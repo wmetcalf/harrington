@@ -1,7 +1,7 @@
 [package]
-name = "batdeob-core"
+name = "harrington-core"
 version = "0.1.0"
-description = "Static-analysis deobfuscation engine for Windows batch / cmd / PowerShell / VBS / JScript samples. Library crate behind the batdeob CLI."
+description = "Static-analysis deobfuscation engine for Windows batch / cmd / PowerShell / VBS / JScript samples. Library crate behind the harrington CLI."
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

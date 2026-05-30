@@ -1,5 +1,5 @@
 #![no_main]
-use batdeob_core::handlers::cmd::extract_cmd_inner;
+use harrington_core::handlers::cmd::extract_cmd_inner;
 use libfuzzer_sys::fuzz_target;
 
 // Fuzz the `cmd /c "..."` body extractor. Quote-balance handling has been

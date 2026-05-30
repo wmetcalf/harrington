@@ -5,8 +5,8 @@ target/
 # Cargo offline cache
 .cargo/
 
-# Default output dir of `batdeob deob`
-batdeob-out/
+# Default output dir of `harrington deob`
+harrington-out/
 
 # Editor / IDE
 .idea/

@@ -3,8 +3,9 @@
 Static-analysis deobfuscator for Windows `.bat` / `.cmd` scripts. Never
 invokes PowerShell or `cmd.exe`. Runs on Linux, macOS, and Windows.
 
-Harrington is the public name for the tool; the Rust crate and binary
-package names remain `batdeob-core` and `batdeob-cli` for compatibility.
+Harrington is the public name for the tool. The Rust crates are
+`harrington-core` and `harrington-cli`, and the CLI binary is
+`harrington`.
 
 Handles real-world obfuscation: caret-escape, comma/semicolon
 substitution, `%VAR%` and `!VAR!` with substring + substitution
@@ -28,7 +29,7 @@ trait.
 From crates.io (once published):
 
 ```bash
-cargo install batdeob-cli
+cargo install harrington-cli
 ```
 
 From source (Rust 1.78+):
@@ -36,8 +37,8 @@ From source (Rust 1.78+):
 ```bash
 git clone https://github.com/wmetcalf/harrington
 cd harrington/rust
-cargo build --release -p batdeob-cli
-./target/release/batdeob version
+cargo build --release -p harrington-cli
+./target/release/harrington version
 ```
 
 Add to PATH:
@@ -48,7 +49,7 @@ export PATH="$PWD/rust/target/release:$PATH"
 
 ## Usage
 
-Five subcommands. Run `batdeob <subcommand> --help` for full options.
+Five subcommands. Run `harrington <subcommand> --help` for full options.
 
 ### `summarize` — analyst's TL;DR
 
@@ -56,7 +57,7 @@ Compact JSON report: downloads, lolbas, admin commands, extracted PS
 samples, deob preview. No files written. **Use this first for triage.**
 
 ```bash
-batdeob summarize sample.bat
+harrington summarize sample.bat
 ```
 
 ### `analyze` — full structured JSON
@@ -64,8 +65,8 @@ batdeob summarize sample.bat
 Every trait, every URL, the full deobfuscated text.
 
 ```bash
-batdeob analyze sample.bat              # pretty JSON
-batdeob analyze --jsonl sample.bat      # one event per line (meta / trait / deob)
+harrington analyze sample.bat              # pretty JSON
+harrington analyze --jsonl sample.bat      # one event per line (meta / trait / deob)
 ```
 
 Pipe `--jsonl` output through `jq` for grep-like workflows.
@@ -77,10 +78,10 @@ SHA-256 of the input. Two opt-in flags inline the raw source and the
 deobfuscated text as JSON strings.
 
 ```bash
-batdeob report sample.bat                                  # summary + traits + sha256
-batdeob report --include-source sample.bat                 # + JSON-escaped input bytes
-batdeob report --include-deob sample.bat                   # + JSON-escaped deob text
-batdeob report --include-source --include-deob sample.bat  # the whole picture in one blob
+harrington report sample.bat                                  # summary + traits + sha256
+harrington report --include-source sample.bat                 # + JSON-escaped input bytes
+harrington report --include-deob sample.bat                   # + JSON-escaped deob text
+harrington report --include-source --include-deob sample.bat  # the whole picture in one blob
 ```
 
 Use this when you want a single self-contained record per sample —
@@ -90,7 +91,7 @@ sample databases, etc.
 ### `deob` — write files to disk
 
 ```bash
-batdeob deob sample.bat -o ./out
+harrington deob sample.bat -o ./out
 ```
 
 Produces:
@@ -105,7 +106,7 @@ Produces:
 ### `version`
 
 ```bash
-batdeob version
+harrington version
 ```
 
 ## Stdin
@@ -113,7 +114,7 @@ batdeob version
 Every subcommand accepts `-` as the file argument. Capped at 256 MB.
 
 ```bash
-echo 'set X=ll & set Y=he & %Y%%X%o' | batdeob analyze -
+echo 'set X=ll & set Y=he & %Y%%X%o' | harrington analyze -
 ```
 
 ## Limits and tuning
@@ -136,8 +137,8 @@ Input is hard-capped at 256 MB (stdin or on-disk).
 
 ## Library usage
 
-`batdeob-core` is also usable as a Rust library. Runnable examples live
-in `rust/crates/batdeob-core/examples/`:
+`harrington-core` is also usable as a Rust library. Runnable examples live
+in `rust/crates/harrington-core/examples/`:
 
 | Example | What it shows |
 |---------|---------------|
@@ -147,16 +148,16 @@ in `rust/crates/batdeob-core/examples/`:
 | `batch_url_extract` | Stream paths from stdin, emit one CSV line per file |
 
 ```bash
-cargo run --example basic              -p batdeob-core -- sample.bat
-cargo run --example custom_config      -p batdeob-core -- sample.bat
-cargo run --example filter_aes_dropper -p batdeob-core -- sample.bat
-find samples/ -name '*.bat' | cargo run --example batch_url_extract -p batdeob-core
+cargo run --example basic              -p harrington-core -- sample.bat
+cargo run --example custom_config      -p harrington-core -- sample.bat
+cargo run --example filter_aes_dropper -p harrington-core -- sample.bat
+find samples/ -name '*.bat' | cargo run --example batch_url_extract -p harrington-core
 ```
 
 Core API surface:
 
 ```rust
-use batdeob_core::{analyze, Config, Report, Trait, WinVer};
+use harrington_core::{analyze, Config, Report, Trait, WinVer};
 
 let input = std::fs::read("sample.bat")?;
 let report: Report = analyze(&input, &Config::default());
@@ -177,9 +178,9 @@ for trait_event in &report.traits {
 // The deobfuscated text is report.deobfuscated.
 ```
 
-The public types are all in `batdeob_core::{Config, Report, Trait,
+The public types are all in `harrington_core::{Config, Report, Trait,
 WinVer}` and the module roots
-`batdeob_core::{deob_scan, ps1_scan, js_scan, vbs_scan, aes_chain}`.
+`harrington_core::{deob_scan, ps1_scan, js_scan, vbs_scan, aes_chain}`.
 
 ## Trait kinds emitted
 
@@ -204,7 +205,7 @@ discriminator `"kind"` field. Most useful kinds:
   **Caveat for analysts:** the AES-CBC chain is decrypted without MAC
   validation (the malware's key/IV travels in plaintext alongside the
   ciphertext, so this is key-recovery, not crypto). A sample whose author
-  knows it will hit batdeob can craft ciphertext that decrypts to a
+  knows it will hit harrington can craft ciphertext that decrypts to a
   misleading URL or PE header. Treat URLs surfaced via the `aes-chain`
   line-hint and `nested_aes` pairs as leads to verify, not signed truths.
 - `Lolbas`, `Mshta`, `Rundll32`, `AdminCommand`, `WindowsUtilManip`,
@@ -275,8 +276,8 @@ IOC recovery:
 ```
 harrington/
 ├── rust/                                  # workspace (primary)
-│   ├── crates/batdeob-core/              # library
-│   ├── crates/batdeob-cli/               # `batdeob` binary
+│   ├── crates/harrington-core/              # library
+│   ├── crates/harrington-cli/               # `harrington` binary
 │   ├── fuzz/                             # cargo-fuzz target
 │   └── tools/
 │       ├── collect-windows-env.bat       # pure-cmd Windows env collector
@@ -287,7 +288,7 @@ harrington/
 ## Acknowledgments
 
 The synthetic Windows environment snapshot
-(`rust/crates/batdeob-core/data/win11.json`) was extracted from a
+(`rust/crates/harrington-core/data/win11.json`) was extracted from a
 Windows 11 25H2 Pro `install.wim` using the helper at
 `rust/tools/extract-from-wim/`. No registry data ships from Microsoft
 directly.

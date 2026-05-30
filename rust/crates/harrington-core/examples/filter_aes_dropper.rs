@@ -3,9 +3,9 @@
 //! to decrypt the `:: ` line ciphertext envelope) and any nested Key/IV
 //! the loader assembly holds in its .NET `#US` heap.
 //!
-//!     cargo run --example filter_aes_dropper -p batdeob-core -- sample.bat
+//!     cargo run --example filter_aes_dropper -p harrington-core -- sample.bat
 
-use batdeob_core::{analyze, Config, Trait};
+use harrington_core::{analyze, Config, Trait};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::args()

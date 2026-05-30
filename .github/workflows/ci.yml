@@ -47,7 +47,7 @@ jobs:
       - name: Install MSRV
         run: rustup install 1.78.0
       - name: MSRV check (lib only)
-        run: cargo +1.78.0 check -p batdeob-core --locked
+        run: cargo +1.78.0 check -p harrington-core --locked
 
   audit:
     runs-on: ubuntu-latest
@@ -68,12 +68,12 @@ jobs:
         working-directory: rust
     steps:
       - uses: actions/checkout@v4
-      - name: Dry-run publish of batdeob-core
-        # The CLI's dry-run cannot run until batdeob-core is actually
+      - name: Dry-run publish of harrington-core
+        # The CLI's dry-run cannot run until harrington-core is actually
         # published, since the CLI's path-dep needs the crate to be
         # registry-resolvable. Once core is on crates.io, add a second
-        # step `cargo publish -p batdeob-cli --dry-run --locked`.
-        run: cargo publish -p batdeob-core --dry-run --locked
+        # step `cargo publish -p harrington-cli --dry-run --locked`.
+        run: cargo publish -p harrington-core --dry-run --locked
 
   fuzz-smoke:
     runs-on: ubuntu-latest

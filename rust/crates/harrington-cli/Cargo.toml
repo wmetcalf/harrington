@@ -1,5 +1,5 @@
 [package]
-name = "batdeob-cli"
+name = "harrington-cli"
 version = "0.1.0"
 description = "Static-analysis deobfuscator for Windows batch / cmd / PowerShell / VBS / JScript samples. CLI that reports IOCs, decoded scripts, and extracted child payloads without ever executing the input."
 edition.workspace = true
@@ -13,11 +13,11 @@ keywords = ["deobfuscation", "malware", "batch", "powershell", "forensics"]
 categories = ["command-line-utilities", "parser-implementations"]
 
 [[bin]]
-name = "batdeob"
+name = "harrington"
 path = "src/main.rs"
 
 [dependencies]
-batdeob-core = { path = "../batdeob-core", version = "0.1.0" }
+harrington-core = { path = "../harrington-core", version = "0.1.0" }
 clap.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true

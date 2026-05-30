@@ -1,4 +1,4 @@
-//! batdeob-core — Windows batch deobfuscator engine.
+//! harrington-core — Windows batch deobfuscator engine.
 //!
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
@@ -931,7 +931,7 @@ mod echo_tests {
         assert!(
             report
                 .deobfuscated
-                .contains("==== batdeob: decoded child script"),
+                .contains("==== harrington: decoded child script"),
             "decoded child script banner missing: {:?}",
             report.deobfuscated
         );
@@ -944,7 +944,7 @@ mod echo_tests {
         // walks the modified_filesystem at multiple depths.
         let n = report
             .deobfuscated
-            .matches("==== batdeob: decoded child script")
+            .matches("==== harrington: decoded child script")
             .count();
         assert_eq!(n, 1, "child-script banner duplicated: count={n}");
     }
@@ -1046,10 +1046,10 @@ mod echo_tests {
     #[test]
     fn call_script_extension_pushes_implicit_host_trait() {
         // `call X.jS` shellexecutes via wscript (PathExt resolution).
-        // batdeob's call handler re-feeds via interpret_line, which
+        // harrington's call handler re-feeds via interpret_line, which
         // previously found no matching handler and silently dropped.
         // Now interpret_line pushes a WscriptExec trait so CAPE's
-        // depth-2 `wscript X.jS` IOC has a batdeob counterpart and the
+        // depth-2 `wscript X.jS` IOC has a harrington counterpart and the
         // analyst can see the implicit launcher.
         let script = b"@echo off\r\n\
             set TMP=C:\\Temp\r\n\
@@ -1089,7 +1089,7 @@ mod echo_tests {
     fn start_process_verb_runas_emits_self_elevation_trait() {
         // `Start-Process … -Verb RunAs` triggers UAC. Dropper families
         // (SKMBT, dropper.bat) use it to relaunch elevated. Surface as
-        // a SelfElevation trait so CAPE-vs-batdeob compare flags the
+        // a SelfElevation trait so CAPE-vs-harrington compare flags the
         // UAC prompt behavior cleanly.
         let script = b"@echo off\r\npowershell -Command \"Start-Process powershell.exe -Verb RunAs -ArgumentList '-Command echo hi'\"\r\n";
         let report = analyze(script, &AnalyzeConfig::default());
@@ -1121,7 +1121,7 @@ mod echo_tests {
     fn reg_add_run_key_emits_persistence_trait() {
         // `reg add HKCU\…\Run /v X /d "C:\dropper.exe" /f` is the
         // classic registry-Run persistence. Surface as Persistence
-        // trait so CAPE-vs-batdeob compare flags this without the
+        // trait so CAPE-vs-harrington compare flags this without the
         // analyst grepping the deob.
         let script = b"@echo off\r\nreg add \"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\" /v evil /d \"C:\\Users\\me\\drop.exe\" /f\r\n";
         let report = analyze(script, &AnalyzeConfig::default());
@@ -1299,7 +1299,7 @@ mod echo_tests {
     fn goto_with_punctuation_prefix_resolves() {
         // xeno-class goto-bytecode: `goto ,;;; 311144` resolves to
         // `goto 311144` in real CMD because `,` and `;` are token
-        // delimiters. batdeob's goto handler used to take `,;;;` as
+        // delimiters. harrington's goto handler used to take `,;;;` as
         // the literal label and fail.
         let script = b"@echo off\r\nset X=before\r\ngoto ,;;; tgt\r\nset X=skipped\r\n:tgt\r\nset X=after\r\necho X=%X%\r\n";
         let report = analyze(script, &AnalyzeConfig::default());
@@ -2409,7 +2409,7 @@ pub fn analyze(input: &[u8], cfg: &Config) -> Report {
             "child"
         };
         out.push_str(&format!(
-            "\r\n::==== batdeob: extracted {kind} payload ====\r\n"
+            "\r\n::==== harrington: extracted {kind} payload ====\r\n"
         ));
         out.push_str(ps.trim_end());
         if !ps.ends_with('\n') {
@@ -2682,7 +2682,7 @@ fn looks_like_batch(content: &[u8]) -> bool {
 /// ) > "C:\...\payload.b64"
 /// ```
 ///
-/// CMD redirects the *block's* combined stdout to the file, but batdeob
+/// CMD redirects the *block's* combined stdout to the file, but harrington
 /// processes each line independently, so the file would otherwise stay empty.
 /// We accumulate the echo payloads (newline-joined, var-expanded) and write
 /// them to the synthetic filesystem so a following `certutil -decode` / `call`
@@ -2813,12 +2813,7 @@ fn analyze_extracted_payloads(env: &mut Environment, out: &mut String, depth: u3
         hasher.finish()
     }
 
-    fn walk(
-        env: &mut Environment,
-        out: &mut String,
-        depth: u32,
-        seen: &mut HashSet<u64>,
-    ) {
+    fn walk(env: &mut Environment, out: &mut String, depth: u32, seen: &mut HashSet<u64>) {
         if depth >= 12 {
             return;
         }
@@ -2869,7 +2864,7 @@ fn analyze_extracted_payloads(env: &mut Environment, out: &mut String, depth: u3
             if !child_out.trim().is_empty() {
                 out.push_str("\r\n");
                 out.push_str(&format!(
-                    "::==== batdeob: decoded child script ({dst}) ====\r\n"
+                    "::==== harrington: decoded child script ({dst}) ====\r\n"
                 ));
                 out.push_str(&child_out);
                 if !child_out.ends_with('\n') {

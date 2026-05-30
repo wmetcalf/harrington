@@ -2,7 +2,7 @@
 //! Source: ../../batch_deobfuscator/tests/test_unittests.py
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
-use batdeob_core::{analyze, Config};
+use harrington_core::{analyze, Config};
 
 fn deob(script: &str) -> String {
     let report = analyze(script.as_bytes(), &Config::default());

@@ -57,7 +57,7 @@ pub fn interpret_line(line: &str, env: &mut Environment) {
     // there's no matching handler (which is the case for `call X.jS`
     // — the call handler re-feeds via interpret_line which lands here),
     // Windows shellexecutes wscript/cscript/mshta to run it. Surface
-    // the implicit launcher as a trait so CAPE-vs-batdeob compare can
+    // the implicit launcher as a trait so CAPE-vs-harrington compare can
     // see the spawned binary; the URL/payload extraction has already
     // happened via the recursive certutil-decode + JS scan path.
     let lower = name.to_ascii_lowercase();

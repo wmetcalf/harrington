@@ -2,9 +2,9 @@
 //! stricter trait-per-kind cap. Useful when you want bounded latency or
 //! you're batch-analyzing many small samples in parallel.
 //!
-//!     cargo run --example custom_config -p batdeob-core -- path/to/sample.bat
+//!     cargo run --example custom_config -p harrington-core -- path/to/sample.bat
 
-use batdeob_core::{analyze, Config, WinVer};
+use harrington_core::{analyze, Config, WinVer};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::args()

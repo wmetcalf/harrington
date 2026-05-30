@@ -17,7 +17,7 @@ enum Command {
     Deob {
         /// Input script (`-` for stdin).
         file: String,
-        #[arg(short = 'o', long = "out-dir", default_value = "batdeob-out")]
+        #[arg(short = 'o', long = "out-dir", default_value = "harrington-out")]
         out_dir: PathBuf,
         #[arg(long)]
         json: bool,
@@ -148,14 +148,14 @@ fn make_config(
     max_output_bytes: u64,
     max_output_line_bytes: u64,
     max_traits_per_kind: u32,
-) -> batdeob_core::Config {
-    batdeob_core::Config {
+) -> harrington_core::Config {
+    harrington_core::Config {
         max_depth,
         max_iterations,
         max_child_scripts,
         timeout_secs: timeout,
         self_extract,
-        winver: batdeob_core::WinVer::Win10,
+        winver: harrington_core::WinVer::Win10,
         max_output_bytes,
         max_output_line_bytes,
         max_traits_per_kind,
@@ -216,7 +216,7 @@ fn safe_write_new(path: &Path, bytes: &[u8]) -> Result<()> {
     }
 }
 
-fn write_report_files(report: &batdeob_core::Report, out_dir: &Path) -> Result<()> {
+fn write_report_files(report: &harrington_core::Report, out_dir: &Path) -> Result<()> {
     fs::create_dir_all(out_dir).with_context(|| format!("mkdir {:?}", out_dir))?;
     let canonical_out =
         fs::canonicalize(out_dir).with_context(|| format!("canonicalize {:?}", out_dir))?;
@@ -367,9 +367,9 @@ fn pe_extension(bytes: &[u8]) -> &'static str {
 fn build_summary(
     input_path: &str,
     input: &[u8],
-    report: &batdeob_core::Report,
+    report: &harrington_core::Report,
 ) -> serde_json::Value {
-    use batdeob_core::Trait;
+    use harrington_core::Trait;
     use std::collections::BTreeMap;
 
     let mut downloads = Vec::new();
@@ -601,8 +601,8 @@ fn build_summary(
 /// Human-readable one-paragraph TLDR for analyst triage.
 /// Groups: URLs, persistence, evasion, lateral movement, in-memory loaders,
 /// network/enum probes. Each section is one line (or omitted if empty).
-fn build_tldr(file: &str, input: &[u8], report: &batdeob_core::Report) -> String {
-    use batdeob_core::Trait;
+fn build_tldr(file: &str, input: &[u8], report: &harrington_core::Report) -> String {
+    use harrington_core::Trait;
     use std::collections::BTreeSet;
     let mut urls: BTreeSet<String> = BTreeSet::new();
     let mut persist: Vec<String> = Vec::new();
@@ -847,8 +847,8 @@ fn run() -> Result<()> {
     match cli.command {
         Command::Summarize { file, tldr } => {
             let input = read_input(&file)?;
-            let cfg = batdeob_core::Config::default();
-            let report = batdeob_core::analyze(&input, &cfg);
+            let cfg = harrington_core::Config::default();
+            let report = harrington_core::analyze(&input, &cfg);
             if tldr {
                 print!("{}", build_tldr(&file, &input, &report));
             } else {
@@ -880,7 +880,7 @@ fn run() -> Result<()> {
                 max_output_line_bytes,
                 max_traits_per_kind,
             );
-            let report = batdeob_core::analyze(&input, &cfg);
+            let report = harrington_core::analyze(&input, &cfg);
 
             // Start from the analyst-friendly summary, then layer the full
             // typed trait list and any opt-in raw text on top.
@@ -912,7 +912,7 @@ fn run() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&value)?);
         }
         Command::Version => {
-            println!("Harrington {}", batdeob_core::version());
+            println!("Harrington {}", harrington_core::version());
         }
         Command::Analyze {
             file,
@@ -937,7 +937,7 @@ fn run() -> Result<()> {
                 max_output_line_bytes,
                 max_traits_per_kind,
             );
-            let report = batdeob_core::analyze(&input, &cfg);
+            let report = harrington_core::analyze(&input, &cfg);
             if jsonl {
                 let meta = serde_json::json!({
                     "kind": "meta",
@@ -986,7 +986,7 @@ fn run() -> Result<()> {
                 max_output_line_bytes,
                 max_traits_per_kind,
             );
-            let report = batdeob_core::analyze(&input, &cfg);
+            let report = harrington_core::analyze(&input, &cfg);
             if !json_only {
                 write_report_files(&report, &out_dir)?;
             }

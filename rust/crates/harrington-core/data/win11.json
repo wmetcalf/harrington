@@ -1,5 +1,5 @@
 {
-  "schema": "batdeob-windows-env/v1",
+  "schema": "harrington-windows-env/v1",
   "source": "extract-from-wim",
   "source_image_index": 6,
   "source_build": "26200",

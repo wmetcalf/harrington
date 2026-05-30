@@ -1,7 +1,7 @@
 #![no_main]
-use batdeob_core::deob_scan;
-use batdeob_core::env::Environment;
-use batdeob_core::Config;
+use harrington_core::deob_scan;
+use harrington_core::env::Environment;
+use harrington_core::Config;
 use libfuzzer_sys::fuzz_target;
 
 // Fuzz the decimal-IP URL scanner. The regex has a digit-boundary check

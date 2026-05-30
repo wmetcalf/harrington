@@ -1,5 +1,5 @@
 [package]
-name = "batdeob-fuzz"
+name = "harrington-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2021"
@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-batdeob-core = { path = "../crates/batdeob-core" }
+harrington-core = { path = "../crates/harrington-core" }
 
 [[bin]]
 name = "analyze"

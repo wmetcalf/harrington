@@ -178,7 +178,7 @@ fn cmd_flags_section(raw: &str) -> Option<&str> {
         // `/r` even when it appears in the MIDDLE of the token, otherwise
         // has_v_on (which calls us) misses `/V` because we never return
         // the flags slice and the caller bails. Without this, `cmd /V/D/c`
-        // doesn't enable delayed expansion in batdeob and `!VAR!` refs
+        // doesn't enable delayed expansion in harrington and `!VAR!` refs
         // inside the body stay literal (Brazilian banker JS-droppers,
         // SOSTENER variants).
         let lower = flag.to_ascii_lowercase();

@@ -1,7 +1,7 @@
 @echo off
 rem ============================================================================
 rem  collect-windows-env.bat
-rem  Harvest the data batdeob needs to emulate cmd.exe behaviors statically:
+rem  Harvest the data harrington needs to emulate cmd.exe behaviors statically:
 rem    - assoc                 (file ext -> ProgID map)
 rem    - ftype                 (ProgID  -> command template)
 rem    - environment variables (set)
@@ -10,7 +10,7 @@ rem    - ver                   (Windows version string)
 rem
 rem  Run inside a clean sandbox VM. Produces ONE output file:
 rem    %~dp0windows-env.json
-rem  Commit it under: rust/crates/batdeob-core/data/<winver>.json
+rem  Commit it under: rust/crates/harrington-core/data/<winver>.json
 rem
 rem  No PowerShell, no .NET, no third-party tools. Plain cmd.exe only.
 rem  Tested on Windows 7 SP1, Windows 10 21H2, Windows 11 23H2.
@@ -19,7 +19,7 @@ rem ============================================================================
 setlocal enabledelayedexpansion
 
 set "OUT=%~dp0windows-env.json"
-set "TMPDIR=%TEMP%\batdeob-collect"
+set "TMPDIR=%TEMP%\harrington-collect"
 if exist "%TMPDIR%" rd /s /q "%TMPDIR%" 2>nul
 mkdir "%TMPDIR%" >nul 2>&1
 
@@ -86,7 +86,7 @@ echo [+] Assembling JSON...
 
 set "Q=^""
 > "%OUT%" echo {
->> "%OUT%" echo   "schema": "batdeob-windows-env/v1",
+>> "%OUT%" echo   "schema": "harrington-windows-env/v1",
 
 rem ver
 for /f "delims=" %%L in (%TMPDIR%\ver.txt) do set "VER_LINE=%%L"
@@ -193,7 +193,7 @@ echo.
 echo [+] Done. Wrote: %OUT%
 echo.
 echo Next: copy this file to
-echo   rust/crates/batdeob-core/data/^<winver^>.json
+echo   rust/crates/harrington-core/data/^<winver^>.json
 echo where ^<winver^> is one of: win7, win10, win11
 exit /b 0
 

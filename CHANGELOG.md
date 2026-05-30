@@ -65,7 +65,7 @@ All notable changes to this project will be documented in this file.
 
 ### Refactored
 
-- New `crates/batdeob-core/src/marker_noise.rs` shared module — the
+- New `crates/harrington-core/src/marker_noise.rs` shared module — the
   strip-marker-noise algorithm and protected-keyword list used to be
   duplicated byte-for-byte in `normalize.rs` and `ps1_scan.rs`.
 - New `Environment::known_extracted_urls()` helper — 12 URL scanners
@@ -89,16 +89,16 @@ covering 1,416 in-the-wild malware samples.
 
 ### Core Engine
 
-- **Lexer / tokenizer** (`batdeob-core::lexer`): full DOS batch tokenizer handling
+- **Lexer / tokenizer** (`harrington-core::lexer`): full DOS batch tokenizer handling
   carets, percent-expansion, delayed-expansion (`!var!`), string literals, and
   operator tokens. Caret-continuation collapse, `@` prefix stripping, and
   comma/semicolon command splitting all occur at lex time.
 
-- **Normalizer** (`batdeob-core::normalizer`): reduces `^`, `^^`, and mixed-case
+- **Normalizer** (`harrington-core::normalizer`): reduces `^`, `^^`, and mixed-case
   identifiers; strips redundant whitespace; collapses empty-var sandwiches
   (`%x%%y%%z%` → `%xz%` when `y` is unset).
 
-- **Variable interpreter** (`batdeob-core::interpreter`): tracks SET assignments,
+- **Variable interpreter** (`harrington-core::interpreter`): tracks SET assignments,
   resolves `%var%` and `!var!` references, handles substring extraction
   (`%var:~off,len%`) and search-and-replace (`%var:find=replace%`), applies
   `%~f0` / `%~dp0` / `%~nx0` path modifier expansions.
@@ -169,28 +169,28 @@ Pass-through handlers that record intent without blocking control flow:
   explosion from looping downloaders; adds a `TraitsCapped` summary record when
   the cap fires.
 
-### CLI (`batdeob-cli`)
+### CLI (`harrington-cli`)
 
 Five subcommands:
 
-- **`batdeob deob <file> -o <dir>`** — writes the deobfuscated batch,
+- **`harrington deob <file> -o <dir>`** — writes the deobfuscated batch,
   extracted child scripts (`.bat` / `.ps1` / normalized `.ps1`), and
   `traits.json` into the given directory.
 
-- **`batdeob analyze <file>`** — full deobfuscation output as JSON
+- **`harrington analyze <file>`** — full deobfuscation output as JSON
   including all traits, deobfuscated command lines, child scripts, and
   summary metadata.
 
-- **`batdeob summarize <file>`** — focused IOC report: downloads,
+- **`harrington summarize <file>`** — focused IOC report: downloads,
   executed commands, files written, registry activity, and summary
   flags. Does **not** include raw deobfuscated text — suitable for
   high-volume triage pipelines.
 
-- **`batdeob report <file>`** — pretty-printed analyst-facing report.
+- **`harrington report <file>`** — pretty-printed analyst-facing report.
   Optional `--include-source` / `--include-deob` re-inline the input
   and deobfuscated text.
 
-- **`batdeob version`** — print the engine version.
+- **`harrington version`** — print the engine version.
 
 Bounded-execution flags (all subcommands):
 

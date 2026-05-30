@@ -2,9 +2,9 @@
 //!
 //! Run with:
 //!
-//!     cargo run --example basic -p batdeob-core -- path/to/sample.bat
+//!     cargo run --example basic -p harrington-core -- path/to/sample.bat
 
-use batdeob_core::{analyze, Config, Trait};
+use harrington_core::{analyze, Config, Trait};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::args().nth(1).ok_or("usage: basic <sample.bat>")?;

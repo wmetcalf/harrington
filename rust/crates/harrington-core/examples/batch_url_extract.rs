@@ -2,13 +2,13 @@
 //! file. Designed for piping into other tools. Reads paths from stdin or
 //! takes a single path on the command line.
 //!
-//!     find samples/ -name '*.bat' | cargo run --example batch_url_extract -p batdeob-core
-//!     cargo run --example batch_url_extract -p batdeob-core -- single.bat
+//!     find samples/ -name '*.bat' | cargo run --example batch_url_extract -p harrington-core
+//!     cargo run --example batch_url_extract -p harrington-core -- single.bat
 
-use batdeob_core::{analyze, Config, Trait};
+use harrington_core::{analyze, Config, Trait};
 use std::io::BufRead;
 
-fn urls_in(report: &batdeob_core::Report) -> Vec<String> {
+fn urls_in(report: &harrington_core::Report) -> Vec<String> {
     let mut out = Vec::new();
     for t in &report.traits {
         match t {

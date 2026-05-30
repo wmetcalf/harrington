@@ -1,4 +1,4 @@
-# batdeob fuzz target
+# harrington fuzz target
 
 Run:
 

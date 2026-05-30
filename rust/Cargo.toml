@@ -1,14 +1,14 @@
 [workspace]
 resolver = "2"
-members = ["crates/batdeob-core", "crates/batdeob-cli"]
+members = ["crates/harrington-core", "crates/harrington-cli"]
 exclude = ["fuzz"]
 
 [workspace.package]
 edition = "2021"
 rust-version = "1.78"
 license = "MIT"
-repository = "https://github.com/willmetcalf/batch_deobfuscator"
-homepage = "https://github.com/willmetcalf/batch_deobfuscator"
+repository = "https://github.com/wmetcalf/harrington"
+homepage = "https://github.com/wmetcalf/harrington"
 readme = "../../README.md"
 authors = ["Will Metcalf <william.metcalf@gmail.com>"]
 

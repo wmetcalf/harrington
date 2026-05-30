@@ -44,11 +44,15 @@ pub fn h_certutil(raw: &str, env: &mut Environment) {
     };
 
     let src_key = src.to_ascii_lowercase();
-    let src_content = env.modified_filesystem.get(&src_key).and_then(|e| match e {
-        FsEntry::Content { content, .. } => Some(content.clone()),
-        FsEntry::Decoded { content, .. } => Some(content.clone()),
-        _ => None,
-    }).or_else(|| resolve_self_source(&src, env));
+    let src_content = env
+        .modified_filesystem
+        .get(&src_key)
+        .and_then(|e| match e {
+            FsEntry::Content { content, .. } => Some(content.clone()),
+            FsEntry::Decoded { content, .. } => Some(content.clone()),
+            _ => None,
+        })
+        .or_else(|| resolve_self_source(&src, env));
 
     let src_resolved = src_content.is_some();
     env.traits.push(Trait::CertutilDecode {
@@ -137,13 +141,20 @@ fn extract_pem_base64(text: &str) -> Option<String> {
             out.extend(trimmed[..end_idx].chars().filter(|c| is_base64_char(*c)));
             break;
         }
-        if trimmed.chars().all(|c| c.is_ascii_whitespace() || is_base64_char(c)) {
+        if trimmed
+            .chars()
+            .all(|c| c.is_ascii_whitespace() || is_base64_char(c))
+        {
             out.extend(trimmed.chars().filter(|c| is_base64_char(*c)));
             continue;
         }
         break;
     }
-    if out.is_empty() { None } else { Some(out) }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
 }
 
 fn strip_quotes(s: &str) -> &str {
