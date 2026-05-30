@@ -1,0 +1,37 @@
+# Rust build artifacts
+target/
+*.rs.bk
+
+# Cargo offline cache
+.cargo/
+
+# Default output dir of `batdeob deob`
+batdeob-out/
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*~
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Working directories used by tools/extract-from-wim (large, rebuildable)
+rust/tools/extract-from-wim/work/
+
+# Local Claude / agent state
+.claude/
+
+# Fuzz corpora are kept; fuzz build artifacts are not
+rust/fuzz/target/
+rust/fuzz/artifacts/
+
+# Python helper scratch
+__pycache__/
+*.pyc
+*.pyo
+
+# Scratch pass-N outputs from corpus_iterate.py runs
+rust/pass*

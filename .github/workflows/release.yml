@@ -1,0 +1,87 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        target:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+          - x86_64-pc-windows-msvc
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            use-cross: true
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            use-cross: true
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            use-cross: false
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            use-cross: false
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            use-cross: false
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust target
+        run: rustup target add ${{ matrix.target }}
+      - name: Install cross
+        if: matrix.use-cross
+        run: cargo install cross
+      - name: Build (cross)
+        if: matrix.use-cross
+        working-directory: rust
+        run: cross build --release --target ${{ matrix.target }} -p batdeob-cli
+      - name: Build (native)
+        if: ${{ !matrix.use-cross }}
+        working-directory: rust
+        run: cargo build --release --target ${{ matrix.target }} -p batdeob-cli
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p dist
+          if [[ "${{ matrix.target }}" == *windows* ]]; then
+            cp rust/target/${{ matrix.target }}/release/batdeob.exe dist/batdeob-${{ matrix.target }}.exe
+          else
+            cp rust/target/${{ matrix.target }}/release/batdeob dist/batdeob-${{ matrix.target }}
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: batdeob-${{ matrix.target }}
+          path: dist/*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: Generate SHA256 checksums
+        run: |
+          cd dist
+          find . -type f -print0 \
+            | xargs -0 shasum -a 256 \
+            | sort \
+            > SHA256SUMS
+          cat SHA256SUMS
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*/*
+            dist/SHA256SUMS

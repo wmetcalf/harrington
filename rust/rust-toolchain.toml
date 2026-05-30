@@ -1,0 +1,6 @@
+[toolchain]
+# Track stable. MSRV is enforced separately via the workspace's
+# `rust-version` and a dedicated CI job; this only pins what's used for
+# day-to-day dev so it shouldn't lock contributors to an old point release.
+channel = "stable"
+components = ["clippy", "rustfmt"]

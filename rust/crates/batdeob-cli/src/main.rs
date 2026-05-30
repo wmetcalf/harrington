@@ -1,0 +1,1010 @@
+use anyhow::{Context, Result};
+use clap::{Parser, Subcommand};
+use sha2::{Digest, Sha256};
+use std::fs;
+use std::path::{Path, PathBuf};
+
+#[derive(Parser)]
+#[command(version, about = "Harrington — Windows batch deobfuscator")]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Deobfuscate a script. Writes deobfuscated.bat + extracted children to --out-dir.
+    Deob {
+        /// Input script (`-` for stdin).
+        file: String,
+        #[arg(short = 'o', long = "out-dir", default_value = "batdeob-out")]
+        out_dir: PathBuf,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        json_only: bool,
+        #[arg(long, default_value_t = 12)]
+        max_depth: u32,
+        #[arg(long, default_value_t = 65_536)]
+        max_iterations: u64,
+        #[arg(long, default_value_t = 64)]
+        max_child_scripts: u32,
+        #[arg(long, default_value_t = 10)]
+        timeout: u64,
+        #[arg(long)]
+        no_self_extract: bool,
+        #[arg(long, default_value_t = 10 * 1024 * 1024)]
+        max_output_bytes: u64,
+        #[arg(long, default_value_t = 64 * 1024)]
+        max_output_line_bytes: u64,
+        #[arg(long, default_value_t = 100)]
+        max_traits_per_kind: u32,
+    },
+    /// Like `deob --json-only`: JSON report to stdout, no files.
+    Analyze {
+        file: String,
+        #[arg(long, default_value_t = 12)]
+        max_depth: u32,
+        #[arg(long, default_value_t = 65_536)]
+        max_iterations: u64,
+        #[arg(long, default_value_t = 64)]
+        max_child_scripts: u32,
+        #[arg(long, default_value_t = 10)]
+        timeout: u64,
+        #[arg(long)]
+        no_self_extract: bool,
+        #[arg(long, default_value_t = 10 * 1024 * 1024)]
+        max_output_bytes: u64,
+        #[arg(long, default_value_t = 64 * 1024)]
+        max_output_line_bytes: u64,
+        #[arg(long, default_value_t = 100)]
+        max_traits_per_kind: u32,
+        #[arg(long)]
+        jsonl: bool,
+    },
+    /// Emit a focused JSON IOC report without raw deobfuscated text.
+    Summarize {
+        /// Input script (`-` for stdin).
+        file: String,
+        /// Emit a human-readable one-paragraph TLDR instead of JSON.
+        /// Lists URLs, persistence, evasion, lateral movement, AV evasion,
+        /// in-memory loaders, and enumeration in a few short lines suited
+        /// for analyst triage / chat-paste.
+        #[arg(long)]
+        tldr: bool,
+    },
+    /// Emit a comprehensive JSON report: summary fields + full trait list,
+    /// plus optionally the JSON-escaped source and deobfuscated text.
+    Report {
+        /// Input script (`-` for stdin).
+        file: String,
+        /// Embed the raw input bytes as a JSON string (lossy UTF-8).
+        #[arg(long)]
+        include_source: bool,
+        /// Embed the deobfuscated text as a JSON string.
+        #[arg(long)]
+        include_deob: bool,
+        #[arg(long, default_value_t = 12)]
+        max_depth: u32,
+        #[arg(long, default_value_t = 65_536)]
+        max_iterations: u64,
+        #[arg(long, default_value_t = 64)]
+        max_child_scripts: u32,
+        #[arg(long, default_value_t = 10)]
+        timeout: u64,
+        #[arg(long)]
+        no_self_extract: bool,
+        #[arg(long, default_value_t = 10 * 1024 * 1024)]
+        max_output_bytes: u64,
+        #[arg(long, default_value_t = 64 * 1024)]
+        max_output_line_bytes: u64,
+        #[arg(long, default_value_t = 100)]
+        max_traits_per_kind: u32,
+    },
+    /// Print version and exit.
+    Version,
+}
+
+/// Maximum bytes we will read from stdin or a plain file. Defends against
+/// OOM from a multi-gigabyte input. A real batch file is well under a few
+/// MB; this is a generous safety ceiling.
+const MAX_INPUT_BYTES: u64 = 256 * 1024 * 1024;
+
+fn read_input(path: &str) -> Result<Vec<u8>> {
+    use std::io::Read;
+    if path == "-" {
+        let mut buf = Vec::new();
+        let mut limited = std::io::stdin().take(MAX_INPUT_BYTES);
+        limited.read_to_end(&mut buf).context("read stdin")?;
+        if buf.len() as u64 >= MAX_INPUT_BYTES {
+            anyhow::bail!(
+                "stdin input exceeds {} bytes; refusing to read more",
+                MAX_INPUT_BYTES
+            );
+        }
+        Ok(buf)
+    } else {
+        // Cap on-disk reads too — symlinks could point at /dev/zero etc.
+        let meta = fs::metadata(path).with_context(|| format!("stat {:?}", path))?;
+        if meta.len() > MAX_INPUT_BYTES {
+            anyhow::bail!(
+                "{:?}: {} bytes exceeds the {}-byte input cap",
+                path,
+                meta.len(),
+                MAX_INPUT_BYTES
+            );
+        }
+        fs::read(path).with_context(|| format!("read {:?}", path))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn make_config(
+    max_depth: u32,
+    max_iterations: u64,
+    max_child_scripts: u32,
+    timeout: u64,
+    self_extract: bool,
+    max_output_bytes: u64,
+    max_output_line_bytes: u64,
+    max_traits_per_kind: u32,
+) -> batdeob_core::Config {
+    batdeob_core::Config {
+        max_depth,
+        max_iterations,
+        max_child_scripts,
+        timeout_secs: timeout,
+        self_extract,
+        winver: batdeob_core::WinVer::Win10,
+        max_output_bytes,
+        max_output_line_bytes,
+        max_traits_per_kind,
+    }
+}
+
+fn short_sha(bytes: &[u8]) -> String {
+    let mut h = Sha256::new();
+    h.update(bytes);
+    let digest = h.finalize();
+    hex::encode(digest)[..10].to_string()
+}
+
+/// Safely join `name` onto the canonical `out_dir`, refusing if the result
+/// would escape that directory. All `name`s in this tool are either static
+/// strings ("deobfuscated.bat", "traits.json") or `<sha10>.bat|ps1` — so a
+/// successful escape would require a bug in the SHA encoder. Belt and
+/// braces; the canonicalize step also catches the case where `out_dir`
+/// itself is a symlink to a sensitive location.
+fn safe_join(canonical_out: &Path, name: &str) -> Result<PathBuf> {
+    // Refuse anything that looks like a path traversal upfront.
+    if name.contains('/') || name.contains('\\') || name.contains("..") {
+        anyhow::bail!("refusing unsafe child filename: {:?}", name);
+    }
+    let target = canonical_out.join(name);
+    Ok(target)
+}
+
+/// Write `bytes` to `path` using O_CREATE+O_EXCL semantics and (on Unix)
+/// O_NOFOLLOW. Refuses to overwrite an existing file or follow a symlink —
+/// closes the TOCTOU window where an attacker could swap the output
+/// directory for a symlink between canonicalize() and the write.
+fn safe_write_new(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let mut opts = fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(libc::O_NOFOLLOW);
+    }
+    match opts.open(path) {
+        Ok(mut f) => {
+            f.write_all(bytes)
+                .with_context(|| format!("write {:?}", path))?;
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            // Pre-existing file at target path — refuse to overwrite. In
+            // the analyst use case the output directory is supposed to be
+            // fresh, so a collision is suspicious (race / replay).
+            anyhow::bail!(
+                "refusing to overwrite existing output path {:?} (race or stale dir)",
+                path
+            )
+        }
+        Err(e) => Err(anyhow::Error::from(e).context(format!("open {:?}", path))),
+    }
+}
+
+fn write_report_files(report: &batdeob_core::Report, out_dir: &Path) -> Result<()> {
+    fs::create_dir_all(out_dir).with_context(|| format!("mkdir {:?}", out_dir))?;
+    let canonical_out =
+        fs::canonicalize(out_dir).with_context(|| format!("canonicalize {:?}", out_dir))?;
+
+    safe_write_new(
+        &safe_join(&canonical_out, "deobfuscated.bat")?,
+        report.deobfuscated.as_bytes(),
+    )?;
+
+    let mut seen = std::collections::HashSet::new();
+    for child in &report.extracted_cmd {
+        let bytes = child.as_bytes();
+        let sha = short_sha(bytes);
+        if !seen.insert(sha.clone()) {
+            continue;
+        }
+        let name = format!("{sha}.bat");
+        safe_write_new(&safe_join(&canonical_out, &name)?, bytes)?;
+    }
+    for (idx, child) in report.extracted_ps1.iter().enumerate() {
+        let sha = short_sha(child);
+        if !seen.insert(sha.clone()) {
+            continue;
+        }
+        let name = format!("{sha}.ps1");
+        safe_write_new(&safe_join(&canonical_out, &name)?, child)?;
+        if let Some(normalized) = report.extracted_ps1_normalized.get(idx) {
+            let raw_text = String::from_utf8_lossy(child);
+            if normalized != raw_text.as_ref() {
+                let name = format!("{sha}.normalized.ps1");
+                safe_write_new(&safe_join(&canonical_out, &name)?, normalized.as_bytes())?;
+            }
+        }
+    }
+
+    // Dump recovered binary blobs:
+    //   * `.exe`/`.dll` payloads decrypted out of AES-chain droppers
+    //     (dwm.bat / 1895041 / DHL families)
+    //   * Whole-file disguised binaries — `.cab` / `.zip` / `.rar` /
+    //     `.7z` / `.lnk` / `.pdf` / `.png` etc. delivered as `.bat`
+    //     (15 CAB + 5 LNK + 223 PE in the corpus)
+    // One file per blob, sha-prefixed so two runs against the same
+    // input produce deterministic names. Extension picked by sniffing
+    // the magic bytes (`detect_blob_extension`). Skipped silently if
+    // there's nothing to write.
+    for (label, blob) in &report.recovered_pe {
+        let bytes = blob.as_slice();
+        let sha = short_sha(bytes);
+        if !seen.insert(sha.clone()) {
+            continue;
+        }
+        let ext = detect_blob_extension(bytes);
+        let name = format!("{sha}.{ext}");
+        safe_write_new(&safe_join(&canonical_out, &name)?, bytes)?;
+        // Companion `.meta` text file documents what each blob is so an
+        // analyst eyeballing the out-dir doesn't have to guess.
+        let meta_name = format!("{sha}.meta");
+        let meta = format!(
+            "origin: {label}\nsize: {}\nsha256-prefix: {sha}\n",
+            bytes.len()
+        );
+        safe_write_new(&safe_join(&canonical_out, &meta_name)?, meta.as_bytes())?;
+    }
+
+    let traits_json = serde_json::to_string_pretty(&report.traits)?;
+    safe_write_new(
+        &safe_join(&canonical_out, "traits.json")?,
+        traits_json.as_bytes(),
+    )?;
+
+    Ok(())
+}
+
+/// Pick the right on-disk extension for a recovered blob by sniffing
+/// its magic bytes. Order matters — PE check first (most common), then
+/// archive formats, then LNK/PDF/images. Falls back to `.bin` for
+/// truly unknown content.
+fn detect_blob_extension(bytes: &[u8]) -> &'static str {
+    if bytes.len() < 8 {
+        return "bin";
+    }
+    if bytes.starts_with(b"MZ") {
+        return pe_extension(bytes);
+    }
+    if bytes.starts_with(b"MSCF\x00\x00\x00\x00") {
+        return "cab";
+    }
+    if bytes.starts_with(b"PK\x03\x04") || bytes.starts_with(b"PK\x05\x06") {
+        return "zip";
+    }
+    if bytes.starts_with(b"Rar!\x1a\x07\x00") || bytes.starts_with(b"Rar!\x1a\x07\x01\x00") {
+        return "rar";
+    }
+    if bytes.starts_with(b"7z\xbc\xaf\x27\x1c") {
+        return "7z";
+    }
+    if bytes.starts_with(b"L\x00\x00\x00\x01\x14\x02\x00\x00\x00\x00\x00") {
+        return "lnk";
+    }
+    if bytes.starts_with(b"%PDF-") {
+        return "pdf";
+    }
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return "png";
+    }
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return "gif";
+    }
+    if bytes.starts_with(b"\xff\xd8\xff") {
+        return "jpg";
+    }
+    "bin"
+}
+
+/// Pick `.dll` vs `.exe` for a recovered PE based on its characteristics
+/// flags. Falls back to `.exe` for malformed / non-PE blobs (those still
+/// get written so analysts can inspect them).
+fn pe_extension(bytes: &[u8]) -> &'static str {
+    // PE header: bytes[0x3c..0x40] is the e_lfanew offset to the PE
+    // signature. Then PE\0\0, then COFF File Header. Characteristics
+    // is at offset 18 of the File Header. IMAGE_FILE_DLL = 0x2000.
+    let Some(pe_off) = bytes
+        .get(0x3c..0x40)
+        .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize)
+    else {
+        return "exe";
+    };
+    let Some(sig) = bytes.get(pe_off..pe_off + 4) else {
+        return "exe";
+    };
+    if sig != b"PE\0\0" {
+        return "exe";
+    }
+    let chars_off = pe_off + 4 + 18; // COFF File Header is 20 bytes; chars is last 2
+    let Some(chars) = bytes
+        .get(chars_off..chars_off + 2)
+        .map(|b| u16::from_le_bytes([b[0], b[1]]))
+    else {
+        return "exe";
+    };
+    if chars & 0x2000 != 0 {
+        "dll"
+    } else {
+        "exe"
+    }
+}
+
+fn build_summary(
+    input_path: &str,
+    input: &[u8],
+    report: &batdeob_core::Report,
+) -> serde_json::Value {
+    use batdeob_core::Trait;
+    use std::collections::BTreeMap;
+
+    let mut downloads = Vec::new();
+    // Dedupe across trait kinds. A URL extracted via both `Trait::Download`
+    // and `Trait::DownloadInDeobText` used to appear twice. Logic:
+    //   1. Same src + same dst → drop the second.
+    //   2. Same src, one has None dst & other has a real dst → keep the
+    //      one with a dst (the post-pass sweep's None-dst entry loses).
+    //   3. Same src, different real dsts → keep both (rare but possible
+    //      when the same URL is downloaded to two locations).
+    // Normalize a dst path for dedup comparison: lowercase + collapse the
+    // common `%APPDATA%`/`%TEMP%`/`%LOCALAPPDATA%` env vars and the standard
+    // expanded forms into a canonical token, so handlers that emit `dst=
+    // %APPDATA%/X.exe` vs `dst=C:\Users\puncher\AppData\Roaming/X.exe`
+    // dedupe as the same target. Conservative — only the env vars we
+    // actually substitute in the baseline env.
+    fn norm_dst(s: Option<&str>) -> Option<String> {
+        let s = s?;
+        let mut t = s.to_ascii_lowercase().replace('\\', "/");
+        for (var, expanded) in &[
+            ("%appdata%", "c:/users/puncher/appdata/roaming"),
+            ("%localappdata%", "c:/users/puncher/appdata/local"),
+            ("%temp%", "c:/users/puncher/appdata/local/temp"),
+            ("%tmp%", "c:/users/puncher/appdata/local/temp"),
+            ("%userprofile%", "c:/users/puncher"),
+            ("%systemroot%", "c:/windows"),
+            ("%programdata%", "c:/programdata"),
+        ] {
+            t = t.replace(var, expanded);
+        }
+        Some(t)
+    }
+    let push_download = |downloads: &mut Vec<serde_json::Value>, val: serde_json::Value| {
+        let src = val
+            .get("src")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let dst_str = val.get("dst").and_then(|v| v.as_str()).map(String::from);
+        let dst_norm = norm_dst(dst_str.as_deref());
+        for (i, prev) in downloads.iter_mut().enumerate() {
+            let prev_src = prev.get("src").and_then(|v| v.as_str()).unwrap_or("");
+            if prev_src != src {
+                continue;
+            }
+            let prev_dst = prev.get("dst").and_then(|v| v.as_str()).map(String::from);
+            let prev_dst_norm = norm_dst(prev_dst.as_deref());
+            // Identical (after norm) → drop new.
+            if prev_dst_norm == dst_norm {
+                return;
+            }
+            // New has a dst, prev doesn't → replace prev with new.
+            if prev_dst.is_none() && dst_str.is_some() {
+                downloads[i] = val;
+                return;
+            }
+            // Prev has a dst, new doesn't → drop new.
+            if prev_dst.is_some() && dst_str.is_none() {
+                return;
+            }
+            // Both have different real dsts → fall through to push the new
+            // one as a separate entry.
+        }
+        downloads.push(val);
+    };
+    let mut lolbas: Vec<String> = Vec::new();
+    let mut admin_commands: BTreeMap<String, u64> = BTreeMap::new();
+    let mut ps_samples: Vec<String> = Vec::new();
+    let mut windows_util: Vec<serde_json::Value> = Vec::new();
+    let mut self_extract = false;
+    let mut traits_capped: Vec<serde_json::Value> = Vec::new();
+
+    for t in &report.traits {
+        match t {
+            Trait::Download { src, dst, .. } => {
+                push_download(
+                    &mut downloads,
+                    serde_json::json!({
+                        "src": src,
+                        "dst": dst,
+                    }),
+                );
+            }
+            Trait::CertutilDownload { url, dst } => {
+                push_download(
+                    &mut downloads,
+                    serde_json::json!({
+                        "src": url,
+                        "dst": dst,
+                    }),
+                );
+            }
+            Trait::BitsadminDownload { url, dst } => {
+                push_download(
+                    &mut downloads,
+                    serde_json::json!({
+                        "src": url,
+                        "dst": dst,
+                    }),
+                );
+            }
+            Trait::DownloadInDeobText { src, .. } => {
+                push_download(
+                    &mut downloads,
+                    serde_json::json!({
+                        "src": src,
+                        "dst": null,
+                        "source": "deob-text-sweep",
+                    }),
+                );
+            }
+            // PowerShell `$url = "https://..."` / `Start "" https://...` /
+            // `cmd http://...` style URLs: surface in `downloads[]` so
+            // analyst tooling sees them alongside cmd.exe-style downloads.
+            // De-dup is handled by `push_download`.
+            Trait::UrlVariable { url, .. } => {
+                push_download(
+                    &mut downloads,
+                    serde_json::json!({
+                        "src": url,
+                        "dst": null,
+                        "source": "ps-url-variable",
+                    }),
+                );
+            }
+            Trait::UrlArgument { url, .. } => {
+                push_download(
+                    &mut downloads,
+                    serde_json::json!({
+                        "src": url,
+                        "dst": null,
+                        "source": "process-url-arg",
+                    }),
+                );
+            }
+            Trait::UrlLaunch { url, .. } => {
+                push_download(
+                    &mut downloads,
+                    serde_json::json!({
+                        "src": url,
+                        "dst": null,
+                        "source": "url-launch",
+                    }),
+                );
+            }
+            // `reg add … /d https://…` style C2 URL stashed in the registry —
+            // sandbox tooling treats this the same as a direct download since
+            // the resident component will later fetch it.
+            Trait::RegistryUrl { url, .. } => {
+                push_download(
+                    &mut downloads,
+                    serde_json::json!({
+                        "src": url,
+                        "dst": null,
+                        "source": "registry-url",
+                    }),
+                );
+            }
+            Trait::UncWebDavC2 {
+                host,
+                port,
+                share_path,
+                http_url,
+                ..
+            } => {
+                // `share_path` is already the full `\\host@port\share\...`
+                // UNC string — using it verbatim. The MS-style http(s) URL
+                // is the analyst-friendlier form.
+                downloads.push(serde_json::json!({
+                    "src": share_path,
+                    "http_url": if http_url.is_empty() { None } else { Some(http_url) },
+                    "dst": null,
+                    "source": "unc-webdav-c2",
+                    "host": host,
+                    "port": port,
+                }));
+            }
+            Trait::Lolbas { name, .. } if !lolbas.iter().any(|n| n == name) => {
+                lolbas.push(name.clone());
+            }
+            Trait::AdminCommand { name, .. } => {
+                *admin_commands.entry(name.clone()).or_insert(0) += 1;
+            }
+            Trait::SelfExtract { .. } => {
+                self_extract = true;
+            }
+            Trait::WindowsUtilManip { src, dst, .. } => {
+                windows_util.push(serde_json::json!({"src": src, "dst": dst}));
+            }
+            Trait::TraitsCapped { .. }
+            | Trait::LineTruncated { .. }
+            | Trait::OutputCapped { .. }
+            | Trait::DepthCapped { .. }
+            | Trait::ChildScriptsCapped
+            | Trait::TimeoutHit
+            | Trait::IterationCapped { .. } => {
+                traits_capped.push(serde_json::to_value(t).expect("trait serializes"));
+            }
+            _ => {}
+        }
+    }
+
+    let ps_count = report.extracted_ps1.len();
+    for s in report.extracted_ps1_normalized.iter().take(3) {
+        ps_samples.push(s.chars().take(500).collect());
+    }
+
+    let preview: String = report.deobfuscated.chars().take(1000).collect();
+
+    serde_json::json!({
+        "input": input_path,
+        "input_size": input.len(),
+        "deobfuscated_size": report.deobfuscated.len(),
+        "deobfuscated_preview": preview,
+        "downloads": downloads,
+        "extracted": {
+            "cmd": report.extracted_cmd.len(),
+            "powershell": ps_count,
+            "powershell_samples": ps_samples,
+        },
+        "lolbas": lolbas,
+        "admin_commands": admin_commands,
+        "windows_util_manipulation": windows_util,
+        "self_extract": self_extract,
+        "traits_capped": traits_capped,
+    })
+}
+
+/// Human-readable one-paragraph TLDR for analyst triage.
+/// Groups: URLs, persistence, evasion, lateral movement, in-memory loaders,
+/// network/enum probes. Each section is one line (or omitted if empty).
+fn build_tldr(file: &str, input: &[u8], report: &batdeob_core::Report) -> String {
+    use batdeob_core::Trait;
+    use std::collections::BTreeSet;
+    let mut urls: BTreeSet<String> = BTreeSet::new();
+    let mut persist: Vec<String> = Vec::new();
+    let mut evasion: Vec<String> = Vec::new();
+    let mut lateral: Vec<String> = Vec::new();
+    let mut inmem: BTreeSet<String> = BTreeSet::new();
+    let mut probes: BTreeSet<String> = BTreeSet::new();
+    let mut enumeration: BTreeSet<String> = BTreeSet::new();
+    let mut self_elev: Vec<String> = Vec::new();
+    let mut anti_recov: BTreeSet<String> = BTreeSet::new();
+    let mut unc: BTreeSet<String> = BTreeSet::new();
+    let mut self_extract = false;
+    let mut aes_findings: Vec<String> = Vec::new();
+    let mut cred_access: BTreeSet<String> = BTreeSet::new();
+    let mut injection: BTreeSet<String> = BTreeSet::new();
+    let mut input_cap: BTreeSet<String> = BTreeSet::new();
+    let mut ransom_ext: BTreeSet<String> = BTreeSet::new();
+    let mut remote_exec: BTreeSet<String> = BTreeSet::new();
+    let mut shellcode: BTreeSet<String> = BTreeSet::new();
+    let mut uac_bypass: BTreeSet<String> = BTreeSet::new();
+    let mut svc_install: BTreeSet<String> = BTreeSet::new();
+    let mut beacon_sleep: BTreeSet<String> = BTreeSet::new();
+    let mut remote_connect: BTreeSet<String> = BTreeSet::new();
+    let mut disguised: BTreeSet<String> = BTreeSet::new();
+    let mut extrac32_self: BTreeSet<String> = BTreeSet::new();
+
+    for t in &report.traits {
+        match t {
+            Trait::Download { src, .. } | Trait::DownloadInDeobText { src, .. } => {
+                urls.insert(src.clone());
+            }
+            Trait::CertutilDownload { url, .. }
+            | Trait::BitsadminDownload { url, .. }
+            | Trait::UrlLaunch { url, .. }
+            | Trait::UrlArgument { url, .. }
+            | Trait::UrlVariable { url, .. }
+            | Trait::RegistryUrl { url, .. } => {
+                urls.insert(url.clone());
+            }
+            Trait::RemoteConnect { host, port, .. } => {
+                remote_connect.insert(format!("{host}:{port}"));
+            }
+            Trait::DisguisedBinary { format, size } => {
+                disguised.insert(format!("{format} ({size} bytes)"));
+            }
+            Trait::Extrac32 {
+                src,
+                dst,
+                self_reference,
+            } if *self_reference => {
+                extrac32_self.insert(format!("{src} → {dst}"));
+            }
+            Trait::UncWebDavC2 { share_path, .. } => {
+                unc.insert(share_path.clone());
+            }
+            Trait::Persistence {
+                hive,
+                key,
+                value_name,
+                command,
+            } => {
+                persist.push(format!(
+                    "{hive}\\{key}{}{} → {}",
+                    if value_name.is_empty() { "" } else { " /v " },
+                    value_name,
+                    if command.is_empty() {
+                        "(no /d)"
+                    } else {
+                        command
+                    }
+                ));
+            }
+            Trait::DefenderEvasion { action, target } => {
+                evasion.push(if target.is_empty() {
+                    action.clone()
+                } else {
+                    format!("{action} {target}")
+                });
+            }
+            Trait::LateralMovement { tool, target_host } => {
+                lateral.push(format!("{tool} → {target_host}"));
+            }
+            Trait::InMemoryAssemblyLoad { variant } => {
+                inmem.insert(variant.clone());
+            }
+            Trait::NetworkProbe { probe_kind, target } => {
+                probes.insert(format!("{probe_kind}={target}"));
+            }
+            Trait::Enumeration { enum_kind, .. } => {
+                enumeration.insert(enum_kind.clone());
+            }
+            Trait::SelfElevation { target, .. } => {
+                self_elev.push(target.clone());
+            }
+            Trait::AntiRecovery { action } => {
+                anti_recov.insert(action.clone());
+            }
+            Trait::SelfExtract { .. } => {
+                self_extract = true;
+            }
+            Trait::CredentialAccess { technique, target } => {
+                cred_access.insert(format!(
+                    "{technique}: {}",
+                    target.chars().take(60).collect::<String>()
+                ));
+            }
+            Trait::ProcessInjection { api } => {
+                injection.insert(api.clone());
+            }
+            Trait::InputCapture { capture_kind } => {
+                input_cap.insert(capture_kind.clone());
+            }
+            Trait::RansomFileExtension { extension } => {
+                ransom_ext.insert(extension.clone());
+            }
+            Trait::RemoteExec { tool, target_host } => {
+                remote_exec.insert(format!("{tool} → {target_host}"));
+            }
+            Trait::ShellcodeMarker { evidence } => {
+                shellcode.insert(evidence.clone());
+            }
+            Trait::UacBypass { technique } => {
+                uac_bypass.insert(technique.clone());
+            }
+            Trait::ServiceInstall {
+                service_name,
+                bin_path,
+            } => {
+                svc_install.insert(if bin_path.is_empty() {
+                    service_name.clone()
+                } else {
+                    format!("{service_name} → {bin_path}")
+                });
+            }
+            Trait::BeaconSleep { seconds } => {
+                beacon_sleep.insert(format!("{seconds}s"));
+            }
+            Trait::MultiStageEncryptedDropper {
+                aes_key_b64,
+                aes_iv_b64,
+                assemblies_recovered,
+                ..
+            } => {
+                if let (Some(k), Some(iv)) = (aes_key_b64, aes_iv_b64) {
+                    aes_findings.push(format!(
+                        "Key={}… IV={}… asm={}",
+                        &k.chars().take(16).collect::<String>(),
+                        &iv.chars().take(16).collect::<String>(),
+                        assemblies_recovered.unwrap_or(0)
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut out = String::new();
+    let sha = short_sha(input);
+    out.push_str(&format!("== {file} ({} bytes, {sha}) ==\n", input.len()));
+
+    fn emit_line(out: &mut String, label: &str, items: Vec<String>) {
+        if items.is_empty() {
+            return;
+        }
+        let joined: Vec<String> = items.into_iter().take(6).collect();
+        out.push_str(&format!("  {label}: {}\n", joined.join("; ")));
+    }
+    emit_line(&mut out, "URLs", urls.into_iter().collect());
+    emit_line(&mut out, "UNC", unc.into_iter().collect());
+    emit_line(
+        &mut out,
+        "C2 connect (host:port)",
+        remote_connect.into_iter().collect(),
+    );
+    emit_line(
+        &mut out,
+        "Disguised binary",
+        disguised.into_iter().collect(),
+    );
+    emit_line(
+        &mut out,
+        "Self-extract (extrac32 %~f0)",
+        extrac32_self.into_iter().collect(),
+    );
+    if !report.recovered_pe.is_empty() {
+        out.push_str(&format!(
+            "  Recovered PE blobs: {} (run `deob -o <dir>` to dump)\n",
+            report.recovered_pe.len()
+        ));
+    }
+    emit_line(&mut out, "Persistence", persist);
+    if self_extract {
+        out.push_str("  Self-extract: yes\n");
+    }
+    emit_line(&mut out, "Self-elevation", self_elev);
+    emit_line(&mut out, "AV evasion", evasion);
+    emit_line(&mut out, "Lateral", lateral);
+    emit_line(&mut out, "In-memory load", inmem.into_iter().collect());
+    emit_line(&mut out, "AES dropper (DECRYPTED)", aes_findings);
+    emit_line(&mut out, "Network probe", probes.into_iter().collect());
+    emit_line(&mut out, "Enumeration", enumeration.into_iter().collect());
+    emit_line(&mut out, "Cred access", cred_access.into_iter().collect());
+    emit_line(
+        &mut out,
+        "Process injection (API)",
+        injection.into_iter().collect(),
+    );
+    emit_line(&mut out, "Input capture", input_cap.into_iter().collect());
+    emit_line(&mut out, "Remote exec", remote_exec.into_iter().collect());
+    emit_line(
+        &mut out,
+        "Shellcode marker",
+        shellcode.into_iter().collect(),
+    );
+    emit_line(&mut out, "UAC bypass", uac_bypass.into_iter().collect());
+    emit_line(
+        &mut out,
+        "Service install (sc create)",
+        svc_install.into_iter().collect(),
+    );
+    emit_line(&mut out, "Beacon sleep", beacon_sleep.into_iter().collect());
+    emit_line(
+        &mut out,
+        "Ransom file ext",
+        ransom_ext.into_iter().collect(),
+    );
+    // Anti-recovery is a strong ransomware indicator — call out separately.
+    emit_line(
+        &mut out,
+        "Anti-recovery (RANSOMWARE)",
+        anti_recov.into_iter().collect(),
+    );
+
+    if out.lines().count() <= 1 {
+        out.push_str("  (no notable IOCs surfaced)\n");
+    }
+    out
+}
+
+fn run() -> Result<()> {
+    let cli = Cli::parse();
+    match cli.command {
+        Command::Summarize { file, tldr } => {
+            let input = read_input(&file)?;
+            let cfg = batdeob_core::Config::default();
+            let report = batdeob_core::analyze(&input, &cfg);
+            if tldr {
+                print!("{}", build_tldr(&file, &input, &report));
+            } else {
+                let summary = build_summary(&file, &input, &report);
+                println!("{}", serde_json::to_string_pretty(&summary)?);
+            }
+        }
+        Command::Report {
+            file,
+            include_source,
+            include_deob,
+            max_depth,
+            max_iterations,
+            max_child_scripts,
+            timeout,
+            no_self_extract,
+            max_output_bytes,
+            max_output_line_bytes,
+            max_traits_per_kind,
+        } => {
+            let input = read_input(&file)?;
+            let cfg = make_config(
+                max_depth,
+                max_iterations,
+                max_child_scripts,
+                timeout,
+                !no_self_extract,
+                max_output_bytes,
+                max_output_line_bytes,
+                max_traits_per_kind,
+            );
+            let report = batdeob_core::analyze(&input, &cfg);
+
+            // Start from the analyst-friendly summary, then layer the full
+            // typed trait list and any opt-in raw text on top.
+            let mut value = build_summary(&file, &input, &report);
+            if let serde_json::Value::Object(ref mut obj) = value {
+                let input_sha256 = {
+                    let mut h = Sha256::new();
+                    h.update(&input);
+                    hex::encode(h.finalize())
+                };
+                obj.insert(
+                    "input_sha256".to_string(),
+                    serde_json::Value::String(input_sha256),
+                );
+                obj.insert("traits".to_string(), serde_json::to_value(&report.traits)?);
+                if include_source {
+                    obj.insert(
+                        "source".to_string(),
+                        serde_json::Value::String(String::from_utf8_lossy(&input).into_owned()),
+                    );
+                }
+                if include_deob {
+                    obj.insert(
+                        "deobfuscated".to_string(),
+                        serde_json::Value::String(report.deobfuscated.clone()),
+                    );
+                }
+            }
+            println!("{}", serde_json::to_string_pretty(&value)?);
+        }
+        Command::Version => {
+            println!("Harrington {}", batdeob_core::version());
+        }
+        Command::Analyze {
+            file,
+            max_depth,
+            max_iterations,
+            max_child_scripts,
+            timeout,
+            no_self_extract,
+            max_output_bytes,
+            max_output_line_bytes,
+            max_traits_per_kind,
+            jsonl,
+        } => {
+            let input = read_input(&file)?;
+            let cfg = make_config(
+                max_depth,
+                max_iterations,
+                max_child_scripts,
+                timeout,
+                !no_self_extract,
+                max_output_bytes,
+                max_output_line_bytes,
+                max_traits_per_kind,
+            );
+            let report = batdeob_core::analyze(&input, &cfg);
+            if jsonl {
+                let meta = serde_json::json!({
+                    "kind": "meta",
+                    "input": file,
+                    "input_size": input.len(),
+                    "deobfuscated_size": report.deobfuscated.len(),
+                });
+                println!("{}", serde_json::to_string(&meta)?);
+                for t in &report.traits {
+                    let line = serde_json::json!({"kind": "trait", "trait": t});
+                    println!("{}", serde_json::to_string(&line)?);
+                }
+                let deob_line =
+                    serde_json::json!({"kind": "deob", "content": &report.deobfuscated});
+                println!("{}", serde_json::to_string(&deob_line)?);
+            } else {
+                let json = serde_json::json!({
+                    "deobfuscated": report.deobfuscated,
+                    "traits": report.traits,
+                });
+                println!("{}", serde_json::to_string_pretty(&json)?);
+            }
+        }
+        Command::Deob {
+            file,
+            out_dir,
+            json,
+            json_only,
+            max_depth,
+            max_iterations,
+            max_child_scripts,
+            timeout,
+            no_self_extract,
+            max_output_bytes,
+            max_output_line_bytes,
+            max_traits_per_kind,
+        } => {
+            let input = read_input(&file)?;
+            let cfg = make_config(
+                max_depth,
+                max_iterations,
+                max_child_scripts,
+                timeout,
+                !no_self_extract,
+                max_output_bytes,
+                max_output_line_bytes,
+                max_traits_per_kind,
+            );
+            let report = batdeob_core::analyze(&input, &cfg);
+            if !json_only {
+                write_report_files(&report, &out_dir)?;
+            }
+            if json || json_only {
+                let val = serde_json::json!({
+                    "deobfuscated": report.deobfuscated,
+                    "traits": report.traits,
+                });
+                println!("{}", serde_json::to_string_pretty(&val)?);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn main() {
+    if let Err(e) = run() {
+        eprintln!("harrington: {:#}", e);
+        std::process::exit(2);
+    }
+}
