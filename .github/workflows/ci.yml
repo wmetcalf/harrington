@@ -87,7 +87,7 @@ jobs:
           path: ~/.cargo/bin/cargo-fuzz
           key: cargo-fuzz-bin
       - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz --locked
+        run: cargo install cargo-fuzz --locked --force
       - name: Smoke fuzz (analyze)
         working-directory: rust/fuzz
         run: cargo +nightly fuzz run analyze -- -runs=5000 -max_total_time=120
