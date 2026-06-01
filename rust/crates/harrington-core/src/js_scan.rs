@@ -440,11 +440,13 @@ fn consume_js_string_arg_method(text: &str, idx: usize, name: &str) -> Option<(u
 
 fn consume_js_replace_chain(text: &str, mut idx: usize, mut value: String) -> (usize, String) {
     let mut replacements = 0usize;
-    while let Some((next_idx, needle, replacement)) =
-        consume_js_two_string_arg_method(text, idx, "replace")
-    {
+    while let Some((next_idx, needle, replacement, global)) = consume_js_replace_call(text, idx) {
         if !needle.is_empty() {
-            value = value.replacen(&needle, &replacement, 1);
+            value = if global {
+                value.replace(&needle, &replacement)
+            } else {
+                value.replacen(&needle, &replacement, 1)
+            };
         }
         idx = next_idx;
         replacements += 1;
@@ -455,14 +457,20 @@ fn consume_js_replace_chain(text: &str, mut idx: usize, mut value: String) -> (u
     (idx, value)
 }
 
-fn consume_js_two_string_arg_method(
-    text: &str,
-    idx: usize,
-    name: &str,
-) -> Option<(usize, String, String)> {
-    let open = consume_js_method_open(text, idx, name)?;
+fn consume_js_replace_call(text: &str, idx: usize) -> Option<(usize, String, String, bool)> {
+    let open = consume_js_method_open(text, idx, "replace")?;
     let first_start = skip_ascii_ws(text, open + 1);
-    let (first_end, first) = parse_js_string_literal_at(text, first_start)?;
+    let (first_end, needle, global) =
+        if let Some((first_end, first)) = parse_js_string_literal_at(text, first_start) {
+            (first_end, first, false)
+        } else {
+            let (first_end, pattern, flags) = parse_js_regex_literal_at(text, first_start)?;
+            (
+                first_end,
+                regex_literal_pattern_to_needle(&pattern)?,
+                flags.contains('g'),
+            )
+        };
     let comma = skip_ascii_ws(text, first_end);
     if text.as_bytes().get(comma) != Some(&b',') {
         return None;
@@ -473,7 +481,84 @@ fn consume_js_two_string_arg_method(
     if text.as_bytes().get(close) != Some(&b')') {
         return None;
     }
-    Some((close + 1, first, second))
+    Some((close + 1, needle, second, global))
+}
+
+fn parse_js_regex_literal_at(text: &str, start: usize) -> Option<(usize, String, String)> {
+    if text.as_bytes().get(start) != Some(&b'/') {
+        return None;
+    }
+    let mut pattern = String::new();
+    let mut escaped = false;
+    for (rel, ch) in text[start + 1..].char_indices() {
+        if ch == '\r' || ch == '\n' {
+            return None;
+        }
+        if escaped {
+            pattern.push('\\');
+            pattern.push(ch);
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if ch == '/' {
+            let mut end = start + 1 + rel + ch.len_utf8();
+            let flags_start = end;
+            while text[end..]
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic())
+            {
+                let ch_len = text[end..].chars().next().map(char::len_utf8)?;
+                end += ch_len;
+            }
+            return Some((end, pattern, text[flags_start..end].to_string()));
+        }
+        pattern.push(ch);
+    }
+    None
+}
+
+fn regex_literal_pattern_to_needle(pattern: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut chars = pattern.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            let escaped = chars.next()?;
+            if matches!(
+                escaped,
+                '/' | '\\'
+                    | '.'
+                    | '^'
+                    | '$'
+                    | '*'
+                    | '+'
+                    | '?'
+                    | '('
+                    | ')'
+                    | '['
+                    | ']'
+                    | '{'
+                    | '}'
+                    | '|'
+            ) {
+                out.push(escaped);
+                continue;
+            }
+            return None;
+        }
+        if matches!(
+            ch,
+            '.' | '^' | '$' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|'
+        ) {
+            return None;
+        }
+        out.push(ch);
+    }
+    Some(out)
 }
 
 fn consume_js_no_arg_method(text: &str, idx: usize, name: &str) -> Option<usize> {
