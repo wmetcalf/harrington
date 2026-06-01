@@ -49,6 +49,22 @@ static JS_FROMCHARCODE_CALL_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static JS_NUM_ARRAY_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)(?:\b(?:var|let|const)\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*\[\s*([0-9xa-f+\-\s,]{5,8192})\s*\]"#,
+    )
+    .expect("js numeric array assignment")
+});
+
+#[allow(clippy::expect_used)]
+static JS_FROMCHARCODE_APPLY_VAR_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)String\s*(?:\.\s*fromCharCode|\[\s*['"]fromCharCode['"]\s*\])\s*\.\s*apply\s*\(\s*[^,\r\n]{0,128},\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\)"#,
+    )
+    .expect("js fromCharCode apply variable")
+});
+
+#[allow(clippy::expect_used)]
 static JS_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?is)(?:\b(?:var|let|const)\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*(\+?=)\s*"#)
         .expect("js assignment")
@@ -66,6 +82,7 @@ pub fn scan_js_payloads(env: &mut Environment) {
         let mut candidates = vec![concat_resolved.clone()];
         candidates.extend(decoded_js_percent_literals(&concat_resolved));
         candidates.extend(decoded_js_fromcharcode_literals(&concat_resolved));
+        candidates.extend(decoded_js_fromcharcode_array_bindings(&concat_resolved));
         candidates.extend(decoded_js_atob_literals(&concat_resolved));
         candidates.extend(decoded_js_split_reverse_join_literals(&concat_resolved));
         candidates.extend(decoded_js_array_join_literals(&concat_resolved));
@@ -196,6 +213,26 @@ fn decode_js_fromcharcode_args(nums: &str) -> Option<String> {
         out.push(char::from_u32(n)?);
     }
     (!out.is_empty()).then_some(out)
+}
+
+fn decoded_js_fromcharcode_array_bindings(text: &str) -> Vec<String> {
+    let mut arrays = HashMap::new();
+    for caps in JS_NUM_ARRAY_ASSIGN_RE.captures_iter(text).take(128) {
+        let (Some(name), Some(nums)) = (caps.get(1), caps.get(2)) else {
+            continue;
+        };
+        if let Some(decoded) = decode_js_fromcharcode_args(nums.as_str()) {
+            arrays.insert(name.as_str().to_string(), decoded);
+        }
+    }
+
+    JS_FROMCHARCODE_APPLY_VAR_RE
+        .captures_iter(text)
+        .filter_map(|caps| {
+            let name = caps.get(1)?.as_str();
+            arrays.get(name).cloned()
+        })
+        .collect()
 }
 
 fn decoded_js_atob_literals(text: &str) -> Vec<String> {
