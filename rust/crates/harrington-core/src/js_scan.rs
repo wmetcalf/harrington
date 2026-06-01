@@ -43,6 +43,7 @@ pub fn scan_js_payloads(env: &mut Environment) {
         candidates.extend(decoded_js_fromcharcode_literals(&concat_resolved));
         candidates.extend(decoded_js_atob_literals(&concat_resolved));
         candidates.extend(decoded_js_split_reverse_join_literals(&concat_resolved));
+        candidates.extend(decoded_js_array_join_literals(&concat_resolved));
 
         // Now scan for URLs
         for candidate in candidates {
@@ -230,6 +231,60 @@ fn decoded_js_split_reverse_join_literals(text: &str) -> Vec<String> {
         cursor = after_join;
     }
     out
+}
+
+fn decoded_js_array_join_literals(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cursor = 0usize;
+    while cursor < text.len() {
+        let Some((array_end, parts)) = parse_js_string_array_at(text, cursor) else {
+            cursor += text[cursor..]
+                .chars()
+                .next()
+                .map(char::len_utf8)
+                .unwrap_or(1);
+            continue;
+        };
+        let Some((join_end, sep)) = consume_js_string_arg_method(text, array_end, "join") else {
+            cursor = array_end;
+            continue;
+        };
+        if parts.len() <= 128 && sep.len() <= 64 {
+            let joined = parts.join(&sep);
+            if joined.len() <= 8192 {
+                out.push(joined);
+            }
+        }
+        cursor = join_end;
+    }
+    out
+}
+
+fn parse_js_string_array_at(text: &str, start: usize) -> Option<(usize, Vec<String>)> {
+    if text.as_bytes().get(start) != Some(&b'[') {
+        return None;
+    }
+    let mut parts = Vec::new();
+    let mut cursor = skip_ascii_ws(text, start + 1);
+    if text.as_bytes().get(cursor) == Some(&b']') {
+        return Some((cursor + 1, parts));
+    }
+
+    loop {
+        let (literal_end, value) = parse_js_string_literal_at(text, cursor)?;
+        parts.push(value);
+        if parts.len() > 128 {
+            return None;
+        }
+        cursor = skip_ascii_ws(text, literal_end);
+        match text.as_bytes().get(cursor) {
+            Some(b',') => {
+                cursor = skip_ascii_ws(text, cursor + 1);
+            }
+            Some(b']') => return Some((cursor + 1, parts)),
+            _ => return None,
+        }
+    }
 }
 
 fn consume_js_string_arg_method(text: &str, idx: usize, name: &str) -> Option<(usize, String)> {
