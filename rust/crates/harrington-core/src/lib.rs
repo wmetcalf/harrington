@@ -9228,6 +9228,20 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_unescape_u_escape_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"eval(unescape("%u0068%u0074%u0074%u0070%u0073%u003a%u002f%u002fjs-u-escape.example%u002fstage"))"#.to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://js-u-escape.example/stage"
+            )
+        });
+        assert!(has, "JS unescape %u URL missed: {:?}", env.traits);
+    }
+
+    #[test]
     fn js_fromcharcode_payload_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let chars = "https://char-js.example/p"
@@ -9267,6 +9281,25 @@ mod js_url_extraction_tests {
             "JS fromCharCode expression URL missed: {:?}",
             env.traits
         );
+    }
+
+    #[test]
+    fn js_bracket_fromcharcode_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let chars = "https://char-bracket-js.example/p"
+            .bytes()
+            .map(|b| b.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!(r#"var u = String["fromCharCode"]({chars}); eval(u)"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://char-bracket-js.example/p"
+            )
+        });
+        assert!(has, "JS bracket fromCharCode URL missed: {:?}", env.traits);
     }
 
     #[test]

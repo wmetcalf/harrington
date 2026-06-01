@@ -25,8 +25,10 @@ static U_ESCAPE_RE: Lazy<Regex> = Lazy::new(|| {
 
 #[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"(?is)String\.fromCharCode\s*\(\s*([0-9xa-f+\-\s,]{5,8192})\s*\)"#)
-        .expect("js fromCharCode")
+    Regex::new(
+        r#"(?is)String\s*(?:\.\s*fromCharCode|\[\s*['"]fromCharCode['"]\s*\])\s*\(\s*([0-9xa-f+\-\s,]{5,8192})\s*\)"#,
+    )
+    .expect("js fromCharCode")
 });
 
 pub fn scan_js_payloads(env: &mut Environment) {
@@ -118,6 +120,22 @@ fn percent_decode_lenient(text: &str) -> String {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
+        if bytes[i] == b'%' && i + 5 < bytes.len() && matches!(bytes[i + 1], b'u' | b'U') {
+            if let (Some(h1), Some(h2), Some(h3), Some(h4)) = (
+                (bytes[i + 2] as char).to_digit(16),
+                (bytes[i + 3] as char).to_digit(16),
+                (bytes[i + 4] as char).to_digit(16),
+                (bytes[i + 5] as char).to_digit(16),
+            ) {
+                let codepoint = (h1 << 12) + (h2 << 8) + (h3 << 4) + h4;
+                if let Some(ch) = char::from_u32(codepoint) {
+                    let mut buf = [0u8; 4];
+                    out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+                    i += 6;
+                    continue;
+                }
+            }
+        }
         if bytes[i] == b'%' && i + 2 < bytes.len() {
             if let (Some(h1), Some(h2)) = (
                 (bytes[i + 1] as char).to_digit(16),
