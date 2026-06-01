@@ -400,11 +400,14 @@ fn parse_js_string_expr_term(
     bindings: &HashMap<String, String>,
 ) -> Option<(usize, String)> {
     if let Some((end, value)) = parse_js_string_literal_at(text, start) {
-        return Some((end, value));
+        return Some(consume_js_replace_chain(text, end, value));
     }
 
     let (end, name) = parse_js_identifier_at(text, start)?;
-    bindings.get(name).cloned().map(|value| (end, value))
+    bindings
+        .get(name)
+        .cloned()
+        .map(|value| consume_js_replace_chain(text, end, value))
 }
 
 fn parse_js_identifier_at(text: &str, start: usize) -> Option<(usize, &str)> {
@@ -433,6 +436,44 @@ fn consume_js_string_arg_method(text: &str, idx: usize, name: &str) -> Option<(u
         return None;
     }
     Some((close + 1, arg))
+}
+
+fn consume_js_replace_chain(text: &str, mut idx: usize, mut value: String) -> (usize, String) {
+    let mut replacements = 0usize;
+    while let Some((next_idx, needle, replacement)) =
+        consume_js_two_string_arg_method(text, idx, "replace")
+    {
+        if !needle.is_empty() {
+            value = value.replacen(&needle, &replacement, 1);
+        }
+        idx = next_idx;
+        replacements += 1;
+        if replacements > 16 || value.len() > 8192 {
+            break;
+        }
+    }
+    (idx, value)
+}
+
+fn consume_js_two_string_arg_method(
+    text: &str,
+    idx: usize,
+    name: &str,
+) -> Option<(usize, String, String)> {
+    let open = consume_js_method_open(text, idx, name)?;
+    let first_start = skip_ascii_ws(text, open + 1);
+    let (first_end, first) = parse_js_string_literal_at(text, first_start)?;
+    let comma = skip_ascii_ws(text, first_end);
+    if text.as_bytes().get(comma) != Some(&b',') {
+        return None;
+    }
+    let second_start = skip_ascii_ws(text, comma + 1);
+    let (second_end, second) = parse_js_string_literal_at(text, second_start)?;
+    let close = skip_ascii_ws(text, second_end);
+    if text.as_bytes().get(close) != Some(&b')') {
+        return None;
+    }
+    Some((close + 1, first, second))
 }
 
 fn consume_js_no_arg_method(text: &str, idx: usize, name: &str) -> Option<usize> {
