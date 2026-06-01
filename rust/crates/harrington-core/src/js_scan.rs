@@ -130,7 +130,7 @@ pub fn scan_js_payloads(env: &mut Environment) {
 
 fn decoded_js_percent_literals(text: &str) -> Vec<String> {
     let mut out = Vec::new();
-    for name in ["decodeURIComponent", "unescape"] {
+    for name in ["decodeURIComponent", "decodeURI", "unescape"] {
         let lower = text.to_ascii_lowercase();
         let needle = name.to_ascii_lowercase();
         let mut cursor = 0usize;
@@ -488,7 +488,7 @@ fn parse_js_percent_call_at(
     start: usize,
     bindings: &HashMap<String, String>,
 ) -> Option<(usize, String)> {
-    for name in ["decodeURIComponent", "unescape"] {
+    for name in ["decodeURIComponent", "decodeURI", "unescape"] {
         if !js_word_at(text, start, name) {
             continue;
         }
