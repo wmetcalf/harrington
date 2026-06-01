@@ -40,6 +40,10 @@ static URLDOWN_VAR_RE: Lazy<Regex> = Lazy::new(|| {
         .expect("urldown variable")
 });
 
+#[allow(clippy::expect_used)]
+static SHELL_RUN_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"(?i)\.Run\s*\(?\s*"([^"]+)""#).expect("wscript shell run"));
+
 pub fn scan_vbs_payloads(env: &mut Environment) {
     let payloads: Vec<Vec<u8>> = env.all_extracted_vbs.clone();
     let mut seen: std::collections::HashSet<(usize, String)> = std::collections::HashSet::new();
@@ -70,6 +74,29 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
                     continue;
                 };
                 if !seen.insert((idx, url.clone())) {
+                    continue;
+                }
+                let snippet: String = text.chars().take(120).collect();
+                env.traits.push(Trait::Download {
+                    cmd: format!("(vbs #{idx}) {snippet}"),
+                    src: url,
+                    dst: dst_hint.clone(),
+                });
+            }
+        }
+
+        for caps in SHELL_RUN_RE.captures_iter(&text) {
+            let Some(command) = caps.get(1).map(|m| m.as_str()) else {
+                continue;
+            };
+            for url_caps in crate::deob_scan::URL_RE.captures_iter(command) {
+                let Some(raw_url) = url_caps.get(1).map(|m| m.as_str()) else {
+                    continue;
+                };
+                let Some(url) = crate::deob_scan::normalize_liberal_url_token(raw_url) else {
+                    continue;
+                };
+                if crate::deob_scan::is_noise_url(&url) || !seen.insert((idx, url.clone())) {
                     continue;
                 }
                 let snippet: String = text.chars().take(120).collect();
