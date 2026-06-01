@@ -41,6 +41,14 @@ static JS_FROMCHARCODE_APPLY_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static JS_FROMCHARCODE_CALL_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)String\s*(?:\.\s*fromCharCode|\[\s*['"]fromCharCode['"]\s*\])\s*\.\s*call\s*\(\s*[^,\r\n]{0,128},\s*([0-9xa-f+\-\s,]{5,8192})\s*\)"#,
+    )
+    .expect("js fromCharCode call")
+});
+
+#[allow(clippy::expect_used)]
 static JS_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?is)(?:\b(?:var|let|const)\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*"#)
         .expect("js assignment")
@@ -172,6 +180,7 @@ fn decoded_js_fromcharcode_literals(text: &str) -> Vec<String> {
     JS_FROMCHARCODE_RE
         .captures_iter(text)
         .chain(JS_FROMCHARCODE_APPLY_RE.captures_iter(text))
+        .chain(JS_FROMCHARCODE_CALL_RE.captures_iter(text))
         .filter_map(|caps| decode_js_fromcharcode_args(caps.get(1)?.as_str()))
         .collect()
 }
