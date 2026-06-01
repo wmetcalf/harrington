@@ -6,6 +6,7 @@ use crate::traits::Trait;
 use base64::Engine as _;
 use once_cell::sync::Lazy;
 use regex::Regex;
+use std::collections::{HashMap, HashSet};
 
 #[allow(clippy::expect_used)]
 static URL_IN_JS_RE: Lazy<Regex> = Lazy::new(|| {
@@ -31,9 +32,15 @@ static JS_FROMCHARCODE_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("js fromCharCode")
 });
 
+#[allow(clippy::expect_used)]
+static JS_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?is)(?:\b(?:var|let|const)\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*"#)
+        .expect("js assignment")
+});
+
 pub fn scan_js_payloads(env: &mut Environment) {
     let payloads: Vec<Vec<u8>> = env.all_extracted_jscript.clone();
-    let mut seen: std::collections::HashSet<(usize, String)> = std::collections::HashSet::new();
+    let mut seen: HashSet<(usize, String)> = HashSet::new();
     for (idx, payload) in payloads.iter().enumerate() {
         let raw = String::from_utf8_lossy(payload).into_owned();
         // First pass: decode \uXXXX escapes
@@ -46,6 +53,7 @@ pub fn scan_js_payloads(env: &mut Environment) {
         candidates.extend(decoded_js_atob_literals(&concat_resolved));
         candidates.extend(decoded_js_split_reverse_join_literals(&concat_resolved));
         candidates.extend(decoded_js_array_join_literals(&concat_resolved));
+        candidates.extend(decoded_js_string_bindings(&concat_resolved));
 
         // Now scan for URLs
         for candidate in candidates {
@@ -278,6 +286,28 @@ fn decoded_js_array_join_literals(text: &str) -> Vec<String> {
     out
 }
 
+fn decoded_js_string_bindings(text: &str) -> Vec<String> {
+    let mut bindings = HashMap::new();
+    let mut values = Vec::new();
+    for caps in JS_ASSIGN_RE.captures_iter(text).take(256) {
+        let Some(name) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(expr_start) = caps.get(0).map(|m| m.end()) else {
+            continue;
+        };
+        let Some((expr_end, value)) = eval_js_string_expr(text, expr_start, &bindings) else {
+            continue;
+        };
+        if expr_end.saturating_sub(expr_start) > 8192 || value.len() > 8192 {
+            continue;
+        }
+        bindings.insert(name.to_string(), value.clone());
+        values.push(value);
+    }
+    values
+}
+
 fn parse_js_string_array_at(text: &str, start: usize) -> Option<(usize, Vec<String>)> {
     if text.as_bytes().get(start) != Some(&b'[') {
         return None;
@@ -303,6 +333,65 @@ fn parse_js_string_array_at(text: &str, start: usize) -> Option<(usize, Vec<Stri
             _ => return None,
         }
     }
+}
+
+fn eval_js_string_expr(
+    text: &str,
+    start: usize,
+    bindings: &HashMap<String, String>,
+) -> Option<(usize, String)> {
+    let mut cursor = skip_ascii_ws(text, start);
+    let (mut end, mut out) = parse_js_string_expr_term(text, cursor, bindings)?;
+    let mut terms = 1usize;
+
+    loop {
+        cursor = skip_ascii_ws(text, end);
+        if text.as_bytes().get(cursor) != Some(&b'+') {
+            break;
+        }
+        let next_start = skip_ascii_ws(text, cursor + 1);
+        let Some((next_end, value)) = parse_js_string_expr_term(text, next_start, bindings) else {
+            break;
+        };
+        out.push_str(&value);
+        terms += 1;
+        if terms > 128 || out.len() > 8192 {
+            return None;
+        }
+        end = next_end;
+    }
+
+    Some((end, out))
+}
+
+fn parse_js_string_expr_term(
+    text: &str,
+    start: usize,
+    bindings: &HashMap<String, String>,
+) -> Option<(usize, String)> {
+    if let Some((end, value)) = parse_js_string_literal_at(text, start) {
+        return Some((end, value));
+    }
+
+    let (end, name) = parse_js_identifier_at(text, start)?;
+    bindings.get(name).cloned().map(|value| (end, value))
+}
+
+fn parse_js_identifier_at(text: &str, start: usize) -> Option<(usize, &str)> {
+    let mut chars = text[start..].char_indices();
+    let (_, first) = chars.next()?;
+    if !(first == '_' || first == '$' || first.is_ascii_alphabetic()) {
+        return None;
+    }
+    let mut end = start + first.len_utf8();
+    for (rel, ch) in chars {
+        if is_js_ident_char(ch) {
+            end = start + rel + ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+    Some((end, &text[start..end]))
 }
 
 fn consume_js_string_arg_method(text: &str, idx: usize, name: &str) -> Option<(usize, String)> {

@@ -9352,6 +9352,22 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_variable_concat_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js =
+            br#"var p = "https://"; var h = "js-var.example"; var u = p + h + "/stage"; eval(u)"#
+                .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://js-var.example/stage"
+            )
+        });
+        assert!(has, "JS variable concat URL missed: {:?}", env.traits);
+    }
+
+    #[test]
     fn js_single_quoted_string_concat_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let js = br#"var url = 'https://' + 'single.example' + '/stage'; eval(url)"#.to_vec();
