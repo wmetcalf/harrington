@@ -9483,6 +9483,21 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_plus_equals_variable_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js =
+            br#"var u = "https://"; u += "js-plus-eq.example"; u += "/stage"; eval(u)"#.to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://js-plus-eq.example/stage"
+            )
+        });
+        assert!(has, "JS += variable URL missed: {:?}", env.traits);
+    }
+
+    #[test]
     fn js_string_replace_binding_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let js =

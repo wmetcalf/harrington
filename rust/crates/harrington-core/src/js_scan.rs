@@ -50,7 +50,7 @@ static JS_FROMCHARCODE_CALL_RE: Lazy<Regex> = Lazy::new(|| {
 
 #[allow(clippy::expect_used)]
 static JS_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"(?is)(?:\b(?:var|let|const)\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*"#)
+    Regex::new(r#"(?is)(?:\b(?:var|let|const)\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*(\+?=)\s*"#)
         .expect("js assignment")
 });
 
@@ -312,11 +312,22 @@ fn decoded_js_string_bindings(text: &str) -> Vec<String> {
         let Some(name) = caps.get(1).map(|m| m.as_str()) else {
             continue;
         };
+        let Some(op) = caps.get(2).map(|m| m.as_str()) else {
+            continue;
+        };
         let Some(expr_start) = caps.get(0).map(|m| m.end()) else {
             continue;
         };
         let Some((expr_end, value)) = eval_js_string_expr(text, expr_start, &bindings) else {
             continue;
+        };
+        let value = if op == "+=" {
+            let Some(existing) = bindings.get(name) else {
+                continue;
+            };
+            format!("{existing}{value}")
+        } else {
+            value
         };
         if expr_end.saturating_sub(expr_start) > 8192 || value.len() > 8192 {
             continue;
