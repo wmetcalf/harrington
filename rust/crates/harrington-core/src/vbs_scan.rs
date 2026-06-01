@@ -34,6 +34,12 @@ static URLDOWN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?i)URLDownloadToFile[^"]*"([^"]+)""#).expect("urldown")
 });
 
+#[allow(clippy::expect_used)]
+static URLDOWN_VAR_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?i)URLDownloadToFile\s*\(?\s*[^,\r\n]+,\s*([A-Za-z_][A-Za-z0-9_]*)\b"#)
+        .expect("urldown variable")
+});
+
 pub fn scan_vbs_payloads(env: &mut Environment) {
     let payloads: Vec<Vec<u8>> = env.all_extracted_vbs.clone();
     let mut seen: std::collections::HashSet<(usize, String)> = std::collections::HashSet::new();
@@ -75,25 +81,27 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
             }
         }
 
-        for caps in XMLHTTP_OPEN_VAR_RE.captures_iter(&text) {
-            let Some(var_match) = caps.get(1) else {
-                continue;
-            };
-            let Some(url) = bindings.get(&var_match.as_str().to_ascii_lowercase()) else {
-                continue;
-            };
-            let Some(url) = crate::deob_scan::normalize_liberal_url_token(url) else {
-                continue;
-            };
-            if !seen.insert((idx, url.clone())) {
-                continue;
+        for re in [&XMLHTTP_OPEN_VAR_RE, &URLDOWN_VAR_RE] {
+            for caps in re.captures_iter(&text) {
+                let Some(var_match) = caps.get(1) else {
+                    continue;
+                };
+                let Some(url) = bindings.get(&var_match.as_str().to_ascii_lowercase()) else {
+                    continue;
+                };
+                let Some(url) = crate::deob_scan::normalize_liberal_url_token(url) else {
+                    continue;
+                };
+                if !seen.insert((idx, url.clone())) {
+                    continue;
+                }
+                let snippet: String = text.chars().take(120).collect();
+                env.traits.push(Trait::Download {
+                    cmd: format!("(vbs #{idx}) {snippet}"),
+                    src: url,
+                    dst: dst_hint.clone(),
+                });
             }
-            let snippet: String = text.chars().take(120).collect();
-            env.traits.push(Trait::Download {
-                cmd: format!("(vbs #{idx}) {snippet}"),
-                src: url,
-                dst: dst_hint.clone(),
-            });
         }
     }
 }
