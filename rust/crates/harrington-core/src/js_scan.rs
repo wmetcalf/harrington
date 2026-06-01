@@ -309,12 +309,15 @@ fn decoded_js_string_bindings(text: &str) -> Vec<String> {
 }
 
 fn parse_js_string_array_at(text: &str, start: usize) -> Option<(usize, Vec<String>)> {
-    if text.as_bytes().get(start) != Some(&b'[') {
-        return None;
-    }
+    let (open, close_byte) = if text.as_bytes().get(start) == Some(&b'[') {
+        (start, b']')
+    } else {
+        (parse_js_array_constructor_open(text, start)?, b')')
+    };
+
     let mut parts = Vec::new();
-    let mut cursor = skip_ascii_ws(text, start + 1);
-    if text.as_bytes().get(cursor) == Some(&b']') {
+    let mut cursor = skip_ascii_ws(text, open + 1);
+    if text.as_bytes().get(cursor) == Some(&close_byte) {
         return Some((cursor + 1, parts));
     }
 
@@ -329,10 +332,37 @@ fn parse_js_string_array_at(text: &str, start: usize) -> Option<(usize, Vec<Stri
             Some(b',') => {
                 cursor = skip_ascii_ws(text, cursor + 1);
             }
-            Some(b']') => return Some((cursor + 1, parts)),
+            Some(byte) if *byte == close_byte => return Some((cursor + 1, parts)),
             _ => return None,
         }
     }
+}
+
+fn parse_js_array_constructor_open(text: &str, start: usize) -> Option<usize> {
+    let mut cursor = start;
+    if js_word_at(text, cursor, "new") {
+        cursor = skip_ascii_ws(text, cursor + "new".len());
+    }
+    if !js_word_at(text, cursor, "Array") {
+        return None;
+    }
+    let open = skip_ascii_ws(text, cursor + "Array".len());
+    if text.as_bytes().get(open) != Some(&b'(') {
+        return None;
+    }
+    Some(open)
+}
+
+fn js_word_at(text: &str, start: usize, word: &str) -> bool {
+    let Some(end) = start.checked_add(word.len()) else {
+        return false;
+    };
+    if text.get(start..end) != Some(word) {
+        return false;
+    }
+    let prev = text[..start].chars().next_back();
+    let next = text[end..].chars().next();
+    !prev.is_some_and(is_js_ident_char) && !next.is_some_and(is_js_ident_char)
 }
 
 fn eval_js_string_expr(
