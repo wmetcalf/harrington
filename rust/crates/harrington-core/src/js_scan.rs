@@ -432,12 +432,56 @@ fn parse_js_string_expr_term(
     if let Some((end, value)) = parse_js_string_literal_at(text, start) {
         return Some(consume_js_replace_chain(text, end, value));
     }
+    if let Some((end, value)) = parse_js_atob_call_at(text, start, bindings) {
+        return Some(consume_js_replace_chain(text, end, value));
+    }
 
     let (end, name) = parse_js_identifier_at(text, start)?;
     bindings
         .get(name)
         .cloned()
         .map(|value| consume_js_replace_chain(text, end, value))
+}
+
+fn parse_js_atob_call_at(
+    text: &str,
+    start: usize,
+    bindings: &HashMap<String, String>,
+) -> Option<(usize, String)> {
+    if !js_word_at(text, start, "atob") {
+        return None;
+    }
+    let open = skip_ascii_ws(text, start + "atob".len());
+    if text.as_bytes().get(open) != Some(&b'(') {
+        return None;
+    }
+    let arg_start = skip_ascii_ws(text, open + 1);
+    let (arg_end, encoded) =
+        if let Some((arg_end, value)) = parse_js_string_literal_at(text, arg_start) {
+            (arg_end, value)
+        } else {
+            let (arg_end, name) = parse_js_identifier_at(text, arg_start)?;
+            (arg_end, bindings.get(name)?.clone())
+        };
+    let close = skip_ascii_ws(text, arg_end);
+    if text.as_bytes().get(close) != Some(&b')') {
+        return None;
+    }
+    decode_js_base64_string(&encoded).map(|decoded| (close + 1, decoded))
+}
+
+fn decode_js_base64_string(encoded: &str) -> Option<String> {
+    if encoded.len() > 16384 {
+        return None;
+    }
+    let cleaned: String = encoded
+        .chars()
+        .filter(|c| !c.is_ascii_whitespace())
+        .collect();
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(cleaned.as_bytes())
+        .ok()?;
+    (decoded.len() <= 8192).then(|| String::from_utf8_lossy(&decoded).into_owned())
 }
 
 fn parse_js_identifier_at(text: &str, start: usize) -> Option<(usize, &str)> {
