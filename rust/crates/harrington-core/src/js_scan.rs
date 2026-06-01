@@ -435,12 +435,45 @@ fn parse_js_string_expr_term(
     if let Some((end, value)) = parse_js_atob_call_at(text, start, bindings) {
         return Some(consume_js_replace_chain(text, end, value));
     }
+    if let Some((end, value)) = parse_js_percent_call_at(text, start, bindings) {
+        return Some(consume_js_replace_chain(text, end, value));
+    }
 
     let (end, name) = parse_js_identifier_at(text, start)?;
     bindings
         .get(name)
         .cloned()
         .map(|value| consume_js_replace_chain(text, end, value))
+}
+
+fn parse_js_percent_call_at(
+    text: &str,
+    start: usize,
+    bindings: &HashMap<String, String>,
+) -> Option<(usize, String)> {
+    for name in ["decodeURIComponent", "unescape"] {
+        if !js_word_at(text, start, name) {
+            continue;
+        }
+        let open = skip_ascii_ws(text, start + name.len());
+        if text.as_bytes().get(open) != Some(&b'(') {
+            continue;
+        }
+        let arg_start = skip_ascii_ws(text, open + 1);
+        let (arg_end, encoded) =
+            if let Some((arg_end, value)) = parse_js_string_literal_at(text, arg_start) {
+                (arg_end, value)
+            } else {
+                let (arg_end, ident) = parse_js_identifier_at(text, arg_start)?;
+                (arg_end, bindings.get(ident)?.clone())
+            };
+        let close = skip_ascii_ws(text, arg_end);
+        if text.as_bytes().get(close) != Some(&b')') {
+            continue;
+        }
+        return Some((close + 1, percent_decode_lenient(&encoded)));
+    }
+    None
 }
 
 fn parse_js_atob_call_at(
