@@ -1235,7 +1235,10 @@ fn consume_js_string_transform_chain(text: &str, idx: usize, value: String) -> (
         }
         value = replaced;
 
-        if let Some((slice_end, sliced)) = consume_js_string_slice_call(text, idx, &value) {
+        if let Some((trim_end, trimmed)) = consume_js_string_trim_call(text, idx, &value) {
+            idx = trim_end;
+            value = trimmed;
+        } else if let Some((slice_end, sliced)) = consume_js_string_slice_call(text, idx, &value) {
             idx = slice_end;
             value = sliced;
         } else if let Some((substr_end, substr)) = consume_js_string_substr_call(text, idx, &value)
@@ -1261,6 +1264,23 @@ fn consume_js_string_transform_chain(text: &str, idx: usize, value: String) -> (
         }
     }
     (idx, value)
+}
+
+fn consume_js_string_trim_call(text: &str, idx: usize, value: &str) -> Option<(usize, String)> {
+    if let Some(end) = consume_js_no_arg_method(text, idx, "trim") {
+        return Some((end, value.trim().to_string()));
+    }
+    if let Some(end) = consume_js_no_arg_method(text, idx, "trimStart")
+        .or_else(|| consume_js_no_arg_method(text, idx, "trimLeft"))
+    {
+        return Some((end, value.trim_start().to_string()));
+    }
+    if let Some(end) = consume_js_no_arg_method(text, idx, "trimEnd")
+        .or_else(|| consume_js_no_arg_method(text, idx, "trimRight"))
+    {
+        return Some((end, value.trim_end().to_string()));
+    }
+    None
 }
 
 fn consume_js_string_slice_call(text: &str, idx: usize, value: &str) -> Option<(usize, String)> {
