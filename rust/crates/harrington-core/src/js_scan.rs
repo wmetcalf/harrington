@@ -373,38 +373,24 @@ fn decoded_js_fromcharcode_array_bindings(text: &str) -> Vec<String> {
 }
 
 fn decoded_js_atob_literals(text: &str) -> Vec<String> {
-    let lower = text.to_ascii_lowercase();
     let mut out = Vec::new();
+    let (bindings, _) = collect_js_string_bindings(text);
     let mut cursor = 0usize;
-    while let Some(rel) = lower[cursor..].find("atob") {
-        let name_start = cursor + rel;
-        let name_end = name_start + "atob".len();
-        let prev = text[..name_start].chars().next_back();
-        let next = text[name_end..].chars().next();
-        if prev.is_some_and(is_js_ident_char) || next.is_some_and(is_js_ident_char) {
-            cursor = name_end;
-            continue;
-        }
-
-        let open = skip_ascii_ws(text, name_end);
-        if text.as_bytes().get(open) != Some(&b'(') {
-            cursor = name_end;
-            continue;
-        }
-        let literal_start = skip_ascii_ws(text, open + 1);
-        let Some((literal_end, value)) = parse_js_string_literal_at(text, literal_start) else {
-            cursor = open + 1;
+    while cursor < text.len() && out.len() < 128 {
+        let Some((ident_end, _)) = parse_js_identifier_at(text, cursor) else {
+            cursor += text[cursor..]
+                .chars()
+                .next()
+                .map(char::len_utf8)
+                .unwrap_or(1);
             continue;
         };
-        if value.len() <= 16384 {
-            let cleaned: String = value.chars().filter(|c| !c.is_ascii_whitespace()).collect();
-            if let Some(decoded) = decode_base64_maybe_unpadded(&cleaned) {
-                if decoded.len() <= 8192 {
-                    out.push(String::from_utf8_lossy(&decoded).into_owned());
-                }
-            }
+        if let Some((call_end, decoded)) = parse_js_atob_call_at(text, cursor, &bindings) {
+            out.push(decoded);
+            cursor = call_end;
+            continue;
         }
-        cursor = literal_end;
+        cursor = ident_end;
     }
     out
 }
@@ -827,23 +813,76 @@ fn parse_js_atob_call_at(
 ) -> Option<(usize, String)> {
     let name_end = parse_js_named_callee_end(text, start, "atob")
         .or_else(|| parse_js_bound_member_callee_end(text, start, "atob", bindings))?;
-    let open = skip_ascii_ws(text, name_end);
-    if text.as_bytes().get(open) != Some(&b'(') {
-        return None;
-    }
-    let arg_start = skip_ascii_ws(text, open + 1);
-    let (arg_end, encoded) =
-        if let Some((arg_end, value)) = parse_js_string_literal_at(text, arg_start) {
-            (arg_end, value)
-        } else {
-            let (arg_end, name) = parse_js_identifier_at(text, arg_start)?;
-            (arg_end, bindings.get(name)?.clone())
-        };
+    let (arg_end, encoded) = if let Some((arg_end, encoded)) =
+        parse_js_string_decoder_call_method_arg(text, name_end, bindings)
+    {
+        (arg_end, encoded)
+    } else {
+        let open = skip_ascii_ws(text, name_end);
+        if text.as_bytes().get(open) != Some(&b'(') {
+            return None;
+        }
+        let arg_start = skip_ascii_ws(text, open + 1);
+        parse_js_string_or_bound_arg(text, arg_start, bindings)?
+    };
     let close = skip_ascii_ws(text, arg_end);
     if text.as_bytes().get(close) != Some(&b')') {
         return None;
     }
     decode_js_base64_string(&encoded).map(|decoded| (close + 1, decoded))
+}
+
+fn parse_js_string_decoder_call_method_arg(
+    text: &str,
+    callee_end: usize,
+    bindings: &HashMap<String, String>,
+) -> Option<(usize, String)> {
+    if let Some(open) = consume_js_method_open(text, callee_end, "call") {
+        let comma = find_js_call_comma(text, skip_ascii_ws(text, open + 1))?;
+        let arg_start = skip_ascii_ws(text, comma + 1);
+        return parse_js_string_or_bound_arg(text, arg_start, bindings);
+    }
+
+    let open = consume_js_method_open(text, callee_end, "apply")?;
+    let comma = find_js_call_comma(text, skip_ascii_ws(text, open + 1))?;
+    let arg_start = skip_ascii_ws(text, comma + 1);
+    let (array_end, parts) = parse_js_string_array_at(text, arg_start)?;
+    if parts.len() == 1 {
+        parts.into_iter().next().map(|value| (array_end, value))
+    } else {
+        None
+    }
+}
+
+fn parse_js_string_or_bound_arg(
+    text: &str,
+    start: usize,
+    bindings: &HashMap<String, String>,
+) -> Option<(usize, String)> {
+    if let Some((arg_end, value)) = parse_js_string_literal_at(text, start) {
+        Some((arg_end, value))
+    } else {
+        let (arg_end, name) = parse_js_identifier_at(text, start)?;
+        Some((arg_end, bindings.get(name)?.clone()))
+    }
+}
+
+fn find_js_call_comma(text: &str, mut cursor: usize) -> Option<usize> {
+    let limit = cursor.saturating_add(128).min(text.len());
+    while cursor < limit {
+        if text.as_bytes().get(cursor) == Some(&b',') {
+            return Some(cursor);
+        }
+        if text.as_bytes().get(cursor) == Some(&b')') {
+            return None;
+        }
+        if let Some((literal_end, _)) = parse_js_string_literal_at(text, cursor) {
+            cursor = literal_end;
+            continue;
+        }
+        cursor += text[cursor..].chars().next().map(char::len_utf8)?;
+    }
+    None
 }
 
 fn parse_js_named_callee_end(text: &str, start: usize, name: &str) -> Option<usize> {
