@@ -9496,6 +9496,32 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_variable_member_fromcharcode_apply_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let chars = "https://char-member-var-apply-js.example/p"
+            .bytes()
+            .map(|b| b.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!(
+            r#"var m = "from" + "CharCode"; var u = String[m].apply(null, [{chars}]); eval(u)"#
+        )
+        .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://char-member-var-apply-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS variable member fromCharCode.apply URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_fromcharcode_apply_inline_array_constructor_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let chars = "https://char-apply-inline-ctor-js.example/p"
