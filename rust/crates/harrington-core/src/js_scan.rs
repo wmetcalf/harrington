@@ -1005,9 +1005,14 @@ fn parse_js_string_decoder_call_method_arg(
     let open = consume_js_method_open(text, callee_end, "apply")?;
     let comma = find_js_call_comma(text, skip_ascii_ws(text, open + 1))?;
     let arg_start = skip_ascii_ws(text, comma + 1);
-    if let Some((array_end, parts)) = parse_js_string_array_arg_at(text, arg_start, bindings) {
+    if let Some((array_end, mut parts)) = parse_js_string_array_arg_at(text, arg_start, bindings) {
+        let mut end = array_end;
+        if let Some((slice_end, sliced)) = consume_js_slice_call(text, array_end, &parts) {
+            end = slice_end;
+            parts = sliced;
+        }
         return if parts.len() == 1 {
-            parts.into_iter().next().map(|value| (array_end, value))
+            parts.into_iter().next().map(|value| (end, value))
         } else {
             None
         };
