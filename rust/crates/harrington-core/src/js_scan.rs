@@ -1228,6 +1228,9 @@ fn consume_js_string_transform_chain(text: &str, idx: usize, value: String) -> (
     if let Some((slice_end, sliced)) = consume_js_string_slice_call(text, idx, &value) {
         idx = slice_end;
         value = sliced;
+    } else if let Some((substr_end, substr)) = consume_js_string_substr_call(text, idx, &value) {
+        idx = substr_end;
+        value = substr;
     }
     consume_js_split_reverse_join_chain(text, idx, &value).unwrap_or((idx, value))
 }
@@ -1260,6 +1263,34 @@ fn consume_js_string_slice_call(text: &str, idx: usize, value: &str) -> Option<(
         .unwrap_or(len)
         .max(start);
     let sliced: String = value.chars().skip(start).take(end - start).collect();
+    (sliced.len() <= 8192).then_some((cursor + 1, sliced))
+}
+
+fn consume_js_string_substr_call(text: &str, idx: usize, value: &str) -> Option<(usize, String)> {
+    let open = consume_js_method_open(text, idx, "substr")?;
+    let mut cursor = skip_ascii_ws(text, open + 1);
+    let len = value.chars().count();
+
+    let (start_end, start_arg) = parse_js_signed_integer_at(text, cursor)?;
+    cursor = skip_ascii_ws(text, start_end);
+
+    let mut count_arg = None;
+    if text.as_bytes().get(cursor) == Some(&b',') {
+        cursor = skip_ascii_ws(text, cursor + 1);
+        if text.as_bytes().get(cursor) != Some(&b')') {
+            let (count_end, parsed_count) = parse_js_signed_integer_at(text, cursor)?;
+            count_arg = Some(parsed_count.max(0) as usize);
+            cursor = skip_ascii_ws(text, count_end);
+        }
+    }
+
+    if text.as_bytes().get(cursor) != Some(&b')') {
+        return None;
+    }
+
+    let start = js_slice_bound(start_arg, len);
+    let count = count_arg.unwrap_or_else(|| len.saturating_sub(start));
+    let sliced: String = value.chars().skip(start).take(count).collect();
     (sliced.len() <= 8192).then_some((cursor + 1, sliced))
 }
 
