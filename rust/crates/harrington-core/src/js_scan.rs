@@ -1107,9 +1107,14 @@ fn parse_js_array_join_arg(
 
 fn consume_js_array_join_chain(
     text: &str,
-    idx: usize,
+    mut idx: usize,
     mut parts: Vec<String>,
 ) -> Option<(usize, String)> {
+    if let Some((slice_end, sliced)) = consume_js_slice_call(text, idx, &parts) {
+        idx = slice_end;
+        parts = sliced;
+    }
+
     if let Some((join_end, sep)) = consume_js_string_arg_method(text, idx, "join") {
         return join_js_string_parts(parts, &sep).map(|joined| (join_end, joined));
     }
@@ -1118,6 +1123,79 @@ fn consume_js_array_join_chain(
     let (join_end, sep) = consume_js_string_arg_method(text, after_reverse, "join")?;
     parts.reverse();
     join_js_string_parts(parts, &sep).map(|joined| (join_end, joined))
+}
+
+fn consume_js_slice_call(text: &str, idx: usize, parts: &[String]) -> Option<(usize, Vec<String>)> {
+    let open = consume_js_method_open(text, idx, "slice")?;
+    let mut cursor = skip_ascii_ws(text, open + 1);
+    let len = parts.len();
+
+    if text.as_bytes().get(cursor) == Some(&b')') {
+        return Some((cursor + 1, parts.to_vec()));
+    }
+
+    let (start_end, start_arg) = parse_js_signed_integer_at(text, cursor)?;
+    cursor = skip_ascii_ws(text, start_end);
+
+    let mut end_arg = None;
+    if text.as_bytes().get(cursor) == Some(&b',') {
+        cursor = skip_ascii_ws(text, cursor + 1);
+        if text.as_bytes().get(cursor) != Some(&b')') {
+            let (end_end, parsed_end) = parse_js_signed_integer_at(text, cursor)?;
+            end_arg = Some(parsed_end);
+            cursor = skip_ascii_ws(text, end_end);
+        }
+    }
+
+    if text.as_bytes().get(cursor) != Some(&b')') {
+        return None;
+    }
+
+    let start = js_slice_bound(start_arg, len);
+    let end = end_arg
+        .map(|arg| js_slice_bound(arg, len))
+        .unwrap_or(len)
+        .max(start);
+    Some((cursor + 1, parts[start..end].to_vec()))
+}
+
+fn parse_js_signed_integer_at(text: &str, start: usize) -> Option<(usize, isize)> {
+    let bytes = text.as_bytes();
+    let mut cursor = start;
+    let sign = match bytes.get(cursor) {
+        Some(b'-') => {
+            cursor += 1;
+            -1isize
+        }
+        Some(b'+') => {
+            cursor += 1;
+            1isize
+        }
+        _ => 1isize,
+    };
+
+    let digits_start = cursor;
+    let mut value = 0isize;
+    while let Some(byte) = bytes.get(cursor) {
+        if !byte.is_ascii_digit() {
+            break;
+        }
+        value = value.checked_mul(10)?.checked_add((byte - b'0') as isize)?;
+        cursor += 1;
+        if cursor.saturating_sub(digits_start) > 8 {
+            return None;
+        }
+    }
+    (cursor != digits_start).then_some((cursor, value * sign))
+}
+
+fn js_slice_bound(index: isize, len: usize) -> usize {
+    let len = len as isize;
+    if index < 0 {
+        (len + index).clamp(0, len) as usize
+    } else {
+        index.min(len) as usize
+    }
 }
 
 fn join_js_string_parts(parts: Vec<String>, sep: &str) -> Option<String> {
