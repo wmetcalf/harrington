@@ -49,6 +49,14 @@ static JS_FROMCHARCODE_MEMBER_APPLY_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static JS_FROMCHARCODE_MEMBER_CALL_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)String\s*\[\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\]\s*\.\s*call\s*\(\s*[^,\r\n]{0,128},\s*([0-9xa-f+\-\s,]{5,8192})\s*\)"#,
+    )
+    .expect("js fromCharCode member call")
+});
+
+#[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_APPLY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)String\s*(?:\.\s*fromCharCode|\[\s*['"]fromCharCode['"]\s*\])\s*\.\s*apply\s*\(\s*[^,\r\n]{0,128},\s*\[\s*([0-9xa-f+\-\s,]{5,8192})\s*\]\s*\)"#,
@@ -279,6 +287,17 @@ fn decoded_js_fromcharcode_literals(text: &str) -> Vec<String> {
         .captures_iter(text)
         .take(128)
     {
+        let (Some(name), Some(nums)) = (caps.get(1), caps.get(2)) else {
+            continue;
+        };
+        if bindings.get(name.as_str()).map(String::as_str) != Some("fromCharCode") {
+            continue;
+        }
+        if let Some(decoded) = decode_js_fromcharcode_args(nums.as_str()) {
+            out.push(decoded);
+        }
+    }
+    for caps in JS_FROMCHARCODE_MEMBER_CALL_RE.captures_iter(text).take(128) {
         let (Some(name), Some(nums)) = (caps.get(1), caps.get(2)) else {
             continue;
         };
