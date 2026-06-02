@@ -206,28 +206,23 @@ pub fn scan_js_payloads(env: &mut Environment) {
 
 fn decoded_js_percent_literals(text: &str) -> Vec<String> {
     let mut out = Vec::new();
-    for name in ["decodeURIComponent", "decodeURI", "unescape"] {
-        let lower = text.to_ascii_lowercase();
-        let needle = name.to_ascii_lowercase();
-        let mut cursor = 0usize;
-        while let Some(rel) = lower[cursor..].find(&needle) {
-            let name_start = cursor + rel;
-            let name_end = name_start + name.len();
-            let open = skip_ascii_ws(text, name_end);
-            if text.as_bytes().get(open) != Some(&b'(') {
-                cursor = name_end;
-                continue;
-            }
-            let literal_start = skip_ascii_ws(text, open + 1);
-            let Some((literal_end, value)) = parse_js_string_literal_at(text, literal_start) else {
-                cursor = open + 1;
-                continue;
-            };
-            if value.len() <= 8192 {
-                out.push(percent_decode_lenient(&value));
-            }
-            cursor = literal_end;
+    let (bindings, _) = collect_js_string_bindings(text);
+    let mut cursor = 0usize;
+    while cursor < text.len() && out.len() < 128 {
+        let Some((ident_end, _)) = parse_js_identifier_at(text, cursor) else {
+            cursor += text[cursor..]
+                .chars()
+                .next()
+                .map(char::len_utf8)
+                .unwrap_or(1);
+            continue;
+        };
+        if let Some((call_end, decoded)) = parse_js_percent_call_at(text, cursor, &bindings) {
+            out.push(decoded);
+            cursor = call_end;
+            continue;
         }
+        cursor = ident_end;
     }
     out
 }
@@ -785,18 +780,18 @@ fn parse_js_percent_call_at(
         else {
             continue;
         };
-        let open = skip_ascii_ws(text, name_end);
-        if text.as_bytes().get(open) != Some(&b'(') {
-            continue;
-        }
-        let arg_start = skip_ascii_ws(text, open + 1);
-        let (arg_end, encoded) =
-            if let Some((arg_end, value)) = parse_js_string_literal_at(text, arg_start) {
-                (arg_end, value)
-            } else {
-                let (arg_end, ident) = parse_js_identifier_at(text, arg_start)?;
-                (arg_end, bindings.get(ident)?.clone())
-            };
+        let (arg_end, encoded) = if let Some((arg_end, encoded)) =
+            parse_js_string_decoder_call_method_arg(text, name_end, bindings)
+        {
+            (arg_end, encoded)
+        } else {
+            let open = skip_ascii_ws(text, name_end);
+            if text.as_bytes().get(open) != Some(&b'(') {
+                continue;
+            }
+            let arg_start = skip_ascii_ws(text, open + 1);
+            parse_js_string_or_bound_arg(text, arg_start, bindings)?
+        };
         let close = skip_ascii_ws(text, arg_end);
         if text.as_bytes().get(close) != Some(&b')') {
             continue;

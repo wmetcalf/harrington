@@ -9308,6 +9308,46 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_decodeuricomponent_call_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js =
+            br#"eval(decodeURIComponent.call(null, "https%3A%2F%2Fdecode-call-js.example%2Fp"))"#
+                .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://decode-call-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS decodeURIComponent.call URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_decodeuricomponent_apply_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js =
+            br#"eval(decodeURIComponent.apply(null, ["https%3A%2F%2Fdecode-apply-js.example%2Fp"]))"#
+                .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://decode-apply-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS decodeURIComponent.apply URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_unescape_malformed_percent_still_extracts_later_url() {
         let mut env = Environment::new(&Config::default());
         let js =
