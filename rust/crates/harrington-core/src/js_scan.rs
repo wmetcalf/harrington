@@ -85,6 +85,9 @@ pub fn scan_js_payloads(env: &mut Environment) {
         candidates.extend(decoded_js_fromcharcode_array_bindings(&concat_resolved));
         candidates.extend(decoded_js_atob_literals(&concat_resolved));
         candidates.extend(decoded_js_split_reverse_join_literals(&concat_resolved));
+        candidates.extend(decoded_js_array_from_reverse_join_literals(
+            &concat_resolved,
+        ));
         candidates.extend(decoded_js_array_join_literals(&concat_resolved));
         candidates.extend(decoded_js_string_bindings(&concat_resolved));
 
@@ -297,6 +300,61 @@ fn decoded_js_split_reverse_join_literals(text: &str) -> Vec<String> {
         }
         let Some(after_reverse) = consume_js_no_arg_method(text, after_split, "reverse") else {
             cursor = after_split;
+            continue;
+        };
+        let Some((after_join, join_arg)) =
+            consume_js_string_arg_method(text, after_reverse, "join")
+        else {
+            cursor = after_reverse;
+            continue;
+        };
+        if join_arg.is_empty() && value.len() <= 8192 {
+            out.push(value.chars().rev().collect());
+        }
+        cursor = after_join;
+    }
+    out
+}
+
+fn decoded_js_array_from_reverse_join_literals(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cursor = 0usize;
+    while cursor < text.len() {
+        if !js_word_at(text, cursor, "Array") {
+            cursor += text[cursor..]
+                .chars()
+                .next()
+                .map(char::len_utf8)
+                .unwrap_or(1);
+            continue;
+        }
+        let dot = skip_ascii_ws(text, cursor + "Array".len());
+        if text.as_bytes().get(dot) != Some(&b'.') {
+            cursor += "Array".len();
+            continue;
+        }
+        let from_start = skip_ascii_ws(text, dot + 1);
+        if !js_word_at(text, from_start, "from") {
+            cursor = from_start;
+            continue;
+        }
+        let open = skip_ascii_ws(text, from_start + "from".len());
+        if text.as_bytes().get(open) != Some(&b'(') {
+            cursor = from_start + "from".len();
+            continue;
+        }
+        let literal_start = skip_ascii_ws(text, open + 1);
+        let Some((literal_end, value)) = parse_js_string_literal_at(text, literal_start) else {
+            cursor = open + 1;
+            continue;
+        };
+        let close = skip_ascii_ws(text, literal_end);
+        if text.as_bytes().get(close) != Some(&b')') {
+            cursor = literal_end;
+            continue;
+        }
+        let Some(after_reverse) = consume_js_no_arg_method(text, close + 1, "reverse") else {
+            cursor = close + 1;
             continue;
         };
         let Some((after_join, join_arg)) =
