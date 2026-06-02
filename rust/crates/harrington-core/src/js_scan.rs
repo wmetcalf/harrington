@@ -532,10 +532,10 @@ fn parse_js_percent_call_at(
     bindings: &HashMap<String, String>,
 ) -> Option<(usize, String)> {
     for name in ["decodeURIComponent", "decodeURI", "unescape"] {
-        if !js_word_at(text, start, name) {
+        let Some(name_end) = parse_js_named_callee_end(text, start, name) else {
             continue;
-        }
-        let open = skip_ascii_ws(text, start + name.len());
+        };
+        let open = skip_ascii_ws(text, name_end);
         if text.as_bytes().get(open) != Some(&b'(') {
             continue;
         }
@@ -561,7 +561,7 @@ fn parse_js_atob_call_at(
     start: usize,
     bindings: &HashMap<String, String>,
 ) -> Option<(usize, String)> {
-    let name_end = parse_js_atob_callee_end(text, start)?;
+    let name_end = parse_js_named_callee_end(text, start, "atob")?;
     let open = skip_ascii_ws(text, name_end);
     if text.as_bytes().get(open) != Some(&b'(') {
         return None;
@@ -581,9 +581,9 @@ fn parse_js_atob_call_at(
     decode_js_base64_string(&encoded).map(|decoded| (close + 1, decoded))
 }
 
-fn parse_js_atob_callee_end(text: &str, start: usize) -> Option<usize> {
-    if js_word_at(text, start, "atob") {
-        return Some(start + "atob".len());
+fn parse_js_named_callee_end(text: &str, start: usize, name: &str) -> Option<usize> {
+    if js_word_at(text, start, name) {
+        return Some(start + name.len());
     }
 
     let (object_end, _) = parse_js_identifier_at(text, start)?;
@@ -591,12 +591,12 @@ fn parse_js_atob_callee_end(text: &str, start: usize) -> Option<usize> {
     match text.as_bytes().get(member_start) {
         Some(b'.') => {
             let name_start = skip_ascii_ws(text, member_start + 1);
-            js_word_at(text, name_start, "atob").then_some(name_start + "atob".len())
+            js_word_at(text, name_start, name).then_some(name_start + name.len())
         }
         Some(b'[') => {
             let literal_start = skip_ascii_ws(text, member_start + 1);
-            let (literal_end, name) = parse_js_string_literal_at(text, literal_start)?;
-            if name != "atob" {
+            let (literal_end, property) = parse_js_string_literal_at(text, literal_start)?;
+            if property != name {
                 return None;
             }
             let close = skip_ascii_ws(text, literal_end);
