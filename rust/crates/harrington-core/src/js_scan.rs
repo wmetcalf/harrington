@@ -65,6 +65,14 @@ static JS_NUM_ARRAY_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static JS_NUM_ARRAY_CTOR_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)(?:\b(?:var|let|const)\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:new\s+)?Array\s*\(\s*([0-9xa-f+\-\s,]{5,8192})\s*\)"#,
+    )
+    .expect("js numeric array constructor assignment")
+});
+
+#[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_APPLY_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)String\s*(?:\.\s*fromCharCode|\[\s*['"]fromCharCode['"]\s*\])\s*\.\s*apply\s*\(\s*[^,\r\n]{0,128},\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\)"#,
@@ -237,7 +245,11 @@ fn decode_js_fromcharcode_args(nums: &str) -> Option<String> {
 
 fn decoded_js_fromcharcode_array_bindings(text: &str) -> Vec<String> {
     let mut arrays = HashMap::new();
-    for caps in JS_NUM_ARRAY_ASSIGN_RE.captures_iter(text).take(128) {
+    for caps in JS_NUM_ARRAY_ASSIGN_RE
+        .captures_iter(text)
+        .chain(JS_NUM_ARRAY_CTOR_ASSIGN_RE.captures_iter(text))
+        .take(128)
+    {
         let (Some(name), Some(nums)) = (caps.get(1), caps.get(2)) else {
             continue;
         };
