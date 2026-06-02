@@ -5,6 +5,10 @@ use crate::env::Environment;
 use crate::traits::Trait;
 use once_cell::sync::Lazy;
 use regex::Regex;
+use std::collections::HashMap;
+
+type VbsStringBindings = HashMap<String, String>;
+type VbsArrayBindings = HashMap<String, Vec<String>>;
 
 #[allow(clippy::expect_used)]
 static XMLHTTP_OPEN_RE: Lazy<Regex> = Lazy::new(|| {
@@ -56,15 +60,23 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
     for (idx, payload) in payloads.iter().enumerate() {
         let raw = String::from_utf8_lossy(payload);
         let text = join_vbs_line_continuations(&raw);
-        let mut bindings = std::collections::HashMap::new();
+        let mut bindings: VbsStringBindings = HashMap::new();
+        let mut array_bindings: VbsArrayBindings = HashMap::new();
         for caps in VBS_STRING_ASSIGN_RE.captures_iter(&text) {
             let (Some(name), Some(value)) = (caps.get(1), caps.get(2)) else {
                 continue;
             };
-            let Some(value) = eval_vbs_string_expr(value.as_str(), &bindings) else {
+            let key = name.as_str().to_ascii_lowercase();
+            if let Some(values) = parse_vbs_array_values(value.as_str(), &bindings, &array_bindings)
+            {
+                array_bindings.insert(key, values);
+                continue;
+            }
+            let Some(value) = eval_vbs_string_expr(value.as_str(), &bindings, &array_bindings)
+            else {
                 continue;
             };
-            bindings.insert(name.as_str().to_ascii_lowercase(), value);
+            bindings.insert(key, value);
         }
         let dst_hint: Option<String> = SAVETOFILE_RE
             .captures(&text)
@@ -177,7 +189,8 @@ fn join_vbs_line_continuations(text: &str) -> String {
 
 fn eval_vbs_string_expr(
     expr: &str,
-    bindings: &std::collections::HashMap<String, String>,
+    bindings: &VbsStringBindings,
+    array_bindings: &VbsArrayBindings,
 ) -> Option<String> {
     let mut out = String::new();
     let mut saw_part = false;
@@ -196,27 +209,27 @@ fn eval_vbs_string_expr(
             saw_part = true;
             continue;
         }
-        if let Some(value) = parse_vbs_string_transform(part, bindings) {
+        if let Some(value) = parse_vbs_string_transform(part, bindings, array_bindings) {
             out.push_str(&value);
             saw_part = true;
             continue;
         }
-        if let Some(value) = parse_vbs_split_index(part, bindings) {
+        if let Some(value) = parse_vbs_split_index(part, bindings, array_bindings) {
             out.push_str(&value);
             saw_part = true;
             continue;
         }
-        if let Some(value) = parse_vbs_cstr(part, bindings) {
+        if let Some(value) = parse_vbs_cstr(part, bindings, array_bindings) {
             out.push_str(&value);
             saw_part = true;
             continue;
         }
-        if let Some(value) = parse_vbs_replace(part, bindings) {
+        if let Some(value) = parse_vbs_replace(part, bindings, array_bindings) {
             out.push_str(&value);
             saw_part = true;
             continue;
         }
-        if let Some(value) = parse_vbs_mid(part, bindings) {
+        if let Some(value) = parse_vbs_mid(part, bindings, array_bindings) {
             out.push_str(&value);
             saw_part = true;
             continue;
@@ -303,32 +316,37 @@ fn parse_vbs_integer(value: &str) -> Option<u32> {
 
 fn parse_vbs_string_transform(
     part: &str,
-    bindings: &std::collections::HashMap<String, String>,
+    bindings: &VbsStringBindings,
+    array_bindings: &VbsArrayBindings,
 ) -> Option<String> {
     let lower = part.trim().to_ascii_lowercase();
     if let Some(inner) = vbs_function_args(part, "strreverse") {
-        let value = eval_vbs_string_expr(inner, bindings)?;
+        let value = eval_vbs_string_expr(inner, bindings, array_bindings)?;
         return Some(value.chars().rev().collect());
     }
     if let Some(inner) = vbs_function_args(part, "lcase") {
-        return Some(eval_vbs_string_expr(inner, bindings)?.to_ascii_lowercase());
+        return Some(eval_vbs_string_expr(inner, bindings, array_bindings)?.to_ascii_lowercase());
     }
     if let Some(inner) = vbs_function_args(part, "ucase") {
-        return Some(eval_vbs_string_expr(inner, bindings)?.to_ascii_uppercase());
+        return Some(eval_vbs_string_expr(inner, bindings, array_bindings)?.to_ascii_uppercase());
     }
     if let Some(inner) = vbs_function_args(part, "trim") {
-        return Some(eval_vbs_string_expr(inner, bindings)?.trim().to_string());
+        return Some(
+            eval_vbs_string_expr(inner, bindings, array_bindings)?
+                .trim()
+                .to_string(),
+        );
     }
     if let Some(inner) = vbs_function_args(part, "ltrim") {
         return Some(
-            eval_vbs_string_expr(inner, bindings)?
+            eval_vbs_string_expr(inner, bindings, array_bindings)?
                 .trim_start()
                 .to_string(),
         );
     }
     if let Some(inner) = vbs_function_args(part, "rtrim") {
         return Some(
-            eval_vbs_string_expr(inner, bindings)?
+            eval_vbs_string_expr(inner, bindings, array_bindings)?
                 .trim_end()
                 .to_string(),
         );
@@ -338,8 +356,8 @@ fn parse_vbs_string_transform(
         if args.len() < 2 {
             return None;
         }
-        let values = parse_vbs_array_values(args[0], bindings)?;
-        let separator = eval_vbs_string_expr(args[1], bindings)?;
+        let values = parse_vbs_array_values(args[0], bindings, array_bindings)?;
+        let separator = eval_vbs_string_expr(args[1], bindings, array_bindings)?;
         return Some(values.join(&separator));
     }
     if lower.starts_with("left(") {
@@ -347,7 +365,7 @@ fn parse_vbs_string_transform(
         if args.len() < 2 {
             return None;
         }
-        let value = eval_vbs_string_expr(args[0], bindings)?;
+        let value = eval_vbs_string_expr(args[0], bindings, array_bindings)?;
         let count = parse_vbs_integer(args[1])? as usize;
         return Some(value.chars().take(count).collect());
     }
@@ -356,7 +374,7 @@ fn parse_vbs_string_transform(
         if args.len() < 2 {
             return None;
         }
-        let value = eval_vbs_string_expr(args[0], bindings)?;
+        let value = eval_vbs_string_expr(args[0], bindings, array_bindings)?;
         let count = parse_vbs_integer(args[1])? as usize;
         let chars: Vec<char> = value.chars().collect();
         let start = chars.len().saturating_sub(count);
@@ -367,7 +385,8 @@ fn parse_vbs_string_transform(
 
 fn parse_vbs_split_index(
     part: &str,
-    bindings: &std::collections::HashMap<String, String>,
+    bindings: &VbsStringBindings,
+    array_bindings: &VbsArrayBindings,
 ) -> Option<String> {
     let trimmed = part.trim();
     let lower = trimmed.to_ascii_lowercase();
@@ -382,9 +401,9 @@ fn parse_vbs_split_index(
     if args.is_empty() {
         return None;
     }
-    let source = eval_vbs_string_expr(args[0], bindings)?;
+    let source = eval_vbs_string_expr(args[0], bindings, array_bindings)?;
     let separator = if let Some(sep_expr) = args.get(1) {
-        eval_vbs_string_expr(sep_expr, bindings)?
+        eval_vbs_string_expr(sep_expr, bindings, array_bindings)?
     } else {
         " ".to_string()
     };
@@ -398,12 +417,17 @@ fn parse_vbs_split_index(
 
 fn parse_vbs_array_values(
     expr: &str,
-    bindings: &std::collections::HashMap<String, String>,
+    bindings: &VbsStringBindings,
+    array_bindings: &VbsArrayBindings,
 ) -> Option<Vec<String>> {
+    let key = expr.trim().trim_matches(['(', ')']).to_ascii_lowercase();
+    if let Some(values) = array_bindings.get(&key) {
+        return Some(values.clone());
+    }
     let inner = vbs_function_args(expr, "array")?;
     let mut values = Vec::new();
     for arg in split_vbs_args(inner) {
-        let value = eval_vbs_string_expr(arg, bindings)?;
+        let value = eval_vbs_string_expr(arg, bindings, array_bindings)?;
         values.push(value);
     }
     Some(values)
@@ -411,37 +435,40 @@ fn parse_vbs_array_values(
 
 fn parse_vbs_cstr(
     part: &str,
-    bindings: &std::collections::HashMap<String, String>,
+    bindings: &VbsStringBindings,
+    array_bindings: &VbsArrayBindings,
 ) -> Option<String> {
     let inner = vbs_function_args(part, "cstr")?;
-    eval_vbs_string_expr(inner, bindings)
+    eval_vbs_string_expr(inner, bindings, array_bindings)
 }
 
 fn parse_vbs_replace(
     part: &str,
-    bindings: &std::collections::HashMap<String, String>,
+    bindings: &VbsStringBindings,
+    array_bindings: &VbsArrayBindings,
 ) -> Option<String> {
     let inner = vbs_function_args(part, "replace")?;
     let args = split_vbs_args(inner);
     if args.len() < 3 {
         return None;
     }
-    let source = eval_vbs_string_expr(args[0], bindings)?;
-    let find = eval_vbs_string_expr(args[1], bindings)?;
-    let replacement = eval_vbs_string_expr(args[2], bindings)?;
+    let source = eval_vbs_string_expr(args[0], bindings, array_bindings)?;
+    let find = eval_vbs_string_expr(args[1], bindings, array_bindings)?;
+    let replacement = eval_vbs_string_expr(args[2], bindings, array_bindings)?;
     Some(source.replace(&find, &replacement))
 }
 
 fn parse_vbs_mid(
     part: &str,
-    bindings: &std::collections::HashMap<String, String>,
+    bindings: &VbsStringBindings,
+    array_bindings: &VbsArrayBindings,
 ) -> Option<String> {
     let inner = vbs_function_args(part, "mid")?;
     let args = split_vbs_args(inner);
     if args.len() < 2 {
         return None;
     }
-    let source = eval_vbs_string_expr(args[0], bindings)?;
+    let source = eval_vbs_string_expr(args[0], bindings, array_bindings)?;
     let start = args[1].trim().parse::<usize>().ok()?;
     let skip = start.saturating_sub(1);
     let chars: Vec<char> = source.chars().collect();
