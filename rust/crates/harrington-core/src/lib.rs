@@ -9496,6 +9496,30 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_fromcharcode_spread_array_variable_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let chars = "https://char-spread-var-js.example/p"
+            .bytes()
+            .map(|b| b.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let js =
+            format!("var a = [{chars}]; var u = String.fromCharCode(...a); eval(u)").into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://char-spread-var-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS fromCharCode spread array variable URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_fromcharcode_call_payload_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let chars = "https://char-call-js.example/p"

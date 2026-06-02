@@ -65,6 +65,14 @@ static JS_FROMCHARCODE_APPLY_VAR_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static JS_FROMCHARCODE_SPREAD_VAR_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)String\s*(?:\.\s*fromCharCode|\[\s*['"]fromCharCode['"]\s*\])\s*\(\s*\.\.\.\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\)"#,
+    )
+    .expect("js fromCharCode spread variable")
+});
+
+#[allow(clippy::expect_used)]
 static JS_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?is)(?:\b(?:var|let|const)\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*(\+?=)\s*"#)
         .expect("js assignment")
@@ -231,6 +239,7 @@ fn decoded_js_fromcharcode_array_bindings(text: &str) -> Vec<String> {
 
     JS_FROMCHARCODE_APPLY_VAR_RE
         .captures_iter(text)
+        .chain(JS_FROMCHARCODE_SPREAD_VAR_RE.captures_iter(text))
         .filter_map(|caps| {
             let name = caps.get(1)?.as_str();
             arrays.get(name).cloned()
