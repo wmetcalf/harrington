@@ -458,12 +458,29 @@ fn decoded_js_array_join_literals(text: &str) -> Vec<String> {
             cursor = ident_end;
             continue;
         };
-        let Some((join_end, sep)) = consume_js_string_arg_method(text, ident_end, "join") else {
+        if let Some((join_end, sep)) = consume_js_string_arg_method(text, ident_end, "join") {
+            if sep.len() <= 64 {
+                let joined = parts.join(&sep);
+                if joined.len() <= 8192 {
+                    out.push(joined);
+                }
+            }
+            cursor = join_end;
+            continue;
+        }
+        let Some(after_reverse) = consume_js_no_arg_method(text, ident_end, "reverse") else {
             cursor = ident_end;
             continue;
         };
+        let Some((join_end, sep)) = consume_js_string_arg_method(text, after_reverse, "join")
+        else {
+            cursor = after_reverse;
+            continue;
+        };
         if sep.len() <= 64 {
-            let joined = parts.join(&sep);
+            let mut reversed = parts.clone();
+            reversed.reverse();
+            let joined = reversed.join(&sep);
             if joined.len() <= 8192 {
                 out.push(joined);
             }
