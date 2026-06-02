@@ -480,13 +480,22 @@ fn collect_js_decoder_aliases(text: &str, decoder: &str) -> HashSet<String> {
         let Some(decoder_end) = parse_js_named_callee_end(text, rhs_start, decoder) else {
             continue;
         };
-        let next = skip_ascii_ws(text, decoder_end);
-        if text.as_bytes().get(next) == Some(&b'(') {
+        if !js_decoder_alias_rhs_allowed(text, decoder_end) {
             continue;
         }
         aliases.insert(name.as_str().to_string());
     }
     aliases
+}
+
+fn js_decoder_alias_rhs_allowed(text: &str, decoder_end: usize) -> bool {
+    let next = skip_ascii_ws(text, decoder_end);
+    match text.as_bytes().get(next) {
+        Some(b'(') => false,
+        Some(b'.') => consume_js_method_open(text, decoder_end, "bind").is_some(),
+        Some(b'[') => false,
+        _ => true,
+    }
 }
 
 fn decoded_js_bound_decoder_calls(text: &str) -> Vec<String> {
