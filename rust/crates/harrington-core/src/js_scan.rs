@@ -1231,6 +1231,11 @@ fn consume_js_string_transform_chain(text: &str, idx: usize, value: String) -> (
     } else if let Some((substr_end, substr)) = consume_js_string_substr_call(text, idx, &value) {
         idx = substr_end;
         value = substr;
+    } else if let Some((substring_end, substring)) =
+        consume_js_string_substring_call(text, idx, &value)
+    {
+        idx = substring_end;
+        value = substring;
     }
     consume_js_split_reverse_join_chain(text, idx, &value).unwrap_or((idx, value))
 }
@@ -1291,6 +1296,43 @@ fn consume_js_string_substr_call(text: &str, idx: usize, value: &str) -> Option<
     let start = js_slice_bound(start_arg, len);
     let count = count_arg.unwrap_or_else(|| len.saturating_sub(start));
     let sliced: String = value.chars().skip(start).take(count).collect();
+    (sliced.len() <= 8192).then_some((cursor + 1, sliced))
+}
+
+fn consume_js_string_substring_call(
+    text: &str,
+    idx: usize,
+    value: &str,
+) -> Option<(usize, String)> {
+    let open = consume_js_method_open(text, idx, "substring")?;
+    let mut cursor = skip_ascii_ws(text, open + 1);
+    let len = value.chars().count();
+
+    let (start_end, start_arg) = parse_js_signed_integer_at(text, cursor)?;
+    cursor = skip_ascii_ws(text, start_end);
+
+    let mut end_arg = None;
+    if text.as_bytes().get(cursor) == Some(&b',') {
+        cursor = skip_ascii_ws(text, cursor + 1);
+        if text.as_bytes().get(cursor) != Some(&b')') {
+            let (end_end, parsed_end) = parse_js_signed_integer_at(text, cursor)?;
+            end_arg = Some(parsed_end);
+            cursor = skip_ascii_ws(text, end_end);
+        }
+    }
+
+    if text.as_bytes().get(cursor) != Some(&b')') {
+        return None;
+    }
+
+    let mut start = start_arg.max(0) as usize;
+    let mut end = end_arg.map(|arg| arg.max(0) as usize).unwrap_or(len);
+    start = start.min(len);
+    end = end.min(len);
+    if start > end {
+        std::mem::swap(&mut start, &mut end);
+    }
+    let sliced: String = value.chars().skip(start).take(end - start).collect();
     (sliced.len() <= 8192).then_some((cursor + 1, sliced))
 }
 
