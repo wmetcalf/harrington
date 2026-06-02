@@ -738,6 +738,7 @@ fn decoded_js_string_bindings(text: &str) -> Vec<String> {
 
 fn collect_js_string_bindings(text: &str) -> (HashMap<String, String>, Vec<String>) {
     let mut bindings = HashMap::new();
+    let mut arrays = HashMap::new();
     let mut values = Vec::new();
     for caps in JS_ASSIGN_RE.captures_iter(text).take(256) {
         let Some(name) = caps.get(1).map(|m| m.as_str()) else {
@@ -749,7 +750,21 @@ fn collect_js_string_bindings(text: &str) -> (HashMap<String, String>, Vec<Strin
         let Some(expr_start) = caps.get(0).map(|m| m.end()) else {
             continue;
         };
-        let Some((expr_end, value)) = eval_js_string_expr(text, expr_start, &bindings) else {
+        if op == "=" {
+            if let Some((expr_end, parts)) =
+                parse_js_string_array_arg_at(text, expr_start, &bindings)
+            {
+                if expr_end.saturating_sub(expr_start) <= 8192
+                    && parts.iter().all(|part| part.len() <= 8192)
+                {
+                    arrays.insert(name.to_string(), parts);
+                }
+                continue;
+            }
+        }
+        let Some((expr_end, value)) = eval_js_string_expr(text, expr_start, &bindings)
+            .or_else(|| parse_js_array_index_arg(text, expr_start, &arrays))
+        else {
             continue;
         };
         let value = if op == "+=" {
