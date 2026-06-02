@@ -419,6 +419,7 @@ where
         return Vec::new();
     }
     let (bindings, _) = collect_js_string_bindings(text);
+    let arrays = collect_js_string_array_bindings(text, &bindings);
     let mut out = Vec::new();
     let mut cursor = 0usize;
     while cursor < text.len() && out.len() < 128 {
@@ -445,7 +446,7 @@ where
                 continue;
             }
             let arg_start = skip_ascii_ws(text, open + 1);
-            match parse_js_string_or_bound_arg(text, arg_start, &bindings) {
+            match parse_js_string_or_bound_or_array_arg(text, arg_start, &bindings, &arrays) {
                 Some(parsed) => parsed,
                 None => {
                     cursor = ident_end;
@@ -905,6 +906,7 @@ fn parse_js_percent_call_at(
     start: usize,
     bindings: &HashMap<String, String>,
 ) -> Option<(usize, String)> {
+    let arrays = collect_js_string_array_bindings(text, bindings);
     for name in ["decodeURIComponent", "decodeURI", "unescape"] {
         let Some(name_end) = parse_js_named_callee_end(text, start, name)
             .or_else(|| parse_js_bound_member_callee_end(text, start, name, bindings))
@@ -921,7 +923,7 @@ fn parse_js_percent_call_at(
                 continue;
             }
             let arg_start = skip_ascii_ws(text, open + 1);
-            parse_js_string_or_bound_arg(text, arg_start, bindings)?
+            parse_js_string_or_bound_or_array_arg(text, arg_start, bindings, &arrays)?
         };
         let close = skip_ascii_ws(text, arg_end);
         if text.as_bytes().get(close) != Some(&b')') {
@@ -937,6 +939,7 @@ fn parse_js_atob_call_at(
     start: usize,
     bindings: &HashMap<String, String>,
 ) -> Option<(usize, String)> {
+    let arrays = collect_js_string_array_bindings(text, bindings);
     let name_end = parse_js_named_callee_end(text, start, "atob")
         .or_else(|| parse_js_bound_member_callee_end(text, start, "atob", bindings))?;
     let (arg_end, encoded) = if let Some((arg_end, encoded)) =
@@ -949,7 +952,7 @@ fn parse_js_atob_call_at(
             return None;
         }
         let arg_start = skip_ascii_ws(text, open + 1);
-        parse_js_string_or_bound_arg(text, arg_start, bindings)?
+        parse_js_string_or_bound_or_array_arg(text, arg_start, bindings, &arrays)?
     };
     let close = skip_ascii_ws(text, arg_end);
     if text.as_bytes().get(close) != Some(&b')') {
@@ -966,7 +969,8 @@ fn parse_js_string_decoder_call_method_arg(
     if let Some(open) = consume_js_method_open(text, callee_end, "call") {
         let comma = find_js_call_comma(text, skip_ascii_ws(text, open + 1))?;
         let arg_start = skip_ascii_ws(text, comma + 1);
-        return parse_js_string_or_bound_arg(text, arg_start, bindings);
+        let arrays = collect_js_string_array_bindings(text, bindings);
+        return parse_js_string_or_bound_or_array_arg(text, arg_start, bindings, &arrays);
     }
 
     let open = consume_js_method_open(text, callee_end, "apply")?;
@@ -996,6 +1000,50 @@ fn parse_js_string_or_bound_arg(
         let (arg_end, name) = parse_js_identifier_at(text, start)?;
         Some((arg_end, bindings.get(name)?.clone()))
     }
+}
+
+fn parse_js_string_or_bound_or_array_arg(
+    text: &str,
+    start: usize,
+    bindings: &HashMap<String, String>,
+    arrays: &HashMap<String, Vec<String>>,
+) -> Option<(usize, String)> {
+    parse_js_string_or_bound_arg(text, start, bindings)
+        .or_else(|| parse_js_array_index_arg(text, start, arrays))
+}
+
+fn parse_js_array_index_arg(
+    text: &str,
+    start: usize,
+    arrays: &HashMap<String, Vec<String>>,
+) -> Option<(usize, String)> {
+    let (ident_end, name) = parse_js_identifier_at(text, start)?;
+    let open = skip_ascii_ws(text, ident_end);
+    if text.as_bytes().get(open) != Some(&b'[') {
+        return None;
+    }
+    let index_start = skip_ascii_ws(text, open + 1);
+    let mut index_end = index_start;
+    while text
+        .as_bytes()
+        .get(index_end)
+        .is_some_and(u8::is_ascii_digit)
+    {
+        index_end += 1;
+    }
+    if index_end == index_start {
+        return None;
+    }
+    let index = text[index_start..index_end].parse::<usize>().ok()?;
+    let close = skip_ascii_ws(text, index_end);
+    if text.as_bytes().get(close) != Some(&b']') {
+        return None;
+    }
+    arrays
+        .get(name)?
+        .get(index)
+        .cloned()
+        .map(|value| (close + 1, value))
 }
 
 fn find_js_call_comma(text: &str, mut cursor: usize) -> Option<usize> {

