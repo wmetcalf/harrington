@@ -337,6 +337,51 @@ fn decoded_js_array_join_literals(text: &str) -> Vec<String> {
         }
         cursor = join_end;
     }
+
+    let mut arrays = HashMap::new();
+    for caps in JS_ASSIGN_RE.captures_iter(text).take(256) {
+        let (Some(name), Some(op), Some(expr)) = (caps.get(1), caps.get(2), caps.get(0)) else {
+            continue;
+        };
+        if op.as_str() != "=" {
+            continue;
+        }
+        let expr_start = expr.end();
+        let Some((expr_end, parts)) = parse_js_string_array_at(text, expr_start) else {
+            arrays.remove(name.as_str());
+            continue;
+        };
+        if expr_end.saturating_sub(expr_start) <= 8192 && parts.len() <= 128 {
+            arrays.insert(name.as_str().to_string(), parts);
+        }
+    }
+
+    let mut cursor = 0usize;
+    while cursor < text.len() {
+        let Some((ident_end, name)) = parse_js_identifier_at(text, cursor) else {
+            cursor += text[cursor..]
+                .chars()
+                .next()
+                .map(char::len_utf8)
+                .unwrap_or(1);
+            continue;
+        };
+        let Some(parts) = arrays.get(name) else {
+            cursor = ident_end;
+            continue;
+        };
+        let Some((join_end, sep)) = consume_js_string_arg_method(text, ident_end, "join") else {
+            cursor = ident_end;
+            continue;
+        };
+        if sep.len() <= 64 {
+            let joined = parts.join(&sep);
+            if joined.len() <= 8192 {
+                out.push(joined);
+            }
+        }
+        cursor = join_end;
+    }
     out
 }
 

@@ -9559,6 +9559,22 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_array_variable_join_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js =
+            br#"var parts = ["https://", "js-array-var.example", "/stage"]; var u = parts.join(""); eval(u)"#
+                .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://js-array-var.example/stage"
+            )
+        });
+        assert!(has, "JS array variable join URL missed: {:?}", env.traits);
+    }
+
+    #[test]
     fn js_variable_concat_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let js =
