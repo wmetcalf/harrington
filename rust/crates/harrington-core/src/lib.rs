@@ -9492,6 +9492,26 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_atob_unpadded_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://atob-unpadded-js.example/p')",
+        )
+        .trim_end_matches('=')
+        .to_string();
+        let js = format!(r#"eval(atob("{encoded}"))"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://atob-unpadded-js.example/p"
+            )
+        });
+        assert!(has, "JS unpadded atob URL missed: {:?}", env.traits);
+    }
+
+    #[test]
     fn js_split_reverse_join_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let js =

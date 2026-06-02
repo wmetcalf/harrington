@@ -261,9 +261,7 @@ fn decoded_js_atob_literals(text: &str) -> Vec<String> {
         };
         if value.len() <= 16384 {
             let cleaned: String = value.chars().filter(|c| !c.is_ascii_whitespace()).collect();
-            if let Ok(decoded) =
-                base64::engine::general_purpose::STANDARD.decode(cleaned.as_bytes())
-            {
+            if let Some(decoded) = decode_base64_maybe_unpadded(&cleaned) {
                 if decoded.len() <= 8192 {
                     out.push(String::from_utf8_lossy(&decoded).into_owned());
                 }
@@ -548,10 +546,25 @@ fn decode_js_base64_string(encoded: &str) -> Option<String> {
         .chars()
         .filter(|c| !c.is_ascii_whitespace())
         .collect();
-    let decoded = base64::engine::general_purpose::STANDARD
-        .decode(cleaned.as_bytes())
-        .ok()?;
+    let decoded = decode_base64_maybe_unpadded(&cleaned)?;
     (decoded.len() <= 8192).then(|| String::from_utf8_lossy(&decoded).into_owned())
+}
+
+fn decode_base64_maybe_unpadded(cleaned: &str) -> Option<Vec<u8>> {
+    if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(cleaned.as_bytes()) {
+        return Some(decoded);
+    }
+    let remainder = cleaned.len() % 4;
+    if remainder == 1 {
+        return None;
+    }
+    let mut padded = cleaned.to_string();
+    for _ in 0..((4 - remainder) % 4) {
+        padded.push('=');
+    }
+    base64::engine::general_purpose::STANDARD
+        .decode(padded.as_bytes())
+        .ok()
 }
 
 fn parse_js_identifier_at(text: &str, start: usize) -> Option<(usize, &str)> {
