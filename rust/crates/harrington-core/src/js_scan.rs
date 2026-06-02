@@ -1224,20 +1224,43 @@ fn join_js_string_parts(parts: Vec<String>, sep: &str) -> Option<String> {
 }
 
 fn consume_js_string_transform_chain(text: &str, idx: usize, value: String) -> (usize, String) {
-    let (mut idx, mut value) = consume_js_replace_chain(text, idx, value);
-    if let Some((slice_end, sliced)) = consume_js_string_slice_call(text, idx, &value) {
-        idx = slice_end;
-        value = sliced;
-    } else if let Some((substr_end, substr)) = consume_js_string_substr_call(text, idx, &value) {
-        idx = substr_end;
-        value = substr;
-    } else if let Some((substring_end, substring)) =
-        consume_js_string_substring_call(text, idx, &value)
-    {
-        idx = substring_end;
-        value = substring;
+    let mut idx = idx;
+    let mut value = value;
+    for _ in 0..16 {
+        let (replace_end, replaced) = consume_js_replace_chain(text, idx, value);
+        if replace_end != idx {
+            idx = replace_end;
+            value = replaced;
+            continue;
+        }
+        value = replaced;
+
+        if let Some((slice_end, sliced)) = consume_js_string_slice_call(text, idx, &value) {
+            idx = slice_end;
+            value = sliced;
+        } else if let Some((substr_end, substr)) = consume_js_string_substr_call(text, idx, &value)
+        {
+            idx = substr_end;
+            value = substr;
+        } else if let Some((substring_end, substring)) =
+            consume_js_string_substring_call(text, idx, &value)
+        {
+            idx = substring_end;
+            value = substring;
+        } else if let Some((reverse_join_end, reversed)) =
+            consume_js_split_reverse_join_chain(text, idx, &value)
+        {
+            idx = reverse_join_end;
+            value = reversed;
+        } else {
+            break;
+        }
+
+        if value.len() > 8192 {
+            break;
+        }
     }
-    consume_js_split_reverse_join_chain(text, idx, &value).unwrap_or((idx, value))
+    (idx, value)
 }
 
 fn consume_js_string_slice_call(text: &str, idx: usize, value: &str) -> Option<(usize, String)> {
