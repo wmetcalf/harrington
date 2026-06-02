@@ -9472,6 +9472,30 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_fromcharcode_apply_inline_array_constructor_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let chars = "https://char-apply-inline-ctor-js.example/p"
+            .bytes()
+            .map(|b| b.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!("var u = String.fromCharCode.apply(null, Array({chars})); eval(u)")
+            .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://char-apply-inline-ctor-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS fromCharCode.apply inline Array(...) URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_fromcharcode_apply_array_variable_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let chars = "https://char-apply-var-js.example/p"
@@ -9563,6 +9587,29 @@ mod js_url_extraction_tests {
         assert!(
             has,
             "JS fromCharCode spread inline array URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_fromcharcode_spread_inline_array_constructor_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let chars = "https://char-spread-inline-ctor-js.example/p"
+            .bytes()
+            .map(|b| b.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!("var u = String.fromCharCode(...Array({chars})); eval(u)").into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://char-spread-inline-ctor-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS fromCharCode spread inline Array(...) URL missed: {:?}",
             env.traits
         );
     }
