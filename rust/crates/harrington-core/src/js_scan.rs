@@ -156,6 +156,7 @@ pub fn scan_js_payloads(env: &mut Environment) {
         candidates.extend(decoded_js_fromcharcode_literals(&concat_resolved));
         candidates.extend(decoded_js_fromcharcode_array_bindings(&concat_resolved));
         candidates.extend(decoded_js_atob_literals(&concat_resolved));
+        candidates.extend(decoded_js_atob_alias_calls(&concat_resolved));
         candidates.extend(decoded_js_bound_decoder_calls(&concat_resolved));
         candidates.extend(decoded_js_split_reverse_join_literals(&concat_resolved));
         candidates.extend(decoded_js_array_from_reverse_join_literals(
@@ -388,6 +389,81 @@ fn decoded_js_atob_literals(text: &str) -> Vec<String> {
         cursor = ident_end;
     }
     out
+}
+
+fn decoded_js_atob_alias_calls(text: &str) -> Vec<String> {
+    let aliases = collect_js_decoder_aliases(text, "atob");
+    if aliases.is_empty() {
+        return Vec::new();
+    }
+    let (bindings, _) = collect_js_string_bindings(text);
+    let mut out = Vec::new();
+    let mut cursor = 0usize;
+    while cursor < text.len() && out.len() < 128 {
+        let Some((ident_end, ident)) = parse_js_identifier_at(text, cursor) else {
+            cursor += text[cursor..]
+                .chars()
+                .next()
+                .map(char::len_utf8)
+                .unwrap_or(1);
+            continue;
+        };
+        if !aliases.contains(ident) {
+            cursor = ident_end;
+            continue;
+        }
+        let (arg_end, encoded) = if let Some((arg_end, encoded)) =
+            parse_js_string_decoder_call_method_arg(text, ident_end, &bindings)
+        {
+            (arg_end, encoded)
+        } else {
+            let open = skip_ascii_ws(text, ident_end);
+            if text.as_bytes().get(open) != Some(&b'(') {
+                cursor = ident_end;
+                continue;
+            }
+            let arg_start = skip_ascii_ws(text, open + 1);
+            match parse_js_string_or_bound_arg(text, arg_start, &bindings) {
+                Some(parsed) => parsed,
+                None => {
+                    cursor = ident_end;
+                    continue;
+                }
+            }
+        };
+        let close = skip_ascii_ws(text, arg_end);
+        if text.as_bytes().get(close) != Some(&b')') {
+            cursor = arg_end;
+            continue;
+        }
+        if let Some(decoded) = decode_js_base64_string(&encoded) {
+            out.push(decoded);
+        }
+        cursor = close + 1;
+    }
+    out
+}
+
+fn collect_js_decoder_aliases(text: &str, decoder: &str) -> HashSet<String> {
+    let mut aliases = HashSet::new();
+    for caps in JS_ASSIGN_RE.captures_iter(text).take(256) {
+        let (Some(name), Some(op), Some(expr)) = (caps.get(1), caps.get(2), caps.get(0)) else {
+            continue;
+        };
+        if op.as_str() != "=" {
+            continue;
+        }
+        let rhs_start = expr.end();
+        let Some(decoder_end) = parse_js_named_callee_end(text, rhs_start, decoder) else {
+            continue;
+        };
+        let next = skip_ascii_ws(text, decoder_end);
+        if text.as_bytes().get(next) == Some(&b'(') {
+            continue;
+        }
+        aliases.insert(name.as_str().to_string());
+    }
+    aliases
 }
 
 fn decoded_js_bound_decoder_calls(text: &str) -> Vec<String> {
