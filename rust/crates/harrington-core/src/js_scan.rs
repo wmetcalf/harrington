@@ -1132,9 +1132,13 @@ fn consume_js_array_join_chain(
         return join_js_string_parts(parts, &sep).map(|joined| (join_end, joined));
     }
 
-    let after_reverse = consume_js_no_arg_method(text, idx, "reverse")?;
-    let (join_end, sep) = consume_js_string_arg_method(text, after_reverse, "join")?;
+    let mut after_reverse = consume_js_no_arg_method(text, idx, "reverse")?;
     parts.reverse();
+    if let Some((slice_end, sliced)) = consume_js_slice_call(text, after_reverse, &parts) {
+        after_reverse = slice_end;
+        parts = sliced;
+    }
+    let (join_end, sep) = consume_js_string_arg_method(text, after_reverse, "join")?;
     join_js_string_parts(parts, &sep).map(|joined| (join_end, joined))
 }
 

