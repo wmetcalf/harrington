@@ -789,6 +789,27 @@ fn parse_js_string_array_at(text: &str, start: usize) -> Option<(usize, Vec<Stri
     }
 }
 
+fn collect_js_string_array_bindings(text: &str) -> HashMap<String, Vec<String>> {
+    let mut arrays = HashMap::new();
+    for caps in JS_ASSIGN_RE.captures_iter(text).take(256) {
+        let (Some(name), Some(op), Some(expr)) = (caps.get(1), caps.get(2), caps.get(0)) else {
+            continue;
+        };
+        if op.as_str() != "=" {
+            continue;
+        }
+        let Some((expr_end, parts)) = parse_js_string_array_at(text, expr.end()) else {
+            continue;
+        };
+        if expr_end.saturating_sub(expr.end()) > 8192 || parts.iter().any(|part| part.len() > 8192)
+        {
+            continue;
+        }
+        arrays.insert(name.as_str().to_string(), parts);
+    }
+    arrays
+}
+
 fn parse_js_array_constructor_open(text: &str, start: usize) -> Option<usize> {
     let mut cursor = start;
     if js_word_at(text, cursor, "new") {
@@ -939,12 +960,17 @@ fn parse_js_string_decoder_call_method_arg(
     let open = consume_js_method_open(text, callee_end, "apply")?;
     let comma = find_js_call_comma(text, skip_ascii_ws(text, open + 1))?;
     let arg_start = skip_ascii_ws(text, comma + 1);
-    let (array_end, parts) = parse_js_string_array_at(text, arg_start)?;
-    if parts.len() == 1 {
-        parts.into_iter().next().map(|value| (array_end, value))
-    } else {
-        None
+    if let Some((array_end, parts)) = parse_js_string_array_at(text, arg_start) {
+        return if parts.len() == 1 {
+            parts.into_iter().next().map(|value| (array_end, value))
+        } else {
+            None
+        };
     }
+    let (arg_end, name) = parse_js_identifier_at(text, arg_start)?;
+    let arrays = collect_js_string_array_bindings(text);
+    let parts = arrays.get(name)?;
+    (parts.len() == 1).then(|| (arg_end, parts[0].clone()))
 }
 
 fn parse_js_string_or_bound_arg(
