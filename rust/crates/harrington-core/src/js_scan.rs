@@ -1034,6 +1034,7 @@ fn parse_js_decoder_string_arg(
 ) -> Option<(usize, String)> {
     eval_js_string_expr(text, start, bindings)
         .or_else(|| parse_js_array_index_arg(text, start, arrays))
+        .or_else(|| parse_js_array_method_arg(text, start, arrays))
 }
 
 fn parse_js_array_index_arg(
@@ -1068,6 +1069,22 @@ fn parse_js_array_index_arg(
         .get(index)
         .cloned()
         .map(|value| (close + 1, value))
+}
+
+fn parse_js_array_method_arg(
+    text: &str,
+    start: usize,
+    arrays: &HashMap<String, Vec<String>>,
+) -> Option<(usize, String)> {
+    let (ident_end, name) = parse_js_identifier_at(text, start)?;
+    let values = arrays.get(name)?;
+    if let Some(end) = consume_js_no_arg_method(text, ident_end, "shift") {
+        return values.first().cloned().map(|value| (end, value));
+    }
+    if let Some(end) = consume_js_no_arg_method(text, ident_end, "pop") {
+        return values.last().cloned().map(|value| (end, value));
+    }
+    None
 }
 
 fn find_js_call_comma(text: &str, mut cursor: usize) -> Option<usize> {
