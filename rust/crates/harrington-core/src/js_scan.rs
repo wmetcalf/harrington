@@ -468,6 +468,7 @@ where
 }
 
 fn collect_js_decoder_aliases(text: &str, decoder: &str) -> HashSet<String> {
+    let (bindings, _) = collect_js_string_bindings(text);
     let mut aliases = HashSet::new();
     for caps in JS_ASSIGN_RE.captures_iter(text).take(256) {
         let (Some(name), Some(op), Some(expr)) = (caps.get(1), caps.get(2), caps.get(0)) else {
@@ -477,7 +478,9 @@ fn collect_js_decoder_aliases(text: &str, decoder: &str) -> HashSet<String> {
             continue;
         }
         let rhs_start = expr.end();
-        let Some(decoder_end) = parse_js_named_callee_end(text, rhs_start, decoder) else {
+        let Some(decoder_end) = parse_js_named_callee_end(text, rhs_start, decoder)
+            .or_else(|| parse_js_bound_member_callee_end(text, rhs_start, decoder, &bindings))
+        else {
             continue;
         };
         if !js_decoder_alias_rhs_allowed(text, decoder_end) {
