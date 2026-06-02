@@ -153,6 +153,7 @@ pub fn scan_js_payloads(env: &mut Environment) {
         let concat_resolved = expand_js_string_concat(&decoded);
         let mut candidates = vec![concat_resolved.clone()];
         candidates.extend(decoded_js_percent_literals(&concat_resolved));
+        candidates.extend(decoded_js_percent_alias_calls(&concat_resolved));
         candidates.extend(decoded_js_fromcharcode_literals(&concat_resolved));
         candidates.extend(decoded_js_fromcharcode_array_bindings(&concat_resolved));
         candidates.extend(decoded_js_atob_literals(&concat_resolved));
@@ -226,6 +227,16 @@ fn decoded_js_percent_literals(text: &str) -> Vec<String> {
         cursor = ident_end;
     }
     out
+}
+
+fn decoded_js_percent_alias_calls(text: &str) -> Vec<String> {
+    let mut aliases = HashSet::new();
+    for name in ["decodeURIComponent", "decodeURI", "unescape"] {
+        aliases.extend(collect_js_decoder_aliases(text, name));
+    }
+    decoded_js_decoder_alias_calls(text, &aliases, |encoded| {
+        Some(percent_decode_lenient(encoded))
+    })
 }
 
 fn percent_decode_lenient(text: &str) -> String {
@@ -393,6 +404,17 @@ fn decoded_js_atob_literals(text: &str) -> Vec<String> {
 
 fn decoded_js_atob_alias_calls(text: &str) -> Vec<String> {
     let aliases = collect_js_decoder_aliases(text, "atob");
+    decoded_js_decoder_alias_calls(text, &aliases, decode_js_base64_string)
+}
+
+fn decoded_js_decoder_alias_calls<F>(
+    text: &str,
+    aliases: &HashSet<String>,
+    decode: F,
+) -> Vec<String>
+where
+    F: Fn(&str) -> Option<String>,
+{
     if aliases.is_empty() {
         return Vec::new();
     }
@@ -436,7 +458,7 @@ fn decoded_js_atob_alias_calls(text: &str) -> Vec<String> {
             cursor = arg_end;
             continue;
         }
-        if let Some(decoded) = decode_js_base64_string(&encoded) {
+        if let Some(decoded) = decode(&encoded) {
             out.push(decoded);
         }
         cursor = close + 1;
