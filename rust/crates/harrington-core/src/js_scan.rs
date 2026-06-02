@@ -156,6 +156,7 @@ pub fn scan_js_payloads(env: &mut Environment) {
         candidates.extend(decoded_js_fromcharcode_literals(&concat_resolved));
         candidates.extend(decoded_js_fromcharcode_array_bindings(&concat_resolved));
         candidates.extend(decoded_js_atob_literals(&concat_resolved));
+        candidates.extend(decoded_js_bound_decoder_calls(&concat_resolved));
         candidates.extend(decoded_js_split_reverse_join_literals(&concat_resolved));
         candidates.extend(decoded_js_array_from_reverse_join_literals(
             &concat_resolved,
@@ -404,6 +405,37 @@ fn decoded_js_atob_literals(text: &str) -> Vec<String> {
             }
         }
         cursor = literal_end;
+    }
+    out
+}
+
+fn decoded_js_bound_decoder_calls(text: &str) -> Vec<String> {
+    let (bindings, _) = collect_js_string_bindings(text);
+    if bindings.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut cursor = 0usize;
+    while cursor < text.len() && out.len() < 128 {
+        let Some((ident_end, _)) = parse_js_identifier_at(text, cursor) else {
+            cursor += text[cursor..]
+                .chars()
+                .next()
+                .map(char::len_utf8)
+                .unwrap_or(1);
+            continue;
+        };
+        if let Some((call_end, decoded)) = parse_js_atob_call_at(text, cursor, &bindings) {
+            out.push(decoded);
+            cursor = call_end;
+            continue;
+        }
+        if let Some((call_end, decoded)) = parse_js_percent_call_at(text, cursor, &bindings) {
+            out.push(decoded);
+            cursor = call_end;
+            continue;
+        }
+        cursor = ident_end;
     }
     out
 }

