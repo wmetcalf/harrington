@@ -765,6 +765,7 @@ fn collect_js_string_bindings(text: &str) -> (HashMap<String, String>, Vec<Strin
         let Some((expr_end, value)) = eval_js_string_expr(text, expr_start, &bindings)
             .or_else(|| parse_js_array_index_arg(text, expr_start, &arrays))
             .or_else(|| parse_js_array_method_arg(text, expr_start, &arrays))
+            .or_else(|| parse_js_array_join_arg(text, expr_start, &bindings, &arrays))
         else {
             continue;
         };
@@ -1036,6 +1037,7 @@ fn parse_js_decoder_string_arg(
     eval_js_string_expr(text, start, bindings)
         .or_else(|| parse_js_array_index_arg(text, start, arrays))
         .or_else(|| parse_js_array_method_arg(text, start, arrays))
+        .or_else(|| parse_js_array_join_arg(text, start, bindings, arrays))
 }
 
 fn parse_js_array_index_arg(
@@ -1086,6 +1088,44 @@ fn parse_js_array_method_arg(
         return values.last().cloned().map(|value| (end, value));
     }
     None
+}
+
+fn parse_js_array_join_arg(
+    text: &str,
+    start: usize,
+    bindings: &HashMap<String, String>,
+    arrays: &HashMap<String, Vec<String>>,
+) -> Option<(usize, String)> {
+    let start = skip_ascii_ws(text, start);
+    if let Some((array_end, parts)) = parse_js_string_array_arg_at(text, start, bindings) {
+        return consume_js_array_join_chain(text, array_end, parts);
+    }
+
+    let (ident_end, name) = parse_js_identifier_at(text, start)?;
+    consume_js_array_join_chain(text, ident_end, arrays.get(name)?.clone())
+}
+
+fn consume_js_array_join_chain(
+    text: &str,
+    idx: usize,
+    mut parts: Vec<String>,
+) -> Option<(usize, String)> {
+    if let Some((join_end, sep)) = consume_js_string_arg_method(text, idx, "join") {
+        return join_js_string_parts(parts, &sep).map(|joined| (join_end, joined));
+    }
+
+    let after_reverse = consume_js_no_arg_method(text, idx, "reverse")?;
+    let (join_end, sep) = consume_js_string_arg_method(text, after_reverse, "join")?;
+    parts.reverse();
+    join_js_string_parts(parts, &sep).map(|joined| (join_end, joined))
+}
+
+fn join_js_string_parts(parts: Vec<String>, sep: &str) -> Option<String> {
+    if parts.len() > 128 || sep.len() > 64 || parts.iter().any(|part| part.len() > 8192) {
+        return None;
+    }
+    let joined = parts.join(sep);
+    (joined.len() <= 8192).then_some(joined)
 }
 
 fn find_js_call_comma(text: &str, mut cursor: usize) -> Option<usize> {
