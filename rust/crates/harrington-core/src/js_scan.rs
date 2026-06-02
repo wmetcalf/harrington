@@ -764,6 +764,7 @@ fn collect_js_string_bindings(text: &str) -> (HashMap<String, String>, Vec<Strin
         }
         let Some((expr_end, value)) = eval_js_string_expr(text, expr_start, &bindings)
             .or_else(|| parse_js_array_index_arg(text, expr_start, &arrays))
+            .or_else(|| parse_js_array_method_arg(text, expr_start, &arrays))
         else {
             continue;
         };
