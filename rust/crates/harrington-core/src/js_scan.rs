@@ -33,6 +33,14 @@ static JS_FROMCHARCODE_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static JS_FROMCHARCODE_MEMBER_VAR_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)String\s*\[\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\]\s*\(\s*([0-9xa-f+\-\s,]{5,8192})\s*\)"#,
+    )
+    .expect("js fromCharCode member variable")
+});
+
+#[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_APPLY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)String\s*(?:\.\s*fromCharCode|\[\s*['"]fromCharCode['"]\s*\])\s*\.\s*apply\s*\(\s*[^,\r\n]{0,128},\s*\[\s*([0-9xa-f+\-\s,]{5,8192})\s*\]\s*\)"#,
@@ -237,7 +245,7 @@ fn percent_decode_lenient(text: &str) -> String {
 }
 
 fn decoded_js_fromcharcode_literals(text: &str) -> Vec<String> {
-    JS_FROMCHARCODE_RE
+    let mut out: Vec<String> = JS_FROMCHARCODE_RE
         .captures_iter(text)
         .chain(JS_FROMCHARCODE_APPLY_RE.captures_iter(text))
         .chain(JS_FROMCHARCODE_APPLY_ARRAY_CTOR_RE.captures_iter(text))
@@ -245,7 +253,21 @@ fn decoded_js_fromcharcode_literals(text: &str) -> Vec<String> {
         .chain(JS_FROMCHARCODE_SPREAD_ARRAY_RE.captures_iter(text))
         .chain(JS_FROMCHARCODE_SPREAD_ARRAY_CTOR_RE.captures_iter(text))
         .filter_map(|caps| decode_js_fromcharcode_args(caps.get(1)?.as_str()))
-        .collect()
+        .collect();
+
+    let (bindings, _) = collect_js_string_bindings(text);
+    for caps in JS_FROMCHARCODE_MEMBER_VAR_RE.captures_iter(text).take(128) {
+        let (Some(name), Some(nums)) = (caps.get(1), caps.get(2)) else {
+            continue;
+        };
+        if bindings.get(name.as_str()).map(String::as_str) != Some("fromCharCode") {
+            continue;
+        }
+        if let Some(decoded) = decode_js_fromcharcode_args(nums.as_str()) {
+            out.push(decoded);
+        }
+    }
+    out
 }
 
 fn decode_js_fromcharcode_args(nums: &str) -> Option<String> {
@@ -526,6 +548,11 @@ fn decoded_js_array_join_literals(text: &str) -> Vec<String> {
 }
 
 fn decoded_js_string_bindings(text: &str) -> Vec<String> {
+    let (_, values) = collect_js_string_bindings(text);
+    values
+}
+
+fn collect_js_string_bindings(text: &str) -> (HashMap<String, String>, Vec<String>) {
     let mut bindings = HashMap::new();
     let mut values = Vec::new();
     for caps in JS_ASSIGN_RE.captures_iter(text).take(256) {
@@ -555,7 +582,7 @@ fn decoded_js_string_bindings(text: &str) -> Vec<String> {
         bindings.insert(name.to_string(), value.clone());
         values.push(value);
     }
-    values
+    (bindings, values)
 }
 
 fn parse_js_string_array_at(text: &str, start: usize) -> Option<(usize, Vec<String>)> {
