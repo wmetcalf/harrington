@@ -914,20 +914,20 @@ fn parse_js_string_expr_term(
     bindings: &HashMap<String, String>,
 ) -> Option<(usize, String)> {
     if let Some((end, value)) = parse_js_string_literal_at(text, start) {
-        return Some(consume_js_replace_chain(text, end, value));
+        return Some(consume_js_string_transform_chain(text, end, value));
     }
     if let Some((end, value)) = parse_js_atob_call_at(text, start, bindings) {
-        return Some(consume_js_replace_chain(text, end, value));
+        return Some(consume_js_string_transform_chain(text, end, value));
     }
     if let Some((end, value)) = parse_js_percent_call_at(text, start, bindings) {
-        return Some(consume_js_replace_chain(text, end, value));
+        return Some(consume_js_string_transform_chain(text, end, value));
     }
 
     let (end, name) = parse_js_identifier_at(text, start)?;
     bindings
         .get(name)
         .cloned()
-        .map(|value| consume_js_replace_chain(text, end, value))
+        .map(|value| consume_js_string_transform_chain(text, end, value))
 }
 
 fn parse_js_percent_call_at(
@@ -1221,6 +1221,28 @@ fn join_js_string_parts(parts: Vec<String>, sep: &str) -> Option<String> {
     }
     let joined = parts.join(sep);
     (joined.len() <= 8192).then_some(joined)
+}
+
+fn consume_js_string_transform_chain(text: &str, idx: usize, value: String) -> (usize, String) {
+    let (idx, value) = consume_js_replace_chain(text, idx, value);
+    consume_js_split_reverse_join_chain(text, idx, &value).unwrap_or((idx, value))
+}
+
+fn consume_js_split_reverse_join_chain(
+    text: &str,
+    idx: usize,
+    value: &str,
+) -> Option<(usize, String)> {
+    let (after_split, split_arg) = consume_js_string_arg_method(text, idx, "split")?;
+    if !split_arg.is_empty() {
+        return None;
+    }
+    let after_reverse = consume_js_no_arg_method(text, after_split, "reverse")?;
+    let (after_join, join_arg) = consume_js_string_arg_method(text, after_reverse, "join")?;
+    if !join_arg.is_empty() || value.len() > 8192 {
+        return None;
+    }
+    Some((after_join, value.chars().rev().collect()))
 }
 
 fn find_js_call_comma(text: &str, mut cursor: usize) -> Option<usize> {
