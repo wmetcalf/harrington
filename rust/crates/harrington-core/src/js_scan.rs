@@ -1014,8 +1014,13 @@ fn parse_js_string_decoder_call_method_arg(
     }
     let (arg_end, name) = parse_js_identifier_at(text, arg_start)?;
     let arrays = collect_js_string_array_bindings(text, bindings);
-    let parts = arrays.get(name)?;
-    (parts.len() == 1).then(|| (arg_end, parts[0].clone()))
+    let mut parts = arrays.get(name)?.clone();
+    let mut end = arg_end;
+    if let Some((slice_end, sliced)) = consume_js_slice_call(text, arg_end, &parts) {
+        end = slice_end;
+        parts = sliced;
+    }
+    (parts.len() == 1).then(|| (end, parts[0].clone()))
 }
 
 fn parse_js_string_or_bound_arg(
