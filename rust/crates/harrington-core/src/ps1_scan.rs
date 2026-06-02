@@ -958,8 +958,9 @@ fn expand_ps_dot_replace(text: &str) -> String {
 
 #[allow(clippy::expect_used)]
 static JOIN_RE: Lazy<Regex> = Lazy::new(|| {
-    // (?:'a','b','c') -join 'sep'   — outer parens optional
-    Regex::new(r#"\(?\s*((?:'[^'\\]*(?:\\.[^'\\]*)*'\s*,\s*)+'[^'\\]*(?:\\.[^'\\]*)*')\s*\)?\s*-join\s*'([^'\\]*(?:\\.[^'\\]*)*)'"#)
+    // (?:'a','b','c') -join 'sep' or @('a','b','c') -join 'sep'
+    // Outer parens are optional for the bare array form.
+    Regex::new(r#"@?\(?\s*((?:'[^'\\]*(?:\\.[^'\\]*)*'\s*,\s*)+'[^'\\]*(?:\\.[^'\\]*)*')\s*\)?\s*-join\s*'([^'\\]*(?:\\.[^'\\]*)*)'"#)
         .expect("join")
 });
 
@@ -1132,7 +1133,7 @@ static PS_VAR_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
 
 #[allow(clippy::expect_used)]
 static PS_ARRAY_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*((?:'[^'\\]*(?:\\.[^'\\]*)*'\s*,\s*)+'[^'\\]*(?:\\.[^'\\]*)*')"#)
+    Regex::new(r#"\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*@?\(?\s*((?:'[^'\\]*(?:\\.[^'\\]*)*'\s*,\s*)+'[^'\\]*(?:\\.[^'\\]*)*')\s*\)?"#)
         .expect("ps array assign")
 });
 
