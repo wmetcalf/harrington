@@ -446,7 +446,7 @@ where
                 continue;
             }
             let arg_start = skip_ascii_ws(text, open + 1);
-            match parse_js_string_or_bound_or_array_arg(text, arg_start, &bindings, &arrays) {
+            match parse_js_decoder_string_arg(text, arg_start, &bindings, &arrays) {
                 Some(parsed) => parsed,
                 None => {
                     cursor = ident_end;
@@ -923,7 +923,7 @@ fn parse_js_percent_call_at(
                 continue;
             }
             let arg_start = skip_ascii_ws(text, open + 1);
-            parse_js_string_or_bound_or_array_arg(text, arg_start, bindings, &arrays)?
+            parse_js_decoder_string_arg(text, arg_start, bindings, &arrays)?
         };
         let close = skip_ascii_ws(text, arg_end);
         if text.as_bytes().get(close) != Some(&b')') {
@@ -952,7 +952,7 @@ fn parse_js_atob_call_at(
             return None;
         }
         let arg_start = skip_ascii_ws(text, open + 1);
-        parse_js_string_or_bound_or_array_arg(text, arg_start, bindings, &arrays)?
+        parse_js_decoder_string_arg(text, arg_start, bindings, &arrays)?
     };
     let close = skip_ascii_ws(text, arg_end);
     if text.as_bytes().get(close) != Some(&b')') {
@@ -970,7 +970,7 @@ fn parse_js_string_decoder_call_method_arg(
         let comma = find_js_call_comma(text, skip_ascii_ws(text, open + 1))?;
         let arg_start = skip_ascii_ws(text, comma + 1);
         let arrays = collect_js_string_array_bindings(text, bindings);
-        return parse_js_string_or_bound_or_array_arg(text, arg_start, bindings, &arrays);
+        return parse_js_decoder_string_arg(text, arg_start, bindings, &arrays);
     }
 
     let open = consume_js_method_open(text, callee_end, "apply")?;
@@ -1002,13 +1002,13 @@ fn parse_js_string_or_bound_arg(
     }
 }
 
-fn parse_js_string_or_bound_or_array_arg(
+fn parse_js_decoder_string_arg(
     text: &str,
     start: usize,
     bindings: &HashMap<String, String>,
     arrays: &HashMap<String, Vec<String>>,
 ) -> Option<(usize, String)> {
-    parse_js_string_or_bound_arg(text, start, bindings)
+    eval_js_string_expr(text, start, bindings)
         .or_else(|| parse_js_array_index_arg(text, start, arrays))
 }
 

