@@ -1224,8 +1224,43 @@ fn join_js_string_parts(parts: Vec<String>, sep: &str) -> Option<String> {
 }
 
 fn consume_js_string_transform_chain(text: &str, idx: usize, value: String) -> (usize, String) {
-    let (idx, value) = consume_js_replace_chain(text, idx, value);
+    let (mut idx, mut value) = consume_js_replace_chain(text, idx, value);
+    if let Some((slice_end, sliced)) = consume_js_string_slice_call(text, idx, &value) {
+        idx = slice_end;
+        value = sliced;
+    }
     consume_js_split_reverse_join_chain(text, idx, &value).unwrap_or((idx, value))
+}
+
+fn consume_js_string_slice_call(text: &str, idx: usize, value: &str) -> Option<(usize, String)> {
+    let open = consume_js_method_open(text, idx, "slice")?;
+    let mut cursor = skip_ascii_ws(text, open + 1);
+    let len = value.chars().count();
+
+    let (start_end, start_arg) = parse_js_signed_integer_at(text, cursor)?;
+    cursor = skip_ascii_ws(text, start_end);
+
+    let mut end_arg = None;
+    if text.as_bytes().get(cursor) == Some(&b',') {
+        cursor = skip_ascii_ws(text, cursor + 1);
+        if text.as_bytes().get(cursor) != Some(&b')') {
+            let (end_end, parsed_end) = parse_js_signed_integer_at(text, cursor)?;
+            end_arg = Some(parsed_end);
+            cursor = skip_ascii_ws(text, end_end);
+        }
+    }
+
+    if text.as_bytes().get(cursor) != Some(&b')') {
+        return None;
+    }
+
+    let start = js_slice_bound(start_arg, len);
+    let end = end_arg
+        .map(|arg| js_slice_bound(arg, len))
+        .unwrap_or(len)
+        .max(start);
+    let sliced: String = value.chars().skip(start).take(end - start).collect();
+    (sliced.len() <= 8192).then_some((cursor + 1, sliced))
 }
 
 fn consume_js_split_reverse_join_chain(
