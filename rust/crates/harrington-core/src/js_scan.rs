@@ -914,20 +914,26 @@ fn parse_js_string_expr_term(
     bindings: &HashMap<String, String>,
 ) -> Option<(usize, String)> {
     if let Some((end, value)) = parse_js_string_literal_at(text, start) {
-        return Some(consume_js_string_transform_chain(text, end, value));
+        return Some(consume_js_string_transform_chain(
+            text, end, value, bindings,
+        ));
     }
     if let Some((end, value)) = parse_js_atob_call_at(text, start, bindings) {
-        return Some(consume_js_string_transform_chain(text, end, value));
+        return Some(consume_js_string_transform_chain(
+            text, end, value, bindings,
+        ));
     }
     if let Some((end, value)) = parse_js_percent_call_at(text, start, bindings) {
-        return Some(consume_js_string_transform_chain(text, end, value));
+        return Some(consume_js_string_transform_chain(
+            text, end, value, bindings,
+        ));
     }
 
     let (end, name) = parse_js_identifier_at(text, start)?;
     bindings
         .get(name)
         .cloned()
-        .map(|value| consume_js_string_transform_chain(text, end, value))
+        .map(|value| consume_js_string_transform_chain(text, end, value, bindings))
 }
 
 fn parse_js_percent_call_at(
@@ -1223,7 +1229,12 @@ fn join_js_string_parts(parts: Vec<String>, sep: &str) -> Option<String> {
     (joined.len() <= 8192).then_some(joined)
 }
 
-fn consume_js_string_transform_chain(text: &str, idx: usize, value: String) -> (usize, String) {
+fn consume_js_string_transform_chain(
+    text: &str,
+    idx: usize,
+    value: String,
+    bindings: &HashMap<String, String>,
+) -> (usize, String) {
     let mut idx = idx;
     let mut value = value;
     for _ in 0..16 {
@@ -1235,7 +1246,12 @@ fn consume_js_string_transform_chain(text: &str, idx: usize, value: String) -> (
         }
         value = replaced;
 
-        if let Some((trim_end, trimmed)) = consume_js_string_trim_call(text, idx, &value) {
+        if let Some((concat_end, concatenated)) =
+            consume_js_string_concat_call(text, idx, &value, bindings)
+        {
+            idx = concat_end;
+            value = concatenated;
+        } else if let Some((trim_end, trimmed)) = consume_js_string_trim_call(text, idx, &value) {
             idx = trim_end;
             value = trimmed;
         } else if let Some((slice_end, sliced)) = consume_js_string_slice_call(text, idx, &value) {
@@ -1264,6 +1280,38 @@ fn consume_js_string_transform_chain(text: &str, idx: usize, value: String) -> (
         }
     }
     (idx, value)
+}
+
+fn consume_js_string_concat_call(
+    text: &str,
+    idx: usize,
+    value: &str,
+    bindings: &HashMap<String, String>,
+) -> Option<(usize, String)> {
+    let open = consume_js_method_open(text, idx, "concat")?;
+    let mut cursor = skip_ascii_ws(text, open + 1);
+    let mut out = value.to_string();
+    let mut args = 0usize;
+
+    if text.as_bytes().get(cursor) == Some(&b')') {
+        return Some((cursor + 1, out));
+    }
+
+    loop {
+        let (arg_end, arg) = eval_js_string_expr(text, cursor, bindings)?;
+        out.push_str(&arg);
+        args += 1;
+        if args > 32 || out.len() > 8192 {
+            return None;
+        }
+
+        cursor = skip_ascii_ws(text, arg_end);
+        match text.as_bytes().get(cursor) {
+            Some(b',') => cursor = skip_ascii_ws(text, cursor + 1),
+            Some(b')') => return Some((cursor + 1, out)),
+            _ => return None,
+        }
+    }
 }
 
 fn consume_js_string_trim_call(text: &str, idx: usize, value: &str) -> Option<(usize, String)> {
