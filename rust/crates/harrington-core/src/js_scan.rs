@@ -1238,7 +1238,7 @@ fn consume_js_string_transform_chain(
     let mut idx = idx;
     let mut value = value;
     for _ in 0..16 {
-        let (replace_end, replaced) = consume_js_replace_chain(text, idx, value);
+        let (replace_end, replaced) = consume_js_replace_chain(text, idx, value, bindings);
         if replace_end != idx {
             idx = replace_end;
             value = replaced;
@@ -1577,9 +1577,16 @@ fn consume_js_string_arg_method(text: &str, idx: usize, name: &str) -> Option<(u
     Some((close + 1, arg))
 }
 
-fn consume_js_replace_chain(text: &str, mut idx: usize, mut value: String) -> (usize, String) {
+fn consume_js_replace_chain(
+    text: &str,
+    mut idx: usize,
+    mut value: String,
+    bindings: &HashMap<String, String>,
+) -> (usize, String) {
     let mut replacements = 0usize;
-    while let Some((next_idx, needle, replacement, global)) = consume_js_replace_call(text, idx) {
+    while let Some((next_idx, needle, replacement, global)) =
+        consume_js_replace_call(text, idx, bindings)
+    {
         value = apply_js_replacement(value, needle, &replacement, global);
         idx = next_idx;
         replacements += 1;
@@ -1647,6 +1654,7 @@ fn replace_js_whitespace(value: String, replacement: &str, global: bool) -> Stri
 fn consume_js_replace_call(
     text: &str,
     idx: usize,
+    bindings: &HashMap<String, String>,
 ) -> Option<(usize, JsReplaceNeedle, String, bool)> {
     let (open, force_global) = if let Some(open) = consume_js_method_open(text, idx, "replaceAll") {
         (open, true)
@@ -1654,23 +1662,24 @@ fn consume_js_replace_call(
         (consume_js_method_open(text, idx, "replace")?, false)
     };
     let first_start = skip_ascii_ws(text, open + 1);
-    let (first_end, needle, global) =
-        if let Some((first_end, first)) = parse_js_string_literal_at(text, first_start) {
-            (first_end, JsReplaceNeedle::Literal(first), false)
-        } else {
-            let (first_end, pattern, flags) = parse_js_regex_literal_at(text, first_start)?;
-            (
-                first_end,
-                regex_literal_pattern_to_replace_needle(&pattern)?,
-                flags.contains('g'),
-            )
-        };
+    let (first_end, needle, global) = if let Some((first_end, first)) =
+        parse_js_string_or_bound_arg(text, first_start, bindings)
+    {
+        (first_end, JsReplaceNeedle::Literal(first), false)
+    } else {
+        let (first_end, pattern, flags) = parse_js_regex_literal_at(text, first_start)?;
+        (
+            first_end,
+            regex_literal_pattern_to_replace_needle(&pattern)?,
+            flags.contains('g'),
+        )
+    };
     let comma = skip_ascii_ws(text, first_end);
     if text.as_bytes().get(comma) != Some(&b',') {
         return None;
     }
     let second_start = skip_ascii_ws(text, comma + 1);
-    let (second_end, second) = parse_js_string_literal_at(text, second_start)?;
+    let (second_end, second) = parse_js_string_or_bound_arg(text, second_start, bindings)?;
     let close = skip_ascii_ws(text, second_end);
     if text.as_bytes().get(close) != Some(&b')') {
         return None;
