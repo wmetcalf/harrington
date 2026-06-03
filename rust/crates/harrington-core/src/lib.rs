@@ -1226,6 +1226,42 @@ mod echo_tests {
     }
 
     #[test]
+    fn rdp_backdoor_setup_emits_remote_access_traits() {
+        let script = b"@echo off\r\n\
+            reg add \"HKLM\\system\\CurrentControlSet\\Control\\Terminal Server\" /v \"AllowTSConnections\" /t REG_DWORD /d 0x1 /f\r\n\
+            reg add \"HKLM\\system\\CurrentControlSet\\Control\\Terminal Server\" /v \"fDenyTSConnections\" /t REG_DWORD /d 0x0 /f\r\n\
+            reg add \"HKLM\\software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\\SpecialAccounts\\UserList\" /v defaultuserx /t REG_DWORD /d 0x0 /f\r\n\
+            netsh advfirewall firewall add rule name=\"Remote Desktop\" dir=in protocol=tcp localport=3389 action=allow\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+        for technique in ["rdp-enable", "hidden-user", "rdp-firewall-open"] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::RemoteAccess { technique: tk, .. } if tk == technique
+                )),
+                "missing RemoteAccess {technique}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn rdp_disable_settings_do_not_emit_remote_access_trait() {
+        let script = b"@echo off\r\n\
+            reg add \"HKLM\\system\\CurrentControlSet\\Control\\Terminal Server\" /v \"AllowTSConnections\" /t REG_DWORD /d 0x0 /f\r\n\
+            reg add \"HKLM\\system\\CurrentControlSet\\Control\\Terminal Server\" /v \"fDenyTSConnections\" /t REG_DWORD /d 0x1 /f\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, .. } if technique == "rdp-enable"
+            )),
+            "RDP disable settings should not be flagged: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn inmem_assembly_load_detected_in_extracted_ps_payload() {
         // SOSTENER/banglabillboard family: PS body decoded from base64
         // contains `[System.Reflection.Assembly]::Load(...)`. The
@@ -2503,6 +2539,9 @@ fn semantic_dedup_key(t: &Trait) -> Option<String> {
         Trait::UrlArgument { url, .. } => Some(format!("UrlArgument\0{url}")),
         Trait::UrlVariable { name, url, .. } => Some(format!("UrlVariable\0{name}\0{url}")),
         Trait::RemoteConnect { host, port, .. } => Some(format!("RemoteConnect\0{host}\0{port}")),
+        Trait::RemoteAccess {
+            technique, target, ..
+        } => Some(format!("RemoteAccess\0{technique}\0{target}")),
         Trait::RegistryUrl { value, url, .. } => Some(format!("RegistryUrl\0{value}\0{url}")),
         Trait::CertutilDownload { url, dst } => Some(format!("CertutilDownload\0{url}\0{dst}")),
         Trait::BitsadminDownload { url, dst } => Some(format!("BitsadminDownload\0{url}\0{dst}")),

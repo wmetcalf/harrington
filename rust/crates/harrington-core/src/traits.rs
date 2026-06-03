@@ -341,6 +341,14 @@ pub enum Trait {
         tool: String,
         target_host: String,
     },
+    /// Remote-access backdoor setup: enabling RDP/Terminal Server,
+    /// opening the Remote Desktop firewall rule, or hiding a local
+    /// account under Winlogon\SpecialAccounts\UserList.
+    RemoteAccess {
+        technique: String,
+        target: String,
+        command: String,
+    },
     /// Inline shellcode marker — typed as `[byte[]]` array or `\x90\x90...`
     /// NOP sled, or named `shellcode` variable. Surfaces shellcode-
     /// staging behaviour. MITRE T1027 (Obfuscated Files).

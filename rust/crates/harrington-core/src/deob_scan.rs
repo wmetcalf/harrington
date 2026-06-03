@@ -2608,6 +2608,91 @@ fn scan_remote_exec(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
+/// Remote-access backdoor setup: RDP enablement, Remote Desktop firewall
+/// opening, and Winlogon hidden-user registry entries.
+fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
+    use once_cell::sync::Lazy;
+    use regex::Regex;
+    static RDP_ENABLE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?im)^[^\r\n]*\breg(?:\.exe)?\s+add\s+["']?[^"'\r\n]*Terminal Server[^"'\r\n]*["']?[^\r\n]*/v\s+["']?(AllowTSConnections|fDenyTSConnections)["']?[^\r\n]*/d\s+(0x1|1|0x0|0)\b[^\r\n]*"#,
+        )
+        .expect("rdp enable regex")
+    });
+    static HIDDEN_USER_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?im)^[^\r\n]*\breg(?:\.exe)?\s+add\s+["']?[^"'\r\n]*Winlogon\\SpecialAccounts\\UserList["']?[^\r\n]*/v\s+["']?([^"'\s]+)["']?[^\r\n]*/d\s+(?:0x0|0)\b[^\r\n]*"#,
+        )
+        .expect("hidden user regex")
+    });
+    static RDP_FIREWALL_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?im)^[^\r\n]*\bnetsh\s+advfirewall\s+firewall\s+add\s+rule[^\r\n]*(?:Remote Desktop|localport\s*=\s*3389)[^\r\n]*action\s*=\s*allow[^\r\n]*"#,
+        )
+        .expect("rdp firewall regex")
+    });
+    let mut push = |technique: &str, target: String, command: String| {
+        if env.traits.iter().any(|t| {
+            matches!(
+                t,
+                crate::traits::Trait::RemoteAccess { technique: tk, target: tg, .. }
+                    if tk == technique && tg == &target
+            )
+        }) {
+            return;
+        }
+        env.traits.push(crate::traits::Trait::RemoteAccess {
+            technique: technique.to_string(),
+            target,
+            command,
+        });
+    };
+    for caps in RDP_ENABLE_RE.captures_iter(deobfuscated) {
+        let value_name = caps
+            .get(1)
+            .map(|m| m.as_str().to_ascii_lowercase())
+            .unwrap_or_default();
+        let value = caps
+            .get(2)
+            .map(|m| m.as_str().to_ascii_lowercase())
+            .unwrap_or_default();
+        let enables_rdp = match value_name.as_str() {
+            "allowtsconnections" => value == "1" || value == "0x1",
+            "fdenytsconnections" => value == "0" || value == "0x0",
+            _ => false,
+        };
+        if !enables_rdp {
+            continue;
+        }
+        let command = caps
+            .get(0)
+            .map(|m| m.as_str().trim().chars().take(200).collect())
+            .unwrap_or_default();
+        push("rdp-enable", "Terminal Server".to_string(), command);
+    }
+    for caps in HIDDEN_USER_RE.captures_iter(deobfuscated) {
+        let target = caps
+            .get(1)
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default();
+        if target.is_empty() {
+            continue;
+        }
+        let command = caps
+            .get(0)
+            .map(|m| m.as_str().trim().chars().take(200).collect())
+            .unwrap_or_default();
+        push("hidden-user", target, command);
+    }
+    for m in RDP_FIREWALL_RE.find_iter(deobfuscated) {
+        push(
+            "rdp-firewall-open",
+            "3389".to_string(),
+            m.as_str().trim().chars().take(200).collect(),
+        );
+    }
+}
+
 /// UAC bypass technique. MITRE T1548.002. Detects:
 /// - Auto-elevate-binary triggers (fodhelper/eventvwr/sdclt/computer-
 ///   defaults/wsreset) when paired with an `HKCU\Software\Classes\...\
@@ -2785,6 +2870,7 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     scan_input_capture(deobfuscated, env);
     scan_ransom_ext(deobfuscated, env);
     scan_remote_exec(deobfuscated, env);
+    scan_remote_access(deobfuscated, env);
     scan_uac_bypass(deobfuscated, env);
     scan_service_install(deobfuscated, env);
     scan_beacon_sleep(deobfuscated, env);
