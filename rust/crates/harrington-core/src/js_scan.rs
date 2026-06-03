@@ -1536,7 +1536,11 @@ fn consume_js_replace_chain(text: &str, mut idx: usize, mut value: String) -> (u
 }
 
 fn consume_js_replace_call(text: &str, idx: usize) -> Option<(usize, String, String, bool)> {
-    let open = consume_js_method_open(text, idx, "replace")?;
+    let (open, force_global) = if let Some(open) = consume_js_method_open(text, idx, "replaceAll") {
+        (open, true)
+    } else {
+        (consume_js_method_open(text, idx, "replace")?, false)
+    };
     let first_start = skip_ascii_ws(text, open + 1);
     let (first_end, needle, global) =
         if let Some((first_end, first)) = parse_js_string_literal_at(text, first_start) {
@@ -1559,7 +1563,7 @@ fn consume_js_replace_call(text: &str, idx: usize) -> Option<(usize, String, Str
     if text.as_bytes().get(close) != Some(&b')') {
         return None;
     }
-    Some((close + 1, needle, second, global))
+    Some((close + 1, needle, second, force_global || global))
 }
 
 fn parse_js_regex_literal_at(text: &str, start: usize) -> Option<(usize, String, String)> {
