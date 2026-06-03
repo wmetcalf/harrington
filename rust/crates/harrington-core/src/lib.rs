@@ -1299,6 +1299,38 @@ reg add \"HKCU\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v S
     }
 
     #[test]
+    fn defender_security_binary_tampering_emits_evasion_traits() {
+        let script = b"@echo off\r\n\
+            takeown /f \"C:\\Windows\\System32\\SecurityHealthService.exe\"\r\n\
+            icacls \"C:\\Windows\\System32\\SecurityHealthService.exe\" /grant:r \"%USERDOMAIN%\\%USERNAME%\":F /c\r\n\
+            rename C:\\Windows\\System32\\SecurityHealthSystray.exe Nurik.nes\r\n\
+            icacls \"C:\\Temp\\notes.txt\" /grant:r \"%USERNAME%\":F /c\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+        for action in [
+            "security-binary-takeown",
+            "security-binary-acl-grant",
+            "security-binary-rename",
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::DefenderEvasion { action: a, .. } if a == action
+                )),
+                "missing {action}: {:?}",
+                report.traits
+            );
+        }
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { target, .. } if target.contains("notes.txt")
+            )),
+            "generic icacls target should not be DefenderEvasion: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn defender_exclusion_target_does_not_cross_line_boundary() {
         let script = b"@echo off\r\n\
             powershell.exe -command \"Add-MpPreference -ExclusionPath \"C:\\\r\n\

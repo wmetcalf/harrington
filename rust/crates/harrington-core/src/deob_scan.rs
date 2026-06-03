@@ -1977,6 +1977,9 @@ fn scan_self_elevation(deobfuscated: &str, env: &mut Environment) {
 ///   `Set-MpPreference -MAPSReporting Disabled`
 ///   `sc stop WinDefend`  /  `sc config WinDefend start=disabled`
 ///   `taskkill /IM SecurityHealthSystray.exe /F`
+///   `takeown /f "C:\Windows\System32\SecurityHealthService.exe"`
+///   `icacls "C:\Windows\System32\SecurityHealthService.exe" /grant:r user:F`
+///   `rename C:\Windows\System32\SecurityHealthSystray.exe renamed.bin`
 ///   `netsh advfirewall set allprofiles state off`
 ///   `rmdir /s /q "C:\Program Files (x86)\Trend Micro"`
 fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
@@ -2006,6 +2009,18 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
     static TASKKILL_SECURITY_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?i)\btaskkill(?:\.exe)?\b[^\r\n]*?/im\s+"?(SecurityHealthSystray|SecurityHealthService|WindowsDefender|MsMpEng|NisSrv|MpCmdRun|MBAMService|MBAMTray|avastui|avgui|egui|ekrn|bdservicehost|SentinelAgent|CrowdStrike|CSFalconService)\.exe"?\b[^\r\n]*"#)
             .expect("taskkill security process")
+    });
+    static SECURITY_BINARY_TAKEOWN_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?i)\btakeown(?:\.exe)?\b[^\r\n]*(SecurityHealthService|SecurityHealthSystray|MsMpEng|NisSrv|MpCmdRun)\.exe\b[^\r\n]*"#)
+            .expect("security binary takeown")
+    });
+    static SECURITY_BINARY_ICACLS_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?i)\bicacls(?:\.exe)?\b[^\r\n]*(SecurityHealthService|SecurityHealthSystray|MsMpEng|NisSrv|MpCmdRun)\.exe\b[^\r\n]*/grant[^\r\n]*"#)
+            .expect("security binary icacls")
+    });
+    static SECURITY_BINARY_RENAME_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?i)\bren(?:ame)?(?:\.exe)?\b[^\r\n]*(SecurityHealthService|SecurityHealthSystray|MsMpEng|NisSrv|MpCmdRun)\.exe\b[^\r\n]*"#)
+            .expect("security binary rename")
     });
     static FIREWALL_OFF_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?i)netsh\s+advfirewall\s+set\s+(\w+)\s+state\s+off"#).expect("fw-off")
@@ -2110,6 +2125,27 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
             .map(|m| format!("{}.exe", m.as_str()))
             .unwrap_or_default();
         push("taskkill-security-process", process);
+    }
+    for caps in SECURITY_BINARY_TAKEOWN_RE.captures_iter(deobfuscated) {
+        let binary = caps
+            .get(1)
+            .map(|m| format!("{}.exe", m.as_str()))
+            .unwrap_or_default();
+        push("security-binary-takeown", binary);
+    }
+    for caps in SECURITY_BINARY_ICACLS_RE.captures_iter(deobfuscated) {
+        let binary = caps
+            .get(1)
+            .map(|m| format!("{}.exe", m.as_str()))
+            .unwrap_or_default();
+        push("security-binary-acl-grant", binary);
+    }
+    for caps in SECURITY_BINARY_RENAME_RE.captures_iter(deobfuscated) {
+        let binary = caps
+            .get(1)
+            .map(|m| format!("{}.exe", m.as_str()))
+            .unwrap_or_default();
+        push("security-binary-rename", binary);
     }
     for caps in FIREWALL_OFF_RE.captures_iter(deobfuscated) {
         let prof = caps
