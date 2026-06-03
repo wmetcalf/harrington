@@ -1108,7 +1108,8 @@ fn parse_js_typed_byte_array_arg(text: &str, start: usize) -> Option<(usize, Str
     if ctor_name != "Uint8Array" {
         return None;
     }
-    let open = skip_ascii_ws(text, cursor);
+    let open =
+        consume_js_method_open(text, cursor, "from").unwrap_or_else(|| skip_ascii_ws(text, cursor));
     if text.as_bytes().get(open) != Some(&b'(') {
         return None;
     }
