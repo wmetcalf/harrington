@@ -1837,7 +1837,7 @@ static PS_VAR_REPLACE_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
 /// Pre-pass over a PowerShell text: expand common obfuscation patterns so that
 /// subsequent URL-extraction regexes see literal strings.
 fn expand_obfuscation(text: &str) -> String {
-    let mut out = normalize_powershell_quotes(text);
+    let mut out = join_powershell_line_continuations(&normalize_powershell_quotes(text));
     for _ in 0..8 {
         let before = out.clone();
         out = expand_start_process_argument_list(&out);
@@ -1880,6 +1880,26 @@ fn expand_obfuscation(text: &str) -> String {
         out = expand_getstring_wrapper(&out);
         if out == before {
             break;
+        }
+    }
+    out
+}
+
+fn join_powershell_line_continuations(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for chunk in text.split_inclusive('\n') {
+        let (line, had_newline) = match chunk.strip_suffix('\n') {
+            Some(line) => (line.strip_suffix('\r').unwrap_or(line), true),
+            None => (chunk, false),
+        };
+        let continuation_end = line.trim_end_matches([' ', '\t']);
+        if let Some(prefix) = continuation_end.strip_suffix('`') {
+            out.push_str(prefix);
+            continue;
+        }
+        out.push_str(line);
+        if had_newline {
+            out.push('\n');
         }
     }
     out
@@ -2500,6 +2520,16 @@ static OUTER_FROMBASE64_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
 #[cfg(test)]
 mod herestring_iex_tests {
     use super::*;
+
+    #[test]
+    fn joins_backtick_line_continuations() {
+        let text = "Invoke-Web`  \r\nRequest -Uri http://x.example/p\nWrite-Host done";
+        assert_eq!(
+            join_powershell_line_continuations(text),
+            "Invoke-WebRequest -Uri http://x.example/p\nWrite-Host done"
+        );
+    }
+
     #[test]
     fn extracts_clean_herestring_replace_iex() {
         let text = "$myvar=@'\nthis is INNERSTRIP body\n'@\n$other=$myvar -replace 'INNERSTRIP',''\niex $other\n";
