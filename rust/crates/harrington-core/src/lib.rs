@@ -2850,6 +2850,8 @@ pub fn analyze(input: &[u8], cfg: &Config) -> Report {
             drive(input, &mut env, &mut out);
         }
         profile_mark!("drive");
+        out = summarize_large_pem_blocks(&out);
+        profile_mark!("summarize_pem");
         let raw_text = String::from_utf8_lossy(input);
         deob_scan::scan_embedded_powershell_invocations(&raw_text, &mut env);
         deob_scan::scan_embedded_powershell_invocations(&out, &mut env);
@@ -3933,6 +3935,70 @@ fn render_fast_long_plain_echo(cmd: &str, env: &mut Environment) -> Option<Strin
     ))
 }
 
+fn summarize_large_pem_blocks(text: &str) -> String {
+    const MIN_SUMMARY_BYTES: usize = 32 * 1024;
+
+    if !text.contains("-----BEGIN ") {
+        return text.to_string();
+    }
+
+    let mut out = String::with_capacity(text.len().min(128 * 1024));
+    let mut lines = text.split_inclusive('\n');
+    while let Some(line) = lines.next() {
+        let Some((end_marker, label)) = pem_end_marker(line) else {
+            out.push_str(line);
+            continue;
+        };
+
+        let begin_line = line;
+        let mut body_prefix = String::new();
+        let mut body_bytes = 0usize;
+        let mut end_line = None;
+        for body_line in lines.by_ref() {
+            if body_line.contains(end_marker) {
+                end_line = Some(body_line);
+                break;
+            }
+            body_bytes += body_line.len();
+            if body_bytes < MIN_SUMMARY_BYTES {
+                body_prefix.push_str(body_line);
+            }
+        }
+
+        let Some(end_line) = end_line else {
+            out.push_str(begin_line);
+            out.push_str(&body_prefix);
+            continue;
+        };
+
+        out.push_str(begin_line);
+        if body_bytes >= MIN_SUMMARY_BYTES {
+            out.push_str(&format!(
+                "::==== harrington: omitted {body_bytes} bytes from {label} body ====\r\n"
+            ));
+        } else {
+            out.push_str(&body_prefix);
+        }
+        out.push_str(end_line);
+    }
+    out
+}
+
+fn pem_end_marker(line: &str) -> Option<(&'static str, &'static str)> {
+    if line.contains("-----BEGIN NEW CERTIFICATE REQUEST-----") {
+        Some((
+            "-----END NEW CERTIFICATE REQUEST-----",
+            "certificate request",
+        ))
+    } else if line.contains("-----BEGIN CERTIFICATE REQUEST-----") {
+        Some(("-----END CERTIFICATE REQUEST-----", "certificate request"))
+    } else if line.contains("-----BEGIN CERTIFICATE-----") {
+        Some(("-----END CERTIFICATE-----", "certificate"))
+    } else {
+        None
+    }
+}
+
 fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
     // Depth cap check using env.limits
     if env.limits.depth >= env.limits.max_depth {
@@ -4432,6 +4498,61 @@ mod line_cap_tests {
                 .iter()
                 .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
             "URL hidden in summarized echo payload should be rescued: {:?}",
+            report.traits
+        );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod pem_summary_tests {
+    use crate::traits::Trait;
+    use crate::{analyze, Config};
+
+    #[test]
+    fn large_certificate_request_body_is_summarized_after_drive() {
+        let mut script = String::from(
+            "@echo off\r\ncertutil -decode \"%~f0\" out.exe\r\n-----BEGIN NEW CERTIFICATE REQUEST-----\r\n",
+        );
+        let body_line = "A".repeat(64);
+        for _ in 0..600 {
+            script.push_str(&body_line);
+            script.push_str("\r\n");
+        }
+        script.push_str("-----END NEW CERTIFICATE REQUEST-----\r\n");
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("harrington: omitted 39600 bytes from certificate request body"),
+            "large PEM body should be summarized, got {} bytes:\n{}",
+            report.deobfuscated.len(),
+            report.deobfuscated
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("-----BEGIN NEW CERTIFICATE REQUEST-----")
+                && report
+                    .deobfuscated
+                    .contains("-----END NEW CERTIFICATE REQUEST-----"),
+            "summary should preserve PEM boundaries:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report
+                .deobfuscated
+                .contains(&format!("{body_line}\r\n{body_line}\r\n{body_line}")),
+            "summarized output should not retain the full repeated body"
+        );
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::CertutilDecode { src, dst, .. } if src == "%~f0" && dst == "out.exe")),
+            "certutil trait should still be emitted: {:?}",
             report.traits
         );
     }
