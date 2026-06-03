@@ -2546,6 +2546,18 @@ mod herestring_iex_tests {
         assert_eq!(bodies.len(), 1, "got {:?}", bodies);
         assert_eq!(bodies[0], "this is  body");
     }
+
+    #[test]
+    fn inline_powershell_gate_ignores_copied_binary_path() {
+        let text = "copy /y c:\\windows\\syswow64\\windowspowershell\\v1.0\\powershell.exe script.bat.exe\nscript.bat.exe -enc AAAA";
+        assert!(!inline_powershell_text_has_payload_signal(text));
+    }
+
+    #[test]
+    fn inline_powershell_gate_allows_encoded_invocation() {
+        let text = "powershell.exe -enc AAAA";
+        assert!(inline_powershell_text_has_payload_signal(text));
+    }
 }
 
 /// Walk every entry in `env.all_extracted_ps1` looking for a one-shot
@@ -2792,12 +2804,7 @@ fn is_schemeless_ip_url(url: &str) -> bool {
 
 pub fn scan_inline_powershell_text(text: &str, env: &mut Environment) {
     let lower = text.to_ascii_lowercase();
-    if !lower.contains("powershell")
-        && !lower.contains("downloadstring")
-        && !lower.contains("downloadfile")
-        && !lower.contains("downloaddata")
-        && !lower.contains("callbyname")
-    {
+    if !inline_powershell_text_has_payload_signal(&lower) {
         return;
     }
     let known_downloads: std::collections::HashSet<String> = env
@@ -2826,4 +2833,29 @@ pub fn scan_inline_powershell_text(text: &str, env: &mut Environment) {
             Trait::Download { src, .. } => !known_downloads.contains(src),
             _ => true,
         }));
+}
+
+fn inline_powershell_text_has_payload_signal(lower: &str) -> bool {
+    if lower.contains("downloadstring")
+        || lower.contains("downloadfile")
+        || lower.contains("downloaddata")
+        || lower.contains("callbyname")
+    {
+        return true;
+    }
+
+    lower.lines().any(|line| {
+        (line.contains("powershell") || line.contains("pwsh"))
+            && (line.contains("-enc")
+                || line.contains("/enc")
+                || line.contains("-encodedcommand")
+                || line.contains("/encodedcommand")
+                || line.contains("-command")
+                || line.contains("/command")
+                || line.contains(" -c ")
+                || line.contains(" /c ")
+                || line.contains("http://")
+                || line.contains("https://")
+                || line.contains("iex "))
+    })
 }

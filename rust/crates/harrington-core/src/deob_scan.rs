@@ -3534,6 +3534,73 @@ pub fn scan_embedded_powershell_invocations(text: &str, env: &mut Environment) {
     dedup_exec_ps1(env);
 }
 
+pub fn scan_renamed_powershell_invocations(text: &str, env: &mut Environment) {
+    let mut aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for line in text.lines() {
+        let words = split_words(line);
+        if words.len() < 3 {
+            continue;
+        }
+        let command = command_basename(&words[0]);
+        if command != "copy" && command != "xcopy" {
+            continue;
+        }
+
+        let mut saw_powershell_source = false;
+        for word in words.iter().skip(1) {
+            let lower = word.to_ascii_lowercase();
+            if lower.starts_with('/') || lower.starts_with('-') {
+                continue;
+            }
+            if command_basename(word) == "powershell.exe" {
+                saw_powershell_source = true;
+                continue;
+            }
+            if saw_powershell_source {
+                aliases.insert(command_basename(word));
+                break;
+            }
+        }
+    }
+
+    if aliases.is_empty() {
+        return;
+    }
+
+    for line in text.lines() {
+        let words = split_words(line);
+        let Some(command) = words.first() else {
+            continue;
+        };
+        if !aliases.contains(&command_basename(command)) {
+            continue;
+        }
+        if !looks_like_embedded_powershell_payload(line) {
+            continue;
+        }
+        let rest = line
+            .get(command.len()..)
+            .map(str::trim_start)
+            .unwrap_or_default();
+        let replay = if rest.is_empty() {
+            "powershell.exe".to_string()
+        } else {
+            format!("powershell.exe {rest}")
+        };
+        crate::handlers::powershell::h_powershell(&replay, env);
+    }
+    dedup_exec_ps1(env);
+}
+
+fn command_basename(word: &str) -> String {
+    word.trim_matches('"')
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(word)
+        .to_ascii_lowercase()
+}
+
 fn looks_like_embedded_powershell_payload(tail: &str) -> bool {
     let lower = tail.to_ascii_lowercase();
     // Structural signal — a flag shorthand or download-verb at command
