@@ -1251,6 +1251,8 @@ fn consume_js_string_transform_chain(
         {
             idx = concat_end;
             value = concatenated;
+        } else if let Some(noop_end) = consume_js_string_noop_call(text, idx) {
+            idx = noop_end;
         } else if let Some((trim_end, trimmed)) = consume_js_string_trim_call(text, idx, &value) {
             idx = trim_end;
             value = trimmed;
@@ -1280,6 +1282,11 @@ fn consume_js_string_transform_chain(
         }
     }
     (idx, value)
+}
+
+fn consume_js_string_noop_call(text: &str, idx: usize) -> Option<usize> {
+    consume_js_no_arg_method(text, idx, "toString")
+        .or_else(|| consume_js_no_arg_method(text, idx, "valueOf"))
 }
 
 fn consume_js_string_concat_call(
