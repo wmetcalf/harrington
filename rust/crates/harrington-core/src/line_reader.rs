@@ -66,7 +66,8 @@ pub fn read_logical_lines(input: &[u8]) -> Vec<String> {
         // strip trailing \n and optional \r
         let line = raw.strip_suffix('\n').unwrap_or(raw);
         let line = line.strip_suffix('\r').unwrap_or(line);
-        if let Some(prefix) = line.strip_suffix('^') {
+        let continuation_end = line.trim_end_matches([' ', '\t']);
+        if let Some(prefix) = continuation_end.strip_suffix('^') {
             accum.push_str(prefix);
         } else {
             accum.push_str(line);

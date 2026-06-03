@@ -106,6 +106,15 @@ mod line_reader_tests {
     }
 
     #[test]
+    fn caret_continuation_allows_trailing_whitespace() {
+        let input = b"echo first ^  \r\nsecond\r\n";
+        assert_eq!(
+            read_logical_lines(input),
+            vec!["echo first second".to_string()]
+        );
+    }
+
+    #[test]
     fn caret_continuation_chain() {
         let input = b"a^\nb^\nc\n";
         assert_eq!(read_logical_lines(input), vec!["abc".to_string()]);
@@ -1326,6 +1335,53 @@ reg add \"HKCU\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v S
                 Trait::DefenderEvasion { target, .. } if target.contains("notes.txt")
             )),
             "generic icacls target should not be DefenderEvasion: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn defender_scheduled_task_disable_emits_evasion_trait() {
+        let script = b"@echo off\r\n\
+            schtasks /Change /TN \"Microsoft\\Windows\\Windows Defender\\Windows Defender Scheduled Scan\" /Disable\r\n\
+            schtasks /Change /TN \"Microsoft\\Windows\\ExploitGuard\\ExploitGuard MDM policy Refresh\" /Disable\r\n\
+            schtasks /Change /TN \"Microsoft\\Windows\\Windows Defender\\Windows Defender Verification\" /Enable\r\n\
+            schtasks /Change /TN \"\\User\\Maintenance\" /Disable\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+        let defender_tasks: Vec<&str> = report
+            .traits
+            .iter()
+            .filter_map(|t| {
+                if let Trait::DefenderEvasion { action, target } = t {
+                    (action == "scheduled-task-disable").then_some(target.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(
+            defender_tasks
+                .iter()
+                .any(|t| t.contains("Windows Defender Scheduled Scan")),
+            "missing Defender task disable: {:?}",
+            report.traits
+        );
+        assert!(
+            defender_tasks
+                .iter()
+                .any(|t| t.contains("ExploitGuard MDM policy Refresh")),
+            "missing ExploitGuard task disable: {:?}",
+            report.traits
+        );
+        assert!(
+            !defender_tasks
+                .iter()
+                .any(|t| t.contains("Windows Defender Verification")),
+            "enabled Defender task should not be evasion: {:?}",
+            report.traits
+        );
+        assert!(
+            !defender_tasks.iter().any(|t| t.contains("Maintenance")),
+            "unrelated task disable should not be DefenderEvasion: {:?}",
             report.traits
         );
     }

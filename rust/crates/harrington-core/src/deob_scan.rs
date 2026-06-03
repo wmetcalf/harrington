@@ -1980,6 +1980,7 @@ fn scan_self_elevation(deobfuscated: &str, env: &mut Environment) {
 ///   `takeown /f "C:\Windows\System32\SecurityHealthService.exe"`
 ///   `icacls "C:\Windows\System32\SecurityHealthService.exe" /grant:r user:F`
 ///   `rename C:\Windows\System32\SecurityHealthSystray.exe renamed.bin`
+///   `schtasks /Change /TN "Microsoft\Windows\Windows Defender\..." /Disable`
 ///   `netsh advfirewall set allprofiles state off`
 ///   `rmdir /s /q "C:\Program Files (x86)\Trend Micro"`
 fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
@@ -2021,6 +2022,10 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
     static SECURITY_BINARY_RENAME_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?i)\bren(?:ame)?(?:\.exe)?\b[^\r\n]*(SecurityHealthService|SecurityHealthSystray|MsMpEng|NisSrv|MpCmdRun)\.exe\b[^\r\n]*"#)
             .expect("security binary rename")
+    });
+    static SCHTASKS_TN_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?i)(?:^|\s)/tn\s+(?:"([^"\r\n]+)"|([^\s\r\n]+))"#)
+            .expect("schtasks task name")
     });
     static FIREWALL_OFF_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?i)netsh\s+advfirewall\s+set\s+(\w+)\s+state\s+off"#).expect("fw-off")
@@ -2146,6 +2151,22 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
             .map(|m| format!("{}.exe", m.as_str()))
             .unwrap_or_default();
         push("security-binary-rename", binary);
+    }
+    for line in deobfuscated.lines() {
+        let lower = line.to_ascii_lowercase();
+        if !lower.contains("schtasks")
+            || !lower.contains("/change")
+            || !lower.contains("/disable")
+            || (!lower.contains("windows defender") && !lower.contains("exploitguard"))
+        {
+            continue;
+        }
+        let task_name = SCHTASKS_TN_RE
+            .captures(line)
+            .and_then(|caps| caps.get(1).or_else(|| caps.get(2)))
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_else(|| line.trim().chars().take(160).collect());
+        push("scheduled-task-disable", task_name);
     }
     for caps in FIREWALL_OFF_RE.captures_iter(deobfuscated) {
         let prof = caps
