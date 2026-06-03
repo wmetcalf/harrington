@@ -1145,9 +1145,18 @@ fn parse_js_new_buffer_base64_call_at(
     if text.as_bytes().get(open) != Some(&b'(') {
         return None;
     }
-    let (buffer_end, encoded, encoding) = parse_js_buffer_base64_args(text, open, bindings)?;
+    let (buffer_end, decoded) = if let Some((buffer_end, decoded)) =
+        parse_js_buffer_byte_array_arg(text, open, &collect_js_byte_array_bindings(text))
+    {
+        (buffer_end, decoded)
+    } else {
+        let (buffer_end, encoded, encoding) = parse_js_buffer_base64_args(text, open, bindings)?;
+        (
+            buffer_end,
+            decode_js_buffer_base64_string(&encoded, encoding)?,
+        )
+    };
     let tostring_end = consume_js_to_string_optional_arg(text, buffer_end, bindings)?;
-    let decoded = decode_js_buffer_base64_string(&encoded, encoding)?;
     Some(consume_js_string_transform_chain(
         text,
         tostring_end,
