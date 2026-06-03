@@ -1220,11 +1220,13 @@ reg add \"HKCU\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v S
     fn defender_evasion_traits_detected() {
         // Common AV-evasion patterns: Add-MpPreference exclusion,
         // Set-MpPreference -DisableRealtimeMonitoring $true, sc stop
-        // WinDefend, netsh advfirewall set allprofiles state off, and
-        // recursive removal of known AV product directories.
+        // WinDefend, taskkill of security processes, netsh advfirewall
+        // set allprofiles state off, and recursive removal of known AV
+        // product directories.
         let script = b"@echo off\r\n\
             powershell -c \"Add-MpPreference -ExclusionPath 'C:\\Users\\me\\AppData' ; Set-MpPreference -DisableRealtimeMonitoring $true ; Set-MpPreference -MAPSReporting Disabled\"\r\n\
             sc stop WinDefend\r\n\
+            taskkill /IM SecurityHealthSystray.exe /F\r\n\
             netsh advfirewall set allprofiles state off\r\n\
             rmdir /s /q \"C:\\Program Files (x86)\\Trend Micro\" >> C:\\DISKLOG.TXT\r\n";
         let report = analyze(script, &AnalyzeConfig::default());
@@ -1248,6 +1250,10 @@ reg add \"HKCU\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v S
             "missing rtp disable: {actions:?}"
         );
         assert!(actions.contains(&"sc-stop"), "missing sc-stop: {actions:?}");
+        assert!(
+            actions.contains(&"taskkill-security-process"),
+            "missing taskkill-security-process: {actions:?}"
+        );
         assert!(
             actions.contains(&"netsh-fw-off"),
             "missing netsh-fw-off: {actions:?}"
@@ -1274,6 +1280,20 @@ reg add \"HKCU\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v S
                     if action == "regset-disablebehaviormonitoring"
             )),
             "Defender reg-tamper not flagged: traits={:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn generic_taskkill_does_not_emit_defender_evasion_trait() {
+        let script = b"@echo off\r\ntaskkill /f /im WINWORD.EXE\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, .. } if action == "taskkill-security-process"
+            )),
+            "generic taskkill should not be DefenderEvasion: {:?}",
             report.traits
         );
     }

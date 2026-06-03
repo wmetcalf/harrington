@@ -1976,6 +1976,7 @@ fn scan_self_elevation(deobfuscated: &str, env: &mut Environment) {
 ///   `Set-MpPreference -SubmitSamplesConsent 2`
 ///   `Set-MpPreference -MAPSReporting Disabled`
 ///   `sc stop WinDefend`  /  `sc config WinDefend start=disabled`
+///   `taskkill /IM SecurityHealthSystray.exe /F`
 ///   `netsh advfirewall set allprofiles state off`
 ///   `rmdir /s /q "C:\Program Files (x86)\Trend Micro"`
 fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
@@ -2001,6 +2002,10 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
     static SC_DEFENDER_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?i)sc(?:\.exe)?\s+(stop|config|delete)\s+(WinDefend|MsMpSvc|wuauserv|MpsSvc|WdNisSvc)"#)
             .expect("sc-defender")
+    });
+    static TASKKILL_SECURITY_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?i)\btaskkill(?:\.exe)?\b[^\r\n]*?/im\s+"?(SecurityHealthSystray|SecurityHealthService|WindowsDefender|MsMpEng|NisSrv|MpCmdRun|MBAMService|MBAMTray|avastui|avgui|egui|ekrn|bdservicehost|SentinelAgent|CrowdStrike|CSFalconService)\.exe"?\b[^\r\n]*"#)
+            .expect("taskkill security process")
     });
     static FIREWALL_OFF_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?i)netsh\s+advfirewall\s+set\s+(\w+)\s+state\s+off"#).expect("fw-off")
@@ -2098,6 +2103,13 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
             .map(|m| m.as_str().to_string())
             .unwrap_or_default();
         push(&format!("sc-{verb}"), svc);
+    }
+    for caps in TASKKILL_SECURITY_RE.captures_iter(deobfuscated) {
+        let process = caps
+            .get(1)
+            .map(|m| format!("{}.exe", m.as_str()))
+            .unwrap_or_default();
+        push("taskkill-security-process", process);
     }
     for caps in FIREWALL_OFF_RE.captures_iter(deobfuscated) {
         let prof = caps
