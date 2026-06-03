@@ -1059,6 +1059,14 @@ fn parse_js_buffer_byte_array_arg(
     arrays: &HashMap<String, String>,
 ) -> Option<(usize, String)> {
     let arg_start = skip_ascii_ws(text, open + 1);
+    if let Some((array_end, decoded)) = parse_js_typed_byte_array_arg(text, arg_start) {
+        let close = skip_ascii_ws(text, array_end);
+        if text.as_bytes().get(close) != Some(&b')') {
+            return None;
+        }
+        return Some((close + 1, decoded));
+    }
+
     if let Some((ident_end, name)) = parse_js_identifier_at(text, arg_start) {
         let close = skip_ascii_ws(text, ident_end);
         if text.as_bytes().get(close) != Some(&b')') {
@@ -1071,6 +1079,41 @@ fn parse_js_buffer_byte_array_arg(
     }
 
     let array_open = arg_start;
+    let (array_close, decoded) = parse_js_byte_array_literal_at(text, array_open)?;
+    let close = skip_ascii_ws(text, array_close);
+    if text.as_bytes().get(close) != Some(&b')') {
+        return None;
+    }
+    Some((close + 1, decoded))
+}
+
+fn parse_js_typed_byte_array_arg(text: &str, start: usize) -> Option<(usize, String)> {
+    let (mut cursor, first_name) = parse_js_identifier_at(text, start)?;
+    let ctor_name = if first_name == "new" {
+        cursor = skip_ascii_ws(text, cursor);
+        let (ctor_end, ctor_name) = parse_js_identifier_at(text, cursor)?;
+        cursor = ctor_end;
+        ctor_name
+    } else {
+        first_name
+    };
+    if ctor_name != "Uint8Array" {
+        return None;
+    }
+    let open = skip_ascii_ws(text, cursor);
+    if text.as_bytes().get(open) != Some(&b'(') {
+        return None;
+    }
+    let array_open = skip_ascii_ws(text, open + 1);
+    let (array_close, decoded) = parse_js_byte_array_literal_at(text, array_open)?;
+    let close = skip_ascii_ws(text, array_close);
+    if text.as_bytes().get(close) != Some(&b')') {
+        return None;
+    }
+    Some((close + 1, decoded))
+}
+
+fn parse_js_byte_array_literal_at(text: &str, array_open: usize) -> Option<(usize, String)> {
     if text.as_bytes().get(array_open) != Some(&b'[') {
         return None;
     }
@@ -1084,11 +1127,7 @@ fn parse_js_buffer_byte_array_arg(
     {
         return None;
     }
-    let close = skip_ascii_ws(text, array_close + 1);
-    if text.as_bytes().get(close) != Some(&b')') {
-        return None;
-    }
-    decode_js_byte_array_args(nums).map(|decoded| (close + 1, decoded))
+    decode_js_byte_array_args(nums).map(|decoded| (array_close + 1, decoded))
 }
 
 fn collect_js_byte_array_bindings(text: &str) -> HashMap<String, String> {
