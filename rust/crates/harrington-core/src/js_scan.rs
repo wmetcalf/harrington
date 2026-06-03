@@ -157,6 +157,7 @@ pub fn scan_js_payloads(env: &mut Environment) {
         candidates.extend(decoded_js_fromcharcode_literals(&concat_resolved));
         candidates.extend(decoded_js_fromcharcode_array_bindings(&concat_resolved));
         candidates.extend(decoded_js_atob_literals(&concat_resolved));
+        candidates.extend(decoded_js_buffer_from_base64_literals(&concat_resolved));
         candidates.extend(decoded_js_atob_alias_calls(&concat_resolved));
         candidates.extend(decoded_js_bound_decoder_calls(&concat_resolved));
         candidates.extend(decoded_js_split_reverse_join_literals(&concat_resolved));
@@ -405,6 +406,31 @@ fn decoded_js_atob_literals(text: &str) -> Vec<String> {
 fn decoded_js_atob_alias_calls(text: &str) -> Vec<String> {
     let aliases = collect_js_decoder_aliases(text, "atob");
     decoded_js_decoder_alias_calls(text, &aliases, decode_js_base64_string)
+}
+
+fn decoded_js_buffer_from_base64_literals(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let (bindings, _) = collect_js_string_bindings(text);
+    let mut cursor = 0usize;
+    while cursor < text.len() && out.len() < 128 {
+        let Some((ident_end, _)) = parse_js_identifier_at(text, cursor) else {
+            cursor += text[cursor..]
+                .chars()
+                .next()
+                .map(char::len_utf8)
+                .unwrap_or(1);
+            continue;
+        };
+        if let Some((call_end, decoded)) =
+            parse_js_buffer_from_base64_call_at(text, cursor, &bindings)
+        {
+            out.push(decoded);
+            cursor = call_end;
+            continue;
+        }
+        cursor = ident_end;
+    }
+    out
 }
 
 fn decoded_js_decoder_alias_calls<F>(
@@ -994,6 +1020,66 @@ fn parse_js_atob_call_at(
         return None;
     }
     decode_js_base64_string(&encoded).map(|decoded| (close + 1, decoded))
+}
+
+fn parse_js_buffer_from_base64_call_at(
+    text: &str,
+    start: usize,
+    bindings: &HashMap<String, String>,
+) -> Option<(usize, String)> {
+    let (buffer_end, name) = parse_js_identifier_at(text, start)?;
+    if name != "Buffer" {
+        return None;
+    }
+    let open = consume_js_method_open(text, buffer_end, "from")?;
+    let arg_start = skip_ascii_ws(text, open + 1);
+    let arrays = collect_js_string_array_bindings(text, bindings);
+    let (arg_end, encoded) = parse_js_decoder_string_arg(text, arg_start, bindings, &arrays)?;
+    let comma = skip_ascii_ws(text, arg_end);
+    if text.as_bytes().get(comma) != Some(&b',') {
+        return None;
+    }
+    let encoding_start = skip_ascii_ws(text, comma + 1);
+    let (encoding_end, encoding) = parse_js_string_or_bound_arg(text, encoding_start, bindings)?;
+    if !encoding.eq_ignore_ascii_case("base64") {
+        return None;
+    }
+    let close = skip_ascii_ws(text, encoding_end);
+    if text.as_bytes().get(close) != Some(&b')') {
+        return None;
+    }
+    let tostring_end = consume_js_to_string_optional_arg(text, close + 1, bindings)?;
+    let decoded = decode_js_base64_string(&encoded)?;
+    Some(consume_js_string_transform_chain(
+        text,
+        tostring_end,
+        decoded,
+        bindings,
+    ))
+}
+
+fn consume_js_to_string_optional_arg(
+    text: &str,
+    idx: usize,
+    bindings: &HashMap<String, String>,
+) -> Option<usize> {
+    let open = consume_js_method_open(text, idx, "toString")?;
+    let mut cursor = skip_ascii_ws(text, open + 1);
+    if text.as_bytes().get(cursor) == Some(&b')') {
+        return Some(cursor + 1);
+    }
+    let (arg_end, encoding) = parse_js_string_or_bound_arg(text, cursor, bindings)?;
+    if !matches!(
+        encoding.to_ascii_lowercase().as_str(),
+        "utf8" | "utf-8" | "ascii" | "latin1" | "binary"
+    ) {
+        return None;
+    }
+    cursor = skip_ascii_ws(text, arg_end);
+    if text.as_bytes().get(cursor) != Some(&b')') {
+        return None;
+    }
+    Some(cursor + 1)
 }
 
 fn parse_js_string_decoder_call_method_arg(
