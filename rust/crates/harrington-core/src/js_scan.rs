@@ -423,6 +423,7 @@ fn decoded_js_buffer_from_base64_literals(text: &str) -> Vec<String> {
         };
         if let Some((call_end, decoded)) =
             parse_js_buffer_from_base64_call_at(text, cursor, &bindings)
+                .or_else(|| parse_js_new_buffer_base64_call_at(text, cursor, &bindings))
         {
             out.push(decoded);
             cursor = call_end;
@@ -1032,6 +1033,51 @@ fn parse_js_buffer_from_base64_call_at(
         return None;
     }
     let open = consume_js_method_open(text, buffer_end, "from")?;
+    let (buffer_end, encoded) = parse_js_buffer_base64_args(text, open, bindings)?;
+    let tostring_end = consume_js_to_string_optional_arg(text, buffer_end, bindings)?;
+    let decoded = decode_js_base64_string(&encoded)?;
+    Some(consume_js_string_transform_chain(
+        text,
+        tostring_end,
+        decoded,
+        bindings,
+    ))
+}
+
+fn parse_js_new_buffer_base64_call_at(
+    text: &str,
+    start: usize,
+    bindings: &HashMap<String, String>,
+) -> Option<(usize, String)> {
+    let (new_end, new_name) = parse_js_identifier_at(text, start)?;
+    if new_name != "new" {
+        return None;
+    }
+    let buffer_start = skip_ascii_ws(text, new_end);
+    let (buffer_end, buffer_name) = parse_js_identifier_at(text, buffer_start)?;
+    if buffer_name != "Buffer" {
+        return None;
+    }
+    let open = skip_ascii_ws(text, buffer_end);
+    if text.as_bytes().get(open) != Some(&b'(') {
+        return None;
+    }
+    let (buffer_end, encoded) = parse_js_buffer_base64_args(text, open, bindings)?;
+    let tostring_end = consume_js_to_string_optional_arg(text, buffer_end, bindings)?;
+    let decoded = decode_js_base64_string(&encoded)?;
+    Some(consume_js_string_transform_chain(
+        text,
+        tostring_end,
+        decoded,
+        bindings,
+    ))
+}
+
+fn parse_js_buffer_base64_args(
+    text: &str,
+    open: usize,
+    bindings: &HashMap<String, String>,
+) -> Option<(usize, String)> {
     let arg_start = skip_ascii_ws(text, open + 1);
     let arrays = collect_js_string_array_bindings(text, bindings);
     let (arg_end, encoded) = parse_js_decoder_string_arg(text, arg_start, bindings, &arrays)?;
@@ -1048,14 +1094,7 @@ fn parse_js_buffer_from_base64_call_at(
     if text.as_bytes().get(close) != Some(&b')') {
         return None;
     }
-    let tostring_end = consume_js_to_string_optional_arg(text, close + 1, bindings)?;
-    let decoded = decode_js_base64_string(&encoded)?;
-    Some(consume_js_string_transform_chain(
-        text,
-        tostring_end,
-        decoded,
-        bindings,
-    ))
+    Some((close + 1, encoded))
 }
 
 fn consume_js_to_string_optional_arg(
