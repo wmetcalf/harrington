@@ -31,27 +31,16 @@ pub fn h_bitsadmin(raw: &str, env: &mut Environment) {
         }
         // Job name (first positional after /transfer) — skip if URL not yet seen
         // and current token doesn't look like a URL. Case-insensitive +
-        // tolerate Windows-liberal slashes (`http:\\` / `http:/`).
-        let tl = t.to_ascii_lowercase();
-        let is_url_like = |s: &str| -> bool {
-            for scheme in &["http:", "https:", "ftp:"] {
-                if let Some(rest) = s.strip_prefix(scheme) {
-                    let c = rest.chars().next();
-                    if matches!(c, Some('/') | Some('\\')) {
-                        return true;
-                    }
-                }
-            }
-            false
-        };
-        if !tl.starts_with("http") && !tl.starts_with("ftp") && url.is_none() && !t.starts_with('/')
-        {
+        // tolerate Windows-liberal slashes (`http:\\` / `http:/`) plus the
+        // corpus-observed BITS shape `domain.tld/path` with no scheme.
+        let maybe_url = normalize_bitsadmin_url_token(t);
+        if maybe_url.is_none() && url.is_none() && !t.starts_with('/') {
             // This is the job name; skip it.
             i += 1;
             continue;
         }
-        if is_url_like(&tl) && url.is_none() {
-            url = Some(strip_quotes(t).to_string());
+        if let (None, Some(normalized)) = (&url, maybe_url) {
+            url = Some(normalized);
             i += 1;
             continue;
         }
@@ -82,4 +71,11 @@ fn strip_quotes(s: &str) -> &str {
         return &s[1..s.len() - 1];
     }
     s
+}
+
+fn normalize_bitsadmin_url_token(token: &str) -> Option<String> {
+    if let Some(url) = crate::deob_scan::normalize_liberal_url_token(token) {
+        return Some(url);
+    }
+    crate::deob_scan::normalize_schemeless_domain_path_token(token)
 }

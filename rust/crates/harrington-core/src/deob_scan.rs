@@ -418,6 +418,25 @@ pub(crate) fn normalize_liberal_url_token(token: &str) -> Option<String> {
     None
 }
 
+pub(crate) fn normalize_schemeless_domain_path_token(token: &str) -> Option<String> {
+    let token = strip_quotes(token).trim();
+    let token = token.trim_end_matches(['.', ',', ';', ':', '\\']);
+    let (host, path) = token.split_once('/')?;
+    if host.is_empty() || path.is_empty() || host.contains('\\') || host.contains(':') {
+        return None;
+    }
+    if !host.split('.').all(|label| {
+        !label.is_empty() && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    }) {
+        return None;
+    }
+    let tld = host.rsplit('.').next()?;
+    if host.contains('.') && tld.len() >= 2 && tld.chars().all(|c| c.is_ascii_alphabetic()) {
+        return Some(format!("http://{host}/{path}"));
+    }
+    None
+}
+
 pub(crate) fn looks_like_liberal_url(token: &str) -> bool {
     normalize_liberal_url_token(token).is_some()
 }
@@ -466,7 +485,9 @@ fn scan_bitsadmin_deob_text(deobfuscated: &str, env: &mut Environment) {
                     i += 1;
                     continue;
                 }
-                if let Some(url) = normalize_liberal_url_token(&token) {
+                if let Some(url) = normalize_liberal_url_token(&token)
+                    .or_else(|| normalize_schemeless_domain_path_token(&token))
+                {
                     let dst = tokens
                         .get(i + 1)
                         .map(|s| strip_quotes(s).to_string())

