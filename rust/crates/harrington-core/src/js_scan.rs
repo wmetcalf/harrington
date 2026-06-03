@@ -1108,6 +1108,19 @@ fn parse_js_typed_byte_array_arg(text: &str, start: usize) -> Option<(usize, Str
     if ctor_name != "Uint8Array" {
         return None;
     }
+    if let Some(open) = consume_js_method_open(text, cursor, "of") {
+        let close = text[open + 1..].find(')')? + open + 1;
+        let nums = &text[open + 1..close];
+        if nums.len() > 8192
+            || !nums.chars().all(|ch| {
+                ch.is_ascii_hexdigit()
+                    || matches!(ch, 'x' | 'X' | '+' | '-' | ',' | ' ' | '\t' | '\r' | '\n')
+            })
+        {
+            return None;
+        }
+        return decode_js_byte_array_args(nums).map(|decoded| (close + 1, decoded));
+    }
     let open =
         consume_js_method_open(text, cursor, "from").unwrap_or_else(|| skip_ascii_ws(text, cursor));
     if text.as_bytes().get(open) != Some(&b'(') {
