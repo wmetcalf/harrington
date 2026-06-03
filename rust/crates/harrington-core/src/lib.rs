@@ -7321,10 +7321,21 @@ $urlzip = "https://ps.example/stage.zip""#,
                 )
             })
             .count();
+        let has_powercat_connect = report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::RemoteConnect { host, port, .. } if host == "1.2.3.4" && *port == 2080
+            )
+        });
         assert_eq!(clean_download_count, 1, "traits: {:?}", report.traits);
         assert_eq!(
             noisy_sweep_count, 0,
             "escaped quote URL double-emitted by sweep: {:?}",
+            report.traits
+        );
+        assert!(
+            has_powercat_connect,
+            "powercat reverse connect not emitted: {:?}",
             report.traits
         );
     }
