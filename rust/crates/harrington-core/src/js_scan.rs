@@ -447,7 +447,14 @@ fn parse_js_textdecoder_decode_call_at(text: &str, start: usize) -> Option<(usiz
     }
     let decode_open = consume_js_method_open(text, close + 1, "decode")?;
     let arg_start = skip_ascii_ws(text, decode_open + 1);
-    let (arg_end, decoded) = parse_js_typed_byte_array_arg(text, arg_start)?;
+    let arrays = collect_js_byte_array_bindings(text);
+    let (arg_end, decoded) =
+        if let Some((arg_end, decoded)) = parse_js_typed_byte_array_arg(text, arg_start) {
+            (arg_end, decoded)
+        } else {
+            let (ident_end, name) = parse_js_identifier_at(text, arg_start)?;
+            (ident_end, arrays.get(name)?.clone())
+        };
     let decode_close = skip_ascii_ws(text, arg_end);
     if text.as_bytes().get(decode_close) != Some(&b')') {
         return None;
