@@ -1118,6 +1118,30 @@ mod echo_tests {
     }
 
     #[test]
+    fn uac_policy_weakening_emits_uac_bypass_traits() {
+        let script = b"@echo off\r\n\
+            reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System\" /v \"EnableLUA\" /t REG_DWORD /d 0 /f\r\n\
+            REG ADD HKLM\\software\\microsoft\\windows\\currentversion\\policies\\system /v ConsentPromptBehaviorAdmin /t REG_DWORD /d 0 /f\r\n\
+            reg add HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\system /v LocalAccountTokenFilterPolicy /t REG_DWORD /d 1 /f\r\n\
+            powershell.exe New-ItemProperty -Path HKLM:Software\\Microsoft\\Windows\\CurrentVersion\\policies\\system -Name EnableLUA -PropertyType DWord -Value 0 -Force\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+        for technique in [
+            "uac-enablelua-disabled",
+            "uac-consent-prompt-disabled",
+            "uac-token-filter-disabled",
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::UacBypass { technique: tk } if tk == technique
+                )),
+                "missing UacBypass {technique}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn reg_add_run_key_emits_persistence_trait() {
         // `reg add HKCU\…\Run /v X /d "C:\dropper.exe" /f` is the
         // classic registry-Run persistence. Surface as Persistence

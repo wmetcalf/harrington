@@ -2822,6 +2822,9 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
 ///   the hijacked command from HKCU and runs it elevated).
 /// - cmstp /au (silent INF install with admin token)
 /// - msconfig /4 (legacy UAC bypass)
+/// - UAC policy weakening (`EnableLUA=0`,
+///   `ConsentPromptBehaviorAdmin=0`,
+///   `LocalAccountTokenFilterPolicy=1`)
 fn scan_uac_bypass(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
@@ -2836,6 +2839,22 @@ fn scan_uac_bypass(deobfuscated: &str, env: &mut Environment) {
             (Regex::new(r"(?i)\bmsconfig\s+/4\b").unwrap(), "msconfig-4"),
             (Regex::new(r"(?i)HKCU\\Software\\Classes\\(?:ms-settings|Folder|exefile|mscfile)\\Shell\\Open\\command").unwrap(), "classes-shell-open-hijack"),
             (Regex::new(r"(?i)IColorDataProxy|ICMLuaUtil").unwrap(), "com-elevation"),
+            (
+                Regex::new(r#"(?i)\breg(?:\.exe)?\s+add[^\r\n]*\\Policies\\System[^\r\n]*/v\s+["']?EnableLUA["']?[^\r\n]*/d\s+["']?0["']?\b"#).unwrap(),
+                "uac-enablelua-disabled",
+            ),
+            (
+                Regex::new(r#"(?i)\bNew-ItemProperty\b[^\r\n]*Policies\\system[^\r\n]*-Name\s+EnableLUA[^\r\n]*-Value\s+0\b"#).unwrap(),
+                "uac-enablelua-disabled",
+            ),
+            (
+                Regex::new(r#"(?i)\breg(?:\.exe)?\s+add[^\r\n]*\\Policies\\System[^\r\n]*/v\s+["']?ConsentPromptBehaviorAdmin["']?[^\r\n]*/d\s+["']?0["']?\b"#).unwrap(),
+                "uac-consent-prompt-disabled",
+            ),
+            (
+                Regex::new(r#"(?i)\breg(?:\.exe)?\s+add[^\r\n]*\\Policies\\System[^\r\n]*/v\s+["']?LocalAccountTokenFilterPolicy["']?[^\r\n]*/d\s+["']?1["']?\b"#).unwrap(),
+                "uac-token-filter-disabled",
+            ),
         ]
     });
     for (re, tech) in PATTERNS.iter() {
