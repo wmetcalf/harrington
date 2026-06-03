@@ -179,36 +179,45 @@ pub fn scan_js_payloads(env: &mut Environment) {
         if env.check_deadline() {
             break;
         }
-        // Second pass: collapse "a"+"b"+"c" concat
-        let concat_resolved = expand_js_string_concat(&decoded);
+        let has_js_signal = js_decoder_signal(&decoded);
+        // Second pass: collapse "a"+"b"+"c" concat when the payload has
+        // JavaScript obfuscation vocabulary. This parser is intentionally
+        // skipped for misclassified VBScript bodies.
+        let concat_resolved = if has_js_signal {
+            expand_js_string_concat(&decoded)
+        } else {
+            decoded
+        };
         let mut candidates = vec![concat_resolved.clone()];
-        candidates.extend(decoded_js_percent_literals(&concat_resolved));
-        if env.check_deadline() {
-            break;
+        if has_js_signal {
+            candidates.extend(decoded_js_percent_literals(&concat_resolved));
+            if env.check_deadline() {
+                break;
+            }
+            candidates.extend(decoded_js_percent_alias_calls(&concat_resolved));
+            candidates.extend(decoded_js_fromcharcode_literals(&concat_resolved));
+            if env.check_deadline() {
+                break;
+            }
+            candidates.extend(decoded_js_fromcharcode_array_bindings(&concat_resolved));
+            candidates.extend(decoded_js_textdecoder_literals(&concat_resolved));
+            if env.check_deadline() {
+                break;
+            }
+            candidates.extend(decoded_js_atob_literals(&concat_resolved));
+            candidates.extend(decoded_js_buffer_from_base64_literals(&concat_resolved));
+            candidates.extend(decoded_js_atob_alias_calls(&concat_resolved));
+            if env.check_deadline() {
+                break;
+            }
+            candidates.extend(decoded_js_bound_decoder_calls(&concat_resolved));
+            candidates.extend(decoded_js_split_reverse_join_literals(&concat_resolved));
+            candidates.extend(decoded_js_array_from_reverse_join_literals(
+                &concat_resolved,
+            ));
+            candidates.extend(decoded_js_array_join_literals(&concat_resolved));
+            candidates.extend(decoded_js_string_bindings(&concat_resolved));
         }
-        candidates.extend(decoded_js_percent_alias_calls(&concat_resolved));
-        candidates.extend(decoded_js_fromcharcode_literals(&concat_resolved));
-        if env.check_deadline() {
-            break;
-        }
-        candidates.extend(decoded_js_fromcharcode_array_bindings(&concat_resolved));
-        candidates.extend(decoded_js_textdecoder_literals(&concat_resolved));
-        if env.check_deadline() {
-            break;
-        }
-        candidates.extend(decoded_js_atob_literals(&concat_resolved));
-        candidates.extend(decoded_js_buffer_from_base64_literals(&concat_resolved));
-        candidates.extend(decoded_js_atob_alias_calls(&concat_resolved));
-        if env.check_deadline() {
-            break;
-        }
-        candidates.extend(decoded_js_bound_decoder_calls(&concat_resolved));
-        candidates.extend(decoded_js_split_reverse_join_literals(&concat_resolved));
-        candidates.extend(decoded_js_array_from_reverse_join_literals(
-            &concat_resolved,
-        ));
-        candidates.extend(decoded_js_array_join_literals(&concat_resolved));
-        candidates.extend(decoded_js_string_bindings(&concat_resolved));
 
         // Now scan for URLs
         for candidate in candidates {
@@ -254,6 +263,29 @@ pub fn scan_js_payloads(env: &mut Environment) {
             }
         }
     }
+}
+
+fn js_decoder_signal(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    U_ESCAPE_RE.is_match(text)
+        || lower.contains("decodeuri")
+        || lower.contains("unescape")
+        || lower.contains("fromcharcode")
+        || lower.contains("textdecoder")
+        || lower.contains("uint8array")
+        || lower.contains("atob")
+        || lower.contains("buffer.from")
+        || lower.contains("new buffer")
+        || lower.contains(".split")
+        || lower.contains(".reverse")
+        || lower.contains(".join")
+        || lower.contains("array.from")
+        || lower.contains("array(")
+        || lower.contains("\" + \"")
+        || lower.contains("' + '")
+        || lower.contains("var ")
+        || lower.contains("let ")
+        || lower.contains("const ")
 }
 
 fn decoded_js_percent_literals(text: &str) -> Vec<String> {
@@ -2666,5 +2698,53 @@ mod tests {
             "deadline-expired scan still emitted Download: {:?}",
             env.traits
         );
+    }
+
+    #[test]
+    fn js_decoder_signal_skips_vbscript_wsman_blob() {
+        let vbs = r#"
+            Option Explicit
+            Private Function CreateSession(wsman, conStr, optDic, luar)
+                Dim shell
+                Set shell = CreateObject("WScript.Shell")
+                WScript.Echo "ready"
+            End Function
+        "#;
+
+        assert!(
+            !js_decoder_signal(vbs),
+            "VBScript host blob should not trigger expensive JS decoders"
+        );
+    }
+
+    #[test]
+    fn js_decoder_signal_ignores_windows_path_backslash_u() {
+        let vbs = r#"
+            plenista = ")'sbv." & sintomia & " \putratS\smargorP\uneM tratS\swodniW"
+            pteracanto = "[System.IO.File]::Copy('" & serpentes & "', 'C:\Users\' + [Environment]::UserName)"
+        "#;
+
+        assert!(
+            !js_decoder_signal(vbs),
+            "Windows path backslash-u should not trigger JS Unicode escape scanning"
+        );
+    }
+
+    #[test]
+    fn js_decoder_signal_covers_supported_obfuscators() {
+        for sample in [
+            r#"eval("\u0068\u0074\u0074\u0070")"#,
+            r#"eval(unescape("%68%74%74%70%3a%2f%2fexample"))"#,
+            r#"eval(String.fromCharCode(104,116,116,112))"#,
+            r#"eval(new TextDecoder().decode(new Uint8Array([104,116,116,112])))"#,
+            r#"eval(atob("aHR0cA=="))"#,
+            r#"eval(Buffer.from("aHR0cA==", "base64").toString())"#,
+            r#"var u = "ptth".split("").reverse().join("")"#,
+            r#"var u = Array.from("ptth").reverse().join("")"#,
+            r#"var u = ["ht", "tp"].join("")"#,
+            r#"eval("ht" + "tp")"#,
+        ] {
+            assert!(js_decoder_signal(sample), "missed signal: {sample}");
+        }
     }
 }
