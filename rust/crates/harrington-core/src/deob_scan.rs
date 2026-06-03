@@ -1982,6 +1982,7 @@ fn scan_self_elevation(deobfuscated: &str, env: &mut Environment) {
 ///   `rename C:\Windows\System32\SecurityHealthSystray.exe renamed.bin`
 ///   `schtasks /Change /TN "Microsoft\Windows\Windows Defender\..." /Disable`
 ///   `reg add HKLM\System\CurrentControlSet\Services\WinDefend /v Start /d 4`
+///   `reg add ...\Policies\Attachments /v SaveZoneInformation /d 2`
 ///   `netsh advfirewall set allprofiles state off`
 ///   `rmdir /s /q "C:\Program Files (x86)\Trend Micro"`
 fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
@@ -2031,6 +2032,10 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
     static DEFENDER_SERVICE_START_DISABLED_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?i)\breg(?:\.exe)?\s+add\b[^\r\n]*\\Services\\(WinDefend|WdBoot|WdFilter|WdNisDrv|WdNisSvc|SecurityHealthService|Sense)\b[^\r\n]*/v\s+"?Start"?\b[^\r\n]*/d\s+"?(?:0x)?4"?\b[^\r\n]*"#)
             .expect("defender service start disabled")
+    });
+    static ATTACHMENT_POLICY_WEAKEN_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?i)\breg(?:\.exe)?\s+add\b[^\r\n]*\\Policies\\(?:Attachments|Associations)\b[^\r\n]*/v\s+"?(LowRiskFileTypes|HideZoneInfoOnProperties|SaveZoneInformation)"?\b[^\r\n]*/d\s+"?([^"\r\n]+)"?[^\r\n]*"#)
+            .expect("attachment policy weaken")
     });
     static FIREWALL_OFF_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?i)netsh\s+advfirewall\s+set\s+(\w+)\s+state\s+off"#).expect("fw-off")
@@ -2179,6 +2184,24 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
             .map(|m| m.as_str().to_string())
             .unwrap_or_default();
         push("service-start-disabled", service);
+    }
+    for caps in ATTACHMENT_POLICY_WEAKEN_RE.captures_iter(deobfuscated) {
+        let value_name = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
+        let data = caps
+            .get(2)
+            .map(|m| m.as_str().trim_matches('"').to_ascii_lowercase())
+            .unwrap_or_default();
+        let weakens = match value_name.to_ascii_lowercase().as_str() {
+            "lowriskfiletypes" => [".exe", ".bat", ".cmd", ".reg", ".msi"]
+                .iter()
+                .any(|ext| data.contains(ext)),
+            "hidezoneinfoonproperties" => data == "1" || data == "0x1",
+            "savezoneinformation" => data == "2" || data == "0x2",
+            _ => false,
+        };
+        if weakens {
+            push("attachment-policy-weaken", value_name.to_string());
+        }
     }
     for caps in FIREWALL_OFF_RE.captures_iter(deobfuscated) {
         let prof = caps

@@ -1428,6 +1428,44 @@ reg add \"HKCU\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v S
     }
 
     #[test]
+    fn attachment_policy_weakening_emits_evasion_traits() {
+        let script = b"@echo off\r\n\
+            Reg Add \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Associations\" /v \"LowRiskFileTypes\" /t REG_SZ /d \".exe;.bat;.cmd;.reg;.msi;\" /f\r\n\
+            Reg Add \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Attachments\" /v \"HideZoneInfoOnProperties\" /t REG_DWORD /d \"1\" /f\r\n\
+            Reg Add \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Attachments\" /v \"SaveZoneInformation\" /t REG_DWORD /d \"2\" /f\r\n\
+            Reg Add \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Attachments\" /v \"SaveZoneInformation\" /t REG_DWORD /d \"1\" /f\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+        let targets: std::collections::HashSet<&str> = report
+            .traits
+            .iter()
+            .filter_map(|t| {
+                if let Trait::DefenderEvasion { action, target } = t {
+                    (action == "attachment-policy-weaken").then_some(target.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for target in [
+            "LowRiskFileTypes",
+            "HideZoneInfoOnProperties",
+            "SaveZoneInformation",
+        ] {
+            assert!(
+                targets.contains(target),
+                "missing attachment policy weakening {target}: {:?}",
+                report.traits
+            );
+        }
+        assert_eq!(
+            targets.len(),
+            3,
+            "benign SaveZoneInformation value should not emit an extra trait: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn defender_exclusion_target_does_not_cross_line_boundary() {
         let script = b"@echo off\r\n\
             powershell.exe -command \"Add-MpPreference -ExclusionPath \"C:\\\r\n\
