@@ -1385,15 +1385,21 @@ fn consume_js_split_reverse_join_chain(
     value: &str,
 ) -> Option<(usize, String)> {
     let (after_split, split_arg) = consume_js_string_arg_method(text, idx, "split")?;
-    if !split_arg.is_empty() {
+
+    if let Some(after_reverse) = consume_js_no_arg_method(text, after_split, "reverse") {
+        let (after_join, join_arg) = consume_js_string_arg_method(text, after_reverse, "join")?;
+        if !split_arg.is_empty() || !join_arg.is_empty() || value.len() > 8192 {
+            return None;
+        }
+        return Some((after_join, value.chars().rev().collect()));
+    }
+
+    let (after_join, join_arg) = consume_js_string_arg_method(text, after_split, "join")?;
+    if split_arg.is_empty() || split_arg.len() > 64 || join_arg.len() > 64 || value.len() > 8192 {
         return None;
     }
-    let after_reverse = consume_js_no_arg_method(text, after_split, "reverse")?;
-    let (after_join, join_arg) = consume_js_string_arg_method(text, after_reverse, "join")?;
-    if !join_arg.is_empty() || value.len() > 8192 {
-        return None;
-    }
-    Some((after_join, value.chars().rev().collect()))
+    let joined = value.split(&split_arg).collect::<Vec<_>>().join(&join_arg);
+    (joined.len() <= 8192).then_some((after_join, joined))
 }
 
 fn find_js_call_comma(text: &str, mut cursor: usize) -> Option<usize> {
