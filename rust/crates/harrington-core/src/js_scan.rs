@@ -1033,15 +1033,65 @@ fn parse_js_buffer_from_base64_call_at(
         return None;
     }
     let open = consume_js_method_open(text, buffer_end, "from")?;
-    let (buffer_end, encoded, encoding) = parse_js_buffer_base64_args(text, open, bindings)?;
+    let (buffer_end, decoded) = if let Some((buffer_end, decoded)) =
+        parse_js_buffer_byte_array_arg(text, open)
+    {
+        (buffer_end, decoded)
+    } else {
+        let (buffer_end, encoded, encoding) = parse_js_buffer_base64_args(text, open, bindings)?;
+        (
+            buffer_end,
+            decode_js_buffer_base64_string(&encoded, encoding)?,
+        )
+    };
     let tostring_end = consume_js_to_string_optional_arg(text, buffer_end, bindings)?;
-    let decoded = decode_js_buffer_base64_string(&encoded, encoding)?;
     Some(consume_js_string_transform_chain(
         text,
         tostring_end,
         decoded,
         bindings,
     ))
+}
+
+fn parse_js_buffer_byte_array_arg(text: &str, open: usize) -> Option<(usize, String)> {
+    let array_open = skip_ascii_ws(text, open + 1);
+    if text.as_bytes().get(array_open) != Some(&b'[') {
+        return None;
+    }
+    let array_close = text[array_open + 1..].find(']')? + array_open + 1;
+    let nums = &text[array_open + 1..array_close];
+    if nums.len() > 8192
+        || !nums.chars().all(|ch| {
+            ch.is_ascii_hexdigit()
+                || matches!(ch, 'x' | 'X' | '+' | '-' | ',' | ' ' | '\t' | '\r' | '\n')
+        })
+    {
+        return None;
+    }
+    let close = skip_ascii_ws(text, array_close + 1);
+    if text.as_bytes().get(close) != Some(&b')') {
+        return None;
+    }
+    decode_js_byte_array_args(nums).map(|decoded| (close + 1, decoded))
+}
+
+fn decode_js_byte_array_args(nums: &str) -> Option<String> {
+    let mut decoded = Vec::new();
+    for part in nums.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let value = eval_js_numeric_expr(part)?;
+        if value > u8::MAX as u32 {
+            return None;
+        }
+        decoded.push(value as u8);
+        if decoded.len() > 8192 {
+            return None;
+        }
+    }
+    (!decoded.is_empty()).then(|| String::from_utf8_lossy(&decoded).into_owned())
 }
 
 fn parse_js_new_buffer_base64_call_at(
