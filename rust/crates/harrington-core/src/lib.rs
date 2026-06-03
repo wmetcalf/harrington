@@ -1262,6 +1262,30 @@ mod echo_tests {
     }
 
     #[test]
+    fn rdp_session_relaxation_emits_remote_access_traits() {
+        let script = b"@echo off\r\n\
+            reg add \"HKLM\\software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v \"AllowMultipleTSSessions\" /t REG_DWORD /d 0x1 /f\r\n\
+            reg add \"HKLM\\system\\CurrentControlSet\\Control\\Terminal Server\" /v \"fSingleSessionPerUser\" /t REG_DWORD /d 0x0 /f\r\n\
+            reg add \"HKLM\\system\\CurrentControlSet\\Control\\Terminal Server\\WinStations\\RDP-Tcp\" /v \"MaxIdleTime\" /t REG_DWORD /d 0x0 /f\r\n\
+            reg add \"HKLM\\system\\CurrentControlSet\\Control\\Terminal Server\\WinStations\\RDP-Tcp\" /v \"MaxConnectionTime\" /t REG_DWORD /d 0x0 /f\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+        for technique in [
+            "rdp-multiple-sessions",
+            "rdp-single-session-disabled",
+            "rdp-timeout-disabled",
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::RemoteAccess { technique: tk, .. } if tk == technique
+                )),
+                "missing RemoteAccess {technique}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn net_user_add_and_localgroup_add_emit_account_modification_traits() {
         let script = b"@echo off\r\n\
             net user WDAGUtilltyAccount \"qv69t4p#Z0kE3\" /add\r\n\

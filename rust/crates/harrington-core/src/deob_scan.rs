@@ -2703,6 +2703,24 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
         )
         .expect("hidden user regex")
     });
+    static RDP_MULTIPLE_SESSIONS_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?im)^[^\r\n]*\breg(?:\.exe)?\s+add\s+["']?[^"'\r\n]*Winlogon["']?[^\r\n]*/v\s+["']?AllowMultipleTSSessions["']?[^\r\n]*/d\s+(?:0x1|1)\b[^\r\n]*"#,
+        )
+        .expect("rdp multiple sessions regex")
+    });
+    static RDP_SINGLE_SESSION_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?im)^[^\r\n]*\breg(?:\.exe)?\s+add\s+["']?[^"'\r\n]*Terminal Server[^"'\r\n]*["']?[^\r\n]*/v\s+["']?fSingleSessionPerUser["']?[^\r\n]*/d\s+(?:0x0|0)\b[^\r\n]*"#,
+        )
+        .expect("rdp single session regex")
+    });
+    static RDP_TIMEOUT_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?im)^[^\r\n]*\breg(?:\.exe)?\s+add\s+["']?[^"'\r\n]*Terminal Server\\WinStations\\RDP-Tcp["']?[^\r\n]*/v\s+["']?(MaxIdleTime|MaxConnectionTime)["']?[^\r\n]*/d\s+(?:0x0|0)\b[^\r\n]*"#,
+        )
+        .expect("rdp timeout regex")
+    });
     static RDP_FIREWALL_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
             r#"(?im)^[^\r\n]*\bnetsh\s+advfirewall\s+firewall\s+add\s+rule[^\r\n]*(?:Remote Desktop|localport\s*=\s*3389)[^\r\n]*action\s*=\s*allow[^\r\n]*"#,
@@ -2761,6 +2779,31 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
             .map(|m| m.as_str().trim().chars().take(200).collect())
             .unwrap_or_default();
         push("hidden-user", target, command);
+    }
+    for m in RDP_MULTIPLE_SESSIONS_RE.find_iter(deobfuscated) {
+        push(
+            "rdp-multiple-sessions",
+            "AllowMultipleTSSessions".to_string(),
+            m.as_str().trim().chars().take(200).collect(),
+        );
+    }
+    for m in RDP_SINGLE_SESSION_RE.find_iter(deobfuscated) {
+        push(
+            "rdp-single-session-disabled",
+            "fSingleSessionPerUser".to_string(),
+            m.as_str().trim().chars().take(200).collect(),
+        );
+    }
+    for caps in RDP_TIMEOUT_RE.captures_iter(deobfuscated) {
+        let target = caps
+            .get(1)
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_else(|| "RDP timeout".to_string());
+        let command = caps
+            .get(0)
+            .map(|m| m.as_str().trim().chars().take(200).collect())
+            .unwrap_or_default();
+        push("rdp-timeout-disabled", target, command);
     }
     for m in RDP_FIREWALL_RE.find_iter(deobfuscated) {
         push(
