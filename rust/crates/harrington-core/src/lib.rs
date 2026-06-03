@@ -3904,6 +3904,35 @@ fn rescue_truncated_urls(tail: &str, full_len: usize, env: &mut Environment) {
     }
 }
 
+fn render_fast_long_plain_echo(cmd: &str, env: &mut Environment) -> Option<String> {
+    let limit = env.limits.max_output_line_bytes;
+    if limit == 0 || cmd.len() as u64 <= limit {
+        return None;
+    }
+
+    let stripped = cmd.trim_start_matches(['@', ' ', '\t']);
+    if stripped
+        .bytes()
+        .any(|b| matches!(b, b'%' | b'!' | b'^' | b'&' | b'|' | b'<' | b'>'))
+    {
+        return None;
+    }
+
+    let payload = block_echo_payload(stripped)?;
+    if payload.len() < limit as usize {
+        return None;
+    }
+
+    env.traits.push(crate::traits::Trait::LineTruncated {
+        original_len: cmd.len() as u64,
+    });
+    rescue_truncated_urls(payload, cmd.len(), env);
+    Some(format!(
+        "::==== harrington: omitted {} bytes from long echo line ====",
+        payload.len()
+    ))
+}
+
 fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
     // Depth cap check using env.limits
     if env.limits.depth >= env.limits.max_depth {
@@ -4044,6 +4073,29 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
                 let normalized_capped = cap_line(normalized, env);
                 out.push_str(&normalized_capped);
                 out.push_str("\r\n");
+                continue;
+            }
+
+            if let Some(rendered) = render_fast_long_plain_echo(&cmd, env) {
+                if !line_output_elided {
+                    out.push_str(&rendered);
+                    out.push_str("\r\n");
+                }
+                if env.limits.max_output_bytes > 0
+                    && (out.len() as u64) >= env.limits.max_output_bytes
+                {
+                    if !env
+                        .traits
+                        .iter()
+                        .any(|t| matches!(t, Trait::OutputCapped { .. }))
+                    {
+                        env.traits.push(Trait::OutputCapped {
+                            bytes_at_cap: out.len() as u64,
+                        });
+                    }
+                    should_halt = true;
+                    break;
+                }
                 continue;
             }
 
@@ -4342,6 +4394,44 @@ mod line_cap_tests {
         assert!(
             rescued,
             "URL hidden past line cap should be rescued by analyze; traits: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn long_plain_echo_noise_is_summarized_and_tail_url_rescued() {
+        let url = "https://long-echo-tail.attacker.example/payload.bat";
+        let payload = format!("{} {url}", "A".repeat(4096));
+        let cmd = format!("echo {payload}");
+        let script = format!("{cmd}\r\n");
+        let cfg = Config {
+            max_output_line_bytes: 256,
+            ..Config::default()
+        };
+        let report = analyze(script.as_bytes(), &cfg);
+
+        assert!(
+            report.deobfuscated.contains(&format!(
+                "harrington: omitted {} bytes from long echo line",
+                payload.len()
+            )),
+            "long plain echo should be summarized, got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::LineTruncated { original_len } if *original_len == cmd.len() as u64)),
+            "expected LineTruncated for summarized echo line: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
+            "URL hidden in summarized echo payload should be rescued: {:?}",
             report.traits
         );
     }
