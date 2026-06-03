@@ -1099,6 +1099,7 @@ fn parse_js_buffer_base64_args(
 enum JsBufferEncoding {
     Base64,
     Base64Url,
+    Hex,
 }
 
 impl JsBufferEncoding {
@@ -1107,6 +1108,8 @@ impl JsBufferEncoding {
             Some(Self::Base64)
         } else if value.eq_ignore_ascii_case("base64url") {
             Some(Self::Base64Url)
+        } else if value.eq_ignore_ascii_case("hex") {
+            Some(Self::Hex)
         } else {
             None
         }
@@ -1117,6 +1120,7 @@ fn decode_js_buffer_base64_string(encoded: &str, encoding: JsBufferEncoding) -> 
     match encoding {
         JsBufferEncoding::Base64 => decode_js_base64_string(encoded),
         JsBufferEncoding::Base64Url => decode_js_base64url_string(encoded),
+        JsBufferEncoding::Hex => decode_js_hex_string(encoded),
     }
 }
 
@@ -1134,6 +1138,27 @@ fn decode_js_base64url_string(encoded: &str) -> Option<String> {
         })
         .collect();
     let decoded = decode_base64_maybe_unpadded(&cleaned)?;
+    (decoded.len() <= 8192).then(|| String::from_utf8_lossy(&decoded).into_owned())
+}
+
+fn decode_js_hex_string(encoded: &str) -> Option<String> {
+    if encoded.len() > 16384 {
+        return None;
+    }
+    let cleaned: String = encoded
+        .chars()
+        .filter(|c| !c.is_ascii_whitespace())
+        .collect();
+    if cleaned.len() % 2 != 0 {
+        return None;
+    }
+    let mut decoded = Vec::with_capacity(cleaned.len() / 2);
+    let mut chars = cleaned.chars();
+    while let (Some(hi), Some(lo)) = (chars.next(), chars.next()) {
+        let hi = hi.to_digit(16)?;
+        let lo = lo.to_digit(16)?;
+        decoded.push(((hi << 4) | lo) as u8);
+    }
     (decoded.len() <= 8192).then(|| String::from_utf8_lossy(&decoded).into_owned())
 }
 

