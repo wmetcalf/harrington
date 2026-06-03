@@ -1983,12 +1983,15 @@ fn scan_self_elevation(deobfuscated: &str, env: &mut Environment) {
 ///   `schtasks /Change /TN "Microsoft\Windows\Windows Defender\..." /Disable`
 ///   `reg add HKLM\System\CurrentControlSet\Services\WinDefend /v Start /d 4`
 ///   `reg add ...\Policies\Attachments /v SaveZoneInformation /d 2`
+///   `reg delete HKLM\SYSTEM\CurrentControlSet\services\MBAMService /f`
 ///   `netsh advfirewall set allprofiles state off`
 ///   `rmdir /s /q "C:\Program Files (x86)\Trend Micro"`
 fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
     const SECURITY_PRODUCT_PATTERN: &str = r"Trend Micro|Windows Defender|Microsoft Defender|Sophos|Kaspersky|Symantec|McAfee|Avast|AVG|ESET|Malwarebytes|CrowdStrike|SentinelOne|CarbonBlack|Cylance|Bitdefender";
+    const SECURITY_SERVICE_PATTERN: &str = r"MBAMService|MBAMScheduler|ekrn|egui|AVP[0-9.]*|KSDE[0-9.]*|McAWFwk|MSK80Service|McAPExe|McBootDelayStartSvc|mccspsvc|mfefire|McMPFSvc|mcpltsvc|McProxy|McODS|mfemms|McAfee SiteAdvisor Service|mfevtp|McNaiAnn|NortonSecurity|SBAMSvc|ZillyaAVAuxSvc|ZillyaAVCoreSvc|QHActiveDefense|avast! Antivirus|avast! Firewall|AVG Antivirus|AntiVirMailService|AntiVirService|Avira\.ServiceHost|AntiVirWebService|AntiVirSchedulerService|vsservppl|ProductAgentService|vsserv|updatesrv|cmdAgent|cmdvirth|DragonUpdater|PEFService|SentinelAgent|CSFalconService";
+    const SECURITY_STARTUP_PATTERN: &str = r"AvastUI\.exe|QHSafeTray|Zillya Antivirus|SBAMTray|SBRegRebootCleaner|egui|IseUI|COMODO Internet Security|ClamWin|Avira SystrayStartTrigger|AVGUI\.exe|SUPERAntiSpyware|Malwarebytes|Windows Defender|SecurityHealth|ESET|McAfee|Norton|Symantec";
     static EXCLUSION_PATH_DQ: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?i)Add-MpPreference\s+-Exclusion(Path|Extension|Process)\s+"([^"\r\n]+)""#)
             .expect("excl-path-dq")
@@ -2045,6 +2048,18 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
             r#"(?im)^[^\r\n]*?\b(?:rmdir|rd|del)(?:\.exe)?\b([^\r\n]*(?:{SECURITY_PRODUCT_PATTERN})[^\r\n]*)"#
         ))
         .expect("security product removal")
+    });
+    static SECURITY_SERVICE_DELETE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(&format!(
+            r#"(?i)\breg(?:\.exe)?\s+delete\b[^\r\n]*\\(?:SYSTEM\\CurrentControlSet\\services|System\\CurrentControlSet\\Services)\\({SECURITY_SERVICE_PATTERN})\b[^\r\n]*"#
+        ))
+        .expect("security service delete")
+    });
+    static SECURITY_STARTUP_DELETE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(&format!(
+            r#"(?i)\breg(?:\.exe)?\s+delete\b[^\r\n]*\\(?:SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run|Software\\Microsoft\\Windows\\CurrentVersion\\Run)\b[^\r\n]*/v\s+"?({SECURITY_STARTUP_PATTERN})"?\b[^\r\n]*"#
+        ))
+        .expect("security startup delete")
     });
     // AMSI bypass markers — Invoke-NullAMSI, AmsiInitFailed/AmsiUtils
     // memory patches, ETW patch via System.Diagnostics.Eventing
@@ -2216,6 +2231,20 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
             .map(|m| m.as_str().trim().chars().take(160).collect())
             .unwrap_or_default();
         push("security-product-remove", target);
+    }
+    for caps in SECURITY_SERVICE_DELETE_RE.captures_iter(deobfuscated) {
+        let service = caps
+            .get(1)
+            .map(|m| m.as_str().trim_matches('"').to_string())
+            .unwrap_or_default();
+        push("security-service-delete", service);
+    }
+    for caps in SECURITY_STARTUP_DELETE_RE.captures_iter(deobfuscated) {
+        let value = caps
+            .get(1)
+            .map(|m| m.as_str().trim_matches('"').to_string())
+            .unwrap_or_default();
+        push("security-startup-delete", value);
     }
     if let Some(m) = AMSI_BYPASS_RE.find(deobfuscated) {
         push("amsi-bypass", m.as_str().to_string());

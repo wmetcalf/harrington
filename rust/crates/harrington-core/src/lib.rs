@@ -1466,6 +1466,54 @@ reg add \"HKCU\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v S
     }
 
     #[test]
+    fn security_product_registry_deletion_emits_evasion_traits() {
+        let script = b"@echo off\r\n\
+            Reg Delete \"HKLM\\SYSTEM\\CurrentControlSet\\services\\MBAMService\" /f\r\n\
+            Reg Delete \"HKLM\\SYSTEM\\CurrentControlSet\\services\\ekrn\" /f\r\n\
+            Reg Delete \"HKLM\\SYSTEM\\CurrentControlSet\\services\\GenericUpdater\" /f\r\n\
+            Reg Delete \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run\" /v \"AvastUI.exe\" /f\r\n\
+            Reg Delete \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run\" /v \"COMODO Internet Security\" /f\r\n\
+            Reg Delete \"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\" /v \"MyApp\" /f\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+        let mut service_targets = std::collections::HashSet::new();
+        let mut startup_targets = std::collections::HashSet::new();
+        for t in &report.traits {
+            if let Trait::DefenderEvasion { action, target } = t {
+                match action.as_str() {
+                    "security-service-delete" => {
+                        service_targets.insert(target.as_str());
+                    }
+                    "security-startup-delete" => {
+                        startup_targets.insert(target.as_str());
+                    }
+                    _ => {}
+                }
+            }
+        }
+        assert!(
+            service_targets.contains("MBAMService") && service_targets.contains("ekrn"),
+            "missing security service deletes: {:?}",
+            report.traits
+        );
+        assert!(
+            !service_targets.contains("GenericUpdater"),
+            "generic service delete should not be DefenderEvasion: {:?}",
+            report.traits
+        );
+        assert!(
+            startup_targets.contains("AvastUI.exe")
+                && startup_targets.contains("COMODO Internet Security"),
+            "missing security startup deletes: {:?}",
+            report.traits
+        );
+        assert!(
+            !startup_targets.contains("MyApp"),
+            "generic startup delete should not be DefenderEvasion: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn defender_exclusion_target_does_not_cross_line_boundary() {
         let script = b"@echo off\r\n\
             powershell.exe -command \"Add-MpPreference -ExclusionPath \"C:\\\r\n\
