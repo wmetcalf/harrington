@@ -4039,6 +4039,27 @@ fn summarize_long_rem_comment_lines(text: &str, env: &mut Environment) -> String
     out
 }
 
+fn large_pem_block_summary_at(lines: &[String], start_idx: usize) -> Option<(usize, String)> {
+    const MIN_SUMMARY_BYTES: usize = 32 * 1024;
+
+    let line = lines.get(start_idx)?;
+    let (end_marker, label) = pem_end_marker(line)?;
+    let mut body_bytes = 0usize;
+    for (idx, body_line) in lines.iter().enumerate().skip(start_idx + 1) {
+        if body_line.contains(end_marker) {
+            if body_bytes >= MIN_SUMMARY_BYTES {
+                return Some((
+                    idx,
+                    format!("::==== harrington: omitted {body_bytes} bytes from {label} body ===="),
+                ));
+            }
+            return None;
+        }
+        body_bytes += body_line.len() + 2;
+    }
+    None
+}
+
 fn summarize_binary_noise_line_runs(text: &str, env: &mut Environment) -> String {
     let mut out = String::with_capacity(text.len().min(512 * 1024));
     let mut pending = String::new();
@@ -4176,6 +4197,17 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
 
         env.current_line = Some(cursor);
         let logical = &lines[cursor];
+
+        if let Some((end_idx, marker)) = large_pem_block_summary_at(&lines, cursor) {
+            out.push_str(logical);
+            out.push_str("\r\n");
+            out.push_str(&marker);
+            out.push_str("\r\n");
+            out.push_str(&lines[end_idx]);
+            out.push_str("\r\n");
+            cursor = end_idx + 1;
+            continue;
+        }
 
         if let Some(block) = collapsed_echo_blocks.get(&cursor) {
             out.push_str("(\r\n");
