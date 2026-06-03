@@ -2852,6 +2852,8 @@ pub fn analyze(input: &[u8], cfg: &Config) -> Report {
         profile_mark!("drive");
         out = summarize_large_pem_blocks(&out);
         profile_mark!("summarize_pem");
+        out = summarize_long_rem_comment_lines(&out, &mut env);
+        profile_mark!("summarize_rem_comments");
         let raw_text = String::from_utf8_lossy(input);
         deob_scan::scan_embedded_powershell_invocations(&raw_text, &mut env);
         deob_scan::scan_embedded_powershell_invocations(&out, &mut env);
@@ -3994,6 +3996,56 @@ fn summarize_large_pem_blocks(text: &str) -> String {
     out
 }
 
+fn summarize_long_rem_comment_lines(text: &str, env: &mut Environment) -> String {
+    const MIN_SUMMARY_BYTES: usize = 1024;
+
+    if !contains_rem_comment_candidate(text) {
+        return text.to_string();
+    }
+
+    let mut out = String::with_capacity(text.len().min(256 * 1024));
+    for line in text.split_inclusive('\n') {
+        let (body, eol) = split_line_ending(line);
+        let trimmed = body.trim_start_matches(['@', ' ', '\t']);
+        let leading_len = body.len() - trimmed.len();
+        let lower = trimmed.to_ascii_lowercase();
+        if !lower.starts_with("rem ") {
+            out.push_str(line);
+            continue;
+        }
+
+        let payload = &trimmed[4..];
+        if payload.len() < MIN_SUMMARY_BYTES {
+            out.push_str(line);
+            continue;
+        }
+
+        rescue_truncated_urls(payload, body.len(), env);
+        out.push_str(&body[..leading_len]);
+        out.push_str("rem ::==== harrington: omitted ");
+        out.push_str(&payload.len().to_string());
+        out.push_str(" bytes from long REM comment line ====");
+        out.push_str(eol);
+    }
+    out
+}
+
+fn contains_rem_comment_candidate(text: &str) -> bool {
+    text.as_bytes()
+        .windows(4)
+        .any(|w| matches!(w, [b'r' | b'R', b'e' | b'E', b'm' | b'M', b' ']))
+}
+
+fn split_line_ending(line: &str) -> (&str, &str) {
+    if let Some(body) = line.strip_suffix("\r\n") {
+        (body, "\r\n")
+    } else if let Some(body) = line.strip_suffix('\n') {
+        (body, "\n")
+    } else {
+        (line, "")
+    }
+}
+
 fn pem_end_marker(line: &str) -> Option<(&'static str, &'static str)> {
     if line.contains("-----BEGIN NEW CERTIFICATE REQUEST-----") {
         Some((
@@ -4508,6 +4560,35 @@ mod line_cap_tests {
                 .iter()
                 .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
             "URL hidden in summarized echo payload should be rescued: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn expanded_long_rem_noise_is_summarized_and_tail_url_rescued() {
+        let url = "https://long-rem-tail.attacker.example/payload.bat";
+        let noise = "A".repeat(4096);
+        let script = format!("set \"R=rem \"\r\n%R%{noise} {url}\r\n");
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("harrington: omitted 4147 bytes from long REM comment line"),
+            "expanded REM noise should be summarized, got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.lines().all(|line| line.len() < 512),
+            "summarized REM output should stay compact, got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
+            "URL hidden in summarized REM line should be rescued: {:?}",
             report.traits
         );
     }
