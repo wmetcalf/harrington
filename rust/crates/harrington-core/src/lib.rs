@@ -1299,6 +1299,24 @@ reg add \"HKCU\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v S
     }
 
     #[test]
+    fn defender_exclusion_target_does_not_cross_line_boundary() {
+        let script = b"@echo off\r\n\
+            powershell.exe -command \"Add-MpPreference -ExclusionPath \"C:\\\r\n\
+            timeout.exe /t 10\r\n\
+            cd \"C:\\ProgramData\"\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "exclusion-path" && target.contains("timeout.exe")
+            )),
+            "Defender exclusion target crossed line boundary: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn rdp_backdoor_setup_emits_remote_access_traits() {
         let script = b"@echo off\r\n\
             reg add \"HKLM\\system\\CurrentControlSet\\Control\\Terminal Server\" /v \"AllowTSConnections\" /t REG_DWORD /d 0x1 /f\r\n\

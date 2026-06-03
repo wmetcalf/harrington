@@ -1984,11 +1984,11 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
     use regex::Regex;
     const SECURITY_PRODUCT_PATTERN: &str = r"Trend Micro|Windows Defender|Microsoft Defender|Sophos|Kaspersky|Symantec|McAfee|Avast|AVG|ESET|Malwarebytes|CrowdStrike|SentinelOne|CarbonBlack|Cylance|Bitdefender";
     static EXCLUSION_PATH_DQ: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?i)Add-MpPreference\s+-Exclusion(Path|Extension|Process)\s+"([^"]+)""#)
+        Regex::new(r#"(?i)Add-MpPreference\s+-Exclusion(Path|Extension|Process)\s+"([^"\r\n]+)""#)
             .expect("excl-path-dq")
     });
     static EXCLUSION_PATH_SQ: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?i)Add-MpPreference\s+-Exclusion(Path|Extension|Process)\s+'([^']+)'"#)
+        Regex::new(r#"(?i)Add-MpPreference\s+-Exclusion(Path|Extension|Process)\s+'([^'\r\n]+)'"#)
             .expect("excl-path-sq")
     });
     static EXCLUSION_PATH_BARE: Lazy<Regex> = Lazy::new(|| {
