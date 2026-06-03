@@ -3227,10 +3227,14 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
                     break 'cmds;
                 }
                 Some(crate::env::CursorAction::Halt) => {
-                    // Bare `exit` at top level — same as PopFrame: continue scanning.
-                    // (Inside a call frame this would propagate to the parent drive(),
-                    // but Plan D defers that nuance — top-level only for now.)
-                    top_level_exit = true;
+                    if let Some(frame) = env.call_stack.pop() {
+                        next_cursor = frame.return_line;
+                    } else {
+                        // Bare `exit` at top level — same static-analysis
+                        // policy as top-level `exit /b`: continue scanning
+                        // for IOCs past already-visited subroutine bodies.
+                        top_level_exit = true;
+                    }
                     break 'cmds;
                 }
                 Some(crate::env::CursorAction::Next) | None => {}
@@ -4943,6 +4947,7 @@ mod tokenizer_misc_tests {
 
 #[cfg(test)]
 mod exit_continue_tests {
+    use crate::traits::Trait;
     use crate::{analyze, Config};
 
     #[test]
@@ -4996,6 +5001,81 @@ mod exit_continue_tests {
             lines,
             vec!["echo IN_SUB", "echo AFTER_CALL"],
             "got:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn branch_local_exit_b_does_not_skip_rest_of_called_subroutine() {
+        let script = b"call :outer\r\necho AFTER_OUTER\r\ngoto :eof\r\n\
+            :outer\r\n\
+            call :admin\r\n\
+            echo OUTER_CONTINUED\r\n\
+            exit /b\r\n\
+            :admin\r\n\
+            if not %errorlevel% EQU 0 (\r\n\
+            echo ADMIN_BRANCH\r\n\
+            exit /b\r\n\
+            )\r\n\
+            exit /b\r\n";
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo ADMIN_BRANCH"),
+            "missing branch body, got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.contains("echo OUTER_CONTINUED"),
+            "branch-local exit /b skipped outer subroutine continuation, got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.contains("echo AFTER_OUTER"),
+            "outer subroutine did not return to caller, got:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn sibling_calls_continue_after_nested_admin_subroutine() {
+        let script = b"call :CURRDIR\r\n\
+            call :EXCLUDE\r\n\
+            call :EXTRACT\r\n\
+            goto :eof\r\n\
+            :CURRDIR\r\n\
+            echo CURRDIR\r\n\
+            EXIT /B\r\n\
+            :EXCLUDE\r\n\
+            call :ADMIN\r\n\
+            echo EXCLUDE_CONTINUED\r\n\
+            EXIT /B\r\n\
+            :EXTRACT\r\n\
+            miner.exe --proto stratum --algo etchash --server etchash.infinityton.com:4445 --user wallet.worker\r\n\
+            EXIT /B\r\n\
+            :ADMIN\r\n\
+            if not %errorlevel% EQU 0 (\r\n\
+            echo ADMIN_BRANCH\r\n\
+            EXIT\r\n\
+            )\r\n";
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo EXCLUDE_CONTINUED"),
+            "nested admin call prevented exclude continuation, got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.contains("etchash.infinityton.com:4445"),
+            "sibling extract call was skipped, got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteConnect { host, port, .. }
+                    if host == "etchash.infinityton.com" && *port == 4445
+            )),
+            "miner endpoint not surfaced: {:?}\ndeob:\n{}",
+            report.traits,
             report.deobfuscated
         );
     }
