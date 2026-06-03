@@ -283,6 +283,22 @@ impl Environment {
         e
     }
 
+    /// Return true when the analysis deadline has expired, recording a
+    /// single TimeoutHit trait so callers can distinguish a bounded stop
+    /// from a quiet no-op.
+    pub(crate) fn check_deadline(&mut self) -> bool {
+        let Some(deadline) = self.limits.deadline else {
+            return false;
+        };
+        if Instant::now() < deadline {
+            return false;
+        }
+        if !self.traits.iter().any(|t| matches!(t, Trait::TimeoutHit)) {
+            self.traits.push(Trait::TimeoutHit);
+        }
+        true
+    }
+
     /// Collect every URL-carrying string that's already been recorded as a
     /// trait. Used by URL scanners as a dedup baseline so the same URL
     /// surfaced by two different scanners doesn't double-emit. Centralizing

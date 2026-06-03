@@ -170,20 +170,38 @@ pub fn scan_js_payloads(env: &mut Environment) {
     let payloads: Vec<Vec<u8>> = env.all_extracted_jscript.clone();
     let mut seen: HashSet<(usize, String)> = HashSet::new();
     for (idx, payload) in payloads.iter().enumerate() {
+        if env.check_deadline() {
+            break;
+        }
         let raw = String::from_utf8_lossy(payload).into_owned();
         // First pass: decode \uXXXX escapes
         let decoded = decode_u_escapes(&raw);
+        if env.check_deadline() {
+            break;
+        }
         // Second pass: collapse "a"+"b"+"c" concat
         let concat_resolved = expand_js_string_concat(&decoded);
         let mut candidates = vec![concat_resolved.clone()];
         candidates.extend(decoded_js_percent_literals(&concat_resolved));
+        if env.check_deadline() {
+            break;
+        }
         candidates.extend(decoded_js_percent_alias_calls(&concat_resolved));
         candidates.extend(decoded_js_fromcharcode_literals(&concat_resolved));
+        if env.check_deadline() {
+            break;
+        }
         candidates.extend(decoded_js_fromcharcode_array_bindings(&concat_resolved));
         candidates.extend(decoded_js_textdecoder_literals(&concat_resolved));
+        if env.check_deadline() {
+            break;
+        }
         candidates.extend(decoded_js_atob_literals(&concat_resolved));
         candidates.extend(decoded_js_buffer_from_base64_literals(&concat_resolved));
         candidates.extend(decoded_js_atob_alias_calls(&concat_resolved));
+        if env.check_deadline() {
+            break;
+        }
         candidates.extend(decoded_js_bound_decoder_calls(&concat_resolved));
         candidates.extend(decoded_js_split_reverse_join_literals(&concat_resolved));
         candidates.extend(decoded_js_array_from_reverse_join_literals(
@@ -194,7 +212,13 @@ pub fn scan_js_payloads(env: &mut Environment) {
 
         // Now scan for URLs
         for candidate in candidates {
+            if env.check_deadline() {
+                return;
+            }
             for caps in URL_IN_JS_RE.captures_iter(&candidate) {
+                if env.check_deadline() {
+                    return;
+                }
                 let Some(m) = caps.get(1) else { continue };
                 let mut url = m.as_str().to_string();
                 // Strip "script:" prefix that GetObject uses
@@ -2614,4 +2638,33 @@ fn skip_ascii_ws(text: &str, mut idx: usize) -> usize {
 
 fn escape_js_double_quoted(text: &str) -> String {
     text.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn js_scan_honors_expired_deadline() {
+        let mut env = Environment::default();
+        env.limits.deadline = Some(Instant::now() - Duration::from_secs(1));
+        env.all_extracted_jscript
+            .push(br#"var u = "http://evil.example/p";"#.to_vec());
+
+        scan_js_payloads(&mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(t, Trait::TimeoutHit)),
+            "no TimeoutHit emitted: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::Download { .. })),
+            "deadline-expired scan still emitted Download: {:?}",
+            env.traits
+        );
+    }
 }

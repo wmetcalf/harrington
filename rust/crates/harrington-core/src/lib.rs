@@ -2262,39 +2262,81 @@ pub fn analyze(input: &[u8], cfg: &Config) -> Report {
         env.all_extracted_ps1
             .extend(std::mem::take(&mut env.exec_ps1));
         analyze_extracted_payloads(&mut env, &mut out, 1);
-        ps1_scan::extract_self_embedded_ps1(&mut env, &out);
-        ps1_scan::scan_ps1_payloads(&mut env);
-        vbs_scan::scan_vbs_payloads(&mut env);
-        js_scan::scan_js_payloads(&mut env);
-        ps1_scan::scan_inline_powershell_text(&out, &mut env);
-        deob_scan::scan_deob_text(&out, &mut env);
+        if !env.check_deadline() {
+            ps1_scan::extract_self_embedded_ps1(&mut env, &out);
+        }
+        if !env.check_deadline() {
+            ps1_scan::scan_ps1_payloads(&mut env);
+        }
+        if !env.check_deadline() {
+            vbs_scan::scan_vbs_payloads(&mut env);
+        }
+        if !env.check_deadline() {
+            js_scan::scan_js_payloads(&mut env);
+        }
+        if !env.check_deadline() {
+            ps1_scan::scan_inline_powershell_text(&out, &mut env);
+        }
+        if !env.check_deadline() {
+            deob_scan::scan_deob_text(&out, &mut env);
+        }
         // The char-index-extractor scan needs the FULL source — our
         // normalize pipeline's marker-noise stripping can mangle the
         // PS body that hosts the `function Musculos…` definition
         // (订单列表.bat is 4 KB on one line but the deob is ~2 KB with
         // the body split). Run it again over the raw input so the
         // call sites are intact.
-        deob_scan::scan_ps_char_index_extractor_urls(&raw_text, &mut env);
+        if !env.check_deadline() {
+            deob_scan::scan_ps_char_index_extractor_urls(&raw_text, &mut env);
+        }
         // .js samples that wrap their HTA/JS payload in
         // `unescape('%XX%XX…')` (8 corpus samples, gov-cn.cloud
         // family) get the URLs hidden inside URL-encoded blobs. The
         // call from `scan_deob_text(&out)` only sees the post-drive()
         // output; for .js files most of the original `unescape(...)`
         // calls only exist in `raw_text`. Run it there too.
-        deob_scan::scan_js_unescape_urls(&raw_text, &mut env);
-        deob_scan::scan_inline_b64_urls(&out, &mut env);
-        deob_scan::scan_bare_b64_urls(&out, &mut env);
-        deob_scan::scan_b64_url_prefix(&out, &mut env);
-        deob_scan::scan_ps_char_concat_urls(&out, &mut env);
-        deob_scan::scan_truncated_url_vars(&out, &mut env);
-        deob_scan::scan_certutil_decoded_js(&out, &mut env);
-        deob_scan::scan_echoed_unicode_js(&out, &mut env);
-        deob_scan::scan_delim_wrapped_urls(&out, &mut env);
-        deob_scan::scan_bare_ip_urls(&out, &mut env);
-        deob_scan::scan_decimal_ip_urls(&out, &mut env);
-        deob_scan::scan_multistage_encrypted_dropper(&out, &mut env);
-        aes_chain::extract_from_chain(input, &out, &mut env);
-        deob_scan::scan_unc_webdav(&out, &mut env);
+        if !env.check_deadline() {
+            deob_scan::scan_js_unescape_urls(&raw_text, &mut env);
+        }
+        if !env.check_deadline() {
+            deob_scan::scan_inline_b64_urls(&out, &mut env);
+        }
+        if !env.check_deadline() {
+            deob_scan::scan_bare_b64_urls(&out, &mut env);
+        }
+        if !env.check_deadline() {
+            deob_scan::scan_b64_url_prefix(&out, &mut env);
+        }
+        if !env.check_deadline() {
+            deob_scan::scan_ps_char_concat_urls(&out, &mut env);
+        }
+        if !env.check_deadline() {
+            deob_scan::scan_truncated_url_vars(&out, &mut env);
+        }
+        if !env.check_deadline() {
+            deob_scan::scan_certutil_decoded_js(&out, &mut env);
+        }
+        if !env.check_deadline() {
+            deob_scan::scan_echoed_unicode_js(&out, &mut env);
+        }
+        if !env.check_deadline() {
+            deob_scan::scan_delim_wrapped_urls(&out, &mut env);
+        }
+        if !env.check_deadline() {
+            deob_scan::scan_bare_ip_urls(&out, &mut env);
+        }
+        if !env.check_deadline() {
+            deob_scan::scan_decimal_ip_urls(&out, &mut env);
+        }
+        if !env.check_deadline() {
+            deob_scan::scan_multistage_encrypted_dropper(&out, &mut env);
+        }
+        if !env.check_deadline() {
+            aes_chain::extract_from_chain(input, &out, &mut env);
+        }
+        if !env.check_deadline() {
+            deob_scan::scan_unc_webdav(&out, &mut env);
+        }
     }
     // Also walk JS/VBS payloads for UNC C2 patterns — the deob text only
     // contains CMD code; an `objShell.Run('\\\\host@SSL\\DavWWWRoot\\...')`
@@ -2308,6 +2350,9 @@ pub fn analyze(input: &[u8], cfg: &Config) -> Report {
         .chain(vbs_bodies.iter())
         .chain(ps1_bodies.iter())
     {
+        if env.check_deadline() {
+            break;
+        }
         let text = String::from_utf8_lossy(body);
         deob_scan::scan_unc_webdav(&text, &mut env);
     }
@@ -3019,13 +3064,8 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
     let mut high_water_mark = 0usize;
     while cursor < lines.len() {
         // Deadline check — emit TimeoutHit once and break
-        if let Some(d) = env.limits.deadline {
-            if std::time::Instant::now() >= d {
-                if !env.traits.iter().any(|t| matches!(t, Trait::TimeoutHit)) {
-                    env.traits.push(Trait::TimeoutHit);
-                }
-                break;
-            }
+        if env.check_deadline() {
+            break;
         }
 
         // Advance the high-water mark whenever we move forward linearly.

