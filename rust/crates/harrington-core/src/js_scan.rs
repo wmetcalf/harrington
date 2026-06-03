@@ -180,6 +180,7 @@ pub fn scan_js_payloads(env: &mut Environment) {
         candidates.extend(decoded_js_percent_alias_calls(&concat_resolved));
         candidates.extend(decoded_js_fromcharcode_literals(&concat_resolved));
         candidates.extend(decoded_js_fromcharcode_array_bindings(&concat_resolved));
+        candidates.extend(decoded_js_textdecoder_literals(&concat_resolved));
         candidates.extend(decoded_js_atob_literals(&concat_resolved));
         candidates.extend(decoded_js_buffer_from_base64_literals(&concat_resolved));
         candidates.extend(decoded_js_atob_alias_calls(&concat_resolved));
@@ -402,6 +403,56 @@ fn decoded_js_fromcharcode_array_bindings(text: &str) -> Vec<String> {
             arrays.get(name).cloned()
         })
         .collect()
+}
+
+fn decoded_js_textdecoder_literals(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cursor = 0usize;
+    while cursor < text.len() && out.len() < 128 {
+        let Some((ident_end, _)) = parse_js_identifier_at(text, cursor) else {
+            cursor += text[cursor..]
+                .chars()
+                .next()
+                .map(char::len_utf8)
+                .unwrap_or(1);
+            continue;
+        };
+        if let Some((call_end, decoded)) = parse_js_textdecoder_decode_call_at(text, cursor) {
+            out.push(decoded);
+            cursor = call_end;
+            continue;
+        }
+        cursor = ident_end;
+    }
+    out
+}
+
+fn parse_js_textdecoder_decode_call_at(text: &str, start: usize) -> Option<(usize, String)> {
+    let (new_end, new_name) = parse_js_identifier_at(text, start)?;
+    if new_name != "new" {
+        return None;
+    }
+    let decoder_start = skip_ascii_ws(text, new_end);
+    let (decoder_end, decoder_name) = parse_js_identifier_at(text, decoder_start)?;
+    if decoder_name != "TextDecoder" {
+        return None;
+    }
+    let open = skip_ascii_ws(text, decoder_end);
+    if text.as_bytes().get(open) != Some(&b'(') {
+        return None;
+    }
+    let close = skip_ascii_ws(text, open + 1);
+    if text.as_bytes().get(close) != Some(&b')') {
+        return None;
+    }
+    let decode_open = consume_js_method_open(text, close + 1, "decode")?;
+    let arg_start = skip_ascii_ws(text, decode_open + 1);
+    let (arg_end, decoded) = parse_js_typed_byte_array_arg(text, arg_start)?;
+    let decode_close = skip_ascii_ws(text, arg_end);
+    if text.as_bytes().get(decode_close) != Some(&b')') {
+        return None;
+    }
+    Some((decode_close + 1, decoded))
 }
 
 fn decoded_js_atob_literals(text: &str) -> Vec<String> {
