@@ -1981,6 +1981,7 @@ fn scan_self_elevation(deobfuscated: &str, env: &mut Environment) {
 ///   `icacls "C:\Windows\System32\SecurityHealthService.exe" /grant:r user:F`
 ///   `rename C:\Windows\System32\SecurityHealthSystray.exe renamed.bin`
 ///   `schtasks /Change /TN "Microsoft\Windows\Windows Defender\..." /Disable`
+///   `reg add HKLM\System\CurrentControlSet\Services\WinDefend /v Start /d 4`
 ///   `netsh advfirewall set allprofiles state off`
 ///   `rmdir /s /q "C:\Program Files (x86)\Trend Micro"`
 fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
@@ -2026,6 +2027,10 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
     static SCHTASKS_TN_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?i)(?:^|\s)/tn\s+(?:"([^"\r\n]+)"|([^\s\r\n]+))"#)
             .expect("schtasks task name")
+    });
+    static DEFENDER_SERVICE_START_DISABLED_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?i)\breg(?:\.exe)?\s+add\b[^\r\n]*\\Services\\(WinDefend|WdBoot|WdFilter|WdNisDrv|WdNisSvc|SecurityHealthService|Sense)\b[^\r\n]*/v\s+"?Start"?\b[^\r\n]*/d\s+"?(?:0x)?4"?\b[^\r\n]*"#)
+            .expect("defender service start disabled")
     });
     static FIREWALL_OFF_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?i)netsh\s+advfirewall\s+set\s+(\w+)\s+state\s+off"#).expect("fw-off")
@@ -2167,6 +2172,13 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
             .map(|m| m.as_str().to_string())
             .unwrap_or_else(|| line.trim().chars().take(160).collect());
         push("scheduled-task-disable", task_name);
+    }
+    for caps in DEFENDER_SERVICE_START_DISABLED_RE.captures_iter(deobfuscated) {
+        let service = caps
+            .get(1)
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default();
+        push("service-start-disabled", service);
     }
     for caps in FIREWALL_OFF_RE.captures_iter(deobfuscated) {
         let prof = caps

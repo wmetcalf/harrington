@@ -1387,6 +1387,47 @@ reg add \"HKCU\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v S
     }
 
     #[test]
+    fn defender_service_registry_disable_emits_evasion_trait() {
+        let script = b"@echo off\r\n\
+            reg add \"HKLM\\System\\CurrentControlSet\\Services\\WinDefend\" /v \"Start\" /t REG_DWORD /d \"4\" /f\r\n\
+            reg add \"HKLM\\System\\CurrentControlSet\\Services\\SecurityHealthService\" /v Start /t REG_DWORD /d 4 /f\r\n\
+            reg add \"HKLM\\System\\CurrentControlSet\\Services\\Dnscache\" /v Start /t REG_DWORD /d 4 /f\r\n\
+            reg add \"HKLM\\System\\CurrentControlSet\\Services\\WdNisSvc\" /v Start /t REG_DWORD /d 2 /f\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+        let disabled_services: Vec<&str> = report
+            .traits
+            .iter()
+            .filter_map(|t| {
+                if let Trait::DefenderEvasion { action, target } = t {
+                    (action == "service-start-disabled").then_some(target.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(
+            disabled_services.contains(&"WinDefend"),
+            "missing WinDefend service disable: {:?}",
+            report.traits
+        );
+        assert!(
+            disabled_services.contains(&"SecurityHealthService"),
+            "missing SecurityHealthService service disable: {:?}",
+            report.traits
+        );
+        assert!(
+            !disabled_services.contains(&"Dnscache"),
+            "generic service disable should not be DefenderEvasion: {:?}",
+            report.traits
+        );
+        assert!(
+            !disabled_services.contains(&"WdNisSvc"),
+            "non-disabled Defender service start value should not be evasion: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn defender_exclusion_target_does_not_cross_line_boundary() {
         let script = b"@echo off\r\n\
             powershell.exe -command \"Add-MpPreference -ExclusionPath \"C:\\\r\n\
