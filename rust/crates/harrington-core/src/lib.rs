@@ -1437,6 +1437,48 @@ reg add \"HKCU\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v S
     }
 
     #[test]
+    fn evidence_cleanup_artifacts_emit_traits() {
+        let script = b"@echo off\r\n\
+            wevtutil cl Security\r\n\
+            del /s /f /q C:\\Windows\\Prefetch\\*.*\r\n\
+            del /s /f /q \"%APPDATA%\\Microsoft\\Windows\\Recent\\AutomaticDestinations\\*.*\"\r\n\
+            reg delete \"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\UserAssist\" /f\r\n\
+            reg delete \"HKCU\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\MuiCache\" /f\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+        for action in [
+            "event-log-clear",
+            "prefetch-delete",
+            "recent-items-delete",
+            "registry-history-delete",
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::EvidenceCleanup { action: a, .. } if a == action
+                )),
+                "missing EvidenceCleanup {action}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn generic_delete_does_not_emit_evidence_cleanup_trait() {
+        let script = b"@echo off\r\n\
+            del /f /q C:\\Temp\\installer.log\r\n\
+            reg delete \"HKCU\\Software\\Example\\Cache\" /f\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::EvidenceCleanup { .. })),
+            "generic cleanup should not be EvidenceCleanup: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn goto_with_punctuation_prefix_resolves() {
         // xeno-class goto-bytecode: `goto ,;;; 311144` resolves to
         // `goto 311144` in real CMD because `,` and `;` are token
@@ -2699,6 +2741,9 @@ fn semantic_dedup_key(t: &Trait) -> Option<String> {
         Trait::RemoteAccess {
             technique, target, ..
         } => Some(format!("RemoteAccess\0{technique}\0{target}")),
+        Trait::EvidenceCleanup { action, target, .. } => {
+            Some(format!("EvidenceCleanup\0{action}\0{target}"))
+        }
         Trait::RegistryUrl { value, url, .. } => Some(format!("RegistryUrl\0{value}\0{url}")),
         Trait::CertutilDownload { url, dst } => Some(format!("CertutilDownload\0{url}\0{dst}")),
         Trait::BitsadminDownload { url, dst } => Some(format!("BitsadminDownload\0{url}\0{dst}")),

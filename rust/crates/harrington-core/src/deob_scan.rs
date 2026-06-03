@@ -2289,6 +2289,130 @@ fn scan_anti_recovery(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
+/// Anti-forensics / evidence cleanup: clear Windows event logs, delete
+/// USN journal, remove prefetch/recent artifacts, or delete registry
+/// history keys such as UserAssist/MuiCache/BagMRU/ComDlg32.
+fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
+    use once_cell::sync::Lazy;
+    use regex::Regex;
+
+    static EVENT_LOG_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?im)^[^\r\n]*?\bwevtutil(?:\.exe)?\s+cl\s+("[^"\r\n]+"|[^\s\r\n]+)[^\r\n]*"#)
+            .expect("wevtutil clear regex")
+    });
+    static USN_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?im)^[^\r\n]*?\bfsutil(?:\.exe)?\s+usn\s+deletejournal\b[^\r\n]*"#)
+            .expect("fsutil usn deletejournal regex")
+    });
+    static DEL_LINE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?im)^[^\r\n]*?\bdel(?:\.exe)?\b[^\r\n]*"#).expect("del line regex")
+    });
+    static REG_DELETE_HISTORY_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?im)^[^\r\n]*?\breg(?:\.exe)?\s+delete\b[^\r\n]*(?:\\UserAssist\b|\\RecentDocs\b|\\MuiCache\b|\\BagMRU\b|\\Shell\\Bags\b|\\ComDlg32\\(?:OpenSavePidlMRU|LastVisitedPidlMRU|LastVisitedPidlMRULegacy|OpenSaveMRU)\b|\\RunMRU\b|\\TypedPaths\b)[^\r\n]*"#)
+            .expect("registry history delete regex")
+    });
+
+    fn clean_token(token: &str) -> String {
+        token
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .to_string()
+    }
+
+    let mut push = |action: &str, target: String, command: String| {
+        if target.is_empty() {
+            return;
+        }
+        if env.traits.iter().any(|t| {
+            matches!(
+                t,
+                crate::traits::Trait::EvidenceCleanup {
+                    action: existing_action,
+                    target: existing_target,
+                    ..
+                } if existing_action == action && existing_target == &target
+            )
+        }) {
+            return;
+        }
+        env.traits.push(crate::traits::Trait::EvidenceCleanup {
+            action: action.to_string(),
+            target,
+            command,
+        });
+    };
+
+    for caps in EVENT_LOG_RE.captures_iter(deobfuscated) {
+        let target = caps
+            .get(1)
+            .map(|m| clean_token(m.as_str()))
+            .unwrap_or_default();
+        let command = caps
+            .get(0)
+            .map(|m| m.as_str().trim().chars().take(200).collect())
+            .unwrap_or_default();
+        push("event-log-clear", target, command);
+    }
+
+    for caps in USN_RE.captures_iter(deobfuscated) {
+        let command = caps
+            .get(0)
+            .map(|m| m.as_str().trim().chars().take(200).collect::<String>())
+            .unwrap_or_default();
+        push("usn-journal-delete", command.clone(), command);
+    }
+
+    for caps in DEL_LINE_RE.captures_iter(deobfuscated) {
+        let Some(m) = caps.get(0) else {
+            continue;
+        };
+        let command = m.as_str().trim();
+        let lower = command.to_ascii_lowercase();
+        if lower.contains("\\prefetch\\") || lower.contains("/prefetch/") {
+            push(
+                "prefetch-delete",
+                "Prefetch".to_string(),
+                command.chars().take(200).collect(),
+            );
+        }
+        if lower.contains("\\recent\\")
+            || lower.contains("/recent/")
+            || lower.contains("automaticdestinations")
+            || lower.contains("customdestinations")
+        {
+            push(
+                "recent-items-delete",
+                "Recent".to_string(),
+                command.chars().take(200).collect(),
+            );
+        }
+    }
+
+    for caps in REG_DELETE_HISTORY_RE.captures_iter(deobfuscated) {
+        let command = caps
+            .get(0)
+            .map(|m| m.as_str().trim().chars().take(200).collect::<String>())
+            .unwrap_or_default();
+        let lower = command.to_ascii_lowercase();
+        let target = [
+            "userassist",
+            "recentdocs",
+            "muicache",
+            "bagmru",
+            "shell\\bags",
+            "comdlg32",
+            "runmru",
+            "typedpaths",
+        ]
+        .into_iter()
+        .find(|needle| lower.contains(needle))
+        .unwrap_or("registry-history")
+        .to_string();
+        push("registry-history-delete", target, command);
+    }
+}
+
 /// Network/IP discovery probes: nslookup, Resolve-DnsName, ping to
 /// non-loopback IPs, calls to ipify/checkip/ip-api.
 fn scan_network_probe(deobfuscated: &str, env: &mut Environment) {
@@ -3115,6 +3239,7 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     scan_inmem_assembly_load(deobfuscated, env);
     scan_lateral_movement(deobfuscated, env);
     scan_anti_recovery(deobfuscated, env);
+    scan_evidence_cleanup(deobfuscated, env);
     scan_network_probe(deobfuscated, env);
     scan_account_modification(deobfuscated, env);
     scan_file_concealment(deobfuscated, env);

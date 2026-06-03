@@ -304,6 +304,16 @@ pub enum Trait {
     AntiRecovery {
         action: String,
     },
+    /// Evidence cleanup / anti-forensics. Examples:
+    ///   `wevtutil cl Security`
+    ///   `fsutil usn deletejournal /d C:`
+    ///   `del /s /q C:\Windows\Prefetch\*.*`
+    ///   `reg delete ...\Explorer\UserAssist`
+    EvidenceCleanup {
+        action: String,
+        target: String,
+        command: String,
+    },
     /// Network / IP discovery probe. Examples:
     ///   `nslookup <host>`
     ///   `Resolve-DnsName <host>`
