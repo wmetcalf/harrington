@@ -1656,11 +1656,15 @@ fn consume_js_replace_call(
     idx: usize,
     bindings: &HashMap<String, String>,
 ) -> Option<(usize, JsReplaceNeedle, String, bool)> {
-    let (open, force_global) = if let Some(open) = consume_js_method_open(text, idx, "replaceAll") {
-        (open, true)
-    } else {
-        (consume_js_method_open(text, idx, "replace")?, false)
-    };
+    let (open, force_global) =
+        if let Some(open) = consume_js_bound_method_open(text, idx, "replaceAll", bindings) {
+            (open, true)
+        } else {
+            (
+                consume_js_bound_method_open(text, idx, "replace", bindings)?,
+                false,
+            )
+        };
     let first_start = skip_ascii_ws(text, open + 1);
     let (first_end, needle, global) = if let Some((first_end, first)) =
         parse_js_string_or_bound_arg(text, first_start, bindings)
@@ -1685,6 +1689,36 @@ fn consume_js_replace_call(
         return None;
     }
     Some((close + 1, needle, second, force_global || global))
+}
+
+fn consume_js_bound_method_open(
+    text: &str,
+    idx: usize,
+    name: &str,
+    bindings: &HashMap<String, String>,
+) -> Option<usize> {
+    if let Some(open) = consume_js_method_open(text, idx, name) {
+        return Some(open);
+    }
+
+    let member_start = skip_ascii_ws(text, idx);
+    if text.as_bytes().get(member_start) != Some(&b'[') {
+        return None;
+    }
+    let ident_start = skip_ascii_ws(text, member_start + 1);
+    let (ident_end, ident) = parse_js_identifier_at(text, ident_start)?;
+    if bindings.get(ident).map(String::as_str) != Some(name) {
+        return None;
+    }
+    let close = skip_ascii_ws(text, ident_end);
+    if text.as_bytes().get(close) != Some(&b']') {
+        return None;
+    }
+    let open = skip_ascii_ws(text, close + 1);
+    if text.as_bytes().get(open) != Some(&b'(') {
+        return None;
+    }
+    Some(open)
 }
 
 fn parse_js_regex_literal_at(text: &str, start: usize) -> Option<(usize, String, String)> {

