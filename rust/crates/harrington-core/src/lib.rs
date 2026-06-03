@@ -1197,11 +1197,13 @@ mod echo_tests {
     fn defender_evasion_traits_detected() {
         // Common AV-evasion patterns: Add-MpPreference exclusion,
         // Set-MpPreference -DisableRealtimeMonitoring $true, sc stop
-        // WinDefend, netsh advfirewall set allprofiles state off.
+        // WinDefend, netsh advfirewall set allprofiles state off, and
+        // recursive removal of known AV product directories.
         let script = b"@echo off\r\n\
             powershell -c \"Add-MpPreference -ExclusionPath 'C:\\Users\\me\\AppData' ; Set-MpPreference -DisableRealtimeMonitoring $true ; Set-MpPreference -MAPSReporting Disabled\"\r\n\
             sc stop WinDefend\r\n\
-            netsh advfirewall set allprofiles state off\r\n";
+            netsh advfirewall set allprofiles state off\r\n\
+            rmdir /s /q \"C:\\Program Files (x86)\\Trend Micro\" >> C:\\DISKLOG.TXT\r\n";
         let report = analyze(script, &AnalyzeConfig::default());
         let actions: Vec<&str> = report
             .traits
@@ -1226,6 +1228,10 @@ mod echo_tests {
         assert!(
             actions.contains(&"netsh-fw-off"),
             "missing netsh-fw-off: {actions:?}"
+        );
+        assert!(
+            actions.contains(&"security-product-remove"),
+            "missing security-product-remove: {actions:?}"
         );
     }
 

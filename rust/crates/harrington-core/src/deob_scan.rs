@@ -1977,9 +1977,11 @@ fn scan_self_elevation(deobfuscated: &str, env: &mut Environment) {
 ///   `Set-MpPreference -MAPSReporting Disabled`
 ///   `sc stop WinDefend`  /  `sc config WinDefend start=disabled`
 ///   `netsh advfirewall set allprofiles state off`
+///   `rmdir /s /q "C:\Program Files (x86)\Trend Micro"`
 fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
+    const SECURITY_PRODUCT_PATTERN: &str = r"Trend Micro|Windows Defender|Microsoft Defender|Sophos|Kaspersky|Symantec|McAfee|Avast|AVG|ESET|Malwarebytes|CrowdStrike|SentinelOne|CarbonBlack|Cylance|Bitdefender";
     static EXCLUSION_PATH_DQ: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?i)Add-MpPreference\s+-Exclusion(Path|Extension|Process)\s+"([^"]+)""#)
             .expect("excl-path-dq")
@@ -2002,6 +2004,12 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
     });
     static FIREWALL_OFF_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?i)netsh\s+advfirewall\s+set\s+(\w+)\s+state\s+off"#).expect("fw-off")
+    });
+    static SECURITY_PRODUCT_REMOVE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(&format!(
+            r#"(?im)^[^\r\n]*?\b(?:rmdir|rd|del)(?:\.exe)?\b([^\r\n]*(?:{SECURITY_PRODUCT_PATTERN})[^\r\n]*)"#
+        ))
+        .expect("security product removal")
     });
     // AMSI bypass markers — Invoke-NullAMSI, AmsiInitFailed/AmsiUtils
     // memory patches, ETW patch via System.Diagnostics.Eventing
@@ -2097,6 +2105,13 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
             .map(|m| m.as_str().to_string())
             .unwrap_or_default();
         push("netsh-fw-off", prof);
+    }
+    for caps in SECURITY_PRODUCT_REMOVE_RE.captures_iter(deobfuscated) {
+        let target = caps
+            .get(1)
+            .map(|m| m.as_str().trim().chars().take(160).collect())
+            .unwrap_or_default();
+        push("security-product-remove", target);
     }
     if let Some(m) = AMSI_BYPASS_RE.find(deobfuscated) {
         push("amsi-bypass", m.as_str().to_string());
