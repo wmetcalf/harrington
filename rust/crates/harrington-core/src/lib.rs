@@ -1170,6 +1170,29 @@ mod echo_tests {
     }
 
     #[test]
+    fn winlogon_shell_value_emits_persistence_trait() {
+        let script = b"@echo off\r\n\
+reg add \"HKCU\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v Shell /t REG_SZ /d \"explorer.exe,C:\\Users\\Public\\stage.cmd\" /f\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence {
+                    hive,
+                    key,
+                    value_name,
+                    command,
+                } if hive == "HKCU"
+                    && key == "Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon"
+                    && value_name == "Shell"
+                    && command.contains("stage.cmd")
+            )),
+            "Winlogon Shell persistence missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn schtasks_create_emits_persistence_trait() {
         // `schtasks /create /tn X /tr Y` registers a scheduled-task
         // autorun. Same Persistence trait as reg-add Run, with

@@ -105,7 +105,10 @@ pub fn h_reg(raw: &str, env: &mut Environment) {
         r"\currentversion\app paths\",
         r"\currentversion\winlogon\shell",
     ];
-    if !PERSISTENCE_PATHS.iter().any(|p| key_lower.contains(p)) {
+    let value_lower = value_name.to_ascii_lowercase();
+    let winlogon_value_persistence =
+        key_lower.contains("\\winlogon") && matches!(value_lower.as_str(), "shell" | "userinit");
+    if !winlogon_value_persistence && !PERSISTENCE_PATHS.iter().any(|p| key_lower.contains(p)) {
         return;
     }
     // Split hive from sub-key for clarity.
