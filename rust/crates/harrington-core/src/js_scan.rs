@@ -1034,7 +1034,7 @@ fn parse_js_buffer_from_base64_call_at(
     }
     let open = consume_js_method_open(text, buffer_end, "from")?;
     let (buffer_end, decoded) = if let Some((buffer_end, decoded)) =
-        parse_js_buffer_byte_array_arg(text, open)
+        parse_js_buffer_byte_array_arg(text, open, &collect_js_byte_array_bindings(text))
     {
         (buffer_end, decoded)
     } else {
@@ -1053,8 +1053,24 @@ fn parse_js_buffer_from_base64_call_at(
     ))
 }
 
-fn parse_js_buffer_byte_array_arg(text: &str, open: usize) -> Option<(usize, String)> {
-    let array_open = skip_ascii_ws(text, open + 1);
+fn parse_js_buffer_byte_array_arg(
+    text: &str,
+    open: usize,
+    arrays: &HashMap<String, String>,
+) -> Option<(usize, String)> {
+    let arg_start = skip_ascii_ws(text, open + 1);
+    if let Some((ident_end, name)) = parse_js_identifier_at(text, arg_start) {
+        let close = skip_ascii_ws(text, ident_end);
+        if text.as_bytes().get(close) != Some(&b')') {
+            return None;
+        }
+        return arrays
+            .get(name)
+            .cloned()
+            .map(|decoded| (close + 1, decoded));
+    }
+
+    let array_open = arg_start;
     if text.as_bytes().get(array_open) != Some(&b'[') {
         return None;
     }
@@ -1073,6 +1089,23 @@ fn parse_js_buffer_byte_array_arg(text: &str, open: usize) -> Option<(usize, Str
         return None;
     }
     decode_js_byte_array_args(nums).map(|decoded| (close + 1, decoded))
+}
+
+fn collect_js_byte_array_bindings(text: &str) -> HashMap<String, String> {
+    let mut arrays = HashMap::new();
+    for caps in JS_NUM_ARRAY_ASSIGN_RE
+        .captures_iter(text)
+        .chain(JS_NUM_ARRAY_CTOR_ASSIGN_RE.captures_iter(text))
+        .take(128)
+    {
+        let (Some(name), Some(nums)) = (caps.get(1), caps.get(2)) else {
+            continue;
+        };
+        if let Some(decoded) = decode_js_byte_array_args(nums.as_str()) {
+            arrays.insert(name.as_str().to_string(), decoded);
+        }
+    }
+    arrays
 }
 
 fn decode_js_byte_array_args(nums: &str) -> Option<String> {
