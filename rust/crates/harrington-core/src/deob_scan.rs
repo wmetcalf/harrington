@@ -2416,6 +2416,103 @@ fn scan_account_modification(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
+/// File/directory concealment via `attrib +h` / `attrib +s`. Common
+/// malware batches hide staged scripts and binaries after writing them
+/// into AppData, Templates, or Startup directories.
+fn scan_file_concealment(deobfuscated: &str, env: &mut Environment) {
+    fn clean_token(token: &str) -> String {
+        token
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .to_string()
+    }
+
+    fn attribute_name(token: &str) -> Option<&'static str> {
+        match token.trim().to_ascii_lowercase().as_str() {
+            "+h" => Some("hidden"),
+            "+s" => Some("system"),
+            "+r" => Some("readonly"),
+            "+a" => Some("archive"),
+            _ => None,
+        }
+    }
+
+    fn is_attrib_option(token: &str) -> bool {
+        matches!(
+            token.trim().to_ascii_lowercase().as_str(),
+            "/s" | "/d" | "/l"
+        )
+    }
+
+    fn is_redirection_or_control(token: &str) -> bool {
+        let trimmed = token.trim();
+        trimmed.starts_with('>')
+            || trimmed.starts_with('<')
+            || trimmed.starts_with("2>")
+            || trimmed == "&"
+            || trimmed == "&&"
+            || trimmed == "|"
+    }
+
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        let Some(cmd_index) = tokens
+            .iter()
+            .position(|token| basename_lower(clean_token(token).as_str()) == "attrib")
+        else {
+            continue;
+        };
+
+        let mut attributes = Vec::new();
+        let mut target = String::new();
+        for token in tokens.iter().skip(cmd_index + 1) {
+            if is_redirection_or_control(token) {
+                break;
+            }
+            if let Some(attribute) = attribute_name(token) {
+                if !attributes.iter().any(|existing| existing == attribute) {
+                    attributes.push(attribute.to_string());
+                }
+                continue;
+            }
+            if token.starts_with('-') || token.starts_with('+') || is_attrib_option(token) {
+                continue;
+            }
+            if target.is_empty() {
+                target = clean_token(token);
+            }
+        }
+
+        if target.is_empty()
+            || !attributes
+                .iter()
+                .any(|attribute| attribute == "hidden" || attribute == "system")
+        {
+            continue;
+        }
+
+        if env.traits.iter().any(|t| {
+            matches!(
+                t,
+                crate::traits::Trait::FileConcealment {
+                    target: existing_target,
+                    attributes: existing_attributes,
+                    ..
+                } if existing_target == &target && existing_attributes == &attributes
+            )
+        }) {
+            continue;
+        }
+
+        env.traits.push(crate::traits::Trait::FileConcealment {
+            target,
+            attributes,
+            command: line.trim().chars().take(200).collect(),
+        });
+    }
+}
+
 /// System enumeration / account discovery. `net user`, `net group`,
 /// `net localgroup administrators`, `whoami /priv`, `Get-LocalUser`,
 /// `Get-NetUser` (PowerView).
@@ -3005,6 +3102,7 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     scan_anti_recovery(deobfuscated, env);
     scan_network_probe(deobfuscated, env);
     scan_account_modification(deobfuscated, env);
+    scan_file_concealment(deobfuscated, env);
     scan_enumeration(deobfuscated, env);
     scan_credential_access(deobfuscated, env);
     scan_process_injection(deobfuscated, env);

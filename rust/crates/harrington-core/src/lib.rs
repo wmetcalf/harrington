@@ -1899,6 +1899,7 @@ mod for_f_misc_tests {
 
 #[cfg(test)]
 mod passthrough_tests {
+    use crate::analyze;
     use crate::env::{Config, Environment};
     use crate::interp::interpret_line;
     use crate::traits::Trait;
@@ -1926,6 +1927,42 @@ mod passthrough_tests {
             .iter()
             .any(|t| matches!(t, Trait::AdminCommand { name, .. } if name == "reg"));
         assert!(has, "no AdminCommand: {:?}", env.traits);
+    }
+
+    #[test]
+    fn attrib_hidden_system_emits_file_concealment_trait() {
+        let script = b"@echo off\r\n\
+attrib +h +s \"C:\\Users\\Public\\stage.vbs\" >nul 2>&1\r\n\
+attrib \"C:\\Users\\Public\\payload.exe\" +r +a +s +h\r\n";
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::FileConcealment {
+                    target,
+                    attributes,
+                    ..
+                } if target.ends_with("stage.vbs")
+                    && attributes.iter().any(|a| a == "hidden")
+                    && attributes.iter().any(|a| a == "system")
+            )),
+            "missing leading-attribute concealment trait: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::FileConcealment {
+                    target,
+                    attributes,
+                    ..
+                } if target.ends_with("payload.exe")
+                    && attributes.iter().any(|a| a == "hidden")
+                    && attributes.iter().any(|a| a == "system")
+            )),
+            "missing trailing-attribute concealment trait: {:?}",
+            report.traits
+        );
     }
 }
 
@@ -2623,6 +2660,12 @@ fn semantic_dedup_key(t: &Trait) -> Option<String> {
         } => Some(format!(
             "AccountModification\0{action}\0{account}\0{}",
             group.as_deref().unwrap_or("")
+        )),
+        Trait::FileConcealment {
+            target, attributes, ..
+        } => Some(format!(
+            "FileConcealment\0{target}\0{}",
+            attributes.join(",")
         )),
         Trait::RemoteAccess {
             technique, target, ..

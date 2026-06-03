@@ -175,6 +175,13 @@ pub enum Trait {
         group: Option<String>,
         command: String,
     },
+    /// File or directory attribute changes used for concealment, such as
+    /// `attrib +h +s payload.vbs`.
+    FileConcealment {
+        target: String,
+        attributes: Vec<String>,
+        command: String,
+    },
     LineTruncated {
         original_len: u64,
     },
