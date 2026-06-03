@@ -1580,13 +1580,7 @@ fn consume_js_string_arg_method(text: &str, idx: usize, name: &str) -> Option<(u
 fn consume_js_replace_chain(text: &str, mut idx: usize, mut value: String) -> (usize, String) {
     let mut replacements = 0usize;
     while let Some((next_idx, needle, replacement, global)) = consume_js_replace_call(text, idx) {
-        if !needle.is_empty() {
-            value = if global {
-                value.replace(&needle, &replacement)
-            } else {
-                value.replacen(&needle, &replacement, 1)
-            };
-        }
+        value = apply_js_replacement(value, needle, &replacement, global);
         idx = next_idx;
         replacements += 1;
         if replacements > 16 || value.len() > 8192 {
@@ -1596,7 +1590,48 @@ fn consume_js_replace_chain(text: &str, mut idx: usize, mut value: String) -> (u
     (idx, value)
 }
 
-fn consume_js_replace_call(text: &str, idx: usize) -> Option<(usize, String, String, bool)> {
+enum JsReplaceNeedle {
+    Literal(String),
+    Whitespace,
+}
+
+fn apply_js_replacement(
+    value: String,
+    needle: JsReplaceNeedle,
+    replacement: &str,
+    global: bool,
+) -> String {
+    match needle {
+        JsReplaceNeedle::Literal(needle) if !needle.is_empty() => {
+            if global {
+                value.replace(&needle, replacement)
+            } else {
+                value.replacen(&needle, replacement, 1)
+            }
+        }
+        JsReplaceNeedle::Literal(_) => value,
+        JsReplaceNeedle::Whitespace => replace_js_whitespace(value, replacement, global),
+    }
+}
+
+fn replace_js_whitespace(value: String, replacement: &str, global: bool) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut replaced = false;
+    for ch in value.chars() {
+        if ch.is_whitespace() && (global || !replaced) {
+            out.push_str(replacement);
+            replaced = true;
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+fn consume_js_replace_call(
+    text: &str,
+    idx: usize,
+) -> Option<(usize, JsReplaceNeedle, String, bool)> {
     let (open, force_global) = if let Some(open) = consume_js_method_open(text, idx, "replaceAll") {
         (open, true)
     } else {
@@ -1605,12 +1640,12 @@ fn consume_js_replace_call(text: &str, idx: usize) -> Option<(usize, String, Str
     let first_start = skip_ascii_ws(text, open + 1);
     let (first_end, needle, global) =
         if let Some((first_end, first)) = parse_js_string_literal_at(text, first_start) {
-            (first_end, first, false)
+            (first_end, JsReplaceNeedle::Literal(first), false)
         } else {
             let (first_end, pattern, flags) = parse_js_regex_literal_at(text, first_start)?;
             (
                 first_end,
-                regex_literal_pattern_to_needle(&pattern)?,
+                regex_literal_pattern_to_replace_needle(&pattern)?,
                 flags.contains('g'),
             )
         };
@@ -1665,7 +1700,11 @@ fn parse_js_regex_literal_at(text: &str, start: usize) -> Option<(usize, String,
     None
 }
 
-fn regex_literal_pattern_to_needle(pattern: &str) -> Option<String> {
+fn regex_literal_pattern_to_replace_needle(pattern: &str) -> Option<JsReplaceNeedle> {
+    if pattern == r"\s" {
+        return Some(JsReplaceNeedle::Whitespace);
+    }
+
     let mut out = String::new();
     let mut chars = pattern.chars();
     while let Some(ch) = chars.next() {
@@ -1701,7 +1740,7 @@ fn regex_literal_pattern_to_needle(pattern: &str) -> Option<String> {
         }
         out.push(ch);
     }
-    Some(out)
+    Some(JsReplaceNeedle::Literal(out))
 }
 
 fn consume_js_no_arg_method(text: &str, idx: usize, name: &str) -> Option<usize> {
