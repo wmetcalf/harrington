@@ -3002,6 +3002,7 @@ pub fn analyze(input: &[u8], cfg: &Config) -> Report {
     // in `out` — avoids re-emitting plain inline `powershell -c "…"`
     // commands the lex/normalize already rendered.
     let mut emitted_ps_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut appended_extracted_payload = false;
     for ps in &extracted_ps1_normalized {
         let trimmed = ps.trim();
         if trimmed.is_empty() {
@@ -3069,6 +3070,7 @@ pub fn analyze(input: &[u8], cfg: &Config) -> Report {
         out.push_str(&format!(
             "\r\n::==== harrington: extracted {kind} payload ====\r\n"
         ));
+        appended_extracted_payload = true;
         out.push_str(ps.trim_end());
         if !ps.ends_with('\n') {
             out.push_str("\r\n");
@@ -3082,10 +3084,18 @@ pub fn analyze(input: &[u8], cfg: &Config) -> Report {
     // the SOSTENER/banglabillboard family whose Reflection.Assembly]::Load
     // call is inside the base64-decoded PS body that didn't exist when
     // the first scan_deob_text ran.
-    deob_scan::scan_deob_text(&out, &mut env);
-    // Re-run dedup since the post-banner scan may have emitted dupes.
-    let max_per_kind = cfg.max_traits_per_kind;
-    dedup_traits(&mut env.traits, max_per_kind);
+    // Keep the historical final scan for normal-sized output: several
+    // command-line workflows rely on this late pass for compact URL/download
+    // summaries. For multi-MiB output where no extracted payload was appended,
+    // the scan is an exact duplicate of the earlier deob scan and can dominate
+    // runtime on BatCloak-style reconstruction output.
+    const MAX_UNCHANGED_FINAL_SCAN_BYTES: usize = 1024 * 1024;
+    if appended_extracted_payload || out.len() <= MAX_UNCHANGED_FINAL_SCAN_BYTES {
+        deob_scan::scan_deob_text(&out, &mut env);
+        // Re-run dedup since the post-banner scan may have emitted dupes.
+        let max_per_kind = cfg.max_traits_per_kind;
+        dedup_traits(&mut env.traits, max_per_kind);
+    }
     profile_mark!("final_scan_and_dedup");
     let _ = profile_last;
     Report {
