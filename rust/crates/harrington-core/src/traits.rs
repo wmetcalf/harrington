@@ -165,6 +165,16 @@ pub enum Trait {
         name: String,
         cmd: String,
     },
+    /// Local account or group membership change. Examples:
+    /// `net user <account> <password> /add` and
+    /// `net localgroup Administrators <account> /add`.
+    AccountModification {
+        action: String,
+        account: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        group: Option<String>,
+        command: String,
+    },
     LineTruncated {
         original_len: u64,
     },

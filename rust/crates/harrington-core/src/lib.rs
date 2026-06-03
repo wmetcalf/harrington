@@ -1262,6 +1262,34 @@ mod echo_tests {
     }
 
     #[test]
+    fn net_user_add_and_localgroup_add_emit_account_modification_traits() {
+        let script = b"@echo off\r\n\
+            net user WDAGUtilltyAccount \"qv69t4p#Z0kE3\" /add\r\n\
+            net localgroup Administrators WDAGUtilltyAccount /ADD\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, .. }
+                    if action == "local-user-add" && account == "WDAGUtilltyAccount"
+            )),
+            "missing local-user-add: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, group, .. }
+                    if action == "localgroup-add"
+                        && account == "WDAGUtilltyAccount"
+                        && group.as_deref() == Some("Administrators")
+            )),
+            "missing localgroup-add: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn inmem_assembly_load_detected_in_extracted_ps_payload() {
         // SOSTENER/banglabillboard family: PS body decoded from base64
         // contains `[System.Reflection.Assembly]::Load(...)`. The
@@ -2539,6 +2567,15 @@ fn semantic_dedup_key(t: &Trait) -> Option<String> {
         Trait::UrlArgument { url, .. } => Some(format!("UrlArgument\0{url}")),
         Trait::UrlVariable { name, url, .. } => Some(format!("UrlVariable\0{name}\0{url}")),
         Trait::RemoteConnect { host, port, .. } => Some(format!("RemoteConnect\0{host}\0{port}")),
+        Trait::AccountModification {
+            action,
+            account,
+            group,
+            ..
+        } => Some(format!(
+            "AccountModification\0{action}\0{account}\0{}",
+            group.as_deref().unwrap_or("")
+        )),
         Trait::RemoteAccess {
             technique, target, ..
         } => Some(format!("RemoteAccess\0{technique}\0{target}")),

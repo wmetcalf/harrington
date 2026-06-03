@@ -2338,6 +2338,84 @@ fn scan_network_probe(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
+/// Local account backdoor setup: create a local user or add an account
+/// to a local group such as Administrators / Remote Desktop Users.
+fn scan_account_modification(deobfuscated: &str, env: &mut Environment) {
+    use once_cell::sync::Lazy;
+    use regex::Regex;
+    static NET_USER_ADD_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?im)^[^\r\n]*?\bnet1?(?:\.exe)?\s+user\s+("[^"\r\n]+"|'[^'\r\n]+'|[^\s/]+)[^\r\n]*\s/add\b[^\r\n]*"#,
+        )
+        .expect("net user add regex")
+    });
+    static NET_LOCALGROUP_ADD_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?im)^[^\r\n]*?\bnet1?(?:\.exe)?\s+localgroup\s+("[^"\r\n]+"|'[^'\r\n]+'|[^\s/]+)\s+("[^"\r\n]+"|'[^'\r\n]+'|[^\s/]+)[^\r\n]*\s/add\b[^\r\n]*"#,
+        )
+        .expect("net localgroup add regex")
+    });
+    fn clean_token(token: &str) -> String {
+        token
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .to_string()
+    }
+    let mut push = |action: &str, account: String, group: Option<String>, command: String| {
+        if account.is_empty() {
+            return;
+        }
+        if env.traits.iter().any(|t| {
+            matches!(
+                t,
+                crate::traits::Trait::AccountModification {
+                    action: existing_action,
+                    account: existing_account,
+                    group: existing_group,
+                    ..
+                } if existing_action == action
+                    && existing_account == &account
+                    && existing_group == &group
+            )
+        }) {
+            return;
+        }
+        env.traits.push(crate::traits::Trait::AccountModification {
+            action: action.to_string(),
+            account,
+            group,
+            command,
+        });
+    };
+    for caps in NET_USER_ADD_RE.captures_iter(deobfuscated) {
+        let account = caps
+            .get(1)
+            .map(|m| clean_token(m.as_str()))
+            .unwrap_or_default();
+        let command = caps
+            .get(0)
+            .map(|m| m.as_str().trim().chars().take(200).collect())
+            .unwrap_or_default();
+        push("local-user-add", account, None, command);
+    }
+    for caps in NET_LOCALGROUP_ADD_RE.captures_iter(deobfuscated) {
+        let group = caps
+            .get(1)
+            .map(|m| clean_token(m.as_str()))
+            .unwrap_or_default();
+        let account = caps
+            .get(2)
+            .map(|m| clean_token(m.as_str()))
+            .unwrap_or_default();
+        let command = caps
+            .get(0)
+            .map(|m| m.as_str().trim().chars().take(200).collect())
+            .unwrap_or_default();
+        push("localgroup-add", account, Some(group), command);
+    }
+}
+
 /// System enumeration / account discovery. `net user`, `net group`,
 /// `net localgroup administrators`, `whoami /priv`, `Get-LocalUser`,
 /// `Get-NetUser` (PowerView).
@@ -2864,6 +2942,7 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     scan_lateral_movement(deobfuscated, env);
     scan_anti_recovery(deobfuscated, env);
     scan_network_probe(deobfuscated, env);
+    scan_account_modification(deobfuscated, env);
     scan_enumeration(deobfuscated, env);
     scan_credential_access(deobfuscated, env);
     scan_process_injection(deobfuscated, env);
