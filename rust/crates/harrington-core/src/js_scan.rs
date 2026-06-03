@@ -1033,9 +1033,9 @@ fn parse_js_buffer_from_base64_call_at(
         return None;
     }
     let open = consume_js_method_open(text, buffer_end, "from")?;
-    let (buffer_end, encoded) = parse_js_buffer_base64_args(text, open, bindings)?;
+    let (buffer_end, encoded, encoding) = parse_js_buffer_base64_args(text, open, bindings)?;
     let tostring_end = consume_js_to_string_optional_arg(text, buffer_end, bindings)?;
-    let decoded = decode_js_base64_string(&encoded)?;
+    let decoded = decode_js_buffer_base64_string(&encoded, encoding)?;
     Some(consume_js_string_transform_chain(
         text,
         tostring_end,
@@ -1062,9 +1062,9 @@ fn parse_js_new_buffer_base64_call_at(
     if text.as_bytes().get(open) != Some(&b'(') {
         return None;
     }
-    let (buffer_end, encoded) = parse_js_buffer_base64_args(text, open, bindings)?;
+    let (buffer_end, encoded, encoding) = parse_js_buffer_base64_args(text, open, bindings)?;
     let tostring_end = consume_js_to_string_optional_arg(text, buffer_end, bindings)?;
-    let decoded = decode_js_base64_string(&encoded)?;
+    let decoded = decode_js_buffer_base64_string(&encoded, encoding)?;
     Some(consume_js_string_transform_chain(
         text,
         tostring_end,
@@ -1077,7 +1077,7 @@ fn parse_js_buffer_base64_args(
     text: &str,
     open: usize,
     bindings: &HashMap<String, String>,
-) -> Option<(usize, String)> {
+) -> Option<(usize, String, JsBufferEncoding)> {
     let arg_start = skip_ascii_ws(text, open + 1);
     let arrays = collect_js_string_array_bindings(text, bindings);
     let (arg_end, encoded) = parse_js_decoder_string_arg(text, arg_start, bindings, &arrays)?;
@@ -1087,14 +1087,54 @@ fn parse_js_buffer_base64_args(
     }
     let encoding_start = skip_ascii_ws(text, comma + 1);
     let (encoding_end, encoding) = parse_js_string_or_bound_arg(text, encoding_start, bindings)?;
-    if !encoding.eq_ignore_ascii_case("base64") {
-        return None;
-    }
+    let encoding = JsBufferEncoding::parse(&encoding)?;
     let close = skip_ascii_ws(text, encoding_end);
     if text.as_bytes().get(close) != Some(&b')') {
         return None;
     }
-    Some((close + 1, encoded))
+    Some((close + 1, encoded, encoding))
+}
+
+#[derive(Clone, Copy)]
+enum JsBufferEncoding {
+    Base64,
+    Base64Url,
+}
+
+impl JsBufferEncoding {
+    fn parse(value: &str) -> Option<Self> {
+        if value.eq_ignore_ascii_case("base64") {
+            Some(Self::Base64)
+        } else if value.eq_ignore_ascii_case("base64url") {
+            Some(Self::Base64Url)
+        } else {
+            None
+        }
+    }
+}
+
+fn decode_js_buffer_base64_string(encoded: &str, encoding: JsBufferEncoding) -> Option<String> {
+    match encoding {
+        JsBufferEncoding::Base64 => decode_js_base64_string(encoded),
+        JsBufferEncoding::Base64Url => decode_js_base64url_string(encoded),
+    }
+}
+
+fn decode_js_base64url_string(encoded: &str) -> Option<String> {
+    if encoded.len() > 16384 {
+        return None;
+    }
+    let cleaned: String = encoded
+        .chars()
+        .filter(|c| !c.is_ascii_whitespace())
+        .map(|ch| match ch {
+            '-' => '+',
+            '_' => '/',
+            _ => ch,
+        })
+        .collect();
+    let decoded = decode_base64_maybe_unpadded(&cleaned)?;
+    (decoded.len() <= 8192).then(|| String::from_utf8_lossy(&decoded).into_owned())
 }
 
 fn consume_js_to_string_optional_arg(
