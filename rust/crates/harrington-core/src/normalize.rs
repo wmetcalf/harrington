@@ -164,6 +164,9 @@ fn is_base64_fragment_set_assignment(text: &str) -> bool {
 }
 
 fn strip_marker_noise_preserving_base64(text: &str) -> String {
+    if text.len() > marker_noise::MAX_SCAN_BYTES {
+        return text.to_string();
+    }
     let spans = marker_noise::decodable_base64_spans(text);
     if spans.is_empty() {
         return marker_noise::strip_line(text);

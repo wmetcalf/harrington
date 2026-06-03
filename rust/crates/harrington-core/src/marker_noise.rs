@@ -19,7 +19,7 @@
 use base64::Engine as _;
 use std::collections::HashMap;
 
-const MAX_SCAN_BYTES: usize = 512 * 1024;
+pub(crate) const MAX_SCAN_BYTES: usize = 512 * 1024;
 const MIN_MARKER_LEN: usize = 3;
 const MAX_MARKER_LEN: usize = 8;
 const MIN_MIXED_CASE_COUNT: usize = 5;
