@@ -129,6 +129,14 @@ static JS_UINT8_ARRAY_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static JS_UINT8_ARRAY_OF_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)(?:\b(?:var|let|const)\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*Uint8Array\s*(?:\.\s*of|\[\s*['"]of['"]\s*\])\s*\(\s*([0-9xa-f+\-\s,]{5,8192})\s*\)"#,
+    )
+    .expect("js Uint8Array.of assignment")
+});
+
+#[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_APPLY_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)String\s*(?:\.\s*fromCharCode|\[\s*['"]fromCharCode['"]\s*\])\s*\.\s*apply\s*\(\s*[^,\r\n]{0,128},\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\)"#,
@@ -1158,6 +1166,7 @@ fn collect_js_byte_array_bindings(text: &str) -> HashMap<String, String> {
         .captures_iter(text)
         .chain(JS_NUM_ARRAY_CTOR_ASSIGN_RE.captures_iter(text))
         .chain(JS_UINT8_ARRAY_ASSIGN_RE.captures_iter(text))
+        .chain(JS_UINT8_ARRAY_OF_ASSIGN_RE.captures_iter(text))
         .take(128)
     {
         let (Some(name), Some(nums)) = (caps.get(1), caps.get(2)) else {
