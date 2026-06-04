@@ -3114,6 +3114,8 @@ pub fn analyze(input: &[u8], cfg: &Config) -> Report {
         let max_per_kind = cfg.max_traits_per_kind;
         dedup_traits(&mut env.traits, max_per_kind);
     }
+    scan_recovered_artifact_strings(&mut env);
+    dedup_traits(&mut env.traits, cfg.max_traits_per_kind);
     profile_mark!("final_scan_and_dedup");
     let _ = profile_last;
     Report {
@@ -3124,6 +3126,127 @@ pub fn analyze(input: &[u8], cfg: &Config) -> Report {
         extracted_ps1_normalized,
         recovered_pe: std::mem::take(&mut env.recovered_pe),
     }
+}
+
+fn scan_recovered_artifact_strings(env: &mut Environment) {
+    let artifacts: Vec<Vec<u8>> = env
+        .recovered_pe
+        .iter()
+        .map(|(_, blob)| blob.clone())
+        .collect();
+    for blob in artifacts {
+        scan_binary_input_urls(&blob, env);
+        let behavior_text = recovered_artifact_behavior_text(&blob);
+        if !behavior_text.is_empty() {
+            deob_scan::scan_deob_text(&behavior_text, env);
+        }
+    }
+}
+
+fn recovered_artifact_behavior_text(blob: &[u8]) -> String {
+    const MAX_STRINGS: usize = 512;
+    let mut strings = Vec::new();
+    collect_recovered_artifact_ascii_strings(blob, &mut strings, MAX_STRINGS);
+    collect_recovered_artifact_utf16le_strings(blob, 0, &mut strings, MAX_STRINGS);
+    collect_recovered_artifact_utf16le_strings(blob, 1, &mut strings, MAX_STRINGS);
+
+    let mut seen = std::collections::HashSet::new();
+    let mut text = String::new();
+    for s in strings {
+        if !recovered_artifact_string_is_behavior_hint(&s) || !seen.insert(s.clone()) {
+            continue;
+        }
+        text.push_str(&s);
+        text.push('\n');
+    }
+    text
+}
+
+fn collect_recovered_artifact_ascii_strings(
+    blob: &[u8],
+    strings: &mut Vec<String>,
+    max_strings: usize,
+) {
+    const MIN_LEN: usize = 8;
+    const MAX_LEN: usize = 8192;
+
+    let mut run = Vec::new();
+    for &b in blob {
+        if b == b'\t' || (0x20..=0x7e).contains(&b) {
+            run.push(b);
+            if run.len() >= MAX_LEN {
+                push_recovered_artifact_string(&mut run, strings, max_strings, MIN_LEN);
+            }
+        } else {
+            push_recovered_artifact_string(&mut run, strings, max_strings, MIN_LEN);
+        }
+        if strings.len() >= max_strings {
+            return;
+        }
+    }
+    push_recovered_artifact_string(&mut run, strings, max_strings, MIN_LEN);
+}
+
+fn collect_recovered_artifact_utf16le_strings(
+    blob: &[u8],
+    offset: usize,
+    strings: &mut Vec<String>,
+    max_strings: usize,
+) {
+    const MIN_LEN: usize = 8;
+    const MAX_LEN: usize = 8192;
+
+    if offset >= blob.len() {
+        return;
+    }
+    let mut run = Vec::new();
+    for pair in blob[offset..].chunks_exact(2) {
+        let ch = u16::from_le_bytes([pair[0], pair[1]]);
+        if ch == u16::from(b'\t') || (0x20u16..=0x7eu16).contains(&ch) {
+            run.push(ch as u8);
+            if run.len() >= MAX_LEN {
+                push_recovered_artifact_string(&mut run, strings, max_strings, MIN_LEN);
+            }
+        } else {
+            push_recovered_artifact_string(&mut run, strings, max_strings, MIN_LEN);
+        }
+        if strings.len() >= max_strings {
+            return;
+        }
+    }
+    push_recovered_artifact_string(&mut run, strings, max_strings, MIN_LEN);
+}
+
+fn push_recovered_artifact_string(
+    run: &mut Vec<u8>,
+    strings: &mut Vec<String>,
+    max_strings: usize,
+    min_len: usize,
+) {
+    if run.len() >= min_len && strings.len() < max_strings {
+        strings.push(String::from_utf8_lossy(run).to_string());
+    }
+    run.clear();
+}
+
+fn recovered_artifact_string_is_behavior_hint(s: &str) -> bool {
+    let lc = s.to_ascii_lowercase();
+    const NEEDLES: &[&str] = &[
+        "add-mppreference",
+        "set-mppreference",
+        "netsh advfirewall",
+        "vssadmin",
+        "shadowcopy delete",
+        "bcdedit",
+        "wbadmin",
+        "[system.reflection.assembly]::load",
+        "[reflection.assembly]::load",
+        "amsiscanbuffer",
+        "amsiinitfailed",
+        "amsiutils",
+        "etweventwrite",
+    ];
+    NEEDLES.iter().any(|needle| lc.contains(needle))
 }
 
 fn trait_kind(t: &Trait) -> String {
@@ -6544,6 +6667,7 @@ mod cjk_padding_tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod certutil_tests {
+    use crate::analyze;
     use crate::env::{Config, Environment, FsEntry};
     use crate::interp::interpret_line;
     use crate::traits::Trait;
@@ -6607,6 +6731,57 @@ mod certutil_tests {
                 .any(|(label, blob)| label == "certutil-decode:dst.exe" && blob == &pe),
             "decoded PE was not exposed as recovered blob: {:?}",
             env.recovered_pe
+        );
+    }
+
+    #[test]
+    fn certutil_decoded_pe_command_strings_are_scanned_for_behavior() {
+        let mut pe = vec![0u8; 0x84];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&(0x80u32).to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        pe.extend_from_slice(b"vssadmin delete shadows /all /quiet");
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&pe);
+        let script =
+            format!("echo {b64}>payload.b64\r\ncertutil -decode payload.b64 payload.dll\r\n");
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::AntiRecovery { action } if action == "vssadmin-delete-shadows"
+                )
+            }),
+            "decoded PE behavior string was not scanned: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn certutil_decoded_pe_utf16_command_strings_are_scanned_for_behavior() {
+        let mut pe = vec![0u8; 0x84];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&(0x80u32).to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        for unit in "Set-MpPreference -DisableRealtimeMonitoring $true".encode_utf16() {
+            pe.extend_from_slice(&unit.to_le_bytes());
+        }
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&pe);
+        let script =
+            format!("echo {b64}>payload.b64\r\ncertutil -decode payload.b64 payload.dll\r\n");
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::DefenderEvasion { action, .. }
+                        if action == "setmp-disablerealtimemonitoring"
+                )
+            }),
+            "decoded PE UTF-16 behavior string was not scanned: {:?}",
+            report.traits
         );
     }
 
