@@ -151,6 +151,7 @@ pub fn h_powershell(raw: &str, env: &mut Environment) {
                 let body = tokens[i + 1..].join(" ");
                 let body = body.trim();
                 let body = body.trim_matches('"').trim_matches('\'');
+                let body = trim_nul_padding_body(body);
                 if !body.is_empty() {
                     env.exec_ps1.push(body.as_bytes().to_vec());
                 }
@@ -169,8 +170,24 @@ pub fn h_powershell(raw: &str, env: &mut Environment) {
     // is in the positional arguments. Skip PS-meta flags (and their values
     // when they take one) and push the remainder as the script body.
     let body = skip_ps_meta_flags(&tokens[1..]);
+    let body = trim_nul_padding_body(&body);
     if !body.is_empty() {
         env.exec_ps1.push(body.as_bytes().to_vec());
+    }
+}
+
+fn trim_nul_padding_body(body: &str) -> &str {
+    const MIN_NUL_PADDING_BYTES: usize = 1024;
+
+    let Some(first_nul) = body.as_bytes().iter().position(|&b| b == 0) else {
+        return body;
+    };
+    let tail = &body[first_nul..];
+    let nul_count = tail.as_bytes().iter().filter(|&&b| b == 0).count();
+    if tail.len() >= MIN_NUL_PADDING_BYTES && nul_count * 100 >= tail.len() * 90 {
+        body[..first_nul].trim_end()
+    } else {
+        body
     }
 }
 

