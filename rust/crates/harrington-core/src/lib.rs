@@ -3945,6 +3945,55 @@ fn looks_like_long_alpha_noise(payload: &str) -> bool {
     non_ws >= 1024 && longest_alpha_run >= 1024 && alpha.saturating_mul(100) >= non_ws * 90
 }
 
+fn fast_expand_percent_substr_chain_line(line: &str, env: &Environment) -> Option<String> {
+    if line.len() < 128 || !line.contains(":~") {
+        return None;
+    }
+
+    let mut out = String::with_capacity(line.len().min(128 * 1024));
+    let mut cursor = 0usize;
+    let mut refs = 0usize;
+    while cursor < line.len() {
+        let rest = &line[cursor..];
+        let Some(first) = rest.chars().next() else {
+            break;
+        };
+        if first.is_whitespace() {
+            out.push(first);
+            cursor += first.len_utf8();
+            continue;
+        }
+        if first != '%' {
+            return None;
+        }
+
+        let name_start = cursor + 1;
+        let after_start = &line[name_start..];
+        let colon_rel = after_start.find(':')?;
+        let name_end = name_start + colon_rel;
+        if name_end == name_start {
+            return None;
+        }
+        let op_start = name_end + 1;
+        let op_rest = &line[op_start..];
+        if !op_rest.trim_start().starts_with('~') {
+            return None;
+        }
+        let close_rel = op_rest.find('%')?;
+        let op_end = op_start + close_rel;
+        let op = &line[op_start..op_end];
+        let crate::lex::VarOp::Substr { index, length } = crate::lex::parse_substr(op)? else {
+            return None;
+        };
+        let raw = env.get(&line[name_start..name_end])?;
+        out.push_str(&crate::normalize::apply_substr(&raw, index, length));
+        refs += 1;
+        cursor = op_end + 1;
+    }
+
+    (refs >= 8).then_some(out)
+}
+
 /// Extract `http(s)/ftp/file` URLs from a fragment that's about to be
 /// thrown away by `cap_line` and emit them as `Trait::DownloadInDeobText`.
 /// Uses the same noise filter and dedup logic as the post-pass URL sweep
@@ -4344,6 +4393,11 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
         // When true, we advance past the high-water mark to avoid re-executing
         // subroutine bodies that were already visited via a call.
         let mut top_level_exit = false;
+        let fast_normalized = if env.suppress_until_eol {
+            None
+        } else {
+            fast_expand_percent_substr_chain_line(logical, env)
+        };
 
         'cmds: for cmd in split::split_commands(logical) {
             if env.suppress_until_eol {
@@ -4383,8 +4437,12 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
             // and cmd /c child extraction (raw var refs) in one typed call.
             let pre = interp::pre_dispatch(&cmd, env);
 
-            let toks = lex::lex(&cmd);
-            let normalized = normalize::normalize_to_string(&toks, env);
+            let normalized = if let Some(fast) = fast_normalized.as_ref() {
+                fast.clone()
+            } else {
+                let toks = lex::lex(&cmd);
+                normalize::normalize_to_string(&toks, env)
+            };
             env.pending_action = None;
             // Only dispatch via interpret_line if NOT already consumed by pre_dispatch.
             if !pre.consumed {
@@ -4751,6 +4809,20 @@ mod line_cap_tests {
             "URL hidden in expanded alpha echo should be rescued: {:?}",
             report.traits
         );
+    }
+
+    #[test]
+    fn percent_substring_chain_fast_path_expands_whole_line() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.set("A", "echo");
+        env.set("B", "cab");
+        let chunk = "%A:~0,1%%A:~1,1%%A:~2,1%%A:~3,1% %B:~2,1%%B:~1,1%%B:~0,1%";
+        let line = chunk.repeat(4);
+
+        let expanded = crate::fast_expand_percent_substr_chain_line(&line, &env)
+            .expect("chain-only line should use fast path");
+
+        assert_eq!(expanded, "echo bacecho bacecho bacecho bac");
     }
 
     #[test]
