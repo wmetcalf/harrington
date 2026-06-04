@@ -3480,6 +3480,7 @@ fn extract_inline_stdout_redirect(raw: &str) -> Option<(String, crate::redirect:
 fn parse_echo_redirect_line(
     line: &str,
     scratch: &mut Environment,
+    target_cache: &mut std::collections::HashMap<String, String>,
 ) -> Option<(String, bool, String)> {
     let stripped = line.trim_start_matches(['@', ' ', '\t']);
     let (mut cleaned, mut redir) = crate::redirect::extract_redirections(stripped);
@@ -3494,8 +3495,14 @@ fn parse_echo_redirect_line(
     let target_expanded = {
         let raw_path = target.path();
         if raw_path.contains('%') || raw_path.contains('!') {
-            let toks = lex::lex(raw_path);
-            normalize::normalize_to_string(&toks, scratch)
+            if let Some(expanded) = target_cache.get(raw_path) {
+                expanded.clone()
+            } else {
+                let toks = lex::lex(raw_path);
+                let expanded = normalize::normalize_to_string(&toks, scratch);
+                target_cache.insert(raw_path.to_string(), expanded.clone());
+                expanded
+            }
         } else {
             raw_path.to_string()
         }
@@ -3544,6 +3551,7 @@ fn capture_top_level_echo_redirect_runs(
     env: &mut Environment,
 ) -> Vec<CapturedEchoRun> {
     let mut scratch = env.clone();
+    let mut target_cache = std::collections::HashMap::new();
     let mut captured = Vec::new();
     let mut i = 0usize;
     while i < lines.len() {
@@ -3556,7 +3564,7 @@ fn capture_top_level_echo_redirect_runs(
         }
 
         let Some((target, first_append, first_payload)) =
-            parse_echo_redirect_line(&lines[i], &mut scratch)
+            parse_echo_redirect_line(&lines[i], &mut scratch, &mut target_cache)
         else {
             i += 1;
             continue;
@@ -3567,7 +3575,7 @@ fn capture_top_level_echo_redirect_runs(
         let mut j = i + 1;
         while j < lines.len() {
             let Some((next_target, next_append, next_payload)) =
-                parse_echo_redirect_line(&lines[j], &mut scratch)
+                parse_echo_redirect_line(&lines[j], &mut scratch, &mut target_cache)
             else {
                 break;
             };
