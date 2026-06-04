@@ -520,6 +520,47 @@ fn scan_python_requests_get_deob_text(deobfuscated: &str, env: &mut Environment)
     ) {
         emit_python_download(&url, deobfuscated, env, &mut known);
     }
+
+    for decoded in decoded_python_b64decode_literals(deobfuscated) {
+        for url in find_call_url_literals(
+            &decoded,
+            &["requests.get", "urllib.request.urlopen", "urllib.urlopen"],
+        ) {
+            emit_python_download(&url, &decoded, env, &mut known);
+        }
+    }
+}
+
+fn decoded_python_b64decode_literals(deobfuscated: &str) -> Vec<String> {
+    use base64::Engine;
+
+    #[allow(clippy::expect_used)]
+    static PY_B64DECODE_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)base64\.b64decode\s*\(\s*['"]([A-Za-z0-9+/=]{32,20000})['"]\s*\)"#)
+            .expect("python b64decode literal regex")
+    });
+
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for caps in PY_B64DECODE_LITERAL_RE.captures_iter(deobfuscated).take(16) {
+        let Some(b64) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        if !seen.insert(b64.to_string()) {
+            continue;
+        }
+        let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(b64) else {
+            continue;
+        };
+        if decoded.len() > 64 * 1024 {
+            continue;
+        }
+        let Ok(text) = String::from_utf8(decoded) else {
+            continue;
+        };
+        out.push(text);
+    }
+    out
 }
 
 fn emit_python_download(
@@ -3410,6 +3451,7 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     scan_js_unescape_urls(deobfuscated, env);
     scan_extrac32_self_extract(deobfuscated, env);
     scan_ps_var_socket_connect(deobfuscated, env);
+    scan_resolved_deob_var_fragment_urls(deobfuscated, env);
 
     // Build a set of URLs already known
     let known = env.known_extracted_urls();
@@ -3461,6 +3503,146 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
             line_hint,
         });
     }
+}
+
+fn scan_resolved_deob_var_fragment_urls(deobfuscated: &str, env: &mut Environment) {
+    let known = env.known_extracted_urls();
+    let mut scratch = env.clone();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut candidates = 0usize;
+    for line in deobfuscated.lines() {
+        crate::handlers::set::h_set(line, &mut scratch);
+        if candidates >= 32 {
+            break;
+        }
+        if line.len() > 16 * 1024 {
+            continue;
+        }
+        if !line.contains('%') || !line.contains("://") || !line.contains(":~") {
+            continue;
+        }
+        candidates += 1;
+        let mut expanded_inputs = Vec::new();
+        let expanded = crate::normalize::normalize_to_string(&crate::lex::lex(line), &mut scratch);
+        if expanded != line && expanded.contains("://") {
+            expanded_inputs.push(expanded);
+        }
+        collect_resolved_quoted_var_fragment_inputs(line, &mut scratch, &mut expanded_inputs);
+        collect_resolved_var_fragment_url_inputs(line, &mut scratch, &mut expanded_inputs);
+
+        for expanded in expanded_inputs {
+            for caps in URL_RE.captures_iter(&expanded) {
+                let Some(m) = caps.get(1) else { continue };
+                let mut url = m.as_str().to_string();
+                while let Some(last) = url.chars().last() {
+                    if matches!(
+                        last,
+                        ',' | '.' | ';' | ':' | ')' | ']' | '}' | '"' | '\'' | '!' | '?' | '\\'
+                    ) {
+                        url.pop();
+                    } else {
+                        break;
+                    }
+                }
+                if url.len() < 8 {
+                    continue;
+                }
+                if let Some(normalized) = normalize_liberal_url_token(&url) {
+                    url = normalized;
+                }
+                if is_noise_url(&url)
+                    || is_known_or_known_query_prefix(&known, &url)
+                    || !seen.insert(url.clone())
+                {
+                    continue;
+                }
+                env.traits.push(Trait::DownloadInDeobText {
+                    src: url,
+                    line_hint: "resolved-deob-var-fragments".to_string(),
+                });
+            }
+        }
+    }
+}
+
+fn collect_resolved_quoted_var_fragment_inputs(
+    line: &str,
+    env: &mut Environment,
+    out: &mut Vec<String>,
+) {
+    let mut quote_start: Option<(usize, char)> = None;
+    for (idx, ch) in line.char_indices() {
+        match quote_start {
+            Some((start, quote)) if ch == quote => {
+                let segment = &line[start + quote.len_utf8()..idx];
+                if segment.len() <= 8192
+                    && segment.contains('%')
+                    && segment.contains("://")
+                    && segment.contains(":~")
+                {
+                    let expanded =
+                        crate::normalize::normalize_to_string(&crate::lex::lex(segment), env);
+                    if expanded != segment && expanded.contains("://") {
+                        out.push(expanded);
+                    }
+                }
+                quote_start = None;
+            }
+            None if ch == '\'' || ch == '"' => {
+                quote_start = Some((idx, ch));
+            }
+            _ => {}
+        }
+    }
+}
+
+fn collect_resolved_var_fragment_url_inputs(
+    line: &str,
+    env: &mut Environment,
+    out: &mut Vec<String>,
+) {
+    let mut search_start = 0usize;
+    while let Some(rel_marker) = line[search_start..].find("://") {
+        let marker = search_start + rel_marker;
+        let start = line[..marker]
+            .char_indices()
+            .rev()
+            .find_map(|(idx, ch)| {
+                if is_var_fragment_url_boundary(ch) {
+                    Some(idx + ch.len_utf8())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0);
+        let after_marker = marker + "://".len();
+        let end = line[after_marker..]
+            .char_indices()
+            .find_map(|(rel_idx, ch)| {
+                if is_var_fragment_url_boundary(ch) {
+                    Some(after_marker + rel_idx)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(line.len());
+        let segment = &line[start..end];
+        if segment.len() <= 8192
+            && segment.contains('%')
+            && segment.contains("://")
+            && segment.contains(":~")
+        {
+            let expanded = crate::normalize::normalize_to_string(&crate::lex::lex(segment), env);
+            if expanded != segment && expanded.contains("://") {
+                out.push(expanded);
+            }
+        }
+        search_start = after_marker;
+    }
+}
+
+fn is_var_fragment_url_boundary(ch: char) -> bool {
+    ch.is_whitespace() || matches!(ch, '"' | '\'' | '(' | ')' | '[' | ']' | '{' | '}' | ';')
 }
 
 pub fn scan_raw_marker_powershell_urls(input: &[u8], env: &mut Environment) {
@@ -3536,6 +3718,21 @@ pub fn scan_embedded_powershell_invocations(text: &str, env: &mut Environment) {
 
 pub fn scan_renamed_powershell_invocations(text: &str, env: &mut Environment) {
     let mut aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for t in &env.traits {
+        let Trait::WindowsUtilManip { src, dst, .. } = t else {
+            continue;
+        };
+        let src_base = command_basename(src);
+        if !matches!(
+            src_base.as_str(),
+            "powershell.exe" | "powershell" | "pwsh.exe" | "pwsh"
+        ) {
+            continue;
+        }
+        aliases.insert(command_basename(dst));
+        aliases.insert(dst.trim_matches('"').to_ascii_lowercase());
+    }
 
     for line in text.lines() {
         let words = split_words(line);

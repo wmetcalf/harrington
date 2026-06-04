@@ -718,7 +718,7 @@ fn render_percent_tilde(
 ) -> String {
     // Mirrors batch_interpreter.py::percent_tilde (line 910).
     let bare = if arg_index == 0 {
-        "C:\\Users\\al\\Downloads\\script.bat".to_string()
+        percent_tilde_arg0_path(env)
     } else if let Some(frame) = env.call_stack.last() {
         frame
             .args
@@ -760,26 +760,69 @@ fn render_percent_tilde(
         }
     }
 
+    let arg0_parts = percent_tilde_path_parts(&bare);
     if flags.f {
-        out.push_str("C:\\Users\\al\\Downloads\\script.bat");
+        out.push_str(&arg0_parts.full);
     } else {
         if flags.d {
-            out.push_str("C:");
+            out.push_str(&arg0_parts.drive);
         }
         if flags.p {
-            out.push_str("\\Users\\al\\Downloads\\");
+            out.push_str(&arg0_parts.parent);
         }
         if flags.n {
-            out.push_str("script");
+            out.push_str(&arg0_parts.stem);
         }
         if flags.x {
-            out.push_str(".bat");
+            out.push_str(&arg0_parts.extension);
         }
         if flags.s && out.is_empty() {
-            out.push_str("C:\\Users\\al\\Downloads\\script.bat");
+            out.push_str(&arg0_parts.full);
         }
     }
     out.trim().to_string()
+}
+
+struct PercentTildePathParts {
+    full: String,
+    drive: String,
+    parent: String,
+    stem: String,
+    extension: String,
+}
+
+fn percent_tilde_arg0_path(env: &crate::env::Environment) -> String {
+    env.file_path
+        .as_ref()
+        .map(|p| p.to_string_lossy().into_owned())
+        .filter(|p| !p.is_empty())
+        .unwrap_or_else(|| "C:\\Users\\al\\Downloads\\script.bat".to_string())
+}
+
+fn percent_tilde_path_parts(path: &str) -> PercentTildePathParts {
+    let full = path.trim_matches('"').to_string();
+    let last_sep = full.rfind(['\\', '/']);
+    let (parent, file_name) = match last_sep {
+        Some(idx) => (full[..=idx].to_string(), &full[idx + 1..]),
+        None => ("\\Users\\al\\Downloads\\".to_string(), full.as_str()),
+    };
+    let drive = if full.as_bytes().get(1) == Some(&b':') {
+        full[..2].to_string()
+    } else {
+        "C:".to_string()
+    };
+    let (stem, extension) = match file_name.rfind('.') {
+        Some(idx) if idx > 0 => (file_name[..idx].to_string(), file_name[idx..].to_string()),
+        _ => (file_name.to_string(), String::new()),
+    };
+
+    PercentTildePathParts {
+        full,
+        drive,
+        parent,
+        stem,
+        extension,
+    }
 }
 
 pub(crate) fn apply_substr(s: &str, index: i64, length: Option<i64>) -> String {

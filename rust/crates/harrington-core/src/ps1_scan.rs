@@ -395,6 +395,14 @@ static GETSTRING_B64_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static GETSTRING_B64_VAR_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?i)\[(?:System\.)?(?:Text\.)?Encoding\]::(UTF8|ASCII|Unicode|UTF7|BigEndianUnicode|UTF32)\.GetString\s*\(\s*\[(?:System\.)?Convert\]::FromBase64String\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*\)"#,
+    )
+    .expect("getstring b64 var regex")
+});
+
+#[allow(clippy::expect_used)]
 static FROMB64_LONG_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?i)FromBase64String\s*\(\s*['"]([A-Za-z0-9+/=]{40,})['"]"#)
         .expect("long frombase64 literal regex")
@@ -406,6 +414,25 @@ static GZIP_B64_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
         r#"(?i)\[(?:System\.)?Convert\]::FromBase64String\s*\(\s*\(*\s*['"]([A-Za-z0-9+/=]+)['"]\s*\)*\s*\)"#,
     )
     .expect("gzip b64 literal regex")
+});
+
+#[allow(clippy::expect_used)]
+static PS_LONG_B64_VAR_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?is)\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*["']([A-Za-z0-9+/=]{256,})["']"#)
+        .expect("ps long b64 var assign regex")
+});
+
+#[allow(clippy::expect_used)]
+static PS_FUNCTION_DEF_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?i)\bfunction\s+([A-Za-z_][A-Za-z0-9_]*)\b"#).expect("ps function def regex")
+});
+
+#[allow(clippy::expect_used)]
+static PS_GZIP_FUNCTION_GETSTRING_VAR_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\[(?:System\.)?(?:Text\.)?Encoding\]::(?:UTF8|ASCII|Unicode|UTF7|BigEndianUnicode|UTF32)\.GetString\s*\(\s*\(*\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\(*\s*\[(?:System\.)?Convert\]::FromBase64String\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*\)*\s*\)\s*\)*\s*\)\s*(?:\.TrimEnd\s*\([^)]*\))?"#,
+    )
+    .expect("ps gzip function getstring var regex")
 });
 
 #[allow(clippy::expect_used)]
@@ -436,6 +463,64 @@ fn expand_gzip_base64_literals(text: &str) -> String {
             let (start, end) = gzip_wrapper_bounds(text, full.start(), full.end())
                 .unwrap_or((full.start(), full.end()));
             Some((start, end, format!("'{s}'")))
+        })
+        .collect();
+    let mut out = text.to_string();
+    for (start, end, replacement) in matches.into_iter().rev() {
+        out.replace_range(start..end, &replacement);
+    }
+    out
+}
+
+fn expand_gzip_function_base64_variables(text: &str) -> String {
+    let lower = text.to_ascii_lowercase();
+    if !lower.contains("gzipstream") || !lower.contains("frombase64string") {
+        return text.to_string();
+    }
+
+    let mut b64_vars = std::collections::HashMap::new();
+    for caps in PS_LONG_B64_VAR_ASSIGN_RE.captures_iter(text).take(32) {
+        let Some(name) = caps.get(1) else { continue };
+        let Some(value) = caps.get(2) else { continue };
+        if value.as_str().len() <= 2 * 1024 * 1024 {
+            b64_vars.insert(name.as_str().to_ascii_lowercase(), value.as_str());
+        }
+    }
+    if b64_vars.is_empty() {
+        return text.to_string();
+    }
+
+    let mut gzip_functions = std::collections::HashSet::new();
+    for caps in PS_FUNCTION_DEF_RE.captures_iter(text) {
+        let Some(full) = caps.get(0) else { continue };
+        let Some(name) = caps.get(1) else { continue };
+        let body_end = text.len().min(full.end().saturating_add(4096));
+        if text[full.end()..body_end]
+            .to_ascii_lowercase()
+            .contains("gzipstream")
+        {
+            gzip_functions.insert(name.as_str().to_ascii_lowercase());
+        }
+    }
+    if gzip_functions.is_empty() {
+        return text.to_string();
+    }
+
+    let matches: Vec<(usize, usize, String)> = PS_GZIP_FUNCTION_GETSTRING_VAR_RE
+        .captures_iter(text)
+        .filter_map(|caps| {
+            let full = caps.get(0)?;
+            let out_var = caps.get(1)?.as_str();
+            let function_name = caps.get(2)?.as_str().to_ascii_lowercase();
+            if !gzip_functions.contains(&function_name) {
+                return None;
+            }
+            let b64_var = caps.get(3)?.as_str().to_ascii_lowercase();
+            let b64 = b64_vars.get(&b64_var)?;
+            let decoded = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
+            let inflated = crate::aes_chain::crypto::gunzip(&decoded, 4 * 1024 * 1024).ok()?;
+            let s = decode_payload(&inflated).into_owned().replace('\'', "''");
+            Some((full.start(), full.end(), format!("${out_var} = '{s}'")))
         })
         .collect();
     let mut out = text.to_string();
@@ -484,6 +569,41 @@ fn expand_getstring_base64_literals(text: &str) -> String {
             let encoding = caps.get(1)?.as_str().to_ascii_lowercase();
             let b64 = caps.get(2)?.as_str();
             let decoded = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
+            let value = match encoding.as_str() {
+                "unicode" => decode_utf16_lossy(&decoded, false)?,
+                "bigendianunicode" => decode_utf16_lossy(&decoded, true)?,
+                _ => String::from_utf8_lossy(&decoded).into_owned(),
+            };
+            Some((
+                full.start(),
+                full.end(),
+                format!("'{}'", value.replace('\'', "''")),
+            ))
+        })
+        .collect();
+    let mut out = text.to_string();
+    for (start, end, replacement) in matches.into_iter().rev() {
+        out.replace_range(start..end, &replacement);
+    }
+    out
+}
+
+fn expand_getstring_base64_variables(text: &str) -> String {
+    let bindings = ps_string_bindings(text);
+    if bindings.is_empty() {
+        return text.to_string();
+    }
+    let matches: Vec<(usize, usize, String)> = GETSTRING_B64_VAR_RE
+        .captures_iter(text)
+        .filter_map(|caps| {
+            let full = caps.get(0)?;
+            let encoding = caps.get(1)?.as_str().to_ascii_lowercase();
+            let var = caps.get(2)?.as_str().to_ascii_lowercase();
+            let b64 = bindings.get(&var)?;
+            let decoded = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
+            if !should_inline_base64_decoded_payload(&decoded) {
+                return None;
+            }
             let value = match encoding.as_str() {
                 "unicode" => decode_utf16_lossy(&decoded, false)?,
                 "bigendianunicode" => decode_utf16_lossy(&decoded, true)?,
@@ -608,6 +728,39 @@ fn append_decoded_frombase64_literals(text: &str) -> String {
         }
     }
     out
+}
+
+fn should_inline_base64_decoded_payload(decoded: &[u8]) -> bool {
+    if decoded.is_empty() {
+        return false;
+    }
+    let text = decode_payload(decoded);
+    let lower = text.to_ascii_lowercase();
+    if lower.contains("http://")
+        || lower.contains("https://")
+        || lower.contains("download")
+        || lower.contains("frombase64string")
+        || lower.contains("invoke-")
+        || lower.contains("powershell")
+        || lower.contains("new-object")
+        || lower.contains("start-process")
+        || lower.contains("cmd.exe")
+    {
+        return true;
+    }
+
+    if decoded.len() > 64 * 1024 {
+        return false;
+    }
+    let printable = decoded
+        .iter()
+        .filter(|b| b.is_ascii_graphic() || matches!(**b, b' ' | b'\r' | b'\n' | b'\t'))
+        .count();
+    let hard_controls = decoded
+        .iter()
+        .filter(|b| b.is_ascii_control() && !matches!(**b, b'\r' | b'\n' | b'\t'))
+        .count();
+    printable * 100 >= decoded.len() * 90 && hard_controls * 100 <= decoded.len()
 }
 
 fn decode_utf16_lossy(bytes: &[u8], big_endian: bool) -> Option<String> {
@@ -1292,9 +1445,12 @@ fn expand_ps_variables(text: &str) -> String {
             if is_ps_assignment_operator(after_trim) {
                 return None;
             }
-            bindings
-                .get(&name.to_ascii_lowercase())
-                .map(|v| (full.start(), full.end(), format!("'{}'", v)))
+            bindings.get(&name.to_ascii_lowercase()).and_then(|v| {
+                if is_large_literal_carrier(v) {
+                    return None;
+                }
+                Some((full.start(), full.end(), format!("'{}'", v)))
+            })
         })
         .collect();
 
@@ -1303,6 +1459,14 @@ fn expand_ps_variables(text: &str) -> String {
         out.replace_range(start..end, &replacement);
     }
     out
+}
+
+fn is_large_literal_carrier(value: &str) -> bool {
+    value.len() >= 64 * 1024
+        || (value.len() >= 8192
+            && value
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=')))
 }
 
 fn is_ps_assignment_operator(text: &str) -> bool {
@@ -1855,11 +2019,13 @@ fn expand_obfuscation(text: &str) -> String {
         out = expand_string_concat(&out);
         out = expand_double_string_concat(&out);
         out = expand_format_literals(&out);
+        out = expand_gzip_function_base64_variables(&out);
         out = expand_gzip_base64_literals(&out);
         out = expand_json_script_base64(&out);
         out = expand_regex_replace_base64_variables(&out);
         out = expand_regex_replace_calls(&out);
         out = expand_getstring_base64_literals(&out);
+        out = expand_getstring_base64_variables(&out);
         out = expand_convert_frombase64_literals(&out);
         out = append_decoded_frombase64_literals(&out);
         out = expand_base64_literals(&out);
@@ -1873,7 +2039,9 @@ fn expand_obfuscation(text: &str) -> String {
         out = expand_ps_index_concat_assignments(&out);
         out = expand_ps_variables(&out);
         out = expand_regex_replace_calls(&out);
+        out = expand_gzip_function_base64_variables(&out);
         out = expand_getstring_base64_literals(&out);
+        out = expand_getstring_base64_variables(&out);
         out = expand_convert_frombase64_literals(&out);
         out = append_decoded_frombase64_literals(&out);
         out = expand_base64_literals(&out);

@@ -45,6 +45,9 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
 }
 
 pub fn interpret_line(line: &str, env: &mut Environment) {
+    if let Some(tail) = xcopy_pipeline_tail(line) {
+        crate::handlers::copy::h_xcopy(tail, env);
+    }
     let Some(name) = command_name(line) else {
         return;
     };
@@ -86,6 +89,17 @@ pub fn interpret_line(line: &str, env: &mut Environment) {
         _ => {}
     }
     capture_synthetic_stdout_redirect(line, env);
+}
+
+fn xcopy_pipeline_tail(line: &str) -> Option<&str> {
+    let (_, tail) = line.split_once('|')?;
+    let tail = tail.trim();
+    let name = command_name(tail)?;
+    if name.eq_ignore_ascii_case("xcopy") {
+        Some(tail)
+    } else {
+        None
+    }
 }
 
 fn capture_synthetic_stdout_redirect(line: &str, env: &mut Environment) {

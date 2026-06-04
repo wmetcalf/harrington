@@ -67,13 +67,7 @@ pub fn h_copy(raw: &str, env: &mut Environment) {
     }
     let src = collapse_slashes(&args[0]);
     let dst = collapse_slashes(&args[1]);
-    if src
-        .to_ascii_lowercase()
-        .starts_with("c:\\windows\\system32")
-        && !dst
-            .to_ascii_lowercase()
-            .starts_with("c:\\windows\\system32")
-    {
+    if is_windows_util_copy(&src, &dst) {
         env.traits.push(Trait::WindowsUtilManip {
             cmd: raw.to_string(),
             src: src.clone(),
@@ -82,6 +76,41 @@ pub fn h_copy(raw: &str, env: &mut Environment) {
     }
     env.modified_filesystem
         .insert(dst.to_ascii_lowercase(), FsEntry::Copy { src });
+}
+
+pub fn h_xcopy(raw: &str, env: &mut Environment) {
+    let tokens: Vec<String> = split_words(raw);
+    let mut args: Vec<String> = Vec::new();
+    for t in tokens.iter().skip(1) {
+        let stripped = strip_quotes(t);
+        if stripped.starts_with('/') || stripped.starts_with('-') {
+            continue;
+        }
+        args.push(stripped.to_string());
+    }
+    if args.len() < 2 {
+        return;
+    }
+    let src = collapse_slashes(&args[args.len() - 2]);
+    let dst = collapse_slashes(&args[args.len() - 1]);
+    if is_windows_util_copy(&src, &dst) {
+        env.traits.push(Trait::WindowsUtilManip {
+            cmd: raw.to_string(),
+            src: src.clone(),
+            dst: dst.clone(),
+        });
+    }
+    env.modified_filesystem
+        .insert(dst.to_ascii_lowercase(), FsEntry::Copy { src });
+}
+
+fn is_windows_util_copy(src: &str, dst: &str) -> bool {
+    let src_lower = src.to_ascii_lowercase();
+    let dst_lower = dst.to_ascii_lowercase();
+    (src_lower.starts_with("c:\\windows\\system32")
+        || src_lower.starts_with("c:\\windows\\syswow64"))
+        && !(dst_lower.starts_with("c:\\windows\\system32")
+            || dst_lower.starts_with("c:\\windows\\syswow64"))
 }
 
 fn strip_quotes(s: &str) -> &str {

@@ -34,13 +34,8 @@ pub fn h_certutil(raw: &str, env: &mut Environment) {
         return;
     };
 
-    let src = match tokens.get(flag + 1) {
-        Some(s) => strip_quotes(s).to_string(),
-        None => return,
-    };
-    let dst = match tokens.get(flag + 2) {
-        Some(s) => strip_quotes(s).to_string(),
-        None => return,
+    let Some((src, dst)) = certutil_decode_paths_after_flag(&tokens, flag + 1) else {
+        return;
     };
 
     let src_key = src.to_ascii_lowercase();
@@ -132,7 +127,13 @@ fn resolve_self_source(src: &str, env: &Environment) -> Option<Vec<u8>> {
         || env
             .file_path
             .as_ref()
-            .map(|p| p.to_string_lossy().eq_ignore_ascii_case(src))
+            .map(|p| {
+                let path = p.to_string_lossy();
+                path.eq_ignore_ascii_case(src)
+                    || windows_basename(&path)
+                        .map(|name| name.eq_ignore_ascii_case(src))
+                        .unwrap_or(false)
+            })
             .unwrap_or(false);
     if is_self {
         env.input_bytes.as_deref().map(|b| b.to_vec())
@@ -186,12 +187,28 @@ fn extract_pem_base64(text: &str) -> Option<String> {
     }
 }
 
+fn windows_basename(path: &str) -> Option<&str> {
+    path.rsplit(['\\', '/'])
+        .next()
+        .filter(|name| !name.is_empty())
+}
+
 fn strip_quotes(s: &str) -> &str {
     let s = s.trim();
     if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
         return &s[1..s.len() - 1];
     }
     s
+}
+
+fn certutil_decode_paths_after_flag(tokens: &[String], start: usize) -> Option<(String, String)> {
+    let mut positional = tokens
+        .iter()
+        .skip(start)
+        .filter(|token| !strip_quotes(token).starts_with('-'));
+    let src = strip_quotes(positional.next()?).to_string();
+    let dst = strip_quotes(positional.next()?).to_string();
+    Some((src, dst))
 }
 
 fn is_base64_char(c: char) -> bool {

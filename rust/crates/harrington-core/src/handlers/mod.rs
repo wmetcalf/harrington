@@ -77,7 +77,7 @@ pub fn lookup(name: &str) -> Option<Handler> {
         "schtasks" => Some(passthrough::h_schtasks),
         "sc" => Some(passthrough::h_sc),
         "ping" => Some(passthrough::h_ping),
-        "xcopy" => Some(passthrough::h_xcopy),
+        "xcopy" => Some(copy::h_xcopy),
         "title" => Some(passthrough::h_title),
         "pause" => Some(passthrough::h_pause),
         "color" => Some(passthrough::h_color),
