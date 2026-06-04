@@ -85,6 +85,16 @@ pub fn h_certutil(raw: &str, env: &mut Environment) {
             }
         })();
         if let Some(d) = decoded {
+            if decoded_looks_like_pe(&d) {
+                let label = format!("certutil-decode:{dst}");
+                if !env
+                    .recovered_pe
+                    .iter()
+                    .any(|(existing, blob)| existing == &label && blob == &d)
+                {
+                    env.recovered_pe.push((label, d.clone()));
+                }
+            }
             env.modified_filesystem.insert(
                 dst.to_ascii_lowercase(),
                 FsEntry::Decoded {
@@ -95,6 +105,25 @@ pub fn h_certutil(raw: &str, env: &mut Environment) {
             );
         }
     }
+}
+
+fn decoded_looks_like_pe(content: &[u8]) -> bool {
+    if content.len() < 0x40 || content.get(0..2) != Some(b"MZ") {
+        return false;
+    }
+    let Some(pe_off_bytes) = content.get(0x3c..0x40) else {
+        return false;
+    };
+    let pe_off = u32::from_le_bytes([
+        pe_off_bytes[0],
+        pe_off_bytes[1],
+        pe_off_bytes[2],
+        pe_off_bytes[3],
+    ]) as usize;
+    pe_off
+        .checked_add(4)
+        .and_then(|end| content.get(pe_off..end))
+        == Some(b"PE\0\0")
 }
 
 fn resolve_self_source(src: &str, env: &Environment) -> Option<Vec<u8>> {

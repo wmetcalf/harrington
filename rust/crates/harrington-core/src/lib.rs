@@ -6074,6 +6074,7 @@ mod certutil_tests {
     use crate::env::{Config, Environment, FsEntry};
     use crate::interp::interpret_line;
     use crate::traits::Trait;
+    use base64::Engine;
 
     fn b64(s: &str) -> String {
         use base64::Engine;
@@ -6106,6 +6107,34 @@ mod certutil_tests {
                 env.modified_filesystem.get("dst.bin")
             );
         }
+    }
+
+    #[test]
+    fn certutil_decode_pe_adds_recovered_blob() {
+        let mut env = Environment::new(&Config::default());
+        let mut pe = vec![0u8; 0x84];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&(0x80u32).to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        env.modified_filesystem.insert(
+            "src.b64".to_string(),
+            FsEntry::Content {
+                content: base64::engine::general_purpose::STANDARD
+                    .encode(&pe)
+                    .into_bytes(),
+                append: false,
+            },
+        );
+
+        interpret_line("certutil -decode src.b64 dst.exe", &mut env);
+
+        assert!(
+            env.recovered_pe
+                .iter()
+                .any(|(label, blob)| label == "certutil-decode:dst.exe" && blob == &pe),
+            "decoded PE was not exposed as recovered blob: {:?}",
+            env.recovered_pe
+        );
     }
 
     #[test]
