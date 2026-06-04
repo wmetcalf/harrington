@@ -4009,6 +4009,49 @@ fn fast_expand_percent_substr_chain_line(line: &str, env: &Environment) -> Optio
     (refs >= 8).then_some(out)
 }
 
+fn fast_expand_percent_var_chain_line(line: &str, env: &Environment) -> Option<String> {
+    if line.len() < 128 || !line.contains('%') {
+        return None;
+    }
+
+    let mut out = String::with_capacity(line.len().min(128 * 1024));
+    let mut cursor = 0usize;
+    let mut refs = 0usize;
+    while cursor < line.len() {
+        let rest = &line[cursor..];
+        let Some(first) = rest.chars().next() else {
+            break;
+        };
+        if first.is_whitespace() {
+            out.push(first);
+            cursor += first.len_utf8();
+            continue;
+        }
+        if first != '%' {
+            return None;
+        }
+
+        let name_start = cursor + 1;
+        let after_start = &line[name_start..];
+        let close_rel = after_start.find('%')?;
+        let name_end = name_start + close_rel;
+        if name_end == name_start {
+            return None;
+        }
+        let name = &line[name_start..name_end];
+        if name.contains([':', '!', '^', '&', '|', '<', '>', '"']) {
+            return None;
+        }
+        if let Some(value) = env.get(name) {
+            out.push_str(&value);
+        }
+        refs += 1;
+        cursor = name_end + 1;
+    }
+
+    (refs >= 16).then_some(out)
+}
+
 /// Extract `http(s)/ftp/file` URLs from a fragment that's about to be
 /// thrown away by `cap_line` and emit them as `Trait::DownloadInDeobText`.
 /// Uses the same noise filter and dedup logic as the post-pass URL sweep
@@ -4558,6 +4601,7 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
             None
         } else {
             fast_expand_percent_substr_chain_line(logical, env)
+                .or_else(|| fast_expand_percent_var_chain_line(logical, env))
         };
 
         'cmds: for cmd in split::split_commands(logical) {
@@ -4984,6 +5028,54 @@ mod line_cap_tests {
             .expect("chain-only line should use fast path");
 
         assert_eq!(expanded, "echo bacecho bacecho bacecho bac");
+    }
+
+    #[test]
+    fn percent_var_chain_fast_path_expands_whole_line() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.set("H", "http");
+        env.set("S", "s");
+        env.set("C", ":");
+        env.set("F", "/");
+        env.set("D", "joined.example");
+        env.set("P", "/payload.bat");
+        env.set("EMPTY", "");
+        let chunk = "%H%%S%%C%%F%%F%%D%%EMPTY%%P% ";
+        let line = chunk.repeat(5);
+
+        let expanded = crate::fast_expand_percent_var_chain_line(&line, &env)
+            .expect("simple var chain-only line should use fast path");
+
+        assert_eq!(
+            expanded,
+            "https://joined.example/payload.bat https://joined.example/payload.bat https://joined.example/payload.bat https://joined.example/payload.bat https://joined.example/payload.bat "
+        );
+    }
+
+    #[test]
+    fn percent_var_chain_fast_path_preserves_joined_url_ioc() {
+        let chunk = "%H%%S%%C%%F%%F%%D%%EMPTY%%P% ";
+        let script = format!(
+            "set H=http\r\nset S=s\r\nset C=:\r\nset F=/\r\nset D=joined.example\r\nset EMPTY=\r\nset P=/payload.bat\r\n{}\r\n",
+            chunk.repeat(3)
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("https://joined.example/payload.bat"),
+            "joined URL did not survive fast path:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } | Trait::UrlArgument { url: src, .. } if src == "https://joined.example/payload.bat")),
+            "joined URL IOC was not extracted: {:?}",
+            report.traits
+        );
     }
 
     #[test]
