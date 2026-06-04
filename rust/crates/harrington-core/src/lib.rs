@@ -3871,6 +3871,9 @@ fn cap_line(line: String, env: &mut Environment) -> String {
     if limit == 0 || line.len() as u64 <= limit {
         return line;
     }
+    if let Some(summary) = summarize_expanded_long_alpha_echo_line(&line, env) {
+        return summary;
+    }
     let n = limit as usize;
     let mut end = n.min(line.len());
     while end > 0 && !line.is_char_boundary(end) {
@@ -3887,6 +3890,59 @@ fn cap_line(line: String, env: &mut Environment) -> String {
     let mut s = line[..end].to_string();
     s.push_str("…[truncated]");
     s
+}
+
+fn summarize_expanded_long_alpha_echo_line(line: &str, env: &mut Environment) -> Option<String> {
+    const MIN_SUMMARY_BYTES: usize = 1024;
+
+    let limit = env.limits.max_output_line_bytes as usize;
+    let stripped = line.trim_start_matches(['@', ' ', '\t']);
+    let payload = block_echo_payload(stripped)?;
+    if payload.len() < MIN_SUMMARY_BYTES || payload.len() < limit {
+        return None;
+    }
+    if !looks_like_long_alpha_noise(payload) {
+        return None;
+    }
+
+    env.traits.push(crate::traits::Trait::LineTruncated {
+        original_len: line.len() as u64,
+    });
+    rescue_truncated_urls(payload, line.len(), env);
+    Some(format!(
+        "::==== harrington: omitted {} bytes from long alpha echo line ====",
+        payload.len()
+    ))
+}
+
+fn looks_like_long_alpha_noise(payload: &str) -> bool {
+    let mut non_ws = 0usize;
+    let mut alpha = 0usize;
+    let mut current_alpha_run = 0usize;
+    let mut longest_alpha_run = 0usize;
+
+    for &b in payload.as_bytes() {
+        if b.is_ascii_whitespace() {
+            current_alpha_run = 0;
+            continue;
+        }
+        if matches!(
+            b,
+            b'%' | b'!' | b'^' | b'&' | b'|' | b'<' | b'>' | b'+' | b'='
+        ) {
+            return false;
+        }
+        non_ws += 1;
+        if b.is_ascii_alphabetic() {
+            alpha += 1;
+            current_alpha_run += 1;
+            longest_alpha_run = longest_alpha_run.max(current_alpha_run);
+        } else {
+            current_alpha_run = 0;
+        }
+    }
+
+    non_ws >= 1024 && longest_alpha_run >= 1024 && alpha.saturating_mul(100) >= non_ws * 90
 }
 
 /// Extract `http(s)/ftp/file` URLs from a fragment that's about to be
@@ -4656,6 +4712,43 @@ mod line_cap_tests {
                 .iter()
                 .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
             "URL hidden in summarized echo payload should be rescued: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn expanded_long_alpha_echo_noise_is_summarized_and_tail_url_rescued() {
+        let url = "https://expanded-echo-tail.attacker.example/payload.bat";
+        let payload = format!("{} {url}", "a".repeat(4096));
+        let script = format!("set \"N={payload}\"\r\necho %N%\r\n");
+        let cfg = Config {
+            max_output_line_bytes: 512,
+            ..Config::default()
+        };
+        let report = analyze(script.as_bytes(), &cfg);
+
+        assert!(
+            report.deobfuscated.contains(&format!(
+                "harrington: omitted {} bytes from long alpha echo line",
+                payload.len()
+            )),
+            "expanded alpha echo should be summarized, got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report
+                .deobfuscated
+                .lines()
+                .any(|line| line.starts_with("::==== harrington: omitted") && line.len() < 128),
+            "summarized alpha echo output should stay compact, got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
+            "URL hidden in expanded alpha echo should be rescued: {:?}",
             report.traits
         );
     }
