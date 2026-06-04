@@ -27,6 +27,97 @@ fn deob_writes_deobfuscated_file() {
 }
 
 #[test]
+fn deob_force_overwrites_existing_report_files() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(&input, "echo first\r\n").expect("write");
+    let out_dir = dir.path().join("out");
+    Command::cargo_bin("harrington")
+        .expect("bin")
+        .args([
+            "deob",
+            input.to_str().expect("path"),
+            "-o",
+            out_dir.to_str().expect("path"),
+        ])
+        .assert()
+        .success();
+
+    fs::write(&input, "echo second\r\n").expect("rewrite");
+    Command::cargo_bin("harrington")
+        .expect("bin")
+        .args([
+            "deob",
+            input.to_str().expect("path"),
+            "-o",
+            out_dir.to_str().expect("path"),
+            "--force",
+        ])
+        .assert()
+        .success();
+
+    let contents = fs::read_to_string(out_dir.join("deobfuscated.bat")).expect("read");
+    assert!(
+        contents.contains("echo second") && !contents.contains("echo first"),
+        "stale deobfuscated output after --force:\n{}",
+        contents
+    );
+}
+
+#[test]
+fn deob_force_removes_stale_generated_artifacts() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(&input, "echo first\r\n").expect("write");
+    let out_dir = dir.path().join("out");
+    Command::cargo_bin("harrington")
+        .expect("bin")
+        .args([
+            "deob",
+            input.to_str().expect("path"),
+            "-o",
+            out_dir.to_str().expect("path"),
+        ])
+        .assert()
+        .success();
+
+    fs::write(out_dir.join("0123456789.exe"), b"stale pe").expect("write stale exe");
+    fs::write(out_dir.join("0123456789.meta"), b"stale meta").expect("write stale meta");
+    fs::write(out_dir.join("analyst-notes.txt"), b"keep").expect("write analyst note");
+
+    fs::write(&input, "echo second\r\n").expect("rewrite");
+    Command::cargo_bin("harrington")
+        .expect("bin")
+        .args([
+            "deob",
+            input.to_str().expect("path"),
+            "-o",
+            out_dir.to_str().expect("path"),
+            "--force",
+        ])
+        .assert()
+        .success();
+
+    let entries: Vec<_> = fs::read_dir(&out_dir)
+        .expect("read out")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    assert!(
+        !entries
+            .iter()
+            .any(|name| name.ends_with(".exe") || name.ends_with(".meta")),
+        "stale generated artifact remained after --force: {:?}",
+        entries
+    );
+    assert!(
+        entries.iter().any(|name| name == "analyst-notes.txt"),
+        "unrelated analyst note was removed by --force: {:?}",
+        entries
+    );
+}
+
+#[test]
 fn deob_writes_extracted_child_bat() {
     let dir = TempDir::new().expect("tmp");
     let input = dir.path().join("in.bat");

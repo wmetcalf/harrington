@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use sha2::{Digest, Sha256};
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -23,6 +24,9 @@ enum Command {
         json: bool,
         #[arg(long)]
         json_only: bool,
+        /// Replace Harrington-generated files in an existing output directory.
+        #[arg(long)]
+        force: bool,
         #[arg(long, default_value_t = 12)]
         max_depth: u32,
         #[arg(long, default_value_t = 65_536)]
@@ -111,21 +115,18 @@ enum Command {
 const MAX_INPUT_BYTES: u64 = 256 * 1024 * 1024;
 
 fn read_input(path: &str) -> Result<Vec<u8>> {
-    use std::io::Read;
     if path == "-" {
-        let mut buf = Vec::new();
-        let mut limited = std::io::stdin().take(MAX_INPUT_BYTES);
-        limited.read_to_end(&mut buf).context("read stdin")?;
-        if buf.len() as u64 >= MAX_INPUT_BYTES {
-            anyhow::bail!(
-                "stdin input exceeds {} bytes; refusing to read more",
-                MAX_INPUT_BYTES
-            );
-        }
-        Ok(buf)
+        read_all_capped(std::io::stdin(), MAX_INPUT_BYTES, || {
+            "stdin input".to_string()
+        })
     } else {
-        // Cap on-disk reads too — symlinks could point at /dev/zero etc.
-        let meta = fs::metadata(path).with_context(|| format!("stat {:?}", path))?;
+        let file = fs::File::open(path).with_context(|| format!("open {:?}", path))?;
+        let meta = file
+            .metadata()
+            .with_context(|| format!("stat {:?}", path))?;
+        if !meta.file_type().is_file() {
+            anyhow::bail!("{:?}: not a regular file", path);
+        }
         if meta.len() > MAX_INPUT_BYTES {
             anyhow::bail!(
                 "{:?}: {} bytes exceeds the {}-byte input cap",
@@ -134,8 +135,27 @@ fn read_input(path: &str) -> Result<Vec<u8>> {
                 MAX_INPUT_BYTES
             );
         }
-        fs::read(path).with_context(|| format!("read {:?}", path))
+        read_all_capped(file, MAX_INPUT_BYTES, || format!("{:?}", path))
     }
+}
+
+fn read_all_capped<R, F>(reader: R, max_bytes: u64, read_context: F) -> Result<Vec<u8>>
+where
+    R: std::io::Read,
+    F: Fn() -> String,
+{
+    let mut buf = Vec::new();
+    let mut limited = reader.take(max_bytes.saturating_add(1));
+    limited
+        .read_to_end(&mut buf)
+        .with_context(|| format!("read {}", read_context()))?;
+    if buf.len() as u64 > max_bytes {
+        anyhow::bail!(
+            "{} exceeds {max_bytes} bytes; refusing to read more",
+            read_context()
+        );
+    }
+    Ok(buf)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -169,6 +189,18 @@ fn short_sha(bytes: &[u8]) -> String {
     hex::encode(digest)[..10].to_string()
 }
 
+fn analyze_for_file(
+    file: &str,
+    input: &[u8],
+    cfg: &harrington_core::Config,
+) -> harrington_core::Report {
+    if file == "-" {
+        harrington_core::analyze(input, cfg)
+    } else {
+        harrington_core::analyze_with_path(input, cfg, Path::new(file))
+    }
+}
+
 /// Safely join `name` onto the canonical `out_dir`, refusing if the result
 /// would escape that directory. All `name`s in this tool are either static
 /// strings ("deobfuscated.bat", "traits.json") or `<sha10>.bat|ps1` — so a
@@ -184,14 +216,18 @@ fn safe_join(canonical_out: &Path, name: &str) -> Result<PathBuf> {
     Ok(target)
 }
 
-/// Write `bytes` to `path` using O_CREATE+O_EXCL semantics and (on Unix)
-/// O_NOFOLLOW. Refuses to overwrite an existing file or follow a symlink —
-/// closes the TOCTOU window where an attacker could swap the output
-/// directory for a symlink between canonicalize() and the write.
-fn safe_write_new(path: &Path, bytes: &[u8]) -> Result<()> {
+/// Write `bytes` to `path` without following a final-path symlink on Unix.
+/// By default this uses O_CREATE+O_EXCL and refuses stale output. With
+/// `force`, it truncates/replaces regular files but still refuses symlinks.
+fn safe_write(path: &Path, bytes: &[u8], force: bool) -> Result<()> {
     use std::io::Write;
     let mut opts = fs::OpenOptions::new();
-    opts.write(true).create_new(true);
+    opts.write(true);
+    if force {
+        opts.create(true).truncate(true);
+    } else {
+        opts.create_new(true);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -208,7 +244,7 @@ fn safe_write_new(path: &Path, bytes: &[u8]) -> Result<()> {
             // the analyst use case the output directory is supposed to be
             // fresh, so a collision is suspicious (race / replay).
             anyhow::bail!(
-                "refusing to overwrite existing output path {:?} (race or stale dir)",
+                "refusing to overwrite existing output path {:?}; rerun with --force to replace stale output",
                 path
             )
         }
@@ -216,14 +252,18 @@ fn safe_write_new(path: &Path, bytes: &[u8]) -> Result<()> {
     }
 }
 
-fn write_report_files(report: &harrington_core::Report, out_dir: &Path) -> Result<()> {
+fn write_report_files(report: &harrington_core::Report, out_dir: &Path, force: bool) -> Result<()> {
     fs::create_dir_all(out_dir).with_context(|| format!("mkdir {:?}", out_dir))?;
     let canonical_out =
         fs::canonicalize(out_dir).with_context(|| format!("canonicalize {:?}", out_dir))?;
+    if force {
+        remove_stale_generated_outputs(&canonical_out)?;
+    }
 
-    safe_write_new(
+    safe_write(
         &safe_join(&canonical_out, "deobfuscated.bat")?,
         report.deobfuscated.as_bytes(),
+        force,
     )?;
 
     let mut seen = std::collections::HashSet::new();
@@ -234,7 +274,7 @@ fn write_report_files(report: &harrington_core::Report, out_dir: &Path) -> Resul
             continue;
         }
         let name = format!("{sha}.bat");
-        safe_write_new(&safe_join(&canonical_out, &name)?, bytes)?;
+        safe_write(&safe_join(&canonical_out, &name)?, bytes, force)?;
     }
     for (idx, child) in report.extracted_ps1.iter().enumerate() {
         let sha = short_sha(child);
@@ -242,12 +282,16 @@ fn write_report_files(report: &harrington_core::Report, out_dir: &Path) -> Resul
             continue;
         }
         let name = format!("{sha}.ps1");
-        safe_write_new(&safe_join(&canonical_out, &name)?, child)?;
+        safe_write(&safe_join(&canonical_out, &name)?, child, force)?;
         if let Some(normalized) = report.extracted_ps1_normalized.get(idx) {
             let raw_text = String::from_utf8_lossy(child);
             if normalized != raw_text.as_ref() {
                 let name = format!("{sha}.normalized.ps1");
-                safe_write_new(&safe_join(&canonical_out, &name)?, normalized.as_bytes())?;
+                safe_write(
+                    &safe_join(&canonical_out, &name)?,
+                    normalized.as_bytes(),
+                    force,
+                )?;
             }
         }
     }
@@ -270,7 +314,7 @@ fn write_report_files(report: &harrington_core::Report, out_dir: &Path) -> Resul
         }
         let ext = detect_blob_extension(bytes);
         let name = format!("{sha}.{ext}");
-        safe_write_new(&safe_join(&canonical_out, &name)?, bytes)?;
+        safe_write(&safe_join(&canonical_out, &name)?, bytes, force)?;
         // Companion `.meta` text file documents what each blob is so an
         // analyst eyeballing the out-dir doesn't have to guess.
         let meta_name = format!("{sha}.meta");
@@ -278,16 +322,72 @@ fn write_report_files(report: &harrington_core::Report, out_dir: &Path) -> Resul
             "origin: {label}\nsize: {}\nsha256-prefix: {sha}\n",
             bytes.len()
         );
-        safe_write_new(&safe_join(&canonical_out, &meta_name)?, meta.as_bytes())?;
+        safe_write(
+            &safe_join(&canonical_out, &meta_name)?,
+            meta.as_bytes(),
+            force,
+        )?;
     }
 
     let traits_json = serde_json::to_string_pretty(&report.traits)?;
-    safe_write_new(
+    safe_write(
         &safe_join(&canonical_out, "traits.json")?,
         traits_json.as_bytes(),
+        force,
     )?;
 
     Ok(())
+}
+
+fn remove_stale_generated_outputs(canonical_out: &Path) -> Result<()> {
+    for entry in fs::read_dir(canonical_out)
+        .with_context(|| format!("read output dir {:?}", canonical_out))?
+    {
+        let entry = entry.with_context(|| format!("read output dir entry {:?}", canonical_out))?;
+        let file_name = entry.file_name();
+        let name = file_name.to_string_lossy();
+        if !is_generated_output_name(&name) {
+            continue;
+        }
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("stat output path {:?}", path))?;
+        if file_type.is_file() || file_type.is_symlink() {
+            fs::remove_file(&path).with_context(|| format!("remove stale output {:?}", path))?;
+        }
+    }
+    Ok(())
+}
+
+fn is_generated_output_name(name: &str) -> bool {
+    if matches!(name, "deobfuscated.bat" | "traits.json") {
+        return true;
+    }
+    let Some((prefix, ext)) = name.split_once('.') else {
+        return false;
+    };
+    prefix.len() == 10
+        && prefix.bytes().all(|b| b.is_ascii_hexdigit())
+        && matches!(
+            ext,
+            "bat"
+                | "ps1"
+                | "normalized.ps1"
+                | "exe"
+                | "dll"
+                | "cab"
+                | "zip"
+                | "rar"
+                | "7z"
+                | "lnk"
+                | "pdf"
+                | "png"
+                | "gif"
+                | "jpg"
+                | "bin"
+                | "meta"
+        )
 }
 
 /// Pick the right on-disk extension for a recovered blob by sniffing
@@ -848,7 +948,7 @@ fn run() -> Result<()> {
         Command::Summarize { file, tldr } => {
             let input = read_input(&file)?;
             let cfg = harrington_core::Config::default();
-            let report = harrington_core::analyze(&input, &cfg);
+            let report = analyze_for_file(&file, &input, &cfg);
             if tldr {
                 print!("{}", build_tldr(&file, &input, &report));
             } else {
@@ -880,7 +980,7 @@ fn run() -> Result<()> {
                 max_output_line_bytes,
                 max_traits_per_kind,
             );
-            let report = harrington_core::analyze(&input, &cfg);
+            let report = analyze_for_file(&file, &input, &cfg);
 
             // Start from the analyst-friendly summary, then layer the full
             // typed trait list and any opt-in raw text on top.
@@ -937,7 +1037,7 @@ fn run() -> Result<()> {
                 max_output_line_bytes,
                 max_traits_per_kind,
             );
-            let report = harrington_core::analyze(&input, &cfg);
+            let report = analyze_for_file(&file, &input, &cfg);
             if jsonl {
                 let meta = serde_json::json!({
                     "kind": "meta",
@@ -966,6 +1066,7 @@ fn run() -> Result<()> {
             out_dir,
             json,
             json_only,
+            force,
             max_depth,
             max_iterations,
             max_child_scripts,
@@ -986,9 +1087,9 @@ fn run() -> Result<()> {
                 max_output_line_bytes,
                 max_traits_per_kind,
             );
-            let report = harrington_core::analyze(&input, &cfg);
+            let report = analyze_for_file(&file, &input, &cfg);
             if !json_only {
-                write_report_files(&report, &out_dir)?;
+                write_report_files(&report, &out_dir, force)?;
             }
             if json || json_only {
                 let val = serde_json::json!({
