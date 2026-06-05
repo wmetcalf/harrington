@@ -55,9 +55,9 @@ static SHELL_RUN_VAR_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 pub fn scan_vbs_payloads(env: &mut Environment) {
-    let payloads: Vec<Vec<u8>> = env.all_extracted_vbs.clone();
+    let mut payloads = std::mem::take(&mut env.all_extracted_vbs);
     let mut seen: std::collections::HashSet<(usize, String)> = std::collections::HashSet::new();
-    for (idx, payload) in payloads.iter().enumerate() {
+    'payloads: for (idx, payload) in payloads.iter().enumerate() {
         if env.check_deadline() {
             break;
         }
@@ -67,7 +67,7 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
         let mut array_bindings: VbsArrayBindings = HashMap::new();
         for line in text.lines() {
             if env.check_deadline() {
-                return;
+                break 'payloads;
             }
             let Some(caps) = VBS_STRING_ASSIGN_RE.captures(line) else {
                 continue;
@@ -94,7 +94,7 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
         for re in regexes {
             for caps in re.captures_iter(&text) {
                 if env.check_deadline() {
-                    return;
+                    break 'payloads;
                 }
                 let Some(url_match) = caps.get(1) else {
                     continue;
@@ -117,7 +117,7 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
 
         for caps in SHELL_RUN_RE.captures_iter(&text) {
             if env.check_deadline() {
-                return;
+                break 'payloads;
             }
             let Some(command) = caps.get(1).map(|m| m.as_str()) else {
                 continue;
@@ -127,7 +127,7 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
 
         for caps in SHELL_RUN_VAR_RE.captures_iter(&text) {
             if env.check_deadline() {
-                return;
+                break 'payloads;
             }
             let Some(var_match) = caps.get(1) else {
                 continue;
@@ -140,7 +140,7 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
 
         for expr in extract_xmlhttp_open_url_exprs(&text) {
             if env.check_deadline() {
-                return;
+                break 'payloads;
             }
             let Some(url) = eval_vbs_string_expr(expr, &bindings, &array_bindings)
                 .and_then(|value| crate::deob_scan::normalize_liberal_url_token(&value))
@@ -161,7 +161,7 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
         for re in [&XMLHTTP_OPEN_VAR_RE, &URLDOWN_VAR_RE] {
             for caps in re.captures_iter(&text) {
                 if env.check_deadline() {
-                    return;
+                    break 'payloads;
                 }
                 let Some(var_match) = caps.get(1) else {
                     continue;
@@ -184,6 +184,8 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
             }
         }
     }
+    payloads.append(&mut env.all_extracted_vbs);
+    env.all_extracted_vbs = payloads;
 }
 
 fn extract_xmlhttp_open_url_exprs(text: &str) -> Vec<&str> {
@@ -623,6 +625,11 @@ mod tests {
                 .any(|t| matches!(t, Trait::Download { .. })),
             "deadline-expired scan still emitted Download: {:?}",
             env.traits
+        );
+        assert_eq!(
+            env.all_extracted_vbs.len(),
+            1,
+            "deadline path dropped extracted VBS payloads"
         );
     }
 }

@@ -2947,7 +2947,7 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
 
     // Use all_extracted_ps1 to cover every payload across the run, not just
     // the latest exec_ps1 (which gets drained).
-    let payloads: Vec<Vec<u8>> = env.all_extracted_ps1.clone();
+    let mut payloads = std::mem::take(&mut env.all_extracted_ps1);
     let mut seen: std::collections::HashSet<(usize, String)> = std::collections::HashSet::new();
 
     for (idx, payload) in payloads.iter().enumerate() {
@@ -3037,6 +3037,8 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
             }
         }
     }
+    payloads.append(&mut env.all_extracted_ps1);
+    env.all_extracted_ps1 = payloads;
 }
 
 fn clean_ps_url(raw: &str) -> String {
