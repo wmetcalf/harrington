@@ -547,7 +547,6 @@ fn scan_python_requests_get_deob_text(deobfuscated: &str, env: &mut Environment)
 fn python_urlopen_call_names(text: &str) -> Vec<String> {
     let mut names = vec![
         "requests.get".to_string(),
-        "requests.Session().get".to_string(),
         "urllib.request.urlopen".to_string(),
         "urllib.urlopen".to_string(),
     ];
@@ -609,6 +608,13 @@ fn collect_python_requests_call_aliases(text: &str, target_method: &str) -> Vec<
 }
 
 fn collect_python_requests_session_get_aliases(text: &str) -> Vec<String> {
+    collect_python_requests_session_constructors(text)
+        .into_iter()
+        .map(|constructor| format!("{constructor}().get"))
+        .collect()
+}
+
+fn collect_python_requests_session_constructors(text: &str) -> Vec<String> {
     #[allow(clippy::expect_used)]
     static PY_IMPORT_REQUESTS_ALIAS_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?is)\bimport\s+requests\s+as\s+([A-Za-z_][A-Za-z0-9_]*)"#)
@@ -620,11 +626,13 @@ fn collect_python_requests_session_get_aliases(text: &str) -> Vec<String> {
             .expect("python requests from import regex")
     });
 
-    let mut aliases: Vec<String> = PY_IMPORT_REQUESTS_ALIAS_RE
-        .captures_iter(text)
-        .take(8)
-        .filter_map(|caps| caps.get(1).map(|m| format!("{}.Session().get", m.as_str())))
-        .collect();
+    let mut constructors = vec!["requests.Session".to_string()];
+    constructors.extend(
+        PY_IMPORT_REQUESTS_ALIAS_RE
+            .captures_iter(text)
+            .take(8)
+            .filter_map(|caps| caps.get(1).map(|m| format!("{}.Session", m.as_str()))),
+    );
     for caps in PY_FROM_REQUESTS_IMPORT_RE.captures_iter(text).take(8) {
         let Some(imports) = caps.get(1).or_else(|| caps.get(2)).map(|m| m.as_str()) else {
             continue;
@@ -644,26 +652,35 @@ fn collect_python_requests_session_get_aliases(text: &str) -> Vec<String> {
                 method
             };
             if is_python_identifier(alias) {
-                aliases.push(format!("{alias}().get"));
+                constructors.push(alias.to_string());
             }
         }
     }
-    aliases
+    constructors
 }
 
 fn collect_python_requests_bound_session_get_aliases(text: &str) -> Vec<String> {
     #[allow(clippy::expect_used)]
     static PY_REQUESTS_SESSION_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*requests\.Session\s*\(\s*\)"#,
+            r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*(?:\.Session)?)\s*\(\s*\)"#,
         )
         .expect("python requests session assignment regex")
     });
 
+    let constructors = collect_python_requests_session_constructors(text);
     PY_REQUESTS_SESSION_ASSIGN_RE
         .captures_iter(text)
         .take(8)
-        .filter_map(|caps| caps.get(1).map(|m| format!("{}.get", m.as_str())))
+        .filter_map(|caps| {
+            let name = caps.get(1)?.as_str();
+            let constructor = caps.get(2)?.as_str();
+            if constructors.iter().any(|known| known == constructor) {
+                Some(format!("{name}.get"))
+            } else {
+                None
+            }
+        })
         .collect()
 }
 
