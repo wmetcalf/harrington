@@ -22,6 +22,7 @@ pub mod rundll32;
 pub mod set;
 pub mod setlocal;
 pub(crate) mod util;
+pub mod wget;
 pub mod wmic;
 
 pub type Handler = fn(raw: &str, env: &mut Environment);
@@ -39,6 +40,7 @@ pub fn lookup(name: &str) -> Option<Handler> {
         "cmd" => return Some(cmd::h_cmd),
         "powershell" | "pwsh" => return Some(powershell::h_powershell),
         "curl" => return Some(curl::h_curl),
+        "wget" | "get" => return Some(wget::h_wget),
         "mshta" => return Some(mshta::h_mshta),
         "rundll32" => return Some(rundll32::h_rundll32),
         "certutil" => return Some(certutil::h_certutil),
