@@ -9002,6 +9002,21 @@ iex $stage
     }
 
     #[test]
+    fn ps1_normalization_decodes_double_quoted_tochararray_reverse_join() {
+        let ps = r#"$p="exe.loPsaC\91303.0.4v\krowemarF\TEN.tfosorciM\swodniW\:C";$chars=$p.ToCharArray();[array]::Reverse($chars);$path=-join($chars);Start-Process $path"#;
+        let normalized = crate::ps1_scan::normalize_ps1_text(ps);
+        assert!(
+            normalized
+                .contains("$path='C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\CasPol.exe'")
+                && normalized.contains(
+                    "Start-Process 'C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\CasPol.exe'"
+                ),
+            "double-quoted ToCharArray reverse join not decoded:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
     fn ps1_normalization_decodes_interleaved_literal_reverse_join() {
         let ps = r#"$p='exe.loPsaC\91303.0.4v\krowemarF\TEN.tfosorciM\swodniW\:C';Write-Host 1;$chars=$p.ToCharArray();Write-Host 2;[array]::Reverse($chars);Write-Host 3;$path=-join($chars);Start-Process $path"#;
         let normalized = crate::ps1_scan::normalize_ps1_text(ps);
