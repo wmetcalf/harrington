@@ -3008,7 +3008,7 @@ fn scan_curl_redirect_deob_text(deobfuscated: &str, env: &mut Environment) {
 
     for line in deobfuscated.lines() {
         let lower = line.to_ascii_lowercase();
-        if !lower.contains("curl") || !contains_liberal_url_scheme(line) || !line.contains('>') {
+        if !lower.contains("curl") || !line.contains('>') {
             continue;
         }
         let Some(curl_pos) = lower.find("curl") else {
