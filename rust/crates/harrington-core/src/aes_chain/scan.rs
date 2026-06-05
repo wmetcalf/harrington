@@ -36,8 +36,22 @@ const NOISE: &[&str] = &[
 ];
 
 fn is_noise(url: &str) -> bool {
-    let lc = url.to_ascii_lowercase();
-    NOISE.iter().any(|n| lc.contains(n))
+    NOISE
+        .iter()
+        .any(|needle| ascii_case_insensitive_contains(url, needle))
+}
+
+fn ascii_case_insensitive_contains(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if haystack.len() < needle.len() {
+        return false;
+    }
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
 }
 
 fn trim_trailing(url: &str) -> &str {
@@ -156,10 +170,12 @@ mod tests {
 
     #[test]
     fn filters_known_noise() {
-        let bytes = b"https://ocsp.digicert.com/crl http://real.evil.example.com/x";
+        let bytes = b"https://OCSP.DigiCert.com/crl http://real.evil.example.com/x";
         let urls = scan_urls(bytes, 16);
         assert!(
-            !urls.iter().any(|u| u.contains("digicert")),
+            !urls
+                .iter()
+                .any(|u| u.eq_ignore_ascii_case("https://ocsp.digicert.com/crl")),
             "got: {:?}",
             urls
         );
