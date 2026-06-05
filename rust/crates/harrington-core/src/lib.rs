@@ -8235,12 +8235,14 @@ $clnt.DownloadFile($url,$file)
         let report = analyze(script.as_bytes(), &Config::default());
         let has = report.traits.iter().any(|t| {
             matches!(t,
-                Trait::Download { src, .. } if src == "http://download.example/tool.exe"
+                Trait::Download { src, dst, .. }
+                    if src == "http://download.example/tool.exe"
+                        && dst.as_deref() == Some("C:\\ProgramData\\tool.exe")
             )
         });
         assert!(
             has,
-            "no Download from raw PowerShell DownloadFile variable URL: {:?}",
+            "no Download from raw PowerShell DownloadFile variable URL/destination: {:?}",
             report.traits
         );
     }

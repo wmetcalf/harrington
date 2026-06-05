@@ -73,6 +73,11 @@ static BARE_DOWNLOADSTRING_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static DOWNLOADFILE_CALL_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?is)\bDownloadFile\s*\(\s*([^)]{0,2048})\)"#).expect("downloadfile call")
+});
+
+#[allow(clippy::expect_used)]
 static DOWNLOADSTRING_FRAGMENT_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?i)\b(?:loadString|ADSTRING)\s*\(\s*'{1,2}(https?://[^'")]+)"#)
         .expect("downloadstring fragment")
@@ -2998,6 +3003,98 @@ fn dynamic_download_invoke_urls(text: &str) -> Vec<String> {
     urls
 }
 
+fn ps_downloadfile_calls(text: &str) -> Vec<(String, Option<String>)> {
+    let bindings = ps_string_bindings(text);
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for caps in DOWNLOADFILE_CALL_RE.captures_iter(text) {
+        let Some(args) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let parts = split_ps_top_level_args(args);
+        let Some(src_arg) = parts.first() else {
+            continue;
+        };
+        let Some(url) = ps_url_arg(src_arg, &bindings) else {
+            continue;
+        };
+        if !seen.insert(url.clone()) {
+            continue;
+        }
+        let dst = parts.get(1).and_then(|arg| ps_string_arg(arg, &bindings));
+        out.push((url, dst));
+    }
+    out
+}
+
+fn ps_url_arg(arg: &str, bindings: &std::collections::HashMap<String, String>) -> Option<String> {
+    ps_string_arg(arg, bindings)
+        .filter(|value| crate::deob_scan::looks_like_liberal_url(value))
+        .and_then(|value| crate::deob_scan::normalize_liberal_url_token(&value))
+}
+
+fn ps_string_arg(
+    arg: &str,
+    bindings: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    ps_literal_arg(arg).or_else(|| ps_variable_arg(arg, bindings))
+}
+
+fn ps_literal_arg(arg: &str) -> Option<String> {
+    PS_QUOTED_LITERAL_RE.captures(arg).and_then(|literal_caps| {
+        literal_caps
+            .get(1)
+            .or_else(|| literal_caps.get(2))
+            .map(|m| m.as_str().replace("''", "'"))
+    })
+}
+
+fn ps_variable_arg(
+    arg: &str,
+    bindings: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    let arg = arg.trim();
+    let name = arg.strip_prefix('$')?;
+    if !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+        return None;
+    }
+    bindings.get(&name.to_ascii_lowercase()).cloned()
+}
+
+fn split_ps_top_level_args(args: &str) -> Vec<&str> {
+    let bytes = args.as_bytes();
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    let mut depth = 0usize;
+    let mut quote: Option<u8> = None;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if let Some(q) = quote {
+            if byte == q {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        match byte {
+            b'\'' | b'"' => quote = Some(byte),
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+            b',' if depth == 0 => {
+                parts.push(args[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    if start <= args.len() {
+        parts.push(args[start..].trim());
+    }
+    parts
+}
+
 fn ps_literal_urls(text: &str) -> Vec<String> {
     PS_QUOTED_LITERAL_RE
         .captures_iter(text)
@@ -3280,6 +3377,17 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
         ];
 
         for text in &candidates {
+            for (url, dst) in ps_downloadfile_calls(text) {
+                if !seen.insert((idx, url.clone())) {
+                    continue;
+                }
+                env.traits.push(Trait::Download {
+                    cmd: format!("(ps1 #{idx}) {snippet}"),
+                    src: url,
+                    dst,
+                });
+            }
+
             for re in regexes {
                 for caps in re.captures_iter(text) {
                     let Some(url_match) = caps.get(1) else {
