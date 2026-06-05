@@ -289,7 +289,14 @@ fn extract_urldownloadtofile_arg_exprs(text: &str) -> Vec<(&str, Option<&str>)> 
         let mut cursor = 0usize;
         while let Some(rel) = lower[cursor..].find("urldownloadtofile") {
             let call_start = cursor + rel;
-            let args_start = call_start + "urldownloadtofile".len();
+            let mut args_start = call_start + "urldownloadtofile".len();
+            if line[args_start..]
+                .chars()
+                .next()
+                .is_some_and(|c| matches!(c, 'a' | 'A' | 'w' | 'W'))
+            {
+                args_start += 1;
+            }
             let next = line[args_start..].chars().next();
             if !next.is_some_and(|c| c.is_ascii_whitespace() || c == '(') {
                 cursor = args_start;
