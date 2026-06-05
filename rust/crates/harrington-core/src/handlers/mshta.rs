@@ -9,10 +9,10 @@ pub fn h_mshta(raw: &str, env: &mut Environment) {
 
     for token in split_words(raw).iter().skip(1) {
         let url = strip_quotes(token);
-        if looks_like_url(url) {
+        if let Some(src) = crate::deob_scan::normalize_liberal_url_token(url) {
             env.traits.push(Trait::Download {
                 cmd: raw.to_string(),
-                src: url.to_string(),
+                src,
                 dst: None,
             });
             break;
@@ -28,19 +28,4 @@ fn strip_quotes(s: &str) -> &str {
         return &s[1..s.len() - 1];
     }
     s
-}
-
-fn looks_like_url(s: &str) -> bool {
-    // mshta accepts `hTtps://X`, `http:\\X`, `http:/X` etc — Windows
-    // URL parsing is liberal about scheme case and slash count/type.
-    let lower = s.to_ascii_lowercase();
-    for scheme in &["http:", "https:", "ftp:", "file:"] {
-        if let Some(rest) = lower.strip_prefix(scheme) {
-            let c = rest.chars().next();
-            if matches!(c, Some('/') | Some('\\')) {
-                return true;
-            }
-        }
-    }
-    false
 }
