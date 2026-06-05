@@ -1217,7 +1217,7 @@ fn expand_single_literal_join(text: &str) -> String {
 #[allow(clippy::expect_used)]
 static REVERSE_STRING_SLICE_JOIN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"\(\s*'([^'\\]*(?:\\.[^'\\]*)*)'\s*\[\s*-1\s*\.\.\s*-(\d+)\s*\]\s*-join\s*''\s*\)|'([^'\\]*(?:\\.[^'\\]*)*)'\s*\[\s*-1\s*\.\.\s*-(\d+)\s*\]\s*-join\s*''"#,
+        r#"\(\s*(?:'([^'\\]*(?:\\.[^'\\]*)*)'|"([^"\\]*(?:\\.[^"\\]*)*)")\s*\[\s*-1\s*\.\.\s*-(\d+)\s*\]\s*-join\s*(?:''|"")\s*\)|(?:'([^'\\]*(?:\\.[^'\\]*)*)'|"([^"\\]*(?:\\.[^"\\]*)*)")\s*\[\s*-1\s*\.\.\s*-(\d+)\s*\]\s*-join\s*(?:''|"")"#,
     )
     .expect("reverse string slice join")
 });
@@ -1227,9 +1227,14 @@ fn expand_reverse_string_slice_join(text: &str) -> String {
         .captures_iter(text)
         .filter_map(|caps| {
             let full = caps.get(0)?;
-            let value = caps.get(1).or_else(|| caps.get(3))?.as_str();
+            let value = caps
+                .get(1)
+                .or_else(|| caps.get(2))
+                .or_else(|| caps.get(4))
+                .or_else(|| caps.get(5))?
+                .as_str();
             let requested_len: usize =
-                caps.get(2).or_else(|| caps.get(4))?.as_str().parse().ok()?;
+                caps.get(3).or_else(|| caps.get(6))?.as_str().parse().ok()?;
             let chars: Vec<char> = value.chars().collect();
             if requested_len == 0 || requested_len > chars.len() {
                 return None;
