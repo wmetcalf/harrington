@@ -2787,12 +2787,16 @@ fn parse_curl_like_download(tokens: &[String]) -> Option<(String, Option<String>
                 continue;
             }
         }
-        if let Some(normalized) = normalize_liberal_url_token(token) {
+        if let Some(normalized) = normalize_curl_url_token(token) {
             url = Some(normalized);
         }
         i += 1;
     }
     url.map(|u| (u, dst))
+}
+
+fn normalize_curl_url_token(token: &str) -> Option<String> {
+    normalize_liberal_url_token(token).or_else(|| normalize_schemeless_domain_path_token(token))
 }
 
 fn short_option_cluster_output(token: &str, output_flag: char) -> Option<&str> {
@@ -2901,7 +2905,7 @@ fn parse_curl_output_dst(text: &str) -> Option<String> {
 }
 
 fn looks_like_curl_url(url: &str) -> bool {
-    normalize_liberal_url_token(url).is_some_and(|url| {
+    normalize_curl_url_token(url).is_some_and(|url| {
         let Some((scheme, rest)) = url.split_once("://") else {
             return false;
         };
@@ -3058,7 +3062,7 @@ fn scan_curl_deob_text(deobfuscated: &str, env: &mut Environment) {
 
     for line in deobfuscated.lines() {
         let lower = line.to_ascii_lowercase();
-        if !lower.contains("curl") || !contains_liberal_url_scheme(line) {
+        if !lower.contains("curl") {
             continue;
         }
         let Some(curl_pos) = lower.find("curl") else {
