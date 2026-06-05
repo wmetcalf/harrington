@@ -548,8 +548,13 @@ fn parse_js_textdecoder_decode_call_at(text: &str, start: usize) -> Option<(usiz
         }
         JsTextDecoderEncoding::Utf16Le | JsTextDecoderEncoding::Utf16Be => {
             let raw_arrays = collect_js_byte_array_byte_bindings(text);
+            let (bindings, _) = collect_js_string_bindings(text);
             let (arg_end, bytes) = if let Some((arg_end, bytes)) =
                 parse_js_typed_byte_array_arg_bytes(text, arg_start)
+            {
+                (arg_end, bytes)
+            } else if let Some((arg_end, bytes)) =
+                parse_js_buffer_from_arg_bytes(text, arg_start, &bindings)
             {
                 (arg_end, bytes)
             } else {
@@ -1462,6 +1467,25 @@ fn parse_js_buffer_byte_array_arg_bytes(
         return None;
     }
     Some((close + 1, bytes))
+}
+
+fn parse_js_buffer_from_arg_bytes(
+    text: &str,
+    start: usize,
+    bindings: &HashMap<String, String>,
+) -> Option<(usize, Vec<u8>)> {
+    let (buffer_end, name) = parse_js_identifier_at(text, start)?;
+    if name != "Buffer" {
+        return None;
+    }
+    let open = consume_js_method_open(text, buffer_end, "from")?;
+    if let Some((buffer_end, bytes)) =
+        parse_js_buffer_byte_array_arg_bytes(text, open, &collect_js_byte_array_byte_bindings(text))
+    {
+        return Some((buffer_end, bytes));
+    }
+    let (buffer_end, encoded, encoding) = parse_js_buffer_base64_args(text, open, bindings)?;
+    decode_js_buffer_bytes(&encoded, encoding).map(|bytes| (buffer_end, bytes))
 }
 
 fn parse_js_typed_byte_array_arg(text: &str, start: usize) -> Option<(usize, String)> {
