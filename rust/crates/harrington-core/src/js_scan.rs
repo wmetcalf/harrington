@@ -3067,10 +3067,11 @@ fn find_js_string_concat_matches(text: &str) -> Vec<(usize, usize, String)> {
 
 fn parse_js_string_literal_at(text: &str, start: usize) -> Option<(usize, String)> {
     let quote_byte = *text.as_bytes().get(start)?;
-    if quote_byte != b'\'' && quote_byte != b'"' {
+    if quote_byte != b'\'' && quote_byte != b'"' && quote_byte != b'`' {
         return None;
     }
     let quote_char = quote_byte as char;
+    let is_template = quote_byte == b'`';
 
     let mut value = String::new();
     let inner = &text[start + 1..];
@@ -3081,6 +3082,9 @@ fn parse_js_string_literal_at(text: &str, start: usize) -> Option<(usize, String
         // string prematurely.
         if c == quote_char {
             return Some((start + 1 + rel + c.len_utf8(), value));
+        }
+        if is_template && c == '$' && matches!(chars.peek(), Some(&(_, '{'))) {
+            return None;
         }
         if c != '\\' {
             value.push(c);
