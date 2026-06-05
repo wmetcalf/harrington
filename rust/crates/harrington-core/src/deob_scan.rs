@@ -2464,6 +2464,8 @@ fn is_url_launcher_command(cmd: &str) -> bool {
             | "brave.exe"
             | "opera"
             | "opera.exe"
+            | "hh"
+            | "hh.exe"
     )
 }
 
