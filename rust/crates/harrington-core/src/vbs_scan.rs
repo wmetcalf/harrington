@@ -141,6 +141,16 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
             push_downloads_from_vbs_command(env, idx, &text, command, &dst_hint, &mut seen);
         }
 
+        for expr in extract_shell_run_command_exprs(&text) {
+            if env.check_deadline() {
+                break 'payloads;
+            }
+            let Some(command) = eval_vbs_string_expr(expr, &bindings, &array_bindings) else {
+                continue;
+            };
+            push_downloads_from_vbs_command(env, idx, &text, &command, &dst_hint, &mut seen);
+        }
+
         for expr in extract_xmlhttp_open_url_exprs(&text) {
             if env.check_deadline() {
                 break 'payloads;
@@ -209,6 +219,33 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
     }
     payloads.append(&mut env.all_extracted_vbs);
     env.all_extracted_vbs = payloads;
+}
+
+fn extract_shell_run_command_exprs(text: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let lower = line.to_ascii_lowercase();
+        let mut cursor = 0usize;
+        while let Some(rel) = lower[cursor..].find(".run") {
+            let run_start = cursor + rel;
+            let args_start = run_start + ".run".len();
+            let next = line[args_start..].chars().next();
+            if !next.is_some_and(|c| c.is_ascii_whitespace() || c == '(') {
+                cursor = args_start;
+                continue;
+            }
+            let mut args = line[args_start..].trim_start();
+            if let Some(rest) = args.strip_prefix('(') {
+                args = rest;
+            }
+            let parts = split_vbs_args(args);
+            if let Some(expr) = parts.first() {
+                out.push(*expr);
+            }
+            cursor = args_start;
+        }
+    }
+    out
 }
 
 fn extract_xmlhttp_open_url_exprs(text: &str) -> Vec<&str> {
