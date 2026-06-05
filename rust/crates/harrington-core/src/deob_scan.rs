@@ -535,14 +535,14 @@ fn decoded_python_b64decode_literals(deobfuscated: &str) -> Vec<String> {
     #[allow(clippy::expect_used)]
     static PY_B64DECODE_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r#"(?is)base64\.(b64decode|urlsafe_b64decode)\s*\(\s*(?:[bB])?['"]([^'"]+)['"]\s*([^)]{0,128})\)"#,
+            r#"(?is)(?:base64|__import__\(\s*['"]base64['"]\s*\))\.(b64decode|urlsafe_b64decode)\s*\(\s*(?:[bB])?['"]([^'"]+)['"]\s*([^)]{0,128})\)"#,
         )
             .expect("python b64decode literal regex")
     });
     #[allow(clippy::expect_used)]
     static PY_B64DECODE_VAR_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r#"(?is)base64\.(b64decode|urlsafe_b64decode)\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*([^)]{0,128})\)"#,
+            r#"(?is)(?:base64|__import__\(\s*['"]base64['"]\s*\))\.(b64decode|urlsafe_b64decode)\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*([^)]{0,128})\)"#,
         )
             .expect("python b64decode variable regex")
     });
