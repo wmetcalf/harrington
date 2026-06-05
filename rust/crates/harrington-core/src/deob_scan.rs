@@ -2711,6 +2711,18 @@ fn parse_curl_like_download(tokens: &[String]) -> Option<(String, Option<String>
         let raw_token = tokens[i].trim_matches(['"', '\'', ')']);
         let token = clean_command_url_token(raw_token);
         let lower = raw_token.to_ascii_lowercase();
+        if let Some(value) = short_option_cluster_output(raw_token, 'o') {
+            if value.is_empty() {
+                dst = tokens
+                    .get(i + 1)
+                    .map(|s| s.trim_matches(['"', '\'', ')']).to_string());
+                i += 2;
+            } else {
+                dst = Some(value.trim_matches(['"', '\'', ')']).to_string());
+                i += 1;
+            }
+            continue;
+        }
         if (lower == "-o" || lower == "--output") && tokens.get(i + 1).is_some() {
             dst = tokens
                 .get(i + 1)
@@ -2741,6 +2753,15 @@ fn parse_curl_like_download(tokens: &[String]) -> Option<(String, Option<String>
         i += 1;
     }
     url.map(|u| (u, dst))
+}
+
+fn short_option_cluster_output(token: &str, output_flag: char) -> Option<&str> {
+    let cluster = token.strip_prefix('-')?;
+    if cluster.starts_with('-') || cluster.len() <= 1 {
+        return None;
+    }
+    let idx = cluster.find(output_flag)?;
+    Some(&cluster[idx + output_flag.len_utf8()..])
 }
 
 fn parse_glued_curl_download(text: &str) -> Option<(String, Option<String>)> {
@@ -3037,6 +3058,18 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
         let raw_token = tokens[i].trim_matches(['"', '\'', ')']);
         let token = clean_command_url_token(raw_token);
         let lower = raw_token.to_ascii_lowercase();
+        if let Some(rest) = short_option_cluster_output(raw_token, 'O') {
+            if rest.is_empty() {
+                dst = tokens
+                    .get(i + 1)
+                    .map(|s| s.trim_matches(['"', '\'', ')']).to_string());
+                i += 2;
+            } else {
+                dst = Some(rest.trim_matches(['"', '\'', ')']).to_string());
+                i += 1;
+            }
+            continue;
+        }
         if (lower == "-o" || lower == "--output-document") && tokens.get(i + 1).is_some() {
             dst = tokens
                 .get(i + 1)
