@@ -1370,7 +1370,7 @@ fn parse_js_typed_byte_array_arg(text: &str, start: usize) -> Option<(usize, Str
     } else {
         first_name
     };
-    if ctor_name != "Uint8Array" {
+    if !is_js_byte_array_ctor(ctor_name) {
         return None;
     }
     if let Some(open) = consume_js_method_open(text, cursor, "of") {
@@ -1398,6 +1398,10 @@ fn parse_js_typed_byte_array_arg(text: &str, start: usize) -> Option<(usize, Str
         return None;
     }
     Some((close + 1, decoded))
+}
+
+fn is_js_byte_array_ctor(name: &str) -> bool {
+    matches!(name, "Uint8Array" | "Int8Array")
 }
 
 fn parse_js_byte_array_literal_at(text: &str, array_open: usize) -> Option<(usize, String)> {
