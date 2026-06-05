@@ -49,11 +49,27 @@ static CMD_URL_VAR_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static CMD_SCHEMELESS_URL_VAR_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?i)\bset\s+"?([A-Za-z_][A-Za-z0-9_.$-]*url[A-Za-z0-9_.$-]*)\s*=\s*['"]?([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/[^\s"']+)"#,
+    )
+    .expect("cmd schemeless URL variable regex")
+});
+
+#[allow(clippy::expect_used)]
 static PS_URL_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?i)(?:^|[^\w])\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*["']((?:https?|ftp|file):[\x2f\x5c]+[^"']+)["']"#,
     )
     .expect("PowerShell URL variable regex")
+});
+
+#[allow(clippy::expect_used)]
+static PS_SCHEMELESS_URL_VAR_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?i)(?:^|[^\w])\$([A-Za-z_][A-Za-z0-9_]*url[A-Za-z0-9_]*)\s*=\s*["']([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/[^"']+)["']"#,
+    )
+    .expect("PowerShell schemeless URL variable regex")
 });
 
 #[allow(clippy::expect_used)]
@@ -2156,7 +2172,25 @@ fn scan_url_variable_assignments(deobfuscated: &str, env: &mut Environment) {
                 &mut known,
             );
         }
+        for caps in CMD_SCHEMELESS_URL_VAR_RE.captures_iter(line) {
+            emit_url_variable(
+                caps.get(1).map(|m| m.as_str()),
+                caps.get(2).map(|m| m.as_str()),
+                line,
+                env,
+                &mut known,
+            );
+        }
         for caps in PS_URL_VAR_RE.captures_iter(line) {
+            emit_url_variable(
+                caps.get(1).map(|m| m.as_str()),
+                caps.get(2).map(|m| m.as_str()),
+                line,
+                env,
+                &mut known,
+            );
+        }
+        for caps in PS_SCHEMELESS_URL_VAR_RE.captures_iter(line) {
             emit_url_variable(
                 caps.get(1).map(|m| m.as_str()),
                 caps.get(2).map(|m| m.as_str()),
@@ -2246,7 +2280,10 @@ fn emit_url_variable(
     let (Some(name), Some(url)) = (name, url) else {
         return;
     };
-    let Some(url) = normalize_liberal_url_token(trim_url_suffix(url)) else {
+    let value = trim_url_suffix(url);
+    let Some(url) = normalize_liberal_url_token(value)
+        .or_else(|| normalize_schemeless_domain_path_token(value))
+    else {
         return;
     };
     if is_noise_url(&url) || !known.insert(url.clone()) {

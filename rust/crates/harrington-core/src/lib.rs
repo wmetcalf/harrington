@@ -11910,7 +11910,9 @@ powershell -Command "saps -WindowStyle Hidden -FilePath pslaunch-schemeless.exam
         crate::deob_scan::scan_deob_text(
             r#"set "zipUrl=https://vars.example/payload.zip"
 @@if 1 EQU 1 set NN=https://raw.example/config.txt
-$urlzip = "https://ps.example/stage.zip""#,
+set "downloadUrl=vars-schemeless.example/payload.zip"
+$urlzip = "https://ps.example/stage.zip"
+$stageUrl = "ps-schemeless.example/stage.zip""#,
             &mut env,
         );
         let vars: Vec<(String, String)> = env
@@ -11931,7 +11933,9 @@ $urlzip = "https://ps.example/stage.zip""#,
         for (name, expected) in [
             ("zipUrl", "https://vars.example/payload.zip"),
             ("NN", "https://raw.example/config.txt"),
+            ("downloadUrl", "http://vars-schemeless.example/payload.zip"),
             ("urlzip", "https://ps.example/stage.zip"),
+            ("stageUrl", "http://ps-schemeless.example/stage.zip"),
         ] {
             assert!(
                 vars.iter()
