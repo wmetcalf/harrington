@@ -91,9 +91,14 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
                 bindings.insert(key, value);
             }
         }
-        let dst_hint: Option<String> = SAVETOFILE_RE
-            .captures(&text)
-            .and_then(|c| c.get(1).map(|m| m.as_str().to_string()));
+        let dst_hint: Option<String> = extract_savetofile_dest_exprs(&text)
+            .into_iter()
+            .find_map(|expr| eval_vbs_string_expr(expr, &bindings, &array_bindings))
+            .or_else(|| {
+                SAVETOFILE_RE
+                    .captures(&text)
+                    .and_then(|c| c.get(1).map(|m| m.as_str().to_string()))
+            });
         let regexes: &[&Lazy<Regex>] = &[&XMLHTTP_OPEN_RE, &URLDOWN_RE];
         for re in regexes {
             for caps in re.captures_iter(&text) {
@@ -295,6 +300,33 @@ fn extract_urldownloadtofile_url_exprs(text: &str) -> Vec<&str> {
             }
             let parts = split_vbs_args(args);
             if let Some(expr) = parts.get(1) {
+                out.push(*expr);
+            }
+            cursor = args_start;
+        }
+    }
+    out
+}
+
+fn extract_savetofile_dest_exprs(text: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let lower = line.to_ascii_lowercase();
+        let mut cursor = 0usize;
+        while let Some(rel) = lower[cursor..].find(".savetofile") {
+            let call_start = cursor + rel;
+            let args_start = call_start + ".savetofile".len();
+            let next = line[args_start..].chars().next();
+            if !next.is_some_and(|c| c.is_ascii_whitespace() || c == '(') {
+                cursor = args_start;
+                continue;
+            }
+            let mut args = line[args_start..].trim_start();
+            if let Some(rest) = args.strip_prefix('(') {
+                args = rest;
+            }
+            let parts = split_vbs_args(args);
+            if let Some(expr) = parts.first() {
                 out.push(*expr);
             }
             cursor = args_start;

