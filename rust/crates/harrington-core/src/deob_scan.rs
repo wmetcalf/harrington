@@ -520,6 +520,9 @@ fn scan_python_requests_get_deob_text(deobfuscated: &str, env: &mut Environment)
     ) {
         emit_python_download(&url, deobfuscated, env, &mut known);
     }
+    for (url, dst) in find_python_urlretrieve_literals(deobfuscated) {
+        emit_python_download_with_dst(&url, dst.as_deref(), deobfuscated, env, &mut known);
+    }
 
     for decoded in decoded_python_b64decode_literals(deobfuscated) {
         for url in find_call_url_literals(
@@ -527,6 +530,9 @@ fn scan_python_requests_get_deob_text(deobfuscated: &str, env: &mut Environment)
             &["requests.get", "urllib.request.urlopen", "urllib.urlopen"],
         ) {
             emit_python_download(&url, &decoded, env, &mut known);
+        }
+        for (url, dst) in find_python_urlretrieve_literals(&decoded) {
+            emit_python_download_with_dst(&url, dst.as_deref(), &decoded, env, &mut known);
         }
     }
 }
@@ -1007,6 +1013,16 @@ fn emit_python_download(
     env: &mut Environment,
     known: &mut std::collections::HashSet<String>,
 ) {
+    emit_python_download_with_dst(url, None, deobfuscated, env, known);
+}
+
+fn emit_python_download_with_dst(
+    url: &str,
+    dst: Option<&str>,
+    deobfuscated: &str,
+    env: &mut Environment,
+    known: &mut std::collections::HashSet<String>,
+) {
     let url = trim_url_suffix(url).to_string();
     if is_noise_url(&url) || !known.insert(url.clone()) {
         return;
@@ -1019,7 +1035,7 @@ fn emit_python_download(
     env.traits.push(Trait::Download {
         cmd: line_hint,
         src: url,
-        dst: None,
+        dst: dst.map(str::to_string),
     });
 }
 
@@ -1068,6 +1084,44 @@ fn find_call_url_literals(text: &str, names: &[&str]) -> Vec<String> {
             };
             if let Some(url) = first_url_literal(&text[open + 1..close]) {
                 found.push(url);
+            }
+            search_start = close + 1;
+        }
+    }
+    found
+}
+
+fn find_python_urlretrieve_literals(text: &str) -> Vec<(String, Option<String>)> {
+    let mut found = Vec::new();
+    for name in ["urllib.request.urlretrieve", "urllib.urlretrieve"] {
+        let mut search_start = 0;
+        while let Some(name_start) = find_ascii_case_insensitive(text, name, search_start) {
+            let name_end = name_start + name.len();
+            if !is_callable_name_boundary(text, name_start, name_end) {
+                search_start = name_end;
+                continue;
+            }
+            let open = skip_ascii_ws(text, name_end);
+            if text.as_bytes().get(open) != Some(&b'(') {
+                search_start = name_end;
+                continue;
+            }
+            let Some(close) = find_matching_paren(text, open) else {
+                search_start = open + 1;
+                continue;
+            };
+            let literals = python_quoted_literals(&text[open + 1..close]);
+            if let Some((idx, url)) = literals
+                .iter()
+                .enumerate()
+                .find(|(_, literal)| looks_like_direct_url(trim_url_suffix(literal)))
+            {
+                let dst = literals
+                    .iter()
+                    .skip(idx + 1)
+                    .find(|literal| !looks_like_direct_url(trim_url_suffix(literal)))
+                    .cloned();
+                found.push((trim_url_suffix(url).to_string(), dst));
             }
             search_start = close + 1;
         }
@@ -1188,7 +1242,17 @@ fn find_matching_paren(text: &str, open: usize) -> Option<usize> {
 }
 
 fn first_url_literal(args: &str) -> Option<String> {
+    python_quoted_literals(args)
+        .into_iter()
+        .find_map(|literal| {
+            looks_like_direct_url(trim_url_suffix(&literal))
+                .then(|| trim_url_suffix(&literal).to_string())
+        })
+}
+
+fn python_quoted_literals(args: &str) -> Vec<String> {
     let bytes = args.as_bytes();
+    let mut literals = Vec::new();
     let mut i = 0;
     while i < bytes.len() {
         let mut quote = bytes[i];
@@ -1222,12 +1286,10 @@ fn first_url_literal(args: &str) -> Option<String> {
             literal.push(byte as char);
             i += 1;
         }
-        if looks_like_direct_url(trim_url_suffix(&literal)) {
-            return Some(trim_url_suffix(&literal).to_string());
-        }
+        literals.push(literal);
         i += 1;
     }
-    None
+    literals
 }
 
 fn has_short_webclient_context(text: &str, dot: usize) -> bool {

