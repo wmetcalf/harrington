@@ -773,7 +773,37 @@ fn parse_vbs_replace(
     let source = eval_vbs_string_expr(args[0], bindings, array_bindings)?;
     let find = eval_vbs_string_expr(args[1], bindings, array_bindings)?;
     let replacement = eval_vbs_string_expr(args[2], bindings, array_bindings)?;
-    Some(source.replace(&find, &replacement))
+    if args
+        .get(5)
+        .is_some_and(|compare| vbs_replace_text_compare(compare))
+    {
+        Some(replace_ascii_case_insensitive(&source, &find, &replacement))
+    } else {
+        Some(source.replace(&find, &replacement))
+    }
+}
+
+fn vbs_replace_text_compare(compare: &str) -> bool {
+    let compare = compare.trim().trim_matches(['(', ')']);
+    compare.eq_ignore_ascii_case("vbTextCompare") || compare == "1"
+}
+
+fn replace_ascii_case_insensitive(source: &str, find: &str, replacement: &str) -> String {
+    if find.is_empty() {
+        return source.to_string();
+    }
+    let source_lower = source.to_ascii_lowercase();
+    let find_lower = find.to_ascii_lowercase();
+    let mut out = String::with_capacity(source.len());
+    let mut cursor = 0usize;
+    while let Some(rel) = source_lower[cursor..].find(&find_lower) {
+        let start = cursor + rel;
+        out.push_str(&source[cursor..start]);
+        out.push_str(replacement);
+        cursor = start + find.len();
+    }
+    out.push_str(&source[cursor..]);
+    out
 }
 
 fn parse_vbs_mid(
