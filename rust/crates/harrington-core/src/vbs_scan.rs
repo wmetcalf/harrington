@@ -69,23 +69,26 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
             if env.check_deadline() {
                 break 'payloads;
             }
-            let Some(caps) = VBS_STRING_ASSIGN_RE.captures(line) else {
-                continue;
-            };
-            let (Some(name), Some(value)) = (caps.get(1), caps.get(2)) else {
-                continue;
-            };
-            let key = name.as_str().to_ascii_lowercase();
-            if let Some(values) = parse_vbs_array_values(value.as_str(), &bindings, &array_bindings)
-            {
-                array_bindings.insert(key, values);
-                continue;
+            for statement in split_vbs_statements(line) {
+                let Some(caps) = VBS_STRING_ASSIGN_RE.captures(statement) else {
+                    continue;
+                };
+                let (Some(name), Some(value)) = (caps.get(1), caps.get(2)) else {
+                    continue;
+                };
+                let key = name.as_str().to_ascii_lowercase();
+                if let Some(values) =
+                    parse_vbs_array_values(value.as_str(), &bindings, &array_bindings)
+                {
+                    array_bindings.insert(key, values);
+                    continue;
+                }
+                let Some(value) = eval_vbs_string_expr(value.as_str(), &bindings, &array_bindings)
+                else {
+                    continue;
+                };
+                bindings.insert(key, value);
             }
-            let Some(value) = eval_vbs_string_expr(value.as_str(), &bindings, &array_bindings)
-            else {
-                continue;
-            };
-            bindings.insert(key, value);
         }
         let dst_hint: Option<String> = SAVETOFILE_RE
             .captures(&text)
@@ -255,6 +258,34 @@ fn join_vbs_line_continuations(text: &str) -> String {
         }
     }
     out
+}
+
+fn split_vbs_statements(line: &str) -> Vec<&str> {
+    let mut statements = Vec::new();
+    let mut start = 0usize;
+    let mut in_quote = false;
+    let bytes = line.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => {
+                if in_quote && bytes.get(i + 1) == Some(&b'"') {
+                    i += 2;
+                    continue;
+                }
+                in_quote = !in_quote;
+                i += 1;
+            }
+            b':' if !in_quote => {
+                statements.push(line[start..i].trim());
+                i += 1;
+                start = i;
+            }
+            _ => i += 1,
+        }
+    }
+    statements.push(line[start..].trim());
+    statements
 }
 
 fn eval_vbs_string_expr(
