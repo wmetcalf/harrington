@@ -10800,6 +10800,32 @@ $urlzip = "https://ps.example/stage.zip""#,
     }
 
     #[test]
+    fn registry_default_url_value_emits_typed_trait() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        let url = "https://registry-default.example/payload";
+        crate::deob_scan::scan_deob_text(
+            &format!(r#"reg add "HKCU\Software\Classes\test" /ve /d "{url}" /f"#),
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            let Ok(value) = serde_json::to_value(t) else {
+                return false;
+            };
+            value.get("kind").and_then(|kind| kind.as_str()) == Some("RegistryUrl")
+                && value.get("value").and_then(|value| value.as_str()) == Some("(Default)")
+                && value.get("url").and_then(|got_url| got_url.as_str()) == Some(url)
+        });
+        assert!(has, "default Registry URL not typed: {:?}", env.traits);
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
+            "default Registry URL double-emitted as generic: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn process_url_argument_emits_typed_trait_without_generic_duplicate() {
         let mut env = crate::env::Environment::new(&Config::default());
         let url = "https://skynetx.com.br/html.html";

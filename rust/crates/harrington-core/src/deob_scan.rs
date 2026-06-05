@@ -2201,6 +2201,11 @@ fn scan_registry_url_values(deobfuscated: &str, env: &mut Environment) {
                 i += 2;
                 continue;
             }
+            if token.eq_ignore_ascii_case("/ve") {
+                value_name = Some("(Default)".to_string());
+                i += 1;
+                continue;
+            }
             if token.eq_ignore_ascii_case("/d") {
                 url = tokens.get(i + 1).and_then(|next| {
                     normalize_liberal_url_token(trim_url_suffix(strip_quotes(next)))
