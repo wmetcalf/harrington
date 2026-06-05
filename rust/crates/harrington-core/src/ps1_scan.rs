@@ -150,7 +150,8 @@ static PS_QUOTED_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
 
 #[allow(clippy::expect_used)]
 static OUTFILE_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"(?i)-OutFile\s+(?:'([^'\r\n;]+)'?|"([^"\r\n;]+)"?|([^"'\s]+))"#).expect("outfile")
+    Regex::new(r#"(?i)-OutF(?:ile)?\s+(?:'([^'\r\n;]+)'?|"([^"\r\n;]+)"?|([^"'\s]+))"#)
+        .expect("outfile")
 });
 
 #[allow(clippy::expect_used)]
