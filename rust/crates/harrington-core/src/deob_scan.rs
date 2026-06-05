@@ -536,20 +536,32 @@ fn decoded_python_b64decode_literals(deobfuscated: &str) -> Vec<String> {
 
     #[allow(clippy::expect_used)]
     static PY_B64DECODE_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?is)base64\.b64decode\s*\(\s*['"]([A-Za-z0-9+/=]{32,20000})['"]\s*\)"#)
+        Regex::new(
+            r#"(?is)base64\.(b64decode|urlsafe_b64decode)\s*\(\s*(?:[bB])?['"]([A-Za-z0-9+/_=-]{32,20000})['"]\s*\)"#,
+        )
             .expect("python b64decode literal regex")
     });
 
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for caps in PY_B64DECODE_LITERAL_RE.captures_iter(deobfuscated).take(16) {
-        let Some(b64) = caps.get(1).map(|m| m.as_str()) else {
+        let Some(method) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(b64) = caps.get(2).map(|m| m.as_str()) else {
             continue;
         };
         if !seen.insert(b64.to_string()) {
             continue;
         }
-        let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(b64) else {
+        let decoded = if method.eq_ignore_ascii_case("urlsafe_b64decode") {
+            base64::engine::general_purpose::URL_SAFE
+                .decode(b64)
+                .or_else(|_| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(b64))
+        } else {
+            base64::engine::general_purpose::STANDARD.decode(b64)
+        };
+        let Ok(decoded) = decoded else {
             continue;
         };
         if decoded.len() > 64 * 1024 {
