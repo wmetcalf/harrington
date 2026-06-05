@@ -6834,6 +6834,30 @@ mod wget_tests {
 }
 
 #[cfg(test)]
+mod msiexec_tests {
+    use crate::env::{Config, Environment};
+    use crate::interp::interpret_line;
+    use crate::traits::Trait;
+
+    #[test]
+    fn msiexec_url_package_argument_emits_typed_trait() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"msiexec /quiet /i "https://msiexec-direct.example/setup.msi""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { url, .. }
+                    if url == "https://msiexec-direct.example/setup.msi"
+            )
+        });
+        assert!(has, "msiexec URL argument not typed: {:?}", env.traits);
+    }
+}
+
+#[cfg(test)]
 mod misc_handler_tests {
     use crate::env::{Config, Environment, FsEntry};
     use crate::interp::interpret_line;

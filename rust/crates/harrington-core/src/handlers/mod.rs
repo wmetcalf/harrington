@@ -15,6 +15,7 @@ pub mod for_cmd;
 pub mod goto;
 pub mod if_cmd;
 pub mod mshta;
+pub mod msiexec;
 pub mod net;
 pub mod passthrough;
 pub mod powershell;
@@ -41,6 +42,7 @@ pub fn lookup(name: &str) -> Option<Handler> {
         "powershell" | "pwsh" => return Some(powershell::h_powershell),
         "curl" => return Some(curl::h_curl),
         "wget" | "get" => return Some(wget::h_wget),
+        "msiexec" => return Some(msiexec::h_msiexec),
         "mshta" => return Some(mshta::h_mshta),
         "rundll32" => return Some(rundll32::h_rundll32),
         "certutil" => return Some(certutil::h_certutil),
