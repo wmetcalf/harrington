@@ -2981,9 +2981,9 @@ fn analyze_inner(input: &[u8], cfg: &Config, file_path: Option<std::path::PathBu
     // contains CMD code; an `objShell.Run('\\\\host@SSL\\DavWWWRoot\\...')`
     // inside a `<script>` block (polyglot .bat) never reaches `out` so we
     // scan the raw payload bodies directly.
-    let jscript_bodies: Vec<Vec<u8>> = env.all_extracted_jscript.clone();
-    let vbs_bodies: Vec<Vec<u8>> = env.all_extracted_vbs.clone();
-    let ps1_bodies: Vec<Vec<u8>> = env.all_extracted_ps1.clone();
+    let mut jscript_bodies = std::mem::take(&mut env.all_extracted_jscript);
+    let mut vbs_bodies = std::mem::take(&mut env.all_extracted_vbs);
+    let mut ps1_bodies = std::mem::take(&mut env.all_extracted_ps1);
     for body in jscript_bodies
         .iter()
         .chain(vbs_bodies.iter())
@@ -2995,6 +2995,12 @@ fn analyze_inner(input: &[u8], cfg: &Config, file_path: Option<std::path::PathBu
         let text = String::from_utf8_lossy(body);
         deob_scan::scan_unc_webdav(&text, &mut env);
     }
+    jscript_bodies.append(&mut env.all_extracted_jscript);
+    env.all_extracted_jscript = jscript_bodies;
+    vbs_bodies.append(&mut env.all_extracted_vbs);
+    env.all_extracted_vbs = vbs_bodies;
+    ps1_bodies.append(&mut env.all_extracted_ps1);
+    env.all_extracted_ps1 = ps1_bodies;
     profile_mark!("payload_unc_webdav");
     // Filter out Download traits whose `src` URL is noise (unresolved
     // `%%X` loop vars, `%foo%` undefined refs, bad IPs, well-known scrape
