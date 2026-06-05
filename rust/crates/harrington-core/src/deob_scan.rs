@@ -2375,9 +2375,10 @@ fn url_launch_after_start(tokens: &[String], mut i: usize) -> Option<String> {
             i += 1;
             continue;
         }
-        if looks_like_direct_url(token) {
+        if looks_like_direct_url(token) || normalize_schemeless_domain_path_token(token).is_some() {
             let url = normalize_url_obfuscation(token);
-            return normalize_liberal_url_token(&url);
+            return normalize_liberal_url_token(&url)
+                .or_else(|| normalize_schemeless_domain_path_token(&url));
         }
         if is_url_launcher_command(&command_name(token)) {
             return first_url_after(tokens, i + 1, false, true);
@@ -2385,7 +2386,11 @@ fn url_launch_after_start(tokens: &[String], mut i: usize) -> Option<String> {
         if !skipped_title
             && tokens
                 .get(i + 1)
-                .map(|next| looks_like_direct_url(strip_quotes(next)))
+                .map(|next| {
+                    let next = strip_quotes(next);
+                    looks_like_direct_url(next)
+                        || normalize_schemeless_domain_path_token(next).is_some()
+                })
                 .unwrap_or(false)
         {
             skipped_title = true;
