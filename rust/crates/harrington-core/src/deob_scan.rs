@@ -1404,7 +1404,8 @@ fn python_urlretrieve_download_args(
         let dst = parts
             .iter()
             .skip(idx + 1)
-            .find_map(|part| python_string_arg(part, string_bindings));
+            .find_map(|part| python_string_arg(part, string_bindings))
+            .or_else(|| python_keyword_string_arg(&parts, "filename", string_bindings));
         return Some((url, dst));
     }
 
@@ -1413,7 +1414,8 @@ fn python_urlretrieve_download_args(
         let dst = parts
             .iter()
             .skip(idx + 1)
-            .find_map(|part| python_string_arg(part, string_bindings));
+            .find_map(|part| python_string_arg(part, string_bindings))
+            .or_else(|| python_keyword_string_arg(&parts, "filename", string_bindings));
         Some((url, dst))
     })
 }
@@ -1456,6 +1458,19 @@ fn python_string_arg_from_binding(arg: &str, bindings: &HashMap<String, String>)
         .get(&ident)
         .filter(|value| !looks_like_direct_url(trim_url_suffix(value)))
         .cloned()
+}
+
+fn python_keyword_string_arg(
+    parts: &[&str],
+    keyword: &str,
+    bindings: &HashMap<String, String>,
+) -> Option<String> {
+    parts.iter().find_map(|part| {
+        let (key, value) = part.split_once('=')?;
+        key.trim()
+            .eq_ignore_ascii_case(keyword)
+            .then(|| python_string_arg(value, bindings))?
+    })
 }
 
 fn collect_python_urllib_call_aliases(text: &str, target_method: &str) -> Vec<String> {
