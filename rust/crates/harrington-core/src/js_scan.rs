@@ -542,13 +542,21 @@ fn parse_js_textdecoder_constructor_name_end(text: &str, start: usize) -> Option
     if !matches!(first_name, "window" | "self" | "globalThis") {
         return None;
     }
-    let dot = skip_ascii_ws(text, first_end);
-    if text.as_bytes().get(dot) != Some(&b'.') {
-        return None;
+    let member = skip_ascii_ws(text, first_end);
+    if text.as_bytes().get(member) == Some(&b'.') {
+        let member_start = skip_ascii_ws(text, member + 1);
+        let (member_end, member_name) = parse_js_identifier_at(text, member_start)?;
+        return (member_name == "TextDecoder").then_some(member_end);
     }
-    let member_start = skip_ascii_ws(text, dot + 1);
-    let (member_end, member_name) = parse_js_identifier_at(text, member_start)?;
-    (member_name == "TextDecoder").then_some(member_end)
+    if text.as_bytes().get(member) == Some(&b'[') {
+        let literal_start = skip_ascii_ws(text, member + 1);
+        let (literal_end, member_name) = parse_js_string_literal_at(text, literal_start)?;
+        let close = skip_ascii_ws(text, literal_end);
+        if text.as_bytes().get(close) == Some(&b']') && member_name == "TextDecoder" {
+            return Some(close + 1);
+        }
+    }
+    None
 }
 
 fn parse_js_textdecoder_constructor_close(text: &str, open: usize) -> Option<usize> {

