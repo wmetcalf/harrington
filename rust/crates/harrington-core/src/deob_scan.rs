@@ -532,14 +532,19 @@ fn scan_python_requests_get_deob_text(deobfuscated: &str, env: &mut Environment)
 }
 
 fn decoded_python_b64decode_literals(deobfuscated: &str) -> Vec<String> {
-    use base64::Engine;
-
     #[allow(clippy::expect_used)]
     static PY_B64DECODE_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
             r#"(?is)base64\.(b64decode|urlsafe_b64decode)\s*\(\s*(?:[bB])?['"]([^'"]+)['"]\s*([^)]{0,128})\)"#,
         )
             .expect("python b64decode literal regex")
+    });
+    #[allow(clippy::expect_used)]
+    static PY_B64DECODE_VAR_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?is)base64\.(b64decode|urlsafe_b64decode)\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*([^)]{0,128})\)"#,
+        )
+            .expect("python b64decode variable regex")
     });
 
     let mut out = Vec::new();
@@ -560,22 +565,84 @@ fn decoded_python_b64decode_literals(deobfuscated: &str) -> Vec<String> {
         let has_urlsafe_altchars = caps
             .get(3)
             .is_some_and(|m| python_b64_suffix_has_urlsafe_altchars(m.as_str()));
-        if !seen.insert(b64.to_string()) {
-            continue;
-        }
-        let decoded = if method.eq_ignore_ascii_case("urlsafe_b64decode") || has_urlsafe_altchars {
-            base64::engine::general_purpose::URL_SAFE
-                .decode(b64)
-                .or_else(|_| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(b64))
-        } else {
-            base64::engine::general_purpose::STANDARD.decode(b64)
-        };
-        let Ok(decoded) = decoded else {
+        decode_python_b64_payload(method, b64, has_urlsafe_altchars, &mut out, &mut seen);
+    }
+
+    let bindings = collect_python_b64_string_bindings(deobfuscated);
+    for caps in PY_B64DECODE_VAR_RE.captures_iter(deobfuscated).take(16) {
+        let Some(method) = caps.get(1).map(|m| m.as_str()) else {
             continue;
         };
-        out.extend(decoded_python_literal_payloads(&decoded));
+        let Some(name) = caps.get(2).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(b64) = bindings.get(name).map(String::as_str) else {
+            continue;
+        };
+        let has_urlsafe_altchars = caps
+            .get(3)
+            .is_some_and(|m| python_b64_suffix_has_urlsafe_altchars(m.as_str()));
+        decode_python_b64_payload(method, b64, has_urlsafe_altchars, &mut out, &mut seen);
     }
     out
+}
+
+fn collect_python_b64_string_bindings(
+    deobfuscated: &str,
+) -> std::collections::HashMap<String, String> {
+    #[allow(clippy::expect_used)]
+    static PY_STRING_BINDING_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:[bB])?['"]([^'"]+)['"]"#,
+        )
+        .expect("python string binding regex")
+    });
+
+    let mut bindings = std::collections::HashMap::new();
+    for caps in PY_STRING_BINDING_RE.captures_iter(deobfuscated).take(64) {
+        let Some(name) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(value) = caps.get(2).map(|m| m.as_str()) else {
+            continue;
+        };
+        if !(32..=20_000).contains(&value.len()) || !is_python_base64_literal(value) {
+            continue;
+        }
+        bindings.insert(name.to_string(), value.to_string());
+    }
+    bindings
+}
+
+fn decode_python_b64_payload(
+    method: &str,
+    b64: &str,
+    has_urlsafe_altchars: bool,
+    out: &mut Vec<String>,
+    seen: &mut std::collections::HashSet<String>,
+) {
+    use base64::Engine;
+
+    if !(32..=20_000).contains(&b64.len()) {
+        return;
+    }
+    if !is_python_base64_literal(b64) {
+        return;
+    }
+    if !seen.insert(b64.to_string()) {
+        return;
+    }
+    let decoded = if method.eq_ignore_ascii_case("urlsafe_b64decode") || has_urlsafe_altchars {
+        base64::engine::general_purpose::URL_SAFE
+            .decode(b64)
+            .or_else(|_| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(b64))
+    } else {
+        base64::engine::general_purpose::STANDARD.decode(b64)
+    };
+    let Ok(decoded) = decoded else {
+        return;
+    };
+    out.extend(decoded_python_literal_payloads(&decoded));
 }
 
 fn decoded_python_literal_payloads(decoded: &[u8]) -> Vec<String> {
