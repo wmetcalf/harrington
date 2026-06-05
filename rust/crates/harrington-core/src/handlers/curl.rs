@@ -36,6 +36,14 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
                 i += 1;
                 continue;
             }
+            _ if t.starts_with("--url=") || t.starts_with("--url:") => {
+                let value = strip_quotes(&t["--url=".len()..]);
+                if url.is_none() && looks_like_url(value) {
+                    url = Some(value.to_string());
+                }
+                i += 1;
+                continue;
+            }
             "-O" | "--remote-name" => {
                 remote_name = true;
                 i += 1;
