@@ -2906,14 +2906,40 @@ fn consume_js_method_open(text: &str, idx: usize, name: &str) -> Option<usize> {
             return None;
         }
         close + 1
+    } else if text.as_bytes().get(member_start) == Some(&b'?')
+        && text.as_bytes().get(member_start + 1) == Some(&b'.')
+    {
+        let member_start = skip_ascii_ws(text, member_start + 2);
+        if text.as_bytes().get(member_start) == Some(&b'[') {
+            let literal_start = skip_ascii_ws(text, member_start + 1);
+            let (literal_end, property) = parse_js_string_literal_at(text, literal_start)?;
+            if property != name {
+                return None;
+            }
+            let close = skip_ascii_ws(text, literal_end);
+            if text.as_bytes().get(close) != Some(&b']') {
+                return None;
+            }
+            close + 1
+        } else {
+            let name_start = member_start;
+            let name_end = name_start.checked_add(name.len())?;
+            if text.get(name_start..name_end) != Some(name) {
+                return None;
+            }
+            if text[name_end..]
+                .chars()
+                .next()
+                .is_some_and(is_js_ident_char)
+            {
+                return None;
+            }
+            name_end
+        }
     } else {
         return None;
     };
-    let open = skip_ascii_ws(text, member_end);
-    if text.as_bytes().get(open) != Some(&b'(') {
-        return None;
-    }
-    Some(open)
+    consume_js_call_open(text, member_end)
 }
 
 fn is_js_ident_char(c: char) -> bool {
