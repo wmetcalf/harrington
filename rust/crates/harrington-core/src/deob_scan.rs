@@ -796,13 +796,21 @@ fn python_requests_request_get_url(
         return None;
     }
 
-    first_url_literal(args).or_else(|| {
-        parts
-            .into_iter()
-            .take(4)
-            .filter(|arg| !python_arg_is_keyword(arg, "method"))
-            .find_map(|arg| python_url_arg_from_binding(arg, url_bindings))
-    })
+    if let Some(url) = python_keyword_url_arg(&parts, "url", url_bindings) {
+        return Some(url);
+    }
+
+    let method_is_keyword = parts.iter().any(|arg| python_arg_is_keyword(arg, "method"));
+    let mut positional_args = parts
+        .into_iter()
+        .take(4)
+        .filter(|arg| !python_arg_has_keyword(arg));
+    if !method_is_keyword {
+        positional_args.next();
+    }
+    positional_args
+        .next()
+        .and_then(|arg| python_url_arg_expr(arg, url_bindings))
 }
 
 fn python_requests_request_method_is_get(
@@ -821,6 +829,11 @@ fn python_requests_request_method_is_get(
 fn python_arg_is_keyword(arg: &str, keyword: &str) -> bool {
     arg.split_once('=')
         .is_some_and(|(key, _)| key.trim().eq_ignore_ascii_case(keyword))
+}
+
+fn python_arg_has_keyword(arg: &str) -> bool {
+    arg.split_once('=')
+        .is_some_and(|(key, _)| is_python_identifier(key.trim()))
 }
 
 fn decoded_python_b64decode_literals(deobfuscated: &str) -> Vec<String> {
@@ -1793,12 +1806,31 @@ fn first_url_literal(args: &str) -> Option<String> {
 }
 
 fn first_python_url_arg(args: &str, bindings: &HashMap<String, String>) -> Option<String> {
-    first_url_literal(args).or_else(|| {
-        split_python_top_level_args(args)
+    let parts = split_python_top_level_args(args);
+    python_keyword_url_arg(&parts, "url", bindings).or_else(|| {
+        parts
             .into_iter()
             .take(4)
-            .find_map(|arg| python_url_arg_from_binding(arg, bindings))
+            .find(|arg| !python_arg_has_keyword(arg))
+            .and_then(|arg| python_url_arg_expr(arg, bindings))
     })
+}
+
+fn python_keyword_url_arg(
+    parts: &[&str],
+    keyword: &str,
+    bindings: &HashMap<String, String>,
+) -> Option<String> {
+    parts.iter().find_map(|part| {
+        let (key, value) = part.split_once('=')?;
+        key.trim()
+            .eq_ignore_ascii_case(keyword)
+            .then(|| python_url_arg_expr(value, bindings))?
+    })
+}
+
+fn python_url_arg_expr(arg: &str, bindings: &HashMap<String, String>) -> Option<String> {
+    first_url_literal(arg).or_else(|| python_url_arg_from_binding(arg, bindings))
 }
 
 fn python_url_arg_from_binding(arg: &str, bindings: &HashMap<String, String>) -> Option<String> {
