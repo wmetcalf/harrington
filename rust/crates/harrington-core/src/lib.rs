@@ -10698,6 +10698,37 @@ rundll32 url.dll,FileProtocolHandler https://rundll32-launch.example/extensionle
     }
 
     #[test]
+    fn powershell_url_launch_cmdlets_emit_url_launch() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"powershell -Command "Start-Process 'https://pslaunch.example/a.pdf'"
+powershell -Command "saps -FilePath https://pslaunch.example/b.pdf"
+powershell -Command "Invoke-Item https://pslaunch.example/c.pdf""#,
+            &mut env,
+        );
+        for expected in [
+            "https://pslaunch.example/a.pdf",
+            "https://pslaunch.example/b.pdf",
+            "https://pslaunch.example/c.pdf",
+        ] {
+            assert!(
+                env.traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::UrlLaunch { url, .. } if url == expected)),
+                "missing PowerShell UrlLaunch for {expected}: {:?}",
+                env.traits
+            );
+            assert!(
+                !env.traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == expected)),
+                "PowerShell URL launch double-emitted as generic: {:?}",
+                env.traits
+            );
+        }
+    }
+
+    #[test]
     fn url_variable_assignments_emit_typed_trait_without_generic_duplicate() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
