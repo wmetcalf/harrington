@@ -11698,6 +11698,35 @@ start msedge /max https://edge.example/lure.pdf"#,
     }
 
     #[test]
+    fn known_url_launchers_accept_schemeless_domain_path_arguments() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"msedge lure-schemeless.example/a.pdf
+explorer.exe portal-schemeless.example/privacy/"#,
+            &mut env,
+        );
+        for expected in [
+            "http://lure-schemeless.example/a.pdf",
+            "http://portal-schemeless.example/privacy/",
+        ] {
+            assert!(
+                env.traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::UrlLaunch { url, .. } if url == expected)),
+                "missing schemeless UrlLaunch for {expected}: {:?}",
+                env.traits
+            );
+            assert!(
+                !env.traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == expected)),
+                "schemeless URL launch double-emitted as generic: {:?}",
+                env.traits
+            );
+        }
+    }
+
+    #[test]
     fn rundll32_fileprotocolhandler_url_emits_url_launch() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
