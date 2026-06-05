@@ -32,8 +32,13 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
                 i += 2;
                 continue;
             }
-            _ if t.starts_with("--output=") || t.starts_with("--output:") => {
-                let value = &t["--output=".len()..];
+            _ if strip_ascii_case_insensitive_prefix(t, "--output=")
+                .or_else(|| strip_ascii_case_insensitive_prefix(t, "--output:"))
+                .is_some() =>
+            {
+                let value = strip_ascii_case_insensitive_prefix(t, "--output=")
+                    .or_else(|| strip_ascii_case_insensitive_prefix(t, "--output:"))
+                    .unwrap_or_default();
                 if !value.is_empty() {
                     output = Some(strip_quotes(value).to_string());
                 }
@@ -48,8 +53,15 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
                 i += 1;
                 continue;
             }
-            _ if t.starts_with("--url=") || t.starts_with("--url:") => {
-                let value = strip_quotes(&t["--url=".len()..]);
+            _ if strip_ascii_case_insensitive_prefix(t, "--url=")
+                .or_else(|| strip_ascii_case_insensitive_prefix(t, "--url:"))
+                .is_some() =>
+            {
+                let value = strip_quotes(
+                    strip_ascii_case_insensitive_prefix(t, "--url=")
+                        .or_else(|| strip_ascii_case_insensitive_prefix(t, "--url:"))
+                        .unwrap_or_default(),
+                );
                 if url.is_none() && looks_like_url(value) {
                     url = Some(value.to_string());
                 }
@@ -113,6 +125,14 @@ fn strip_quotes(s: &str) -> &str {
         return &s[1..s.len() - 1];
     }
     s
+}
+
+fn strip_ascii_case_insensitive_prefix<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
+    if s.len() >= prefix.len() && s[..prefix.len()].eq_ignore_ascii_case(prefix) {
+        Some(&s[prefix.len()..])
+    } else {
+        None
+    }
 }
 
 fn looks_like_url(s: &str) -> bool {

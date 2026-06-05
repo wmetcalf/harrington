@@ -57,9 +57,8 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
             }
             continue;
         }
-        if let Some(rest) = raw_token
-            .strip_prefix("--output-document=")
-            .or_else(|| raw_token.strip_prefix("--output-document:"))
+        if let Some(rest) = strip_ascii_case_insensitive_prefix(raw_token, "--output-document=")
+            .or_else(|| strip_ascii_case_insensitive_prefix(raw_token, "--output-document:"))
         {
             if !rest.is_empty() {
                 dst = Some(rest.trim_matches(['"', '\'', ')']).to_string());
@@ -100,4 +99,12 @@ fn short_option_cluster_output(token: &str) -> Option<&str> {
     }
     let idx = cluster.find('O')?;
     Some(&cluster[idx + 1..])
+}
+
+fn strip_ascii_case_insensitive_prefix<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
+    if s.len() >= prefix.len() && s[..prefix.len()].eq_ignore_ascii_case(prefix) {
+        Some(&s[prefix.len()..])
+    } else {
+        None
+    }
 }

@@ -2792,6 +2792,14 @@ fn short_option_cluster_output(token: &str, output_flag: char) -> Option<&str> {
     Some(&cluster[idx + output_flag.len_utf8()..])
 }
 
+fn strip_ascii_case_insensitive_prefix<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
+    if s.len() >= prefix.len() && s[..prefix.len()].eq_ignore_ascii_case(prefix) {
+        Some(&s[prefix.len()..])
+    } else {
+        None
+    }
+}
+
 fn parse_glued_curl_download(text: &str) -> Option<(String, Option<String>)> {
     let lower = text.to_ascii_lowercase();
     let scheme_pos = ["https://", "http://", "ftp://"]
@@ -3115,9 +3123,8 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
                 continue;
             }
         }
-        if let Some(rest) = raw_token
-            .strip_prefix("--output-document=")
-            .or_else(|| raw_token.strip_prefix("--output-document:"))
+        if let Some(rest) = strip_ascii_case_insensitive_prefix(raw_token, "--output-document=")
+            .or_else(|| strip_ascii_case_insensitive_prefix(raw_token, "--output-document:"))
         {
             if !rest.is_empty() {
                 dst = Some(rest.trim_matches(['"', '\'', ')']).to_string());
