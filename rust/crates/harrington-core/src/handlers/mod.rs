@@ -19,6 +19,7 @@ pub mod msiexec;
 pub mod net;
 pub mod passthrough;
 pub mod powershell;
+pub mod regsvr32;
 pub mod rundll32;
 pub mod set;
 pub mod setlocal;
@@ -44,6 +45,7 @@ pub fn lookup(name: &str) -> Option<Handler> {
         "wget" | "get" => return Some(wget::h_wget),
         "msiexec" => return Some(msiexec::h_msiexec),
         "mshta" => return Some(mshta::h_mshta),
+        "regsvr32" => return Some(regsvr32::h_regsvr32),
         "rundll32" => return Some(rundll32::h_rundll32),
         "certutil" => return Some(certutil::h_certutil),
         _ => {}

