@@ -460,6 +460,9 @@ fn decoded_js_fromcharcode_array_bindings(text: &str) -> Vec<String> {
     for caps in JS_NUM_ARRAY_ASSIGN_RE
         .captures_iter(text)
         .chain(JS_NUM_ARRAY_CTOR_ASSIGN_RE.captures_iter(text))
+        .chain(JS_UINT8_ARRAY_ASSIGN_RE.captures_iter(text))
+        .chain(JS_UINT8_ARRAY_OF_ASSIGN_RE.captures_iter(text))
+        .chain(JS_UINT8_ARRAY_FROM_ASSIGN_RE.captures_iter(text))
         .take(128)
     {
         let (Some(name), Some(nums)) = (caps.get(1), caps.get(2)) else {
