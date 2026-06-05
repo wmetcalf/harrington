@@ -2464,6 +2464,11 @@ fn first_url_after(
             if allow_schemeless && normalize_schemeless_domain_path_token(token).is_some() {
                 return Some(token);
             }
+            if allow_schemeless {
+                if let Some(attached) = ps_url_launch_attached_url_token(token) {
+                    return Some(attached);
+                }
+            }
             None
         })
         // Truncate at shell/PS terminators that split.rs / split_words
@@ -2479,6 +2484,23 @@ fn first_url_after(
                 .or_else(|| normalize_schemeless_domain_path_token(&url))
                 .unwrap_or(url)
         })
+}
+
+fn ps_url_launch_attached_url_token(token: &str) -> Option<&str> {
+    let lower = token.to_ascii_lowercase();
+    for prefix in ["-filepath", "-file", "-path", "-literalpath", "-literal"] {
+        let Some(rest) = lower.strip_prefix(prefix) else {
+            continue;
+        };
+        let original_rest = &token[token.len() - rest.len()..];
+        let candidate = original_rest.trim_start_matches([':', '=']);
+        if looks_like_direct_url(candidate)
+            || normalize_schemeless_domain_path_token(candidate).is_some()
+        {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 fn msiexec_attached_url_token(token: &str) -> Option<&str> {
