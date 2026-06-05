@@ -2468,6 +2468,10 @@ fn is_url_launcher_command(cmd: &str) -> bool {
 }
 
 fn is_url_argument_process(cmd: &str) -> bool {
+    if cmd == "msiexec" {
+        return true;
+    }
+
     // Windows file extensions are case-insensitive — `Notepad.EXE`
     // / `payload.Bat` are valid invocations. Lowercase once for cheap
     // suffix check.
