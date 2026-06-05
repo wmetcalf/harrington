@@ -553,21 +553,7 @@ fn parse_vbs_split_index(
     let call = &trimmed[..idx_start + 1];
     let index = parse_vbs_integer(trimmed[idx_start + 2..trimmed.len() - 1].trim())? as usize;
     let inner = vbs_function_args(call, "split")?;
-    let args = split_vbs_args(inner);
-    if args.is_empty() {
-        return None;
-    }
-    let source = eval_vbs_string_expr(args[0], bindings, array_bindings)?;
-    let separator = if let Some(sep_expr) = args.get(1) {
-        eval_vbs_string_expr(sep_expr, bindings, array_bindings)?
-    } else {
-        " ".to_string()
-    };
-    let pieces: Vec<String> = if separator.is_empty() {
-        source.chars().map(|c| c.to_string()).collect()
-    } else {
-        source.split(&separator).map(|s| s.to_string()).collect()
-    };
+    let pieces = parse_vbs_split_values(inner, bindings, array_bindings)?;
     pieces.get(index).cloned()
 }
 
@@ -580,6 +566,9 @@ fn parse_vbs_array_values(
     if let Some(values) = array_bindings.get(&key) {
         return Some(values.clone());
     }
+    if let Some(inner) = vbs_function_args(expr, "split") {
+        return parse_vbs_split_values(inner, bindings, array_bindings);
+    }
     let inner = vbs_function_args(expr, "array")?;
     let mut values = Vec::new();
     for arg in split_vbs_args(inner) {
@@ -587,6 +576,28 @@ fn parse_vbs_array_values(
         values.push(value);
     }
     Some(values)
+}
+
+fn parse_vbs_split_values(
+    inner: &str,
+    bindings: &VbsStringBindings,
+    array_bindings: &VbsArrayBindings,
+) -> Option<Vec<String>> {
+    let args = split_vbs_args(inner);
+    if args.is_empty() {
+        return None;
+    }
+    let source = eval_vbs_string_expr(args[0], bindings, array_bindings)?;
+    let separator = if let Some(sep_expr) = args.get(1) {
+        eval_vbs_string_expr(sep_expr, bindings, array_bindings)?
+    } else {
+        " ".to_string()
+    };
+    Some(if separator.is_empty() {
+        source.chars().map(|c| c.to_string()).collect()
+    } else {
+        source.split(&separator).map(|s| s.to_string()).collect()
+    })
 }
 
 fn parse_vbs_cstr(

