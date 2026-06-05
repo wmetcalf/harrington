@@ -519,6 +519,9 @@ fn scan_python_requests_get_deob_text(deobfuscated: &str, env: &mut Environment)
     for url in find_call_url_literals(deobfuscated, &urlopen_name_refs) {
         emit_python_download(&url, deobfuscated, env, &mut known);
     }
+    for url in find_python_requests_request_get_literals(deobfuscated) {
+        emit_python_download(&url, deobfuscated, env, &mut known);
+    }
     for (url, dst) in find_python_urlretrieve_literals(deobfuscated) {
         emit_python_download_with_dst(&url, dst.as_deref(), deobfuscated, env, &mut known);
     }
@@ -530,6 +533,9 @@ fn scan_python_requests_get_deob_text(deobfuscated: &str, env: &mut Environment)
             .map(String::as_str)
             .collect::<Vec<_>>();
         for url in find_call_url_literals(&decoded, &decoded_urlopen_name_refs) {
+            emit_python_download(&url, &decoded, env, &mut known);
+        }
+        for url in find_python_requests_request_get_literals(&decoded) {
             emit_python_download(&url, &decoded, env, &mut known);
         }
         for (url, dst) in find_python_urlretrieve_literals(&decoded) {
@@ -550,6 +556,10 @@ fn python_urlopen_call_names(text: &str) -> Vec<String> {
 }
 
 fn collect_python_requests_get_aliases(text: &str) -> Vec<String> {
+    collect_python_requests_call_aliases(text, "get")
+}
+
+fn collect_python_requests_call_aliases(text: &str, target_method: &str) -> Vec<String> {
     #[allow(clippy::expect_used)]
     static PY_IMPORT_REQUESTS_ALIAS_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?is)\bimport\s+requests\s+as\s+([A-Za-z_][A-Za-z0-9_]*)"#)
@@ -564,7 +574,10 @@ fn collect_python_requests_get_aliases(text: &str) -> Vec<String> {
     let mut aliases: Vec<String> = PY_IMPORT_REQUESTS_ALIAS_RE
         .captures_iter(text)
         .take(8)
-        .filter_map(|caps| caps.get(1).map(|m| format!("{}.get", m.as_str())))
+        .filter_map(|caps| {
+            caps.get(1)
+                .map(|m| format!("{}.{}", m.as_str(), target_method))
+        })
         .collect();
     for caps in PY_FROM_REQUESTS_IMPORT_RE.captures_iter(text).take(8) {
         let Some(imports) = caps.get(1).or_else(|| caps.get(2)).map(|m| m.as_str()) else {
@@ -576,7 +589,7 @@ fn collect_python_requests_get_aliases(text: &str) -> Vec<String> {
             let Some(method) = words.first().copied() else {
                 continue;
             };
-            if method != "get" {
+            if method != target_method {
                 continue;
             }
             let alias = if words.get(1).is_some_and(|w| w.eq_ignore_ascii_case("as")) {
@@ -590,6 +603,53 @@ fn collect_python_requests_get_aliases(text: &str) -> Vec<String> {
         }
     }
     aliases
+}
+
+fn find_python_requests_request_get_literals(text: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut names = vec!["requests.request".to_string()];
+    names.extend(collect_python_requests_call_aliases(text, "request"));
+
+    for name in names {
+        let mut search_start = 0;
+        while let Some(name_start) = find_ascii_case_insensitive(text, &name, search_start) {
+            let name_end = name_start + name.len();
+            if !is_callable_name_boundary(text, name_start, name_end) {
+                search_start = name_end;
+                continue;
+            }
+            let open = skip_ascii_ws(text, name_end);
+            if text.as_bytes().get(open) != Some(&b'(') {
+                search_start = name_end;
+                continue;
+            }
+            let Some(close) = find_matching_paren(text, open) else {
+                search_start = open + 1;
+                continue;
+            };
+            if let Some(url) = python_requests_request_get_url(&text[open + 1..close]) {
+                found.push(url);
+            }
+            search_start = close + 1;
+        }
+    }
+
+    found
+}
+
+fn python_requests_request_get_url(args: &str) -> Option<String> {
+    let literals = python_quoted_literals(args);
+    let method = literals
+        .iter()
+        .find(|literal| !looks_like_direct_url(trim_url_suffix(literal)))?;
+    if !method.eq_ignore_ascii_case("GET") {
+        return None;
+    }
+
+    literals.into_iter().find_map(|literal| {
+        looks_like_direct_url(trim_url_suffix(&literal))
+            .then(|| trim_url_suffix(&literal).to_string())
+    })
 }
 
 fn decoded_python_b64decode_literals(deobfuscated: &str) -> Vec<String> {
