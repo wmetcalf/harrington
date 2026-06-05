@@ -546,6 +546,20 @@ fn decoded_python_b64decode_literals(deobfuscated: &str) -> Vec<String> {
         )
             .expect("python b64decode variable regex")
     });
+    #[allow(clippy::expect_used)]
+    static PY_B64DECODE_ALIAS_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?is)\b([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*(?:[bB])?['"]([^'"]+)['"]\s*([^)]{0,128})\)"#,
+        )
+        .expect("python b64decode alias literal regex")
+    });
+    #[allow(clippy::expect_used)]
+    static PY_B64DECODE_ALIAS_VAR_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?is)\b([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*([^)]{0,128})\)"#,
+        )
+        .expect("python b64decode alias variable regex")
+    });
 
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -569,6 +583,7 @@ fn decoded_python_b64decode_literals(deobfuscated: &str) -> Vec<String> {
     }
 
     let bindings = collect_python_b64_string_bindings(deobfuscated);
+    let decoder_aliases = collect_python_base64_decoder_aliases(deobfuscated);
     for caps in PY_B64DECODE_VAR_RE.captures_iter(deobfuscated).take(16) {
         let Some(method) = caps.get(1).map(|m| m.as_str()) else {
             continue;
@@ -584,7 +599,84 @@ fn decoded_python_b64decode_literals(deobfuscated: &str) -> Vec<String> {
             .is_some_and(|m| python_b64_suffix_has_urlsafe_altchars(m.as_str()));
         decode_python_b64_payload(method, b64, has_urlsafe_altchars, &mut out, &mut seen);
     }
+
+    for caps in PY_B64DECODE_ALIAS_LITERAL_RE
+        .captures_iter(deobfuscated)
+        .take(32)
+    {
+        let Some(name) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(method) = decoder_aliases.get(name).map(String::as_str) else {
+            continue;
+        };
+        let Some(b64) = caps.get(2).map(|m| m.as_str()) else {
+            continue;
+        };
+        let has_urlsafe_altchars = caps
+            .get(3)
+            .is_some_and(|m| python_b64_suffix_has_urlsafe_altchars(m.as_str()));
+        decode_python_b64_payload(method, b64, has_urlsafe_altchars, &mut out, &mut seen);
+    }
+
+    for caps in PY_B64DECODE_ALIAS_VAR_RE
+        .captures_iter(deobfuscated)
+        .take(32)
+    {
+        let Some(name) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(method) = decoder_aliases.get(name).map(String::as_str) else {
+            continue;
+        };
+        let Some(var_name) = caps.get(2).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(b64) = bindings.get(var_name).map(String::as_str) else {
+            continue;
+        };
+        let has_urlsafe_altchars = caps
+            .get(3)
+            .is_some_and(|m| python_b64_suffix_has_urlsafe_altchars(m.as_str()));
+        decode_python_b64_payload(method, b64, has_urlsafe_altchars, &mut out, &mut seen);
+    }
     out
+}
+
+fn collect_python_base64_decoder_aliases(
+    deobfuscated: &str,
+) -> std::collections::HashMap<String, String> {
+    #[allow(clippy::expect_used)]
+    static PY_FROM_BASE64_IMPORT_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)\bfrom\s+base64\s+import\s+([^;"'\r\n]+)"#)
+            .expect("python from base64 import regex")
+    });
+
+    let mut aliases = std::collections::HashMap::new();
+    for caps in PY_FROM_BASE64_IMPORT_RE.captures_iter(deobfuscated).take(8) {
+        let Some(imports) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        for part in imports.split(',') {
+            let part = part.trim().trim_matches(['(', ')']);
+            let words: Vec<&str> = part.split_ascii_whitespace().collect();
+            let Some(method) = words.first().copied() else {
+                continue;
+            };
+            if !matches!(method, "b64decode" | "urlsafe_b64decode") {
+                continue;
+            }
+            let alias = if words.get(1).is_some_and(|w| w.eq_ignore_ascii_case("as")) {
+                words.get(2).copied().unwrap_or(method)
+            } else {
+                method
+            };
+            if is_python_identifier(alias) {
+                aliases.insert(alias.to_string(), method.to_string());
+            }
+        }
+    }
+    aliases
 }
 
 fn collect_python_b64_string_bindings(
@@ -612,6 +704,15 @@ fn collect_python_b64_string_bindings(
         bindings.insert(name.to_string(), value.to_string());
     }
     bindings
+}
+
+fn is_python_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first == '_' || first.is_ascii_alphabetic())
+        && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
 }
 
 fn decode_python_b64_payload(
