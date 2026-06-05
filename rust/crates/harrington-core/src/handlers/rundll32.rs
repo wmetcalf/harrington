@@ -49,6 +49,7 @@ fn file_protocol_handler_url(parts: &[String]) -> Option<String> {
                 .find([')', '(', ';', ',', '"', '\'', '`'])
                 .unwrap_or(part.len());
             crate::deob_scan::normalize_liberal_url_token(&part[..end])
+                .or_else(|| crate::deob_scan::normalize_schemeless_domain_path_token(&part[..end]))
         })
 }
 

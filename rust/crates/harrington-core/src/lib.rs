@@ -7210,6 +7210,27 @@ mod misc_handler_tests {
     }
 
     #[test]
+    fn rundll32_fileprotocolhandler_schemeless_url_emits_url_launch() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            "rundll32 url.dll,FileProtocolHandler rundll32-schemeless.example/lure.pdf",
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlLaunch { url, .. }
+                    if url == "http://rundll32-schemeless.example/lure.pdf"
+            )
+        });
+        assert!(
+            has,
+            "rundll32 FileProtocolHandler schemeless URL launch not typed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn rundll32_quoted_downloaded_dll_with_spaces_resolves_url() {
         let mut env = Environment::new(&Config::default());
         env.modified_filesystem.insert(
@@ -11827,13 +11848,15 @@ hh https://hh-launch.example/extensionless.chm"#,
         crate::deob_scan::scan_deob_text(
             r#"powershell -Command "Start-Process 'https://pslaunch.example/a.pdf'"
 powershell -Command "saps -FilePath https://pslaunch.example/b.pdf"
-powershell -Command "Invoke-Item https://pslaunch.example/c.pdf""#,
+powershell -Command "Invoke-Item https://pslaunch.example/c.pdf"
+powershell -Command "saps -WindowStyle Hidden -FilePath pslaunch-schemeless.example/d.pdf""#,
             &mut env,
         );
         for expected in [
             "https://pslaunch.example/a.pdf",
             "https://pslaunch.example/b.pdf",
             "https://pslaunch.example/c.pdf",
+            "http://pslaunch-schemeless.example/d.pdf",
         ] {
             assert!(
                 env.traits
