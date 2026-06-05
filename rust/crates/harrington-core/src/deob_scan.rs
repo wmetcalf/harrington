@@ -555,12 +555,41 @@ fn collect_python_requests_get_aliases(text: &str) -> Vec<String> {
         Regex::new(r#"(?is)\bimport\s+requests\s+as\s+([A-Za-z_][A-Za-z0-9_]*)"#)
             .expect("python requests import alias regex")
     });
+    #[allow(clippy::expect_used)]
+    static PY_FROM_REQUESTS_IMPORT_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)\bfrom\s+requests\s+import\s+([^;"'\r\n]+)"#)
+            .expect("python requests from import regex")
+    });
 
-    PY_IMPORT_REQUESTS_ALIAS_RE
+    let mut aliases: Vec<String> = PY_IMPORT_REQUESTS_ALIAS_RE
         .captures_iter(text)
         .take(8)
         .filter_map(|caps| caps.get(1).map(|m| format!("{}.get", m.as_str())))
-        .collect()
+        .collect();
+    for caps in PY_FROM_REQUESTS_IMPORT_RE.captures_iter(text).take(8) {
+        let Some(imports) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        for part in imports.split(',') {
+            let part = part.trim().trim_matches(['(', ')']);
+            let words: Vec<&str> = part.split_ascii_whitespace().collect();
+            let Some(method) = words.first().copied() else {
+                continue;
+            };
+            if method != "get" {
+                continue;
+            }
+            let alias = if words.get(1).is_some_and(|w| w.eq_ignore_ascii_case("as")) {
+                words.get(2).copied().unwrap_or(method)
+            } else {
+                method
+            };
+            if is_python_identifier(alias) {
+                aliases.push(alias.to_string());
+            }
+        }
+    }
+    aliases
 }
 
 fn decoded_python_b64decode_literals(deobfuscated: &str) -> Vec<String> {
