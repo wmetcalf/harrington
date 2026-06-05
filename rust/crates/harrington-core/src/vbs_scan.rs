@@ -24,7 +24,7 @@ static XMLHTTP_OPEN_VAR_RE: Lazy<Regex> = Lazy::new(|| {
 
 #[allow(clippy::expect_used)]
 static VBS_STRING_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"(?im)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+?)\s*$"#)
+    Regex::new(r#"(?im)^\s*(?:Const\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+?)\s*$"#)
         .expect("vbs string assignment")
 });
 
