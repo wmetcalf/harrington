@@ -2065,7 +2065,7 @@ fn scan_url_launch_deob_text(deobfuscated: &str, env: &mut Environment) {
             } else if cmd == "rundll32" || cmd == "rundll32.exe" {
                 url_launch_after_rundll32_fileprotocolhandler(&tokens, i + 1)
             } else if is_url_launcher_command(&cmd) {
-                first_url_after(&tokens, i + 1)
+                first_url_after(&tokens, i + 1, false)
             } else {
                 None
             }) else {
@@ -2109,7 +2109,7 @@ fn powershell_url_launches_in_line(line: &str) -> Vec<String> {
                 .map(|token| is_url_launcher_command(&command_name(strip_quotes(token))))
                 .unwrap_or(false)
             {
-                if let Some(url) = first_url_after(&tokens, 1) {
+                if let Some(url) = first_url_after(&tokens, 1, false) {
                     found.push(url);
                 }
             }
@@ -2128,7 +2128,7 @@ fn url_launch_after_rundll32_fileprotocolhandler(
             .to_ascii_lowercase()
             .contains("fileprotocolhandler")
     })?;
-    first_url_after(tokens, handler_idx + 1)
+    first_url_after(tokens, handler_idx + 1, false)
 }
 
 fn scan_url_variable_assignments(deobfuscated: &str, env: &mut Environment) {
@@ -2319,7 +2319,8 @@ fn scan_process_url_arguments(deobfuscated: &str, env: &mut Environment) {
         if !is_url_argument_process(&cmd) || is_url_launcher_command(&cmd) {
             continue;
         }
-        let Some(url) = first_url_after(&tokens, 1) else {
+        let Some(url) = first_url_after(&tokens, 1, cmd == "msiexec" || cmd == "msiexec.exe")
+        else {
             continue;
         };
         if is_noise_url(&url) || !known.insert(url.clone()) {
@@ -2373,7 +2374,7 @@ fn url_launch_after_start(tokens: &[String], mut i: usize) -> Option<String> {
             return normalize_liberal_url_token(&url);
         }
         if is_url_launcher_command(&command_name(token)) {
-            return first_url_after(tokens, i + 1);
+            return first_url_after(tokens, i + 1, false);
         }
         if !skipped_title
             && tokens
@@ -2390,12 +2391,24 @@ fn url_launch_after_start(tokens: &[String], mut i: usize) -> Option<String> {
     None
 }
 
-fn first_url_after(tokens: &[String], start: usize) -> Option<String> {
+fn first_url_after(
+    tokens: &[String],
+    start: usize,
+    allow_msiexec_attached: bool,
+) -> Option<String> {
     tokens
         .iter()
         .skip(start)
         .map(|token| strip_quotes(token).trim_start_matches(['"', '\'']))
-        .find(|token| looks_like_direct_url(token))
+        .find_map(|token| {
+            if looks_like_direct_url(token) {
+                return Some(token);
+            }
+            if allow_msiexec_attached {
+                return msiexec_attached_url_token(token);
+            }
+            None
+        })
         // Truncate at shell/PS terminators that split.rs / split_words
         // didn't split on (e.g. `URL);Invoke-NullAMSI;function` in a
         // PS one-liner that has the URL embedded in a parenthesized
@@ -2407,6 +2420,21 @@ fn first_url_after(tokens: &[String], start: usize) -> Option<String> {
             let url = normalize_url_obfuscation(&token[..end]);
             normalize_liberal_url_token(&url).unwrap_or(url)
         })
+}
+
+fn msiexec_attached_url_token(token: &str) -> Option<&str> {
+    let lower = token.to_ascii_lowercase();
+    for prefix in ["/i", "-i", "/package", "-package", "/update", "-update"] {
+        let Some(rest) = lower.strip_prefix(prefix) else {
+            continue;
+        };
+        let original_rest = &token[token.len() - rest.len()..];
+        let candidate = original_rest.trim_start_matches([':', '=']);
+        if looks_like_direct_url(candidate) {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 /// Collapse common in-quote URL obfuscation tricks that survive into
