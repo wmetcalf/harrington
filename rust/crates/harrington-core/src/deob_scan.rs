@@ -537,7 +537,7 @@ fn decoded_python_b64decode_literals(deobfuscated: &str) -> Vec<String> {
     #[allow(clippy::expect_used)]
     static PY_B64DECODE_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r#"(?is)base64\.(b64decode|urlsafe_b64decode)\s*\(\s*(?:[bB])?['"]([A-Za-z0-9+/_=-]{32,20000})['"]\s*\)"#,
+            r#"(?is)base64\.(b64decode|urlsafe_b64decode)\s*\(\s*(?:[bB])?['"]([^'"]+)['"]\s*([^)]{0,128})\)"#,
         )
             .expect("python b64decode literal regex")
     });
@@ -551,10 +551,19 @@ fn decoded_python_b64decode_literals(deobfuscated: &str) -> Vec<String> {
         let Some(b64) = caps.get(2).map(|m| m.as_str()) else {
             continue;
         };
+        if !(32..=20_000).contains(&b64.len()) {
+            continue;
+        }
+        if !is_python_base64_literal(b64) {
+            continue;
+        }
+        let has_urlsafe_altchars = caps
+            .get(3)
+            .is_some_and(|m| python_b64_suffix_has_urlsafe_altchars(m.as_str()));
         if !seen.insert(b64.to_string()) {
             continue;
         }
-        let decoded = if method.eq_ignore_ascii_case("urlsafe_b64decode") {
+        let decoded = if method.eq_ignore_ascii_case("urlsafe_b64decode") || has_urlsafe_altchars {
             base64::engine::general_purpose::URL_SAFE
                 .decode(b64)
                 .or_else(|_| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(b64))
@@ -573,6 +582,21 @@ fn decoded_python_b64decode_literals(deobfuscated: &str) -> Vec<String> {
         out.push(text);
     }
     out
+}
+
+fn is_python_base64_literal(s: &str) -> bool {
+    s.chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '/' | '_' | '-' | '='))
+}
+
+fn python_b64_suffix_has_urlsafe_altchars(suffix: &str) -> bool {
+    #[allow(clippy::expect_used)]
+    static PY_B64_ALTCHARS_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)^\s*,\s*(?:altchars\s*=\s*)?(?:[bB])?['"]-_['"]\s*$"#)
+            .expect("python b64 altchars regex")
+    });
+
+    PY_B64_ALTCHARS_RE.is_match(suffix)
 }
 
 fn emit_python_download(
