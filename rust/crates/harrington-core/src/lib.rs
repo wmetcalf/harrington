@@ -12277,6 +12277,34 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_fromcodepoint_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"eval(String.fromCodePoint(104,116,116,112,58,47,47,101,118,105,108,46,101,120,97,109,112,108,101,47,120))"#.to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://evil.example/x"
+            )
+        });
+        assert!(has, "fromCodePoint URL missed: {:?}", env.traits);
+    }
+
+    #[test]
+    fn js_fromcodepoint_member_variable_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"var m="fromCodePoint"; eval(String[m](104,116,116,112,58,47,47,101,118,105,108,46,101,120,97,109,112,108,101,47,121))"#.to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://evil.example/y"
+            )
+        });
+        assert!(has, "fromCodePoint member URL missed: {:?}", env.traits);
+    }
+
+    #[test]
     fn js_single_quoted_string_with_non_ascii_char_not_truncated() {
         // Regression: `c as u8 == quote` truncated a `char` codepoint to its
         // low byte, so 'ħ' (U+0127, low byte 0x27 = `'`) used to close the

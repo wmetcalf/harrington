@@ -27,9 +27,9 @@ static U_ESCAPE_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)String\s*(?:\.\s*fromCharCode|\[\s*['"]fromCharCode['"]\s*\])\s*\(\s*([0-9xa-f+\-\s,]{5,8192})\s*\)"#,
+        r#"(?is)String\s*(?:\.\s*from(?:CharCode|CodePoint)|\[\s*['"]from(?:CharCode|CodePoint)['"]\s*\])\s*\(\s*([0-9xa-f+\-\s,]{5,8192})\s*\)"#,
     )
-    .expect("js fromCharCode")
+    .expect("js fromCharCode/fromCodePoint")
 });
 
 #[allow(clippy::expect_used)]
@@ -67,41 +67,41 @@ static JS_FROMCHARCODE_MEMBER_SPREAD_ARRAY_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_APPLY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)String\s*(?:\.\s*fromCharCode|\[\s*['"]fromCharCode['"]\s*\])\s*\.\s*apply\s*\(\s*[^,\r\n]{0,128},\s*\[\s*([0-9xa-f+\-\s,]{5,8192})\s*\]\s*\)"#,
+        r#"(?is)String\s*(?:\.\s*from(?:CharCode|CodePoint)|\[\s*['"]from(?:CharCode|CodePoint)['"]\s*\])\s*\.\s*apply\s*\(\s*[^,\r\n]{0,128},\s*\[\s*([0-9xa-f+\-\s,]{5,8192})\s*\]\s*\)"#,
     )
-    .expect("js fromCharCode apply")
+    .expect("js fromCharCode/fromCodePoint apply")
 });
 
 #[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_APPLY_ARRAY_CTOR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)String\s*(?:\.\s*fromCharCode|\[\s*['"]fromCharCode['"]\s*\])\s*\.\s*apply\s*\(\s*[^,\r\n]{0,128},\s*(?:new\s+)?Array\s*\(\s*([0-9xa-f+\-\s,]{5,8192})\s*\)\s*\)"#,
+        r#"(?is)String\s*(?:\.\s*from(?:CharCode|CodePoint)|\[\s*['"]from(?:CharCode|CodePoint)['"]\s*\])\s*\.\s*apply\s*\(\s*[^,\r\n]{0,128},\s*(?:new\s+)?Array\s*\(\s*([0-9xa-f+\-\s,]{5,8192})\s*\)\s*\)"#,
     )
-    .expect("js fromCharCode apply Array constructor")
+    .expect("js fromCharCode/fromCodePoint apply Array constructor")
 });
 
 #[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_CALL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)String\s*(?:\.\s*fromCharCode|\[\s*['"]fromCharCode['"]\s*\])\s*\.\s*call\s*\(\s*[^,\r\n]{0,128},\s*([0-9xa-f+\-\s,]{5,8192})\s*\)"#,
+        r#"(?is)String\s*(?:\.\s*from(?:CharCode|CodePoint)|\[\s*['"]from(?:CharCode|CodePoint)['"]\s*\])\s*\.\s*call\s*\(\s*[^,\r\n]{0,128},\s*([0-9xa-f+\-\s,]{5,8192})\s*\)"#,
     )
-    .expect("js fromCharCode call")
+    .expect("js fromCharCode/fromCodePoint call")
 });
 
 #[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_SPREAD_ARRAY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)String\s*(?:\.\s*fromCharCode|\[\s*['"]fromCharCode['"]\s*\])\s*\(\s*\.\.\.\s*\[\s*([0-9xa-f+\-\s,]{5,8192})\s*\]\s*\)"#,
+        r#"(?is)String\s*(?:\.\s*from(?:CharCode|CodePoint)|\[\s*['"]from(?:CharCode|CodePoint)['"]\s*\])\s*\(\s*\.\.\.\s*\[\s*([0-9xa-f+\-\s,]{5,8192})\s*\]\s*\)"#,
     )
-    .expect("js fromCharCode spread array")
+    .expect("js fromCharCode/fromCodePoint spread array")
 });
 
 #[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_SPREAD_ARRAY_CTOR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)String\s*(?:\.\s*fromCharCode|\[\s*['"]fromCharCode['"]\s*\])\s*\(\s*\.\.\.\s*(?:new\s+)?Array\s*\(\s*([0-9xa-f+\-\s,]{5,8192})\s*\)\s*\)"#,
+        r#"(?is)String\s*(?:\.\s*from(?:CharCode|CodePoint)|\[\s*['"]from(?:CharCode|CodePoint)['"]\s*\])\s*\(\s*\.\.\.\s*(?:new\s+)?Array\s*\(\s*([0-9xa-f+\-\s,]{5,8192})\s*\)\s*\)"#,
     )
-    .expect("js fromCharCode spread Array constructor")
+    .expect("js fromCharCode/fromCodePoint spread Array constructor")
 });
 
 #[allow(clippy::expect_used)]
@@ -147,17 +147,17 @@ static JS_UINT8_ARRAY_FROM_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_APPLY_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)String\s*(?:\.\s*fromCharCode|\[\s*['"]fromCharCode['"]\s*\])\s*\.\s*apply\s*\(\s*[^,\r\n]{0,128},\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\)"#,
+        r#"(?is)String\s*(?:\.\s*from(?:CharCode|CodePoint)|\[\s*['"]from(?:CharCode|CodePoint)['"]\s*\])\s*\.\s*apply\s*\(\s*[^,\r\n]{0,128},\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\)"#,
     )
-    .expect("js fromCharCode apply variable")
+    .expect("js fromCharCode/fromCodePoint apply variable")
 });
 
 #[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_SPREAD_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)String\s*(?:\.\s*fromCharCode|\[\s*['"]fromCharCode['"]\s*\])\s*\(\s*\.\.\.\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\)"#,
+        r#"(?is)String\s*(?:\.\s*from(?:CharCode|CodePoint)|\[\s*['"]from(?:CharCode|CodePoint)['"]\s*\])\s*\(\s*\.\.\.\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\)"#,
     )
-    .expect("js fromCharCode spread variable")
+    .expect("js fromCharCode/fromCodePoint spread variable")
 });
 
 #[allow(clippy::expect_used)]
@@ -273,6 +273,7 @@ fn js_decoder_signal(text: &str) -> bool {
         || lower.contains("decodeuri")
         || lower.contains("unescape")
         || lower.contains("fromcharcode")
+        || lower.contains("fromcodepoint")
         || lower.contains("textdecoder")
         || lower.contains("uint8array")
         || lower.contains("atob")
@@ -376,7 +377,10 @@ fn decoded_js_fromcharcode_literals(text: &str) -> Vec<String> {
         let (Some(name), Some(nums)) = (caps.get(1), caps.get(2)) else {
             continue;
         };
-        if bindings.get(name.as_str()).map(String::as_str) != Some("fromCharCode") {
+        if !bindings
+            .get(name.as_str())
+            .is_some_and(|value| is_js_string_code_decoder(value))
+        {
             continue;
         }
         if let Some(decoded) = decode_js_fromcharcode_args(nums.as_str()) {
@@ -390,7 +394,10 @@ fn decoded_js_fromcharcode_literals(text: &str) -> Vec<String> {
         let (Some(name), Some(nums)) = (caps.get(1), caps.get(2)) else {
             continue;
         };
-        if bindings.get(name.as_str()).map(String::as_str) != Some("fromCharCode") {
+        if !bindings
+            .get(name.as_str())
+            .is_some_and(|value| is_js_string_code_decoder(value))
+        {
             continue;
         }
         if let Some(decoded) = decode_js_fromcharcode_args(nums.as_str()) {
@@ -401,7 +408,10 @@ fn decoded_js_fromcharcode_literals(text: &str) -> Vec<String> {
         let (Some(name), Some(nums)) = (caps.get(1), caps.get(2)) else {
             continue;
         };
-        if bindings.get(name.as_str()).map(String::as_str) != Some("fromCharCode") {
+        if !bindings
+            .get(name.as_str())
+            .is_some_and(|value| is_js_string_code_decoder(value))
+        {
             continue;
         }
         if let Some(decoded) = decode_js_fromcharcode_args(nums.as_str()) {
@@ -415,7 +425,10 @@ fn decoded_js_fromcharcode_literals(text: &str) -> Vec<String> {
         let (Some(name), Some(nums)) = (caps.get(1), caps.get(2)) else {
             continue;
         };
-        if bindings.get(name.as_str()).map(String::as_str) != Some("fromCharCode") {
+        if !bindings
+            .get(name.as_str())
+            .is_some_and(|value| is_js_string_code_decoder(value))
+        {
             continue;
         }
         if let Some(decoded) = decode_js_fromcharcode_args(nums.as_str()) {
@@ -423,6 +436,10 @@ fn decoded_js_fromcharcode_literals(text: &str) -> Vec<String> {
         }
     }
     out
+}
+
+fn is_js_string_code_decoder(name: &str) -> bool {
+    matches!(name, "fromCharCode" | "fromCodePoint")
 }
 
 fn decode_js_fromcharcode_args(nums: &str) -> Option<String> {
@@ -2743,6 +2760,7 @@ mod tests {
             r#"eval("\u0068\u0074\u0074\u0070")"#,
             r#"eval(unescape("%68%74%74%70%3a%2f%2fexample"))"#,
             r#"eval(String.fromCharCode(104,116,116,112))"#,
+            r#"eval(String.fromCodePoint(104,116,116,112))"#,
             r#"eval(new TextDecoder().decode(new Uint8Array([104,116,116,112])))"#,
             r#"eval(atob("aHR0cA=="))"#,
             r#"eval(Buffer.from("aHR0cA==", "base64").toString())"#,
