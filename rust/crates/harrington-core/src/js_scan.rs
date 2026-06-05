@@ -516,7 +516,13 @@ fn parse_js_textdecoder_decode_call_at(text: &str, start: usize) -> Option<(usiz
     if text.as_bytes().get(open) != Some(&b'(') {
         return None;
     }
-    let close = skip_ascii_ws(text, open + 1);
+    let ctor_arg = skip_ascii_ws(text, open + 1);
+    let close = if text.as_bytes().get(ctor_arg) == Some(&b')') {
+        ctor_arg
+    } else {
+        let (arg_end, _) = parse_js_string_literal_at(text, ctor_arg)?;
+        skip_ascii_ws(text, arg_end)
+    };
     if text.as_bytes().get(close) != Some(&b')') {
         return None;
     }
