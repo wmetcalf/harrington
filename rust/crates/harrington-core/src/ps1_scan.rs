@@ -2842,12 +2842,11 @@ mod herestring_iex_tests {
 /// `[Convert]::FromBase64String('...')`). When found, push the decoded inner
 /// PS body to `env.all_extracted_ps1` so the main scan picks it up.
 fn extract_herestring_replace_iex_inners(env: &mut Environment) {
-    let payloads = env.all_extracted_ps1.clone();
+    let mut payloads = std::mem::take(&mut env.all_extracted_ps1);
     let mut new_payloads: Vec<Vec<u8>> = Vec::new();
-    let mut seen: std::collections::HashSet<Vec<u8>> =
-        env.all_extracted_ps1.iter().cloned().collect();
-    for payload in payloads {
-        let text = String::from_utf8_lossy(&payload).into_owned();
+    let mut seen: std::collections::HashSet<Vec<u8>> = payloads.iter().cloned().collect();
+    for payload in &payloads {
+        let text = String::from_utf8_lossy(payload).into_owned();
         // Candidate texts: the raw payload, plus one round of base64 decoding
         // for `[Convert]::FromBase64String('...')` wrappers.
         let mut candidates: Vec<String> = vec![text.clone()];
@@ -2872,7 +2871,9 @@ fn extract_herestring_replace_iex_inners(env: &mut Environment) {
             }
         }
     }
-    env.all_extracted_ps1.extend(new_payloads);
+    payloads.extend(new_payloads);
+    payloads.append(&mut env.all_extracted_ps1);
+    env.all_extracted_ps1 = payloads;
 }
 
 /// Find every `$VAR = @'...'@ ; $VAR2 = $VAR -replace 'X','Y' ; iex $VAR2`
@@ -2951,8 +2952,7 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
     let mut seen: std::collections::HashSet<(usize, String)> = std::collections::HashSet::new();
 
     for (idx, payload) in payloads.iter().enumerate() {
-        let raw_text = decode_payload(payload);
-        let raw_owned: String = raw_text.clone().into_owned();
+        let raw_owned = decode_payload(payload).into_owned();
 
         let text_expanded = expand_obfuscation(&raw_owned);
         // Dual-scan: also run URL regexes over alias-expanded version so that
