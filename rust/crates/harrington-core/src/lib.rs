@@ -7479,6 +7479,67 @@ mod wmic_tests {
             env.exec_cmd
         );
     }
+
+    #[test]
+    fn wmic_node_process_call_create_extracts_inner() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"wmic /node:"target.example" process call create "cmd /c echo remote""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::WmicProcessCreate { inner_cmd } if inner_cmd == "cmd /c echo remote"
+            )
+        });
+        assert!(has, "no WmicProcessCreate with /node: {:?}", env.traits);
+        assert!(
+            env.exec_cmd.iter().any(|c| c == "cmd /c echo remote"),
+            "no recursive remote cmd: {:?}",
+            env.exec_cmd
+        );
+    }
+
+    #[test]
+    fn wmic_unquoted_process_call_create_extracts_inner() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(r#"wmic process call create cmd /c echo loose"#, &mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::WmicProcessCreate { inner_cmd } if inner_cmd == "cmd /c echo loose"
+            )
+        });
+        assert!(has, "no unquoted WmicProcessCreate: {:?}", env.traits);
+        assert!(
+            env.exec_cmd.iter().any(|c| c == "cmd /c echo loose"),
+            "no recursive unquoted cmd: {:?}",
+            env.exec_cmd
+        );
+    }
+
+    #[test]
+    fn wmic_process_call_create_tolerates_spacing_and_case() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            "WMIC   /NODE:target.example   PROCESS   CALL   CREATE   \"cmd /c echo spaced\"",
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::WmicProcessCreate { inner_cmd } if inner_cmd == "cmd /c echo spaced"
+            )
+        });
+        assert!(
+            has,
+            "spacing/case variant did not emit WmicProcessCreate: {:?}",
+            env.traits
+        );
+        assert!(
+            env.exec_cmd.iter().any(|c| c == "cmd /c echo spaced"),
+            "spacing/case variant did not recurse: {:?}",
+            env.exec_cmd
+        );
+    }
 }
 
 #[cfg(test)]
