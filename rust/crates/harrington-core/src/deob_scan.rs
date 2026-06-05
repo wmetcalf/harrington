@@ -3156,18 +3156,22 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
                 .get(i + 1)
                 .map(|s| clean_command_url_token(s.trim_matches(['"', '\'', ')'])))
                 .unwrap_or_default();
-            if let Some(normalized) = normalize_liberal_url_token(candidate) {
+            if let Some(normalized) = normalize_wget_url_token(candidate) {
                 url = Some(normalized);
             }
             i += 2;
             continue;
         }
-        if let Some(normalized) = normalize_liberal_url_token(token) {
+        if let Some(normalized) = normalize_wget_url_token(token) {
             url = Some(normalized);
         }
         i += 1;
     }
     url.map(|u| (u, dst))
+}
+
+fn normalize_wget_url_token(token: &str) -> Option<String> {
+    normalize_liberal_url_token(token).or_else(|| normalize_schemeless_domain_path_token(token))
 }
 
 fn scan_wget_deob_text(deobfuscated: &str, env: &mut Environment) {
@@ -3182,9 +3186,7 @@ fn scan_wget_deob_text(deobfuscated: &str, env: &mut Environment) {
 
     for line in deobfuscated.lines() {
         let lower = line.to_ascii_lowercase();
-        if !contains_liberal_url_scheme(line)
-            || (!lower.contains("wget") && !lower.contains("get.exe"))
-        {
+        if !lower.contains("wget") && !lower.contains("get.exe") {
             continue;
         }
         let wget_pos = lower
