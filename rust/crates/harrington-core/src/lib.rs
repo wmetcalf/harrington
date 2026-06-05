@@ -8939,6 +8939,18 @@ iex $stage
     }
 
     #[test]
+    fn ps1_normalization_collapses_double_quoted_single_literal_join() {
+        let ps = r#"$method=("DownloadString" -join ""); $url=("https://readable-dq.example/a" -join "")"#;
+        let normalized = crate::ps1_scan::normalize_ps1_text(ps);
+        assert!(
+            normalized.contains("$method='DownloadString'")
+                && normalized.contains("$url='https://readable-dq.example/a'"),
+            "double-quoted single-literal join was not collapsed:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
     fn ps1_normalization_preserves_variable_name_on_append_assignment_lhs() {
         let ps = r#"$client='Net.w';$client+='EBClIeNT';$url='https://readable.example/a';Invoke-WebRequest -Uri $url"#;
         let normalized = crate::ps1_scan::normalize_ps1_text(ps);
