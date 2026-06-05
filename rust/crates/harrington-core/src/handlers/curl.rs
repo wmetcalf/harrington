@@ -20,6 +20,14 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
                 i += 2;
                 continue;
             }
+            _ if t.starts_with("--output=") || t.starts_with("--output:") => {
+                let value = &t["--output=".len()..];
+                if !value.is_empty() {
+                    output = Some(strip_quotes(value).to_string());
+                }
+                i += 1;
+                continue;
+            }
             "-O" | "--remote-name" => {
                 remote_name = true;
                 i += 1;
