@@ -883,11 +883,10 @@ where
         {
             (arg_end, encoded)
         } else {
-            let open = skip_ascii_ws(text, ident_end);
-            if text.as_bytes().get(open) != Some(&b'(') {
+            let Some(open) = consume_js_call_open(text, ident_end) else {
                 cursor = ident_end;
                 continue;
-            }
+            };
             let arg_start = skip_ascii_ws(text, open + 1);
             match parse_js_decoder_string_arg(text, arg_start, &bindings, &arrays) {
                 Some(parsed) => parsed,
@@ -1396,10 +1395,9 @@ fn parse_js_percent_call_at(
         {
             (arg_end, encoded)
         } else {
-            let open = skip_ascii_ws(text, name_end);
-            if text.as_bytes().get(open) != Some(&b'(') {
+            let Some(open) = consume_js_call_open(text, name_end) else {
                 continue;
-            }
+            };
             let arg_start = skip_ascii_ws(text, open + 1);
             parse_js_decoder_string_arg(text, arg_start, bindings, &arrays)?
         };
@@ -1425,10 +1423,7 @@ fn parse_js_atob_call_at(
     {
         (arg_end, encoded)
     } else {
-        let open = skip_ascii_ws(text, name_end);
-        if text.as_bytes().get(open) != Some(&b'(') {
-            return None;
-        }
+        let open = consume_js_call_open(text, name_end)?;
         let arg_start = skip_ascii_ws(text, open + 1);
         parse_js_decoder_string_arg(text, arg_start, bindings, &arrays)?
     };
@@ -2868,6 +2863,20 @@ fn consume_js_no_arg_method(text: &str, idx: usize, name: &str) -> Option<usize>
         return None;
     }
     Some(close + 1)
+}
+
+fn consume_js_call_open(text: &str, idx: usize) -> Option<usize> {
+    let open = skip_ascii_ws(text, idx);
+    if text.as_bytes().get(open) == Some(&b'(') {
+        return Some(open);
+    }
+    if text.as_bytes().get(open) == Some(&b'?') && text.as_bytes().get(open + 1) == Some(&b'.') {
+        let optional_open = skip_ascii_ws(text, open + 2);
+        if text.as_bytes().get(optional_open) == Some(&b'(') {
+            return Some(optional_open);
+        }
+    }
+    None
 }
 
 fn consume_js_method_open(text: &str, idx: usize, name: &str) -> Option<usize> {
