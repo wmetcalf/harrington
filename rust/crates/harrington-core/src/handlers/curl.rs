@@ -62,8 +62,8 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
                         .or_else(|| strip_ascii_case_insensitive_prefix(t, "--url:"))
                         .unwrap_or_default(),
                 );
-                if url.is_none() && looks_like_url(value) {
-                    url = Some(value.to_string());
+                if url.is_none() {
+                    url = normalize_curl_url(value);
                 }
                 i += 1;
                 continue;
@@ -89,8 +89,8 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
                     continue;
                 }
                 let candidate = strip_quotes(t);
-                if url.is_none() && looks_like_url(candidate) {
-                    url = Some(candidate.to_string());
+                if url.is_none() {
+                    url = normalize_curl_url(candidate);
                 }
                 i += 1;
             }
@@ -149,6 +149,13 @@ fn looks_like_url(s: &str) -> bool {
         }
     }
     false
+}
+
+fn normalize_curl_url(s: &str) -> Option<String> {
+    if looks_like_url(s) {
+        return crate::deob_scan::normalize_liberal_url_token(s).or_else(|| Some(s.to_string()));
+    }
+    crate::deob_scan::normalize_schemeless_domain_path_token(s)
 }
 
 fn short_option_cluster_output(token: &str) -> Option<&str> {
