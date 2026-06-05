@@ -283,18 +283,14 @@ fn is_base64_char(c: char) -> bool {
 }
 
 fn find_first_url(tokens: &[String]) -> Option<String> {
-    tokens
-        .iter()
-        .find_map(|t| crate::deob_scan::normalize_liberal_url_token(strip_quotes(t)))
+    tokens.iter().find_map(|t| normalize_certutil_url(t))
 }
 
 fn find_dst_after_url(tokens: &[String], url: &str) -> Option<String> {
     let mut found_url = false;
     for t in tokens {
         if !found_url {
-            if crate::deob_scan::normalize_liberal_url_token(strip_quotes(t)).as_deref()
-                == Some(url)
-            {
+            if normalize_certutil_url(t).as_deref() == Some(url) {
                 found_url = true;
             }
             continue;
@@ -305,4 +301,10 @@ fn find_dst_after_url(tokens: &[String], url: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn normalize_certutil_url(token: &str) -> Option<String> {
+    let token = strip_quotes(token);
+    crate::deob_scan::normalize_liberal_url_token(token)
+        .or_else(|| crate::deob_scan::normalize_schemeless_domain_path_token(token))
 }
