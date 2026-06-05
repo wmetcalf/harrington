@@ -111,6 +111,19 @@ pub(crate) fn canonical_ps_flag(token: &str) -> Option<&'static str> {
     None
 }
 
+fn attached_ps_flag_value(token: &str) -> Option<(&'static str, &str)> {
+    let stripped = token
+        .strip_prefix('/')
+        .or_else(|| token.strip_prefix('-'))?;
+    let delimiter = stripped.find([':', '='])?;
+    let flag = canonical_ps_flag(&token[..token.len() - stripped.len() + delimiter])?;
+    let value = &stripped[delimiter + 1..];
+    if value.is_empty() || !flag_takes_value(flag) {
+        return None;
+    }
+    Some((flag, value))
+}
+
 fn flag_takes_value(flag: &str) -> bool {
     PS_FLAGS
         .iter()
@@ -137,6 +150,30 @@ pub fn h_powershell(raw: &str, env: &mut Environment) {
     let mut i = 1usize;
     while i < tokens.len() {
         let t = &tokens[i];
+        if let Some((flag, value)) = attached_ps_flag_value(t) {
+            if is_encoded_flag(flag) {
+                let s = collect_encoded_argument_with_prefix(value, &tokens[i + 1..]);
+                if !s.is_empty() {
+                    if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(s) {
+                        env.exec_ps1.push(decoded);
+                    }
+                }
+                return;
+            }
+            if is_command_flag(flag) {
+                let body = command_body_from_attached_value(value, &tokens[i + 1..]);
+                let body = trim_nul_padding_body(&body);
+                if !body.is_empty() {
+                    env.exec_ps1.push(body.as_bytes().to_vec());
+                }
+                return;
+            }
+            if is_file_flag(flag) {
+                return;
+            }
+            i += 1;
+            continue;
+        }
         match canonical_ps_flag(t) {
             Some(flag) if is_encoded_flag(flag) => {
                 let s = collect_encoded_argument(&tokens[i + 1..]);
@@ -196,6 +233,10 @@ fn skip_ps_meta_flags(tokens: &[String]) -> String {
     let mut i = 0;
     while i < tokens.len() {
         let t = &tokens[i];
+        if attached_ps_flag_value(t).is_some() {
+            i += 1;
+            continue;
+        }
         if let Some(flag) = canonical_ps_flag(t) {
             i += if flag_takes_value(flag) { 2 } else { 1 };
             continue;
@@ -204,6 +245,32 @@ fn skip_ps_meta_flags(tokens: &[String]) -> String {
         i += 1;
     }
     out.join(" ")
+}
+
+fn command_body_from_attached_value(value: &str, rest: &[String]) -> String {
+    let first = strip_quotes(value);
+    if rest.is_empty() {
+        first.to_string()
+    } else {
+        let mut body = String::from(first);
+        body.push(' ');
+        body.push_str(&rest.join(" "));
+        body.trim().trim_matches('"').trim_matches('\'').to_string()
+    }
+}
+
+fn collect_encoded_argument_with_prefix(first: &str, rest: &[String]) -> String {
+    let mut out = String::new();
+    let first = strip_quotes(first);
+    if first.is_empty() || !first.chars().all(is_base64_char) {
+        return out;
+    }
+    out.push_str(first);
+    if first.ends_with('=') {
+        return out;
+    }
+    out.push_str(&collect_encoded_argument(rest));
+    out
 }
 
 fn collect_encoded_argument(tokens: &[String]) -> String {
