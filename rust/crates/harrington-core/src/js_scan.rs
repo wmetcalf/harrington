@@ -516,13 +516,7 @@ fn parse_js_textdecoder_decode_call_at(text: &str, start: usize) -> Option<(usiz
     if text.as_bytes().get(open) != Some(&b'(') {
         return None;
     }
-    let ctor_arg = skip_ascii_ws(text, open + 1);
-    let close = if text.as_bytes().get(ctor_arg) == Some(&b')') {
-        ctor_arg
-    } else {
-        let (arg_end, _) = parse_js_string_literal_at(text, ctor_arg)?;
-        skip_ascii_ws(text, arg_end)
-    };
+    let close = parse_js_textdecoder_constructor_close(text, open)?;
     if text.as_bytes().get(close) != Some(&b')') {
         return None;
     }
@@ -541,6 +535,100 @@ fn parse_js_textdecoder_decode_call_at(text: &str, start: usize) -> Option<(usiz
         return None;
     }
     Some((decode_close + 1, decoded))
+}
+
+fn parse_js_textdecoder_constructor_close(text: &str, open: usize) -> Option<usize> {
+    let mut cursor = skip_ascii_ws(text, open + 1);
+    if text.as_bytes().get(cursor) == Some(&b')') {
+        return Some(cursor);
+    }
+
+    let (arg_end, encoding) = parse_js_string_literal_at(text, cursor)?;
+    if !is_utf8_textdecoder_label(&encoding) {
+        return None;
+    }
+    cursor = skip_ascii_ws(text, arg_end);
+    if text.as_bytes().get(cursor) == Some(&b')') {
+        return Some(cursor);
+    }
+
+    if text.as_bytes().get(cursor) != Some(&b',') {
+        return None;
+    }
+    cursor = skip_ascii_ws(text, cursor + 1);
+    let options_end = consume_js_balanced_literal(text, cursor, b'{', b'}')?;
+    let close = skip_ascii_ws(text, options_end);
+    (text.as_bytes().get(close) == Some(&b')')).then_some(close)
+}
+
+fn is_utf8_textdecoder_label(label: &str) -> bool {
+    label.eq_ignore_ascii_case("utf-8")
+        || label.eq_ignore_ascii_case("utf8")
+        || label.eq_ignore_ascii_case("unicode-1-1-utf-8")
+}
+
+fn consume_js_balanced_literal(
+    text: &str,
+    start: usize,
+    open_byte: u8,
+    close_byte: u8,
+) -> Option<usize> {
+    const MAX_BALANCED_LITERAL_LEN: usize = 1024;
+
+    let bytes = text.as_bytes();
+    if bytes.get(start) != Some(&open_byte) {
+        return None;
+    }
+
+    let mut stack = vec![close_byte];
+    let mut cursor = start + 1;
+    while cursor < bytes.len() && cursor.saturating_sub(start) <= MAX_BALANCED_LITERAL_LEN {
+        match bytes[cursor] {
+            b'\'' | b'"' | b'`' => {
+                cursor = consume_js_quoted_bytes(text, cursor)?;
+            }
+            b'{' => {
+                stack.push(b'}');
+                cursor += 1;
+            }
+            b'[' => {
+                stack.push(b']');
+                cursor += 1;
+            }
+            b'(' => {
+                stack.push(b')');
+                cursor += 1;
+            }
+            b'}' | b']' | b')' => {
+                if stack.pop()? != bytes[cursor] {
+                    return None;
+                }
+                cursor += 1;
+                if stack.is_empty() {
+                    return Some(cursor);
+                }
+            }
+            _ => cursor += 1,
+        }
+    }
+    None
+}
+
+fn consume_js_quoted_bytes(text: &str, start: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let quote = *bytes.get(start)?;
+    let mut cursor = start + 1;
+    while cursor < bytes.len() {
+        match bytes[cursor] {
+            b'\\' => {
+                cursor = cursor.saturating_add(2);
+            }
+            b'\r' | b'\n' if quote != b'`' => return None,
+            b if b == quote => return Some(cursor + 1),
+            _ => cursor += 1,
+        }
+    }
+    None
 }
 
 fn decoded_js_atob_literals(text: &str) -> Vec<String> {
