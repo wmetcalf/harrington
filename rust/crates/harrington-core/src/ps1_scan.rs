@@ -491,7 +491,7 @@ static GETSTRING_B64_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static GETSTRING_B64_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?i)\[(?:System\.)?(?:Text\.)?Encoding\]::(UTF8|ASCII|Unicode|UTF7|BigEndianUnicode|UTF32)\.GetString\s*\(\s*\[(?:System\.)?Convert\]::FromBase64String\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*\)"#,
+        r#"(?i)\[(?:System\.)?(?:Text\.)?Encoding\]::(UTF8|ASCII|Unicode|UTF7|BigEndianUnicode|UTF32)\.GetString\s*\(\s*\[(?:System\.)?Convert\]::FromBase64String\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\.\s*Trim\s*\(\s*\))?\s*\)\s*\)"#,
     )
     .expect("getstring b64 var regex")
 });
@@ -702,7 +702,9 @@ fn expand_getstring_base64_variables(text: &str) -> String {
             let encoding = caps.get(1)?.as_str().to_ascii_lowercase();
             let var = caps.get(2)?.as_str().to_ascii_lowercase();
             let b64 = bindings.get(&var)?;
-            let decoded = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(b64.trim())
+                .ok()?;
             if !should_inline_base64_decoded_payload(&decoded) {
                 return None;
             }
