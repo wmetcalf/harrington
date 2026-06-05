@@ -483,7 +483,7 @@ static B64_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static GETSTRING_B64_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?i)\[(?:System\.)?(?:Text\.)?Encoding\]::(UTF8|ASCII|Unicode|UTF7|BigEndianUnicode|UTF32)\.GetString\s*\(\s*\[(?:System\.)?Convert\]::FromBase64String\s*\(\s*['"]([A-Za-z0-9+/=]+)['"]\s*\)\s*\)"#,
+        r#"(?i)\[(?:System\.)?(?:Text\.)?Encoding\]::(UTF8|ASCII|Unicode|UTF7|BigEndianUnicode|UTF32)\.GetString\s*\(\s*\[(?:System\.)?Convert\]::FromBase64String\s*\(\s*['"]([A-Za-z0-9+/=\s]+)['"]\s*(?:\.\s*Trim\s*\(\s*\))?\s*\)\s*\)"#,
     )
     .expect("getstring b64 literal regex")
 });
@@ -670,7 +670,7 @@ fn expand_getstring_base64_literals(text: &str) -> String {
             let full = caps.get(0)?;
             let encoding = caps.get(1)?.as_str().to_ascii_lowercase();
             let b64 = caps.get(2)?.as_str();
-            let decoded = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
+            let decoded = decode_ps_base64_string(b64)?;
             let value = match encoding.as_str() {
                 "unicode" => decode_utf16_lossy(&decoded, false)?,
                 "bigendianunicode" => decode_utf16_lossy(&decoded, true)?,
@@ -702,9 +702,7 @@ fn expand_getstring_base64_variables(text: &str) -> String {
             let encoding = caps.get(1)?.as_str().to_ascii_lowercase();
             let var = caps.get(2)?.as_str().to_ascii_lowercase();
             let b64 = bindings.get(&var)?;
-            let decoded = base64::engine::general_purpose::STANDARD
-                .decode(b64.trim())
-                .ok()?;
+            let decoded = decode_ps_base64_string(b64)?;
             if !should_inline_base64_decoded_payload(&decoded) {
                 return None;
             }
@@ -725,6 +723,16 @@ fn expand_getstring_base64_variables(text: &str) -> String {
         out.replace_range(start..end, &replacement);
     }
     out
+}
+
+fn decode_ps_base64_string(encoded: &str) -> Option<Vec<u8>> {
+    let cleaned: String = encoded.chars().filter(|c| !c.is_whitespace()).collect();
+    if cleaned.is_empty() {
+        return None;
+    }
+    base64::engine::general_purpose::STANDARD
+        .decode(cleaned)
+        .ok()
 }
 
 fn expand_getstring_byte_arrays(text: &str) -> String {
