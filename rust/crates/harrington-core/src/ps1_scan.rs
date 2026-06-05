@@ -1720,6 +1720,14 @@ static CHAR_ARRAY_CHUNK_RE: Lazy<Regex> = Lazy::new(|| {
         .expect("char arr chunk")
 });
 
+#[allow(clippy::expect_used)]
+static STRING_JOIN_CHAR_ARRAY_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?i)\[(?:System\.)?String\]::Join\s*\(\s*['"]([^'"]*)['"]\s*,\s*\[char\[\]\]\s*@?\(\s*((?:0x[0-9a-f]+|\d+)\s*(?:,\s*(?:0x[0-9a-f]+|\d+)\s*){2,})\)\s*\)"#,
+    )
+    .expect("string join char array")
+});
+
 fn decode_char_array_nums(nums_str: &str) -> Option<String> {
     let chars: Vec<char> = nums_str
         .split(',')
@@ -1730,6 +1738,41 @@ fn decode_char_array_nums(nums_str: &str) -> Option<String> {
         return None;
     }
     Some(chars.into_iter().collect())
+}
+
+fn decode_ps_char_array_nums(nums_str: &str, separator: &str) -> Option<String> {
+    let chars: Vec<String> = nums_str
+        .split(',')
+        .map(|part| {
+            let value = parse_ps_char_codepoint(part.trim())?;
+            char::from_u32(value).map(|ch| ch.to_string())
+        })
+        .collect::<Option<_>>()?;
+    if chars.is_empty() || chars.len() > 128 * 1024 {
+        return None;
+    }
+    Some(chars.join(separator))
+}
+
+fn expand_string_join_char_arrays(text: &str) -> String {
+    let matches: Vec<(usize, usize, String)> = STRING_JOIN_CHAR_ARRAY_RE
+        .captures_iter(text)
+        .filter_map(|caps| {
+            let full = caps.get(0)?;
+            let separator = caps.get(1)?.as_str();
+            let decoded = decode_ps_char_array_nums(caps.get(2)?.as_str(), separator)?;
+            Some((
+                full.start(),
+                full.end(),
+                format!("'{}'", decoded.replace('\'', "''")),
+            ))
+        })
+        .collect();
+    let mut out = text.to_string();
+    for (start, end, replacement) in matches.into_iter().rev() {
+        out.replace_range(start..end, &replacement);
+    }
+    out
 }
 
 fn expand_char_array_concat_chunks(text: &str) -> String {
@@ -2208,6 +2251,7 @@ fn expand_obfuscation(text: &str) -> String {
         out = expand_skip_nth_for_substring(&out);
         out = expand_char_concat(&out);
         out = expand_char_literal_concat(&out);
+        out = expand_string_join_char_arrays(&out);
         out = expand_char_array_concat_chunks(&out);
         out = expand_char_array_chunks(&out); // char-array chunk decoder (Pattern D)
         out = expand_hex_split_char_loop(&out);
@@ -2237,6 +2281,7 @@ fn expand_obfuscation(text: &str) -> String {
         out = expand_ps_variables(&out);
         out = expand_regex_replace_calls(&out);
         out = expand_gzip_function_base64_variables(&out);
+        out = expand_string_join_char_arrays(&out);
         out = expand_getstring_base64_literals(&out);
         out = expand_getstring_base64_variables(&out);
         out = expand_getstring_byte_arrays(&out);
