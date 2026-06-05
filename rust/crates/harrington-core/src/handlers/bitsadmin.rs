@@ -7,14 +7,14 @@ use crate::traits::Trait;
 pub fn h_bitsadmin(raw: &str, env: &mut Environment) {
     let tokens = split_words(raw);
     let lower: Vec<String> = tokens.iter().map(|s| s.to_ascii_lowercase()).collect();
-    if !lower.iter().any(|t| t == "/transfer") {
+    if !lower.iter().any(|t| t == "/transfer" || t == "/addfile") {
         return;
     }
 
     // Skip past /transfer and known flags to find URL + DST.
     let mut url: Option<String> = None;
     let mut dst: Option<String> = None;
-    let skip_flags = ["/transfer", "/download", "/upload", "/priority"];
+    let skip_flags = ["/transfer", "/addfile", "/download", "/upload", "/priority"];
     let skip_values = ["/priority"]; // flags whose VALUE we also skip
 
     let mut i = 1; // skip "bitsadmin"

