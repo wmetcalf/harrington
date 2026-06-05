@@ -29,8 +29,9 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
             "-d" | "--data" | "--data-ascii" | "--data-binary" | "--data-raw"
             | "--data-urlencode" | "-H" | "--header" | "-X" | "--request" | "-A"
             | "--user-agent" | "-e" | "--referer" | "-b" | "--cookie" | "-c" | "--cookie-jar"
-            | "-u" | "--user" | "--proxy" | "--connect-timeout" | "-m" | "--max-time" | "-T"
-            | "--upload-file" | "-F" | "--form" | "--form-string" | "--retry" | "--retry-delay" => {
+            | "-u" | "--user" | "-x" | "--proxy" | "--connect-timeout" | "-m" | "--max-time"
+            | "-T" | "--upload-file" | "-F" | "--form" | "--form-string" | "--retry"
+            | "--retry-delay" => {
                 i += 2;
                 continue;
             }
