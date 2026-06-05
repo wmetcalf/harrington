@@ -9,7 +9,9 @@ pub fn h_mshta(raw: &str, env: &mut Environment) {
 
     for token in split_words(raw).iter().skip(1) {
         let url = strip_quotes(token);
-        if let Some(src) = crate::deob_scan::normalize_liberal_url_token(url) {
+        if let Some(src) = crate::deob_scan::normalize_liberal_url_token(url)
+            .or_else(|| crate::deob_scan::normalize_schemeless_domain_path_token(url))
+        {
             env.traits.push(Trait::Download {
                 cmd: raw.to_string(),
                 src,

