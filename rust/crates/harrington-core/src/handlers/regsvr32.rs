@@ -30,7 +30,9 @@ fn regsvr32_scriptlet_url_after(tokens: &[String], start: usize) -> Option<Strin
         let Some(candidate) = candidate else {
             continue;
         };
-        if let Some(url) = crate::deob_scan::normalize_liberal_url_token(trim_url_suffix(candidate))
+        let candidate = trim_url_suffix(candidate);
+        if let Some(url) = crate::deob_scan::normalize_liberal_url_token(candidate)
+            .or_else(|| crate::deob_scan::normalize_schemeless_domain_path_token(candidate))
         {
             return Some(url);
         }
