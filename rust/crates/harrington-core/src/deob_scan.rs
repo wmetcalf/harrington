@@ -605,7 +605,7 @@ fn decoded_python_b64decode_literals(deobfuscated: &str) -> Vec<String> {
 
     let bindings = collect_python_b64_string_bindings(deobfuscated);
     let module_aliases = collect_python_base64_module_aliases(deobfuscated);
-    let decoder_aliases = collect_python_base64_decoder_aliases(deobfuscated);
+    let decoder_aliases = collect_python_base64_decoder_aliases(deobfuscated, &module_aliases);
     for caps in PY_B64DECODE_VAR_RE.captures_iter(deobfuscated).take(16) {
         let Some(method) = caps.get(1).map(|m| m.as_str()) else {
             continue;
@@ -735,11 +735,19 @@ fn collect_python_base64_module_aliases(deobfuscated: &str) -> std::collections:
 
 fn collect_python_base64_decoder_aliases(
     deobfuscated: &str,
+    module_aliases: &std::collections::HashSet<String>,
 ) -> std::collections::HashMap<String, String> {
     #[allow(clippy::expect_used)]
     static PY_FROM_BASE64_IMPORT_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?is)\bfrom\s+base64\s+import\s+([^;"'\r\n]+)"#)
             .expect("python from base64 import regex")
+    });
+    #[allow(clippy::expect_used)]
+    static PY_BASE64_DECODER_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\.(b64decode|urlsafe_b64decode)\b"#,
+        )
+        .expect("python base64 decoder assignment regex")
     });
 
     let mut aliases = std::collections::HashMap::new();
@@ -773,6 +781,27 @@ fn collect_python_base64_decoder_aliases(
                 aliases.insert(alias.to_string(), method.to_string());
             }
         }
+    }
+    for caps in PY_BASE64_DECODER_ASSIGN_RE
+        .captures_iter(deobfuscated)
+        .take(16)
+    {
+        let Some(alias) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        if !is_python_identifier(alias) {
+            continue;
+        }
+        let Some(module_name) = caps.get(2).map(|m| m.as_str()) else {
+            continue;
+        };
+        if !module_aliases.contains(module_name) {
+            continue;
+        }
+        let Some(method) = caps.get(3).map(|m| m.as_str()) else {
+            continue;
+        };
+        aliases.insert(alias.to_string(), method.to_string());
     }
     aliases
 }
