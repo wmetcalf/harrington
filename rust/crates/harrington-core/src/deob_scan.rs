@@ -775,7 +775,7 @@ fn collect_python_b64_string_bindings(
     #[allow(clippy::expect_used)]
     static PY_STRING_CONCAT_BINDING_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*((?:(?:[bB])?['"][^'"]+['"]\s*\+\s*)+(?:[bB])?['"][^'"]+['"])"#,
+            r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*((?:[bB])?['"][^'"]+['"](?:\s*(?:\+\s*)?(?:[bB])?['"][^'"]+['"])*)"#,
         )
         .expect("python string concat binding regex")
     });

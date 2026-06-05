@@ -11061,6 +11061,33 @@ $urlzip = "https://ps.example/stage.zip""#,
     }
 
     #[test]
+    fn python_b64decode_adjacent_bound_literal_recurses_into_decoded_source_urls() {
+        use base64::Engine;
+
+        let decoded = "import requests;requests.get('https://py.example/adjacent-bound-inner')";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(decoded.as_bytes());
+        let midpoint = b64.len() / 2;
+        let (left, right) = b64.split_at(midpoint);
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            &format!(
+                r#"python.exe -c "payload = '{left}' '{right}'; exec(base64.b64decode(payload))""#
+            ),
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://py.example/adjacent-bound-inner"
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from decoded Python adjacent bound b64 source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn python_imported_b64decode_alias_recurses_into_decoded_source_urls() {
         use base64::Engine;
 
