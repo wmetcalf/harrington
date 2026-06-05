@@ -150,7 +150,7 @@ static PS_QUOTED_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
 
 #[allow(clippy::expect_used)]
 static OUTFILE_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"(?i)-Out(?:F(?:ile)?)?\s+(?:'([^'\r\n;]+)'?|"([^"\r\n;]+)"?|([^"'\s]+))"#)
+    Regex::new(r#"(?i)-Out(?:F(?:ile)?)?(?:\s+|:)(?:'([^'\r\n;]+)'?|"([^"\r\n;]+)"?|([^"'\s]+))"#)
         .expect("outfile")
 });
 
@@ -162,7 +162,7 @@ static CURL_OUTPUT_RE: Lazy<Regex> = Lazy::new(|| {
 
 #[allow(clippy::expect_used)]
 static BITS_DESTINATION_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"(?i)-Dest(?:ination)?\s+(?:'([^'\r\n;]+)'?|"([^"\r\n;]+)"?|([^"'\s;]+))"#)
+    Regex::new(r#"(?i)-Dest(?:ination)?(?:\s+|:)(?:'([^'\r\n;]+)'?|"([^"\r\n;]+)"?|([^"'\s;]+))"#)
         .expect("bits destination")
 });
 

