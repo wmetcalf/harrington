@@ -439,11 +439,7 @@ fn parse_vbs_string_literal(part: &str) -> Option<String> {
 }
 
 fn parse_vbs_chr(part: &str) -> Option<char> {
-    let lower = part.to_ascii_lowercase();
-    let inner = lower
-        .strip_prefix("chr(")
-        .or_else(|| lower.strip_prefix("chrw("))?
-        .strip_suffix(')')?;
+    let inner = vbs_function_args(part, "chr").or_else(|| vbs_function_args(part, "chrw"))?;
     let value = parse_vbs_integer(inner)?;
     char::from_u32(value)
 }
@@ -700,11 +696,26 @@ fn vbs_function_args<'a>(part: &'a str, name: &str) -> Option<&'a str> {
     let part = part.trim();
     let lower = part.to_ascii_lowercase();
     let prefix_len = name.len();
-    if !lower.starts_with(name) || part.as_bytes().get(prefix_len) != Some(&b'(') {
+    if !lower.starts_with(name) {
         return None;
     }
-    let inner = part.get(prefix_len + 1..part.len().checked_sub(1)?)?;
+    let open = skip_ascii_ws(part, prefix_len);
+    if part.as_bytes().get(open) != Some(&b'(') {
+        return None;
+    }
+    let inner = part.get(open + 1..part.len().checked_sub(1)?)?;
     part.ends_with(')').then_some(inner)
+}
+
+fn skip_ascii_ws(text: &str, mut idx: usize) -> usize {
+    while text
+        .as_bytes()
+        .get(idx)
+        .is_some_and(u8::is_ascii_whitespace)
+    {
+        idx += 1;
+    }
+    idx
 }
 
 fn split_vbs_args(expr: &str) -> Vec<&str> {
