@@ -514,10 +514,9 @@ fn scan_python_requests_get_deob_text(deobfuscated: &str, env: &mut Environment)
         })
         .collect();
 
-    for url in find_call_url_literals(
-        deobfuscated,
-        &["requests.get", "urllib.request.urlopen", "urllib.urlopen"],
-    ) {
+    let urlopen_names = python_urlopen_call_names(deobfuscated);
+    let urlopen_name_refs = urlopen_names.iter().map(String::as_str).collect::<Vec<_>>();
+    for url in find_call_url_literals(deobfuscated, &urlopen_name_refs) {
         emit_python_download(&url, deobfuscated, env, &mut known);
     }
     for (url, dst) in find_python_urlretrieve_literals(deobfuscated) {
@@ -525,16 +524,28 @@ fn scan_python_requests_get_deob_text(deobfuscated: &str, env: &mut Environment)
     }
 
     for decoded in decoded_python_b64decode_literals(deobfuscated) {
-        for url in find_call_url_literals(
-            &decoded,
-            &["requests.get", "urllib.request.urlopen", "urllib.urlopen"],
-        ) {
+        let decoded_urlopen_names = python_urlopen_call_names(&decoded);
+        let decoded_urlopen_name_refs = decoded_urlopen_names
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        for url in find_call_url_literals(&decoded, &decoded_urlopen_name_refs) {
             emit_python_download(&url, &decoded, env, &mut known);
         }
         for (url, dst) in find_python_urlretrieve_literals(&decoded) {
             emit_python_download_with_dst(&url, dst.as_deref(), &decoded, env, &mut known);
         }
     }
+}
+
+fn python_urlopen_call_names(text: &str) -> Vec<String> {
+    let mut names = vec![
+        "requests.get".to_string(),
+        "urllib.request.urlopen".to_string(),
+        "urllib.urlopen".to_string(),
+    ];
+    names.extend(collect_python_urllib_call_aliases(text, "urlopen"));
+    names
 }
 
 fn decoded_python_b64decode_literals(deobfuscated: &str) -> Vec<String> {
@@ -1097,7 +1108,7 @@ fn find_python_urlretrieve_literals(text: &str) -> Vec<(String, Option<String>)>
         "urllib.request.urlretrieve".to_string(),
         "urllib.urlretrieve".to_string(),
     ];
-    names.extend(collect_python_urlretrieve_aliases(text));
+    names.extend(collect_python_urllib_call_aliases(text, "urlretrieve"));
     for name in names {
         let mut search_start = 0;
         while let Some(name_start) = find_ascii_case_insensitive(text, &name, search_start) {
@@ -1134,7 +1145,7 @@ fn find_python_urlretrieve_literals(text: &str) -> Vec<(String, Option<String>)>
     found
 }
 
-fn collect_python_urlretrieve_aliases(text: &str) -> Vec<String> {
+fn collect_python_urllib_call_aliases(text: &str, target_method: &str) -> Vec<String> {
     #[allow(clippy::expect_used)]
     static PY_FROM_URLLIB_IMPORT_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?is)\bfrom\s+urllib(?:\.request)?\s+import\s+([^;"'\r\n]+)"#)
@@ -1154,7 +1165,7 @@ fn collect_python_urlretrieve_aliases(text: &str) -> Vec<String> {
         let Some(alias) = caps.get(1).map(|m| m.as_str()) else {
             continue;
         };
-        aliases.push(format!("{alias}.urlretrieve"));
+        aliases.push(format!("{alias}.{target_method}"));
     }
     for caps in PY_FROM_URLLIB_IMPORT_RE.captures_iter(text).take(8) {
         let Some(imports) = caps.get(1).map(|m| m.as_str()) else {
@@ -1166,7 +1177,7 @@ fn collect_python_urlretrieve_aliases(text: &str) -> Vec<String> {
             let Some(method) = words.first().copied() else {
                 continue;
             };
-            if method != "urlretrieve" {
+            if method != target_method {
                 continue;
             }
             let alias = if words.get(1).is_some_and(|w| w.eq_ignore_ascii_case("as")) {
