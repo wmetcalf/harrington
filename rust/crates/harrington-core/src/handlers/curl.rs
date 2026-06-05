@@ -12,6 +12,18 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
     let mut i = 1;
     while i < tokens.len() {
         let t = &tokens[i];
+        if let Some(value) = short_option_cluster_output(t) {
+            if value.is_empty() {
+                if let Some(v) = tokens.get(i + 1) {
+                    output = Some(strip_quotes(v).to_string());
+                }
+                i += 2;
+            } else {
+                output = Some(strip_quotes(value).to_string());
+                i += 1;
+            }
+            continue;
+        }
         match t.as_str() {
             "-o" | "--output" => {
                 if let Some(v) = tokens.get(i + 1) {
@@ -117,6 +129,15 @@ fn looks_like_url(s: &str) -> bool {
         }
     }
     false
+}
+
+fn short_option_cluster_output(token: &str) -> Option<&str> {
+    let cluster = token.strip_prefix('-')?;
+    if cluster.starts_with('-') || cluster.len() <= 1 {
+        return None;
+    }
+    let idx = cluster.find('o')?;
+    Some(&cluster[idx + 1..])
 }
 
 fn url_basename(url: &str) -> Option<String> {
