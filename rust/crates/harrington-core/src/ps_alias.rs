@@ -127,7 +127,7 @@ pub fn looks_like_powershell(text: &str) -> bool {
                   |Import|Export|ConvertTo|ConvertFrom|Start|Stop|Enter|Exit
                   |Write|Read|Test|Format) - [A-Z][A-Za-z]+ \b
             | :: [A-Za-z_]
-            | (?:^|[\s;|&(]) (?:iex|iwr|irm) (?:\s|$|[\(\;\&\|])
+            | (?:^|[\s;|&(]) (?:iex|iwr|irm|wget|curl) (?:\s|$|[\(\;\&\|])
             ",
         )
         .expect("ps marker re")
