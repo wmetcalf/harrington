@@ -2582,10 +2582,10 @@ fn consume_js_replace_chain(
     bindings: &HashMap<String, String>,
 ) -> (usize, String) {
     let mut replacements = 0usize;
-    while let Some((next_idx, needle, replacement, global)) =
+    while let Some((next_idx, needle, replacement, options)) =
         consume_js_replace_call(text, idx, bindings)
     {
-        value = apply_js_replacement(value, needle, &replacement, global);
+        value = apply_js_replacement(value, needle, &replacement, options);
         idx = next_idx;
         replacements += 1;
         if replacements > 16 || value.len() > 8192 {
@@ -2601,24 +2601,64 @@ enum JsReplaceNeedle {
     Whitespace,
 }
 
+#[derive(Clone, Copy)]
+struct JsReplaceOptions {
+    global: bool,
+    case_insensitive: bool,
+}
+
 fn apply_js_replacement(
     value: String,
     needle: JsReplaceNeedle,
     replacement: &str,
-    global: bool,
+    options: JsReplaceOptions,
 ) -> String {
     match needle {
         JsReplaceNeedle::Literal(needle) if !needle.is_empty() => {
-            if global {
+            if options.case_insensitive && needle.is_ascii() {
+                replace_js_literal_ascii_case_insensitive(
+                    value,
+                    &needle,
+                    replacement,
+                    options.global,
+                )
+            } else if options.global {
                 value.replace(&needle, replacement)
             } else {
                 value.replacen(&needle, replacement, 1)
             }
         }
         JsReplaceNeedle::Literal(_) => value,
-        JsReplaceNeedle::CharSet(chars) => replace_js_chars(value, &chars, replacement, global),
-        JsReplaceNeedle::Whitespace => replace_js_whitespace(value, replacement, global),
+        JsReplaceNeedle::CharSet(chars) => {
+            replace_js_chars(value, &chars, replacement, options.global)
+        }
+        JsReplaceNeedle::Whitespace => replace_js_whitespace(value, replacement, options.global),
     }
+}
+
+fn replace_js_literal_ascii_case_insensitive(
+    value: String,
+    needle: &str,
+    replacement: &str,
+    global: bool,
+) -> String {
+    let value_lower = value.to_ascii_lowercase();
+    let needle_lower = needle.to_ascii_lowercase();
+    let mut out = String::with_capacity(value.len());
+    let mut cursor = 0usize;
+    let mut replaced = false;
+    while let Some(rel) = value_lower[cursor..].find(&needle_lower) {
+        if replaced && !global {
+            break;
+        }
+        let start = cursor + rel;
+        out.push_str(&value[cursor..start]);
+        out.push_str(replacement);
+        cursor = start + needle.len();
+        replaced = true;
+    }
+    out.push_str(&value[cursor..]);
+    out
 }
 
 fn replace_js_chars(value: String, chars: &[char], replacement: &str, global: bool) -> String {
@@ -2653,7 +2693,7 @@ fn consume_js_replace_call(
     text: &str,
     idx: usize,
     bindings: &HashMap<String, String>,
-) -> Option<(usize, JsReplaceNeedle, String, bool)> {
+) -> Option<(usize, JsReplaceNeedle, String, JsReplaceOptions)> {
     let (open, force_global) =
         if let Some(open) = consume_js_bound_method_open(text, idx, "replaceAll", bindings) {
             (open, true)
@@ -2664,16 +2704,26 @@ fn consume_js_replace_call(
             )
         };
     let first_start = skip_ascii_ws(text, open + 1);
-    let (first_end, needle, global) = if let Some((first_end, first)) =
+    let (first_end, needle, options) = if let Some((first_end, first)) =
         parse_js_string_or_bound_arg(text, first_start, bindings)
     {
-        (first_end, JsReplaceNeedle::Literal(first), false)
+        (
+            first_end,
+            JsReplaceNeedle::Literal(first),
+            JsReplaceOptions {
+                global: false,
+                case_insensitive: false,
+            },
+        )
     } else {
         let (first_end, pattern, flags) = parse_js_regex_literal_at(text, first_start)?;
         (
             first_end,
             regex_literal_pattern_to_replace_needle(&pattern)?,
-            flags.contains('g'),
+            JsReplaceOptions {
+                global: flags.contains('g'),
+                case_insensitive: flags.contains('i'),
+            },
         )
     };
     let comma = skip_ascii_ws(text, first_end);
@@ -2686,7 +2736,15 @@ fn consume_js_replace_call(
     if text.as_bytes().get(close) != Some(&b')') {
         return None;
     }
-    Some((close + 1, needle, second, force_global || global))
+    Some((
+        close + 1,
+        needle,
+        second,
+        JsReplaceOptions {
+            global: force_global || options.global,
+            ..options
+        },
+    ))
 }
 
 fn consume_js_bound_method_open(
