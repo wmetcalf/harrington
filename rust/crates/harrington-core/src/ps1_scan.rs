@@ -3133,6 +3133,7 @@ fn ps_literal_urls_in_download_context(text: &str) -> Vec<String> {
         .filter(|(start, value)| {
             crate::deob_scan::looks_like_liberal_url(value)
                 && !ps_url_inside_headers_hash(text, *start)
+                && !ps_url_is_non_download_option_value(text, *start)
                 && seen.insert(value.clone())
         })
         .filter_map(|(_, value)| crate::deob_scan::normalize_liberal_url_token(&value))
@@ -3402,6 +3403,9 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
                     if ps_url_inside_headers_hash(text, url_match.start()) {
                         continue;
                     }
+                    if ps_url_is_non_download_option_value(text, url_match.start()) {
+                        continue;
+                    }
                     let mut url = clean_ps_url(url_match.as_str());
                     if is_schemeless_ip_url(&url) {
                         url = format!("http://{url}");
@@ -3467,6 +3471,20 @@ fn ps_url_inside_headers_hash(text: &str, url_start: usize) -> bool {
     };
     let hash_start = stmt_start + headers_pos + hash_rel;
     !text[hash_start..url_start].contains('}')
+}
+
+fn ps_url_is_non_download_option_value(text: &str, url_start: usize) -> bool {
+    let stmt_start = text[..url_start]
+        .rfind(['\r', '\n', ';'])
+        .map_or(0, |idx| idx + 1);
+    let before_url = text[stmt_start..url_start]
+        .trim_end_matches([' ', '\t', '\r', '\n', '"', '\'', '(', '=', ':']);
+    let Some(option) = before_url.split_whitespace().last() else {
+        return false;
+    };
+    option
+        .trim_end_matches(['=', ':'])
+        .eq_ignore_ascii_case("-proxy")
 }
 
 fn clean_ps_url(raw: &str) -> String {
