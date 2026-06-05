@@ -547,7 +547,15 @@ fn parse_js_textdecoder_decode_call_at(text: &str, start: usize) -> Option<(usiz
             }
         }
         JsTextDecoderEncoding::Utf16Le | JsTextDecoderEncoding::Utf16Be => {
-            let (arg_end, bytes) = parse_js_typed_byte_array_arg_bytes(text, arg_start)?;
+            let raw_arrays = collect_js_byte_array_byte_bindings(text);
+            let (arg_end, bytes) = if let Some((arg_end, bytes)) =
+                parse_js_typed_byte_array_arg_bytes(text, arg_start)
+            {
+                (arg_end, bytes)
+            } else {
+                let (ident_end, name) = parse_js_identifier_at(text, arg_start)?;
+                (ident_end, raw_arrays.get(name)?.clone())
+            };
             let decoded = decode_js_textdecoder_bytes(&bytes, encoding)?;
             (arg_end, decoded)
         }
@@ -1531,6 +1539,26 @@ fn collect_js_byte_array_bindings(text: &str) -> HashMap<String, String> {
             continue;
         };
         if let Some(decoded) = decode_js_byte_array_args(nums.as_str()) {
+            arrays.insert(name.as_str().to_string(), decoded);
+        }
+    }
+    arrays
+}
+
+fn collect_js_byte_array_byte_bindings(text: &str) -> HashMap<String, Vec<u8>> {
+    let mut arrays = HashMap::new();
+    for caps in JS_NUM_ARRAY_ASSIGN_RE
+        .captures_iter(text)
+        .chain(JS_NUM_ARRAY_CTOR_ASSIGN_RE.captures_iter(text))
+        .chain(JS_UINT8_ARRAY_ASSIGN_RE.captures_iter(text))
+        .chain(JS_UINT8_ARRAY_OF_ASSIGN_RE.captures_iter(text))
+        .chain(JS_UINT8_ARRAY_FROM_ASSIGN_RE.captures_iter(text))
+        .take(128)
+    {
+        let (Some(name), Some(nums)) = (caps.get(1), caps.get(2)) else {
+            continue;
+        };
+        if let Some(decoded) = decode_js_byte_array_bytes(nums.as_str()) {
             arrays.insert(name.as_str().to_string(), decoded);
         }
     }
