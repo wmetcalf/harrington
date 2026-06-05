@@ -612,15 +612,41 @@ fn collect_python_requests_call_aliases(text: &str, target_method: &str) -> Vec<
 fn collect_python_requests_assigned_get_aliases(text: &str) -> Vec<String> {
     #[allow(clippy::expect_used)]
     static PY_REQUESTS_GET_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*requests\.get\b"#)
+        Regex::new(r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\.get\b"#)
             .expect("python requests get assignment regex")
     });
 
+    let module_aliases = collect_python_requests_module_aliases(text);
     PY_REQUESTS_GET_ASSIGN_RE
         .captures_iter(text)
         .take(8)
-        .filter_map(|caps| caps.get(1).map(|m| m.as_str().to_string()))
+        .filter_map(|caps| {
+            let alias = caps.get(1)?.as_str();
+            let module = caps.get(2)?.as_str();
+            if module_aliases.iter().any(|known| known == module) {
+                Some(alias.to_string())
+            } else {
+                None
+            }
+        })
         .collect()
+}
+
+fn collect_python_requests_module_aliases(text: &str) -> Vec<String> {
+    #[allow(clippy::expect_used)]
+    static PY_IMPORT_REQUESTS_ALIAS_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)\bimport\s+requests\s+as\s+([A-Za-z_][A-Za-z0-9_]*)"#)
+            .expect("python requests import alias regex")
+    });
+
+    let mut aliases = vec!["requests".to_string()];
+    aliases.extend(
+        PY_IMPORT_REQUESTS_ALIAS_RE
+            .captures_iter(text)
+            .take(8)
+            .filter_map(|caps| caps.get(1).map(|m| m.as_str().to_string())),
+    );
+    aliases
 }
 
 fn collect_python_requests_session_get_aliases(text: &str) -> Vec<String> {
