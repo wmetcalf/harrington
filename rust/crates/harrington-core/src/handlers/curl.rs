@@ -24,10 +24,22 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
             }
             continue;
         }
+        if t == "-o" || t.eq_ignore_ascii_case("--output") {
+            if let Some(v) = tokens.get(i + 1) {
+                output = Some(strip_quotes(v).to_string());
+            }
+            i += 2;
+            continue;
+        }
+        if t == "-O" || t.eq_ignore_ascii_case("--remote-name") {
+            remote_name = true;
+            i += 1;
+            continue;
+        }
         match t.as_str() {
-            "-o" | "--output" => {
+            _ if t.eq_ignore_ascii_case("--url") => {
                 if let Some(v) = tokens.get(i + 1) {
-                    output = Some(strip_quotes(v).to_string());
+                    url = normalize_curl_url(strip_quotes(v));
                 }
                 i += 2;
                 continue;
@@ -65,11 +77,6 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
                 if url.is_none() {
                     url = normalize_curl_url(value);
                 }
-                i += 1;
-                continue;
-            }
-            "-O" | "--remote-name" => {
-                remote_name = true;
                 i += 1;
                 continue;
             }

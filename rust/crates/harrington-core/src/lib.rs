@@ -6800,6 +6800,32 @@ mod curl_tests {
     }
 
     #[test]
+    fn curl_spaced_long_output_option_is_case_insensitive() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"curl --OUTPUT C:\Temp\upper-spaced.bin https://curl-upper-spaced-output.example/payload.bin"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![(
+                "https://curl-upper-spaced-output.example/payload.bin",
+                Some(r#"C:\Temp\upper-spaced.bin"#)
+            )],
+            "traits: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn curl_short_o_glued_records_destination() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
