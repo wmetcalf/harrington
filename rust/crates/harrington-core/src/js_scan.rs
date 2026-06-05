@@ -549,6 +549,7 @@ fn parse_js_textdecoder_decode_call_at(text: &str, start: usize) -> Option<(usiz
         JsTextDecoderEncoding::Utf16Le | JsTextDecoderEncoding::Utf16Be => {
             let raw_arrays = collect_js_byte_array_byte_bindings(text);
             let (bindings, _) = collect_js_string_bindings(text);
+            let raw_buffers = collect_js_buffer_byte_bindings(text, &bindings);
             let (arg_end, bytes) = if let Some((arg_end, bytes)) =
                 parse_js_typed_byte_array_arg_bytes(text, arg_start)
             {
@@ -559,7 +560,11 @@ fn parse_js_textdecoder_decode_call_at(text: &str, start: usize) -> Option<(usiz
                 (arg_end, bytes)
             } else {
                 let (ident_end, name) = parse_js_identifier_at(text, arg_start)?;
-                (ident_end, raw_arrays.get(name)?.clone())
+                let bytes = raw_arrays
+                    .get(name)
+                    .or_else(|| raw_buffers.get(name))?
+                    .clone();
+                (ident_end, bytes)
             };
             let decoded = decode_js_textdecoder_bytes(&bytes, encoding)?;
             (arg_end, decoded)
@@ -1637,6 +1642,35 @@ fn collect_js_byte_array_byte_bindings(text: &str) -> HashMap<String, Vec<u8>> {
         }
     }
     arrays
+}
+
+fn collect_js_buffer_byte_bindings(
+    text: &str,
+    bindings: &HashMap<String, String>,
+) -> HashMap<String, Vec<u8>> {
+    let mut buffers = HashMap::new();
+    for caps in JS_ASSIGN_RE.captures_iter(text).take(128) {
+        let Some(name) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(op) = caps.get(2).map(|m| m.as_str()) else {
+            continue;
+        };
+        if op != "=" {
+            continue;
+        }
+        let Some(expr_start) = caps.get(0).map(|m| m.end()) else {
+            continue;
+        };
+        let Some((expr_end, bytes)) = parse_js_buffer_from_arg_bytes(text, expr_start, bindings)
+        else {
+            continue;
+        };
+        if expr_end.saturating_sub(expr_start) <= 8192 && bytes.len() <= 8192 {
+            buffers.insert(name.to_string(), bytes);
+        }
+    }
+    buffers
 }
 
 fn decode_js_byte_array_args(nums: &str) -> Option<String> {
