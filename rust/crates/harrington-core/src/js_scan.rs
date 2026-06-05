@@ -27,7 +27,7 @@ static U_ESCAPE_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)String\s*(?:\.\s*from(?:CharCode|CodePoint)|\[\s*['"]from(?:CharCode|CodePoint)['"]\s*\])\s*\(\s*([0-9xa-f+\-\s,]{5,8192})\s*\)"#,
+        r#"(?is)String\s*(?:\.\s*from(?:CharCode|CodePoint)|\[\s*['"]from(?:CharCode|CodePoint)['"]\s*\])\s*\(\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\)"#,
     )
     .expect("js fromCharCode/fromCodePoint")
 });
@@ -35,7 +35,7 @@ static JS_FROMCHARCODE_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_MEMBER_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)String\s*\[\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\]\s*\(\s*([0-9xa-f+\-\s,]{5,8192})\s*\)"#,
+        r#"(?is)String\s*\[\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\]\s*\(\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\)"#,
     )
     .expect("js fromCharCode member variable")
 });
@@ -43,7 +43,7 @@ static JS_FROMCHARCODE_MEMBER_VAR_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_MEMBER_APPLY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)String\s*\[\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\]\s*\.\s*apply\s*\(\s*[^,\r\n]{0,128},\s*\[\s*([0-9xa-f+\-\s,]{5,8192})\s*\]\s*\)"#,
+        r#"(?is)String\s*\[\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\]\s*\.\s*apply\s*\(\s*[^,\r\n]{0,128},\s*\[\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\]\s*\)"#,
     )
     .expect("js fromCharCode member apply")
 });
@@ -51,7 +51,7 @@ static JS_FROMCHARCODE_MEMBER_APPLY_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_MEMBER_CALL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)String\s*\[\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\]\s*\.\s*call\s*\(\s*[^,\r\n]{0,128},\s*([0-9xa-f+\-\s,]{5,8192})\s*\)"#,
+        r#"(?is)String\s*\[\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\]\s*\.\s*call\s*\(\s*[^,\r\n]{0,128},\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\)"#,
     )
     .expect("js fromCharCode member call")
 });
@@ -59,7 +59,7 @@ static JS_FROMCHARCODE_MEMBER_CALL_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_MEMBER_SPREAD_ARRAY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)String\s*\[\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\]\s*\(\s*\.\.\.\s*\[\s*([0-9xa-f+\-\s,]{5,8192})\s*\]\s*\)"#,
+        r#"(?is)String\s*\[\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\]\s*\(\s*\.\.\.\s*\[\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\]\s*\)"#,
     )
     .expect("js fromCharCode member spread array")
 });
@@ -67,7 +67,7 @@ static JS_FROMCHARCODE_MEMBER_SPREAD_ARRAY_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_APPLY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)String\s*(?:\.\s*from(?:CharCode|CodePoint)|\[\s*['"]from(?:CharCode|CodePoint)['"]\s*\])\s*\.\s*apply\s*\(\s*[^,\r\n]{0,128},\s*\[\s*([0-9xa-f+\-\s,]{5,8192})\s*\]\s*\)"#,
+        r#"(?is)String\s*(?:\.\s*from(?:CharCode|CodePoint)|\[\s*['"]from(?:CharCode|CodePoint)['"]\s*\])\s*\.\s*apply\s*\(\s*[^,\r\n]{0,128},\s*\[\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\]\s*\)"#,
     )
     .expect("js fromCharCode/fromCodePoint apply")
 });
@@ -75,7 +75,7 @@ static JS_FROMCHARCODE_APPLY_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_APPLY_ARRAY_CTOR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)String\s*(?:\.\s*from(?:CharCode|CodePoint)|\[\s*['"]from(?:CharCode|CodePoint)['"]\s*\])\s*\.\s*apply\s*\(\s*[^,\r\n]{0,128},\s*(?:new\s+)?Array\s*\(\s*([0-9xa-f+\-\s,]{5,8192})\s*\)\s*\)"#,
+        r#"(?is)String\s*(?:\.\s*from(?:CharCode|CodePoint)|\[\s*['"]from(?:CharCode|CodePoint)['"]\s*\])\s*\.\s*apply\s*\(\s*[^,\r\n]{0,128},\s*(?:new\s+)?Array\s*\(\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\)\s*\)"#,
     )
     .expect("js fromCharCode/fromCodePoint apply Array constructor")
 });
@@ -83,7 +83,7 @@ static JS_FROMCHARCODE_APPLY_ARRAY_CTOR_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_APPLY_TYPED_ARRAY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)String\s*(?:\.\s*from(?:CharCode|CodePoint)|\[\s*['"]from(?:CharCode|CodePoint)['"]\s*\])\s*\.\s*apply\s*\(\s*[^,\r\n]{0,128},\s*(?:new\s+)?(?:Uint8Array|Int8Array|Uint8ClampedArray)\s*\(\s*\[\s*([0-9xa-f+\-\s,]{5,8192})\s*\]\s*\)\s*\)"#,
+        r#"(?is)String\s*(?:\.\s*from(?:CharCode|CodePoint)|\[\s*['"]from(?:CharCode|CodePoint)['"]\s*\])\s*\.\s*apply\s*\(\s*[^,\r\n]{0,128},\s*(?:new\s+)?(?:Uint8Array|Int8Array|Uint8ClampedArray)\s*\(\s*\[\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\]\s*\)\s*\)"#,
     )
     .expect("js fromCharCode/fromCodePoint apply typed array")
 });
@@ -91,7 +91,7 @@ static JS_FROMCHARCODE_APPLY_TYPED_ARRAY_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_CALL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)String\s*(?:\.\s*from(?:CharCode|CodePoint)|\[\s*['"]from(?:CharCode|CodePoint)['"]\s*\])\s*\.\s*call\s*\(\s*[^,\r\n]{0,128},\s*([0-9xa-f+\-\s,]{5,8192})\s*\)"#,
+        r#"(?is)String\s*(?:\.\s*from(?:CharCode|CodePoint)|\[\s*['"]from(?:CharCode|CodePoint)['"]\s*\])\s*\.\s*call\s*\(\s*[^,\r\n]{0,128},\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\)"#,
     )
     .expect("js fromCharCode/fromCodePoint call")
 });
@@ -99,7 +99,7 @@ static JS_FROMCHARCODE_CALL_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_SPREAD_ARRAY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)String\s*(?:\.\s*from(?:CharCode|CodePoint)|\[\s*['"]from(?:CharCode|CodePoint)['"]\s*\])\s*\(\s*\.\.\.\s*\[\s*([0-9xa-f+\-\s,]{5,8192})\s*\]\s*\)"#,
+        r#"(?is)String\s*(?:\.\s*from(?:CharCode|CodePoint)|\[\s*['"]from(?:CharCode|CodePoint)['"]\s*\])\s*\(\s*\.\.\.\s*\[\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\]\s*\)"#,
     )
     .expect("js fromCharCode/fromCodePoint spread array")
 });
@@ -107,7 +107,7 @@ static JS_FROMCHARCODE_SPREAD_ARRAY_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_SPREAD_ARRAY_CTOR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)String\s*(?:\.\s*from(?:CharCode|CodePoint)|\[\s*['"]from(?:CharCode|CodePoint)['"]\s*\])\s*\(\s*\.\.\.\s*(?:new\s+)?Array\s*\(\s*([0-9xa-f+\-\s,]{5,8192})\s*\)\s*\)"#,
+        r#"(?is)String\s*(?:\.\s*from(?:CharCode|CodePoint)|\[\s*['"]from(?:CharCode|CodePoint)['"]\s*\])\s*\(\s*\.\.\.\s*(?:new\s+)?Array\s*\(\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\)\s*\)"#,
     )
     .expect("js fromCharCode/fromCodePoint spread Array constructor")
 });
@@ -115,7 +115,7 @@ static JS_FROMCHARCODE_SPREAD_ARRAY_CTOR_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static JS_NUM_ARRAY_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)(?:\b(?:var|let|const)\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*\[\s*([0-9xa-f+\-\s,]{5,8192})\s*\]"#,
+        r#"(?is)(?:\b(?:var|let|const)\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*\[\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\]"#,
     )
     .expect("js numeric array assignment")
 });
@@ -123,7 +123,7 @@ static JS_NUM_ARRAY_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static JS_NUM_ARRAY_CTOR_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)(?:\b(?:var|let|const)\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:new\s+)?Array\s*\(\s*([0-9xa-f+\-\s,]{5,8192})\s*\)"#,
+        r#"(?is)(?:\b(?:var|let|const)\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:new\s+)?Array\s*\(\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\)"#,
     )
     .expect("js numeric array constructor assignment")
 });
@@ -131,7 +131,7 @@ static JS_NUM_ARRAY_CTOR_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static JS_UINT8_ARRAY_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)(?:\b(?:var|let|const)\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:new\s+)?(?:Uint8Array|Int8Array|Uint8ClampedArray)\s*\(\s*\[\s*([0-9xa-f+\-\s,]{5,8192})\s*\]\s*\)"#,
+        r#"(?is)(?:\b(?:var|let|const)\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:new\s+)?(?:Uint8Array|Int8Array|Uint8ClampedArray)\s*\(\s*\[\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\]\s*\)"#,
     )
     .expect("js Uint8Array assignment")
 });
@@ -139,7 +139,7 @@ static JS_UINT8_ARRAY_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static JS_UINT8_ARRAY_OF_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)(?:\b(?:var|let|const)\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:Uint8Array|Int8Array|Uint8ClampedArray)\s*(?:\.\s*of|\[\s*['"]of['"]\s*\])\s*\(\s*([0-9xa-f+\-\s,]{5,8192})\s*\)"#,
+        r#"(?is)(?:\b(?:var|let|const)\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:Uint8Array|Int8Array|Uint8ClampedArray)\s*(?:\.\s*of|\[\s*['"]of['"]\s*\])\s*\(\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\)"#,
     )
     .expect("js Uint8Array.of assignment")
 });
@@ -147,7 +147,7 @@ static JS_UINT8_ARRAY_OF_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static JS_UINT8_ARRAY_FROM_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)(?:\b(?:var|let|const)\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:Uint8Array|Int8Array|Uint8ClampedArray)\s*(?:\.\s*from|\[\s*['"]from['"]\s*\])\s*\(\s*\[\s*([0-9xa-f+\-\s,]{5,8192})\s*\]\s*\)"#,
+        r#"(?is)(?:\b(?:var|let|const)\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:Uint8Array|Int8Array|Uint8ClampedArray)\s*(?:\.\s*from|\[\s*['"]from['"]\s*\])\s*\(\s*\[\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\]\s*\)"#,
     )
     .expect("js Uint8Array.from assignment")
 });
@@ -1588,12 +1588,7 @@ fn parse_js_typed_byte_array_arg(text: &str, start: usize) -> Option<(usize, Str
     if let Some(open) = consume_js_method_open(text, cursor, "of") {
         let close = text[open + 1..].find(')')? + open + 1;
         let nums = &text[open + 1..close];
-        if nums.len() > 8192
-            || !nums.chars().all(|ch| {
-                ch.is_ascii_hexdigit()
-                    || matches!(ch, 'x' | 'X' | '+' | '-' | ',' | ' ' | '\t' | '\r' | '\n')
-            })
-        {
+        if !is_js_byte_array_nums(nums) {
             return None;
         }
         return decode_js_byte_array_args(nums).map(|decoded| (close + 1, decoded));
@@ -1679,7 +1674,10 @@ fn is_js_byte_array_nums(nums: &str) -> bool {
     nums.len() <= 8192
         && nums.chars().all(|ch| {
             ch.is_ascii_hexdigit()
-                || matches!(ch, 'x' | 'X' | '+' | '-' | ',' | ' ' | '\t' | '\r' | '\n')
+                || matches!(
+                    ch,
+                    'x' | 'X' | '+' | '-' | '^' | ',' | ' ' | '\t' | '\r' | '\n'
+                )
         })
 }
 
@@ -2916,42 +2914,61 @@ fn is_js_ident_char(c: char) -> bool {
 fn eval_js_numeric_expr(expr: &str) -> Option<u32> {
     let bytes = expr.as_bytes();
     let mut i = 0usize;
-    let mut total: i64 = 0;
-    let mut saw_term = false;
-    let mut sign: i64 = 1;
+    let mut total = eval_js_additive_numeric_expr(bytes, expr, &mut i)?;
 
-    while i < bytes.len() {
+    loop {
         while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
             i += 1;
         }
         if i >= bytes.len() {
+            return Some(total);
+        }
+        if bytes.get(i) != Some(&b'^') {
+            return None;
+        }
+        i += 1;
+        let rhs = eval_js_additive_numeric_expr(bytes, expr, &mut i)?;
+        total ^= rhs;
+    }
+}
+
+fn eval_js_additive_numeric_expr(bytes: &[u8], expr: &str, i: &mut usize) -> Option<u32> {
+    let mut total: i64 = 0;
+    let mut saw_term = false;
+    let mut sign: i64 = 1;
+
+    while *i < bytes.len() {
+        while bytes.get(*i).is_some_and(u8::is_ascii_whitespace) {
+            *i += 1;
+        }
+        if *i >= bytes.len() || bytes.get(*i) == Some(&b'^') {
             break;
         }
-        match bytes[i] {
+        match bytes[*i] {
             b'+' => {
                 sign = 1;
-                i += 1;
+                *i += 1;
                 continue;
             }
             b'-' => {
                 sign = -1;
-                i += 1;
+                *i += 1;
                 continue;
             }
             _ => {}
         }
 
-        let start = i;
-        while i < bytes.len()
-            && (bytes[i].is_ascii_hexdigit()
-                || bytes.get(i).is_some_and(|b| *b == b'x' || *b == b'X'))
+        let start = *i;
+        while *i < bytes.len()
+            && (bytes[*i].is_ascii_hexdigit()
+                || bytes.get(*i).is_some_and(|b| *b == b'x' || *b == b'X'))
         {
-            i += 1;
+            *i += 1;
         }
-        if i == start {
+        if *i == start {
             return None;
         }
-        let term = &expr[start..i];
+        let term = &expr[start..*i];
         let value = if let Some(hex) = term.strip_prefix("0x").or_else(|| term.strip_prefix("0X")) {
             i64::from(u32::from_str_radix(hex, 16).ok()?)
         } else {

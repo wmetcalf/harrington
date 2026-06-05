@@ -13237,6 +13237,29 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_fromcharcode_xor_expression_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let chars = "https://char-xor-js.example/p"
+            .bytes()
+            .map(|b| format!("0x{:x}^0x55^0x55", b))
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!("var u = String.fromCharCode({chars}); eval(u)").into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://char-xor-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS fromCharCode xor expression URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_bracket_fromcharcode_payload_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let chars = "https://char-bracket-js.example/p"
