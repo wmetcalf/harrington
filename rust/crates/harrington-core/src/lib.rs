@@ -6908,6 +6908,27 @@ mod misc_handler_tests {
     }
 
     #[test]
+    fn rundll32_fileprotocolhandler_url_emits_url_launch() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            "rundll32 url.dll,FileProtocolHandler https://rundll32-direct.example/lure.pdf",
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlLaunch { url, .. }
+                    if url == "https://rundll32-direct.example/lure.pdf"
+            )
+        });
+        assert!(
+            has,
+            "rundll32 FileProtocolHandler URL launch not typed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn rundll32_quoted_downloaded_dll_with_spaces_resolves_url() {
         let mut env = Environment::new(&Config::default());
         env.modified_filesystem.insert(

@@ -60,7 +60,7 @@ const SHORTCUT_OVERRIDES: &[(&str, &str)] = &[
 /// flag name (e.g. `EncodedCommand`). Returns `None` for non-flag tokens,
 /// unknown flags, and ambiguous abbreviations not covered by an explicit
 /// PS-precedence override.
-fn canonical_ps_flag(token: &str) -> Option<&'static str> {
+pub(crate) fn canonical_ps_flag(token: &str) -> Option<&'static str> {
     let lower = token.to_ascii_lowercase();
     let stripped = lower
         .strip_prefix('/')

