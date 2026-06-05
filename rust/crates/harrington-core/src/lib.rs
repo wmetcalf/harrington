@@ -6720,6 +6720,32 @@ mod curl_tests {
             env.traits
         );
     }
+
+    #[test]
+    fn curl_short_o_glued_records_destination() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"curl -oC:\Temp\payload.bin https://curl-short-o.example/payload.bin"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![(
+                "https://curl-short-o.example/payload.bin",
+                Some(r#"C:\Temp\payload.bin"#)
+            )],
+            "traits: {:?}",
+            env.traits
+        );
+    }
 }
 
 #[cfg(test)]

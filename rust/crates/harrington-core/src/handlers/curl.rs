@@ -28,6 +28,14 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
                 i += 1;
                 continue;
             }
+            _ if t.starts_with("-o") && t.len() > 2 => {
+                let value = &t["-o".len()..];
+                if !value.starts_with('-') {
+                    output = Some(strip_quotes(value).to_string());
+                }
+                i += 1;
+                continue;
+            }
             "-O" | "--remote-name" => {
                 remote_name = true;
                 i += 1;
