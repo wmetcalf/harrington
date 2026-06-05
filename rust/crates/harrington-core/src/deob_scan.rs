@@ -558,7 +558,9 @@ fn python_urlopen_call_names(text: &str) -> Vec<String> {
 }
 
 fn collect_python_requests_get_aliases(text: &str) -> Vec<String> {
-    collect_python_requests_call_aliases(text, "get")
+    let mut aliases = collect_python_requests_call_aliases(text, "get");
+    aliases.extend(collect_python_requests_assigned_get_aliases(text));
+    aliases
 }
 
 fn collect_python_requests_call_aliases(text: &str, target_method: &str) -> Vec<String> {
@@ -605,6 +607,20 @@ fn collect_python_requests_call_aliases(text: &str, target_method: &str) -> Vec<
         }
     }
     aliases
+}
+
+fn collect_python_requests_assigned_get_aliases(text: &str) -> Vec<String> {
+    #[allow(clippy::expect_used)]
+    static PY_REQUESTS_GET_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*requests\.get\b"#)
+            .expect("python requests get assignment regex")
+    });
+
+    PY_REQUESTS_GET_ASSIGN_RE
+        .captures_iter(text)
+        .take(8)
+        .filter_map(|caps| caps.get(1).map(|m| m.as_str().to_string()))
+        .collect()
 }
 
 fn collect_python_requests_session_get_aliases(text: &str) -> Vec<String> {
