@@ -7009,6 +7009,27 @@ mod msiexec_tests {
             env.traits
         );
     }
+
+    #[test]
+    fn msiexec_schemeless_package_url_emits_typed_trait() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"msiexec /quiet /i msiexec-schemeless.example/setup.msi"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { url, .. }
+                    if url == "http://msiexec-schemeless.example/setup.msi"
+            )
+        });
+        assert!(
+            has,
+            "msiexec schemeless package URL argument not typed: {:?}",
+            env.traits
+        );
+    }
 }
 
 #[cfg(test)]
