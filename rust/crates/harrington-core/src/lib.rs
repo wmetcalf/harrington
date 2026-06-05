@@ -6675,7 +6675,7 @@ mod curl_tests {
 
 #[cfg(test)]
 mod misc_handler_tests {
-    use crate::env::{Config, Environment};
+    use crate::env::{Config, Environment, FsEntry};
     use crate::interp::interpret_line;
     use crate::traits::Trait;
 
@@ -6697,6 +6697,32 @@ mod misc_handler_tests {
             .traits
             .iter()
             .any(|t| matches!(t, Trait::Rundll32 { .. })));
+    }
+
+    #[test]
+    fn rundll32_quoted_downloaded_dll_with_spaces_resolves_url() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            r#"c:\users\public\stage one.dll"#.to_string(),
+            FsEntry::Download {
+                src: "https://rundll32-space.example/stage.dll".to_string(),
+            },
+        );
+        interpret_line(
+            r#"rundll32 "C:\Users\Public\stage one.dll",EntryPoint"#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Rundll32 { url: Some(url), .. }
+                        if url == "https://rundll32-space.example/stage.dll"
+                )
+            }),
+            "rundll32 did not resolve downloaded DLL path: {:?}",
+            env.traits
+        );
     }
 
     #[test]
