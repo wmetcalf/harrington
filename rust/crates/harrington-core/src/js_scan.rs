@@ -123,7 +123,7 @@ static JS_NUM_ARRAY_CTOR_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static JS_UINT8_ARRAY_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)(?:\b(?:var|let|const)\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:new\s+)?Uint8Array\s*\(\s*\[\s*([0-9xa-f+\-\s,]{5,8192})\s*\]\s*\)"#,
+        r#"(?is)(?:\b(?:var|let|const)\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:new\s+)?(?:Uint8Array|Int8Array)\s*\(\s*\[\s*([0-9xa-f+\-\s,]{5,8192})\s*\]\s*\)"#,
     )
     .expect("js Uint8Array assignment")
 });
@@ -131,7 +131,7 @@ static JS_UINT8_ARRAY_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static JS_UINT8_ARRAY_OF_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)(?:\b(?:var|let|const)\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*Uint8Array\s*(?:\.\s*of|\[\s*['"]of['"]\s*\])\s*\(\s*([0-9xa-f+\-\s,]{5,8192})\s*\)"#,
+        r#"(?is)(?:\b(?:var|let|const)\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:Uint8Array|Int8Array)\s*(?:\.\s*of|\[\s*['"]of['"]\s*\])\s*\(\s*([0-9xa-f+\-\s,]{5,8192})\s*\)"#,
     )
     .expect("js Uint8Array.of assignment")
 });
@@ -139,7 +139,7 @@ static JS_UINT8_ARRAY_OF_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static JS_UINT8_ARRAY_FROM_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)(?:\b(?:var|let|const)\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*Uint8Array\s*(?:\.\s*from|\[\s*['"]from['"]\s*\])\s*\(\s*\[\s*([0-9xa-f+\-\s,]{5,8192})\s*\]\s*\)"#,
+        r#"(?is)(?:\b(?:var|let|const)\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:Uint8Array|Int8Array)\s*(?:\.\s*from|\[\s*['"]from['"]\s*\])\s*\(\s*\[\s*([0-9xa-f+\-\s,]{5,8192})\s*\]\s*\)"#,
     )
     .expect("js Uint8Array.from assignment")
 });
