@@ -35,7 +35,7 @@ static IRM_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static PS_SCHEMELESS_IP_CMDLET_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?i)(?:Invoke-WebRequest|Invoke-RestMethod|iwr|irm|wget|curl)\b(?:\s+-[A-Za-z][\w-]*)*\s+(?:['"])?((?:\d{1,3}\.){3}\d{1,3}(?::\d+)?(?:/[^\s"'\);]*)?)(?:['"])?"#,
+        r#"(?i)(?:Invoke-WebRequest|Invoke-RestMethod|iwr|irm|wget|curl)\b(?:[^\n|;]*?-(?:Uri|Ur)(?:\s+|:)|(?:\s+-[A-Za-z][\w-]*)*\s+)(?:['"])?((?:\d{1,3}\.){3}\d{1,3}(?::\d+)?(?:/[^\s"'\);]*)?)(?:['"])?"#,
     )
     .expect("ps schemeless ip cmdlet")
 });
@@ -45,7 +45,7 @@ static PS_SCHEMELESS_DOMAIN_CMDLET_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?ix)
             (?: Invoke-WebRequest | Invoke-RestMethod | iwr | irm | wget | curl ) \b
-            (?: [^\n|;]*? -Uri \s+ | (?: \s+ -[A-Za-z][\w-]* )* \s+ )
+            (?: [^\n|;]*? - (?: Uri | Ur ) (?: \s+ | : ) | (?: \s+ -[A-Za-z][\w-]* )* \s+ )
             (?: ['"] )?
             (
                 (?: [a-z0-9\-]+ \. ){1,4}
