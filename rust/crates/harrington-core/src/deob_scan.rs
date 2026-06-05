@@ -3230,7 +3230,7 @@ fn scan_certutil_urlcache_deob_text(deobfuscated: &str, env: &mut Environment) {
         let dst = tokens
             .iter()
             .skip(url_idx + 1)
-            .find(|token| !token.starts_with('-'))
+            .find(|token| !token.starts_with('-') && !token.starts_with('/'))
             .map(|token| token.trim_matches(['"', '\'', ')']).to_string())
             .unwrap_or_default();
         env.traits.push(Trait::CertutilDownload { url, dst });
