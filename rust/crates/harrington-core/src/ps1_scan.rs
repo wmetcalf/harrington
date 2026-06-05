@@ -3132,7 +3132,7 @@ fn ps_literal_urls_in_download_context(text: &str) -> Vec<String> {
         })
         .filter(|(start, value)| {
             crate::deob_scan::looks_like_liberal_url(value)
-                && !ps_url_inside_headers_hash(text, *start)
+                && !ps_url_inside_non_download_hash_option(text, *start)
                 && !ps_url_is_non_download_option_value(text, *start)
                 && seen.insert(value.clone())
         })
@@ -3400,7 +3400,7 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
                     let Some(url_match) = caps.get(1) else {
                         continue;
                     };
-                    if ps_url_inside_headers_hash(text, url_match.start()) {
+                    if ps_url_inside_non_download_hash_option(text, url_match.start()) {
                         continue;
                     }
                     if ps_url_is_non_download_option_value(text, url_match.start()) {
@@ -3456,21 +3456,44 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
     env.all_extracted_ps1 = payloads;
 }
 
-fn ps_url_inside_headers_hash(text: &str, url_start: usize) -> bool {
+fn ps_url_inside_non_download_hash_option(text: &str, url_start: usize) -> bool {
     let stmt_start = text[..url_start]
         .rfind(['\r', '\n', ';'])
         .map_or(0, |idx| idx + 1);
     let before_url = &text[stmt_start..url_start];
     let lower = before_url.to_ascii_lowercase();
-    let Some(headers_pos) = lower.rfind("-headers") else {
-        return false;
-    };
-    let after_headers = &before_url[headers_pos..];
-    let Some(hash_rel) = after_headers.rfind("@{") else {
-        return false;
-    };
-    let hash_start = stmt_start + headers_pos + hash_rel;
-    !text[hash_start..url_start].contains('}')
+    for option in ["-headers", "-body"] {
+        let Some(option_pos) = rfind_ps_option_token(&lower, option) else {
+            continue;
+        };
+        let after_option = &before_url[option_pos..];
+        let Some(hash_rel) = after_option.rfind("@{") else {
+            continue;
+        };
+        let hash_start = stmt_start + option_pos + hash_rel;
+        if !text[hash_start..url_start].contains('}') {
+            return true;
+        }
+    }
+    false
+}
+
+fn rfind_ps_option_token(lower: &str, option: &str) -> Option<usize> {
+    let mut search_end = lower.len();
+    while let Some(pos) = lower[..search_end].rfind(option) {
+        let before_boundary = pos == 0
+            || lower.as_bytes()[pos - 1].is_ascii_whitespace()
+            || matches!(lower.as_bytes()[pos - 1], b'(' | b';');
+        let after = pos + option.len();
+        let after_boundary = after == lower.len()
+            || lower.as_bytes()[after].is_ascii_whitespace()
+            || matches!(lower.as_bytes()[after], b':' | b'=');
+        if before_boundary && after_boundary {
+            return Some(pos);
+        }
+        search_end = pos;
+    }
+    None
 }
 
 fn ps_url_is_non_download_option_value(text: &str, url_start: usize) -> bool {

