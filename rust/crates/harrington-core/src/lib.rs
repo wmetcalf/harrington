@@ -7144,6 +7144,39 @@ mod certutil_tests {
     }
 
     #[test]
+    fn certutil_decodehex_accepts_offset_dump_rows() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "src.hex".to_string(),
+            FsEntry::Content {
+                content: b"0000  68 65 6c 6c 6f  |hello|\r\n0005  20 77 6f 72 6c 64  | world|\r\n"
+                    .to_vec(),
+                append: false,
+            },
+        );
+
+        interpret_line("certutil -decodehex src.hex dst.bin", &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::CertutilDecode { src, dst, src_resolved }
+                    if src == "src.hex" && dst == "dst.bin" && *src_resolved
+            )),
+            "certutil -decodehex trait missing: {:?}",
+            env.traits
+        );
+        assert!(
+            matches!(
+                env.modified_filesystem.get("dst.bin"),
+                Some(FsEntry::Decoded { content, .. }) if content == b"hello world"
+            ),
+            "dst.bin was not decoded from offset hex dump: {:?}",
+            env.modified_filesystem.get("dst.bin")
+        );
+    }
+
+    #[test]
     fn certutil_decode_self_basename_resolves_with_input_path() {
         let mut pe = vec![0u8; 0x84];
         pe[0..2].copy_from_slice(b"MZ");

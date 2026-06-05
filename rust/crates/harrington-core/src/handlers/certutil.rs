@@ -75,7 +75,7 @@ pub fn h_certutil(raw: &str, env: &mut Environment) {
                 }
                 DecodeKind::Hex => {
                     let s = std::str::from_utf8(&bytes).ok()?;
-                    hex::decode(s.trim().replace([' ', '\n', '\r', '\t'], "")).ok()
+                    decode_certutil_hex_text(s)
                 }
             }
         })();
@@ -100,6 +100,58 @@ pub fn h_certutil(raw: &str, env: &mut Environment) {
             );
         }
     }
+}
+
+fn decode_certutil_hex_text(text: &str) -> Option<Vec<u8>> {
+    let mut dump_bytes = Vec::new();
+    let mut saw_offset_dump = false;
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+        if tokens.len() >= 2
+            && parse_hex_offset(tokens[0]).is_some_and(|offset| offset == dump_bytes.len())
+        {
+            let before_len = dump_bytes.len();
+            for token in &tokens[1..] {
+                let Some(byte) = parse_hex_byte_token(token) else {
+                    break;
+                };
+                dump_bytes.push(byte);
+            }
+            if dump_bytes.len() == before_len {
+                return None;
+            }
+            saw_offset_dump = true;
+            continue;
+        }
+        if saw_offset_dump {
+            return None;
+        }
+    }
+
+    if saw_offset_dump {
+        return Some(dump_bytes);
+    }
+
+    hex::decode(text.trim().replace([' ', '\n', '\r', '\t'], "")).ok()
+}
+
+fn parse_hex_offset(token: &str) -> Option<usize> {
+    if !(4..=8).contains(&token.len()) || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    usize::from_str_radix(token, 16).ok()
+}
+
+fn parse_hex_byte_token(token: &str) -> Option<u8> {
+    if token.len() != 2 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    u8::from_str_radix(token, 16).ok()
 }
 
 fn decoded_looks_like_pe(content: &[u8]) -> bool {
