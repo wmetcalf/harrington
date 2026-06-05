@@ -1360,6 +1360,19 @@ fn parse_js_buffer_from_base64_call_at(
         return None;
     }
     let open = consume_js_method_open(text, buffer_end, "from")?;
+    if let Some((buffer_end, bytes)) =
+        parse_js_buffer_byte_array_arg_bytes(text, open, &collect_js_byte_array_byte_bindings(text))
+    {
+        let (tostring_end, encoding) =
+            consume_js_to_string_optional_encoding(text, buffer_end, bindings)?;
+        let decoded = decode_js_buffer_string_bytes(&bytes, encoding)?;
+        return Some(consume_js_string_transform_chain(
+            text,
+            tostring_end,
+            decoded,
+            bindings,
+        ));
+    }
     let (buffer_end, decoded) = if let Some((buffer_end, decoded)) =
         parse_js_buffer_byte_array_arg(text, open, &collect_js_byte_array_bindings(text))
     {
@@ -1412,6 +1425,37 @@ fn parse_js_buffer_byte_array_arg(
         return None;
     }
     Some((close + 1, decoded))
+}
+
+fn parse_js_buffer_byte_array_arg_bytes(
+    text: &str,
+    open: usize,
+    arrays: &HashMap<String, Vec<u8>>,
+) -> Option<(usize, Vec<u8>)> {
+    let arg_start = skip_ascii_ws(text, open + 1);
+    if let Some((array_end, bytes)) = parse_js_typed_byte_array_arg_bytes(text, arg_start) {
+        let close = skip_ascii_ws(text, array_end);
+        if text.as_bytes().get(close) != Some(&b')') {
+            return None;
+        }
+        return Some((close + 1, bytes));
+    }
+
+    if let Some((ident_end, name)) = parse_js_identifier_at(text, arg_start) {
+        let close = skip_ascii_ws(text, ident_end);
+        if text.as_bytes().get(close) != Some(&b')') {
+            return None;
+        }
+        return arrays.get(name).cloned().map(|bytes| (close + 1, bytes));
+    }
+
+    let array_open = arg_start;
+    let (array_close, bytes) = parse_js_byte_array_literal_bytes_at(text, array_open)?;
+    let close = skip_ascii_ws(text, array_close);
+    if text.as_bytes().get(close) != Some(&b')') {
+        return None;
+    }
+    Some((close + 1, bytes))
 }
 
 fn parse_js_typed_byte_array_arg(text: &str, start: usize) -> Option<(usize, String)> {
@@ -1631,6 +1675,19 @@ fn parse_js_new_buffer_base64_call_at(
     if text.as_bytes().get(open) != Some(&b'(') {
         return None;
     }
+    if let Some((buffer_end, bytes)) =
+        parse_js_buffer_byte_array_arg_bytes(text, open, &collect_js_byte_array_byte_bindings(text))
+    {
+        let (tostring_end, encoding) =
+            consume_js_to_string_optional_encoding(text, buffer_end, bindings)?;
+        let decoded = decode_js_buffer_string_bytes(&bytes, encoding)?;
+        return Some(consume_js_string_transform_chain(
+            text,
+            tostring_end,
+            decoded,
+            bindings,
+        ));
+    }
     let (buffer_end, decoded) = if let Some((buffer_end, decoded)) =
         parse_js_buffer_byte_array_arg(text, open, &collect_js_byte_array_bindings(text))
     {
@@ -1702,6 +1759,30 @@ fn decode_js_buffer_base64_string(encoded: &str, encoding: JsBufferEncoding) -> 
     }
 }
 
+#[derive(Clone, Copy)]
+enum JsBufferStringEncoding {
+    Utf8Like,
+    Utf16Le,
+}
+
+impl JsBufferStringEncoding {
+    fn parse(value: &str) -> Option<Self> {
+        let lower = value.to_ascii_lowercase();
+        match lower.as_str() {
+            "utf8" | "utf-8" | "ascii" | "latin1" | "binary" => Some(Self::Utf8Like),
+            "utf16le" | "utf-16le" | "ucs2" | "ucs-2" => Some(Self::Utf16Le),
+            _ => None,
+        }
+    }
+}
+
+fn decode_js_buffer_string_bytes(bytes: &[u8], encoding: JsBufferStringEncoding) -> Option<String> {
+    match encoding {
+        JsBufferStringEncoding::Utf8Like => Some(String::from_utf8_lossy(bytes).into_owned()),
+        JsBufferStringEncoding::Utf16Le => decode_js_utf16_bytes(bytes, u16::from_le_bytes),
+    }
+}
+
 fn decode_js_base64url_string(encoded: &str) -> Option<String> {
     if encoded.len() > 16384 {
         return None;
@@ -1745,23 +1826,26 @@ fn consume_js_to_string_optional_arg(
     idx: usize,
     bindings: &HashMap<String, String>,
 ) -> Option<usize> {
+    consume_js_to_string_optional_encoding(text, idx, bindings).map(|(end, _)| end)
+}
+
+fn consume_js_to_string_optional_encoding(
+    text: &str,
+    idx: usize,
+    bindings: &HashMap<String, String>,
+) -> Option<(usize, JsBufferStringEncoding)> {
     let open = consume_js_method_open(text, idx, "toString")?;
     let mut cursor = skip_ascii_ws(text, open + 1);
     if text.as_bytes().get(cursor) == Some(&b')') {
-        return Some(cursor + 1);
+        return Some((cursor + 1, JsBufferStringEncoding::Utf8Like));
     }
     let (arg_end, encoding) = parse_js_string_or_bound_arg(text, cursor, bindings)?;
-    if !matches!(
-        encoding.to_ascii_lowercase().as_str(),
-        "utf8" | "utf-8" | "ascii" | "latin1" | "binary"
-    ) {
-        return None;
-    }
+    let encoding = JsBufferStringEncoding::parse(&encoding)?;
     cursor = skip_ascii_ws(text, arg_end);
     if text.as_bytes().get(cursor) != Some(&b')') {
         return None;
     }
-    Some(cursor + 1)
+    Some((cursor + 1, encoding))
 }
 
 fn parse_js_string_decoder_call_method_arg(
