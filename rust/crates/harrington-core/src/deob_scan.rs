@@ -652,9 +652,13 @@ fn collect_python_requests_module_aliases(text: &str) -> Vec<String> {
 }
 
 fn collect_python_requests_session_get_aliases(text: &str) -> Vec<String> {
+    collect_python_requests_session_method_aliases(text, "get")
+}
+
+fn collect_python_requests_session_method_aliases(text: &str, target_method: &str) -> Vec<String> {
     collect_python_requests_session_constructors(text)
         .into_iter()
-        .map(|constructor| format!("{constructor}().get"))
+        .map(|constructor| format!("{constructor}().{target_method}"))
         .collect()
 }
 
@@ -704,6 +708,13 @@ fn collect_python_requests_session_constructors(text: &str) -> Vec<String> {
 }
 
 fn collect_python_requests_bound_session_get_aliases(text: &str) -> Vec<String> {
+    collect_python_requests_bound_session_method_aliases(text, "get")
+}
+
+fn collect_python_requests_bound_session_method_aliases(
+    text: &str,
+    target_method: &str,
+) -> Vec<String> {
     #[allow(clippy::expect_used)]
     static PY_REQUESTS_SESSION_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
@@ -720,7 +731,7 @@ fn collect_python_requests_bound_session_get_aliases(text: &str) -> Vec<String> 
             let name = caps.get(1)?.as_str();
             let constructor = caps.get(2)?.as_str();
             if constructors.iter().any(|known| known == constructor) {
-                Some(format!("{name}.get"))
+                Some(format!("{name}.{target_method}"))
             } else {
                 None
             }
@@ -733,6 +744,12 @@ fn find_python_requests_request_get_literals(text: &str) -> Vec<String> {
     let mut names = vec!["requests.request".to_string()];
     names.extend(collect_python_requests_call_aliases(text, "request"));
     names.extend(collect_python_requests_assigned_method_aliases(
+        text, "request",
+    ));
+    names.extend(collect_python_requests_session_method_aliases(
+        text, "request",
+    ));
+    names.extend(collect_python_requests_bound_session_method_aliases(
         text, "request",
     ));
     let string_bindings = collect_python_string_bindings(text);

