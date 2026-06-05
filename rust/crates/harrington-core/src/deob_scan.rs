@@ -1351,7 +1351,11 @@ fn scan_typo_webclient_downloads(deobfuscated: &str, env: &mut Environment) {
 
 fn find_call_url_literals(text: &str, names: &[&str]) -> Vec<String> {
     let mut found = Vec::new();
-    let bindings = collect_python_url_string_bindings(text);
+    let string_bindings = collect_python_string_bindings(text);
+    let mut bindings = collect_python_url_string_bindings_from(&string_bindings);
+    bindings.extend(collect_python_urllib_request_object_url_bindings(
+        text, &bindings,
+    ));
     for name in names {
         let mut search_start = 0;
         while let Some(name_start) = find_ascii_case_insensitive(text, name, search_start) {
@@ -1376,6 +1380,56 @@ fn find_call_url_literals(text: &str, names: &[&str]) -> Vec<String> {
         }
     }
     found
+}
+
+fn collect_python_urllib_request_object_url_bindings(
+    text: &str,
+    url_bindings: &HashMap<String, String>,
+) -> HashMap<String, String> {
+    let mut found = HashMap::new();
+    let mut names = vec![
+        "urllib.request.Request".to_string(),
+        "urllib.Request".to_string(),
+    ];
+    names.extend(collect_python_urllib_call_aliases(text, "Request"));
+    for name in names {
+        let mut search_start = 0;
+        while let Some(name_start) = find_ascii_case_insensitive(text, &name, search_start) {
+            let name_end = name_start + name.len();
+            if !is_callable_name_boundary(text, name_start, name_end) {
+                search_start = name_end;
+                continue;
+            }
+            let Some(lhs) = python_assignment_lhs_before(text, name_start) else {
+                search_start = name_end;
+                continue;
+            };
+            let open = skip_ascii_ws(text, name_end);
+            if text.as_bytes().get(open) != Some(&b'(') {
+                search_start = name_end;
+                continue;
+            }
+            let Some(close) = find_matching_paren(text, open) else {
+                search_start = open + 1;
+                continue;
+            };
+            if let Some(url) = first_python_url_arg(&text[open + 1..close], url_bindings) {
+                found.insert(lhs, url);
+            }
+            search_start = close + 1;
+        }
+    }
+    found
+}
+
+fn python_assignment_lhs_before(text: &str, expr_start: usize) -> Option<String> {
+    let prefix = text.get(..expr_start)?.trim_end();
+    let before_eq = prefix.strip_suffix('=')?.trim_end();
+    let ident_start = before_eq
+        .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .map_or(0, |idx| idx + 1);
+    let ident = before_eq.get(ident_start..)?.trim();
+    is_python_identifier(ident).then(|| ident.to_string())
 }
 
 fn find_python_urlretrieve_literals(text: &str) -> Vec<(String, Option<String>)> {
@@ -1800,10 +1854,6 @@ fn split_python_top_level_args(args: &str) -> Vec<&str> {
         parts.push(args[start..].trim());
     }
     parts
-}
-
-fn collect_python_url_string_bindings(text: &str) -> HashMap<String, String> {
-    collect_python_url_string_bindings_from(&collect_python_string_bindings(text))
 }
 
 fn collect_python_url_string_bindings_from(
