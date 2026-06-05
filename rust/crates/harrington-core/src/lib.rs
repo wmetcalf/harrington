@@ -7217,6 +7217,42 @@ mod certutil_tests {
     }
 
     #[test]
+    fn certutil_decode_self_new_certificate_request_recovers_pe() {
+        let mut pe = vec![0u8; 0x84];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&(0x80u32).to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&pe);
+        let script = format!(
+            "certutil -decode \"%~f0\" payload.exe\r\n-----BEGIN NEW CERTIFICATE REQUEST-----\r\n{b64}\r\n-----END NEW CERTIFICATE REQUEST-----\r\n"
+        );
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::CertutilDecode { src, dst, src_resolved }
+                    if src == "%~f0" && dst == "payload.exe" && *src_resolved
+            )),
+            "self certutil decode trait missing/resolution false: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .recovered_pe
+                .iter()
+                .any(|(label, blob)| label == "certutil-decode:payload.exe" && blob == &pe),
+            "NEW CERTIFICATE REQUEST PE was not recovered: {:?}",
+            report
+                .recovered_pe
+                .iter()
+                .map(|(label, blob)| (label.as_str(), blob.len()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn long_pe_base64_carrier_line_is_summarized() {
         let mut pe = vec![0u8; 0x84];
         pe[0..2].copy_from_slice(b"MZ");
