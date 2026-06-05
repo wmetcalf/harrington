@@ -176,8 +176,10 @@ static OUTFILE_RE: Lazy<Regex> = Lazy::new(|| {
 
 #[allow(clippy::expect_used)]
 static CURL_OUTPUT_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"(?i)(?:^|\s)-o\s+(?:'([^'\r\n;]+)'?|"([^"\r\n;]+)"?|([^"'\s;]+))"#)
-        .expect("curl output")
+    Regex::new(
+        r#"(?i)(?:^|\s)(?:--output(?:\s+|:|=)|-o\s+)(?:'([^'\r\n;]+)'?|"([^"\r\n;]+)"?|([^"'\s;]+))|(?:^|\s)-[A-Za-z]*o(?:'([^'\r\n;]+)'?|"([^"\r\n;]+)"?|((?:[A-Za-z]:|[\\/])[^"'\s;]+))"#,
+    )
+    .expect("curl output")
 });
 
 #[allow(clippy::expect_used)]

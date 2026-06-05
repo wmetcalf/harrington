@@ -2720,7 +2720,8 @@ fn scan_curl_style_compact_flags_deob_text(deobfuscated: &str, env: &mut Environ
         let Some(cmd) = tokens.first() else {
             continue;
         };
-        if !basename_lower(cmd).ends_with(".exe") {
+        let cmd_base = basename_lower(cmd);
+        if !cmd_base.ends_with(".exe") || is_known_non_curl_compact_flag_host(&cmd_base) {
             continue;
         }
         if !tokens
@@ -2746,6 +2747,25 @@ fn scan_curl_style_compact_flags_deob_text(deobfuscated: &str, env: &mut Environ
             });
         }
     }
+}
+
+fn is_known_non_curl_compact_flag_host(cmd_base: &str) -> bool {
+    matches!(
+        cmd_base,
+        "powershell.exe"
+            | "pwsh.exe"
+            | "cmd.exe"
+            | "wscript.exe"
+            | "cscript.exe"
+            | "mshta.exe"
+            | "rundll32.exe"
+            | "regsvr32.exe"
+            | "certutil.exe"
+            | "bitsadmin.exe"
+            | "msiexec.exe"
+            | "explorer.exe"
+            | "hh.exe"
+    )
 }
 
 fn parse_curl_like_download(tokens: &[String]) -> Option<(String, Option<String>)> {
@@ -2850,20 +2870,18 @@ fn parse_glued_curl_download(text: &str) -> Option<(String, Option<String>)> {
 
     let mut dst = None;
     let lowered = url.to_ascii_lowercase();
-    if let Some(idx) = lowered.find("--output=") {
+    if let Some(idx) = find_glued_curl_output_marker(&lowered, "--output=") {
         dst = Some(url[idx + "--output=".len()..].trim().to_string());
         url.truncate(idx);
-    } else if let Some(idx) = lowered.find("--output:") {
+    } else if let Some(idx) = find_glued_curl_output_marker(&lowered, "--output:") {
         dst = Some(url[idx + "--output:".len()..].trim().to_string());
         url.truncate(idx);
-    } else if let Some(idx) = lowered.find("--output") {
+    } else if let Some(idx) = find_glued_curl_output_marker(&lowered, "--output") {
         dst = Some(url[idx + "--output".len()..].trim().to_string());
         url.truncate(idx);
-    } else if let Some(idx) = lowered.find("-o") {
-        if idx > 0 {
-            dst = Some(url[idx + "-o".len()..].trim().to_string());
-            url.truncate(idx);
-        }
+    } else if let Some(idx) = find_glued_curl_output_marker(&lowered, "-o") {
+        dst = Some(url[idx + "-o".len()..].trim().to_string());
+        url.truncate(idx);
     }
 
     let url = url.trim_end_matches(['.', ',', ';', ':']).to_string();
@@ -2872,6 +2890,18 @@ fn parse_glued_curl_download(text: &str) -> Option<(String, Option<String>)> {
     } else {
         Some((url, dst))
     }
+}
+
+fn find_glued_curl_output_marker(text: &str, marker: &str) -> Option<usize> {
+    let mut search_start = 0;
+    while let Some(rel) = text[search_start..].find(marker) {
+        let idx = search_start + rel;
+        if idx > 0 && text.as_bytes()[idx - 1] == b'/' {
+            return Some(idx);
+        }
+        search_start = idx + marker.len();
+    }
+    None
 }
 
 fn parse_curl_output_dst(text: &str) -> Option<String> {
@@ -2951,10 +2981,16 @@ fn normalize_curl_text(curl_text: &str) -> std::borrow::Cow<'_, str> {
     }
 
     for needle in ["http://", "https://", "ftp://", "--output", "-o"] {
-        while let Some(pos) = out.find(needle) {
+        let mut search_start = 0;
+        while let Some(rel) = out[search_start..].find(needle) {
+            let pos = search_start + rel;
             let is_scheme = matches!(needle, "http://" | "https://" | "ftp://");
-            if needle == "-o" && pos > 0 && out[..pos].ends_with('-') {
-                break;
+            if needle == "-o"
+                && pos > 0
+                && !out[..pos].chars().last().is_some_and(|c| c.is_whitespace())
+            {
+                search_start = pos + needle.len();
+                continue;
             }
             if pos > 0 && !out[..pos].chars().last().is_some_and(|c| c.is_whitespace()) {
                 out.insert(pos, ' ');
