@@ -499,6 +499,7 @@ fn decoded_js_fromcharcode_array_bindings(text: &str) -> Vec<String> {
 
 fn decoded_js_textdecoder_literals(text: &str) -> Vec<String> {
     let mut out = Vec::new();
+    let decoders = collect_js_textdecoder_bindings(text);
     let mut cursor = 0usize;
     while cursor < text.len() && out.len() < 128 {
         let Some((ident_end, _)) = parse_js_identifier_at(text, cursor) else {
@@ -514,12 +515,39 @@ fn decoded_js_textdecoder_literals(text: &str) -> Vec<String> {
             cursor = call_end;
             continue;
         }
+        if let Some((call_end, decoded)) =
+            parse_js_textdecoder_instance_decode_call_at(text, cursor, &decoders)
+        {
+            out.push(decoded);
+            cursor = call_end;
+            continue;
+        }
         cursor = ident_end;
     }
     out
 }
 
 fn parse_js_textdecoder_decode_call_at(text: &str, start: usize) -> Option<(usize, String)> {
+    let (new_end, encoding) = parse_js_textdecoder_new_expr_at(text, start)?;
+    let decode_open = consume_js_method_open(text, new_end, "decode")?;
+    parse_js_textdecoder_decode_args_at(text, decode_open, encoding)
+}
+
+fn parse_js_textdecoder_instance_decode_call_at(
+    text: &str,
+    start: usize,
+    decoders: &HashMap<String, JsTextDecoderEncoding>,
+) -> Option<(usize, String)> {
+    let (ident_end, name) = parse_js_identifier_at(text, start)?;
+    let encoding = *decoders.get(name)?;
+    let decode_open = consume_js_method_open(text, ident_end, "decode")?;
+    parse_js_textdecoder_decode_args_at(text, decode_open, encoding)
+}
+
+fn parse_js_textdecoder_new_expr_at(
+    text: &str,
+    start: usize,
+) -> Option<(usize, JsTextDecoderEncoding)> {
     let (new_end, new_name) = parse_js_identifier_at(text, start)?;
     if new_name != "new" {
         return None;
@@ -534,7 +562,14 @@ fn parse_js_textdecoder_decode_call_at(text: &str, start: usize) -> Option<(usiz
     if text.as_bytes().get(close) != Some(&b')') {
         return None;
     }
-    let decode_open = consume_js_method_open(text, close + 1, "decode")?;
+    Some((close + 1, encoding))
+}
+
+fn parse_js_textdecoder_decode_args_at(
+    text: &str,
+    decode_open: usize,
+    encoding: JsTextDecoderEncoding,
+) -> Option<(usize, String)> {
     let arg_start = skip_ascii_ws(text, decode_open + 1);
     let (arg_end, decoded) = match encoding {
         JsTextDecoderEncoding::Utf8 => {
@@ -586,6 +621,25 @@ fn parse_js_textdecoder_decode_call_at(text: &str, start: usize) -> Option<(usiz
         return None;
     }
     Some((decode_close + 1, decoded))
+}
+
+fn collect_js_textdecoder_bindings(text: &str) -> HashMap<String, JsTextDecoderEncoding> {
+    let mut decoders = HashMap::new();
+    for caps in JS_ASSIGN_RE.captures_iter(text).take(128) {
+        let (Some(name), Some(op), Some(expr)) = (caps.get(1), caps.get(2), caps.get(0)) else {
+            continue;
+        };
+        if op.as_str() != "=" {
+            continue;
+        }
+        let Some((expr_end, encoding)) = parse_js_textdecoder_new_expr_at(text, expr.end()) else {
+            continue;
+        };
+        if expr_end.saturating_sub(expr.end()) <= 1024 {
+            decoders.insert(name.as_str().to_string(), encoding);
+        }
+    }
+    decoders
 }
 
 #[derive(Clone, Copy)]
