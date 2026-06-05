@@ -3227,17 +3227,18 @@ fn scan_certutil_urlcache_deob_text(deobfuscated: &str, env: &mut Environment) {
 
     for line in deobfuscated.lines() {
         let lower = line.to_ascii_lowercase();
-        if !lower.contains("-urlcache") || !contains_liberal_url_scheme(line) {
+        if !lower.contains("-urlcache") {
             continue;
         }
         let tokens = split_words(line);
         let Some(url_idx) = tokens.iter().position(|token| {
             let token = clean_command_url_token(token);
-            looks_like_liberal_url(token)
+            normalize_certutil_urlcache_token(token).is_some()
         }) else {
             continue;
         };
-        let Some(url) = normalize_liberal_url_token(clean_command_url_token(&tokens[url_idx]))
+        let Some(url) =
+            normalize_certutil_urlcache_token(clean_command_url_token(&tokens[url_idx]))
         else {
             continue;
         };
@@ -3252,6 +3253,10 @@ fn scan_certutil_urlcache_deob_text(deobfuscated: &str, env: &mut Environment) {
             .unwrap_or_default();
         env.traits.push(Trait::CertutilDownload { url, dst });
     }
+}
+
+fn normalize_certutil_urlcache_token(token: &str) -> Option<String> {
+    normalize_liberal_url_token(token).or_else(|| normalize_schemeless_domain_path_token(token))
 }
 
 fn scan_echoed_curl_deob_text(deobfuscated: &str, env: &mut Environment) {

