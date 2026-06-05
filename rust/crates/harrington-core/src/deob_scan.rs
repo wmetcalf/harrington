@@ -573,15 +573,47 @@ fn decoded_python_b64decode_literals(deobfuscated: &str) -> Vec<String> {
         let Ok(decoded) = decoded else {
             continue;
         };
-        if decoded.len() > 64 * 1024 {
-            continue;
+        out.extend(decoded_python_literal_payloads(&decoded));
+    }
+    out
+}
+
+fn decoded_python_literal_payloads(decoded: &[u8]) -> Vec<String> {
+    let mut out = Vec::new();
+    if decoded.len() <= 64 * 1024 {
+        if let Ok(text) = std::str::from_utf8(decoded) {
+            out.push(text.to_string());
         }
-        let Ok(text) = String::from_utf8(decoded) else {
-            continue;
-        };
+    }
+    if let Some(text) = inflate_python_literal_zlib(decoded) {
+        out.push(text);
+    }
+    if let Some(text) = inflate_python_literal_gzip(decoded) {
         out.push(text);
     }
     out
+}
+
+fn inflate_python_literal_zlib(decoded: &[u8]) -> Option<String> {
+    python_bounded_inflate(flate2::read::ZlibDecoder::new(decoded))
+}
+
+fn inflate_python_literal_gzip(decoded: &[u8]) -> Option<String> {
+    python_bounded_inflate(flate2::read::GzDecoder::new(decoded))
+}
+
+fn python_bounded_inflate<R: std::io::Read>(reader: R) -> Option<String> {
+    use std::io::Read as _;
+
+    const MAX_DECOMPRESSED_BYTES: u64 = 64 * 1024;
+
+    let mut limited = reader.take(MAX_DECOMPRESSED_BYTES + 1);
+    let mut bytes = Vec::new();
+    limited.read_to_end(&mut bytes).ok()?;
+    if bytes.len() as u64 > MAX_DECOMPRESSED_BYTES {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
 }
 
 fn is_python_base64_literal(s: &str) -> bool {

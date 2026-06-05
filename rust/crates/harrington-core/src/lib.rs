@@ -10998,6 +10998,66 @@ start /min powershell.exe -Command "[Net.ServicePointManager]::SecurityProtocol 
     }
 
     #[test]
+    fn python_zlib_decompress_b64decode_literal_recurses_into_decoded_source_urls() {
+        use base64::Engine;
+        use std::io::Write;
+
+        let decoded = "import requests;requests.get('https://py.example/zlib-inner')";
+        let mut encoder =
+            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder
+            .write_all(decoded.as_bytes())
+            .expect("write zlib payload");
+        let compressed = encoder.finish().expect("finish zlib payload");
+        let b64 = base64::engine::general_purpose::STANDARD.encode(compressed);
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            &format!(r#"python.exe -c "exec(zlib.decompress(base64.b64decode('{b64}')))""#),
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://py.example/zlib-inner"
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from decoded Python zlib b64 source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_gzip_decompress_b64decode_literal_recurses_into_decoded_source_urls() {
+        use base64::Engine;
+        use std::io::Write;
+
+        let decoded =
+            "import urllib.request;urllib.request.urlopen('https://py.example/gzip-inner')";
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder
+            .write_all(decoded.as_bytes())
+            .expect("write gzip payload");
+        let compressed = encoder.finish().expect("finish gzip payload");
+        let b64 = base64::engine::general_purpose::STANDARD.encode(compressed);
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            &format!(r#"python.exe -c "exec(gzip.decompress(base64.b64decode('{b64}')))""#),
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://py.example/gzip-inner"
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from decoded Python gzip b64 source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn python_keyword_url_calls_in_deob_text_emit_structured_downloads() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
