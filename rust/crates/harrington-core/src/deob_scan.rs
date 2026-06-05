@@ -2057,6 +2057,8 @@ fn scan_url_launch_deob_text(deobfuscated: &str, env: &mut Environment) {
             let cmd = command_name(strip_quotes(&tokens[i]));
             let Some(url) = (if cmd == "start" || cmd == "start.exe" {
                 url_launch_after_start(&tokens, i + 1)
+            } else if cmd == "rundll32" || cmd == "rundll32.exe" {
+                url_launch_after_rundll32_fileprotocolhandler(&tokens, i + 1)
             } else if is_url_launcher_command(&cmd) {
                 first_url_after(&tokens, i + 1)
             } else {
@@ -2074,6 +2076,18 @@ fn scan_url_launch_deob_text(deobfuscated: &str, env: &mut Environment) {
             });
         }
     }
+}
+
+fn url_launch_after_rundll32_fileprotocolhandler(
+    tokens: &[String],
+    start: usize,
+) -> Option<String> {
+    let handler_idx = (start..tokens.len()).take(4).find(|idx| {
+        strip_quotes(&tokens[*idx])
+            .to_ascii_lowercase()
+            .contains("fileprotocolhandler")
+    })?;
+    first_url_after(tokens, handler_idx + 1)
 }
 
 fn scan_url_variable_assignments(deobfuscated: &str, env: &mut Environment) {

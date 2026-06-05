@@ -10663,6 +10663,41 @@ start msedge /max https://edge.example/lure.pdf"#,
     }
 
     #[test]
+    fn rundll32_fileprotocolhandler_url_emits_url_launch() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"rundll32.exe url.dll,FileProtocolHandler "https://rundll32-launch.example/lure.pdf"
+rundll32 url.dll,FileProtocolHandler https://rundll32-launch.example/extensionless.pdf"#,
+            &mut env,
+        );
+        for expected in [
+            "https://rundll32-launch.example/lure.pdf",
+            "https://rundll32-launch.example/extensionless.pdf",
+        ] {
+            let has = env.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::UrlLaunch { url, .. } if url == expected
+                )
+            });
+            assert!(
+                has,
+                "rundll32 FileProtocolHandler URL launch missed for {expected}: {:?}",
+                env.traits
+            );
+            assert!(
+                !env.traits.iter().any(|t| {
+                    matches!(t,
+                        Trait::DownloadInDeobText { src, .. } | Trait::UrlArgument { url: src, .. }
+                            if src == expected
+                    )
+                }),
+                "rundll32 FileProtocolHandler URL double-emitted with weaker type: {:?}",
+                env.traits
+            );
+        }
+    }
+
+    #[test]
     fn url_variable_assignments_emit_typed_trait_without_generic_duplicate() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
