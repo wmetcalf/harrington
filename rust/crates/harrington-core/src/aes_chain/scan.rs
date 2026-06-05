@@ -73,8 +73,9 @@ pub fn scan_urls(bytes: &[u8], limit: usize) -> Vec<String> {
     // We check both alignments because embedded user strings and appended
     // blobs do not always start on an even byte offset.
     if bytes.len() >= 16 {
+        let mut decoded = String::with_capacity(bytes.len() / 2);
         for offset in [0usize, 1] {
-            let mut decoded = String::with_capacity(bytes.len() / 2);
+            decoded.clear();
             let mut i = offset;
             while i + 1 < bytes.len() {
                 let lo = bytes[i];

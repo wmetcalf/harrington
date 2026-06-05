@@ -3150,18 +3150,16 @@ fn analyze_inner(input: &[u8], cfg: &Config, file_path: Option<std::path::PathBu
 }
 
 fn scan_recovered_artifact_strings(env: &mut Environment) {
-    let artifacts: Vec<Vec<u8>> = env
-        .recovered_pe
-        .iter()
-        .map(|(_, blob)| blob.clone())
-        .collect();
-    for blob in artifacts {
-        scan_binary_input_urls(&blob, env);
-        let behavior_text = recovered_artifact_behavior_text(&blob);
+    let mut artifacts = std::mem::take(&mut env.recovered_pe);
+    for (_, blob) in &artifacts {
+        scan_binary_input_urls(blob, env);
+        let behavior_text = recovered_artifact_behavior_text(blob);
         if !behavior_text.is_empty() {
             deob_scan::scan_deob_text(&behavior_text, env);
         }
     }
+    artifacts.append(&mut env.recovered_pe);
+    env.recovered_pe = artifacts;
 }
 
 fn summarize_multiline_base64_pe_carrier_blocks(text: String, env: &mut Environment) -> String {
@@ -3480,11 +3478,12 @@ fn recovered_artifact_behavior_text(blob: &[u8]) -> String {
     let mut seen = std::collections::HashSet::new();
     let mut text = String::new();
     for s in strings {
-        if !recovered_artifact_string_is_behavior_hint(&s) || !seen.insert(s.clone()) {
+        if !recovered_artifact_string_is_behavior_hint(&s) || seen.contains(&s) {
             continue;
         }
         text.push_str(&s);
         text.push('\n');
+        seen.insert(s);
     }
     text
 }
@@ -3557,7 +3556,6 @@ fn push_recovered_artifact_string(
 }
 
 fn recovered_artifact_string_is_behavior_hint(s: &str) -> bool {
-    let lc = s.to_ascii_lowercase();
     const NEEDLES: &[&str] = &[
         "add-mppreference",
         "set-mppreference",
@@ -3573,7 +3571,25 @@ fn recovered_artifact_string_is_behavior_hint(s: &str) -> bool {
         "amsiutils",
         "etweventwrite",
     ];
-    NEEDLES.iter().any(|needle| lc.contains(needle))
+    NEEDLES
+        .iter()
+        .any(|needle| ascii_case_insensitive_contains(s, needle))
+}
+
+fn ascii_case_insensitive_contains(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if haystack.len() < needle.len() {
+        return false;
+    }
+    haystack.as_bytes().windows(needle.len()).any(|window| {
+        window
+            .iter()
+            .copied()
+            .zip(needle.bytes())
+            .all(|(h, n)| h.to_ascii_lowercase() == n)
+    })
 }
 
 fn trait_kind(t: &Trait) -> String {
