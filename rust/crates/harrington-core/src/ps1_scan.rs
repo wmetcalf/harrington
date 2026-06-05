@@ -191,6 +191,14 @@ static CHAR_INNER_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("inner char regex")
 });
 
+#[allow(clippy::expect_used)]
+static CHAR_LITERAL_CONCAT_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?i)\[char\]\s*\(?\s*((?:0x[0-9a-f]+|\d+)(?:\s*[+-]\s*(?:0x[0-9a-f]+|\d+))*)\s*\)?\s*\+\s*(?:'((?:''|[^'])*)'|"([^"`$\\]*(?:\\.[^"`$\\]*)*)")"#,
+    )
+    .expect("char literal concat regex")
+});
+
 fn expand_char_concat(text: &str) -> String {
     let matches: Vec<(usize, usize, String)> = CHAR_CONCAT_RE
         .find_iter(text)
@@ -210,6 +218,27 @@ fn expand_char_concat(text: &str) -> String {
         .collect();
     let mut result = text.to_string();
     // Apply replacements in reverse so byte offsets stay valid
+    for (start, end, replacement) in matches.into_iter().rev() {
+        result.replace_range(start..end, &replacement);
+    }
+    result
+}
+
+fn expand_char_literal_concat(text: &str) -> String {
+    let matches: Vec<(usize, usize, String)> = CHAR_LITERAL_CONCAT_RE
+        .captures_iter(text)
+        .filter_map(|caps| {
+            let full = caps.get(0)?;
+            let ch = char::from_u32(parse_ps_char_codepoint(caps.get(1)?.as_str())?)?;
+            let literal = caps
+                .get(2)
+                .map(|m| m.as_str().replace("''", "'"))
+                .or_else(|| caps.get(3).map(|m| m.as_str().to_string()))?;
+            let value = format!("{ch}{literal}").replace('\'', "''");
+            Some((full.start(), full.end(), format!("'{value}'")))
+        })
+        .collect();
+    let mut result = text.to_string();
     for (start, end, replacement) in matches.into_iter().rev() {
         result.replace_range(start..end, &replacement);
     }
@@ -2100,6 +2129,7 @@ fn expand_obfuscation(text: &str) -> String {
         out = expand_skip_nth(&out); // skip-nth-char decoder (Pattern B)
         out = expand_skip_nth_for_substring(&out);
         out = expand_char_concat(&out);
+        out = expand_char_literal_concat(&out);
         out = expand_char_array_concat_chunks(&out);
         out = expand_char_array_chunks(&out); // char-array chunk decoder (Pattern D)
         out = expand_hex_split_char_loop(&out);
