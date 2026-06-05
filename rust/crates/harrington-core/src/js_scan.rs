@@ -499,7 +499,8 @@ fn decoded_js_fromcharcode_array_bindings(text: &str) -> Vec<String> {
 
 fn decoded_js_textdecoder_literals(text: &str) -> Vec<String> {
     let mut out = Vec::new();
-    let decoders = collect_js_textdecoder_bindings(text);
+    let (bindings, _) = collect_js_string_bindings(text);
+    let decoders = collect_js_textdecoder_bindings(text, &bindings);
     let mut cursor = 0usize;
     while cursor < text.len() && out.len() < 128 {
         let Some((ident_end, _)) = parse_js_identifier_at(text, cursor) else {
@@ -510,7 +511,9 @@ fn decoded_js_textdecoder_literals(text: &str) -> Vec<String> {
                 .unwrap_or(1);
             continue;
         };
-        if let Some((call_end, decoded)) = parse_js_textdecoder_decode_call_at(text, cursor) {
+        if let Some((call_end, decoded)) =
+            parse_js_textdecoder_decode_call_at(text, cursor, &bindings)
+        {
             out.push(decoded);
             cursor = call_end;
             continue;
@@ -527,8 +530,12 @@ fn decoded_js_textdecoder_literals(text: &str) -> Vec<String> {
     out
 }
 
-fn parse_js_textdecoder_decode_call_at(text: &str, start: usize) -> Option<(usize, String)> {
-    let (new_end, encoding) = parse_js_textdecoder_new_expr_at(text, start)?;
+fn parse_js_textdecoder_decode_call_at(
+    text: &str,
+    start: usize,
+    bindings: &HashMap<String, String>,
+) -> Option<(usize, String)> {
+    let (new_end, encoding) = parse_js_textdecoder_new_expr_at(text, start, bindings)?;
     let decode_open = consume_js_method_open(text, new_end, "decode")?;
     parse_js_textdecoder_decode_args_at(text, decode_open, encoding)
 }
@@ -547,6 +554,7 @@ fn parse_js_textdecoder_instance_decode_call_at(
 fn parse_js_textdecoder_new_expr_at(
     text: &str,
     start: usize,
+    bindings: &HashMap<String, String>,
 ) -> Option<(usize, JsTextDecoderEncoding)> {
     let (new_end, new_name) = parse_js_identifier_at(text, start)?;
     if new_name != "new" {
@@ -558,7 +566,7 @@ fn parse_js_textdecoder_new_expr_at(
     if text.as_bytes().get(open) != Some(&b'(') {
         return None;
     }
-    let (close, encoding) = parse_js_textdecoder_constructor_close(text, open)?;
+    let (close, encoding) = parse_js_textdecoder_constructor_close(text, open, bindings)?;
     if text.as_bytes().get(close) != Some(&b')') {
         return None;
     }
@@ -623,7 +631,10 @@ fn parse_js_textdecoder_decode_args_at(
     Some((decode_close + 1, decoded))
 }
 
-fn collect_js_textdecoder_bindings(text: &str) -> HashMap<String, JsTextDecoderEncoding> {
+fn collect_js_textdecoder_bindings(
+    text: &str,
+    bindings: &HashMap<String, String>,
+) -> HashMap<String, JsTextDecoderEncoding> {
     let mut decoders = HashMap::new();
     for caps in JS_ASSIGN_RE.captures_iter(text).take(128) {
         let (Some(name), Some(op), Some(expr)) = (caps.get(1), caps.get(2), caps.get(0)) else {
@@ -632,7 +643,9 @@ fn collect_js_textdecoder_bindings(text: &str) -> HashMap<String, JsTextDecoderE
         if op.as_str() != "=" {
             continue;
         }
-        let Some((expr_end, encoding)) = parse_js_textdecoder_new_expr_at(text, expr.end()) else {
+        let Some((expr_end, encoding)) =
+            parse_js_textdecoder_new_expr_at(text, expr.end(), bindings)
+        else {
             continue;
         };
         if expr_end.saturating_sub(expr.end()) <= 1024 {
@@ -677,13 +690,14 @@ fn parse_js_textdecoder_constructor_name_end(text: &str, start: usize) -> Option
 fn parse_js_textdecoder_constructor_close(
     text: &str,
     open: usize,
+    bindings: &HashMap<String, String>,
 ) -> Option<(usize, JsTextDecoderEncoding)> {
     let mut cursor = skip_ascii_ws(text, open + 1);
     if text.as_bytes().get(cursor) == Some(&b')') {
         return Some((cursor, JsTextDecoderEncoding::Utf8));
     }
 
-    let (arg_end, encoding) = parse_js_string_literal_at(text, cursor)?;
+    let (arg_end, encoding) = parse_js_string_or_bound_arg(text, cursor, bindings)?;
     let encoding = parse_js_textdecoder_label(&encoding)?;
     cursor = skip_ascii_ws(text, arg_end);
     if text.as_bytes().get(cursor) == Some(&b')') {

