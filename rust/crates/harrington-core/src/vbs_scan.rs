@@ -99,6 +99,27 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
                     .captures(&text)
                     .and_then(|c| c.get(1).map(|m| m.as_str().to_string()))
             });
+        for (url_expr, dst_expr) in extract_urldownloadtofile_arg_exprs(&text) {
+            if env.check_deadline() {
+                break 'payloads;
+            }
+            let Some(url) = eval_vbs_string_expr(url_expr, &bindings, &array_bindings)
+                .and_then(|value| crate::deob_scan::normalize_liberal_url_token(&value))
+            else {
+                continue;
+            };
+            if !seen.insert((idx, url.clone())) {
+                continue;
+            }
+            let dst =
+                dst_expr.and_then(|expr| eval_vbs_string_expr(expr, &bindings, &array_bindings));
+            let snippet: String = text.chars().take(120).collect();
+            env.traits.push(Trait::Download {
+                cmd: format!("(vbs #{idx}) {snippet}"),
+                src: url,
+                dst: dst.or_else(|| dst_hint.clone()),
+            });
+        }
         let regexes: &[&Lazy<Regex>] = &[&XMLHTTP_OPEN_RE, &URLDOWN_RE];
         for re in regexes {
             for caps in re.captures_iter(&text) {
@@ -158,26 +179,6 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
         }
 
         for expr in extract_xmlhttp_open_url_exprs(&text) {
-            if env.check_deadline() {
-                break 'payloads;
-            }
-            let Some(url) = eval_vbs_string_expr(expr, &bindings, &array_bindings)
-                .and_then(|value| crate::deob_scan::normalize_liberal_url_token(&value))
-            else {
-                continue;
-            };
-            if !seen.insert((idx, url.clone())) {
-                continue;
-            }
-            let snippet: String = text.chars().take(120).collect();
-            env.traits.push(Trait::Download {
-                cmd: format!("(vbs #{idx}) {snippet}"),
-                src: url,
-                dst: dst_hint.clone(),
-            });
-        }
-
-        for expr in extract_urldownloadtofile_url_exprs(&text) {
             if env.check_deadline() {
                 break 'payloads;
             }
@@ -281,7 +282,7 @@ fn extract_xmlhttp_open_url_exprs(text: &str) -> Vec<&str> {
     out
 }
 
-fn extract_urldownloadtofile_url_exprs(text: &str) -> Vec<&str> {
+fn extract_urldownloadtofile_arg_exprs(text: &str) -> Vec<(&str, Option<&str>)> {
     let mut out = Vec::new();
     for line in text.lines() {
         let lower = line.to_ascii_lowercase();
@@ -300,7 +301,7 @@ fn extract_urldownloadtofile_url_exprs(text: &str) -> Vec<&str> {
             }
             let parts = split_vbs_args(args);
             if let Some(expr) = parts.get(1) {
-                out.push(*expr);
+                out.push((*expr, parts.get(2).copied()));
             }
             cursor = args_start;
         }

