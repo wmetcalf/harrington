@@ -1379,10 +1379,16 @@ fn parse_js_buffer_from_base64_call_at(
         (buffer_end, decoded)
     } else {
         let (buffer_end, encoded, encoding) = parse_js_buffer_base64_args(text, open, bindings)?;
-        (
-            buffer_end,
-            decode_js_buffer_base64_string(&encoded, encoding)?,
-        )
+        let bytes = decode_js_buffer_bytes(&encoded, encoding)?;
+        let (tostring_end, string_encoding) =
+            consume_js_to_string_optional_encoding(text, buffer_end, bindings)?;
+        let decoded = decode_js_buffer_string_bytes(&bytes, string_encoding)?;
+        return Some(consume_js_string_transform_chain(
+            text,
+            tostring_end,
+            decoded,
+            bindings,
+        ));
     };
     let tostring_end = consume_js_to_string_optional_arg(text, buffer_end, bindings)?;
     Some(consume_js_string_transform_chain(
@@ -1694,10 +1700,16 @@ fn parse_js_new_buffer_base64_call_at(
         (buffer_end, decoded)
     } else {
         let (buffer_end, encoded, encoding) = parse_js_buffer_base64_args(text, open, bindings)?;
-        (
-            buffer_end,
-            decode_js_buffer_base64_string(&encoded, encoding)?,
-        )
+        let bytes = decode_js_buffer_bytes(&encoded, encoding)?;
+        let (tostring_end, string_encoding) =
+            consume_js_to_string_optional_encoding(text, buffer_end, bindings)?;
+        let decoded = decode_js_buffer_string_bytes(&bytes, string_encoding)?;
+        return Some(consume_js_string_transform_chain(
+            text,
+            tostring_end,
+            decoded,
+            bindings,
+        ));
     };
     let tostring_end = consume_js_to_string_optional_arg(text, buffer_end, bindings)?;
     Some(consume_js_string_transform_chain(
@@ -1751,11 +1763,11 @@ impl JsBufferEncoding {
     }
 }
 
-fn decode_js_buffer_base64_string(encoded: &str, encoding: JsBufferEncoding) -> Option<String> {
+fn decode_js_buffer_bytes(encoded: &str, encoding: JsBufferEncoding) -> Option<Vec<u8>> {
     match encoding {
-        JsBufferEncoding::Base64 => decode_js_base64_string(encoded),
-        JsBufferEncoding::Base64Url => decode_js_base64url_string(encoded),
-        JsBufferEncoding::Hex => decode_js_hex_string(encoded),
+        JsBufferEncoding::Base64 => decode_js_base64_bytes(encoded),
+        JsBufferEncoding::Base64Url => decode_js_base64url_bytes(encoded),
+        JsBufferEncoding::Hex => decode_js_hex_bytes(encoded),
     }
 }
 
@@ -1783,7 +1795,7 @@ fn decode_js_buffer_string_bytes(bytes: &[u8], encoding: JsBufferStringEncoding)
     }
 }
 
-fn decode_js_base64url_string(encoded: &str) -> Option<String> {
+fn decode_js_base64url_bytes(encoded: &str) -> Option<Vec<u8>> {
     if encoded.len() > 16384 {
         return None;
     }
@@ -1797,10 +1809,10 @@ fn decode_js_base64url_string(encoded: &str) -> Option<String> {
         })
         .collect();
     let decoded = decode_base64_maybe_unpadded(&cleaned)?;
-    (decoded.len() <= 8192).then(|| String::from_utf8_lossy(&decoded).into_owned())
+    (decoded.len() <= 8192).then_some(decoded)
 }
 
-fn decode_js_hex_string(encoded: &str) -> Option<String> {
+fn decode_js_hex_bytes(encoded: &str) -> Option<Vec<u8>> {
     if encoded.len() > 16384 {
         return None;
     }
@@ -1818,7 +1830,7 @@ fn decode_js_hex_string(encoded: &str) -> Option<String> {
         let lo = lo.to_digit(16)?;
         decoded.push(((hi << 4) | lo) as u8);
     }
-    (decoded.len() <= 8192).then(|| String::from_utf8_lossy(&decoded).into_owned())
+    (decoded.len() <= 8192).then_some(decoded)
 }
 
 fn consume_js_to_string_optional_arg(
@@ -2373,6 +2385,10 @@ fn parse_js_bound_member_callee_end(
 }
 
 fn decode_js_base64_string(encoded: &str) -> Option<String> {
+    decode_js_base64_bytes(encoded).map(|decoded| String::from_utf8_lossy(&decoded).into_owned())
+}
+
+fn decode_js_base64_bytes(encoded: &str) -> Option<Vec<u8>> {
     if encoded.len() > 16384 {
         return None;
     }
@@ -2381,7 +2397,7 @@ fn decode_js_base64_string(encoded: &str) -> Option<String> {
         .filter(|c| !c.is_ascii_whitespace())
         .collect();
     let decoded = decode_base64_maybe_unpadded(&cleaned)?;
-    (decoded.len() <= 8192).then(|| String::from_utf8_lossy(&decoded).into_owned())
+    (decoded.len() <= 8192).then_some(decoded)
 }
 
 fn decode_base64_maybe_unpadded(cleaned: &str) -> Option<Vec<u8>> {
