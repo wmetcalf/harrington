@@ -269,10 +269,10 @@ fn strip_quotes(s: &str) -> &str {
 }
 
 fn certutil_decode_paths_after_flag(tokens: &[String], start: usize) -> Option<(String, String)> {
-    let mut positional = tokens
-        .iter()
-        .skip(start)
-        .filter(|token| !strip_quotes(token).starts_with('-'));
+    let mut positional = tokens.iter().skip(start).filter(|token| {
+        let token = strip_quotes(token);
+        !token.starts_with('-') && !token.starts_with('/')
+    });
     let src = strip_quotes(positional.next()?).to_string();
     let dst = strip_quotes(positional.next()?).to_string();
     Some((src, dst))
@@ -299,8 +299,9 @@ fn find_dst_after_url(tokens: &[String], url: &str) -> Option<String> {
             }
             continue;
         }
-        if !t.starts_with('-') {
-            return Some(strip_quotes(t).to_string());
+        let t = strip_quotes(t);
+        if !t.starts_with('-') && !t.starts_with('/') {
+            return Some(t.to_string());
         }
     }
     None

