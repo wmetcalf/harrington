@@ -1401,7 +1401,7 @@ fn parse_js_typed_byte_array_arg(text: &str, start: usize) -> Option<(usize, Str
 }
 
 fn is_js_byte_array_ctor(name: &str) -> bool {
-    matches!(name, "Uint8Array" | "Int8Array")
+    matches!(name, "Uint8Array" | "Int8Array" | "Uint8ClampedArray")
 }
 
 fn parse_js_byte_array_literal_at(text: &str, array_open: usize) -> Option<(usize, String)> {
