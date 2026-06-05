@@ -539,11 +539,22 @@ fn parse_js_textdecoder_decode_call_at(text: &str, start: usize) -> Option<(usiz
     let (arg_end, decoded) = match encoding {
         JsTextDecoderEncoding::Utf8 => {
             let arrays = collect_js_byte_array_bindings(text);
+            let (bindings, _) = collect_js_string_bindings(text);
+            let raw_buffers = collect_js_buffer_byte_bindings(text, &bindings);
             if let Some((arg_end, decoded)) = parse_js_typed_byte_array_arg(text, arg_start) {
                 (arg_end, decoded)
+            } else if let Some((arg_end, bytes)) =
+                parse_js_buffer_from_arg_bytes(text, arg_start, &bindings)
+            {
+                (arg_end, String::from_utf8_lossy(&bytes).into_owned())
             } else {
                 let (ident_end, name) = parse_js_identifier_at(text, arg_start)?;
-                (ident_end, arrays.get(name)?.clone())
+                let decoded = if let Some(decoded) = arrays.get(name) {
+                    decoded.clone()
+                } else {
+                    String::from_utf8_lossy(raw_buffers.get(name)?).into_owned()
+                };
+                (ident_end, decoded)
             }
         }
         JsTextDecoderEncoding::Utf16Le | JsTextDecoderEncoding::Utf16Be => {
