@@ -2619,7 +2619,7 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
         let raw_token = tokens[i].trim_matches(['"', '\'', ')']);
         let token = clean_command_url_token(raw_token);
         let lower = raw_token.to_ascii_lowercase();
-        if lower == "-o" && tokens.get(i + 1).is_some() {
+        if (lower == "-o" || lower == "--output-document") && tokens.get(i + 1).is_some() {
             dst = tokens
                 .get(i + 1)
                 .map(|s| s.trim_matches(['"', '\'', ')']).to_string());

