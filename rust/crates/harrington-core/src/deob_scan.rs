@@ -4978,6 +4978,10 @@ fn scan_remote_exec(deobfuscated: &str, env: &mut Environment) {
 /// Remote-access backdoor setup: RDP enablement, Remote Desktop firewall
 /// opening, and Winlogon hidden-user registry entries.
 fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
+    if !has_remote_access_atom(deobfuscated) {
+        return;
+    }
+
     use once_cell::sync::Lazy;
     use regex::Regex;
     static RDP_ENABLE_RE: Lazy<Regex> = Lazy::new(|| {
@@ -5100,6 +5104,49 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
             "3389".to_string(),
             m.as_str().trim().chars().take(200).collect(),
         );
+    }
+}
+
+fn has_remote_access_atom(text: &str) -> bool {
+    [
+        b"terminal server".as_slice(),
+        b"allowtsconnections".as_slice(),
+        b"fdenytsconnections".as_slice(),
+        b"winlogon".as_slice(),
+        b"specialaccounts".as_slice(),
+        b"allowmultipletssessions".as_slice(),
+        b"fsinglesessionperuser".as_slice(),
+        b"rdp-tcp".as_slice(),
+        b"remote desktop".as_slice(),
+        b"3389".as_slice(),
+    ]
+    .iter()
+    .any(|atom| contains_ascii_case_insensitive_atom(text, atom))
+}
+
+#[cfg(test)]
+mod remote_access_prefilter_tests {
+    use super::has_remote_access_atom;
+
+    #[test]
+    fn prefilter_allows_known_remote_access_shapes() {
+        for text in [
+            r#"reg add "HKLM\system\CurrentControlSet\Control\Terminal Server" /v "AllowTSConnections" /d 1"#,
+            r#"reg add "HKLM\software\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList" /v defaultuserx /d 0"#,
+            r#"reg add "HKLM\software\Microsoft\Windows NT\CurrentVersion\Winlogon" /v "AllowMultipleTSSessions" /d 1"#,
+            r#"reg add "HKLM\system\CurrentControlSet\Control\Terminal Server" /v "fSingleSessionPerUser" /d 0"#,
+            r#"reg add "HKLM\system\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" /v "MaxIdleTime" /d 0"#,
+            r#"netsh advfirewall firewall add rule name="Remote Desktop" localport=3389 action=allow"#,
+        ] {
+            assert!(has_remote_access_atom(text), "blocked: {text}");
+        }
+    }
+
+    #[test]
+    fn prefilter_blocks_unrelated_registry_text() {
+        assert!(!has_remote_access_atom(
+            r#"reg add "HKCU\Software\Classes\foo" /v bar /d baz"#,
+        ));
     }
 }
 
@@ -5307,26 +5354,64 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
         }};
     }
 
-    scan_step!("behavior_scanners", {
+    scan_step!("self_elevation", {
         scan_self_elevation(deobfuscated, env);
+    });
+    scan_step!("defender_evasion", {
         scan_defender_evasion(deobfuscated, env);
+    });
+    scan_step!("inmem_assembly_load", {
         scan_inmem_assembly_load(deobfuscated, env);
+    });
+    scan_step!("lateral_movement", {
         scan_lateral_movement(deobfuscated, env);
+    });
+    scan_step!("anti_recovery", {
         scan_anti_recovery(deobfuscated, env);
+    });
+    scan_step!("evidence_cleanup", {
         scan_evidence_cleanup(deobfuscated, env);
+    });
+    scan_step!("network_probe", {
         scan_network_probe(deobfuscated, env);
+    });
+    scan_step!("account_modification", {
         scan_account_modification(deobfuscated, env);
+    });
+    scan_step!("file_concealment", {
         scan_file_concealment(deobfuscated, env);
+    });
+    scan_step!("enumeration", {
         scan_enumeration(deobfuscated, env);
+    });
+    scan_step!("credential_access", {
         scan_credential_access(deobfuscated, env);
+    });
+    scan_step!("process_injection", {
         scan_process_injection(deobfuscated, env);
+    });
+    scan_step!("input_capture", {
         scan_input_capture(deobfuscated, env);
+    });
+    scan_step!("ransom_ext", {
         scan_ransom_ext(deobfuscated, env);
+    });
+    scan_step!("remote_exec", {
         scan_remote_exec(deobfuscated, env);
+    });
+    scan_step!("remote_access", {
         scan_remote_access(deobfuscated, env);
+    });
+    scan_step!("uac_bypass", {
         scan_uac_bypass(deobfuscated, env);
+    });
+    scan_step!("service_install", {
         scan_service_install(deobfuscated, env);
+    });
+    scan_step!("beacon_sleep", {
         scan_beacon_sleep(deobfuscated, env);
+    });
+    scan_step!("shellcode_marker", {
         scan_shellcode_marker(deobfuscated, env);
     });
     scan_step!("bitsadmin_deob_text", {
