@@ -1379,7 +1379,82 @@ fn expand_ps_replace(text: &str) -> String {
             break;
         }
     }
+    loop {
+        let next = find_ps_double_quoted_replace_operator_matches(&out);
+        if next.is_empty() {
+            break;
+        }
+        for (start, end, replacement) in next.into_iter().rev() {
+            out.replace_range(start..end, &replacement);
+        }
+    }
     out
+}
+
+fn find_ps_double_quoted_replace_operator_matches(text: &str) -> Vec<(usize, usize, String)> {
+    let bytes = text.as_bytes();
+    let mut matches = Vec::new();
+    let mut start = 0;
+    while let Some(rel) = text[start..].find('"') {
+        let literal_start = start + rel;
+        let Some((literal_end, haystack)) = parse_ps_static_quoted_literal(text, literal_start)
+        else {
+            start = literal_start + 1;
+            continue;
+        };
+
+        let mut pos = skip_ascii_ws(bytes, literal_end);
+        let Some(after_operator) = parse_ps_replace_operator(text, pos) else {
+            start = literal_end;
+            continue;
+        };
+        pos = skip_ascii_ws(bytes, after_operator);
+        let Some((needle_end, needle)) = parse_ps_static_quoted_literal(text, pos) else {
+            start = literal_end;
+            continue;
+        };
+        pos = skip_ascii_ws(bytes, needle_end);
+        if bytes.get(pos) != Some(&b',') {
+            start = literal_end;
+            continue;
+        }
+        pos = skip_ascii_ws(bytes, pos + 1);
+        let Some((repl_end, repl)) = parse_ps_static_quoted_literal(text, pos) else {
+            start = literal_end;
+            continue;
+        };
+        let replaced = haystack.replace(&needle, &repl).replace('\'', "''");
+        matches.push((literal_start, repl_end, format!("'{replaced}'")));
+        start = repl_end;
+    }
+    matches
+}
+
+fn parse_ps_replace_operator(text: &str, pos: usize) -> Option<usize> {
+    if text.as_bytes().get(pos) != Some(&b'-') {
+        return None;
+    }
+    let mut pos = pos + 1;
+    if text
+        .as_bytes()
+        .get(pos)
+        .is_some_and(|b| b.eq_ignore_ascii_case(&b'i') || b.eq_ignore_ascii_case(&b'c'))
+    {
+        pos += 1;
+    }
+    let end = pos.checked_add("replace".len())?;
+    let method = text.get(pos..end)?;
+    if !method.eq_ignore_ascii_case("replace") {
+        return None;
+    }
+    if text
+        .as_bytes()
+        .get(end)
+        .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
+    {
+        return None;
+    }
+    Some(end)
 }
 
 fn expand_ps_dot_replace(text: &str) -> String {
