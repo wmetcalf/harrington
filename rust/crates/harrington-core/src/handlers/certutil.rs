@@ -10,7 +10,7 @@ pub fn h_certutil(raw: &str, env: &mut Environment) {
     let lower: Vec<String> = tokens.iter().map(|s| s.to_ascii_lowercase()).collect();
 
     // -urlcache -split -f URL DST
-    if lower.iter().any(|t| t == "-urlcache") {
+    if lower.iter().any(|t| t == "-urlcache" || t == "/urlcache") {
         if let Some(url) = find_first_url(&tokens) {
             let dst = find_dst_after_url(&tokens, &url);
             env.traits.push(Trait::CertutilDownload {

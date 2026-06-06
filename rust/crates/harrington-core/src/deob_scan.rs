@@ -3351,7 +3351,7 @@ fn scan_certutil_urlcache_deob_text(deobfuscated: &str, env: &mut Environment) {
 
     for line in deobfuscated.lines() {
         let lower = line.to_ascii_lowercase();
-        if !lower.contains("-urlcache") {
+        if !lower.contains("-urlcache") && !lower.contains("/urlcache") {
             continue;
         }
         let tokens = split_words(line);
