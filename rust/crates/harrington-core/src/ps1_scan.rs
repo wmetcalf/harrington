@@ -1487,6 +1487,14 @@ static SINGLE_LITERAL_JOIN_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("single literal join")
 });
 
+#[allow(clippy::expect_used)]
+static SPLIT_JOIN_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)\(?\s*(?:'([^'\\]*(?:\\.[^'\\]*)*)'|"([^"\\]*(?:\\.[^"\\]*)*)")\s*-split\s*(?:'([^'\\]*(?:\\.[^'\\]*)*)'|"([^"\\]*(?:\\.[^"\\]*)*)")\s*\)?\s*-join\s*(?:'([^'\\]*(?:\\.[^'\\]*)*)'|"([^"\\]*(?:\\.[^"\\]*)*)")"#,
+    )
+    .expect("split join")
+});
+
 fn expand_single_literal_join(text: &str) -> String {
     let matches: Vec<(usize, usize, String)> = SINGLE_LITERAL_JOIN_RE
         .captures_iter(text)
@@ -1502,6 +1510,39 @@ fn expand_single_literal_join(text: &str) -> String {
                 .or_else(|| caps.get(4))?
                 .as_str();
             Some((full.start(), full.end(), format!("'{}'", value)))
+        })
+        .collect();
+    let mut out = text.to_string();
+    for (start, end, replacement) in matches.into_iter().rev() {
+        out.replace_range(start..end, &replacement);
+    }
+    out
+}
+
+fn expand_split_join_literals(text: &str) -> String {
+    let matches: Vec<(usize, usize, String)> = SPLIT_JOIN_RE
+        .captures_iter(text)
+        .filter_map(|caps| {
+            let full = caps.get(0)?;
+            let value = caps.get(1).or_else(|| caps.get(2))?.as_str();
+            let split_sep = caps.get(3).or_else(|| caps.get(4))?.as_str();
+            let join_sep = caps.get(5).or_else(|| caps.get(6))?.as_str();
+            if split_sep.is_empty() || split_sep.len() > 64 || join_sep.len() > 64 {
+                return None;
+            }
+            let parts: Vec<&str> = value.split(split_sep).collect();
+            if parts.is_empty() || parts.len() > 256 {
+                return None;
+            }
+            let joined = parts.join(join_sep);
+            if joined.len() > 8192 {
+                return None;
+            }
+            Some((
+                full.start(),
+                full.end(),
+                format!("'{}'", joined.replace('\'', "''")),
+            ))
         })
         .collect();
     let mut out = text.to_string();
@@ -2560,6 +2601,7 @@ fn expand_obfuscation(text: &str) -> String {
         out = expand_getstring_wrapper(&out);
         out = expand_reverse_string_slice_join(&out);
         out = expand_single_literal_join(&out);
+        out = expand_split_join_literals(&out);
         out = expand_tochararray_reverse_join(&out);
         out = expand_ps_string_join(&out);
         out = expand_ps_string_concat_static(&out);
@@ -2649,6 +2691,7 @@ fn should_skip_marker_noise_line(text: &str) -> bool {
         || lower.contains("-replace")
         || lower.contains("-ireplace")
         || lower.contains("-creplace")
+        || (lower.contains("-split") && lower.contains("-join"))
         || lower.contains("gzipstream")
         || lower.contains("readtoend")
         || lower.contains("function ")
