@@ -2887,7 +2887,11 @@ fn parse_curl_like_download(tokens: &[String]) -> Option<(String, Option<String>
             i += 1;
             continue;
         }
-        if curl_value_flag(raw_token) {
+        if curl_attached_value_flag_url(raw_token) {
+            i += 1;
+            continue;
+        }
+        if curl_value_flag(raw_token) || curl_empty_attached_value_flag(raw_token) {
             i += 2;
             continue;
         }
@@ -2907,7 +2911,11 @@ fn curl_value_flag(token: &str) -> bool {
     matches!(
         token,
         "-d" | "-H" | "-X" | "-A" | "-e" | "-b" | "-c" | "-u" | "-x" | "-m" | "-T" | "-F"
-    ) || [
+    ) || curl_value_long_flag(token)
+}
+
+fn curl_value_long_flag(token: &str) -> bool {
+    [
         "--data",
         "--data-ascii",
         "--data-binary",
@@ -2931,6 +2939,21 @@ fn curl_value_flag(token: &str) -> bool {
     ]
     .iter()
     .any(|flag| token.eq_ignore_ascii_case(flag))
+}
+
+fn curl_attached_value_flag_url(token: &str) -> bool {
+    let Some(delimiter) = token.find(['=', ':']) else {
+        return false;
+    };
+    let (flag, value_with_delimiter) = token.split_at(delimiter);
+    curl_value_long_flag(flag) && token_contains_liberal_url_scheme(&value_with_delimiter[1..])
+}
+
+fn curl_empty_attached_value_flag(token: &str) -> bool {
+    let Some(flag) = token.strip_suffix('=').or_else(|| token.strip_suffix(':')) else {
+        return false;
+    };
+    curl_value_long_flag(flag)
 }
 
 fn short_option_cluster_output(token: &str, output_flag: char) -> Option<&str> {
@@ -3013,7 +3036,10 @@ fn first_url_token_is_curl_option_value(text: &str) -> bool {
     let mut i = 1usize;
     while i < tokens.len() {
         let token = tokens[i].trim_matches(['"', '\'', ')']);
-        if curl_value_flag(token) {
+        if curl_attached_value_flag_url(token) {
+            return true;
+        }
+        if curl_value_flag(token) || curl_empty_attached_value_flag(token) {
             let Some(value) = tokens.get(i + 1) else {
                 return false;
             };
