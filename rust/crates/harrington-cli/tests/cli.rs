@@ -486,6 +486,55 @@ fn analyze_jsonl_emits_lines() {
     assert_eq!(first["kind"], "meta");
 }
 
+#[cfg(unix)]
+#[test]
+fn analyze_jsonl_handles_closed_stdout_without_panic() {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command as StdCommand, Stdio};
+
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    let mut body = String::new();
+    for i in 0..200_000 {
+        body.push_str(&format!(
+            "echo AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA{i:06}\r\n"
+        ));
+    }
+    fs::write(&input, body).expect("write");
+
+    let bin = assert_cmd::cargo::cargo_bin("harrington");
+    let mut child = StdCommand::new(bin)
+        .args(["analyze", input.to_str().expect("path"), "--jsonl"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn");
+
+    let stdout = child.stdout.take().expect("stdout");
+    let mut reader = BufReader::new(stdout);
+    let mut first_line = String::new();
+    reader.read_line(&mut first_line).expect("read first line");
+    assert!(
+        first_line.contains(r#""kind":"meta""#),
+        "line: {first_line}"
+    );
+    drop(reader);
+
+    let output = child.wait_with_output().expect("wait");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "closed stdout should exit cleanly, status={:?}, stderr:\n{}",
+        output.status,
+        stderr
+    );
+    assert!(
+        !stderr.contains("panicked") && !stderr.contains("Broken pipe"),
+        "closed stdout produced panic-like stderr:\n{}",
+        stderr
+    );
+}
+
 #[test]
 fn summarize_emits_compact_report() {
     let dir = TempDir::new().expect("tmp");

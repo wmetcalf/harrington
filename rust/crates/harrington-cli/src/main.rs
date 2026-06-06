@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use sha2::{Digest, Sha256};
 use std::fs;
-use std::io::Read;
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -1158,6 +1158,22 @@ fn build_tldr(file: &str, input: &[u8], report: &harrington_core::Report) -> Str
     out
 }
 
+fn write_stdout(s: &str) -> Result<bool> {
+    let mut stdout = io::stdout().lock();
+    match stdout.write_all(s.as_bytes()) {
+        Ok(()) => Ok(true),
+        Err(err) if err.kind() == io::ErrorKind::BrokenPipe => Ok(false),
+        Err(err) => Err(err).context("write stdout"),
+    }
+}
+
+fn write_stdout_line(s: &str) -> Result<bool> {
+    if !write_stdout(s)? {
+        return Ok(false);
+    }
+    write_stdout("\n")
+}
+
 fn run() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
@@ -1170,11 +1186,15 @@ fn run() -> Result<()> {
             let cfg = harrington_core::Config::default();
             let report = analyze_for_file(&file, &input, &cfg);
             if tldr {
-                print!("{}", build_tldr(&file, &input, &report));
+                if !write_stdout(&build_tldr(&file, &input, &report))? {
+                    return Ok(());
+                }
             } else {
                 let lolbas_index = lolbas_json.as_deref().map(load_lolbas_index).transpose()?;
                 let summary = build_summary(&file, &input, &report, lolbas_index.as_ref());
-                println!("{}", serde_json::to_string_pretty(&summary)?);
+                if !write_stdout_line(&serde_json::to_string_pretty(&summary)?)? {
+                    return Ok(());
+                }
             }
         }
         Command::Report {
@@ -1232,10 +1252,14 @@ fn run() -> Result<()> {
                     );
                 }
             }
-            println!("{}", serde_json::to_string_pretty(&value)?);
+            if !write_stdout_line(&serde_json::to_string_pretty(&value)?)? {
+                return Ok(());
+            }
         }
         Command::Version => {
-            println!("Harrington {}", harrington_core::version());
+            if !write_stdout_line(&format!("Harrington {}", harrington_core::version()))? {
+                return Ok(());
+            }
         }
         Command::Analyze {
             file,
@@ -1270,20 +1294,28 @@ fn run() -> Result<()> {
                     "input_size": input.len(),
                     "deobfuscated_size": report.deobfuscated.len(),
                 });
-                println!("{}", serde_json::to_string(&meta)?);
+                if !write_stdout_line(&serde_json::to_string(&meta)?)? {
+                    return Ok(());
+                }
                 for t in &report.traits {
                     let line = serde_json::json!({"kind": "trait", "trait": t});
-                    println!("{}", serde_json::to_string(&line)?);
+                    if !write_stdout_line(&serde_json::to_string(&line)?)? {
+                        return Ok(());
+                    }
                 }
                 if let Some(matches) = lolbas_matches {
                     for item in matches {
                         let line = serde_json::json!({"kind": "lolbas_match", "match": item});
-                        println!("{}", serde_json::to_string(&line)?);
+                        if !write_stdout_line(&serde_json::to_string(&line)?)? {
+                            return Ok(());
+                        }
                     }
                 }
                 let deob_line =
                     serde_json::json!({"kind": "deob", "content": &report.deobfuscated});
-                println!("{}", serde_json::to_string(&deob_line)?);
+                if !write_stdout_line(&serde_json::to_string(&deob_line)?)? {
+                    return Ok(());
+                }
             } else {
                 let mut json = serde_json::json!({
                     "deobfuscated": report.deobfuscated,
@@ -1297,7 +1329,9 @@ fn run() -> Result<()> {
                         );
                     }
                 }
-                println!("{}", serde_json::to_string_pretty(&json)?);
+                if !write_stdout_line(&serde_json::to_string_pretty(&json)?)? {
+                    return Ok(());
+                }
             }
         }
         Command::Deob {
@@ -1345,7 +1379,9 @@ fn run() -> Result<()> {
                         );
                     }
                 }
-                println!("{}", serde_json::to_string_pretty(&val)?);
+                if !write_stdout_line(&serde_json::to_string_pretty(&val)?)? {
+                    return Ok(());
+                }
             }
         }
     }
