@@ -1333,7 +1333,15 @@ fn parse_js_array_constructor_open(text: &str, start: usize) -> Option<usize> {
     if !js_word_at(text, cursor, "Array") {
         return None;
     }
-    let open = skip_ascii_ws(text, cursor + "Array".len());
+    cursor = skip_ascii_ws(text, cursor + "Array".len());
+    if text.as_bytes().get(cursor) == Some(&b'.') {
+        let method_start = skip_ascii_ws(text, cursor + 1);
+        if !js_word_at(text, method_start, "of") {
+            return None;
+        }
+        cursor = skip_ascii_ws(text, method_start + "of".len());
+    }
+    let open = cursor;
     if text.as_bytes().get(open) != Some(&b'(') {
         return None;
     }
