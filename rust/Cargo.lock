@@ -395,6 +395,7 @@ name = "harrington-core"
 version = "0.1.0"
 dependencies = [
  "aes",
+ "aho-corasick",
  "base64",
  "cbc",
  "flate2",

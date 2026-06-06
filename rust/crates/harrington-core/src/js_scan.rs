@@ -3,6 +3,7 @@
 
 use crate::env::Environment;
 use crate::traits::Trait;
+use aho_corasick::{AhoCorasick, AhoCorasickBuilder};
 use base64::Engine as _;
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -190,6 +191,38 @@ static JS_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
         .expect("js assignment")
 });
 
+#[allow(clippy::expect_used)]
+static JS_DECODER_ATOMS: Lazy<AhoCorasick> = Lazy::new(|| {
+    AhoCorasickBuilder::new()
+        .ascii_case_insensitive(true)
+        .build([
+            "decodeuri",
+            "unescape",
+            "fromcharcode",
+            "fromcodepoint",
+            "textdecoder",
+            "uint8array",
+            "atob",
+            "buffer.from",
+            "new buffer",
+            ".split",
+            ".reverse",
+            ".join",
+            "array.from",
+            "array(",
+            "\" + \"",
+            "' + '",
+            "\\x",
+            ".replace",
+            ".replaceall",
+            "+=",
+            "var ",
+            "let ",
+            "const ",
+        ])
+        .expect("js decoder atom matcher")
+});
+
 pub fn scan_js_payloads(env: &mut Environment) {
     let mut payloads = std::mem::take(&mut env.all_extracted_jscript);
     let mut seen: HashSet<(usize, String)> = HashSet::new();
@@ -291,28 +324,33 @@ pub fn scan_js_payloads(env: &mut Environment) {
     env.all_extracted_jscript = payloads;
 }
 
+#[cfg(test)]
+mod js_signal_tests {
+    use super::*;
+
+    #[test]
+    fn js_decoder_atom_gate_is_case_insensitive() {
+        assert!(js_decoder_atom_signal(
+            r#"String["FromCharCode"](104,116,116,112)"#
+        ));
+        assert!(js_decoder_atom_signal("var x = ATOB('aHR0cHM6Ly9hLmI=')"));
+        assert!(js_decoder_atom_signal("new TextDecoder().decode(bytes)"));
+    }
+
+    #[test]
+    fn js_decoder_atom_gate_ignores_plain_script_text() {
+        assert!(!js_decoder_atom_signal(
+            "plain string without decoder vocabulary"
+        ));
+    }
+}
+
 fn js_decoder_signal(text: &str) -> bool {
-    let lower = text.to_ascii_lowercase();
-    U_ESCAPE_RE.is_match(text)
-        || lower.contains("decodeuri")
-        || lower.contains("unescape")
-        || lower.contains("fromcharcode")
-        || lower.contains("fromcodepoint")
-        || lower.contains("textdecoder")
-        || lower.contains("uint8array")
-        || lower.contains("atob")
-        || lower.contains("buffer.from")
-        || lower.contains("new buffer")
-        || lower.contains(".split")
-        || lower.contains(".reverse")
-        || lower.contains(".join")
-        || lower.contains("array.from")
-        || lower.contains("array(")
-        || lower.contains("\" + \"")
-        || lower.contains("' + '")
-        || lower.contains("var ")
-        || lower.contains("let ")
-        || lower.contains("const ")
+    U_ESCAPE_RE.is_match(text) || js_decoder_atom_signal(text)
+}
+
+fn js_decoder_atom_signal(text: &str) -> bool {
+    JS_DECODER_ATOMS.is_match(text)
 }
 
 fn decoded_js_percent_literals(text: &str) -> Vec<String> {
