@@ -2887,6 +2887,10 @@ fn parse_curl_like_download(tokens: &[String]) -> Option<(String, Option<String>
             i += 1;
             continue;
         }
+        if curl_value_flag(raw_token) {
+            i += 2;
+            continue;
+        }
         if let Some(normalized) = normalize_curl_url_token(token) {
             url = Some(normalized);
         }
@@ -2897,6 +2901,36 @@ fn parse_curl_like_download(tokens: &[String]) -> Option<(String, Option<String>
 
 fn normalize_curl_url_token(token: &str) -> Option<String> {
     normalize_liberal_url_token(token).or_else(|| normalize_schemeless_domain_path_token(token))
+}
+
+fn curl_value_flag(token: &str) -> bool {
+    matches!(
+        token,
+        "-d" | "-H" | "-X" | "-A" | "-e" | "-b" | "-c" | "-u" | "-x" | "-m" | "-T" | "-F"
+    ) || [
+        "--data",
+        "--data-ascii",
+        "--data-binary",
+        "--data-raw",
+        "--data-urlencode",
+        "--header",
+        "--request",
+        "--user-agent",
+        "--referer",
+        "--cookie",
+        "--cookie-jar",
+        "--user",
+        "--proxy",
+        "--connect-timeout",
+        "--max-time",
+        "--upload-file",
+        "--form",
+        "--form-string",
+        "--retry",
+        "--retry-delay",
+    ]
+    .iter()
+    .any(|flag| token.eq_ignore_ascii_case(flag))
 }
 
 fn short_option_cluster_output(token: &str, output_flag: char) -> Option<&str> {
@@ -2917,6 +2951,10 @@ fn strip_ascii_case_insensitive_prefix<'a>(s: &'a str, prefix: &str) -> Option<&
 }
 
 fn parse_glued_curl_download(text: &str) -> Option<(String, Option<String>)> {
+    if first_url_token_is_curl_option_value(text) {
+        return None;
+    }
+
     let lower = text.to_ascii_lowercase();
     let scheme_pos = ["https://", "http://", "ftp://"]
         .iter()
@@ -2968,6 +3006,32 @@ fn find_glued_curl_output_marker(text: &str, marker: &str) -> Option<usize> {
         search_start = idx + marker.len();
     }
     None
+}
+
+fn first_url_token_is_curl_option_value(text: &str) -> bool {
+    let tokens = split_words(text);
+    let mut i = 1usize;
+    while i < tokens.len() {
+        let token = tokens[i].trim_matches(['"', '\'', ')']);
+        if curl_value_flag(token) {
+            let Some(value) = tokens.get(i + 1) else {
+                return false;
+            };
+            return token_contains_liberal_url_scheme(value);
+        }
+        if token_contains_liberal_url_scheme(token) {
+            return false;
+        }
+        i += 1;
+    }
+    false
+}
+
+fn token_contains_liberal_url_scheme(token: &str) -> bool {
+    let lower = token.to_ascii_lowercase();
+    ["http://", "https://", "ftp://"]
+        .iter()
+        .any(|scheme| lower.contains(scheme))
 }
 
 fn parse_curl_output_dst(text: &str) -> Option<String> {

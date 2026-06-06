@@ -14584,6 +14584,26 @@ powershll.exe -mmand"(Nw-ject-ypame Sstem.Net.Welint).Dwnloadile('https://raw.ex
     }
 
     #[test]
+    fn curl_uppercase_long_proxy_in_deob_text_is_not_download_source() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"curl --PROXY http://proxy-only-deob.example:8080 --OUTPUT NUL"#,
+            &mut env,
+        );
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "http://proxy-only-deob.example:8080"
+                )
+            }),
+            "curl proxy URL was promoted as structured download: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn curl_attached_url_schemeless_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
