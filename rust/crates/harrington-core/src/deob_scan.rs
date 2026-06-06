@@ -595,12 +595,46 @@ fn has_python_download_scan_atom(text: &str) -> bool {
         "urllib",
         "urlopen",
         "urlretrieve",
-        "base64",
         "b64decode",
         "urlsafe_b64decode",
     ]
     .iter()
     .any(|atom| find_ascii_case_insensitive(text, atom, 0).is_some())
+}
+
+#[cfg(test)]
+mod python_download_prefilter_tests {
+    use super::has_python_download_scan_atom;
+
+    #[test]
+    fn prefilter_allows_direct_download_apis() {
+        assert!(has_python_download_scan_atom(
+            "import requests; requests.get('https://example.test/p')"
+        ));
+        assert!(has_python_download_scan_atom(
+            "urllib.request.urlopen('https://example.test/p')"
+        ));
+    }
+
+    #[test]
+    fn prefilter_allows_python_base64_decoders() {
+        assert!(has_python_download_scan_atom(
+            "exec(base64.b64decode('aW1wb3J0IHVybGxpYg=='))"
+        ));
+        assert!(has_python_download_scan_atom(
+            "from base64 import b64decode as dec; exec(dec(payload))"
+        ));
+        assert!(has_python_download_scan_atom(
+            "exec(base64.urlsafe_b64decode(payload))"
+        ));
+    }
+
+    #[test]
+    fn prefilter_blocks_base64_import_without_decoder() {
+        assert!(!has_python_download_scan_atom(
+            "import base64; print(base64.standard_b64encode(b'data'))"
+        ));
+    }
 }
 
 fn python_urlopen_call_names(text: &str) -> Vec<String> {
