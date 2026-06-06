@@ -3569,6 +3569,7 @@ fn ps_option_token_matches(token: &str, option: &str) -> bool {
     let option = option.trim_start_matches('-');
     let min_len = match option {
         "headers" | "body" => 2,
+        "useragent" => 5,
         _ => option.len(),
     };
     token.len() >= min_len && token.len() <= option.len() && option.starts_with(token)
@@ -3603,7 +3604,7 @@ fn ps_non_download_option_before_value(before_value: &str) -> bool {
     ps_option_token_matches(&option.to_ascii_lowercase(), "-body")
         || option.eq_ignore_ascii_case("-proxy")
         || option.eq_ignore_ascii_case("-proxylist")
-        || option.eq_ignore_ascii_case("-useragent")
+        || ps_option_token_matches(&option.to_ascii_lowercase(), "-useragent")
 }
 
 fn clean_ps_url(raw: &str) -> String {
