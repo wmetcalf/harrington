@@ -1995,6 +1995,12 @@ fn parse_js_string_decoder_call_method_arg(
     callee_end: usize,
     bindings: &HashMap<String, String>,
 ) -> Option<(usize, String)> {
+    if let Some(open) = consume_js_bound_immediate_call_open(text, callee_end) {
+        let arg_start = skip_ascii_ws(text, open + 1);
+        let arrays = collect_js_string_array_bindings(text, bindings);
+        return parse_js_decoder_string_arg(text, arg_start, bindings, &arrays);
+    }
+
     if let Some(open) = consume_js_method_open(text, callee_end, "call") {
         let comma = find_js_call_comma(text, skip_ascii_ws(text, open + 1))?;
         let arg_start = skip_ascii_ws(text, comma + 1);
@@ -2026,6 +2032,12 @@ fn parse_js_string_decoder_call_method_arg(
         parts = sliced;
     }
     (parts.len() == 1).then(|| (end, parts[0].clone()))
+}
+
+fn consume_js_bound_immediate_call_open(text: &str, callee_end: usize) -> Option<usize> {
+    let bind_open = consume_js_method_open(text, callee_end, "bind")?;
+    let bind_close = find_js_call_close(text, bind_open)?;
+    consume_js_call_open(text, bind_close + 1)
 }
 
 fn parse_js_string_or_bound_arg(
@@ -2465,6 +2477,39 @@ fn find_js_call_comma(text: &str, mut cursor: usize) -> Option<usize> {
             continue;
         }
         cursor += text[cursor..].chars().next().map(char::len_utf8)?;
+    }
+    None
+}
+
+fn find_js_call_close(text: &str, open: usize) -> Option<usize> {
+    if text.as_bytes().get(open) != Some(&b'(') {
+        return None;
+    }
+    let mut cursor = open + 1;
+    let limit = cursor.saturating_add(512).min(text.len());
+    let mut depth = 1usize;
+    while cursor < limit {
+        if let Some((literal_end, _)) = parse_js_string_literal_at(text, cursor) {
+            cursor = literal_end;
+            continue;
+        }
+        match text.as_bytes().get(cursor) {
+            Some(b'(') => {
+                depth += 1;
+                cursor += 1;
+            }
+            Some(b')') => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(cursor);
+                }
+                cursor += 1;
+            }
+            Some(_) => {
+                cursor += text[cursor..].chars().next().map(char::len_utf8)?;
+            }
+            None => return None,
+        }
     }
     None
 }
