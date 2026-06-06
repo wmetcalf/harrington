@@ -2708,6 +2708,17 @@ fn scan_copied_curl_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
             continue;
         }
 
+        if let Some((url, dst)) = parse_curl_like_download(&tokens) {
+            if known.insert(url.clone()) {
+                env.traits.push(Trait::Download {
+                    cmd: line.to_string(),
+                    src: url,
+                    dst,
+                });
+            }
+            continue;
+        }
+
         let mut dst: Option<String> = None;
         let mut i = 1;
         while i < tokens.len() {
@@ -2869,9 +2880,8 @@ fn parse_curl_like_download(tokens: &[String]) -> Option<(String, Option<String>
             i += 2;
             continue;
         }
-        if let Some(rest) = raw_token
-            .strip_prefix("--output=")
-            .or_else(|| raw_token.strip_prefix("--output:"))
+        if let Some(rest) = strip_ascii_case_insensitive_prefix(raw_token, "--output=")
+            .or_else(|| strip_ascii_case_insensitive_prefix(raw_token, "--output:"))
         {
             if !rest.is_empty() {
                 dst = Some(rest.trim_matches(['"', '\'', ')']).to_string());

