@@ -7014,6 +7014,29 @@ mod wget_tests {
     }
 
     #[test]
+    fn wget_uppercase_long_header_url_does_not_become_download_src() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"wget --HEADER http://wget-header-only.example/ref --OUTPUT-DOCUMENT=NUL"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            Vec::<(&str, Option<&str>)>::new(),
+            "traits: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn wget_attached_long_output_option_is_case_insensitive() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
@@ -14994,6 +15017,26 @@ powershll.exe -mmand"(Nw-ject-ypame Sstem.Net.Welint).Dwnloadile('https://raw.ex
         assert!(
             has,
             "wget uppercase attached --output-document not recovered: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn wget_uppercase_long_header_in_deob_text_is_not_download_source() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"wget --HEADER http://wget-header-only-deob.example/ref --OUTPUT-DOCUMENT=NUL"#,
+            &mut env,
+        );
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "http://wget-header-only-deob.example/ref"
+                )
+            }),
+            "wget header URL was promoted as structured download: {:?}",
             env.traits
         );
     }

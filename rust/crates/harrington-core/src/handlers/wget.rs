@@ -84,6 +84,10 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
             i += 2;
             continue;
         }
+        if wget_value_flag(raw_token) {
+            i += 2;
+            continue;
+        }
         if let Some(normalized) = normalize_wget_url_token(raw_token) {
             url = Some(normalized);
         }
@@ -95,6 +99,31 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
 fn normalize_wget_url_token(token: &str) -> Option<String> {
     crate::deob_scan::normalize_liberal_url_token(token)
         .or_else(|| crate::deob_scan::normalize_schemeless_domain_path_token(token))
+}
+
+fn wget_value_flag(token: &str) -> bool {
+    matches!(token, "-e" | "-U")
+        || [
+            "--execute",
+            "--header",
+            "--user-agent",
+            "--referer",
+            "--post-data",
+            "--post-file",
+            "--body-data",
+            "--body-file",
+            "--method",
+            "--load-cookies",
+            "--save-cookies",
+            "--proxy-user",
+            "--proxy-password",
+            "--bind-address",
+            "--ca-certificate",
+            "--certificate",
+            "--private-key",
+        ]
+        .iter()
+        .any(|flag| token.eq_ignore_ascii_case(flag))
 }
 
 fn short_option_cluster_output(token: &str) -> Option<&str> {
