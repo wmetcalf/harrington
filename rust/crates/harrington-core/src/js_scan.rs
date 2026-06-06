@@ -536,7 +536,7 @@ fn parse_js_textdecoder_decode_call_at(
     bindings: &HashMap<String, String>,
 ) -> Option<(usize, String)> {
     let (new_end, encoding) = parse_js_textdecoder_new_expr_at(text, start, bindings)?;
-    let decode_open = consume_js_method_open(text, new_end, "decode")?;
+    let decode_open = consume_js_method_or_bound_immediate_call_open(text, new_end, "decode")?;
     parse_js_textdecoder_decode_args_at(text, decode_open, encoding)
 }
 
@@ -547,7 +547,7 @@ fn parse_js_textdecoder_instance_decode_call_at(
 ) -> Option<(usize, String)> {
     let (ident_end, name) = parse_js_identifier_at(text, start)?;
     let encoding = *decoders.get(name)?;
-    let decode_open = consume_js_method_open(text, ident_end, "decode")?;
+    let decode_open = consume_js_method_or_bound_immediate_call_open(text, ident_end, "decode")?;
     parse_js_textdecoder_decode_args_at(text, decode_open, encoding)
 }
 

