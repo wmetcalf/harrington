@@ -3360,21 +3360,48 @@ fn collect_ps1_self_tail_reversed_gzip_pe(
     normalized_ps1: &[String],
     env: &mut Environment,
 ) {
-    use std::io::Read as _;
-
-    if !normalized_ps1.iter().any(|ps| {
+    let has_reversed_gzip_loader = normalized_ps1.iter().any(|ps| {
         let lc = ps.to_ascii_lowercase();
         lc.contains("getcurrentprocess")
             && lc.contains("readlines")
-            && lc.contains("select-object -last 1")
             && lc.contains("frombase64string")
             && lc.contains("gzipstream")
             && lc.contains("[array]::reverse")
             && lc.contains("assembly]::load")
-    }) {
+    });
+    if !has_reversed_gzip_loader {
         return;
     }
     let raw_text = String::from_utf8_lossy(input);
+
+    for marker in ps1_self_read_split_markers(normalized_ps1) {
+        let mut b64 = String::new();
+        for line in raw_text.lines() {
+            let Some(marker_pos) = line.find(marker.as_str()) else {
+                continue;
+            };
+            let after_marker = line[marker_pos + marker.len()..].trim();
+            b64.extend(
+                after_marker
+                    .chars()
+                    .take_while(|ch| ch.is_ascii() && is_base64_byte(*ch as u8)),
+            );
+        }
+        let Some(pe) = reversed_gzip_pe_from_base64(&b64) else {
+            continue;
+        };
+        if push_recovered_pe_artifact(env, "ps1-self-marker-reversed-gzip-pe", pe.clone()) {
+            scan_binary_input_urls(&pe, env);
+        }
+    }
+
+    let tail_loader = normalized_ps1.iter().any(|ps| {
+        let lc = ps.to_ascii_lowercase();
+        lc.contains("select-object -last 1")
+    });
+    if !tail_loader {
+        return;
+    }
     let Some(last_line) = raw_text
         .lines()
         .rev()
@@ -3383,31 +3410,63 @@ fn collect_ps1_self_tail_reversed_gzip_pe(
     else {
         return;
     };
-    if last_line.len() < 64 || last_line.len() > 16 * 1024 * 1024 {
-        return;
-    }
-    if !last_line.bytes().all(is_base64_byte) {
-        return;
-    }
-    let Ok(gz) = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, last_line)
-    else {
+    let Some(reversed) = reversed_gzip_pe_from_base64(last_line) else {
         return;
     };
+    if push_recovered_pe_artifact(env, "ps1-self-tail-reversed-gzip-pe", reversed.clone()) {
+        scan_binary_input_urls(&reversed, env);
+    }
+}
+
+fn ps1_self_read_split_markers(normalized_ps1: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for ps in normalized_ps1 {
+        let lc = ps.to_ascii_lowercase();
+        if !lc.contains("readlines") || !lc.contains(".split") {
+            continue;
+        }
+        for needle in [".split('", ".split(\""] {
+            let mut cursor = 0usize;
+            while let Some(rel) = lc[cursor..].find(needle) {
+                let start = cursor + rel + needle.len();
+                let quote = needle.as_bytes()[needle.len() - 1] as char;
+                let Some(end_rel) = ps[start..].find(quote) else {
+                    break;
+                };
+                let marker = &ps[start..start + end_rel];
+                if !marker.is_empty() && marker.len() <= 8 && !out.iter().any(|m| m == marker) {
+                    out.push(marker.to_string());
+                }
+                cursor = start + end_rel + quote.len_utf8();
+            }
+        }
+    }
+    out
+}
+
+fn reversed_gzip_pe_from_base64(b64: &str) -> Option<Vec<u8>> {
+    use std::io::Read as _;
+
+    if b64.len() < 64 || b64.len() > 16 * 1024 * 1024 {
+        return None;
+    }
+    if !b64.bytes().all(is_base64_byte) {
+        return None;
+    }
+    let gz = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64).ok()?;
     let mut decoder = flate2::read::GzDecoder::new(gz.as_slice());
     let mut reversed = Vec::new();
     if std::io::Read::take(&mut decoder, 16 * 1024 * 1024)
         .read_to_end(&mut reversed)
         .is_err()
     {
-        return;
+        return None;
     }
     reversed.reverse();
     if !looks_like_pe(&reversed) {
-        return;
+        return None;
     }
-    if push_recovered_pe_artifact(env, "ps1-self-tail-reversed-gzip-pe", reversed.clone()) {
-        scan_binary_input_urls(&reversed, env);
-    }
+    Some(reversed)
 }
 
 fn push_recovered_pe_artifact(
@@ -11053,6 +11112,48 @@ exit
                 .iter()
                 .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
             "recovered PE URL was not extracted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ps1_self_read_marker_chunks_reversed_gzip_pe_is_recovered() {
+        use base64::Engine;
+        use std::io::Write as _;
+
+        let url = "https://selfmarker-pe.example/payload";
+        let mut pe = vec![0u8; 0x200];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        pe.extend_from_slice(url.as_bytes());
+        let mut reversed = pe.clone();
+        reversed.reverse();
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(&reversed).unwrap();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(gz.finish().unwrap());
+        let (left, right) = b64.split_at(b64.len() / 2);
+        let ps = r#"$exe=[System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName;$sb=New-Object -TypeName System.Text.StringBuilder;foreach($line in [System.IO.File]::ReadLines($exe.Remove($exe.Length-4))){if($line -like '* Ǵ*'){$sb.Append($line.Split('Ǵ')[1])|Out-Null}};$bytes=[Convert]::FromBase64String($sb.ToString());$input=New-Object System.IO.MemoryStream(,$bytes);$output=New-Object System.IO.MemoryStream;$gzipStream=New-Object System.IO.Compression.GzipStream $input,([IO.Compression.CompressionMode]::Decompress);$gzipStream.CopyTo($output);[byte[]]$bytes=$output.ToArray();[Array]::Reverse($bytes);[System.Reflection.Assembly]::Load($bytes)"#;
+        let utf16: Vec<u8> = ps.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+        let encoded_ps = base64::engine::general_purpose::STANDARD.encode(utf16);
+        let script =
+            format!("powershell -enc {encoded_ps}\r\nset a= Ǵ{left}\r\nset b= Ǵ{right}\r\n");
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.recovered_pe.iter().any(|(label, bytes)| label
+                .starts_with("ps1-self-marker-reversed-gzip-pe")
+                && bytes.starts_with(b"MZ")),
+            "marker reversed gzip PE was not recovered: {:?}",
+            report.recovered_pe
+        );
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
+            "recovered marker PE URL was not extracted: {:?}",
             report.traits
         );
     }
