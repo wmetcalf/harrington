@@ -3648,13 +3648,10 @@ fn ascii_case_insensitive_contains(haystack: &str, needle: &str) -> bool {
     if haystack.len() < needle.len() {
         return false;
     }
-    haystack.as_bytes().windows(needle.len()).any(|window| {
-        window
-            .iter()
-            .copied()
-            .zip(needle.bytes())
-            .all(|(h, n)| h.to_ascii_lowercase() == n)
-    })
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
 }
 
 fn trait_kind(t: &Trait) -> String {
