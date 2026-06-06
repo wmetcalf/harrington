@@ -1443,7 +1443,7 @@ fn parse_js_buffer_from_base64_call_at(
     if name != "Buffer" {
         return None;
     }
-    let open = consume_js_method_open(text, buffer_end, "from")?;
+    let open = consume_js_method_or_bound_immediate_call_open(text, buffer_end, "from")?;
     if let Some((buffer_end, bytes)) =
         parse_js_buffer_byte_array_arg_bytes(text, open, &collect_js_byte_array_byte_bindings(text))
     {
@@ -1557,7 +1557,7 @@ fn parse_js_buffer_from_arg_bytes(
     if name != "Buffer" {
         return None;
     }
-    let open = consume_js_method_open(text, buffer_end, "from")?;
+    let open = consume_js_method_or_bound_immediate_call_open(text, buffer_end, "from")?;
     if let Some((buffer_end, bytes)) =
         parse_js_buffer_byte_array_arg_bytes(text, open, &collect_js_byte_array_byte_bindings(text))
     {
@@ -2038,6 +2038,18 @@ fn consume_js_bound_immediate_call_open(text: &str, callee_end: usize) -> Option
     let bind_open = consume_js_method_open(text, callee_end, "bind")?;
     let bind_close = find_js_call_close(text, bind_open)?;
     consume_js_call_open(text, bind_close + 1)
+}
+
+fn consume_js_method_or_bound_immediate_call_open(
+    text: &str,
+    idx: usize,
+    name: &str,
+) -> Option<usize> {
+    if let Some(open) = consume_js_method_open(text, idx, name) {
+        return Some(open);
+    }
+    let member_end = parse_js_method_member_end(text, idx, name)?;
+    consume_js_bound_immediate_call_open(text, member_end)
 }
 
 fn parse_js_string_or_bound_arg(
@@ -2983,8 +2995,13 @@ fn consume_js_call_open(text: &str, idx: usize) -> Option<usize> {
 }
 
 fn consume_js_method_open(text: &str, idx: usize, name: &str) -> Option<usize> {
+    let member_end = parse_js_method_member_end(text, idx, name)?;
+    consume_js_call_open(text, member_end)
+}
+
+fn parse_js_method_member_end(text: &str, idx: usize, name: &str) -> Option<usize> {
     let member_start = skip_ascii_ws(text, idx);
-    let member_end = if text.as_bytes().get(member_start) == Some(&b'.') {
+    if text.as_bytes().get(member_start) == Some(&b'.') {
         let name_start = skip_ascii_ws(text, member_start + 1);
         let name_end = name_start.checked_add(name.len())?;
         if text.get(name_start..name_end) != Some(name) {
@@ -2997,7 +3014,7 @@ fn consume_js_method_open(text: &str, idx: usize, name: &str) -> Option<usize> {
         {
             return None;
         }
-        name_end
+        Some(name_end)
     } else if text.as_bytes().get(member_start) == Some(&b'[') {
         let literal_start = skip_ascii_ws(text, member_start + 1);
         let (literal_end, property) = parse_js_string_literal_at(text, literal_start)?;
@@ -3008,7 +3025,7 @@ fn consume_js_method_open(text: &str, idx: usize, name: &str) -> Option<usize> {
         if text.as_bytes().get(close) != Some(&b']') {
             return None;
         }
-        close + 1
+        Some(close + 1)
     } else if text.as_bytes().get(member_start) == Some(&b'?')
         && text.as_bytes().get(member_start + 1) == Some(&b'.')
     {
@@ -3023,7 +3040,7 @@ fn consume_js_method_open(text: &str, idx: usize, name: &str) -> Option<usize> {
             if text.as_bytes().get(close) != Some(&b']') {
                 return None;
             }
-            close + 1
+            Some(close + 1)
         } else {
             let name_start = member_start;
             let name_end = name_start.checked_add(name.len())?;
@@ -3037,12 +3054,11 @@ fn consume_js_method_open(text: &str, idx: usize, name: &str) -> Option<usize> {
             {
                 return None;
             }
-            name_end
+            Some(name_end)
         }
     } else {
-        return None;
-    };
-    consume_js_call_open(text, member_end)
+        None
+    }
 }
 
 fn is_js_ident_char(c: char) -> bool {
