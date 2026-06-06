@@ -1454,9 +1454,9 @@ fn expand_ps_dot_substring(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut matches = Vec::new();
     let mut start = 0;
-    while let Some(rel) = text[start..].find('\'') {
+    while let Some(rel) = text[start..].find(['\'', '"']) {
         let literal_start = start + rel;
-        let Some((literal_end, value)) = parse_ps_single_quoted_literal(text, literal_start) else {
+        let Some((literal_end, value)) = parse_ps_static_quoted_literal(text, literal_start) else {
             start = literal_start + 1;
             continue;
         };
@@ -1536,6 +1536,36 @@ fn expand_ps_dot_substring(text: &str) -> String {
         out.replace_range(start_pos..end_pos, &replacement);
     }
     out
+}
+
+fn parse_ps_static_quoted_literal(text: &str, start: usize) -> Option<(usize, String)> {
+    let quote = text.as_bytes().get(start).copied()?;
+    if quote == b'\'' {
+        return parse_ps_single_quoted_literal(text, start);
+    }
+    if quote != b'"' {
+        return None;
+    }
+    let mut pos = start + 1;
+    let mut out = String::new();
+    while pos < text.len() {
+        let ch = text[pos..].chars().next()?;
+        pos += ch.len_utf8();
+        if ch == '"' {
+            return Some((pos, out));
+        }
+        if ch == '$' {
+            return None;
+        }
+        if ch == '`' {
+            let escaped = text[pos..].chars().next()?;
+            pos += escaped.len_utf8();
+            out.push(escaped);
+            continue;
+        }
+        out.push(ch);
+    }
+    None
 }
 
 fn parse_ps_usize_arg(text: &str, start: usize) -> Option<(usize, usize)> {

