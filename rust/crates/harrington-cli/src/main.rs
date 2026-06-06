@@ -27,6 +27,9 @@ enum Command {
         /// Replace Harrington-generated files in an existing output directory.
         #[arg(long)]
         force: bool,
+        /// Optional path to external LOLBAS JSON for JSON enrichment.
+        #[arg(long = "lolbas-json")]
+        lolbas_json: Option<PathBuf>,
         #[arg(long, default_value_t = 12)]
         max_depth: u32,
         #[arg(long, default_value_t = 65_536)]
@@ -65,6 +68,9 @@ enum Command {
         max_traits_per_kind: u32,
         #[arg(long)]
         jsonl: bool,
+        /// Optional path to external LOLBAS JSON for JSON enrichment.
+        #[arg(long = "lolbas-json")]
+        lolbas_json: Option<PathBuf>,
     },
     /// Emit a focused JSON IOC report without raw deobfuscated text.
     Summarize {
@@ -856,6 +862,17 @@ fn lolbas_matches(report: &harrington_core::Report, index: &LolbasIndex) -> Vec<
     matches
 }
 
+fn optional_lolbas_matches(
+    report: &harrington_core::Report,
+    lolbas_json: Option<&Path>,
+) -> Result<Option<Vec<serde_json::Value>>> {
+    let Some(path) = lolbas_json else {
+        return Ok(None);
+    };
+    let index = load_lolbas_index(path)?;
+    Ok(Some(lolbas_matches(report, &index)))
+}
+
 fn command_lines_for_lolbas(report: &harrington_core::Report) -> Vec<&str> {
     use harrington_core::Trait;
 
@@ -1231,6 +1248,7 @@ fn run() -> Result<()> {
             max_output_line_bytes,
             max_traits_per_kind,
             jsonl,
+            lolbas_json,
         } => {
             let input = read_input(&file)?;
             let cfg = make_config(
@@ -1244,6 +1262,7 @@ fn run() -> Result<()> {
                 max_traits_per_kind,
             );
             let report = analyze_for_file(&file, &input, &cfg);
+            let lolbas_matches = optional_lolbas_matches(&report, lolbas_json.as_deref())?;
             if jsonl {
                 let meta = serde_json::json!({
                     "kind": "meta",
@@ -1256,14 +1275,28 @@ fn run() -> Result<()> {
                     let line = serde_json::json!({"kind": "trait", "trait": t});
                     println!("{}", serde_json::to_string(&line)?);
                 }
+                if let Some(matches) = lolbas_matches {
+                    for item in matches {
+                        let line = serde_json::json!({"kind": "lolbas_match", "match": item});
+                        println!("{}", serde_json::to_string(&line)?);
+                    }
+                }
                 let deob_line =
                     serde_json::json!({"kind": "deob", "content": &report.deobfuscated});
                 println!("{}", serde_json::to_string(&deob_line)?);
             } else {
-                let json = serde_json::json!({
+                let mut json = serde_json::json!({
                     "deobfuscated": report.deobfuscated,
                     "traits": report.traits,
                 });
+                if let Some(matches) = lolbas_matches {
+                    if let serde_json::Value::Object(ref mut obj) = json {
+                        obj.insert(
+                            "lolbas_matches".to_string(),
+                            serde_json::Value::Array(matches),
+                        );
+                    }
+                }
                 println!("{}", serde_json::to_string_pretty(&json)?);
             }
         }
@@ -1273,6 +1306,7 @@ fn run() -> Result<()> {
             json,
             json_only,
             force,
+            lolbas_json,
             max_depth,
             max_iterations,
             max_child_scripts,
@@ -1298,10 +1332,19 @@ fn run() -> Result<()> {
                 write_report_files(&report, &out_dir, force)?;
             }
             if json || json_only {
-                let val = serde_json::json!({
+                let lolbas_matches = optional_lolbas_matches(&report, lolbas_json.as_deref())?;
+                let mut val = serde_json::json!({
                     "deobfuscated": report.deobfuscated,
                     "traits": report.traits,
                 });
+                if let Some(matches) = lolbas_matches {
+                    if let serde_json::Value::Object(ref mut obj) = val {
+                        obj.insert(
+                            "lolbas_matches".to_string(),
+                            serde_json::Value::Array(matches),
+                        );
+                    }
+                }
                 println!("{}", serde_json::to_string_pretty(&val)?);
             }
         }

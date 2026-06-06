@@ -65,12 +65,15 @@ without bundling GPL-licensed LOLBAS data:
 
 ```bash
 harrington summarize sample.bat --lolbas-json /path/to/lolbas.json
+harrington analyze sample.bat --lolbas-json /path/to/lolbas.json
 harrington report sample.bat --lolbas-json /path/to/lolbas.json
+harrington deob sample.bat --json-only --lolbas-json /path/to/lolbas.json
 ```
 
 When supplied, JSON output includes `lolbas_matches[]` entries with the
 matched binary name, observed command line, LOLBAS URL, categories, and
-MITRE IDs from that user-provided file.
+MITRE IDs from that user-provided file. For `analyze --jsonl`, matches
+are emitted as `{"kind":"lolbas_match", ...}` events.
 
 ### `analyze` — full structured JSON
 

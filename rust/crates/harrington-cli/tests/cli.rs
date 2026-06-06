@@ -572,6 +572,66 @@ fn summarize_can_enrich_lolbas_matches_from_external_json() {
 }
 
 #[test]
+fn analyze_can_enrich_lolbas_matches_from_external_json() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(
+        &input,
+        "rundll32 url.dll,FileProtocolHandler http://evil.example/\r\n",
+    )
+    .expect("write input");
+    let lolbas = dir.path().join("lolbas.json");
+    fs::write(
+        &lolbas,
+        r#"[
+          {
+            "Name": "Rundll32.exe",
+            "url": "https://lolbas-project.github.io/lolbas/Binaries/Rundll32/",
+            "Commands": [
+              {
+                "Category": "Execute",
+                "MitreID": "T1218.011"
+              }
+            ]
+          }
+        ]"#,
+    )
+    .expect("write lolbas");
+
+    let out = Command::cargo_bin("harrington")
+        .expect("bin")
+        .args([
+            "analyze",
+            input.to_str().expect("input path"),
+            "--lolbas-json",
+            lolbas.to_str().expect("lolbas path"),
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("json");
+    let matches = v
+        .get("lolbas_matches")
+        .and_then(|v| v.as_array())
+        .expect("lolbas_matches array");
+    assert_eq!(matches.len(), 1, "unexpected matches: {matches:?}");
+    assert_eq!(
+        matches[0].get("name").and_then(|v| v.as_str()),
+        Some("Rundll32.exe")
+    );
+    assert_eq!(
+        matches[0]
+            .get("mitre_ids")
+            .and_then(|v| v.as_array())
+            .and_then(|ids| ids.first())
+            .and_then(|v| v.as_str()),
+        Some("T1218.011")
+    );
+}
+
+#[test]
 fn tldr_surfaces_remote_connect_disguised_extrac32_and_recovered_pe_count() {
     use base64::Engine;
     // Compose a script that hits multiple TLDR-relevant code paths at
