@@ -2797,6 +2797,30 @@ pub fn analyze_with_path(
     analyze_inner(input, cfg, Some(file_path.as_ref().to_path_buf()))
 }
 
+fn normalize_extracted_ps1_payloads(payloads: &[Vec<u8>]) -> Vec<String> {
+    if payloads.len() <= 1 {
+        return payloads
+            .iter()
+            .map(|bytes| ps1_scan::normalize_ps1_payload(bytes))
+            .collect();
+    }
+
+    let mut normalized = Vec::with_capacity(payloads.len());
+    let mut cache: std::collections::HashMap<&[u8], String> =
+        std::collections::HashMap::with_capacity(payloads.len());
+    for bytes in payloads {
+        let key = bytes.as_slice();
+        if let Some(cached) = cache.get(key) {
+            normalized.push(cached.clone());
+            continue;
+        }
+        let value = ps1_scan::normalize_ps1_payload(key);
+        cache.insert(key, value.clone());
+        normalized.push(value);
+    }
+    normalized
+}
+
 fn analyze_inner(input: &[u8], cfg: &Config, file_path: Option<std::path::PathBuf>) -> Report {
     let profile_enabled = std::env::var_os("HARRINGTON_PROFILE").is_some();
     let profile_start = std::time::Instant::now();
@@ -3021,11 +3045,7 @@ fn analyze_inner(input: &[u8], cfg: &Config, file_path: Option<std::path::PathBu
     });
     dedup_traits(&mut env.traits, cfg.max_traits_per_kind);
     profile_mark!("filter_and_dedup");
-    let extracted_ps1_normalized: Vec<String> = env
-        .all_extracted_ps1
-        .iter()
-        .map(|bytes| ps1_scan::normalize_ps1_payload(bytes))
-        .collect();
+    let extracted_ps1_normalized = normalize_extracted_ps1_payloads(&env.all_extracted_ps1);
     profile_mark!("normalize_ps1_payloads");
     // Surface decoded/extracted PowerShell payloads in the deob with a
     // banner so analysts can read the reconstructed PS body — critical
@@ -20820,5 +20840,24 @@ mod disguised_binary_tests {
         assert_eq!(detect_disguised_binary(b""), None);
         assert_eq!(detect_disguised_binary(b"MSCF"), None);
         assert_eq!(detect_disguised_binary(b"PK\x03\x04"), None);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod ps1_payload_normalization_tests {
+    use super::normalize_extracted_ps1_payloads;
+
+    #[test]
+    fn duplicate_payloads_preserve_one_to_one_normalized_outputs() {
+        let payload = br#"$u = "hxxp://example.test/a";"#.to_vec();
+        let other = br#"$v = "hxxp://example.test/b";"#.to_vec();
+        let payloads = vec![payload.clone(), other, payload];
+
+        let normalized = normalize_extracted_ps1_payloads(&payloads);
+
+        assert_eq!(normalized.len(), payloads.len());
+        assert_eq!(normalized[0], normalized[2]);
+        assert_ne!(normalized[0], normalized[1]);
     }
 }
