@@ -5227,6 +5227,10 @@ mod remote_access_prefilter_tests {
 fn scan_uac_bypass(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
+    if !has_uac_bypass_atom(deobfuscated) {
+        return;
+    }
+
     static PATTERNS: Lazy<Vec<(Regex, &str)>> = Lazy::new(|| {
         vec![
             (Regex::new(r"(?i)\bfodhelper(?:\.exe)?\b").unwrap(), "fodhelper"),
@@ -5269,6 +5273,60 @@ fn scan_uac_bypass(deobfuscated: &str, env: &mut Environment) {
                 technique: tech.to_string(),
             });
         }
+    }
+}
+
+fn has_uac_bypass_atom(text: &str) -> bool {
+    [
+        b"fodhelper".as_slice(),
+        b"eventvwr".as_slice(),
+        b"sdclt".as_slice(),
+        b"computerdefaults".as_slice(),
+        b"wsreset".as_slice(),
+        b"cmstp".as_slice(),
+        b"msconfig".as_slice(),
+        b"hkcu\\software\\classes".as_slice(),
+        b"icolorproxy".as_slice(),
+        b"icolordataproxy".as_slice(),
+        b"icmluautil".as_slice(),
+        b"policies\\system".as_slice(),
+        b"enablelua".as_slice(),
+        b"consentpromptbehavioradmin".as_slice(),
+        b"localaccounttokenfilterpolicy".as_slice(),
+    ]
+    .iter()
+    .any(|atom| contains_ascii_case_insensitive_atom(text, atom))
+}
+
+#[cfg(test)]
+mod uac_bypass_prefilter_tests {
+    use super::has_uac_bypass_atom;
+
+    #[test]
+    fn prefilter_allows_known_uac_bypass_markers() {
+        for sample in [
+            "fodhelper.exe",
+            "eventvwr.exe",
+            "sdclt.exe",
+            "computerdefaults.exe",
+            "wsreset.exe",
+            "cmstp.exe /au payload.inf",
+            "msconfig /4",
+            r"HKCU\Software\Classes\ms-settings\Shell\Open\command",
+            "IColorDataProxy",
+            "ICMLuaUtil",
+            r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System /v EnableLUA",
+        ] {
+            assert!(has_uac_bypass_atom(sample), "blocked marker: {sample}");
+        }
+    }
+
+    #[test]
+    fn prefilter_blocks_generic_registry_and_process_text() {
+        assert!(!has_uac_bypass_atom(
+            r#"reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v app /d app.exe"#,
+        ));
+        assert!(!has_uac_bypass_atom("taskkill /f /im WINWORD.EXE"));
     }
 }
 
