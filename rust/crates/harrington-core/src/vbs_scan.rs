@@ -480,6 +480,11 @@ fn eval_vbs_string_expr(
             saw_part = true;
             continue;
         }
+        if let Some(value) = parse_vbs_eval(part, bindings, array_bindings) {
+            out.push_str(&value);
+            saw_part = true;
+            continue;
+        }
         if let Some(value) = parse_vbs_replace(part, bindings, array_bindings) {
             out.push_str(&value);
             saw_part = true;
@@ -758,6 +763,16 @@ fn parse_vbs_cstr(
 ) -> Option<String> {
     let inner = vbs_function_args(part, "cstr")?;
     eval_vbs_string_expr(inner, bindings, array_bindings)
+}
+
+fn parse_vbs_eval(
+    part: &str,
+    bindings: &VbsStringBindings,
+    array_bindings: &VbsArrayBindings,
+) -> Option<String> {
+    let inner = vbs_function_args(part, "eval").or_else(|| vbs_function_args(part, "execute"))?;
+    let expression = eval_vbs_string_expr(inner, bindings, array_bindings)?;
+    eval_vbs_string_expr(&expression, bindings, array_bindings)
 }
 
 fn parse_vbs_replace(
