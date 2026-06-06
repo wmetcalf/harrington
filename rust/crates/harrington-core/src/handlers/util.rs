@@ -42,3 +42,69 @@ pub(crate) fn split_words(s: &str) -> Vec<String> {
     }
     out
 }
+
+pub(crate) fn flag_url_value_after(
+    tokens: &[String],
+    start: usize,
+    flags: &[&str],
+) -> Option<String> {
+    let mut i = start;
+    while i < tokens.len() {
+        let token = strip_outer_quotes(&tokens[i]);
+        if flags.iter().any(|flag| token.eq_ignore_ascii_case(flag)) {
+            if let Some(next) = tokens.get(i + 1) {
+                if let Some(url) = normalize_url_like_token(strip_outer_quotes(next)) {
+                    return Some(url);
+                }
+            }
+            i += 2;
+            continue;
+        }
+        if let Some(value) = attached_flag_value(token, flags) {
+            if let Some(url) = normalize_url_like_token(value) {
+                return Some(url);
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+pub(crate) fn attached_flag_value<'a>(token: &'a str, flags: &[&str]) -> Option<&'a str> {
+    let lower = token.to_ascii_lowercase();
+    for flag in flags {
+        let flag = flag.to_ascii_lowercase();
+        for separator in [':', '='] {
+            let prefix = format!("{flag}{separator}");
+            let Some(rest) = lower.strip_prefix(&prefix) else {
+                continue;
+            };
+            let offset = token.len() - rest.len();
+            let value = &token[offset..];
+            if !value.is_empty() {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
+pub(crate) fn normalize_url_like_token(token: &str) -> Option<String> {
+    let token = trim_url_suffix(strip_outer_quotes(token));
+    crate::deob_scan::normalize_liberal_url_token(token)
+        .or_else(|| crate::deob_scan::normalize_schemeless_domain_path_token(token))
+}
+
+pub(crate) fn trim_url_suffix(url: &str) -> &str {
+    url.trim_end_matches(['"', '\'', ')', ']', '}', ';', ','])
+}
+
+pub(crate) fn strip_outer_quotes(s: &str) -> &str {
+    let s = s.trim();
+    if ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')))
+        && s.len() >= 2
+    {
+        return &s[1..s.len() - 1];
+    }
+    s
+}
