@@ -1274,7 +1274,20 @@ fn parse_js_string_array_arg_at(
     let (open, close_byte) = if text.as_bytes().get(start) == Some(&b'[') {
         (start, b']')
     } else {
-        (parse_js_array_constructor_open(text, start)?, b')')
+        let (open, kind) = parse_js_array_constructor_open(text, start)?;
+        if kind == JsArrayConstructorKind::From {
+            let arg_start = skip_ascii_ws(text, open + 1);
+            if text.as_bytes().get(arg_start) != Some(&b'[') {
+                return None;
+            }
+            let (array_end, parts) = parse_js_string_array_arg_at(text, arg_start, bindings)?;
+            let close = skip_ascii_ws(text, array_end);
+            if text.as_bytes().get(close) != Some(&b')') {
+                return None;
+            }
+            return Some((close + 1, parts));
+        }
+        (open, b')')
     };
 
     let mut parts = Vec::new();
@@ -1298,6 +1311,13 @@ fn parse_js_string_array_arg_at(
             _ => return None,
         }
     }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum JsArrayConstructorKind {
+    Plain,
+    Of,
+    From,
 }
 
 fn collect_js_string_array_bindings(
@@ -1325,7 +1345,10 @@ fn collect_js_string_array_bindings(
     arrays
 }
 
-fn parse_js_array_constructor_open(text: &str, start: usize) -> Option<usize> {
+fn parse_js_array_constructor_open(
+    text: &str,
+    start: usize,
+) -> Option<(usize, JsArrayConstructorKind)> {
     let mut cursor = start;
     if js_word_at(text, cursor, "new") {
         cursor = skip_ascii_ws(text, cursor + "new".len());
@@ -1334,18 +1357,24 @@ fn parse_js_array_constructor_open(text: &str, start: usize) -> Option<usize> {
         return None;
     }
     cursor = skip_ascii_ws(text, cursor + "Array".len());
+    let mut kind = JsArrayConstructorKind::Plain;
     if text.as_bytes().get(cursor) == Some(&b'.') {
         let method_start = skip_ascii_ws(text, cursor + 1);
-        if !js_word_at(text, method_start, "of") {
+        if js_word_at(text, method_start, "of") {
+            kind = JsArrayConstructorKind::Of;
+            cursor = skip_ascii_ws(text, method_start + "of".len());
+        } else if js_word_at(text, method_start, "from") {
+            kind = JsArrayConstructorKind::From;
+            cursor = skip_ascii_ws(text, method_start + "from".len());
+        } else {
             return None;
         }
-        cursor = skip_ascii_ws(text, method_start + "of".len());
     }
     let open = cursor;
     if text.as_bytes().get(open) != Some(&b'(') {
         return None;
     }
-    Some(open)
+    Some((open, kind))
 }
 
 fn js_word_at(text: &str, start: usize, word: &str) -> bool {
