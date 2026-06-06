@@ -2255,6 +2255,88 @@ fn scan_desktopimgdownldr_deob_text(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
+fn scan_certoc_deob_text(deobfuscated: &str, env: &mut Environment) {
+    let mut known: std::collections::HashSet<String> = env
+        .traits
+        .iter()
+        .filter_map(|t| match t {
+            Trait::Download { src, .. } => Some(src.clone()),
+            Trait::UrlArgument { url, .. } => Some(url.clone()),
+            Trait::UrlLaunch { url, .. } => Some(url.clone()),
+            Trait::CertutilDownload { url, .. } => Some(url.clone()),
+            Trait::BitsadminDownload { url, .. } => Some(url.clone()),
+            _ => None,
+        })
+        .collect();
+
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        for i in 0..tokens.len() {
+            let cmd = command_name(strip_quotes(&tokens[i]));
+            if cmd != "certoc" && cmd != "certoc.exe" {
+                continue;
+            }
+            let Some(url) = certoc_getcacaps_url_after(&tokens, i + 1) else {
+                continue;
+            };
+            if is_noise_url(&url) || !known.insert(url.clone()) {
+                continue;
+            }
+            env.traits.push(Trait::Download {
+                cmd: line.to_string(),
+                src: url,
+                dst: None,
+            });
+        }
+    }
+}
+
+fn certoc_getcacaps_url_after(tokens: &[String], start: usize) -> Option<String> {
+    let mut i = start;
+    while i < tokens.len() {
+        let token = strip_quotes(&tokens[i]);
+        if token.eq_ignore_ascii_case("-getcacaps") || token.eq_ignore_ascii_case("/getcacaps") {
+            let Some(next) = tokens.get(i + 1) else {
+                i += 1;
+                continue;
+            };
+            let value = trim_url_suffix(strip_quotes(next));
+            if let Some(url) = normalize_liberal_url_token(value)
+                .or_else(|| normalize_schemeless_domain_path_token(value))
+            {
+                return Some(url);
+            }
+            i += 2;
+            continue;
+        }
+        if let Some(value) = certoc_attached_getcacaps_value(token) {
+            let value = trim_url_suffix(value);
+            if let Some(url) = normalize_liberal_url_token(value)
+                .or_else(|| normalize_schemeless_domain_path_token(value))
+            {
+                return Some(url);
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+fn certoc_attached_getcacaps_value(token: &str) -> Option<&str> {
+    let lower = token.to_ascii_lowercase();
+    for prefix in ["-getcacaps:", "/getcacaps:", "-getcacaps=", "/getcacaps="] {
+        let Some(rest) = lower.strip_prefix(prefix) else {
+            continue;
+        };
+        let offset = token.len() - rest.len();
+        let value = &token[offset..];
+        if !value.is_empty() {
+            return Some(value);
+        }
+    }
+    None
+}
+
 fn desktopimgdownldr_lockscreen_url_after(tokens: &[String], start: usize) -> Option<String> {
     let mut i = start;
     while i < tokens.len() {
@@ -5280,6 +5362,7 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     scan_typo_webclient_downloads(deobfuscated, env);
     scan_url_launch_deob_text(deobfuscated, env);
     scan_rundll32_download_exports_deob_text(deobfuscated, env);
+    scan_certoc_deob_text(deobfuscated, env);
     scan_desktopimgdownldr_deob_text(deobfuscated, env);
     scan_process_url_arguments(deobfuscated, env);
     scan_url_variable_assignments(deobfuscated, env);

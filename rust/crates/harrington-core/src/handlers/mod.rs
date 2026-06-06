@@ -4,6 +4,7 @@ use crate::env::Environment;
 
 pub mod bitsadmin;
 pub mod call;
+pub mod certoc;
 pub mod certreq;
 pub mod certutil;
 pub mod cmd;
@@ -49,6 +50,7 @@ pub fn lookup(name: &str) -> Option<Handler> {
         "mshta" => return Some(mshta::h_mshta),
         "regsvr32" => return Some(regsvr32::h_regsvr32),
         "rundll32" => return Some(rundll32::h_rundll32),
+        "certoc" => return Some(certoc::h_certoc),
         "certreq" => return Some(certreq::h_certreq),
         "certutil" => return Some(certutil::h_certutil),
         "desktopimgdownldr" => return Some(desktopimgdownldr::h_desktopimgdownldr),
