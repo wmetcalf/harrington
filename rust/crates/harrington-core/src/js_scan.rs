@@ -1103,6 +1103,8 @@ fn decoded_js_array_from_reverse_join_literals(text: &str) -> Vec<String> {
 
 fn decoded_js_array_join_literals(text: &str) -> Vec<String> {
     let mut out = Vec::new();
+    let empty_bindings = HashMap::new();
+    let empty_arrays = HashMap::new();
     let mut cursor = 0usize;
     while cursor < text.len() {
         let Some((array_end, parts)) = parse_js_string_array_at(text, cursor) else {
@@ -1113,34 +1115,14 @@ fn decoded_js_array_join_literals(text: &str) -> Vec<String> {
                 .unwrap_or(1);
             continue;
         };
-        if let Some((join_end, sep)) = consume_js_string_arg_method(text, array_end, "join") {
-            if parts.len() <= 128 && sep.len() <= 64 {
-                let joined = parts.join(&sep);
-                if joined.len() <= 8192 {
-                    out.push(joined);
-                }
-            }
+        if let Some((join_end, joined)) =
+            consume_js_array_join_chain(text, array_end, parts, &empty_bindings, &empty_arrays)
+        {
+            out.push(joined);
             cursor = join_end;
             continue;
         }
-        let Some(after_reverse) = consume_js_no_arg_method(text, array_end, "reverse") else {
-            cursor = array_end;
-            continue;
-        };
-        let Some((join_end, sep)) = consume_js_string_arg_method(text, after_reverse, "join")
-        else {
-            cursor = after_reverse;
-            continue;
-        };
-        if parts.len() <= 128 && sep.len() <= 64 {
-            let mut reversed = parts;
-            reversed.reverse();
-            let joined = reversed.join(&sep);
-            if joined.len() <= 8192 {
-                out.push(joined);
-            }
-        }
-        cursor = join_end;
+        cursor = array_end;
     }
 
     let mut arrays = HashMap::new();
@@ -1175,34 +1157,14 @@ fn decoded_js_array_join_literals(text: &str) -> Vec<String> {
             cursor = ident_end;
             continue;
         };
-        if let Some((join_end, sep)) = consume_js_string_arg_method(text, ident_end, "join") {
-            if sep.len() <= 64 {
-                let joined = parts.join(&sep);
-                if joined.len() <= 8192 {
-                    out.push(joined);
-                }
-            }
+        if let Some((join_end, joined)) =
+            consume_js_array_join_chain(text, ident_end, parts.clone(), &empty_bindings, &arrays)
+        {
+            out.push(joined);
             cursor = join_end;
             continue;
         }
-        let Some(after_reverse) = consume_js_no_arg_method(text, ident_end, "reverse") else {
-            cursor = ident_end;
-            continue;
-        };
-        let Some((join_end, sep)) = consume_js_string_arg_method(text, after_reverse, "join")
-        else {
-            cursor = after_reverse;
-            continue;
-        };
-        if sep.len() <= 64 {
-            let mut reversed = parts.clone();
-            reversed.reverse();
-            let joined = reversed.join(&sep);
-            if joined.len() <= 8192 {
-                out.push(joined);
-            }
-        }
-        cursor = join_end;
+        cursor = ident_end;
     }
     out
 }
@@ -2203,18 +2165,27 @@ fn parse_js_array_join_arg(
 ) -> Option<(usize, String)> {
     let start = skip_ascii_ws(text, start);
     if let Some((array_end, parts)) = parse_js_string_array_arg_at(text, start, bindings) {
-        return consume_js_array_join_chain(text, array_end, parts);
+        return consume_js_array_join_chain(text, array_end, parts, bindings, arrays);
     }
 
     let (ident_end, name) = parse_js_identifier_at(text, start)?;
-    consume_js_array_join_chain(text, ident_end, arrays.get(name)?.clone())
+    consume_js_array_join_chain(text, ident_end, arrays.get(name)?.clone(), bindings, arrays)
 }
 
 fn consume_js_array_join_chain(
     text: &str,
     mut idx: usize,
     mut parts: Vec<String>,
+    bindings: &HashMap<String, String>,
+    arrays: &HashMap<String, Vec<String>>,
 ) -> Option<(usize, String)> {
+    if let Some((concat_end, concat_parts)) =
+        consume_js_concat_chain(text, idx, parts.clone(), bindings, arrays)
+    {
+        idx = concat_end;
+        parts = concat_parts;
+    }
+
     if let Some((slice_end, sliced)) = consume_js_slice_call(text, idx, &parts) {
         idx = slice_end;
         parts = sliced;
@@ -2226,12 +2197,71 @@ fn consume_js_array_join_chain(
 
     let mut after_reverse = consume_js_no_arg_method(text, idx, "reverse")?;
     parts.reverse();
+    if let Some((concat_end, concat_parts)) =
+        consume_js_concat_chain(text, after_reverse, parts.clone(), bindings, arrays)
+    {
+        after_reverse = concat_end;
+        parts = concat_parts;
+    }
     if let Some((slice_end, sliced)) = consume_js_slice_call(text, after_reverse, &parts) {
         after_reverse = slice_end;
         parts = sliced;
     }
     let (join_end, sep) = consume_js_string_arg_method(text, after_reverse, "join")?;
     join_js_string_parts(parts, &sep).map(|joined| (join_end, joined))
+}
+
+fn consume_js_concat_chain(
+    text: &str,
+    mut idx: usize,
+    mut parts: Vec<String>,
+    bindings: &HashMap<String, String>,
+    arrays: &HashMap<String, Vec<String>>,
+) -> Option<(usize, Vec<String>)> {
+    let mut consumed = false;
+    while let Some(open) = consume_js_method_open(text, idx, "concat") {
+        let mut cursor = skip_ascii_ws(text, open + 1);
+        if text.as_bytes().get(cursor) == Some(&b')') {
+            idx = cursor + 1;
+            consumed = true;
+            continue;
+        }
+
+        loop {
+            if let Some((arg_end, mut arg_parts)) =
+                parse_js_string_array_arg_at(text, cursor, bindings)
+            {
+                parts.append(&mut arg_parts);
+                cursor = skip_ascii_ws(text, arg_end);
+            } else if let Some((arg_end, value)) =
+                parse_js_string_or_bound_arg(text, cursor, bindings)
+            {
+                parts.push(value);
+                cursor = skip_ascii_ws(text, arg_end);
+            } else {
+                let (arg_end, name) = parse_js_identifier_at(text, cursor)?;
+                parts.extend(arrays.get(name)?.iter().cloned());
+                cursor = skip_ascii_ws(text, arg_end);
+            }
+
+            if parts.len() > 128 {
+                return None;
+            }
+
+            match text.as_bytes().get(cursor) {
+                Some(b',') => {
+                    cursor = skip_ascii_ws(text, cursor + 1);
+                }
+                Some(b')') => {
+                    idx = cursor + 1;
+                    consumed = true;
+                    break;
+                }
+                _ => return None,
+            }
+        }
+    }
+    consumed.then_some((idx, parts))
 }
 
 fn consume_js_slice_call(text: &str, idx: usize, parts: &[String]) -> Option<(usize, Vec<String>)> {

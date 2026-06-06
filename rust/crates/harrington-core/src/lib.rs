@@ -20249,6 +20249,22 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_array_concat_join_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js =
+            br#"var u = ["https://"].concat(["js-array-concat.example"], ["/stage"]).join(""); eval(u)"#
+                .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://js-array-concat.example/stage"
+            )
+        });
+        assert!(has, "JS array concat/join URL missed: {:?}", env.traits);
+    }
+
+    #[test]
     fn js_array_reverse_join_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let js =
