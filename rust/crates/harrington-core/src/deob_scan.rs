@@ -3860,6 +3860,10 @@ fn scan_echoed_curl_deob_text(deobfuscated: &str, env: &mut Environment) {
 fn scan_self_elevation(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
+    if !has_self_elevation_atom(deobfuscated) {
+        return;
+    }
+
     // Anchor on `Start-Process` (or `saps` alias). Lazy match the body up
     // to `-Verb runas` so we capture the target+args regardless of order.
     static SELF_ELEV_RE: Lazy<Regex> = Lazy::new(|| {
@@ -3919,6 +3923,31 @@ fn scan_self_elevation(deobfuscated: &str, env: &mut Environment) {
         }
         env.traits
             .push(crate::traits::Trait::SelfElevation { target, args });
+    }
+}
+
+fn has_self_elevation_atom(text: &str) -> bool {
+    contains_ascii_case_insensitive_atom(text, b"runas")
+        && (contains_ascii_case_insensitive_atom(text, b"start-process")
+            || contains_ascii_case_insensitive_atom(text, b"saps"))
+}
+
+#[cfg(test)]
+mod self_elevation_prefilter_tests {
+    use super::has_self_elevation_atom;
+
+    #[test]
+    fn prefilter_allows_start_process_runas_shapes() {
+        assert!(has_self_elevation_atom(
+            "Start-Process powershell.exe -Verb RunAs"
+        ));
+        assert!(has_self_elevation_atom("saps cmd.exe -Verb runas"));
+    }
+
+    #[test]
+    fn prefilter_blocks_start_process_without_runas() {
+        assert!(!has_self_elevation_atom("Start-Process calc.exe"));
+        assert!(!has_self_elevation_atom("runas /user:admin cmd.exe"));
     }
 }
 
