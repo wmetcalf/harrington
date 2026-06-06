@@ -2098,7 +2098,7 @@ fn scan_url_launch_deob_text(deobfuscated: &str, env: &mut Environment) {
             let Some(url) = (if cmd == "start" || cmd == "start.exe" {
                 url_launch_after_start(&tokens, i + 1)
             } else if cmd == "rundll32" || cmd == "rundll32.exe" {
-                url_launch_after_rundll32_fileprotocolhandler(&tokens, i + 1)
+                url_launch_after_rundll32(&tokens, i + 1)
             } else if is_url_launcher_command(&cmd) {
                 first_url_after(&tokens, i + 1, false, true)
             } else {
@@ -2154,16 +2154,69 @@ fn powershell_url_launches_in_line(line: &str) -> Vec<String> {
     found
 }
 
-fn url_launch_after_rundll32_fileprotocolhandler(
-    tokens: &[String],
-    start: usize,
-) -> Option<String> {
-    let handler_idx = (start..tokens.len()).take(4).find(|idx| {
-        strip_quotes(&tokens[*idx])
-            .to_ascii_lowercase()
-            .contains("fileprotocolhandler")
-    })?;
-    first_url_after(tokens, handler_idx + 1, false, false)
+fn url_launch_after_rundll32(tokens: &[String], start: usize) -> Option<String> {
+    let handler_idx = (start..tokens.len())
+        .take(4)
+        .find(|idx| rundll32_url_launch_export(strip_quotes(&tokens[*idx])))?;
+    first_url_after(tokens, handler_idx + 1, false, true)
+}
+
+fn rundll32_url_launch_export(token: &str) -> bool {
+    let lower = token.to_ascii_lowercase();
+    lower.contains("url.dll,fileprotocolhandler")
+        || lower.contains("url.dll,openurl")
+        || lower.contains("ieframe.dll,openurl")
+        || lower.contains("shdocvw.dll,openurl")
+        || lower.contains("photoviewer.dll,imageview_fullscreen")
+        || lower.contains("shimgvw.dll,imageview_fullscreen")
+}
+
+fn rundll32_download_export(token: &str) -> bool {
+    token
+        .to_ascii_lowercase()
+        .contains("scrobj.dll,generatetypelib")
+}
+
+fn scan_rundll32_download_exports_deob_text(deobfuscated: &str, env: &mut Environment) {
+    let mut known: std::collections::HashSet<String> = env
+        .traits
+        .iter()
+        .filter_map(|t| match t {
+            Trait::Download { src, .. } => Some(src.clone()),
+            Trait::UrlLaunch { url, .. } => Some(url.clone()),
+            Trait::UrlArgument { url, .. } => Some(url.clone()),
+            Trait::CertutilDownload { url, .. } => Some(url.clone()),
+            Trait::BitsadminDownload { url, .. } => Some(url.clone()),
+            _ => None,
+        })
+        .collect();
+
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        for i in 0..tokens.len() {
+            let cmd = command_name(strip_quotes(&tokens[i]));
+            if cmd != "rundll32" && cmd != "rundll32.exe" {
+                continue;
+            }
+            let Some(export_idx) = (i + 1..tokens.len())
+                .take(4)
+                .find(|idx| rundll32_download_export(strip_quotes(&tokens[*idx])))
+            else {
+                continue;
+            };
+            let Some(url) = first_url_after(&tokens, export_idx + 1, false, true) else {
+                continue;
+            };
+            if is_noise_url(&url) || !known.insert(url.clone()) {
+                continue;
+            }
+            env.traits.push(Trait::Download {
+                cmd: line.to_string(),
+                src: url,
+                dst: None,
+            });
+        }
+    }
 }
 
 fn scan_url_variable_assignments(deobfuscated: &str, env: &mut Environment) {
@@ -5074,6 +5127,7 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     scan_python_requests_get_deob_text(deobfuscated, env);
     scan_typo_webclient_downloads(deobfuscated, env);
     scan_url_launch_deob_text(deobfuscated, env);
+    scan_rundll32_download_exports_deob_text(deobfuscated, env);
     scan_process_url_arguments(deobfuscated, env);
     scan_url_variable_assignments(deobfuscated, env);
     scan_registry_url_values(deobfuscated, env);

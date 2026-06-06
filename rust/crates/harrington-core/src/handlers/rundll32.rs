@@ -7,10 +7,17 @@ pub fn h_rundll32(raw: &str, env: &mut Environment) {
     if parts.len() < 2 {
         return;
     }
-    if let Some(url) = file_protocol_handler_url(&parts) {
+    if let Some(url) = url_launch_export_argument(&parts) {
         env.traits.push(Trait::UrlLaunch {
             cmd: raw.to_string(),
             url,
+        });
+    }
+    if let Some(url) = download_export_argument(&parts) {
+        env.traits.push(Trait::Download {
+            cmd: raw.to_string(),
+            src: url,
+            dst: None,
         });
     }
     let dll = strip_quotes(parts[1].split(',').next().unwrap_or(""));
@@ -24,25 +31,57 @@ pub fn h_rundll32(raw: &str, env: &mut Environment) {
     });
 }
 
-fn file_protocol_handler_url(parts: &[String]) -> Option<String> {
-    let handler_idx = parts
+fn url_launch_export_argument(parts: &[String]) -> Option<String> {
+    let export_idx = parts
         .iter()
         .enumerate()
         .skip(1)
         .take(4)
         .find_map(|(idx, part)| {
-            if strip_quotes(part)
-                .to_ascii_lowercase()
-                .contains("fileprotocolhandler")
-            {
+            if rundll32_url_launch_export(strip_quotes(part)) {
                 Some(idx)
             } else {
                 None
             }
         })?;
+    first_url_after(parts, export_idx + 1)
+}
+
+fn download_export_argument(parts: &[String]) -> Option<String> {
+    let export_idx = parts
+        .iter()
+        .enumerate()
+        .skip(1)
+        .take(4)
+        .find_map(|(idx, part)| {
+            if rundll32_download_export(strip_quotes(part)) {
+                Some(idx)
+            } else {
+                None
+            }
+        })?;
+    first_url_after(parts, export_idx + 1)
+}
+
+fn rundll32_url_launch_export(token: &str) -> bool {
+    let lower = token.to_ascii_lowercase();
+    lower.contains("url.dll,fileprotocolhandler")
+        || lower.contains("url.dll,openurl")
+        || lower.contains("ieframe.dll,openurl")
+        || lower.contains("shdocvw.dll,openurl")
+        || lower.contains("photoviewer.dll,imageview_fullscreen")
+        || lower.contains("shimgvw.dll,imageview_fullscreen")
+}
+
+fn rundll32_download_export(token: &str) -> bool {
+    let lower = token.to_ascii_lowercase();
+    lower.contains("scrobj.dll,generatetypelib")
+}
+
+fn first_url_after(parts: &[String], start: usize) -> Option<String> {
     parts
         .iter()
-        .skip(handler_idx + 1)
+        .skip(start)
         .map(|part| strip_quotes(part).trim_start_matches(['"', '\'']))
         .find_map(|part| {
             let end = part
