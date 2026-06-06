@@ -97,6 +97,14 @@ static JS_FROMCHARCODE_CALL_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static JS_FROMCHARCODE_BIND_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)String\s*(?:\.\s*from(?:CharCode|CodePoint)|\[\s*['"]from(?:CharCode|CodePoint)['"]\s*\])\s*\.\s*bind\s*\(\s*[^)\r\n]{0,128}\)\s*\(\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\)"#,
+    )
+    .expect("js fromCharCode/fromCodePoint bind")
+});
+
+#[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_SPREAD_ARRAY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)String\s*(?:\.\s*from(?:CharCode|CodePoint)|\[\s*['"]from(?:CharCode|CodePoint)['"]\s*\])\s*\(\s*\.\.\.\s*\[\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\]\s*\)"#,
@@ -375,6 +383,7 @@ fn decoded_js_fromcharcode_literals(text: &str) -> Vec<String> {
         .chain(JS_FROMCHARCODE_APPLY_RE.captures_iter(text))
         .chain(JS_FROMCHARCODE_APPLY_ARRAY_CTOR_RE.captures_iter(text))
         .chain(JS_FROMCHARCODE_CALL_RE.captures_iter(text))
+        .chain(JS_FROMCHARCODE_BIND_RE.captures_iter(text))
         .chain(JS_FROMCHARCODE_SPREAD_ARRAY_RE.captures_iter(text))
         .chain(JS_FROMCHARCODE_SPREAD_ARRAY_CTOR_RE.captures_iter(text))
         .filter_map(|caps| decode_js_fromcharcode_args(caps.get(1)?.as_str()))
