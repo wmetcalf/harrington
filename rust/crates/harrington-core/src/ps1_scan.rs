@@ -1450,6 +1450,107 @@ fn expand_ps_dot_replace(text: &str) -> String {
     out
 }
 
+fn expand_ps_dot_substring(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut matches = Vec::new();
+    let mut start = 0;
+    while let Some(rel) = text[start..].find('\'') {
+        let literal_start = start + rel;
+        let Some((literal_end, value)) = parse_ps_single_quoted_literal(text, literal_start) else {
+            start = literal_start + 1;
+            continue;
+        };
+
+        let mut pos = skip_ascii_ws(bytes, literal_end);
+        if bytes.get(pos) != Some(&b'.') {
+            start = literal_end;
+            continue;
+        }
+        pos += 1;
+        let Some(after_dot) = text.get(pos..) else {
+            start = literal_end;
+            continue;
+        };
+        let Some(method) = after_dot.get(.."Substring".len()) else {
+            start = literal_end;
+            continue;
+        };
+        if !method.eq_ignore_ascii_case("Substring") {
+            start = literal_end;
+            continue;
+        }
+        pos += "Substring".len();
+        pos = skip_ascii_ws(bytes, pos);
+        if bytes.get(pos) != Some(&b'(') {
+            start = literal_end;
+            continue;
+        }
+        pos = skip_ascii_ws(bytes, pos + 1);
+        let Some((after_start, start_idx)) = parse_ps_usize_arg(text, pos) else {
+            start = literal_end;
+            continue;
+        };
+        pos = skip_ascii_ws(bytes, after_start);
+        let mut len_arg = None;
+        if bytes.get(pos) == Some(&b',') {
+            pos = skip_ascii_ws(bytes, pos + 1);
+            let Some((after_len, len)) = parse_ps_usize_arg(text, pos) else {
+                start = literal_end;
+                continue;
+            };
+            len_arg = Some(len);
+            pos = skip_ascii_ws(bytes, after_len);
+        }
+        if bytes.get(pos) != Some(&b')') {
+            start = literal_end;
+            continue;
+        }
+        let chars: Vec<char> = value.chars().collect();
+        if start_idx > chars.len() {
+            start = pos + 1;
+            continue;
+        }
+        let end_idx = match len_arg {
+            Some(len) => start_idx.saturating_add(len),
+            None => chars.len(),
+        };
+        if end_idx > chars.len() {
+            start = pos + 1;
+            continue;
+        }
+        let sliced: String = chars[start_idx..end_idx].iter().collect();
+        if sliced.len() > 8192 {
+            start = pos + 1;
+            continue;
+        }
+        matches.push((
+            literal_start,
+            pos + 1,
+            format!("'{}'", sliced.replace('\'', "''")),
+        ));
+        start = pos + 1;
+    }
+
+    let mut out = text.to_string();
+    for (start_pos, end_pos, replacement) in matches.into_iter().rev() {
+        out.replace_range(start_pos..end_pos, &replacement);
+    }
+    out
+}
+
+fn parse_ps_usize_arg(text: &str, start: usize) -> Option<(usize, usize)> {
+    let bytes = text.as_bytes();
+    let mut pos = start;
+    while bytes.get(pos).is_some_and(u8::is_ascii_digit) {
+        pos += 1;
+    }
+    if pos == start {
+        return None;
+    }
+    let value = text[start..pos].parse().ok()?;
+    Some((pos, value))
+}
+
 #[allow(clippy::expect_used)]
 static JOIN_RE: Lazy<Regex> = Lazy::new(|| {
     // (?:'a',"b",'c') -join 'sep' or @('a',"b",'c') -join "sep"
@@ -2605,6 +2706,7 @@ fn expand_obfuscation(text: &str) -> String {
         out = expand_start_process_argument_list(&out);
         out = expand_invoke_expression_wrappers(&out);
         out = expand_ps_dot_replace(&out);
+        out = expand_ps_dot_substring(&out);
         out = expand_ps_embedded_single_quote_assignments(&out);
         out = expand_doubled_quote_literals(&out);
         out = expand_skip_nth(&out); // skip-nth-char decoder (Pattern B)
@@ -2642,6 +2744,7 @@ fn expand_obfuscation(text: &str) -> String {
         out = expand_ps_join(&out);
         out = expand_ps_replace(&out);
         out = expand_ps_dot_replace(&out);
+        out = expand_ps_dot_substring(&out);
         out = expand_ps_index_concat_assignments(&out);
         out = expand_ps_variables(&out);
         out = expand_regex_replace_calls(&out);
