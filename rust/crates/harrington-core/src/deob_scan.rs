@@ -6296,6 +6296,10 @@ pub fn scan_ps_replace_chain_urls(deobfuscated: &str, env: &mut Environment) {
 pub fn scan_ps_char_index_extractor_urls(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
+    if !has_ps_char_index_extractor_atom(deobfuscated) {
+        return;
+    }
+
     // Two-pass detection because the `regex` crate lacks backreferences:
     //   (1) Find `function NAME(...){...}` blocks (header capture only).
     //   (2) Inside each block, find any `$IDX=START` / `$IDX+=STEP`
@@ -6422,6 +6426,32 @@ pub fn scan_ps_char_index_extractor_urls(deobfuscated: &str, env: &mut Environme
             }
         }
     }
+}
+
+fn has_ps_char_index_extractor_atom(text: &str) -> bool {
+    contains_ascii_case_insensitive_atom(text, b"function")
+        && text.as_bytes().contains(&b'$')
+        && text.as_bytes().windows(2).any(|window| window == b"+=")
+        && has_ps_variable_index_atom(text)
+}
+
+fn has_ps_variable_index_atom(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut idx = 0;
+    while idx < bytes.len() {
+        if bytes[idx] != b'[' {
+            idx += 1;
+            continue;
+        }
+        idx += 1;
+        while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+            idx += 1;
+        }
+        if idx < bytes.len() && bytes[idx] == b'$' {
+            return true;
+        }
+    }
+    false
 }
 
 /// PowerShell socket-style reverse shells store the C2 address as
@@ -8246,7 +8276,7 @@ mod ps_tcp_client_tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod ps_char_index_extractor_tests {
-    use super::scan_ps_char_index_extractor_urls;
+    use super::{has_ps_char_index_extractor_atom, scan_ps_char_index_extractor_urls};
     use crate::env::Environment;
     use crate::traits::Trait;
     use crate::Config;
@@ -8284,6 +8314,30 @@ mod ps_char_index_extractor_tests {
             "expected shalouxt.top URL; got {:?}",
             extracted
         );
+    }
+
+    #[test]
+    fn prefilter_allows_index_extractor_shape() {
+        let script = r#"
+            function Musculos ($filmprod){
+                $overill=3;
+                do { $sirp+=$filmprod[$overill]; $overill+=4; }
+                until (!$filmprod[$overill])
+                $sirp
+            }
+        "#;
+
+        assert!(has_ps_char_index_extractor_atom(script));
+    }
+
+    #[test]
+    fn prefilter_blocks_function_without_index_extraction() {
+        let script = r#"
+            function Sum ($n){ $i=0; do { $s+=1; $i+=1 } until ($i -ge $n) $s }
+            $x = Sum 5
+        "#;
+
+        assert!(!has_ps_char_index_extractor_atom(script));
     }
 
     #[test]
