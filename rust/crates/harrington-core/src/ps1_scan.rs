@@ -1490,7 +1490,7 @@ static SINGLE_LITERAL_JOIN_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static SPLIT_JOIN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)\(?\s*(?:'([^'\\]*(?:\\.[^'\\]*)*)'|"([^"\\]*(?:\\.[^"\\]*)*)")\s*-split\s*(?:'([^'\\]*(?:\\.[^'\\]*)*)'|"([^"\\]*(?:\\.[^"\\]*)*)")\s*\)?\s*-join\s*(?:'([^'\\]*(?:\\.[^'\\]*)*)'|"([^"\\]*(?:\\.[^"\\]*)*)")"#,
+        r#"(?is)\(?\s*(?:'([^'\\]*(?:\\.[^'\\]*)*)'|"([^"\\]*(?:\\.[^"\\]*)*)")\s*-(?:[ic])?split\s*(?:'([^'\\]*(?:\\.[^'\\]*)*)'|"([^"\\]*(?:\\.[^"\\]*)*)")\s*\)?\s*-join\s*(?:'([^'\\]*(?:\\.[^'\\]*)*)'|"([^"\\]*(?:\\.[^"\\]*)*)")"#,
     )
     .expect("split join")
 });
@@ -1525,12 +1525,12 @@ fn expand_split_join_literals(text: &str) -> String {
         .filter_map(|caps| {
             let full = caps.get(0)?;
             let value = caps.get(1).or_else(|| caps.get(2))?.as_str();
-            let split_sep = caps.get(3).or_else(|| caps.get(4))?.as_str();
+            let split_sep = split_literal_separator(caps.get(3).or_else(|| caps.get(4))?.as_str())?;
             let join_sep = caps.get(5).or_else(|| caps.get(6))?.as_str();
             if split_sep.is_empty() || split_sep.len() > 64 || join_sep.len() > 64 {
                 return None;
             }
-            let parts: Vec<&str> = value.split(split_sep).collect();
+            let parts: Vec<&str> = value.split(split_sep.as_str()).collect();
             if parts.is_empty() || parts.len() > 256 {
                 return None;
             }
@@ -1550,6 +1550,40 @@ fn expand_split_join_literals(text: &str) -> String {
         out.replace_range(start..end, &replacement);
     }
     out
+}
+
+fn split_literal_separator(sep: &str) -> Option<String> {
+    if sep.is_empty() {
+        return None;
+    }
+    if sep.len() == 2 && sep.starts_with('\\') {
+        let escaped = sep.as_bytes()[1] as char;
+        if r#"\.^$|?*+()[]{}"#.contains(escaped) {
+            return Some(escaped.to_string());
+        }
+    }
+    if sep.as_bytes().iter().any(|b| {
+        matches!(
+            b,
+            b'\\'
+                | b'.'
+                | b'^'
+                | b'$'
+                | b'|'
+                | b'?'
+                | b'*'
+                | b'+'
+                | b'('
+                | b')'
+                | b'['
+                | b']'
+                | b'{'
+                | b'}'
+        )
+    }) {
+        return None;
+    }
+    Some(sep.to_string())
 }
 
 #[allow(clippy::expect_used)]
@@ -2692,6 +2726,8 @@ fn should_skip_marker_noise_line(text: &str) -> bool {
         || lower.contains("-ireplace")
         || lower.contains("-creplace")
         || (lower.contains("-split") && lower.contains("-join"))
+        || (lower.contains("-isplit") && lower.contains("-join"))
+        || (lower.contains("-csplit") && lower.contains("-join"))
         || lower.contains("gzipstream")
         || lower.contains("readtoend")
         || lower.contains("function ")
