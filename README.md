@@ -60,6 +60,18 @@ samples, deob preview. No files written. **Use this first for triage.**
 harrington summarize sample.bat
 ```
 
+Optional external LOLBAS enrichment can annotate recognized command lines
+without bundling GPL-licensed LOLBAS data:
+
+```bash
+harrington summarize sample.bat --lolbas-json /path/to/lolbas.json
+harrington report sample.bat --lolbas-json /path/to/lolbas.json
+```
+
+When supplied, JSON output includes `lolbas_matches[]` entries with the
+matched binary name, observed command line, LOLBAS URL, categories, and
+MITRE IDs from that user-provided file.
+
 ### `analyze` — full structured JSON
 
 Every trait, every URL, the full deobfuscated text.

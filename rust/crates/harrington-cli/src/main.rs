@@ -76,6 +76,9 @@ enum Command {
         /// for analyst triage / chat-paste.
         #[arg(long)]
         tldr: bool,
+        /// Optional path to external LOLBAS JSON for JSON enrichment.
+        #[arg(long = "lolbas-json")]
+        lolbas_json: Option<PathBuf>,
     },
     /// Emit a comprehensive JSON report: summary fields + full trait list,
     /// plus optionally the JSON-escaped source and deobfuscated text.
@@ -104,6 +107,9 @@ enum Command {
         max_output_line_bytes: u64,
         #[arg(long, default_value_t = 100)]
         max_traits_per_kind: u32,
+        /// Optional path to external LOLBAS JSON for JSON enrichment.
+        #[arg(long = "lolbas-json")]
+        lolbas_json: Option<PathBuf>,
     },
     /// Print version and exit.
     Version,
@@ -199,6 +205,121 @@ fn analyze_for_file(
     } else {
         harrington_core::analyze_with_path(input, cfg, Path::new(file))
     }
+}
+
+#[derive(Debug, Clone)]
+struct LolbasEntry {
+    name: String,
+    stem: String,
+    url: Option<String>,
+    categories: Vec<String>,
+    mitre_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct LolbasIndex {
+    entries: Vec<LolbasEntry>,
+}
+
+fn load_lolbas_index(path: &Path) -> Result<LolbasIndex> {
+    const MAX_LOLBAS_JSON_BYTES: u64 = 64 * 1024 * 1024;
+
+    let file = fs::File::open(path).with_context(|| format!("open {:?}", path))?;
+    let meta = file
+        .metadata()
+        .with_context(|| format!("stat {:?}", path))?;
+    if !meta.file_type().is_file() {
+        anyhow::bail!("{:?}: not a regular file", path);
+    }
+    if meta.len() > MAX_LOLBAS_JSON_BYTES {
+        anyhow::bail!(
+            "{:?}: {} bytes exceeds the {}-byte LOLBAS JSON cap",
+            path,
+            meta.len(),
+            MAX_LOLBAS_JSON_BYTES
+        );
+    }
+    let bytes = read_all_capped(file, MAX_LOLBAS_JSON_BYTES, || format!("{:?}", path))?;
+    let value: serde_json::Value =
+        serde_json::from_slice(&bytes).with_context(|| format!("parse {:?}", path))?;
+    let Some(items) = value.as_array() else {
+        anyhow::bail!("{:?}: expected top-level LOLBAS JSON array", path);
+    };
+
+    let mut entries = Vec::new();
+    for item in items {
+        let Some(obj) = item.as_object() else {
+            continue;
+        };
+        let Some(name) = obj.get("Name").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        let stem = program_stem(name);
+        if stem.is_empty() {
+            continue;
+        }
+        let url = obj
+            .get("url")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let mut categories = Vec::new();
+        let mut mitre_ids = Vec::new();
+        if let Some(commands) = obj.get("Commands").and_then(|v| v.as_array()) {
+            for command in commands {
+                if let Some(category) = command.get("Category").and_then(|v| v.as_str()) {
+                    push_unique(&mut categories, category);
+                }
+                if let Some(mitre_id) = command.get("MitreID").and_then(|v| v.as_str()) {
+                    push_unique(&mut mitre_ids, mitre_id);
+                }
+            }
+        }
+        entries.push(LolbasEntry {
+            name: name.to_string(),
+            stem,
+            url,
+            categories,
+            mitre_ids,
+        });
+    }
+
+    Ok(LolbasIndex { entries })
+}
+
+fn push_unique(values: &mut Vec<String>, value: &str) {
+    let value = value.trim();
+    if !value.is_empty() && !values.iter().any(|v| v == value) {
+        values.push(value.to_string());
+    }
+}
+
+fn program_stem(name: &str) -> String {
+    let basename = name
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(name)
+        .trim_matches(['"', '\'']);
+    let lower = basename.to_ascii_lowercase();
+    lower
+        .strip_suffix(".exe")
+        .unwrap_or(lower.as_str())
+        .to_string()
+}
+
+fn command_invokes_program(command: &str, wanted_stem: &str) -> bool {
+    command
+        .split(|ch: char| {
+            !(ch.is_ascii_alphanumeric()
+                || matches!(ch, '.' | '_' | '-' | '\\' | '/' | ':' | '"' | '\''))
+        })
+        .any(|token| {
+            let stem = program_stem(token);
+            !stem.is_empty() && stem == wanted_stem
+        })
 }
 
 /// Safely join `name` onto the canonical `out_dir`, refusing if the result
@@ -468,6 +589,7 @@ fn build_summary(
     input_path: &str,
     input: &[u8],
     report: &harrington_core::Report,
+    lolbas_index: Option<&LolbasIndex>,
 ) -> serde_json::Value {
     use harrington_core::Trait;
     use std::collections::BTreeMap;
@@ -679,7 +801,7 @@ fn build_summary(
 
     let preview: String = report.deobfuscated.chars().take(1000).collect();
 
-    serde_json::json!({
+    let mut summary = serde_json::json!({
         "input": input_path,
         "input_size": input.len(),
         "deobfuscated_size": report.deobfuscated.len(),
@@ -695,7 +817,84 @@ fn build_summary(
         "windows_util_manipulation": windows_util,
         "self_extract": self_extract,
         "traits_capped": traits_capped,
-    })
+    });
+    if let Some(index) = lolbas_index {
+        if let serde_json::Value::Object(ref mut obj) = summary {
+            obj.insert(
+                "lolbas_matches".to_string(),
+                serde_json::Value::Array(lolbas_matches(report, index)),
+            );
+        }
+    }
+    summary
+}
+
+fn lolbas_matches(report: &harrington_core::Report, index: &LolbasIndex) -> Vec<serde_json::Value> {
+    let mut matches = Vec::new();
+    let commands = command_lines_for_lolbas(report);
+    for command in commands {
+        for entry in &index.entries {
+            if !command_invokes_program(command, &entry.stem) {
+                continue;
+            }
+            let duplicate = matches.iter().any(|item: &serde_json::Value| {
+                item.get("name").and_then(|v| v.as_str()) == Some(entry.name.as_str())
+                    && item.get("command").and_then(|v| v.as_str()) == Some(command)
+            });
+            if duplicate {
+                continue;
+            }
+            matches.push(serde_json::json!({
+                "name": entry.name,
+                "command": command,
+                "lolbas_url": entry.url,
+                "categories": entry.categories,
+                "mitre_ids": entry.mitre_ids,
+            }));
+        }
+    }
+    matches
+}
+
+fn command_lines_for_lolbas(report: &harrington_core::Report) -> Vec<&str> {
+    use harrington_core::Trait;
+
+    let mut out = Vec::new();
+    for t in &report.traits {
+        let command = match t {
+            Trait::Download { cmd, .. }
+            | Trait::UrlLaunch { cmd, .. }
+            | Trait::UrlArgument { cmd, .. }
+            | Trait::UrlVariable { cmd, .. }
+            | Trait::RegistryUrl { cmd, .. }
+            | Trait::Lolbas { cmd, .. }
+            | Trait::CommandGrouping { cmd, .. }
+            | Trait::StartWithVar { cmd, .. }
+            | Trait::VarUsed { cmd, .. }
+            | Trait::Mshta { cmd }
+            | Trait::Rundll32 { cmd, .. }
+            | Trait::WindowsUtilManip { cmd, .. }
+            | Trait::ManipulatedExec { cmd, .. }
+            | Trait::AdminCommand { cmd, .. }
+            | Trait::AccountModification { command: cmd, .. }
+            | Trait::FileConcealment { command: cmd, .. }
+            | Trait::UncWebDavC2 { command: cmd, .. }
+            | Trait::Persistence { command: cmd, .. }
+            | Trait::EvidenceCleanup { command: cmd, .. }
+            | Trait::Enumeration { command: cmd, .. } => Some(cmd.as_str()),
+            Trait::WmicProcessCreate { inner_cmd } => Some(inner_cmd.as_str()),
+            Trait::CscriptExec { src } | Trait::WscriptExec { src } => Some(src.as_str()),
+            Trait::SelfElevation { target, .. } => Some(target.as_str()),
+            _ => None,
+        };
+        let Some(command) = command else {
+            continue;
+        };
+        if !command.is_empty() && !out.contains(&command) {
+            out.push(command);
+        }
+    }
+    out
 }
 
 /// Human-readable one-paragraph TLDR for analyst triage.
@@ -945,14 +1144,19 @@ fn build_tldr(file: &str, input: &[u8], report: &harrington_core::Report) -> Str
 fn run() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Summarize { file, tldr } => {
+        Command::Summarize {
+            file,
+            tldr,
+            lolbas_json,
+        } => {
             let input = read_input(&file)?;
             let cfg = harrington_core::Config::default();
             let report = analyze_for_file(&file, &input, &cfg);
             if tldr {
                 print!("{}", build_tldr(&file, &input, &report));
             } else {
-                let summary = build_summary(&file, &input, &report);
+                let lolbas_index = lolbas_json.as_deref().map(load_lolbas_index).transpose()?;
+                let summary = build_summary(&file, &input, &report, lolbas_index.as_ref());
                 println!("{}", serde_json::to_string_pretty(&summary)?);
             }
         }
@@ -968,6 +1172,7 @@ fn run() -> Result<()> {
             max_output_bytes,
             max_output_line_bytes,
             max_traits_per_kind,
+            lolbas_json,
         } => {
             let input = read_input(&file)?;
             let cfg = make_config(
@@ -984,7 +1189,8 @@ fn run() -> Result<()> {
 
             // Start from the analyst-friendly summary, then layer the full
             // typed trait list and any opt-in raw text on top.
-            let mut value = build_summary(&file, &input, &report);
+            let lolbas_index = lolbas_json.as_deref().map(load_lolbas_index).transpose()?;
+            let mut value = build_summary(&file, &input, &report, lolbas_index.as_ref());
             if let serde_json::Value::Object(ref mut obj) = value {
                 let input_sha256 = {
                     let mut h = Sha256::new();
