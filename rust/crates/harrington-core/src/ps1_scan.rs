@@ -1348,7 +1348,7 @@ fn expand_getstring_wrapper(text: &str) -> String {
 
 #[allow(clippy::expect_used)]
 static REPLACE_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"'([^'\\]*(?:\\.[^'\\]*)*)'\s*-replace\s*'([^'\\]*(?:\\.[^'\\]*)*)'\s*,\s*'([^'\\]*(?:\\.[^'\\]*)*)'"#)
+    Regex::new(r#"'([^'\\]*(?:\\.[^'\\]*)*)'\s*-(?:[ic])?replace\s*'([^'\\]*(?:\\.[^'\\]*)*)'\s*,\s*'([^'\\]*(?:\\.[^'\\]*)*)'"#)
         .expect("replace")
 });
 
@@ -2507,6 +2507,7 @@ static PS_HERESTRING_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 // `$DST = $SRC -replace 'NEEDLE', 'REPL'` — captures dst, src, needle, repl.
+// PowerShell also accepts -ireplace/-creplace for explicit case behavior.
 // Outer quote count is constrained to 1 or 2 so the matcher works both for
 // the original form (`'a','b'`) and the doubled-quote form (`''a'','b''`)
 // that arises when the chain is inlined inside a wrapping single-quoted PS
@@ -2515,7 +2516,7 @@ static PS_HERESTRING_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static PS_VAR_REPLACE_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"\$([A-Za-z_]\w*)\s*=\s*\$([A-Za-z_]\w*)\s*-replace\s*'{1,2}((?:[^'\\\n]|''|\\.)*?)'{1,2}\s*,\s*'{1,2}((?:[^'\\\n]|''|\\.)*?)'{1,2}"#,
+        r#"\$([A-Za-z_]\w*)\s*=\s*\$([A-Za-z_]\w*)\s*-(?:[ic])?replace\s*'{1,2}((?:[^'\\\n]|''|\\.)*?)'{1,2}\s*,\s*'{1,2}((?:[^'\\\n]|''|\\.)*?)'{1,2}"#,
     )
     .expect("ps var replace assign")
 });
@@ -2646,6 +2647,8 @@ fn should_skip_marker_noise_line(text: &str) -> bool {
     lower.contains(".replace(")
         || lower.contains("::replace(")
         || lower.contains("-replace")
+        || lower.contains("-ireplace")
+        || lower.contains("-creplace")
         || lower.contains("gzipstream")
         || lower.contains("readtoend")
         || lower.contains("function ")
