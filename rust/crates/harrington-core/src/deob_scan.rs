@@ -6493,10 +6493,10 @@ pub fn scan_truncated_url_vars(deobfuscated: &str, env: &mut Environment) {
 
 #[allow(clippy::expect_used)]
 static CERTUTIL_DECODE_RE: Lazy<Regex> = Lazy::new(|| {
-    // Matches: certutil [-f] -decode  (case-insensitive). We do not require
+    // Matches: certutil [-f] -decode  (case-insensitive, dash or slash flags). We do not require
     // the same source/target filenames; just the presence of a decode call
     // is enough to gate this sweep, paired with a preceding `echo <b64>`.
-    Regex::new(r"(?i)\bcertutil(?:\.exe)?\b[^\r\n]*?-decode\b").expect("certutil decode")
+    Regex::new(r"(?i)\bcertutil(?:\.exe)?\b[^\r\n]*?[-/]decode\b").expect("certutil decode")
 });
 
 #[allow(clippy::expect_used)]
