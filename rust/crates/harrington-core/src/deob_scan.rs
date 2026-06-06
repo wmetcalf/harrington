@@ -2423,6 +2423,23 @@ fn scan_process_url_arguments(deobfuscated: &str, env: &mut Environment) {
             });
         }
 
+        for i in 0..tokens.len() {
+            let cmd = command_name(strip_quotes(&tokens[i]));
+            if cmd != "certreq" && cmd != "certreq.exe" {
+                continue;
+            }
+            let Some(url) = certreq_config_url_after(&tokens, i + 1) else {
+                continue;
+            };
+            if is_noise_url(&url) || !known.insert(url.clone()) {
+                continue;
+            }
+            env.traits.push(Trait::UrlArgument {
+                cmd: line.to_string(),
+                url,
+            });
+        }
+
         if tokens.len() < 2 {
             continue;
         }
@@ -2443,6 +2460,52 @@ fn scan_process_url_arguments(deobfuscated: &str, env: &mut Environment) {
             url,
         });
     }
+}
+
+fn certreq_config_url_after(tokens: &[String], start: usize) -> Option<String> {
+    let mut i = start;
+    while i < tokens.len() {
+        let token = strip_quotes(&tokens[i]);
+        if token.eq_ignore_ascii_case("-config") || token.eq_ignore_ascii_case("/config") {
+            let Some(next) = tokens.get(i + 1) else {
+                i += 1;
+                continue;
+            };
+            let value = trim_url_suffix(strip_quotes(next));
+            if let Some(url) = normalize_liberal_url_token(value)
+                .or_else(|| normalize_schemeless_domain_path_token(value))
+            {
+                return Some(url);
+            }
+            i += 2;
+            continue;
+        }
+        if let Some(value) = certreq_attached_config_value(token) {
+            let value = trim_url_suffix(value);
+            if let Some(url) = normalize_liberal_url_token(value)
+                .or_else(|| normalize_schemeless_domain_path_token(value))
+            {
+                return Some(url);
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+fn certreq_attached_config_value(token: &str) -> Option<&str> {
+    let lower = token.to_ascii_lowercase();
+    for prefix in ["-config:", "/config:", "-config=", "/config="] {
+        let Some(rest) = lower.strip_prefix(prefix) else {
+            continue;
+        };
+        let offset = token.len() - rest.len();
+        let value = &token[offset..];
+        if !value.is_empty() {
+            return Some(value);
+        }
+    }
+    None
 }
 
 fn regsvr32_scriptlet_url_after(tokens: &[String], start: usize) -> Option<String> {

