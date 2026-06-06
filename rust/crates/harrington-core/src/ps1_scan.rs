@@ -1418,6 +1418,14 @@ static JOIN_PART_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static STRING_JOIN_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)\[(?:System\.)?String\]::Join\s*\(\s*(?:'([^'\\]*(?:\\.[^'\\]*)*)'|"([^"\\]*(?:\\.[^"\\]*)*)")\s*,\s*@?\(\s*((?:(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*")\s*,\s*)*(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*"))\s*\)\s*\)"#,
+    )
+    .expect("string join")
+});
+
+#[allow(clippy::expect_used)]
 static SINGLE_LITERAL_JOIN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"\(\s*(?:'([^'\\]*(?:\\.[^'\\]*)*)'|"([^"\\]*(?:\\.[^"\\]*)*)")\s*-join\s*(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*")\s*\)|(?:'([^'\\]*(?:\\.[^'\\]*)*)'|"([^"\\]*(?:\\.[^"\\]*)*)")\s*-join\s*(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*")"#,
@@ -1574,6 +1582,42 @@ fn expand_ps_join(text: &str) -> String {
                 return None;
             }
             Some((full.start(), full.end(), format!("'{}'", parts.join(sep))))
+        })
+        .collect();
+    let mut out = text.to_string();
+    for (start, end, replacement) in matches.into_iter().rev() {
+        out.replace_range(start..end, &replacement);
+    }
+    out
+}
+
+fn expand_ps_string_join(text: &str) -> String {
+    let matches: Vec<(usize, usize, String)> = STRING_JOIN_RE
+        .captures_iter(text)
+        .filter_map(|caps| {
+            let full = caps.get(0)?;
+            let sep = caps.get(1).or_else(|| caps.get(2))?.as_str();
+            let parts_text = caps.get(3)?.as_str();
+            let parts: Vec<String> = JOIN_PART_RE
+                .captures_iter(parts_text)
+                .filter_map(|c| {
+                    c.get(1)
+                        .or_else(|| c.get(2))
+                        .map(|m| m.as_str().to_string())
+                })
+                .collect();
+            if parts.is_empty() || parts.len() > 128 || sep.len() > 64 {
+                return None;
+            }
+            let joined = parts.join(sep);
+            if joined.len() > 8192 {
+                return None;
+            }
+            Some((
+                full.start(),
+                full.end(),
+                format!("'{}'", joined.replace('\'', "''")),
+            ))
         })
         .collect();
     let mut out = text.to_string();
@@ -2426,6 +2470,7 @@ fn expand_obfuscation(text: &str) -> String {
         out = expand_reverse_string_slice_join(&out);
         out = expand_single_literal_join(&out);
         out = expand_tochararray_reverse_join(&out);
+        out = expand_ps_string_join(&out);
         out = expand_ps_join(&out);
         out = expand_ps_replace(&out);
         out = expand_ps_dot_replace(&out);
