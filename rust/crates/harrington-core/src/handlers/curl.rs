@@ -80,13 +80,8 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
                 i += 1;
                 continue;
             }
-            // Skip values for known one-arg flags
-            "-d" | "--data" | "--data-ascii" | "--data-binary" | "--data-raw"
-            | "--data-urlencode" | "-H" | "--header" | "-X" | "--request" | "-A"
-            | "--user-agent" | "-e" | "--referer" | "-b" | "--cookie" | "-c" | "--cookie-jar"
-            | "-u" | "--user" | "-x" | "--proxy" | "--connect-timeout" | "-m" | "--max-time"
-            | "-T" | "--upload-file" | "-F" | "--form" | "--form-string" | "--retry"
-            | "--retry-delay" => {
+            // Skip values for known one-arg flags.
+            _ if curl_value_flag(t) => {
                 i += 2;
                 continue;
             }
@@ -163,6 +158,36 @@ fn normalize_curl_url(s: &str) -> Option<String> {
         return crate::deob_scan::normalize_liberal_url_token(s).or_else(|| Some(s.to_string()));
     }
     crate::deob_scan::normalize_schemeless_domain_path_token(s)
+}
+
+fn curl_value_flag(token: &str) -> bool {
+    matches!(
+        token,
+        "-d" | "-H" | "-X" | "-A" | "-e" | "-b" | "-c" | "-u" | "-x" | "-m" | "-T" | "-F"
+    ) || [
+        "--data",
+        "--data-ascii",
+        "--data-binary",
+        "--data-raw",
+        "--data-urlencode",
+        "--header",
+        "--request",
+        "--user-agent",
+        "--referer",
+        "--cookie",
+        "--cookie-jar",
+        "--user",
+        "--proxy",
+        "--connect-timeout",
+        "--max-time",
+        "--upload-file",
+        "--form",
+        "--form-string",
+        "--retry",
+        "--retry-delay",
+    ]
+    .iter()
+    .any(|flag| token.eq_ignore_ascii_case(flag))
 }
 
 fn short_option_cluster_output(token: &str) -> Option<&str> {

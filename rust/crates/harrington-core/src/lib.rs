@@ -6747,6 +6747,29 @@ mod curl_tests {
     }
 
     #[test]
+    fn curl_uppercase_long_proxy_url_does_not_become_download_src() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            "curl --PROXY http://proxy-only.example:8080 --OUTPUT NUL",
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            Vec::<(&str, Option<&str>)>::new(),
+            "traits: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn curl_output_equals_records_destination() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
