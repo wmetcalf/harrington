@@ -10,6 +10,7 @@ pub mod cmd;
 pub mod copy;
 pub mod cscript;
 pub mod curl;
+pub mod desktopimgdownldr;
 pub mod echo;
 pub mod extrac32;
 pub mod for_cmd;
@@ -50,6 +51,7 @@ pub fn lookup(name: &str) -> Option<Handler> {
         "rundll32" => return Some(rundll32::h_rundll32),
         "certreq" => return Some(certreq::h_certreq),
         "certutil" => return Some(certutil::h_certutil),
+        "desktopimgdownldr" => return Some(desktopimgdownldr::h_desktopimgdownldr),
         _ => {}
     }
     match lower.as_str() {
