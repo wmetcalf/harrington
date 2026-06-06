@@ -546,6 +546,10 @@ fn first_unquoted_ampersand_segment(text: &str) -> &str {
 }
 
 fn scan_python_requests_get_deob_text(deobfuscated: &str, env: &mut Environment) {
+    if !has_python_download_scan_atom(deobfuscated) {
+        return;
+    }
+
     let mut known: std::collections::HashSet<String> = env
         .traits
         .iter()
@@ -583,6 +587,20 @@ fn scan_python_requests_get_deob_text(deobfuscated: &str, env: &mut Environment)
             emit_python_download_with_dst(&url, dst.as_deref(), &decoded, env, &mut known);
         }
     }
+}
+
+fn has_python_download_scan_atom(text: &str) -> bool {
+    [
+        "requests",
+        "urllib",
+        "urlopen",
+        "urlretrieve",
+        "base64",
+        "b64decode",
+        "urlsafe_b64decode",
+    ]
+    .iter()
+    .any(|atom| find_ascii_case_insensitive(text, atom, 0).is_some())
 }
 
 fn python_urlopen_call_names(text: &str) -> Vec<String> {
@@ -5206,104 +5224,182 @@ fn scan_shellcode_marker(deobfuscated: &str, env: &mut Environment) {
 }
 
 pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
-    scan_self_elevation(deobfuscated, env);
-    scan_defender_evasion(deobfuscated, env);
-    scan_inmem_assembly_load(deobfuscated, env);
-    scan_lateral_movement(deobfuscated, env);
-    scan_anti_recovery(deobfuscated, env);
-    scan_evidence_cleanup(deobfuscated, env);
-    scan_network_probe(deobfuscated, env);
-    scan_account_modification(deobfuscated, env);
-    scan_file_concealment(deobfuscated, env);
-    scan_enumeration(deobfuscated, env);
-    scan_credential_access(deobfuscated, env);
-    scan_process_injection(deobfuscated, env);
-    scan_input_capture(deobfuscated, env);
-    scan_ransom_ext(deobfuscated, env);
-    scan_remote_exec(deobfuscated, env);
-    scan_remote_access(deobfuscated, env);
-    scan_uac_bypass(deobfuscated, env);
-    scan_service_install(deobfuscated, env);
-    scan_beacon_sleep(deobfuscated, env);
-    scan_shellcode_marker(deobfuscated, env);
-    scan_bitsadmin_deob_text(deobfuscated, env);
-    scan_python_requests_get_deob_text(deobfuscated, env);
-    scan_typo_webclient_downloads(deobfuscated, env);
-    scan_url_launch_deob_text(deobfuscated, env);
-    scan_rundll32_download_exports_deob_text(deobfuscated, env);
-    scan_certoc_deob_text(deobfuscated, env);
-    scan_desktopimgdownldr_deob_text(deobfuscated, env);
-    scan_process_url_arguments(deobfuscated, env);
-    scan_url_variable_assignments(deobfuscated, env);
-    scan_registry_url_values(deobfuscated, env);
-    scan_echoed_vbs_xmlhttp_deob_text(deobfuscated, env);
-    scan_copied_curl_alias_deob_text(deobfuscated, env);
-    scan_curl_style_compact_flags_deob_text(deobfuscated, env);
-    scan_echoed_curl_deob_text(deobfuscated, env);
-    scan_curl_redirect_deob_text(deobfuscated, env);
-    scan_curl_deob_text(deobfuscated, env);
-    scan_wget_deob_text(deobfuscated, env);
-    scan_certutil_urlcache_deob_text(deobfuscated, env);
-    scan_damaged_scheme_download_urls(deobfuscated, env);
-    scan_ps_replace_chain_urls(deobfuscated, env);
-    scan_ps_bare_url_downloads(deobfuscated, env);
-    scan_ps_char_index_extractor_urls(deobfuscated, env);
-    scan_js_fromcharcode_urls(deobfuscated, env);
-    scan_js_unescape_urls(deobfuscated, env);
-    scan_extrac32_self_extract(deobfuscated, env);
-    scan_ps_var_socket_connect(deobfuscated, env);
-    scan_resolved_deob_var_fragment_urls(deobfuscated, env);
-
-    // Build a set of URLs already known
-    let known = env.known_extracted_urls();
-
-    // Sweep
-    let mut seen_new: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for caps in URL_RE.captures_iter(deobfuscated) {
-        let Some(m) = caps.get(1) else { continue };
-        let mut url = m.as_str().to_string();
-        // Trim common trailing punctuation that the regex's terminator class missed
-        while let Some(last) = url.chars().last() {
-            if matches!(
-                last,
-                ',' | '.' | ';' | ':' | ')' | ']' | '}' | '"' | '\'' | '!' | '?' | '\\'
-            ) {
-                url.pop();
+    let scan_profile_enabled = std::env::var_os("HARRINGTON_PROFILE_DEOB_SCAN").is_some();
+    macro_rules! scan_step {
+        ($stage:literal, $body:block) => {{
+            if scan_profile_enabled {
+                let start = std::time::Instant::now();
+                let traits_before = env.traits.len();
+                $body
+                eprintln!(
+                    "harrington_profile_deob_scan scanner={} delta_ms={} bytes={} added_traits={}",
+                    $stage,
+                    start.elapsed().as_millis(),
+                    deobfuscated.len(),
+                    env.traits.len().saturating_sub(traits_before)
+                );
             } else {
-                break;
+                $body
             }
-        }
-        if url.len() < 8 {
-            continue;
-        } // http://x is the minimum sensible URL
-        if let Some(normalized) = normalize_liberal_url_token(&url) {
-            url = normalized;
-        }
-        if is_noise_url(&url) {
-            continue;
-        }
-        if is_known_or_known_query_prefix(&known, &url) {
-            continue;
-        }
-        if !seen_new.insert(url.clone()) {
-            continue;
-        }
-
-        // Best-effort: find the line containing this URL for context
-        let line_hint = deobfuscated
-            .lines()
-            .find(|l| l.contains(&url))
-            .map(|l| l.chars().take(200).collect::<String>())
-            .unwrap_or_default();
-        if is_noise_url_context(&line_hint, &url) {
-            continue;
-        }
-
-        env.traits.push(Trait::DownloadInDeobText {
-            src: url,
-            line_hint,
-        });
+        }};
     }
+
+    scan_step!("behavior_scanners", {
+        scan_self_elevation(deobfuscated, env);
+        scan_defender_evasion(deobfuscated, env);
+        scan_inmem_assembly_load(deobfuscated, env);
+        scan_lateral_movement(deobfuscated, env);
+        scan_anti_recovery(deobfuscated, env);
+        scan_evidence_cleanup(deobfuscated, env);
+        scan_network_probe(deobfuscated, env);
+        scan_account_modification(deobfuscated, env);
+        scan_file_concealment(deobfuscated, env);
+        scan_enumeration(deobfuscated, env);
+        scan_credential_access(deobfuscated, env);
+        scan_process_injection(deobfuscated, env);
+        scan_input_capture(deobfuscated, env);
+        scan_ransom_ext(deobfuscated, env);
+        scan_remote_exec(deobfuscated, env);
+        scan_remote_access(deobfuscated, env);
+        scan_uac_bypass(deobfuscated, env);
+        scan_service_install(deobfuscated, env);
+        scan_beacon_sleep(deobfuscated, env);
+        scan_shellcode_marker(deobfuscated, env);
+    });
+    scan_step!("bitsadmin_deob_text", {
+        scan_bitsadmin_deob_text(deobfuscated, env);
+    });
+    scan_step!("python_requests_get_deob_text", {
+        scan_python_requests_get_deob_text(deobfuscated, env);
+    });
+    scan_step!("typo_webclient_downloads", {
+        scan_typo_webclient_downloads(deobfuscated, env);
+    });
+    scan_step!("url_launch_deob_text", {
+        scan_url_launch_deob_text(deobfuscated, env);
+    });
+    scan_step!("rundll32_download_exports_deob_text", {
+        scan_rundll32_download_exports_deob_text(deobfuscated, env);
+    });
+    scan_step!("certoc_deob_text", {
+        scan_certoc_deob_text(deobfuscated, env);
+    });
+    scan_step!("desktopimgdownldr_deob_text", {
+        scan_desktopimgdownldr_deob_text(deobfuscated, env);
+    });
+    scan_step!("process_url_arguments", {
+        scan_process_url_arguments(deobfuscated, env);
+    });
+    scan_step!("url_variable_assignments", {
+        scan_url_variable_assignments(deobfuscated, env);
+    });
+    scan_step!("registry_url_values", {
+        scan_registry_url_values(deobfuscated, env);
+    });
+    scan_step!("echoed_vbs_xmlhttp_deob_text", {
+        scan_echoed_vbs_xmlhttp_deob_text(deobfuscated, env);
+    });
+    scan_step!("copied_curl_alias_deob_text", {
+        scan_copied_curl_alias_deob_text(deobfuscated, env);
+    });
+    scan_step!("curl_style_compact_flags_deob_text", {
+        scan_curl_style_compact_flags_deob_text(deobfuscated, env);
+    });
+    scan_step!("echoed_curl_deob_text", {
+        scan_echoed_curl_deob_text(deobfuscated, env);
+    });
+    scan_step!("curl_redirect_deob_text", {
+        scan_curl_redirect_deob_text(deobfuscated, env);
+    });
+    scan_step!("curl_deob_text", {
+        scan_curl_deob_text(deobfuscated, env);
+    });
+    scan_step!("wget_deob_text", {
+        scan_wget_deob_text(deobfuscated, env);
+    });
+    scan_step!("certutil_urlcache_deob_text", {
+        scan_certutil_urlcache_deob_text(deobfuscated, env);
+    });
+    scan_step!("damaged_scheme_download_urls", {
+        scan_damaged_scheme_download_urls(deobfuscated, env);
+    });
+    scan_step!("ps_replace_chain_urls", {
+        scan_ps_replace_chain_urls(deobfuscated, env);
+    });
+    scan_step!("ps_bare_url_downloads", {
+        scan_ps_bare_url_downloads(deobfuscated, env);
+    });
+    scan_step!("ps_char_index_extractor_urls", {
+        scan_ps_char_index_extractor_urls(deobfuscated, env);
+    });
+    scan_step!("js_fromcharcode_urls", {
+        scan_js_fromcharcode_urls(deobfuscated, env);
+    });
+    scan_step!("js_unescape_urls", {
+        scan_js_unescape_urls(deobfuscated, env);
+    });
+    scan_step!("extrac32_self_extract", {
+        scan_extrac32_self_extract(deobfuscated, env);
+    });
+    scan_step!("ps_var_socket_connect", {
+        scan_ps_var_socket_connect(deobfuscated, env);
+    });
+    scan_step!("resolved_deob_var_fragment_urls", {
+        scan_resolved_deob_var_fragment_urls(deobfuscated, env);
+    });
+
+    scan_step!("url_sweep", {
+        // Build a set of URLs already known
+        let known = env.known_extracted_urls();
+
+        // Sweep
+        let mut seen_new: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for caps in URL_RE.captures_iter(deobfuscated) {
+            let Some(m) = caps.get(1) else { continue };
+            let mut url = m.as_str().to_string();
+            // Trim common trailing punctuation that the regex's terminator class missed
+            while let Some(last) = url.chars().last() {
+                if matches!(
+                    last,
+                    ',' | '.' | ';' | ':' | ')' | ']' | '}' | '"' | '\'' | '!' | '?' | '\\'
+                ) {
+                    url.pop();
+                } else {
+                    break;
+                }
+            }
+            if url.len() < 8 {
+                continue;
+            } // http://x is the minimum sensible URL
+            if let Some(normalized) = normalize_liberal_url_token(&url) {
+                url = normalized;
+            }
+            if is_noise_url(&url) {
+                continue;
+            }
+            if is_known_or_known_query_prefix(&known, &url) {
+                continue;
+            }
+            if !seen_new.insert(url.clone()) {
+                continue;
+            }
+
+            // Best-effort: find the line containing this URL for context
+            let line_hint = deobfuscated
+                .lines()
+                .find(|l| l.contains(&url))
+                .map(|l| l.chars().take(200).collect::<String>())
+                .unwrap_or_default();
+            if is_noise_url_context(&line_hint, &url) {
+                continue;
+            }
+
+            env.traits.push(Trait::DownloadInDeobText {
+                src: url,
+                line_hint,
+            });
+        }
+    });
 }
 
 fn scan_resolved_deob_var_fragment_urls(deobfuscated: &str, env: &mut Environment) {
