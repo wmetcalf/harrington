@@ -9655,6 +9655,35 @@ mod ps1_url_extraction_tests {
     }
 
     #[test]
+    fn start_bitstransfer_abbreviated_proxylist_url_is_not_promoted_to_download() {
+        let ps = r#"Start-BitsTransfer -ProxyL http://bits-proxy-short.example:8080 -Source https://bits-proxy-short-actual.example/bits.exe -Destination C:\Temp\bits.exe"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://bits-proxy-short-actual.example/bits.exe"
+                            && dst.as_deref() == Some("C:\\Temp\\bits.exe")
+                )
+            }),
+            "actual BITS source URL was not extracted: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "http://bits-proxy-short.example:8080"
+                )
+            }),
+            "BITS abbreviated ProxyList URL was promoted to Download: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn raw_powershell_downloadfile_variable_url_extracted() {
         let script = r#"$clnt = New-Object System.Net.WebClient
 $url = "http://download.example/tool.exe"

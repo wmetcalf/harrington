@@ -3570,6 +3570,7 @@ fn ps_option_token_matches(token: &str, option: &str) -> bool {
     let min_len = match option {
         "headers" | "body" => 2,
         "useragent" => 5,
+        "proxylist" => 6,
         _ => option.len(),
     };
     token.len() >= min_len && token.len() <= option.len() && option.starts_with(token)
@@ -3603,7 +3604,7 @@ fn ps_non_download_option_before_value(before_value: &str) -> bool {
     let option = option.trim_end_matches(['=', ':']);
     ps_option_token_matches(&option.to_ascii_lowercase(), "-body")
         || option.eq_ignore_ascii_case("-proxy")
-        || option.eq_ignore_ascii_case("-proxylist")
+        || ps_option_token_matches(&option.to_ascii_lowercase(), "-proxylist")
         || ps_option_token_matches(&option.to_ascii_lowercase(), "-useragent")
 }
 
