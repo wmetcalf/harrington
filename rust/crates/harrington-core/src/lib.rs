@@ -18013,6 +18013,32 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_variable_member_fromcharcode_bind_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let chars = "https://char-member-var-bind-js.example/p"
+            .bytes()
+            .map(|b| b.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!(
+            r#"var m = "from" + "CharCode"; var u = String[m].bind(String)({chars}); eval(u)"#
+        )
+        .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://char-member-var-bind-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS variable member fromCharCode.bind URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_variable_member_fromcharcode_call_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let chars = "https://char-member-var-call-js.example/p"
