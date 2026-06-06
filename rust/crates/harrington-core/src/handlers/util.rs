@@ -71,22 +71,29 @@ pub(crate) fn flag_url_value_after(
 }
 
 pub(crate) fn attached_flag_value<'a>(token: &'a str, flags: &[&str]) -> Option<&'a str> {
-    let lower = token.to_ascii_lowercase();
     for flag in flags {
-        let flag = flag.to_ascii_lowercase();
         for separator in [':', '='] {
-            let prefix = format!("{flag}{separator}");
-            let Some(rest) = lower.strip_prefix(&prefix) else {
+            let Some(rest) = strip_ascii_case_prefix(token, flag) else {
                 continue;
             };
-            let offset = token.len() - rest.len();
-            let value = &token[offset..];
+            let Some(value) = rest.strip_prefix(separator) else {
+                continue;
+            };
             if !value.is_empty() {
                 return Some(value);
             }
         }
     }
     None
+}
+
+fn strip_ascii_case_prefix<'a>(token: &'a str, prefix: &str) -> Option<&'a str> {
+    let prefix_len = prefix.len();
+    if token.len() < prefix_len {
+        return None;
+    }
+    let (head, tail) = token.split_at(prefix_len);
+    head.eq_ignore_ascii_case(prefix).then_some(tail)
 }
 
 pub(crate) fn normalize_url_like_token(token: &str) -> Option<String> {
