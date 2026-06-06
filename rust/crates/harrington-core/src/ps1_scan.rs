@@ -1386,9 +1386,9 @@ fn expand_ps_dot_replace(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut matches = Vec::new();
     let mut start = 0;
-    while let Some(rel) = text[start..].find('\'') {
+    while let Some(rel) = text[start..].find(['\'', '"']) {
         let literal_start = start + rel;
-        let Some((literal_end, haystack)) = parse_ps_single_quoted_literal(text, literal_start)
+        let Some((literal_end, haystack)) = parse_ps_static_quoted_literal(text, literal_start)
         else {
             start = literal_start + 1;
             continue;
@@ -1419,7 +1419,7 @@ fn expand_ps_dot_replace(text: &str) -> String {
             continue;
         }
         pos = skip_ascii_ws(bytes, pos + 1);
-        let Some((needle_end, needle)) = parse_ps_single_quoted_literal(text, pos) else {
+        let Some((needle_end, needle)) = parse_ps_static_quoted_literal(text, pos) else {
             start = literal_end;
             continue;
         };
@@ -1429,7 +1429,7 @@ fn expand_ps_dot_replace(text: &str) -> String {
             continue;
         }
         pos = skip_ascii_ws(bytes, pos + 1);
-        let Some((repl_end, repl)) = parse_ps_single_quoted_literal(text, pos) else {
+        let Some((repl_end, repl)) = parse_ps_static_quoted_literal(text, pos) else {
             start = literal_end;
             continue;
         };
