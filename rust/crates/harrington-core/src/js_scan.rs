@@ -2179,12 +2179,9 @@ fn consume_js_array_join_chain(
     bindings: &HashMap<String, String>,
     arrays: &HashMap<String, Vec<String>>,
 ) -> Option<(usize, String)> {
-    if let Some((concat_end, concat_parts)) =
-        consume_js_concat_chain(text, idx, parts.clone(), bindings, arrays)
-    {
-        idx = concat_end;
-        parts = concat_parts;
-    }
+    let (concat_end, concat_parts) = consume_js_concat_chain(text, idx, parts, bindings, arrays)?;
+    idx = concat_end;
+    parts = concat_parts;
 
     if let Some((slice_end, sliced)) = consume_js_slice_call(text, idx, &parts) {
         idx = slice_end;
@@ -2200,12 +2197,10 @@ fn consume_js_array_join_chain(
 
     let mut after_reverse = consume_js_no_arg_method(text, idx, "reverse")?;
     parts.reverse();
-    if let Some((concat_end, concat_parts)) =
-        consume_js_concat_chain(text, after_reverse, parts.clone(), bindings, arrays)
-    {
-        after_reverse = concat_end;
-        parts = concat_parts;
-    }
+    let (concat_end, concat_parts) =
+        consume_js_concat_chain(text, after_reverse, parts, bindings, arrays)?;
+    after_reverse = concat_end;
+    parts = concat_parts;
     if let Some((slice_end, sliced)) = consume_js_slice_call(text, after_reverse, &parts) {
         after_reverse = slice_end;
         parts = sliced;
@@ -2224,12 +2219,10 @@ fn consume_js_concat_chain(
     bindings: &HashMap<String, String>,
     arrays: &HashMap<String, Vec<String>>,
 ) -> Option<(usize, Vec<String>)> {
-    let mut consumed = false;
     while let Some(open) = consume_js_method_open(text, idx, "concat") {
         let mut cursor = skip_ascii_ws(text, open + 1);
         if text.as_bytes().get(cursor) == Some(&b')') {
             idx = cursor + 1;
-            consumed = true;
             continue;
         }
 
@@ -2260,14 +2253,13 @@ fn consume_js_concat_chain(
                 }
                 Some(b')') => {
                     idx = cursor + 1;
-                    consumed = true;
                     break;
                 }
                 _ => return None,
             }
         }
     }
-    consumed.then_some((idx, parts))
+    Some((idx, parts))
 }
 
 fn consume_js_slice_call(text: &str, idx: usize, parts: &[String]) -> Option<(usize, Vec<String>)> {
