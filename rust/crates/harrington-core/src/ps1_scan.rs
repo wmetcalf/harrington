@@ -474,6 +474,14 @@ static FORMAT_CONCAT_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
 static FORMAT_ARG_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"'([^']*)'|"([^"]*)""#).expect("format arg literal"));
 
+#[allow(clippy::expect_used)]
+static STRING_FORMAT_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)\[(?:System\.)?String\]::Format\s*\(\s*(?:'([^']*)'|"([^"]*)")\s*,\s*((?:(?:'[^']*'|"[^"]*")\s*,\s*)*(?:'[^']*'|"[^"]*"))\s*\)"#,
+    )
+    .expect("string format")
+});
+
 fn expand_format_literals(text: &str) -> String {
     let concat_matches: Vec<(usize, usize, String)> = FORMAT_CONCAT_LITERAL_RE
         .captures_iter(text)
@@ -523,12 +531,50 @@ fn expand_format_literals(text: &str) -> String {
     out
 }
 
-fn format_format_literal(mut template: String, args: &str) -> Option<String> {
+fn format_format_literal(template: String, args: &str) -> Option<String> {
+    let template = format_format_literal_value(template, args)?;
+    Some(format!("'{}'", template))
+}
+
+fn format_format_literal_value(mut template: String, args: &str) -> Option<String> {
+    let mut arg_count = 0usize;
     for (idx, part) in FORMAT_ARG_RE.captures_iter(args).enumerate() {
+        arg_count += 1;
+        if arg_count > 128 {
+            return None;
+        }
         let value = part.get(1).or_else(|| part.get(2))?.as_str();
         template = template.replace(&format!("{{{idx}}}"), value);
+        if template.len() > 8192 {
+            return None;
+        }
     }
-    Some(format!("'{}'", template))
+    Some(template)
+}
+
+fn expand_ps_string_format_static(text: &str) -> String {
+    let matches: Vec<(usize, usize, String)> = STRING_FORMAT_RE
+        .captures_iter(text)
+        .filter_map(|caps| {
+            let full = caps.get(0)?;
+            let template = caps.get(1).or_else(|| caps.get(2))?.as_str();
+            if template.len() > 8192 {
+                return None;
+            }
+            let args = caps.get(3)?.as_str();
+            let formatted = format_format_literal_value(template.to_string(), args)?;
+            Some((
+                full.start(),
+                full.end(),
+                format!("'{}'", formatted.replace('\'', "''")),
+            ))
+        })
+        .collect();
+    let mut out = text.to_string();
+    for (start, end, replacement) in matches.into_iter().rev() {
+        out.replace_range(start..end, &replacement);
+    }
+    out
 }
 
 #[allow(clippy::expect_used)]
@@ -2498,6 +2544,7 @@ fn expand_obfuscation(text: &str) -> String {
         out = expand_string_concat(&out);
         out = expand_double_string_concat(&out);
         out = expand_format_literals(&out);
+        out = expand_ps_string_format_static(&out);
         out = expand_gzip_function_base64_variables(&out);
         out = expand_gzip_base64_literals(&out);
         out = expand_json_script_base64(&out);
