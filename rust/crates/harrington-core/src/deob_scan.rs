@@ -2415,6 +2415,9 @@ fn desktopimgdownldr_lockscreen_url_after(tokens: &[String], start: usize) -> Op
 }
 
 fn scan_url_variable_assignments(deobfuscated: &str, env: &mut Environment) {
+    if !has_url_variable_assignment_atom(deobfuscated) {
+        return;
+    }
     let mut known: std::collections::HashSet<String> = env
         .traits
         .iter()
@@ -2466,6 +2469,50 @@ fn scan_url_variable_assignments(deobfuscated: &str, env: &mut Environment) {
                 &mut known,
             );
         }
+    }
+}
+
+fn has_url_variable_assignment_atom(text: &str) -> bool {
+    if !text.as_bytes().contains(&b'=') {
+        return false;
+    }
+    if [b"http:".as_slice(), b"https:", b"ftp:", b"file:"]
+        .iter()
+        .any(|atom| contains_ascii_case_insensitive_atom(text, atom))
+    {
+        return true;
+    }
+    contains_ascii_case_insensitive_atom(text, b"url") && text.contains('/') && text.contains('.')
+}
+
+#[cfg(test)]
+mod url_variable_assignment_prefilter_tests {
+    use super::has_url_variable_assignment_atom;
+
+    #[test]
+    fn prefilter_allows_cmd_and_powershell_url_assignments() {
+        assert!(has_url_variable_assignment_atom(
+            r#"set "u=https://evil.example/p""#
+        ));
+        assert!(has_url_variable_assignment_atom(
+            r#"$u = 'ftp://evil.example/p'"#
+        ));
+        assert!(has_url_variable_assignment_atom(
+            r#"set payloadUrl=evil.example/payload.exe"#
+        ));
+        assert!(has_url_variable_assignment_atom(
+            r#"$payloadUrl = "evil.example/payload.exe""#
+        ));
+    }
+
+    #[test]
+    fn prefilter_blocks_generic_url_words_without_assignment() {
+        assert!(!has_url_variable_assignment_atom(
+            "echo https://evil.example/p"
+        ));
+        assert!(!has_url_variable_assignment_atom(
+            "set name=not-a-url && echo url"
+        ));
     }
 }
 
