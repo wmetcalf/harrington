@@ -26,13 +26,17 @@ pub fn h_certutil(raw: &str, env: &mut Environment) {
     }
 
     // -decode SRC DST  /  -decodehex SRC DST
-    let (method, flag) = if let Some(p) = lower.iter().position(|t| t == "-decode") {
-        (DecodeKind::Base64, p)
-    } else if let Some(p) = lower.iter().position(|t| t == "-decodehex") {
-        (DecodeKind::Hex, p)
-    } else {
-        return;
-    };
+    let (method, flag) =
+        if let Some(p) = lower.iter().position(|t| t == "-decode" || t == "/decode") {
+            (DecodeKind::Base64, p)
+        } else if let Some(p) = lower
+            .iter()
+            .position(|t| t == "-decodehex" || t == "/decodehex")
+        {
+            (DecodeKind::Hex, p)
+        } else {
+            return;
+        };
 
     let Some((src, dst)) = certutil_decode_paths_after_flag(&tokens, flag + 1) else {
         return;

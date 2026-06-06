@@ -7784,6 +7784,38 @@ mod certutil_tests {
     }
 
     #[test]
+    fn certutil_slash_decode_writes_fs_entry() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "src.b64".to_string(),
+            FsEntry::Content {
+                content: b64("slash decode").into_bytes(),
+                append: false,
+            },
+        );
+
+        interpret_line("certutil /decode /f src.b64 dst.bin", &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::CertutilDecode { src, dst, src_resolved }
+                    if src == "src.b64" && dst == "dst.bin" && *src_resolved
+            )),
+            "certutil /decode paths were not parsed: {:?}",
+            env.traits
+        );
+        assert!(
+            matches!(
+                env.modified_filesystem.get("dst.bin"),
+                Some(FsEntry::Decoded { content, .. }) if content == b"slash decode"
+            ),
+            "dst.bin was not decoded from /decode: {:?}",
+            env.modified_filesystem.get("dst.bin")
+        );
+    }
+
+    #[test]
     fn certutil_decodehex_accepts_offset_dump_rows() {
         let mut env = Environment::new(&Config::default());
         env.modified_filesystem.insert(
@@ -7812,6 +7844,38 @@ mod certutil_tests {
                 Some(FsEntry::Decoded { content, .. }) if content == b"hello world"
             ),
             "dst.bin was not decoded from offset hex dump: {:?}",
+            env.modified_filesystem.get("dst.bin")
+        );
+    }
+
+    #[test]
+    fn certutil_slash_decodehex_accepts_offset_dump_rows() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "src.hex".to_string(),
+            FsEntry::Content {
+                content: b"0000  73 6c 61 73 68  |slash|\r\n0005  20 68 65 78  | hex|\r\n".to_vec(),
+                append: false,
+            },
+        );
+
+        interpret_line("certutil /decodehex src.hex dst.bin", &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::CertutilDecode { src, dst, src_resolved }
+                    if src == "src.hex" && dst == "dst.bin" && *src_resolved
+            )),
+            "certutil /decodehex trait missing: {:?}",
+            env.traits
+        );
+        assert!(
+            matches!(
+                env.modified_filesystem.get("dst.bin"),
+                Some(FsEntry::Decoded { content, .. }) if content == b"slash hex"
+            ),
+            "dst.bin was not decoded from /decodehex offset dump: {:?}",
             env.modified_filesystem.get("dst.bin")
         );
     }
