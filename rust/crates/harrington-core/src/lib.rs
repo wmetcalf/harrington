@@ -14327,6 +14327,31 @@ powershll.exe -mmand"(Nw-ject-ypame Sstem.Net.Welint).Dwnloadile('https://raw.ex
     }
 
     #[test]
+    fn copied_curl_alias_proxy_url_is_not_download_source() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::WindowsUtilManip {
+            cmd: "copy c:\\windows\\system32\\curl.exe vjik.exe".to_string(),
+            src: "c:\\windows\\system32\\curl.exe".to_string(),
+            dst: "vjik.exe".to_string(),
+        });
+        crate::deob_scan::scan_deob_text(
+            r#"vjik --PROXY http://curl-copy-proxy.example:8080 --OUTPUT NUL"#,
+            &mut env,
+        );
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "http://curl-copy-proxy.example:8080"
+                )
+            }),
+            "copied curl proxy URL was promoted as structured download: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn copied_curl_alias_schemeless_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         env.traits.push(Trait::WindowsUtilManip {
