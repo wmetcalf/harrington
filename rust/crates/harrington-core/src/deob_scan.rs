@@ -485,7 +485,7 @@ fn scan_bitsadmin_deob_text(deobfuscated: &str, env: &mut Environment) {
 
         for bits_match in BITSADMIN_WORD_RE.find_iter(line) {
             let tail = &line[bits_match.start()..];
-            let segment = tail.split('&').next().unwrap_or(tail);
+            let segment = first_unquoted_ampersand_segment(tail);
             let tokens = split_words(segment);
             let lower_tokens: Vec<String> = tokens.iter().map(|s| s.to_ascii_lowercase()).collect();
             if !lower_tokens
@@ -524,6 +524,25 @@ fn scan_bitsadmin_deob_text(deobfuscated: &str, env: &mut Environment) {
             }
         }
     }
+}
+
+fn first_unquoted_ampersand_segment(text: &str) -> &str {
+    let mut in_dq = false;
+    let mut in_sq = false;
+    for (idx, c) in text.char_indices() {
+        if c == '"' && !in_sq {
+            in_dq = !in_dq;
+            continue;
+        }
+        if c == '\'' && !in_dq {
+            in_sq = !in_sq;
+            continue;
+        }
+        if c == '&' && !in_dq && !in_sq {
+            return &text[..idx];
+        }
+    }
+    text
 }
 
 fn scan_python_requests_get_deob_text(deobfuscated: &str, env: &mut Environment) {

