@@ -3976,7 +3976,7 @@ fn ps_downloadfile_calls(text: &str) -> Vec<(String, Option<String>)> {
         return Vec::new();
     }
 
-    let bindings = ps_string_bindings(text);
+    let mut bindings = None;
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for caps in DOWNLOADFILE_CALL_RE.captures_iter(text) {
@@ -3987,16 +3987,30 @@ fn ps_downloadfile_calls(text: &str) -> Vec<(String, Option<String>)> {
         let Some(src_arg) = parts.first() else {
             continue;
         };
-        let Some(url) = ps_url_arg(src_arg, &bindings) else {
+        let Some(url) = ps_literal_url_arg(src_arg).or_else(|| {
+            let bindings = bindings.get_or_insert_with(|| ps_string_bindings(text));
+            ps_url_arg(src_arg, bindings)
+        }) else {
             continue;
         };
         if !seen.insert(url.clone()) {
             continue;
         }
-        let dst = parts.get(1).and_then(|arg| ps_string_arg(arg, &bindings));
+        let dst = parts.get(1).and_then(|arg| {
+            ps_literal_arg(arg).or_else(|| {
+                let bindings = bindings.get_or_insert_with(|| ps_string_bindings(text));
+                ps_variable_arg(arg, bindings)
+            })
+        });
         out.push((url, dst));
     }
     out
+}
+
+fn ps_literal_url_arg(arg: &str) -> Option<String> {
+    ps_literal_arg(arg)
+        .filter(|value| crate::deob_scan::looks_like_liberal_url(value))
+        .and_then(|value| crate::deob_scan::normalize_liberal_url_token(&value))
 }
 
 fn ps_url_arg(arg: &str, bindings: &std::collections::HashMap<String, String>) -> Option<String> {
