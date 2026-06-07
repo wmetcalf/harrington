@@ -10811,12 +10811,22 @@ POW%!A%RSH%!A%LL.%!A%X%!A% -N^O^P -%!A%X%!A%C B^YPA^SS -NO^NI [BYT%!A%[]];$XCZM=
         assert!(
             report.traits.iter().any(|t| {
                 matches!(t,
+                    Trait::Download { src, .. }
+                        if src == "https://payload.example/a.png"
+                )
+            }),
+            "raw marker PowerShell URL was not typed as Download: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(t,
                     Trait::DownloadInDeobText { src, line_hint }
                         if src == "https://payload.example/a.png"
                         && line_hint == "raw-marker-powershell"
                 )
             }),
-            "raw marker PowerShell URL missed: {:?}",
+            "raw marker PowerShell URL was double-emitted as generic: {:?}",
             report.traits
         );
     }

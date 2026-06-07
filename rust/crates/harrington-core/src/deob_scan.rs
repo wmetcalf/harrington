@@ -6983,6 +6983,26 @@ pub fn scan_raw_marker_powershell_urls(input: &[u8], env: &mut Environment) {
         return;
     }
 
+    let ps_payload = normalized
+        .lines()
+        .filter(|line| {
+            let line_lower = line.to_ascii_lowercase();
+            line_lower.contains("powershell")
+                || line_lower.contains("download")
+                || line_lower.contains("adstring")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !ps_payload.is_empty() {
+        let normalized_payload = ps_payload.as_bytes().to_vec();
+        let mut payload_env = env.clone();
+        let traits_before = payload_env.traits.len();
+        payload_env.all_extracted_ps1 = vec![normalized_payload];
+        crate::ps1_scan::scan_ps1_payloads(&mut payload_env);
+        env.traits
+            .extend(payload_env.traits.into_iter().skip(traits_before));
+    }
+
     let known = env.known_extracted_urls();
     let mut seen = std::collections::HashSet::new();
     for line in normalized.lines() {
