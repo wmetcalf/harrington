@@ -2797,11 +2797,19 @@ pub fn analyze_with_path(
     analyze_inner(input, cfg, Some(file_path.as_ref().to_path_buf()))
 }
 
-fn normalize_extracted_ps1_payloads(payloads: &[Vec<u8>]) -> Vec<String> {
+fn normalize_extracted_ps1_payloads(
+    payloads: &[Vec<u8>],
+    normalized_cache: &std::collections::HashMap<Vec<u8>, String>,
+) -> Vec<String> {
     if payloads.len() <= 1 {
         return payloads
             .iter()
-            .map(|bytes| ps1_scan::normalize_ps1_payload(bytes))
+            .map(|bytes| {
+                normalized_cache
+                    .get(bytes.as_slice())
+                    .cloned()
+                    .unwrap_or_else(|| ps1_scan::normalize_ps1_payload(bytes))
+            })
             .collect();
     }
 
@@ -2810,6 +2818,10 @@ fn normalize_extracted_ps1_payloads(payloads: &[Vec<u8>]) -> Vec<String> {
         std::collections::HashMap::with_capacity(payloads.len());
     for bytes in payloads {
         let key = bytes.as_slice();
+        if let Some(cached) = normalized_cache.get(key) {
+            normalized.push(cached.clone());
+            continue;
+        }
         if let Some(cached) = cache.get(key) {
             normalized.push(cached.clone());
             continue;
@@ -3045,7 +3057,8 @@ fn analyze_inner(input: &[u8], cfg: &Config, file_path: Option<std::path::PathBu
     });
     dedup_traits(&mut env.traits, cfg.max_traits_per_kind);
     profile_mark!("filter_and_dedup");
-    let extracted_ps1_normalized = normalize_extracted_ps1_payloads(&env.all_extracted_ps1);
+    let extracted_ps1_normalized =
+        normalize_extracted_ps1_payloads(&env.all_extracted_ps1, &env.ps1_normalized_cache);
     profile_mark!("normalize_ps1_payloads");
     // Surface decoded/extracted PowerShell payloads in the deob with a
     // banner so analysts can read the reconstructed PS body — critical
@@ -21050,7 +21063,8 @@ mod ps1_payload_normalization_tests {
         let other = br#"$v = "hxxp://example.test/b";"#.to_vec();
         let payloads = vec![payload.clone(), other, payload];
 
-        let normalized = normalize_extracted_ps1_payloads(&payloads);
+        let normalized =
+            normalize_extracted_ps1_payloads(&payloads, &std::collections::HashMap::new());
 
         assert_eq!(normalized.len(), payloads.len());
         assert_eq!(normalized[0], normalized[2]);

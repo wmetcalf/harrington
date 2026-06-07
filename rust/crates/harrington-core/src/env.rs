@@ -168,6 +168,10 @@ pub struct Environment {
     pub all_extracted_cmd: Vec<String>,
     /// Cumulative list of all extracted PowerShell payloads across the whole run.
     pub all_extracted_ps1: Vec<Vec<u8>>,
+    /// Normalized PowerShell payload cache for payloads already scanned in this run.
+    pub ps1_normalized_cache: HashMap<Vec<u8>, String>,
+    /// Whether PS payload scanning should populate/use normalized report-cache text.
+    pub ps1_scan_cache_normalized: bool,
     /// Cumulative list of all extracted VBScript payloads across the whole run.
     pub all_extracted_vbs: Vec<Vec<u8>>,
     /// Cumulative list of all extracted JScript payloads across the whole run.
@@ -248,6 +252,8 @@ impl Default for Environment {
             exec_jscript: Vec::new(),
             all_extracted_cmd: Vec::new(),
             all_extracted_ps1: Vec::new(),
+            ps1_normalized_cache: HashMap::new(),
+            ps1_scan_cache_normalized: true,
             all_extracted_vbs: Vec::new(),
             all_extracted_jscript: Vec::new(),
             recovered_pe: Vec::new(),

