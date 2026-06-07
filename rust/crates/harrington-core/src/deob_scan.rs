@@ -640,8 +640,8 @@ fn scan_python_requests_get_deob_text(deobfuscated: &str, env: &mut Environment)
                 emit_python_download(&url, deobfuscated, env, &mut known);
             }
         });
-        profile_python_group!("direct_request_get", {
-            for url in find_python_requests_request_get_literals(deobfuscated) {
+        profile_python_group!("direct_request", {
+            for url in find_python_requests_request_literals(deobfuscated) {
                 emit_python_download(&url, deobfuscated, env, &mut known);
             }
         });
@@ -666,7 +666,7 @@ fn scan_python_requests_get_deob_text(deobfuscated: &str, env: &mut Environment)
                 for url in find_call_url_literals(&decoded, &decoded_urlopen_name_refs) {
                     emit_python_download(&url, &decoded, env, &mut known);
                 }
-                for url in find_python_requests_request_get_literals(&decoded) {
+                for url in find_python_requests_request_literals(&decoded) {
                     emit_python_download(&url, &decoded, env, &mut known);
                 }
                 for (url, dst) in find_python_urlretrieve_literals(&decoded) {
@@ -943,7 +943,7 @@ fn collect_python_requests_bound_session_method_aliases(
         .collect()
 }
 
-fn find_python_requests_request_get_literals(text: &str) -> Vec<String> {
+fn find_python_requests_request_literals(text: &str) -> Vec<String> {
     let mut found = Vec::new();
     let mut names = vec!["requests.request".to_string()];
     names.extend(collect_python_requests_call_aliases(text, "request"));
@@ -987,7 +987,7 @@ fn find_python_requests_request_get_literals(text: &str) -> Vec<String> {
 
     for (open, close) in call_sites {
         if let Some(url) =
-            python_requests_request_get_url(&text[open + 1..close], &url_bindings, &string_bindings)
+            python_requests_request_url(&text[open + 1..close], &url_bindings, &string_bindings)
         {
             found.push(url);
         }
@@ -996,13 +996,13 @@ fn find_python_requests_request_get_literals(text: &str) -> Vec<String> {
     found
 }
 
-fn python_requests_request_get_url(
+fn python_requests_request_url(
     args: &str,
     url_bindings: &HashMap<String, String>,
     string_bindings: &HashMap<String, String>,
 ) -> Option<String> {
     let parts = split_python_top_level_args(args);
-    if !python_requests_request_method_is_get(&parts, string_bindings) {
+    if !python_requests_request_method_is_supported(&parts, string_bindings) {
         return None;
     }
 
@@ -1023,17 +1023,24 @@ fn python_requests_request_get_url(
         .and_then(|arg| python_url_arg_expr(arg, url_bindings))
 }
 
-fn python_requests_request_method_is_get(
+fn python_requests_request_method_is_supported(
     parts: &[&str],
     bindings: &HashMap<String, String>,
 ) -> bool {
     if let Some(method) = python_keyword_string_arg(parts, "method", bindings) {
-        return method.eq_ignore_ascii_case("GET");
+        return is_python_requests_download_method(&method);
     }
     parts
         .first()
         .and_then(|arg| python_string_arg(arg, bindings))
-        .is_some_and(|method| method.eq_ignore_ascii_case("GET"))
+        .is_some_and(|method| is_python_requests_download_method(&method))
+}
+
+fn is_python_requests_download_method(method: &str) -> bool {
+    matches!(
+        method.to_ascii_uppercase().as_str(),
+        "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS"
+    )
 }
 
 fn python_arg_is_keyword(arg: &str, keyword: &str) -> bool {

