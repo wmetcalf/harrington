@@ -388,17 +388,32 @@ fn join_vbs_line_continuations(text: &str) -> String {
 fn expand_vbs_static_execute(text: &str) -> String {
     const MAX_EXECUTE_EXPANSION_BYTES: usize = 1024 * 1024;
 
-    let empty_bindings = HashMap::new();
-    let empty_arrays = HashMap::new();
+    let mut bindings: VbsStringBindings = HashMap::new();
+    let mut array_bindings: VbsArrayBindings = HashMap::new();
     let mut expanded = Vec::new();
     let mut expanded_bytes = 0usize;
 
     for line in text.lines() {
         for statement in split_vbs_statements(line) {
+            if let Some(caps) = VBS_STRING_ASSIGN_RE.captures(statement) {
+                if let (Some(name), Some(value)) = (caps.get(1), caps.get(2)) {
+                    let key = name.as_str().to_ascii_lowercase();
+                    if let Some(values) =
+                        parse_vbs_array_values(value.as_str(), &bindings, &array_bindings)
+                    {
+                        array_bindings.insert(key, values);
+                    } else if let Some(value) =
+                        eval_vbs_string_expr(value.as_str(), &bindings, &array_bindings)
+                    {
+                        bindings.insert(key, value);
+                    }
+                }
+            }
+
             let Some(expr) = vbs_execute_expr(statement) else {
                 continue;
             };
-            let Some(decoded) = eval_vbs_string_expr(expr, &empty_bindings, &empty_arrays) else {
+            let Some(decoded) = eval_vbs_string_expr(expr, &bindings, &array_bindings) else {
                 continue;
             };
             if decoded.trim().is_empty() {
