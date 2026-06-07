@@ -284,6 +284,10 @@ const NOISE_URL_SUBSTRINGS: &[&str] = &[
     "crl.digicert.com",
     "ocsp.usertrust.com",
     "crl.usertrust.com",
+    "www.usertrust.com",
+    "ocsp2.globalsign.com",
+    "secure.globalsign.com/cacert/",
+    "globalsign.com/repository/",
     "crl.microsoft.com",
     "ocsp.microsoft.com",
     "microsoft.com/pki/certs/",
@@ -324,6 +328,9 @@ const NOISE_URL_SUBSTRINGS: &[&str] = &[
     "xmp.gettyimages.com/",
     "ns.useplus.org/",
     "red-gate.com/products/dotnet-development/smartassembly",
+    "chiark.greenend.org.uk/~sgtatham/putty/",
+    "tempuri.org/",
+    "autoitscript.com/autoit3/",
     // Stock photo / template attribution
     "istockphoto.com/legal/license-agreement",
     "istockphoto.com/photo/license",
@@ -9212,6 +9219,14 @@ mod noise_ip_tests {
         assert!(super::is_noise_url("http://logo.verisign.com/vslogo.gif"));
         assert!(super::is_noise_url("http://ts-ocsp.ws.symantec.com"));
         assert!(super::is_noise_url("https://d.symcb.com/cps"));
+        assert!(super::is_noise_url("http://www.usertrust.com1"));
+        assert!(super::is_noise_url("http://ocsp2.globalsign.com/rootr306"));
+        assert!(super::is_noise_url(
+            "https://www.globalsign.com/repository/0"
+        ));
+        assert!(super::is_noise_url(
+            "http://secure.globalsign.com/cacert/gstimestampingsha2g2.crt0"
+        ));
     }
 
     #[test]
@@ -9231,6 +9246,13 @@ mod noise_ip_tests {
             "http://www.red-gate.com/products/dotnet-development/smartassembly/?utm_source=x"
         ));
         assert!(super::is_noise_url("http://sawebservice.red-gate.com/"));
+        assert!(super::is_noise_url(
+            "https://www.chiark.greenend.org.uk/~sgtatham/putty/0"
+        ));
+        assert!(super::is_noise_url(
+            "http://tempuri.org/Database1DataSet.xsd"
+        ));
+        assert!(super::is_noise_url("https://www.autoitscript.com/autoit3/"));
     }
 
     #[test]
