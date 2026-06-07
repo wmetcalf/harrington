@@ -13222,6 +13222,20 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
     }
 
     #[test]
+    fn resolved_deob_var_fragment_gate_requires_url_substring_shape() {
+        assert!(!crate::deob_scan::has_resolved_deob_var_fragment_shape(""));
+        assert!(!crate::deob_scan::has_resolved_deob_var_fragment_shape(
+            "echo https://plain.example/payload"
+        ));
+        assert!(!crate::deob_scan::has_resolved_deob_var_fragment_shape(
+            "echo %A:~0,1%%B:~0,1%"
+        ));
+        assert!(crate::deob_scan::has_resolved_deob_var_fragment_shape(
+            r#"echo "%A:~0,4%://%H:~0,11%/stage""#
+        ));
+    }
+
+    #[test]
     fn registry_url_value_emits_typed_trait_without_generic_duplicate() {
         let mut env = crate::env::Environment::new(&Config::default());
         let url = "http://www.relevantknowledge.com/confirmuninstall.aspx?siteid=2600";

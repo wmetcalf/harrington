@@ -6235,6 +6235,10 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
 }
 
 fn scan_resolved_deob_var_fragment_urls(deobfuscated: &str, env: &mut Environment) {
+    if !has_resolved_deob_var_fragment_shape(deobfuscated) {
+        return;
+    }
+
     let known = env.known_extracted_urls();
     let mut scratch = env.clone();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -6292,6 +6296,17 @@ fn scan_resolved_deob_var_fragment_urls(deobfuscated: &str, env: &mut Environmen
             }
         }
     }
+}
+
+pub(crate) fn has_resolved_deob_var_fragment_shape(deobfuscated: &str) -> bool {
+    if !deobfuscated.contains('%') || !deobfuscated.contains("://") || !deobfuscated.contains(":~")
+    {
+        return false;
+    }
+
+    deobfuscated.lines().any(|line| {
+        line.len() <= 16 * 1024 && line.contains('%') && line.contains("://") && line.contains(":~")
+    })
 }
 
 fn collect_resolved_quoted_var_fragment_inputs(
