@@ -742,6 +742,12 @@ fn python_urlopen_call_names(text: &str) -> Vec<String> {
             names.push(format!("httpx.{method}"));
         }
         names.extend(collect_python_httpx_method_aliases(text, method));
+        names.extend(collect_python_httpx_bound_client_method_aliases(
+            text, method,
+        ));
+        names.extend(collect_python_httpx_bound_client_assigned_method_aliases(
+            text, method,
+        ));
         names.extend(collect_python_requests_method_aliases(text, method));
         names.extend(collect_python_requests_session_method_aliases(text, method));
         names.extend(collect_python_requests_bound_session_method_aliases(
@@ -845,6 +851,76 @@ fn collect_python_httpx_module_aliases(text: &str) -> Vec<String> {
             .filter_map(|caps| caps.get(1).map(|m| m.as_str().to_string())),
     );
     aliases
+}
+
+fn collect_python_httpx_bound_client_method_aliases(
+    text: &str,
+    target_method: &str,
+) -> Vec<String> {
+    collect_python_httpx_bound_client_names(text)
+        .into_iter()
+        .map(|name| format!("{name}.{target_method}"))
+        .collect()
+}
+
+fn collect_python_httpx_bound_client_names(text: &str) -> Vec<String> {
+    if !contains_ascii_case_insensitive_atom(text, b"client") || !text.as_bytes().contains(&b'=') {
+        return Vec::new();
+    }
+
+    #[allow(clippy::expect_used)]
+    static PY_HTTPX_CLIENT_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\.Client\s*\(\s*\)"#,
+        )
+        .expect("python httpx client assignment regex")
+    });
+
+    let module_aliases = collect_python_httpx_module_aliases(text);
+    PY_HTTPX_CLIENT_ASSIGN_RE
+        .captures_iter(text)
+        .take(8)
+        .filter_map(|caps| {
+            let name = caps.get(1)?.as_str();
+            let module = caps.get(2)?.as_str();
+            if module_aliases.iter().any(|known| known == module) {
+                Some(name.to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn collect_python_httpx_bound_client_assigned_method_aliases(
+    text: &str,
+    target_method: &str,
+) -> Vec<String> {
+    if !text.as_bytes().contains(&b'=') {
+        return Vec::new();
+    }
+
+    #[allow(clippy::expect_used)]
+    static PY_HTTPX_BOUND_CLIENT_METHOD_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\.(get|post|put|patch|delete|head|options)\b"#)
+            .expect("python bound httpx client method assignment regex")
+    });
+
+    let clients = collect_python_httpx_bound_client_names(text);
+    PY_HTTPX_BOUND_CLIENT_METHOD_ASSIGN_RE
+        .captures_iter(text)
+        .take(8)
+        .filter_map(|caps| {
+            let alias = caps.get(1)?.as_str();
+            let client = caps.get(2)?.as_str();
+            let method = caps.get(3)?.as_str();
+            if method == target_method && clients.iter().any(|known| known == client) {
+                Some(alias.to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 fn collect_python_requests_method_aliases(text: &str, target_method: &str) -> Vec<String> {
