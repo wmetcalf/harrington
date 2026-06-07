@@ -2932,7 +2932,20 @@ fn decode_js_base64_bytes(encoded: &str) -> Option<Vec<u8>> {
         .chars()
         .filter(|c| !c.is_ascii_whitespace())
         .collect();
-    let decoded = decode_base64_maybe_unpadded(&cleaned)?;
+    let decoded = decode_base64_maybe_unpadded(&cleaned).or_else(|| {
+        if !cleaned.as_bytes().iter().any(|b| matches!(b, b'-' | b'_')) {
+            return None;
+        }
+        let urlsafe = cleaned
+            .chars()
+            .map(|ch| match ch {
+                '-' => '+',
+                '_' => '/',
+                _ => ch,
+            })
+            .collect::<String>();
+        decode_base64_maybe_unpadded(&urlsafe)
+    })?;
     (decoded.len() <= 8192).then_some(decoded)
 }
 
