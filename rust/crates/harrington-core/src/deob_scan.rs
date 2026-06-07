@@ -817,7 +817,7 @@ fn collect_python_requests_assigned_method_aliases(text: &str, target_method: &s
 
     #[allow(clippy::expect_used)]
     static PY_REQUESTS_METHOD_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\.(get|request)\b"#)
+        Regex::new(r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\.(get|post|put|patch|delete|head|options|request)\b"#)
             .expect("python requests method assignment regex")
     });
 

