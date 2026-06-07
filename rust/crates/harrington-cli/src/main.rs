@@ -344,7 +344,7 @@ fn is_url_like_program_token(token: &str) -> bool {
     {
         return true;
     }
-    let Some(slash) = token.find('/') else {
+    let Some(slash) = token.find(['/', '\\']) else {
         return false;
     };
     let first_segment = &token[..slash];
@@ -353,7 +353,10 @@ fn is_url_like_program_token(token: &str) -> bool {
 
 fn is_drive_path(token: &str) -> bool {
     let bytes = token.as_bytes();
-    bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/'
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'/' | b'\\')
 }
 
 /// Safely join `name` onto the canonical `out_dir`, refusing if the result
