@@ -4019,6 +4019,10 @@ mod self_elevation_prefilter_tests {
 fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
+    if !has_defender_evasion_atom(deobfuscated) {
+        return;
+    }
+
     const SECURITY_PRODUCT_PATTERN: &str = r"Trend Micro|Windows Defender|Microsoft Defender|Sophos|Kaspersky|Symantec|McAfee|Avast|AVG|ESET|Malwarebytes|CrowdStrike|SentinelOne|CarbonBlack|Cylance|Bitdefender";
     const SECURITY_SERVICE_PATTERN: &str = r"MBAMService|MBAMScheduler|ekrn|egui|AVP[0-9.]*|KSDE[0-9.]*|McAWFwk|MSK80Service|McAPExe|McBootDelayStartSvc|mccspsvc|mfefire|McMPFSvc|mcpltsvc|McProxy|McODS|mfemms|McAfee SiteAdvisor Service|mfevtp|McNaiAnn|NortonSecurity|SBAMSvc|ZillyaAVAuxSvc|ZillyaAVCoreSvc|QHActiveDefense|avast! Antivirus|avast! Firewall|AVG Antivirus|AntiVirMailService|AntiVirService|Avira\.ServiceHost|AntiVirWebService|AntiVirSchedulerService|vsservppl|ProductAgentService|vsserv|updatesrv|cmdAgent|cmdvirth|DragonUpdater|PEFService|SentinelAgent|CSFalconService";
     const SECURITY_STARTUP_PATTERN: &str = r"AvastUI\.exe|QHSafeTray|Zillya Antivirus|SBAMTray|SBRegRebootCleaner|egui|IseUI|COMODO Internet Security|ClamWin|Avira SystrayStartTrigger|AVGUI\.exe|SUPERAntiSpyware|Malwarebytes|Windows Defender|SecurityHealth|ESET|McAfee|Norton|Symantec";
@@ -4281,6 +4285,133 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
     }
     if ETW_PATCH_RE.is_match(deobfuscated) {
         push("etw-patch", String::new());
+    }
+}
+
+fn has_defender_evasion_atom(text: &str) -> bool {
+    const ATOMS: &[&str] = &[
+        "add-mppreference",
+        "set-mppreference",
+        "windefend",
+        "msmpsvc",
+        "wdnissvc",
+        "wdboot",
+        "wdfilter",
+        "wdnisdrv",
+        "securityhealth",
+        "msmpeng",
+        "nissrv",
+        "mpcmdrun",
+        "windows defender",
+        "windowsdefender",
+        "microsoft defender",
+        "exploitguard",
+        "wintrust\\trust providers\\software publishing",
+        "lowriskfiletypes",
+        "hidezoneinfoonproperties",
+        "savezoneinformation",
+        "advfirewall",
+        "invoke-nullamsi",
+        "amsiinitfailed",
+        "amsiutils",
+        "amsicontext",
+        "amsisession",
+        "amsiscanbuffer",
+        "amsi.dll",
+        "etweventwrite",
+        "system.diagnostics.eventing.eventprovider",
+        "trend micro",
+        "sophos",
+        "kaspersky",
+        "symantec",
+        "mcafee",
+        "avast",
+        "avg",
+        "eset",
+        "malwarebytes",
+        "crowdstrike",
+        "sentinelone",
+        "carbonblack",
+        "cylance",
+        "bitdefender",
+        "mbam",
+        "ekrn",
+        "avp",
+        "ksde",
+        "mcawfwk",
+        "msk80service",
+        "mcapexe",
+        "mcbootdelaystartsvc",
+        "mccspsvc",
+        "mfefire",
+        "mcmpfsvc",
+        "mcpltsvc",
+        "mcproxy",
+        "mcods",
+        "mfemms",
+        "mfevtp",
+        "mcnaiann",
+        "nortonsecurity",
+        "sbamsvc",
+        "zillya",
+        "qhactivedefense",
+        "antivir",
+        "avira",
+        "vsserv",
+        "productagentservice",
+        "updatesrv",
+        "cmdagent",
+        "cmdvirth",
+        "dragonupdater",
+        "pefservice",
+        "sentinelagent",
+        "csfalconservice",
+        "avastui",
+        "qhsafetray",
+        "sbamtray",
+        "sbregrebootcleaner",
+        "iseui",
+        "comodo internet security",
+        "clamwin",
+        "avgui",
+        "superantispyware",
+    ];
+    let lower = text.to_ascii_lowercase();
+    ATOMS.iter().any(|atom| lower.contains(atom))
+}
+
+#[cfg(test)]
+mod defender_evasion_prefilter_tests {
+    use super::has_defender_evasion_atom;
+
+    #[test]
+    fn prefilter_allows_known_defender_evasion_shapes() {
+        for sample in [
+            r#"powershell Add-MpPreference -ExclusionPath C:\Users\Public"#,
+            "Set-MpPreference -DisableRealtimeMonitoring $true",
+            "sc stop WinDefend",
+            "taskkill /im SecurityHealthSystray.exe /f",
+            "taskkill /im WindowsDefender.exe /f",
+            r#"takeown /f C:\Windows\System32\MsMpEng.exe"#,
+            r#"schtasks /Change /TN "Microsoft\Windows\Windows Defender\Cache Maintenance" /Disable"#,
+            r#"reg add HKLM\System\CurrentControlSet\Services\WinDefend /v Start /d 4"#,
+            r#"reg add HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\Attachments /v SaveZoneInformation /d 2"#,
+            "netsh advfirewall set allprofiles state off",
+            r#"rmdir /s /q "C:\Program Files (x86)\Trend Micro""#,
+            r#"reg delete HKLM\SYSTEM\CurrentControlSet\services\MBAMService /f"#,
+            "Invoke-NullAMSI",
+            "EtwEventWrite",
+        ] {
+            assert!(has_defender_evasion_atom(sample), "blocked: {sample}");
+        }
+    }
+
+    #[test]
+    fn prefilter_blocks_unrelated_text() {
+        assert!(!has_defender_evasion_atom("echo hello && whoami"));
+        assert!(!has_defender_evasion_atom(
+            r#"reg add HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v App /d app.exe"#,
+        ));
     }
 }
 
