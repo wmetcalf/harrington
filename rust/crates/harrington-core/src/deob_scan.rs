@@ -4061,7 +4061,8 @@ mod self_elevation_prefilter_tests {
 fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
-    if !has_defender_evasion_atom(deobfuscated) {
+    let lower = deobfuscated.to_ascii_lowercase();
+    if !has_defender_evasion_atom_lower(&lower) {
         return;
     }
 
@@ -4151,6 +4152,23 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
         Regex::new(r#"(?i)EtwEventWrite|System\.Diagnostics\.Eventing\.EventProvider"#)
             .expect("etw-patch")
     });
+    let defender_profile_enabled =
+        std::env::var_os("HARRINGTON_PROFILE_DEFENDER_EVASION").is_some();
+    macro_rules! profile_defender_group {
+        ($stage:literal, $body:block) => {{
+            let profile_start = defender_profile_enabled.then(std::time::Instant::now);
+            let result = $body;
+            if let Some(profile_start) = profile_start {
+                eprintln!(
+                    "harrington_profile_defender_evasion stage={} delta_ms={} bytes={}",
+                    $stage,
+                    profile_start.elapsed().as_millis(),
+                    deobfuscated.len()
+                );
+            }
+            result
+        }};
+    }
     let mut push = |kind: &str, target: String| {
         let target = target
             .trim_matches(|c: char| c == '\'' || c == '"')
@@ -4168,168 +4186,193 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
             target,
         });
     };
-    for caps in EXCLUSION_PATH_DQ
-        .captures_iter(deobfuscated)
-        .chain(EXCLUSION_PATH_SQ.captures_iter(deobfuscated))
-        .chain(EXCLUSION_PATH_BARE.captures_iter(deobfuscated))
-    {
-        let kind = format!(
-            "exclusion-{}",
-            caps.get(1)
-                .map(|m| m.as_str().to_ascii_lowercase())
-                .unwrap_or_default()
-        );
-        let target = caps
-            .get(2)
-            .map(|m| m.as_str().to_string())
-            .unwrap_or_default();
-        push(&kind, target);
+    if lower.contains("add-mppreference") || lower.contains("set-mppreference") {
+        profile_defender_group!("mp_preference", {
+            for caps in EXCLUSION_PATH_DQ
+                .captures_iter(deobfuscated)
+                .chain(EXCLUSION_PATH_SQ.captures_iter(deobfuscated))
+                .chain(EXCLUSION_PATH_BARE.captures_iter(deobfuscated))
+            {
+                let kind = format!(
+                    "exclusion-{}",
+                    caps.get(1)
+                        .map(|m| m.as_str().to_ascii_lowercase())
+                        .unwrap_or_default()
+                );
+                let target = caps
+                    .get(2)
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_default();
+                push(&kind, target);
+            }
+
+            for caps in DISABLE_RE.captures_iter(deobfuscated) {
+                let opt = caps
+                    .get(1)
+                    .map(|m| m.as_str().to_ascii_lowercase())
+                    .unwrap_or_default();
+                let val = caps
+                    .get(2)
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_default();
+                // Only flag the disabling forms — `$true` / `1` / `Disabled` /
+                // `2` (SubmitSamplesConsent=2 = never submit). Skip enabling
+                // values like `$false` to avoid false positives in remediation
+                // scripts that turn protections back on.
+                let val_lc = val.to_ascii_lowercase();
+                let disabling = matches!(
+                    (opt.as_str(), val_lc.as_str()),
+                    ("disablerealtimemonitoring", "$true" | "1" | "true")
+                        | ("disablebehaviormonitoring", "$true" | "1" | "true")
+                        | ("disableioavprotection", "$true" | "1" | "true")
+                        | ("disableblockatfirstseen", "$true" | "1" | "true")
+                        | ("disableprivacymode", "$true" | "1" | "true")
+                        | ("disablescriptscanning", "$true" | "1" | "true")
+                        | ("mapsreporting", "disabled" | "0")
+                ) || (opt == "submitsamplesconsent"
+                    && (val_lc == "2" || val_lc == "never"));
+                if disabling {
+                    push(&format!("setmp-{opt}"), val);
+                }
+            }
+        });
     }
-    for caps in DISABLE_RE.captures_iter(deobfuscated) {
-        let opt = caps
-            .get(1)
-            .map(|m| m.as_str().to_ascii_lowercase())
-            .unwrap_or_default();
-        let val = caps
-            .get(2)
-            .map(|m| m.as_str().to_string())
-            .unwrap_or_default();
-        // Only flag the disabling forms — `$true` / `1` / `Disabled` /
-        // `2` (SubmitSamplesConsent=2 = never submit). Skip enabling
-        // values like `$false` to avoid false positives in remediation
-        // scripts that turn protections back on.
-        let val_lc = val.to_ascii_lowercase();
-        let disabling = matches!(
-            (opt.as_str(), val_lc.as_str()),
-            ("disablerealtimemonitoring", "$true" | "1" | "true")
-                | ("disablebehaviormonitoring", "$true" | "1" | "true")
-                | ("disableioavprotection", "$true" | "1" | "true")
-                | ("disableblockatfirstseen", "$true" | "1" | "true")
-                | ("disableprivacymode", "$true" | "1" | "true")
-                | ("disablescriptscanning", "$true" | "1" | "true")
-                | ("mapsreporting", "disabled" | "0")
-        ) || (opt == "submitsamplesconsent"
-            && (val_lc == "2" || val_lc == "never"));
-        if disabling {
-            push(&format!("setmp-{opt}"), val);
-        }
+
+    if has_defender_service_process_atom_lower(&lower) {
+        profile_defender_group!("service_process", {
+            for caps in SC_DEFENDER_RE.captures_iter(deobfuscated) {
+                let verb = caps
+                    .get(1)
+                    .map(|m| m.as_str().to_ascii_lowercase())
+                    .unwrap_or_default();
+                let svc = caps
+                    .get(2)
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_default();
+                push(&format!("sc-{verb}"), svc);
+            }
+            for caps in TASKKILL_SECURITY_RE.captures_iter(deobfuscated) {
+                let process = caps
+                    .get(1)
+                    .map(|m| format!("{}.exe", m.as_str()))
+                    .unwrap_or_default();
+                push("taskkill-security-process", process);
+            }
+            for caps in SECURITY_BINARY_TAKEOWN_RE.captures_iter(deobfuscated) {
+                let binary = caps
+                    .get(1)
+                    .map(|m| format!("{}.exe", m.as_str()))
+                    .unwrap_or_default();
+                push("security-binary-takeown", binary);
+            }
+            for caps in SECURITY_BINARY_ICACLS_RE.captures_iter(deobfuscated) {
+                let binary = caps
+                    .get(1)
+                    .map(|m| format!("{}.exe", m.as_str()))
+                    .unwrap_or_default();
+                push("security-binary-acl-grant", binary);
+            }
+            for caps in SECURITY_BINARY_RENAME_RE.captures_iter(deobfuscated) {
+                let binary = caps
+                    .get(1)
+                    .map(|m| format!("{}.exe", m.as_str()))
+                    .unwrap_or_default();
+                push("security-binary-rename", binary);
+            }
+        });
     }
-    for caps in SC_DEFENDER_RE.captures_iter(deobfuscated) {
-        let verb = caps
-            .get(1)
-            .map(|m| m.as_str().to_ascii_lowercase())
-            .unwrap_or_default();
-        let svc = caps
-            .get(2)
-            .map(|m| m.as_str().to_string())
-            .unwrap_or_default();
-        push(&format!("sc-{verb}"), svc);
+
+    if has_defender_scheduled_registry_firewall_atom_lower(&lower) {
+        profile_defender_group!("scheduled_registry_firewall", {
+            for line in deobfuscated.lines() {
+                let lower = line.to_ascii_lowercase();
+                if !lower.contains("schtasks")
+                    || !lower.contains("/change")
+                    || !lower.contains("/disable")
+                    || (!lower.contains("windows defender") && !lower.contains("exploitguard"))
+                {
+                    continue;
+                }
+                let task_name = SCHTASKS_TN_RE
+                    .captures(line)
+                    .and_then(|caps| caps.get(1).or_else(|| caps.get(2)))
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_else(|| line.trim().chars().take(160).collect());
+                push("scheduled-task-disable", task_name);
+            }
+            for caps in DEFENDER_SERVICE_START_DISABLED_RE.captures_iter(deobfuscated) {
+                let service = caps
+                    .get(1)
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_default();
+                push("service-start-disabled", service);
+            }
+            for caps in ATTACHMENT_POLICY_WEAKEN_RE.captures_iter(deobfuscated) {
+                let value_name = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
+                let data = caps
+                    .get(2)
+                    .map(|m| m.as_str().trim_matches('"').to_ascii_lowercase())
+                    .unwrap_or_default();
+                let weakens = match value_name.to_ascii_lowercase().as_str() {
+                    "lowriskfiletypes" => [".exe", ".bat", ".cmd", ".reg", ".msi"]
+                        .iter()
+                        .any(|ext| data.contains(ext)),
+                    "hidezoneinfoonproperties" => data == "1" || data == "0x1",
+                    "savezoneinformation" => data == "2" || data == "0x2",
+                    _ => false,
+                };
+                if weakens {
+                    push("attachment-policy-weaken", value_name.to_string());
+                }
+            }
+            for caps in FIREWALL_OFF_RE.captures_iter(deobfuscated) {
+                let prof = caps
+                    .get(1)
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_default();
+                push("netsh-fw-off", prof);
+            }
+        });
     }
-    for caps in TASKKILL_SECURITY_RE.captures_iter(deobfuscated) {
-        let process = caps
-            .get(1)
-            .map(|m| format!("{}.exe", m.as_str()))
-            .unwrap_or_default();
-        push("taskkill-security-process", process);
+
+    if has_defender_product_registry_atom_lower(&lower) {
+        profile_defender_group!("product_registry", {
+            for caps in SECURITY_PRODUCT_REMOVE_RE.captures_iter(deobfuscated) {
+                let target = caps
+                    .get(1)
+                    .map(|m| m.as_str().trim().chars().take(160).collect::<String>())
+                    .unwrap_or_default();
+                if is_encoded_security_product_remove_noise(&target) {
+                    continue;
+                }
+                push("security-product-remove", target);
+            }
+            for caps in SECURITY_SERVICE_DELETE_RE.captures_iter(deobfuscated) {
+                let service = caps
+                    .get(1)
+                    .map(|m| m.as_str().trim_matches('"').to_string())
+                    .unwrap_or_default();
+                push("security-service-delete", service);
+            }
+            for caps in SECURITY_STARTUP_DELETE_RE.captures_iter(deobfuscated) {
+                let value = caps
+                    .get(1)
+                    .map(|m| m.as_str().trim_matches('"').to_string())
+                    .unwrap_or_default();
+                push("security-startup-delete", value);
+            }
+        });
     }
-    for caps in SECURITY_BINARY_TAKEOWN_RE.captures_iter(deobfuscated) {
-        let binary = caps
-            .get(1)
-            .map(|m| format!("{}.exe", m.as_str()))
-            .unwrap_or_default();
-        push("security-binary-takeown", binary);
-    }
-    for caps in SECURITY_BINARY_ICACLS_RE.captures_iter(deobfuscated) {
-        let binary = caps
-            .get(1)
-            .map(|m| format!("{}.exe", m.as_str()))
-            .unwrap_or_default();
-        push("security-binary-acl-grant", binary);
-    }
-    for caps in SECURITY_BINARY_RENAME_RE.captures_iter(deobfuscated) {
-        let binary = caps
-            .get(1)
-            .map(|m| format!("{}.exe", m.as_str()))
-            .unwrap_or_default();
-        push("security-binary-rename", binary);
-    }
-    for line in deobfuscated.lines() {
-        let lower = line.to_ascii_lowercase();
-        if !lower.contains("schtasks")
-            || !lower.contains("/change")
-            || !lower.contains("/disable")
-            || (!lower.contains("windows defender") && !lower.contains("exploitguard"))
-        {
-            continue;
-        }
-        let task_name = SCHTASKS_TN_RE
-            .captures(line)
-            .and_then(|caps| caps.get(1).or_else(|| caps.get(2)))
-            .map(|m| m.as_str().to_string())
-            .unwrap_or_else(|| line.trim().chars().take(160).collect());
-        push("scheduled-task-disable", task_name);
-    }
-    for caps in DEFENDER_SERVICE_START_DISABLED_RE.captures_iter(deobfuscated) {
-        let service = caps
-            .get(1)
-            .map(|m| m.as_str().to_string())
-            .unwrap_or_default();
-        push("service-start-disabled", service);
-    }
-    for caps in ATTACHMENT_POLICY_WEAKEN_RE.captures_iter(deobfuscated) {
-        let value_name = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
-        let data = caps
-            .get(2)
-            .map(|m| m.as_str().trim_matches('"').to_ascii_lowercase())
-            .unwrap_or_default();
-        let weakens = match value_name.to_ascii_lowercase().as_str() {
-            "lowriskfiletypes" => [".exe", ".bat", ".cmd", ".reg", ".msi"]
-                .iter()
-                .any(|ext| data.contains(ext)),
-            "hidezoneinfoonproperties" => data == "1" || data == "0x1",
-            "savezoneinformation" => data == "2" || data == "0x2",
-            _ => false,
-        };
-        if weakens {
-            push("attachment-policy-weaken", value_name.to_string());
-        }
-    }
-    for caps in FIREWALL_OFF_RE.captures_iter(deobfuscated) {
-        let prof = caps
-            .get(1)
-            .map(|m| m.as_str().to_string())
-            .unwrap_or_default();
-        push("netsh-fw-off", prof);
-    }
-    for caps in SECURITY_PRODUCT_REMOVE_RE.captures_iter(deobfuscated) {
-        let target = caps
-            .get(1)
-            .map(|m| m.as_str().trim().chars().take(160).collect::<String>())
-            .unwrap_or_default();
-        if is_encoded_security_product_remove_noise(&target) {
-            continue;
-        }
-        push("security-product-remove", target);
-    }
-    for caps in SECURITY_SERVICE_DELETE_RE.captures_iter(deobfuscated) {
-        let service = caps
-            .get(1)
-            .map(|m| m.as_str().trim_matches('"').to_string())
-            .unwrap_or_default();
-        push("security-service-delete", service);
-    }
-    for caps in SECURITY_STARTUP_DELETE_RE.captures_iter(deobfuscated) {
-        let value = caps
-            .get(1)
-            .map(|m| m.as_str().trim_matches('"').to_string())
-            .unwrap_or_default();
-        push("security-startup-delete", value);
-    }
-    if let Some(m) = AMSI_BYPASS_RE.find(deobfuscated) {
-        push("amsi-bypass", m.as_str().to_string());
-    }
-    if ETW_PATCH_RE.is_match(deobfuscated) {
-        push("etw-patch", String::new());
+
+    if has_defender_amsi_etw_atom_lower(&lower) {
+        profile_defender_group!("amsi_etw", {
+            if let Some(m) = AMSI_BYPASS_RE.find(deobfuscated) {
+                push("amsi-bypass", m.as_str().to_string());
+            }
+            if ETW_PATCH_RE.is_match(deobfuscated) {
+                push("etw-patch", String::new());
+            }
+        });
     }
 }
 
@@ -4347,7 +4390,13 @@ fn is_encoded_security_product_remove_noise(target: &str) -> bool {
     encodedish.saturating_mul(100) >= target.len() * 90
 }
 
+#[cfg(test)]
 fn has_defender_evasion_atom(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    has_defender_evasion_atom_lower(&lower)
+}
+
+fn has_defender_evasion_atom_lower(lower: &str) -> bool {
     const DIRECT_ATOMS: &[&str] = &[
         "add-mppreference",
         "set-mppreference",
@@ -4443,7 +4492,6 @@ fn has_defender_evasion_atom(text: &str) -> bool {
         "taskkill", "takeown", "icacls", "rename", "ren ", "ren\t", "reg", "rmdir", "rd ", "rd\t",
         "del ", "del\t", "del.",
     ];
-    let lower = text.to_ascii_lowercase();
     DIRECT_ATOMS.iter().any(|atom| lower.contains(atom))
         || (SECURITY_PRODUCT_ATOMS
             .iter()
@@ -4451,9 +4499,131 @@ fn has_defender_evasion_atom(text: &str) -> bool {
             && OPERATION_ATOMS.iter().any(|atom| lower.contains(atom)))
 }
 
+fn has_defender_service_process_atom_lower(lower: &str) -> bool {
+    const COMMAND_ATOMS: &[&str] = &[
+        "sc ", "sc.exe", "taskkill", "takeown", "icacls", "rename", "ren ", "ren\t",
+    ];
+    COMMAND_ATOMS.iter().any(|atom| lower.contains(atom))
+}
+
+fn has_defender_scheduled_registry_firewall_atom_lower(lower: &str) -> bool {
+    lower.contains("schtasks")
+        || lower.contains("advfirewall")
+        || (lower.contains("reg")
+            && (lower.contains("\\services\\")
+                || lower.contains("\\policies\\attachments")
+                || lower.contains("\\policies\\associations")))
+        || lower.contains("lowriskfiletypes")
+        || lower.contains("hidezoneinfoonproperties")
+        || lower.contains("savezoneinformation")
+}
+
+fn has_defender_product_registry_atom_lower(lower: &str) -> bool {
+    const PRODUCT_REMOVE_COMMANDS: &[&str] = &["rmdir", "rd ", "rd\t", "del ", "del\t", "del."];
+    const SECURITY_PRODUCT_ATOMS: &[&str] = &[
+        "trend micro",
+        "windows defender",
+        "microsoft defender",
+        "sophos",
+        "kaspersky",
+        "symantec",
+        "mcafee",
+        "avast",
+        "avg",
+        "eset",
+        "malwarebytes",
+        "crowdstrike",
+        "sentinelone",
+        "carbonblack",
+        "cylance",
+        "bitdefender",
+    ];
+    const SECURITY_SERVICE_OR_STARTUP_ATOMS: &[&str] = &[
+        "mbam",
+        "ekrn",
+        "egui",
+        "avp",
+        "ksde",
+        "mcawfwk",
+        "msk80service",
+        "mcapexe",
+        "mcbootdelaystartsvc",
+        "mccspsvc",
+        "mfefire",
+        "mcmpfsvc",
+        "mcpltsvc",
+        "mcproxy",
+        "mcods",
+        "mfemms",
+        "mfevtp",
+        "mcnaiann",
+        "nortonsecurity",
+        "sbamsvc",
+        "zillya",
+        "qhactivedefense",
+        "antivir",
+        "avira",
+        "vsserv",
+        "productagentservice",
+        "updatesrv",
+        "cmdagent",
+        "cmdvirth",
+        "dragonupdater",
+        "pefservice",
+        "sentinelagent",
+        "csfalconservice",
+        "avastui",
+        "qhsafetray",
+        "sbamtray",
+        "sbregrebootcleaner",
+        "iseui",
+        "comodo internet security",
+        "clamwin",
+        "avgui",
+        "superantispyware",
+        "securityhealth",
+        "eset",
+        "mcafee",
+        "norton",
+        "symantec",
+    ];
+
+    (PRODUCT_REMOVE_COMMANDS
+        .iter()
+        .any(|atom| lower.contains(atom))
+        && SECURITY_PRODUCT_ATOMS
+            .iter()
+            .any(|atom| lower.contains(atom)))
+        || (lower.contains("reg")
+            && lower.contains("delete")
+            && SECURITY_SERVICE_OR_STARTUP_ATOMS
+                .iter()
+                .any(|atom| lower.contains(atom)))
+}
+
+fn has_defender_amsi_etw_atom_lower(lower: &str) -> bool {
+    const AMSI_ETW_ATOMS: &[&str] = &[
+        "invoke-nullamsi",
+        "amsiinitfailed",
+        "amsiutils",
+        "amsicontext",
+        "amsisession",
+        "amsiscanbuffer",
+        "amsi.dll",
+        "etweventwrite",
+        "system.diagnostics.eventing.eventprovider",
+    ];
+    AMSI_ETW_ATOMS.iter().any(|atom| lower.contains(atom))
+}
+
 #[cfg(test)]
 mod defender_evasion_prefilter_tests {
-    use super::has_defender_evasion_atom;
+    use super::{
+        has_defender_amsi_etw_atom_lower, has_defender_evasion_atom,
+        has_defender_product_registry_atom_lower,
+        has_defender_scheduled_registry_firewall_atom_lower,
+        has_defender_service_process_atom_lower,
+    };
 
     #[test]
     fn prefilter_allows_known_defender_evasion_shapes() {
@@ -4488,6 +4658,37 @@ mod defender_evasion_prefilter_tests {
         ));
         assert!(!has_defender_evasion_atom(
             "echo avg payload size && echo avp staging note"
+        ));
+    }
+
+    #[test]
+    fn internal_gates_allow_known_defender_evasion_shapes() {
+        assert!(has_defender_service_process_atom_lower(
+            &"sc stop WinDefend".to_ascii_lowercase()
+        ));
+        assert!(has_defender_service_process_atom_lower(
+            &"taskkill /im SecurityHealthSystray.exe /f".to_ascii_lowercase()
+        ));
+        assert!(has_defender_scheduled_registry_firewall_atom_lower(
+            &r#"reg add HKLM\System\CurrentControlSet\Services\WinDefend /v Start /d 4"#
+                .to_ascii_lowercase()
+        ));
+        assert!(has_defender_scheduled_registry_firewall_atom_lower(
+            &"netsh advfirewall set allprofiles state off".to_ascii_lowercase()
+        ));
+        assert!(has_defender_product_registry_atom_lower(
+            &r#"rmdir /s /q "C:\Program Files (x86)\Trend Micro""#.to_ascii_lowercase()
+        ));
+        assert!(has_defender_product_registry_atom_lower(
+            &r#"reg delete HKLM\SYSTEM\CurrentControlSet\services\MBAMService /f"#
+                .to_ascii_lowercase()
+        ));
+        assert!(has_defender_product_registry_atom_lower(
+            &r#"reg delete HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run /v "AVGUI.exe" /f"#
+                .to_ascii_lowercase()
+        ));
+        assert!(has_defender_amsi_etw_atom_lower(
+            &"Invoke-NullAMSI".to_ascii_lowercase()
         ));
     }
 }
