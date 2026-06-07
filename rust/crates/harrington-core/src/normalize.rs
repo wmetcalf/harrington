@@ -38,6 +38,9 @@ pub(crate) fn normalize_literal_command_fast(input: &str) -> Option<String> {
     if let Some(set) = normalize_quoted_set_assignment_fast(input) {
         return Some(set);
     }
+    if let Some(caret_plain) = normalize_caret_plain_command_fast(input) {
+        return Some(caret_plain);
+    }
     if input.is_empty() || input.starts_with(' ') || input.ends_with(' ') {
         return None;
     }
@@ -75,6 +78,50 @@ pub(crate) fn normalize_literal_command_fast(input: &str) -> Option<String> {
         return None;
     }
     Some(input.to_string())
+}
+
+fn normalize_caret_plain_command_fast(input: &str) -> Option<String> {
+    if !input.contains('^') || input.is_empty() || input.starts_with(' ') || input.ends_with(' ') {
+        return None;
+    }
+    let mut prev_space = false;
+    for &b in input.as_bytes() {
+        if b == b' ' {
+            if prev_space {
+                return None;
+            }
+            prev_space = true;
+            continue;
+        }
+        prev_space = false;
+        if matches!(
+            b,
+            b'%' | b'!'
+                | b'"'
+                | b'\t'
+                | b'\r'
+                | b'\n'
+                | b','
+                | b';'
+                | b'&'
+                | b'|'
+                | b'<'
+                | b'>'
+                | b'('
+                | b')'
+        ) {
+            return None;
+        }
+    }
+    let processed = caret_postprocess(input);
+    if marker_noise::has_repeated_sandwich_candidate_shape(&processed) {
+        return None;
+    }
+    if is_base64_fragment_set_assignment(&processed) || has_replace_marker_operation(&processed) {
+        Some(processed)
+    } else {
+        Some(strip_marker_noise(&processed))
+    }
 }
 
 fn normalize_quoted_set_assignment_fast(input: &str) -> Option<String> {
@@ -568,23 +615,23 @@ fn expand_var(
 fn value_likely_has_nested_ref(s: &str) -> bool {
     // Look for `%<name>%` or `!<name>!` patterns. A bare `%%` (with no
     // closing `%`) is the percent-escape literal — don't re-lex that.
-    let chars: Vec<char> = s.chars().collect();
+    let bytes = s.as_bytes();
     let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        if c == '%' || c == '!' {
+    while i < bytes.len() {
+        let sigil = bytes[i];
+        if sigil == b'%' || sigil == b'!' {
             // Need at least one name char after, then a closing same-sigil.
             let mut j = i + 1;
             let mut has_name = false;
-            while j < chars.len() && chars[j] != c {
-                if chars[j].is_ascii_alphanumeric() || chars[j] == '_' {
+            while j < bytes.len() && bytes[j] != sigil {
+                if bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_' {
                     has_name = true;
                     j += 1;
                 } else {
                     break;
                 }
             }
-            if has_name && j < chars.len() && chars[j] == c {
+            if has_name && j < bytes.len() && bytes[j] == sigil {
                 return true;
             }
         }
@@ -1004,6 +1051,15 @@ mod dosfuscation_tests {
         assert_eq!(got, "foobar", "got: {:?}", got);
     }
 
+    #[test]
+    fn nested_ref_detector_handles_percent_bang_and_literals() {
+        assert!(super::value_likely_has_nested_ref("%A%"));
+        assert!(super::value_likely_has_nested_ref("pre!name_1!post"));
+        assert!(!super::value_likely_has_nested_ref("%%J"));
+        assert!(!super::value_likely_has_nested_ref("%A-"));
+        assert!(!super::value_likely_has_nested_ref("plain text"));
+    }
+
     // From batch_deobfuscator/tests/test_FE_DOSfuscation.py::test_variable_manipulation
     #[test]
     fn comspec_plain() {
@@ -1166,6 +1222,16 @@ mod dosfuscation_tests {
                 "fast path unexpectedly accepted {input:?}"
             );
         }
+    }
+
+    #[test]
+    fn literal_command_fast_path_accepts_caret_plain_text_like_full_normalizer() {
+        let input = "r^e^m payload ABC123+/=";
+        let full = nm(input);
+        assert_eq!(
+            super::normalize_literal_command_fast(input).as_deref(),
+            Some(full.as_str())
+        );
     }
 
     #[test]

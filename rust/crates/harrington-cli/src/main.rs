@@ -1189,23 +1189,33 @@ fn build_tldr(file: &str, input: &[u8], report: &harrington_core::Report) -> Str
     out
 }
 
-fn write_stdout(s: &str) -> Result<bool> {
-    let mut stdout = io::stdout().lock();
-    match stdout.write_all(s.as_bytes()) {
+fn write_all_or_pipe<W: Write>(writer: &mut W, bytes: &[u8]) -> Result<bool> {
+    match writer.write_all(bytes) {
         Ok(()) => Ok(true),
         Err(err) if err.kind() == io::ErrorKind::BrokenPipe => Ok(false),
         Err(err) => Err(err).context("write stdout"),
     }
 }
 
-fn write_stdout_line(s: &str) -> Result<bool> {
-    if !write_stdout(s)? {
+fn write_line_to<W: Write>(writer: &mut W, s: &str) -> Result<bool> {
+    if !write_all_or_pipe(writer, s.as_bytes())? {
         return Ok(false);
     }
-    write_stdout("\n")
+    write_all_or_pipe(writer, b"\n")
+}
+
+fn write_stdout(s: &str) -> Result<bool> {
+    let mut stdout = io::stdout().lock();
+    write_all_or_pipe(&mut stdout, s.as_bytes())
+}
+
+fn write_stdout_line(s: &str) -> Result<bool> {
+    let mut stdout = io::stdout().lock();
+    write_line_to(&mut stdout, s)
 }
 
 fn write_analyze_jsonl_report(
+    writer: &mut impl Write,
     file: &str,
     input: &[u8],
     report: &harrington_core::Report,
@@ -1217,25 +1227,25 @@ fn write_analyze_jsonl_report(
         "input_size": input.len(),
         "deobfuscated_size": report.deobfuscated.len(),
     });
-    if !write_stdout_line(&serde_json::to_string(&meta)?)? {
+    if !write_line_to(writer, &serde_json::to_string(&meta)?)? {
         return Ok(false);
     }
     for t in &report.traits {
         let line = serde_json::json!({"kind": "trait", "trait": t});
-        if !write_stdout_line(&serde_json::to_string(&line)?)? {
+        if !write_line_to(writer, &serde_json::to_string(&line)?)? {
             return Ok(false);
         }
     }
     if let Some(matches) = lolbas_matches {
         for item in matches {
             let line = serde_json::json!({"kind": "lolbas_match", "match": item});
-            if !write_stdout_line(&serde_json::to_string(&line)?)? {
+            if !write_line_to(writer, &serde_json::to_string(&line)?)? {
                 return Ok(false);
             }
         }
     }
     let deob_line = serde_json::json!({"kind": "deob", "content": &report.deobfuscated});
-    write_stdout_line(&serde_json::to_string(&deob_line)?)
+    write_line_to(writer, &serde_json::to_string(&deob_line)?)
 }
 
 fn analyze_input_files(
@@ -1378,13 +1388,20 @@ fn run() -> Result<()> {
             );
             let lolbas_index = lolbas_json.as_deref().map(load_lolbas_index).transpose()?;
             if jsonl {
+                let mut stdout = io::stdout().lock();
                 for file in files {
                     let input = read_input(&file)?;
                     let report = analyze_for_file(&file, &input, &cfg);
                     let lolbas_matches = lolbas_index
                         .as_ref()
                         .map(|index| lolbas_matches(&report, index));
-                    if !write_analyze_jsonl_report(&file, &input, &report, lolbas_matches)? {
+                    if !write_analyze_jsonl_report(
+                        &mut stdout,
+                        &file,
+                        &input,
+                        &report,
+                        lolbas_matches,
+                    )? {
                         return Ok(());
                     }
                 }
