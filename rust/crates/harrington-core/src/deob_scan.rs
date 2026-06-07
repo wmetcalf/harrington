@@ -7407,6 +7407,9 @@ fn has_ps_char_index_extractor_atom(text: &str) -> bool {
         && text.as_bytes().windows(2).any(|window| window == b"+=")
         && has_ps_variable_index_atom(text)
         && contains_ascii_case_insensitive_atom(text, b"function")
+        && ((contains_ascii_case_insensitive_atom(text, b"do")
+            && contains_ascii_case_insensitive_atom(text, b"until"))
+            || contains_ascii_case_insensitive_atom(text, b"for"))
 }
 
 fn has_ps_variable_index_atom(text: &str) -> bool {
@@ -9341,6 +9344,20 @@ mod ps_char_index_extractor_tests {
         let script = r#"
             function Sum ($n){ $i=0; do { $s+=1; $i+=1 } until ($i -ge $n) $s }
             $x = Sum 5
+        "#;
+
+        assert!(!has_ps_char_index_extractor_atom(script));
+    }
+
+    #[test]
+    fn prefilter_blocks_index_math_without_do_until_extractor_loop() {
+        let script = r#"
+            function MaybeIndexer ($p){
+                $i=3;
+                $r += $p[$i];
+                $i += 4;
+                $r
+            }
         "#;
 
         assert!(!has_ps_char_index_extractor_atom(script));
