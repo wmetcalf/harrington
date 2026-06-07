@@ -3668,7 +3668,7 @@ fn recovered_artifact_behavior_text(blob: &[u8]) -> String {
     let mut seen = std::collections::HashSet::new();
     let mut text = String::new();
     for s in strings {
-        if !recovered_artifact_string_is_behavior_hint(&s) || seen.contains(&s) {
+        if seen.contains(&s) {
             continue;
         }
         text.push_str(&s);
@@ -3740,7 +3740,10 @@ fn push_recovered_artifact_string(
     min_len: usize,
 ) {
     if run.len() >= min_len && strings.len() < max_strings {
-        strings.push(String::from_utf8_lossy(run).to_string());
+        let candidate = String::from_utf8_lossy(run);
+        if recovered_artifact_string_is_behavior_hint(&candidate) {
+            strings.push(candidate.to_string());
+        }
     }
     run.clear();
 }
@@ -8813,6 +8816,22 @@ mod certutil_tests {
             }),
             "decoded PE behavior string was not scanned: {:?}",
             report.traits
+        );
+    }
+
+    #[test]
+    fn recovered_artifact_behavior_strings_ignore_junk_before_cap() {
+        let mut blob = Vec::new();
+        for idx in 0..600 {
+            blob.extend_from_slice(format!("junk-string-{idx:04}\0").as_bytes());
+        }
+        blob.extend_from_slice(b"vssadmin delete shadows /all /quiet\0");
+
+        let text = crate::recovered_artifact_behavior_text(&blob);
+
+        assert!(
+            text.contains("vssadmin delete shadows"),
+            "late behavior string was dropped after junk strings: {text:?}"
         );
     }
 
