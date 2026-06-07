@@ -2149,8 +2149,13 @@ fn collect_python_string_bindings(text: &str) -> HashMap<String, String> {
         )
         .expect("python string assignment regex")
     });
+    #[allow(clippy::expect_used)]
+    static PY_STRING_ASSIGN_EXPR_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)(?:^|[;\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^;\r\n]{1,4096})"#)
+            .expect("python string assignment expr regex")
+    });
 
-    PY_STRING_ASSIGN_RE
+    let mut bindings: HashMap<String, String> = PY_STRING_ASSIGN_RE
         .captures_iter(text)
         .take(64)
         .filter_map(|caps| {
@@ -2158,7 +2163,21 @@ fn collect_python_string_bindings(text: &str) -> HashMap<String, String> {
             let value = caps.get(2).or_else(|| caps.get(3))?.as_str();
             Some((name.to_string(), value.to_string()))
         })
-        .collect()
+        .collect();
+
+    for caps in PY_STRING_ASSIGN_EXPR_RE.captures_iter(text).take(64) {
+        let Some(name) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(expr) = caps.get(2).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(value) = python_adjacent_string_literal_expr(expr) else {
+            continue;
+        };
+        bindings.insert(name.to_string(), value);
+    }
+    bindings
 }
 
 fn python_adjacent_string_literal_expr(expr: &str) -> Option<String> {

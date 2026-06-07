@@ -14700,6 +14700,26 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
     }
 
     #[test]
+    fn python_requests_get_adjacent_string_variable_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import requests; u='https://' 'py.example/adjacent-var'; requests.get(u)""#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: None, .. }
+                        if src == "https://py.example/adjacent-var"
+                )
+            }),
+            "no structured Download from Python adjacent literal variable URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn python_requests_module_alias_get_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
