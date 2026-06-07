@@ -570,7 +570,7 @@ mod echo_tests {
     use crate::env::{Config, Environment, FsEntry};
     use crate::interp::interpret_line;
     use crate::traits::Trait;
-    use crate::{analyze, Config as AnalyzeConfig};
+    use crate::{analyze, has_echo_redirect_prescan_shape, Config as AnalyzeConfig};
     use base64::Engine;
 
     #[test]
@@ -668,6 +668,29 @@ if exist "%B64FILE%" del "%B64FILE%"
                 .any(|t| matches!(t, Trait::EchoRedirect { .. })),
             "collapsed echo chunks should not emit per-line EchoRedirect traits"
         );
+    }
+
+    #[test]
+    fn echo_redirect_prescan_gate_allows_materialization_shapes() {
+        assert!(has_echo_redirect_prescan_shape(
+            b"(\r\necho SGVsbG8=\r\n) > out.b64\r\n"
+        ));
+        assert!(has_echo_redirect_prescan_shape(
+            b"echo SGVsbG8=>>out.b64\r\necho V29ybGQ=>>out.b64\r\n"
+        ));
+        assert!(!has_echo_redirect_prescan_shape(
+            b"set X=SGVsbG8=\r\necho %X%>out.b64\r\n"
+        ));
+    }
+
+    #[test]
+    fn echo_redirect_prescan_gate_blocks_unrelated_echo_text() {
+        assert!(!has_echo_redirect_prescan_shape(
+            b"echo URL is https://example.test/a > con\r\n"
+        ));
+        assert!(!has_echo_redirect_prescan_shape(
+            b"rem echo and > and ( ) appear in a comment\r\n"
+        ));
     }
 
     #[test]
@@ -4130,6 +4153,44 @@ fn write_captured_echo_content(
         .insert(key, crate::env::FsEntry::Content { content, append });
 }
 
+fn has_echo_redirect_prescan_shape(input: &[u8]) -> bool {
+    if !input_contains_ascii_case_insensitive(input, b"echo") || !input.contains(&b'>') {
+        return false;
+    }
+
+    let text = String::from_utf8_lossy(input);
+    let mut saw_group_open = false;
+    let mut echo_redirect_lines = 0usize;
+    for raw_line in text.lines() {
+        let trimmed = raw_line.trim_start_matches(['@', ' ', '\t']);
+        if trimmed.is_empty() {
+            continue;
+        }
+        let lower = trimmed.to_ascii_lowercase();
+        if lower.starts_with("rem ") || lower == "rem" || lower.starts_with("::") {
+            continue;
+        }
+        if trimmed.trim_end() == "(" {
+            saw_group_open = true;
+            continue;
+        }
+        if saw_group_open && trimmed.trim_start().starts_with(')') && trimmed.contains('>') {
+            return true;
+        }
+        if block_echo_payload(trimmed).is_some() && trimmed.contains('>') {
+            echo_redirect_lines += 1;
+            if echo_redirect_lines >= 2 {
+                return true;
+            }
+            continue;
+        }
+        if block_echo_payload(trimmed).is_none() {
+            echo_redirect_lines = 0;
+        }
+    }
+    false
+}
+
 fn capture_top_level_echo_redirect_runs(
     lines: &[String],
     env: &mut Environment,
@@ -5182,8 +5243,7 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
     // never populated. Capturing it up front lets certutil -decode / call
     // resolve the written file. Safe to run before the main loop: the close
     // `)` redirect line is a block delimiter and never re-writes the file.
-    let has_echo_redirect =
-        input_contains_ascii_case_insensitive(input, b"echo") && input.contains(&b'>');
+    let has_echo_redirect = has_echo_redirect_prescan_shape(input);
     let redirect_capture_start = drive_profile_enabled.then(std::time::Instant::now);
     let captured_echo_blocks =
         if has_echo_redirect && input.contains(&b'(') && input.contains(&b')') {
