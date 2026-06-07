@@ -14912,6 +14912,38 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
     }
 
     #[test]
+    fn python_requests_post_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import requests; requests.post('https://py.example/requests-post', data='x'); from requests import put as send; send('https://py.example/requests-put-alias'); s = requests.Session(); s.patch('https://py.example/session-patch')""#,
+            &mut env,
+        );
+        for expected in [
+            "https://py.example/requests-post",
+            "https://py.example/requests-put-alias",
+            "https://py.example/session-patch",
+        ] {
+            assert!(
+                env.traits.iter().any(|t| {
+                    matches!(t,
+                        Trait::Download { src, dst, .. }
+                            if src == expected && dst.is_none()
+                    )
+                }),
+                "no structured Download from Python requests verb {expected}: {:?}",
+                env.traits
+            );
+            assert!(
+                !env.traits.iter().any(|t| {
+                    matches!(t, Trait::DownloadInDeobText { src, .. } if src == expected)
+                }),
+                "Python requests verb URL double-emitted: {:?}",
+                env.traits
+            );
+        }
+    }
+
+    #[test]
     fn python_requests_request_get_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(

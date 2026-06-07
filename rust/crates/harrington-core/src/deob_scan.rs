@@ -680,16 +680,26 @@ fn python_urlopen_call_names(text: &str) -> Vec<String> {
         "urllib.request.urlopen".to_string(),
         "urllib.urlopen".to_string(),
     ];
-    names.extend(collect_python_requests_get_aliases(text));
-    names.extend(collect_python_requests_session_get_aliases(text));
-    names.extend(collect_python_requests_bound_session_get_aliases(text));
+    for method in ["get", "post", "put", "patch", "delete", "head", "options"] {
+        if method != "get" {
+            names.push(format!("requests.{method}"));
+        }
+        names.extend(collect_python_requests_method_aliases(text, method));
+        names.extend(collect_python_requests_session_method_aliases(text, method));
+        names.extend(collect_python_requests_bound_session_method_aliases(
+            text, method,
+        ));
+    }
     names.extend(collect_python_urllib_call_aliases(text, "urlopen"));
     names
 }
 
-fn collect_python_requests_get_aliases(text: &str) -> Vec<String> {
-    let mut aliases = collect_python_requests_call_aliases(text, "get");
-    aliases.extend(collect_python_requests_assigned_method_aliases(text, "get"));
+fn collect_python_requests_method_aliases(text: &str, target_method: &str) -> Vec<String> {
+    let mut aliases = collect_python_requests_call_aliases(text, target_method);
+    aliases.extend(collect_python_requests_assigned_method_aliases(
+        text,
+        target_method,
+    ));
     aliases
 }
 
@@ -790,10 +800,6 @@ fn collect_python_requests_module_aliases(text: &str) -> Vec<String> {
     aliases
 }
 
-fn collect_python_requests_session_get_aliases(text: &str) -> Vec<String> {
-    collect_python_requests_session_method_aliases(text, "get")
-}
-
 fn collect_python_requests_session_method_aliases(text: &str, target_method: &str) -> Vec<String> {
     collect_python_requests_session_constructors(text)
         .into_iter()
@@ -848,10 +854,6 @@ fn collect_python_requests_session_constructors(text: &str) -> Vec<String> {
         }
     }
     constructors
-}
-
-fn collect_python_requests_bound_session_get_aliases(text: &str) -> Vec<String> {
-    collect_python_requests_bound_session_method_aliases(text, "get")
 }
 
 fn collect_python_requests_bound_session_method_aliases(
