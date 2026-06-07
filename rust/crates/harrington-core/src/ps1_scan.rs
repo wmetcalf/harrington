@@ -4145,15 +4145,11 @@ fn ps_downloadfile_calls(text: &str) -> Vec<(String, Option<String>)> {
 }
 
 fn ps_literal_url_arg(arg: &str) -> Option<String> {
-    ps_literal_arg(arg)
-        .filter(|value| crate::deob_scan::looks_like_liberal_url(value))
-        .and_then(|value| normalize_ps_literal_url(&value))
+    ps_literal_arg(arg).and_then(|value| normalize_ps_download_url(&value))
 }
 
 fn ps_url_arg(arg: &str, bindings: &std::collections::HashMap<String, String>) -> Option<String> {
-    ps_string_arg(arg, bindings)
-        .filter(|value| crate::deob_scan::looks_like_liberal_url(value))
-        .and_then(|value| normalize_ps_literal_url(&value))
+    ps_string_arg(arg, bindings).and_then(|value| normalize_ps_download_url(&value))
 }
 
 fn ps_string_arg(
@@ -4227,13 +4223,18 @@ fn ps_literal_urls(text: &str) -> Vec<String> {
                 .or_else(|| literal_caps.get(2))
                 .map(|m| m.as_str().to_string())
         })
-        .filter(|value| crate::deob_scan::looks_like_liberal_url(value))
-        .filter_map(|value| normalize_ps_literal_url(&value))
+        .filter_map(|value| normalize_ps_download_url(&value))
         .collect()
 }
 
 fn normalize_ps_literal_url(value: &str) -> Option<String> {
     crate::deob_scan::normalize_liberal_url_token(&clean_ps_url(value))
+}
+
+fn normalize_ps_download_url(value: &str) -> Option<String> {
+    let value = clean_ps_url(value);
+    crate::deob_scan::normalize_liberal_url_token(&value)
+        .or_else(|| crate::deob_scan::normalize_schemeless_domain_path_token(&value))
 }
 
 fn ps_literal_urls_in_download_context(text: &str) -> Vec<String> {

