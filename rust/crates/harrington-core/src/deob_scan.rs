@@ -81,6 +81,14 @@ static GLUED_RUNDLL32_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static SPACED_RUNDLL32_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?i)(?:^|[&|;]\s*)(rundll32(?:\.exe)?\s+(?:"([^"\r\n]+)"|([^"'\s\r\n,]+))\s*,\s*[A-Za-z0-9_#@$.-]{1,80})"#,
+    )
+    .expect("spaced rundll32 regex")
+});
+
+#[allow(clippy::expect_used)]
 static EMBEDDED_POWERSHELL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?i)(?:[A-Za-z]:\\[^\s"']*\\)?(?:powershell|pwsh)(?:\.exe)?\b"#)
         .expect("embedded PowerShell regex")
@@ -2684,6 +2692,27 @@ fn scan_glued_rundll32_deob_text(deobfuscated: &str, env: &mut Environment) {
             let dll = strip_quotes(dll_match.as_str());
             let url = url_for_download_destination(dll, &downloads);
             env.traits.push(Trait::Rundll32 { cmd, url });
+        }
+        for caps in SPACED_RUNDLL32_RE.captures_iter(line) {
+            let Some(cmd_match) = caps.get(1) else {
+                continue;
+            };
+            let dll = caps
+                .get(2)
+                .or_else(|| caps.get(3))
+                .map(|m| strip_quotes(m.as_str()))
+                .unwrap_or("");
+            let Some(url) = url_for_download_destination(dll, &downloads) else {
+                continue;
+            };
+            let cmd = cmd_match.as_str().trim().to_string();
+            if !known_cmds.insert(cmd.clone()) {
+                continue;
+            }
+            env.traits.push(Trait::Rundll32 {
+                cmd,
+                url: Some(url),
+            });
         }
     }
 }

