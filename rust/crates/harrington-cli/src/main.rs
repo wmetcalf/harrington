@@ -327,9 +327,33 @@ fn command_invokes_program(command: &str, wanted_stem: &str) -> bool {
                 || matches!(ch, '.' | '_' | '-' | '\\' | '/' | ':' | '"' | '\''))
         })
         .any(|token| {
+            if is_url_like_program_token(token) {
+                return false;
+            }
             let stem = program_stem(token);
             !stem.is_empty() && stem == wanted_stem
         })
+}
+
+fn is_url_like_program_token(token: &str) -> bool {
+    let token = token.trim_matches(['"', '\'']).to_ascii_lowercase();
+    if token.contains("://")
+        || ["http:", "https:", "hxxp:", "hxxps:", "ftp:", "file:"]
+            .iter()
+            .any(|prefix| token.starts_with(prefix))
+    {
+        return true;
+    }
+    let Some(slash) = token.find('/') else {
+        return false;
+    };
+    let first_segment = &token[..slash];
+    first_segment.contains('.') && !is_drive_path(&token)
+}
+
+fn is_drive_path(token: &str) -> bool {
+    let bytes = token.as_bytes();
+    bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/'
 }
 
 /// Safely join `name` onto the canonical `out_dir`, refusing if the result
