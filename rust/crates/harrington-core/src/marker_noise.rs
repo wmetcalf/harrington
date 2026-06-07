@@ -53,25 +53,20 @@ pub fn strip_line(text: &str) -> String {
                 if !candidate.iter().all(|b| b.is_ascii_alphabetic()) {
                     continue;
                 }
+                if !candidate_has_multiple_distinct_bytes(candidate) {
+                    continue;
+                }
                 let Ok(candidate) = std::str::from_utf8(candidate) else {
                     continue;
                 };
                 if is_protected_marker_candidate(candidate) {
                     continue;
                 }
-                if candidate
-                    .chars()
-                    .collect::<std::collections::HashSet<_>>()
-                    .len()
-                    < 2
-                {
-                    continue;
-                }
-                let is_mixed = candidate.chars().any(|c| c.is_ascii_lowercase())
-                    && candidate.chars().any(|c| c.is_ascii_uppercase());
+                let is_mixed = candidate.bytes().any(|b| b.is_ascii_lowercase())
+                    && candidate.bytes().any(|b| b.is_ascii_uppercase());
                 let vowel_count = candidate
-                    .chars()
-                    .filter(|c| matches!(c.to_ascii_lowercase(), 'a' | 'e' | 'i' | 'o' | 'u'))
+                    .bytes()
+                    .filter(|b| matches!(b.to_ascii_lowercase(), b'a' | b'e' | b'i' | b'o' | b'u'))
                     .count();
                 let embedded = (start > 0 && bytes[start - 1].is_ascii_alphabetic())
                     || (end < bytes.len() && bytes[end].is_ascii_alphabetic());
@@ -288,24 +283,24 @@ fn enclosing_alpha_run_ids(bytes: &[u8]) -> Vec<Option<usize>> {
 }
 
 fn is_protected_marker_candidate(candidate: &str) -> bool {
-    matches!(
-        candidate.to_ascii_lowercase().as_str(),
-        "system"
-            | "object"
-            | "string"
-            | "convert"
-            | "security"
-            | "crypto"
-            | "graphy"
-            | "length"
-            | "invoke"
-            | "request"
-    )
+    [
+        "system", "object", "string", "convert", "security", "crypto", "graphy", "length",
+        "invoke", "request",
+    ]
+    .iter()
+    .any(|protected| candidate.eq_ignore_ascii_case(protected))
+}
+
+fn candidate_has_multiple_distinct_bytes(candidate: &[u8]) -> bool {
+    let Some(first) = candidate.first() else {
+        return false;
+    };
+    candidate.iter().any(|byte| byte != first)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::strip_line;
+    use super::{candidate_has_multiple_distinct_bytes, is_protected_marker_candidate, strip_line};
 
     #[test]
     fn strip_line_keeps_plain_assignment_without_marker_shape() {
@@ -316,5 +311,18 @@ mod tests {
     #[test]
     fn strip_line_removes_repeated_sandwich_marker_shape() {
         assert_eq!(strip_line("aXYZbXYZcXYZ dXYZeXYZ"), "abc de");
+    }
+
+    #[test]
+    fn candidate_distinct_check_matches_ascii_marker_semantics() {
+        assert!(!candidate_has_multiple_distinct_bytes(b"AAA"));
+        assert!(candidate_has_multiple_distinct_bytes(b"AaA"));
+        assert!(candidate_has_multiple_distinct_bytes(b"ABC"));
+    }
+
+    #[test]
+    fn protected_marker_check_is_ascii_case_insensitive() {
+        assert!(is_protected_marker_candidate("SyStEm"));
+        assert!(!is_protected_marker_candidate("SyStXm"));
     }
 }
