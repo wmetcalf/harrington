@@ -374,8 +374,8 @@ fn join_vbs_line_continuations(text: &str) -> String {
     let mut out = String::new();
     for line in text.lines() {
         let trimmed_end = line.trim_end();
-        if let Some(prefix) = trimmed_end.strip_suffix('_') {
-            out.push_str(prefix.trim_end());
+        if vbs_line_has_continuation(trimmed_end) {
+            out.push_str(trimmed_end[..trimmed_end.len() - 1].trim_end());
             out.push(' ');
         } else {
             out.push_str(line);
@@ -383,6 +383,16 @@ fn join_vbs_line_continuations(text: &str) -> String {
         }
     }
     out
+}
+
+fn vbs_line_has_continuation(trimmed_end: &str) -> bool {
+    let Some(prefix) = trimmed_end.strip_suffix('_') else {
+        return false;
+    };
+    prefix
+        .as_bytes()
+        .last()
+        .is_some_and(u8::is_ascii_whitespace)
 }
 
 fn expand_vbs_static_execute(text: &str) -> String {
@@ -1008,6 +1018,39 @@ fn split_vbs_args(expr: &str) -> Vec<&str> {
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn vbs_line_continuation_requires_space_before_underscore() {
+        let text = "x = value_\ny = 1";
+        assert_eq!(join_vbs_line_continuations(text), "x = value_\ny = 1\n");
+    }
+
+    #[test]
+    fn vbs_line_continuation_ignores_underscore_inside_string() {
+        let text = "x = \"http://literal.example/path_\"\ny = 1";
+        assert_eq!(
+            join_vbs_line_continuations(text),
+            "x = \"http://literal.example/path_\"\ny = 1\n"
+        );
+    }
+
+    #[test]
+    fn vbs_line_continuation_ignores_space_underscore_inside_string() {
+        let text = "x = \"http://literal.example/path _\"\ny = 1";
+        assert_eq!(
+            join_vbs_line_continuations(text),
+            "x = \"http://literal.example/path _\"\ny = 1\n"
+        );
+    }
+
+    #[test]
+    fn vbs_line_continuation_joins_space_underscore_outside_string() {
+        let text = "x = \"http://\" & _\n\"continued.example/p\"";
+        assert_eq!(
+            join_vbs_line_continuations(text),
+            "x = \"http://\" & \"continued.example/p\"\n"
+        );
+    }
 
     #[test]
     fn vbs_scan_honors_expired_deadline() {
