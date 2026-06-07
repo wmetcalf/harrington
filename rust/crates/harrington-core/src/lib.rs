@@ -3263,7 +3263,7 @@ fn scan_recovered_artifact_strings(env: &mut Environment) {
         scan_binary_input_urls(blob, env);
         let behavior_text = recovered_artifact_behavior_text(blob);
         if !behavior_text.is_empty() {
-            deob_scan::scan_deob_text(&behavior_text, env);
+            deob_scan::scan_recovered_artifact_behavior_text(&behavior_text, env);
         }
     }
     artifacts.append(&mut env.recovered_pe);

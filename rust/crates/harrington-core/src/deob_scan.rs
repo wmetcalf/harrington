@@ -6696,6 +6696,17 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     });
 }
 
+/// Scan the small synthetic text assembled from recovered binary artifact
+/// strings. The collector only admits behavior hints for these detector
+/// families, so running the full deobfuscated-text scanner stack here is
+/// unnecessary work and can introduce unrelated matches if future hints are
+/// added too broadly.
+pub fn scan_recovered_artifact_behavior_text(text: &str, env: &mut Environment) {
+    scan_defender_evasion(text, env);
+    scan_inmem_assembly_load(text, env);
+    scan_anti_recovery(text, env);
+}
+
 fn scan_resolved_deob_var_fragment_urls(deobfuscated: &str, env: &mut Environment) {
     if !has_resolved_deob_var_fragment_shape(deobfuscated) {
         return;
