@@ -287,6 +287,10 @@ pub fn scan_js_payloads(env: &mut Environment) {
             if env.check_deadline() {
                 break 'payloads;
             }
+            push_downloads_from_js_shell_run(env, idx, &concat_resolved, &candidate, &mut seen);
+            if env.check_deadline() {
+                break 'payloads;
+            }
             for caps in URL_IN_JS_RE.captures_iter(&candidate) {
                 if env.check_deadline() {
                     break 'payloads;
@@ -328,6 +332,75 @@ pub fn scan_js_payloads(env: &mut Environment) {
     }
     payloads.append(&mut env.all_extracted_jscript);
     env.all_extracted_jscript = payloads;
+}
+
+fn push_downloads_from_js_shell_run(
+    env: &mut Environment,
+    idx: usize,
+    snippet_source: &str,
+    text: &str,
+    seen: &mut HashSet<(usize, String)>,
+) {
+    let mut cursor = 0usize;
+    while let Some(rel) = text[cursor..].find(".Run") {
+        if env.check_deadline() {
+            return;
+        }
+        let run_start = cursor + rel;
+        let Some(open) = consume_js_call_open(text, run_start + ".Run".len()) else {
+            cursor = run_start + ".Run".len();
+            continue;
+        };
+        let arg_start = skip_ascii_ws(text, open + 1);
+        let Some((_arg_end, command)) = parse_js_string_literal_at(text, arg_start) else {
+            cursor = open + 1;
+            continue;
+        };
+        push_downloads_from_js_command(env, idx, snippet_source, &command, seen);
+        cursor = open + 1;
+    }
+}
+
+fn push_downloads_from_js_command(
+    env: &mut Environment,
+    idx: usize,
+    snippet_source: &str,
+    command: &str,
+    seen: &mut HashSet<(usize, String)>,
+) {
+    for url_caps in crate::deob_scan::URL_RE.captures_iter(command) {
+        let Some(raw_url) = url_caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(url) = crate::deob_scan::normalize_liberal_url_token(raw_url) else {
+            continue;
+        };
+        if crate::deob_scan::is_noise_url(&url) || !seen.insert((idx, url.clone())) {
+            continue;
+        }
+        let snippet: String = snippet_source.chars().take(120).collect();
+        env.traits.push(Trait::Download {
+            cmd: format!("(js #{idx}) {snippet}"),
+            src: url,
+            dst: None,
+        });
+    }
+
+    for token in command.split_ascii_whitespace() {
+        let candidate = token.trim_matches(['"', '\'', '(', ')', '[', ']', '{', '}', ',', ';']);
+        let Some(url) = crate::deob_scan::normalize_schemeless_domain_path_token(candidate) else {
+            continue;
+        };
+        if crate::deob_scan::is_noise_url(&url) || !seen.insert((idx, url.clone())) {
+            continue;
+        }
+        let snippet: String = snippet_source.chars().take(120).collect();
+        env.traits.push(Trait::Download {
+            cmd: format!("(js #{idx}) {snippet}"),
+            src: url,
+            dst: None,
+        });
+    }
 }
 
 fn collapse_js_line_continuations(text: &str) -> String {
