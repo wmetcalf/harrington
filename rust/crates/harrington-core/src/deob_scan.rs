@@ -6648,9 +6648,6 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     scan_step!("ps_bare_url_downloads", {
         scan_ps_bare_url_downloads(deobfuscated, env);
     });
-    scan_step!("ps_char_index_extractor_urls", {
-        scan_ps_char_index_extractor_urls(deobfuscated, env);
-    });
     scan_step!("js_fromcharcode_urls", {
         scan_js_fromcharcode_urls(deobfuscated, env);
     });

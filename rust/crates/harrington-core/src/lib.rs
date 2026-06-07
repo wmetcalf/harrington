@@ -3021,7 +3021,9 @@ fn analyze_inner(input: &[u8], cfg: &Config, file_path: Option<std::path::PathBu
         // PS body that hosts the `function Musculos…` definition
         // (订单列表.bat is 4 KB on one line but the deob is ~2 KB with
         // the body split). Run it again over the raw input so the
-        // call sites are intact.
+        // call sites are intact. Keep this out of the generic
+        // scan_deob_text loop; full-corpus parity showed the raw-source
+        // pass covers the family while avoiding duplicate regex work.
         if !env.check_deadline() {
             deob_scan::scan_ps_char_index_extractor_urls(&raw_text, &mut env);
         }
