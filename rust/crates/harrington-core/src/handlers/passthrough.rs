@@ -121,8 +121,9 @@ pub fn h_reg(raw: &str, env: &mut Environment) {
         hive,
         key: subkey,
         value_name,
-        command,
+        command: command.clone(),
     });
+    queue_registry_persisted_command(command, env);
 }
 
 make_handler!(h_attrib, "attrib");
@@ -173,16 +174,36 @@ pub fn h_schtasks(raw: &str, env: &mut Environment) {
         value_name: String::new(),
         command: task_run.clone(),
     });
-    if !task_run.is_empty() {
-        if let Some(inner) = super::cmd::extract_cmd_inner(&task_run) {
-            env.exec_cmd.push(inner);
-            env.exec_cmd_delayed
-                .push(super::cmd::has_v_on_raw(&task_run));
-        } else {
-            env.exec_cmd.push(task_run);
-            env.exec_cmd_delayed.push(false);
-        }
+    queue_child_command(task_run, env);
+}
+
+fn queue_registry_persisted_command(command: String, env: &mut Environment) {
+    if !persisted_command_looks_dispatchable(&command) {
+        return;
     }
+    queue_child_command(command, env);
+}
+
+fn queue_child_command(command: String, env: &mut Environment) {
+    if command.is_empty() {
+        return;
+    }
+    if let Some(inner) = super::cmd::extract_cmd_inner(&command) {
+        env.exec_cmd.push(inner);
+        env.exec_cmd_delayed
+            .push(super::cmd::has_v_on_raw(&command));
+    } else {
+        env.exec_cmd.push(command);
+        env.exec_cmd_delayed.push(false);
+    }
+}
+
+fn persisted_command_looks_dispatchable(command: &str) -> bool {
+    let trimmed = command.trim().trim_matches('"');
+    if trimmed.is_empty() || trimmed.ends_with('\\') || trimmed.ends_with('/') {
+        return false;
+    }
+    trimmed.bytes().any(|b| b.is_ascii_whitespace())
 }
 
 make_handler!(h_sc, "sc");
