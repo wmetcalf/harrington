@@ -5057,6 +5057,10 @@ fn scan_credential_access(deobfuscated: &str, env: &mut Environment) {
 fn scan_process_injection(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
+    if !has_process_injection_atom(deobfuscated) {
+        return;
+    }
+
     static API_RE: Lazy<Regex> = Lazy::new(|| {
         // `CreateThread` (no `Ex` suffix) is the local-process variant
         // meter.ps1 uses — same shellcode-execution intent. `VirtualProtect`
@@ -5087,6 +5091,67 @@ fn scan_process_injection(deobfuscated: &str, env: &mut Environment) {
         }
         env.traits
             .push(crate::traits::Trait::ProcessInjection { api });
+    }
+}
+
+fn has_process_injection_atom(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    [
+        "virtualalloc",
+        "virtualprotect",
+        "writeprocessmemory",
+        "createremotethread",
+        "createthread",
+        "ntmapviewofsection",
+        "ntcreatethreadex",
+        "queueuserapc",
+        "setwindowshookex",
+        "rtlmovememory",
+        "zwallocatevirtualmemory",
+        "getprocaddress",
+        "getmodulehandle",
+        "loadlibrary",
+        "unsafenativemethods",
+    ]
+    .iter()
+    .any(|atom| lower.contains(atom))
+}
+
+#[cfg(test)]
+mod process_injection_prefilter_tests {
+    use super::has_process_injection_atom;
+
+    #[test]
+    fn prefilter_allows_known_process_injection_apis() {
+        for sample in [
+            "VirtualAllocEx",
+            "VirtualProtect",
+            "WriteProcessMemory",
+            "CreateRemoteThreadEx",
+            "CreateThread",
+            "NtMapViewOfSection",
+            "NtCreateThreadEx",
+            "QueueUserAPC",
+            "SetWindowsHookEx",
+            "RtlMoveMemory",
+            "ZwAllocateVirtualMemory",
+            "GetProcAddress",
+            "GetModuleHandle",
+            "LoadLibraryA",
+            "UnsafeNativeMethods",
+        ] {
+            assert!(has_process_injection_atom(sample), "blocked: {sample}");
+        }
+    }
+
+    #[test]
+    fn prefilter_blocks_unrelated_powershell_text() {
+        assert!(!has_process_injection_atom(
+            "Start-Process powershell.exe -WindowStyle Hidden"
+        ));
+        assert!(!has_process_injection_atom(
+            "Get-Process | Select-Object ProcessName"
+        ));
     }
 }
 
