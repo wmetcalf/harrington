@@ -104,7 +104,7 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
                 break 'payloads;
             }
             let Some(url) = eval_vbs_string_expr(url_expr, &bindings, &array_bindings)
-                .and_then(|value| crate::deob_scan::normalize_liberal_url_token(&value))
+                .and_then(|value| normalize_vbs_download_url(&value))
             else {
                 continue;
             };
@@ -183,7 +183,7 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
                 break 'payloads;
             }
             let Some(url) = eval_vbs_string_expr(expr, &bindings, &array_bindings)
-                .and_then(|value| crate::deob_scan::normalize_liberal_url_token(&value))
+                .and_then(|value| normalize_vbs_download_url(&value))
             else {
                 continue;
             };
@@ -209,7 +209,7 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
                 let Some(url) = bindings.get(&var_match.as_str().to_ascii_lowercase()) else {
                     continue;
                 };
-                let Some(url) = crate::deob_scan::normalize_liberal_url_token(url) else {
+                let Some(url) = normalize_vbs_download_url(url) else {
                     continue;
                 };
                 if !seen.insert((idx, url.clone())) {
@@ -226,6 +226,11 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
     }
     payloads.append(&mut env.all_extracted_vbs);
     env.all_extracted_vbs = payloads;
+}
+
+fn normalize_vbs_download_url(value: &str) -> Option<String> {
+    crate::deob_scan::normalize_liberal_url_token(value)
+        .or_else(|| crate::deob_scan::normalize_schemeless_domain_path_token(value))
 }
 
 fn extract_shell_run_command_exprs(text: &str) -> Vec<&str> {

