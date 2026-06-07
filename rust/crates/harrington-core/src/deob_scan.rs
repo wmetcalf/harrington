@@ -5577,6 +5577,10 @@ fn scan_beacon_sleep(deobfuscated: &str, env: &mut Environment) {
 fn scan_shellcode_marker(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
+    if !has_shellcode_marker_atom(deobfuscated) {
+        return;
+    }
+
     static SHELLCODE_VAR_RE: Lazy<Regex> =
         Lazy::new(|| Regex::new(r#"(?i)\$(\w*shellcode\w*)\s*="#).expect("shellcode var"));
     static NOP_SLED_RE: Lazy<Regex> =
@@ -5630,6 +5634,13 @@ fn scan_shellcode_marker(deobfuscated: &str, env: &mut Environment) {
             });
         }
     }
+}
+
+fn has_shellcode_marker_atom(text: &str) -> bool {
+    contains_ascii_case_insensitive_atom(text, b"shellcode")
+        || text.contains("0x90")
+        || text.contains(r"\x90")
+        || contains_ascii_case_insensitive_atom(text, b"0xfc")
 }
 
 pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
@@ -8895,7 +8906,7 @@ mod inline_b64_url_extraction_tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod shellcode_marker_tests {
-    use super::scan_shellcode_marker;
+    use super::{has_shellcode_marker_atom, scan_shellcode_marker};
     use crate::env::Environment;
     use crate::traits::Trait;
     use crate::Config;
@@ -8910,6 +8921,27 @@ mod shellcode_marker_tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn prefilter_allows_shellcode_marker_shapes() {
+        for sample in [
+            r#"$shellCode = @(0x41,0x42)"#,
+            r#"$buf = "A" + "\x90\x90\x90\x90\x90\x90\x90\x90""#,
+            r#"$buf = 0x90,0x90,0x90,0x90,0x90,0x90,0x90,0x90"#,
+            r#"[Byte[]] $BqFIleukW = 0xfc,0x48,0x83,0xe4,0xf0"#,
+            r#"[Byte[]] $sc = 0XFC,0XE8,0x82"#,
+        ] {
+            assert!(has_shellcode_marker_atom(sample), "blocked: {sample}");
+        }
+    }
+
+    #[test]
+    fn prefilter_blocks_unrelated_hex_and_powershell_text() {
+        assert!(!has_shellcode_marker_atom(
+            r#"$bytes = 0x41,0x42,0x43; Write-Host done"#,
+        ));
+        assert!(!has_shellcode_marker_atom("powershell -nop -w hidden"));
     }
 
     #[test]
