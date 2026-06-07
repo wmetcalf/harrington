@@ -7096,10 +7096,10 @@ pub fn scan_ps_char_index_extractor_urls(deobfuscated: &str, env: &mut Environme
 }
 
 fn has_ps_char_index_extractor_atom(text: &str) -> bool {
-    contains_ascii_case_insensitive_atom(text, b"function")
-        && text.as_bytes().contains(&b'$')
+    text.as_bytes().contains(&b'$')
         && text.as_bytes().windows(2).any(|window| window == b"+=")
         && has_ps_variable_index_atom(text)
+        && contains_ascii_case_insensitive_atom(text, b"function")
 }
 
 fn has_ps_variable_index_atom(text: &str) -> bool {
