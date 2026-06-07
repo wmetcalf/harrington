@@ -2906,28 +2906,34 @@ fn expand_obfuscation(text: &str) -> String {
         if signals.substring {
             out = expand_ps_dot_substring(&out);
         }
-        if signals.variables {
+        let variables_changed = if signals.variables {
+            let before_variables = out.clone();
             out = expand_ps_index_concat_assignments(&out);
             out = expand_ps_variables(&out);
-        }
-        if signals.regex_replace {
-            out = expand_regex_replace_calls(&out);
-        }
-        if signals.compressed_base64 {
-            out = expand_gzip_function_base64_variables(&out);
-        }
-        if signals.char_cast {
-            out = expand_string_join_char_arrays(&out);
-            out = expand_unary_join_char_arrays(&out);
-        }
-        if signals.base64_or_getstring {
-            out = expand_getstring_base64_literals(&out);
-            out = expand_getstring_base64_variables(&out);
-            out = expand_getstring_byte_arrays(&out);
-            out = expand_convert_frombase64_literals(&out);
-            out = append_decoded_frombase64_literals(&out);
-            out = expand_base64_literals(&out);
-            out = expand_getstring_wrapper(&out);
+            out != before_variables
+        } else {
+            false
+        };
+        if variables_changed {
+            if signals.regex_replace {
+                out = expand_regex_replace_calls(&out);
+            }
+            if signals.compressed_base64 {
+                out = expand_gzip_function_base64_variables(&out);
+            }
+            if signals.char_cast {
+                out = expand_string_join_char_arrays(&out);
+                out = expand_unary_join_char_arrays(&out);
+            }
+            if signals.base64_or_getstring {
+                out = expand_getstring_base64_literals(&out);
+                out = expand_getstring_base64_variables(&out);
+                out = expand_getstring_byte_arrays(&out);
+                out = expand_convert_frombase64_literals(&out);
+                out = append_decoded_frombase64_literals(&out);
+                out = expand_base64_literals(&out);
+                out = expand_getstring_wrapper(&out);
+            }
         }
         if out == before {
             break;
