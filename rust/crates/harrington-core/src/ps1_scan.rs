@@ -4080,7 +4080,7 @@ fn dynamic_download_invoke_urls(text: &str) -> Vec<String> {
     let mut urls = Vec::new();
     for caps in DYNAMIC_DOWNLOAD_INVOKE_RE.captures_iter(text) {
         if let Some(literal) = caps.get(2) {
-            let Some(url) = crate::deob_scan::normalize_liberal_url_token(literal.as_str()) else {
+            let Some(url) = normalize_ps_literal_url(literal.as_str()) else {
                 continue;
             };
             if seen.insert(url.clone()) {
@@ -4142,13 +4142,13 @@ fn ps_downloadfile_calls(text: &str) -> Vec<(String, Option<String>)> {
 fn ps_literal_url_arg(arg: &str) -> Option<String> {
     ps_literal_arg(arg)
         .filter(|value| crate::deob_scan::looks_like_liberal_url(value))
-        .and_then(|value| crate::deob_scan::normalize_liberal_url_token(&value))
+        .and_then(|value| normalize_ps_literal_url(&value))
 }
 
 fn ps_url_arg(arg: &str, bindings: &std::collections::HashMap<String, String>) -> Option<String> {
     ps_string_arg(arg, bindings)
         .filter(|value| crate::deob_scan::looks_like_liberal_url(value))
-        .and_then(|value| crate::deob_scan::normalize_liberal_url_token(&value))
+        .and_then(|value| normalize_ps_literal_url(&value))
 }
 
 fn ps_string_arg(
@@ -4223,8 +4223,12 @@ fn ps_literal_urls(text: &str) -> Vec<String> {
                 .map(|m| m.as_str().to_string())
         })
         .filter(|value| crate::deob_scan::looks_like_liberal_url(value))
-        .filter_map(|value| crate::deob_scan::normalize_liberal_url_token(&value))
+        .filter_map(|value| normalize_ps_literal_url(&value))
         .collect()
+}
+
+fn normalize_ps_literal_url(value: &str) -> Option<String> {
+    crate::deob_scan::normalize_liberal_url_token(&clean_ps_url(value))
 }
 
 fn ps_literal_urls_in_download_context(text: &str) -> Vec<String> {
@@ -4247,13 +4251,16 @@ fn ps_literal_urls_in_download_context(text: &str) -> Vec<String> {
                     (m.start(), value)
                 })
         })
-        .filter(|(start, value)| {
-            crate::deob_scan::looks_like_liberal_url(value)
-                && !ps_url_inside_non_download_hash_option(text, *start)
-                && !ps_url_is_non_download_option_value(text, *start)
-                && seen.insert(value.clone())
+        .filter_map(|(start, value)| {
+            if !crate::deob_scan::looks_like_liberal_url(&value)
+                || ps_url_inside_non_download_hash_option(text, start)
+                || ps_url_is_non_download_option_value(text, start)
+            {
+                return None;
+            }
+            let url = normalize_ps_literal_url(&value)?;
+            seen.insert(url.clone()).then_some(url)
         })
-        .filter_map(|(_, value)| crate::deob_scan::normalize_liberal_url_token(&value))
         .collect()
 }
 
@@ -4951,7 +4958,7 @@ fn clean_ps_url(raw: &str) -> String {
     while let Some(last) = url.chars().last() {
         if matches!(
             last,
-            '.' | ',' | ';' | ':' | ')' | ']' | '}' | '"' | '\'' | '`'
+            '.' | ',' | ';' | ':' | ')' | ']' | '}' | '"' | '\'' | '`' | '&'
         ) {
             url.pop();
         } else {

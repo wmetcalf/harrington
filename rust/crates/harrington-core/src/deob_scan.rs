@@ -2979,7 +2979,7 @@ fn emit_url_variable(
 }
 
 fn trim_url_suffix(url: &str) -> &str {
-    url.trim_end_matches(['"', '\'', ')', ']', '}', ';', ','])
+    url.trim_end_matches(['"', '\'', ')', ']', '}', ';', ',', '&'])
 }
 
 fn scan_process_url_arguments(deobfuscated: &str, env: &mut Environment) {
@@ -6798,7 +6798,7 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
             while let Some(last) = url.chars().last() {
                 if matches!(
                     last,
-                    ',' | '.' | ';' | ':' | ')' | ']' | '}' | '"' | '\'' | '!' | '?' | '\\'
+                    ',' | '.' | ';' | ':' | ')' | ']' | '}' | '"' | '\'' | '!' | '?' | '\\' | '&'
                 ) {
                     url.pop();
                 } else {
