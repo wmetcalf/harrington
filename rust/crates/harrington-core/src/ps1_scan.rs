@@ -2807,67 +2807,262 @@ static PS_VAR_REPLACE_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
 fn expand_obfuscation(text: &str) -> String {
     let mut out = join_powershell_line_continuations(&normalize_powershell_quotes(text));
     for _ in 0..8 {
+        let signals = PsObfuscationSignals::new(&out);
+        if !signals.has_any_expansion_signal() {
+            break;
+        }
         let before = out.clone();
-        out = expand_start_process_argument_list(&out);
-        out = expand_invoke_expression_wrappers(&out);
-        out = expand_ps_dot_replace(&out);
-        out = expand_ps_dot_substring(&out);
-        out = expand_ps_embedded_single_quote_assignments(&out);
-        out = expand_doubled_quote_literals(&out);
-        out = expand_skip_nth(&out); // skip-nth-char decoder (Pattern B)
-        out = expand_skip_nth_for_substring(&out);
-        out = expand_char_concat(&out);
-        out = expand_char_literal_concat(&out);
-        out = expand_string_join_char_arrays(&out);
-        out = expand_unary_join_char_arrays(&out);
-        out = expand_char_array_concat_chunks(&out);
-        out = expand_char_array_chunks(&out); // char-array chunk decoder (Pattern D)
-        out = expand_hex_split_char_loop(&out);
-        out = expand_space_concat(&out); // space-separated string array (Pattern C)
-        out = expand_string_concat(&out);
-        out = expand_double_string_concat(&out);
-        out = expand_format_literals(&out);
-        out = expand_ps_string_format_static(&out);
-        out = expand_gzip_function_base64_variables(&out);
-        out = expand_gzip_base64_literals(&out);
-        out = expand_json_script_base64(&out);
-        out = expand_regex_replace_base64_variables(&out);
-        out = expand_regex_replace_calls(&out);
-        out = expand_getstring_base64_literals(&out);
-        out = expand_getstring_base64_variables(&out);
-        out = expand_getstring_byte_arrays(&out);
-        out = expand_convert_frombase64_literals(&out);
-        out = append_decoded_frombase64_literals(&out);
-        out = expand_base64_literals(&out);
-        out = expand_getstring_wrapper(&out);
-        out = expand_reverse_string_slice_join(&out);
-        out = expand_single_literal_join(&out);
-        out = expand_split_join_literals(&out);
-        out = expand_tochararray_reverse_join(&out);
-        out = expand_ps_string_join(&out);
-        out = expand_ps_string_concat_static(&out);
-        out = expand_ps_join(&out);
-        out = expand_ps_replace(&out);
-        out = expand_ps_dot_replace(&out);
-        out = expand_ps_dot_substring(&out);
-        out = expand_ps_index_concat_assignments(&out);
-        out = expand_ps_variables(&out);
-        out = expand_regex_replace_calls(&out);
-        out = expand_gzip_function_base64_variables(&out);
-        out = expand_string_join_char_arrays(&out);
-        out = expand_unary_join_char_arrays(&out);
-        out = expand_getstring_base64_literals(&out);
-        out = expand_getstring_base64_variables(&out);
-        out = expand_getstring_byte_arrays(&out);
-        out = expand_convert_frombase64_literals(&out);
-        out = append_decoded_frombase64_literals(&out);
-        out = expand_base64_literals(&out);
-        out = expand_getstring_wrapper(&out);
+        if signals.argument_list {
+            out = expand_start_process_argument_list(&out);
+        }
+        if signals.invoke_wrapper {
+            out = expand_invoke_expression_wrappers(&out);
+        }
+        if signals.dot_replace {
+            out = expand_ps_dot_replace(&out);
+        }
+        if signals.substring {
+            out = expand_ps_dot_substring(&out);
+        }
+        if signals.embedded_single_quote_assignment {
+            out = expand_ps_embedded_single_quote_assignments(&out);
+        }
+        if signals.doubled_single_quote {
+            out = expand_doubled_quote_literals(&out);
+        }
+        if signals.skip_nth {
+            out = expand_skip_nth(&out); // skip-nth-char decoder (Pattern B)
+            out = expand_skip_nth_for_substring(&out);
+        }
+        if signals.char_cast {
+            out = expand_char_concat(&out);
+            out = expand_char_literal_concat(&out);
+            out = expand_string_join_char_arrays(&out);
+            out = expand_unary_join_char_arrays(&out);
+            out = expand_char_array_concat_chunks(&out);
+            out = expand_char_array_chunks(&out); // char-array chunk decoder (Pattern D)
+        }
+        if signals.hex_split {
+            out = expand_hex_split_char_loop(&out);
+        }
+        if signals.space_concat {
+            out = expand_space_concat(&out); // space-separated string array (Pattern C)
+        }
+        if signals.single_quote_concat {
+            out = expand_string_concat(&out);
+        }
+        if signals.double_quote_concat {
+            out = expand_double_string_concat(&out);
+        }
+        if signals.format {
+            out = expand_format_literals(&out);
+            out = expand_ps_string_format_static(&out);
+        }
+        if signals.compressed_base64 {
+            out = expand_gzip_function_base64_variables(&out);
+            out = expand_gzip_base64_literals(&out);
+        }
+        if signals.json_script_base64 {
+            out = expand_json_script_base64(&out);
+        }
+        if signals.regex_replace_base64 {
+            out = expand_regex_replace_base64_variables(&out);
+        }
+        if signals.regex_replace {
+            out = expand_regex_replace_calls(&out);
+        }
+        if signals.base64_or_getstring {
+            out = expand_getstring_base64_literals(&out);
+            out = expand_getstring_base64_variables(&out);
+            out = expand_getstring_byte_arrays(&out);
+            out = expand_convert_frombase64_literals(&out);
+            out = append_decoded_frombase64_literals(&out);
+            out = expand_base64_literals(&out);
+            out = expand_getstring_wrapper(&out);
+        }
+        if signals.reverse_slice_join {
+            out = expand_reverse_string_slice_join(&out);
+        }
+        if signals.join {
+            out = expand_single_literal_join(&out);
+            out = expand_split_join_literals(&out);
+            out = expand_ps_join(&out);
+        }
+        if signals.to_char_array {
+            out = expand_tochararray_reverse_join(&out);
+        }
+        if signals.string_join {
+            out = expand_ps_string_join(&out);
+        }
+        if signals.string_concat {
+            out = expand_ps_string_concat_static(&out);
+        }
+        if signals.replace {
+            out = expand_ps_replace(&out);
+        }
+        if signals.dot_replace {
+            out = expand_ps_dot_replace(&out);
+        }
+        if signals.substring {
+            out = expand_ps_dot_substring(&out);
+        }
+        if signals.variables {
+            out = expand_ps_index_concat_assignments(&out);
+            out = expand_ps_variables(&out);
+        }
+        if signals.regex_replace {
+            out = expand_regex_replace_calls(&out);
+        }
+        if signals.compressed_base64 {
+            out = expand_gzip_function_base64_variables(&out);
+        }
+        if signals.char_cast {
+            out = expand_string_join_char_arrays(&out);
+            out = expand_unary_join_char_arrays(&out);
+        }
+        if signals.base64_or_getstring {
+            out = expand_getstring_base64_literals(&out);
+            out = expand_getstring_base64_variables(&out);
+            out = expand_getstring_byte_arrays(&out);
+            out = expand_convert_frombase64_literals(&out);
+            out = append_decoded_frombase64_literals(&out);
+            out = expand_base64_literals(&out);
+            out = expand_getstring_wrapper(&out);
+        }
         if out == before {
             break;
         }
     }
     out
+}
+
+struct PsObfuscationSignals {
+    argument_list: bool,
+    invoke_wrapper: bool,
+    dot_replace: bool,
+    substring: bool,
+    embedded_single_quote_assignment: bool,
+    doubled_single_quote: bool,
+    skip_nth: bool,
+    char_cast: bool,
+    hex_split: bool,
+    space_concat: bool,
+    single_quote_concat: bool,
+    double_quote_concat: bool,
+    format: bool,
+    compressed_base64: bool,
+    json_script_base64: bool,
+    regex_replace_base64: bool,
+    regex_replace: bool,
+    base64_or_getstring: bool,
+    reverse_slice_join: bool,
+    join: bool,
+    to_char_array: bool,
+    string_join: bool,
+    string_concat: bool,
+    replace: bool,
+    variables: bool,
+}
+
+impl PsObfuscationSignals {
+    fn new(text: &str) -> Self {
+        let lower = text.to_ascii_lowercase();
+        let argument_list = lower.contains("-argumentlist");
+        let has_function_def =
+            lower.contains("function ") || lower.contains("-name ") || lower.contains("-n ");
+        let invoke_wrapper = has_function_def && lower.contains("invoke-expression");
+        let dot_replace = lower.contains(".replace");
+        let substring = lower.contains(".substring");
+        let embedded_single_quote_assignment = text.contains("'''") && text.contains('$');
+        let doubled_single_quote = text.contains("''");
+        let skip_nth = has_function_def
+            && (lower.contains("do")
+                || lower.contains("for")
+                || lower.contains("until")
+                || lower.contains(".invoke"));
+        let char_cast = lower.contains("[char");
+        let hex_split = lower.contains("-split") && lower.contains("toint16");
+        let space_concat = text.contains("' ") && (text.contains(" '") || text.contains("\t'"));
+        let single_quote_concat = text.contains('\'') && text.contains('+');
+        let double_quote_concat = text.contains('"') && text.contains('+');
+        let format = lower.contains("-f") || lower.contains("string]::format");
+        let compressed_base64 = (lower.contains("gzipstream") || lower.contains("deflatestream"))
+            && lower.contains("base64");
+        let json_script_base64 = lower.contains("convertfrom-json")
+            && lower.contains("script")
+            && lower.contains("frombase64string");
+        let regex_replace = lower.contains("[regex]::replace");
+        let regex_replace_base64 = regex_replace && lower.contains("frombase64string");
+        let base64_or_getstring = lower.contains("base64")
+            || lower.contains("frombase64string")
+            || lower.contains(".getstring");
+        let reverse_slice_join = lower.contains("-join") && lower.contains("-1..-");
+        let join = lower.contains("-join")
+            || lower.contains("-split")
+            || lower.contains("-isplit")
+            || lower.contains("-csplit");
+        let to_char_array = lower.contains("tochararray") && lower.contains("reverse");
+        let string_join = lower.contains("string]::join");
+        let string_concat = lower.contains("string]::concat");
+        let replace = lower.contains("replace");
+        let variables = text.contains('$');
+
+        Self {
+            argument_list,
+            invoke_wrapper,
+            dot_replace,
+            substring,
+            embedded_single_quote_assignment,
+            doubled_single_quote,
+            skip_nth,
+            char_cast,
+            hex_split,
+            space_concat,
+            single_quote_concat,
+            double_quote_concat,
+            format,
+            compressed_base64,
+            json_script_base64,
+            regex_replace_base64,
+            regex_replace,
+            base64_or_getstring,
+            reverse_slice_join,
+            join,
+            to_char_array,
+            string_join,
+            string_concat,
+            replace,
+            variables,
+        }
+    }
+
+    fn has_any_expansion_signal(&self) -> bool {
+        self.argument_list
+            || self.invoke_wrapper
+            || self.dot_replace
+            || self.substring
+            || self.embedded_single_quote_assignment
+            || self.doubled_single_quote
+            || self.skip_nth
+            || self.char_cast
+            || self.hex_split
+            || self.space_concat
+            || self.single_quote_concat
+            || self.double_quote_concat
+            || self.format
+            || self.compressed_base64
+            || self.json_script_base64
+            || self.regex_replace_base64
+            || self.regex_replace
+            || self.base64_or_getstring
+            || self.reverse_slice_join
+            || self.join
+            || self.to_char_array
+            || self.string_join
+            || self.string_concat
+            || self.replace
+            || self.variables
+    }
 }
 
 fn join_powershell_line_continuations(text: &str) -> String {
