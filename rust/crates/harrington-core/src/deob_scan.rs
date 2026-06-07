@@ -6888,10 +6888,10 @@ fn is_var_fragment_url_boundary(ch: char) -> bool {
 }
 
 pub fn scan_raw_marker_powershell_urls(input: &[u8], env: &mut Environment) {
-    let text = String::from_utf8_lossy(input);
-    if !text.contains("%!") {
+    if !input.windows(2).any(|window| window == b"%!") {
         return;
     }
+    let text = String::from_utf8_lossy(input);
     let mut normalized = text.replace('^', "");
     normalized = normalized
         .replace("%!A%", "E")

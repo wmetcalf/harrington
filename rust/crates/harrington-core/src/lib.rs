@@ -824,6 +824,22 @@ if exist "%B64FILE%" del "%B64FILE%"
     }
 
     #[test]
+    fn ascii_case_insensitive_byte_gate_matches_script_tags() {
+        assert!(crate::contains_ascii_case_insensitive_bytes(
+            b"/* <SCRIPT language=\"JScript\"> */",
+            b"<script"
+        ));
+        assert!(crate::contains_ascii_case_insensitive_bytes(
+            b"</ScRiPt>",
+            b"</script>"
+        ));
+        assert!(!crate::contains_ascii_case_insensitive_bytes(
+            b"echo no embedded script here",
+            b"<script"
+        ));
+    }
+
+    #[test]
     fn start_quoted_url_is_extracted() {
         // `start "" "URL"` opens the URL in the default handler.
         let script = b"start \"\" \"https://opened.example/doc.pdf\"\r\n";
@@ -2678,6 +2694,11 @@ pub struct Report {
 // would never reach trait extraction. Pre-scan and push any script block
 // payload onto `all_extracted_jscript` so `scan_js_payloads` walks it.
 fn pre_scan_polyglot_script_block(input: &[u8], env: &mut Environment) {
+    if !contains_ascii_case_insensitive_bytes(input, b"<script")
+        || !contains_ascii_case_insensitive_bytes(input, b"</script>")
+    {
+        return;
+    }
     let text = String::from_utf8_lossy(input);
     let lower = text.to_ascii_lowercase();
     let mut idx = 0usize;
@@ -2699,6 +2720,14 @@ fn pre_scan_polyglot_script_block(input: &[u8], env: &mut Environment) {
         }
         idx = body_end + "</script>".len();
     }
+}
+
+fn contains_ascii_case_insensitive_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+    needle.is_empty()
+        || (haystack.len() >= needle.len()
+            && haystack
+                .windows(needle.len())
+                .any(|window| window.eq_ignore_ascii_case(needle)))
 }
 
 fn pre_scan_utf16_script_blob(decoded: &str, env: &mut Environment) {
