@@ -741,6 +741,9 @@ fn python_urlopen_call_names(text: &str) -> Vec<String> {
             names.push(format!("requests.{method}"));
             names.push(format!("httpx.{method}"));
         }
+        names.extend(
+            collect_python_httpx_module_aliases(text).map(|alias| format!("{alias}.{method}")),
+        );
         names.extend(collect_python_requests_method_aliases(text, method));
         names.extend(collect_python_requests_session_method_aliases(text, method));
         names.extend(collect_python_requests_bound_session_method_aliases(
@@ -749,6 +752,19 @@ fn python_urlopen_call_names(text: &str) -> Vec<String> {
     }
     names.extend(collect_python_urllib_call_aliases(text, "urlopen"));
     names
+}
+
+fn collect_python_httpx_module_aliases(text: &str) -> impl Iterator<Item = String> + '_ {
+    #[allow(clippy::expect_used)]
+    static PY_IMPORT_HTTPX_ALIAS_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)\bimport\s+httpx\s+as\s+([A-Za-z_][A-Za-z0-9_]*)"#)
+            .expect("python httpx import alias regex")
+    });
+
+    PY_IMPORT_HTTPX_ALIAS_RE
+        .captures_iter(text)
+        .take(8)
+        .filter_map(|caps| caps.get(1).map(|m| m.as_str().to_string()))
 }
 
 fn collect_python_requests_method_aliases(text: &str, target_method: &str) -> Vec<String> {
