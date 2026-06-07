@@ -3243,18 +3243,12 @@ fn analyze_inner(input: &[u8], cfg: &Config, file_path: Option<std::path::PathBu
     // the SOSTENER/banglabillboard family whose Reflection.Assembly]::Load
     // call is inside the base64-decoded PS body that didn't exist when
     // the first scan_deob_text ran.
-    // Keep the historical final scan for normal-sized output: several
-    // command-line workflows rely on this late pass for compact URL/download
-    // summaries. For multi-MiB output where no extracted payload was appended,
-    // the scan is an exact duplicate of the earlier deob scan and can dominate
-    // runtime on BatCloak-style reconstruction output.
-    const MAX_UNCHANGED_FINAL_SCAN_BYTES: usize = 1024 * 1024;
     if let Some(scan_start) = appended_payload_scan_start {
         deob_scan::scan_deob_text(&out[scan_start..], &mut env);
         // Re-run dedup since the post-banner scan may have emitted dupes.
         let max_per_kind = cfg.max_traits_per_kind;
         dedup_traits(&mut env.traits, max_per_kind);
-    } else if out.len() <= MAX_UNCHANGED_FINAL_SCAN_BYTES {
+    } else if has_unchanged_final_scan_candidate(&out) {
         deob_scan::scan_deob_text(&out, &mut env);
         // Re-run dedup since the post-banner scan may have emitted dupes.
         let max_per_kind = cfg.max_traits_per_kind;
@@ -3300,6 +3294,13 @@ fn scan_recovered_artifact_strings(env: &mut Environment) {
     }
     artifacts.append(&mut env.recovered_pe);
     env.recovered_pe = artifacts;
+}
+
+fn has_unchanged_final_scan_candidate(text: &str) -> bool {
+    ascii_case_insensitive_contains(text, "http:")
+        || ascii_case_insensitive_contains(text, "https:")
+        || ascii_case_insensitive_contains(text, "ftp:")
+        || ascii_case_insensitive_contains(text, "file:")
 }
 
 fn summarize_multiline_base64_pe_carrier_blocks(text: String, env: &mut Environment) -> String {
