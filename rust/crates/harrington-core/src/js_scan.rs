@@ -1034,7 +1034,7 @@ fn decoded_js_atob_literals(text: &str) -> Vec<String> {
 
 fn decoded_js_atob_alias_calls(text: &str) -> Vec<String> {
     let aliases = collect_js_decoder_aliases(text, "atob");
-    decoded_js_decoder_alias_calls(text, &aliases, decode_js_base64_string)
+    decoded_js_decoder_alias_calls(text, &aliases, decode_js_base64_string_strict)
 }
 
 fn decoded_js_custom_base64_decoder_calls(text: &str) -> Vec<String> {
@@ -1714,7 +1714,7 @@ fn parse_js_atob_call_at(
     if text.as_bytes().get(close) != Some(&b')') {
         return None;
     }
-    decode_js_base64_string(&encoded).map(|decoded| (close + 1, decoded))
+    decode_js_base64_string_strict(&encoded).map(|decoded| (close + 1, decoded))
 }
 
 fn parse_js_buffer_from_base64_call_at(
@@ -2920,18 +2920,35 @@ fn parse_js_bound_member_callee_end(
     (text.as_bytes().get(close) == Some(&b']')).then_some(close + 1)
 }
 
+fn clean_js_base64(encoded: &str) -> Option<String> {
+    if encoded.len() > 16384 {
+        return None;
+    }
+    Some(
+        encoded
+            .chars()
+            .filter(|c| !c.is_ascii_whitespace())
+            .collect(),
+    )
+}
+
+fn decode_js_base64_string_strict(encoded: &str) -> Option<String> {
+    decode_js_base64_bytes_strict(encoded)
+        .map(|decoded| String::from_utf8_lossy(&decoded).into_owned())
+}
+
 fn decode_js_base64_string(encoded: &str) -> Option<String> {
     decode_js_base64_bytes(encoded).map(|decoded| String::from_utf8_lossy(&decoded).into_owned())
 }
 
+fn decode_js_base64_bytes_strict(encoded: &str) -> Option<Vec<u8>> {
+    let cleaned = clean_js_base64(encoded)?;
+    let decoded = decode_base64_maybe_unpadded(&cleaned)?;
+    (decoded.len() <= 8192).then_some(decoded)
+}
+
 fn decode_js_base64_bytes(encoded: &str) -> Option<Vec<u8>> {
-    if encoded.len() > 16384 {
-        return None;
-    }
-    let cleaned: String = encoded
-        .chars()
-        .filter(|c| !c.is_ascii_whitespace())
-        .collect();
+    let cleaned = clean_js_base64(encoded)?;
     let decoded = decode_base64_maybe_unpadded(&cleaned).or_else(|| {
         if !cleaned.as_bytes().iter().any(|b| matches!(b, b'-' | b'_')) {
             return None;
