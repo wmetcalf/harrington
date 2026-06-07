@@ -32,6 +32,9 @@ pub fn strip_line(text: &str) -> String {
     if text.len() > MAX_SCAN_BYTES {
         return text.to_string();
     }
+    if !has_repeated_sandwich_candidate_shape(text) {
+        return text.to_string();
+    }
     let mut out = text.to_string();
     for _ in 0..4 {
         let bytes = out.as_bytes();
@@ -165,6 +168,34 @@ pub fn strip_line(text: &str) -> String {
     out
 }
 
+fn has_repeated_sandwich_candidate_shape(text: &str) -> bool {
+    // The real stripper requires the same candidate marker to appear at
+    // least twice inside at least two alphabetic runs. A 3-byte marker
+    // appearing twice needs a run of at least 8 bytes (`aXYZbXYZ`).
+    // Anything without two such runs cannot satisfy the sandwich test.
+    let min_run_len = MIN_MARKER_LEN * 2 + 2;
+    let mut qualifying_runs = 0usize;
+    let bytes = text.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if !bytes[i].is_ascii_alphabetic() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
+            i += 1;
+        }
+        if i - start >= min_run_len {
+            qualifying_runs += 1;
+            if qualifying_runs >= 2 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Find byte spans within `text` that look like ASCII-alphanumeric base64
 /// runs of at least 64 chars whose decoded bytes look textual or UTF-16LE.
 /// Used to PRESERVE base64 literals when stripping marker noise around them.
@@ -270,4 +301,20 @@ fn is_protected_marker_candidate(candidate: &str) -> bool {
             | "invoke"
             | "request"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_line;
+
+    #[test]
+    fn strip_line_keeps_plain_assignment_without_marker_shape() {
+        let line = r#"set "Ynclwtharj=INIMIZ" & set "Gopsadtjgt=& star""#;
+        assert_eq!(strip_line(line), line);
+    }
+
+    #[test]
+    fn strip_line_removes_repeated_sandwich_marker_shape() {
+        assert_eq!(strip_line("aXYZbXYZcXYZ dXYZeXYZ"), "abc de");
+    }
 }
