@@ -32,6 +32,11 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
         return result;
     }
 
+    if let Some(inner) = crate::handlers::forfiles::extract_forfiles_inner(raw) {
+        result.child_cmd_to_push = Some(inner);
+        result.child_cmd_delayed = false;
+    }
+
     // cmd /c handler: extract child from raw text so var refs aren't expanded
     if let Some(inner) = crate::handlers::cmd::extract_cmd_inner(raw) {
         result.child_cmd_to_push = Some(inner);

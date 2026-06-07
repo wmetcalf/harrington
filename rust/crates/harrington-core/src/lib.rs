@@ -6727,7 +6727,7 @@ mod goto_tests {
 
 #[cfg(test)]
 mod child_tests {
-    use crate::{analyze, Config};
+    use crate::{analyze, traits::Trait, Config};
 
     #[test]
     fn nested_cmd_c_recurses_into_child() {
@@ -6742,6 +6742,31 @@ mod child_tests {
             combined.contains("echo hi world") || report.deobfuscated.contains("echo hi world"),
             "no echo hi world in:\n{}",
             combined
+        );
+    }
+
+    #[test]
+    fn forfiles_c_recurses_into_nested_cmd_child() {
+        let script =
+            br#"forfiles /p C:\Users\Public /m *.txt /c "cmd /V:ON /c set X=hi&&echo !X! world""#;
+        let report = analyze(script, &Config::default());
+        let combined = format!(
+            "{}\n--children--\n{}",
+            report.deobfuscated,
+            report.extracted_cmd.join("\n---\n")
+        );
+        assert!(
+            combined.contains("echo hi world") || report.deobfuscated.contains("echo hi world"),
+            "forfiles /c child was not recursively analyzed:\n{}",
+            combined
+        );
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::Lolbas { name, .. } if name == "forfiles")),
+            "forfiles LOLBAS trait missing: {:?}",
+            report.traits
         );
     }
 }

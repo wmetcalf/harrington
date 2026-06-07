@@ -15,6 +15,7 @@ pub mod desktopimgdownldr;
 pub mod echo;
 pub mod extrac32;
 pub mod for_cmd;
+pub mod forfiles;
 pub mod goto;
 pub mod if_cmd;
 pub mod mshta;
@@ -54,6 +55,7 @@ pub fn lookup(name: &str) -> Option<Handler> {
         "certreq" => return Some(certreq::h_certreq),
         "certutil" => return Some(certutil::h_certutil),
         "desktopimgdownldr" => return Some(desktopimgdownldr::h_desktopimgdownldr),
+        "forfiles" => return Some(forfiles::h_forfiles),
         _ => {}
     }
     match lower.as_str() {
