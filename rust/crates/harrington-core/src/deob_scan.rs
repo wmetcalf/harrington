@@ -2479,6 +2479,9 @@ fn rundll32_download_export(token: &str) -> bool {
 }
 
 fn scan_rundll32_download_exports_deob_text(deobfuscated: &str, env: &mut Environment) {
+    if !has_rundll32_download_export_atom(deobfuscated) {
+        return;
+    }
     let mut known: std::collections::HashSet<String> = env
         .traits
         .iter()
@@ -2521,6 +2524,9 @@ fn scan_rundll32_download_exports_deob_text(deobfuscated: &str, env: &mut Enviro
 }
 
 fn scan_desktopimgdownldr_deob_text(deobfuscated: &str, env: &mut Environment) {
+    if !has_desktopimgdownldr_atom(deobfuscated) {
+        return;
+    }
     let mut known: std::collections::HashSet<String> = env
         .traits
         .iter()
@@ -2557,6 +2563,9 @@ fn scan_desktopimgdownldr_deob_text(deobfuscated: &str, env: &mut Environment) {
 }
 
 fn scan_certoc_deob_text(deobfuscated: &str, env: &mut Environment) {
+    if !has_certoc_getcacaps_atom(deobfuscated) {
+        return;
+    }
     let mut known: std::collections::HashSet<String> = env
         .traits
         .iter()
@@ -2590,6 +2599,22 @@ fn scan_certoc_deob_text(deobfuscated: &str, env: &mut Environment) {
             });
         }
     }
+}
+
+fn has_rundll32_download_export_atom(text: &str) -> bool {
+    contains_ascii_case_insensitive_atom(text, b"rundll32")
+        && contains_ascii_case_insensitive_atom(text, b"scrobj.dll")
+        && contains_ascii_case_insensitive_atom(text, b"generatetypelib")
+}
+
+fn has_desktopimgdownldr_atom(text: &str) -> bool {
+    contains_ascii_case_insensitive_atom(text, b"desktopimgdownldr")
+        && contains_ascii_case_insensitive_atom(text, b"lockscreenurl")
+}
+
+fn has_certoc_getcacaps_atom(text: &str) -> bool {
+    contains_ascii_case_insensitive_atom(text, b"certoc")
+        && contains_ascii_case_insensitive_atom(text, b"getcacaps")
 }
 
 fn certoc_getcacaps_url_after(tokens: &[String], start: usize) -> Option<String> {
