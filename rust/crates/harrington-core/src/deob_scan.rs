@@ -4589,6 +4589,9 @@ fn scan_anti_recovery(deobfuscated: &str, env: &mut Environment) {
 fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
+    if !has_evidence_cleanup_atom(deobfuscated) {
+        return;
+    }
 
     static EVENT_LOG_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?im)^[^\r\n]*?\bwevtutil(?:\.exe)?\s+cl\s+("[^"\r\n]+"|[^\s\r\n]+)[^\r\n]*"#)
@@ -4704,6 +4707,64 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
         .unwrap_or("registry-history")
         .to_string();
         push("registry-history-delete", target, command);
+    }
+}
+
+fn has_evidence_cleanup_atom(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    [
+        "wevtutil",
+        "fsutil",
+        "prefetch",
+        "recent",
+        "automaticdestinations",
+        "customdestinations",
+        "userassist",
+        "recentdocs",
+        "muicache",
+        "bagmru",
+        "shell\\bags",
+        "comdlg32",
+        "runmru",
+        "typedpaths",
+    ]
+    .iter()
+    .any(|atom| lower.contains(atom))
+}
+
+#[cfg(test)]
+mod evidence_cleanup_prefilter_tests {
+    use super::has_evidence_cleanup_atom;
+
+    #[test]
+    fn prefilter_allows_known_cleanup_targets() {
+        for sample in [
+            "wevtutil cl Security",
+            "fsutil usn deletejournal /d c:",
+            r#"del /s /q C:\Windows\Prefetch\*.*"#,
+            r#"del /q "%APPDATA%\Microsoft\Windows\Recent\AutomaticDestinations\*.*""#,
+            r#"del /q "%APPDATA%\Microsoft\Windows\Recent\CustomDestinations\*.*""#,
+            r#"reg delete HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\UserAssist"#,
+            r#"reg delete HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\RecentDocs"#,
+            r#"reg delete HKCU\Software\Microsoft\Windows\ShellNoRoam\MUICache"#,
+            r#"reg delete HKCU\Software\Microsoft\Windows\Shell\BagMRU"#,
+            r#"reg delete HKCU\Software\Microsoft\Windows\Shell\Bags"#,
+            r#"reg delete HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\ComDlg32\OpenSavePidlMRU"#,
+            r#"reg delete HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\RunMRU"#,
+            r#"reg delete HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\TypedPaths"#,
+        ] {
+            assert!(has_evidence_cleanup_atom(sample), "blocked: {sample}");
+        }
+    }
+
+    #[test]
+    fn prefilter_blocks_generic_delete_text() {
+        assert!(!has_evidence_cleanup_atom(
+            r#"del /f /q C:\Temp\installer.log"#
+        ));
+        assert!(!has_evidence_cleanup_atom(
+            r#"reg delete HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v App /f"#,
+        ));
     }
 }
 
