@@ -209,45 +209,69 @@ pub fn scan_js_payloads(env: &mut Environment) {
         if env.check_deadline() {
             break 'payloads;
         }
-        let has_js_signal = js_decoder_signal(&decoded);
+        let js_signals = js_decoder_signals(&decoded);
         // Second pass: collapse "a"+"b"+"c" concat when the payload has
         // JavaScript obfuscation vocabulary. This parser is intentionally
         // skipped for misclassified VBScript bodies.
-        let concat_resolved = if has_js_signal {
+        let concat_resolved = if js_signals.any() {
             expand_js_string_concat(&decoded)
         } else {
             decoded
         };
         let mut candidates = vec![concat_resolved.clone()];
-        if has_js_signal {
-            candidates.extend(decoded_js_percent_literals(&concat_resolved));
+        if js_signals.any() {
+            if js_signals.percent_decoder {
+                candidates.extend(decoded_js_percent_literals(&concat_resolved));
+            }
             if env.check_deadline() {
                 break 'payloads;
             }
-            candidates.extend(decoded_js_percent_alias_calls(&concat_resolved));
-            candidates.extend(decoded_js_fromcharcode_literals(&concat_resolved));
+            if js_signals.percent_decoder {
+                candidates.extend(decoded_js_percent_alias_calls(&concat_resolved));
+            }
+            if js_signals.charcode_decoder || js_signals.string_bindings {
+                candidates.extend(decoded_js_fromcharcode_literals(&concat_resolved));
+            }
             if env.check_deadline() {
                 break 'payloads;
             }
-            candidates.extend(decoded_js_fromcharcode_array_bindings(&concat_resolved));
-            candidates.extend(decoded_js_textdecoder_literals(&concat_resolved));
+            if js_signals.charcode_decoder || js_signals.string_bindings {
+                candidates.extend(decoded_js_fromcharcode_array_bindings(&concat_resolved));
+                candidates.extend(decoded_js_custom_base64_decoder_calls(&concat_resolved));
+            }
+            if js_signals.text_decoder {
+                candidates.extend(decoded_js_textdecoder_literals(&concat_resolved));
+            }
             if env.check_deadline() {
                 break 'payloads;
             }
-            candidates.extend(decoded_js_atob_literals(&concat_resolved));
-            candidates.extend(decoded_js_buffer_from_base64_literals(&concat_resolved));
-            candidates.extend(decoded_js_atob_alias_calls(&concat_resolved));
-            candidates.extend(decoded_js_custom_base64_decoder_calls(&concat_resolved));
+            if js_signals.atob_decoder || js_signals.string_bindings {
+                candidates.extend(decoded_js_atob_literals(&concat_resolved));
+                candidates.extend(decoded_js_atob_alias_calls(&concat_resolved));
+            }
+            if js_signals.buffer_decoder {
+                candidates.extend(decoded_js_buffer_from_base64_literals(&concat_resolved));
+            }
             if env.check_deadline() {
                 break 'payloads;
             }
-            candidates.extend(decoded_js_bound_decoder_calls(&concat_resolved));
-            candidates.extend(decoded_js_split_reverse_join_literals(&concat_resolved));
-            candidates.extend(decoded_js_array_from_reverse_join_literals(
-                &concat_resolved,
-            ));
-            candidates.extend(decoded_js_array_join_literals(&concat_resolved));
-            candidates.extend(decoded_js_string_bindings(&concat_resolved));
+            if js_signals.bound_decoder {
+                candidates.extend(decoded_js_bound_decoder_calls(&concat_resolved));
+            }
+            if js_signals.split_reverse_join {
+                candidates.extend(decoded_js_split_reverse_join_literals(&concat_resolved));
+            }
+            if js_signals.array_from_reverse_join {
+                candidates.extend(decoded_js_array_from_reverse_join_literals(
+                    &concat_resolved,
+                ));
+            }
+            if js_signals.array_join {
+                candidates.extend(decoded_js_array_join_literals(&concat_resolved));
+            }
+            if js_signals.string_bindings {
+                candidates.extend(decoded_js_string_bindings(&concat_resolved));
+            }
         }
 
         for candidate in candidates.iter().skip(1) {
@@ -327,28 +351,73 @@ fn queue_decoded_js_script_candidate(candidate: &str, env: &mut Environment) {
     }
 }
 
+#[cfg(test)]
 fn js_decoder_signal(text: &str) -> bool {
+    js_decoder_signals(text).any()
+}
+
+#[derive(Debug, Default)]
+struct JsDecoderSignals {
+    percent_decoder: bool,
+    charcode_decoder: bool,
+    text_decoder: bool,
+    atob_decoder: bool,
+    buffer_decoder: bool,
+    bound_decoder: bool,
+    split_reverse_join: bool,
+    array_from_reverse_join: bool,
+    array_join: bool,
+    string_bindings: bool,
+    unicode_escape: bool,
+}
+
+impl JsDecoderSignals {
+    fn any(&self) -> bool {
+        self.percent_decoder
+            || self.charcode_decoder
+            || self.text_decoder
+            || self.atob_decoder
+            || self.buffer_decoder
+            || self.bound_decoder
+            || self.split_reverse_join
+            || self.array_from_reverse_join
+            || self.array_join
+            || self.string_bindings
+            || self.unicode_escape
+    }
+}
+
+fn js_decoder_signals(text: &str) -> JsDecoderSignals {
     let lower = text.to_ascii_lowercase();
-    U_ESCAPE_RE.is_match(text)
-        || lower.contains("decodeuri")
-        || lower.contains("unescape")
-        || lower.contains("fromcharcode")
-        || lower.contains("fromcodepoint")
-        || lower.contains("textdecoder")
-        || lower.contains("uint8array")
-        || lower.contains("atob")
-        || lower.contains("buffer.from")
-        || lower.contains("new buffer")
-        || lower.contains(".split")
-        || lower.contains(".reverse")
-        || lower.contains(".join")
-        || lower.contains("array.from")
+    let percent_decoder = lower.contains("decodeuri") || lower.contains("unescape");
+    let charcode_decoder = lower.contains("fromcharcode") || lower.contains("fromcodepoint");
+    let text_decoder = lower.contains("textdecoder");
+    let atob_decoder = lower.contains("atob");
+    let buffer_decoder = lower.contains("buffer.from") || lower.contains("new buffer");
+    let split_reverse_join = lower.contains(".split") && lower.contains(".reverse");
+    let array_from_reverse_join = lower.contains("array.from") && lower.contains(".reverse");
+    let array_join = lower.contains(".join")
         || lower.contains("array(")
-        || lower.contains("\" + \"")
+        || lower.contains("array.of")
+        || lower.contains("array.from");
+    let string_bindings = lower.contains("\" + \"")
         || lower.contains("' + '")
         || lower.contains("var ")
         || lower.contains("let ")
-        || lower.contains("const ")
+        || lower.contains("const ");
+    JsDecoderSignals {
+        percent_decoder,
+        charcode_decoder,
+        text_decoder,
+        atob_decoder,
+        buffer_decoder,
+        bound_decoder: percent_decoder || atob_decoder || string_bindings,
+        split_reverse_join,
+        array_from_reverse_join,
+        array_join,
+        string_bindings,
+        unicode_escape: U_ESCAPE_RE.is_match(text),
+    }
 }
 
 fn decoded_js_percent_literals(text: &str) -> Vec<String> {
