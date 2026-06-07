@@ -2486,13 +2486,14 @@ fn has_url_variable_assignment_atom(text: &str) -> bool {
     if !text.as_bytes().contains(&b'=') {
         return false;
     }
-    if [b"http:".as_slice(), b"https:", b"ftp:", b"file:"]
+    let lower = text.to_ascii_lowercase();
+    if ["http:", "https:", "ftp:", "file:"]
         .iter()
-        .any(|atom| contains_ascii_case_insensitive_atom(text, atom))
+        .any(|atom| lower.contains(atom))
     {
         return true;
     }
-    contains_ascii_case_insensitive_atom(text, b"url") && text.contains('/') && text.contains('.')
+    lower.contains("url") && text.contains('/') && text.contains('.')
 }
 
 #[cfg(test)]
