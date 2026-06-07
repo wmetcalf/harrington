@@ -155,6 +155,89 @@ static NET_REQ_RE: Lazy<Regex> = Lazy::new(|| {
         .expect("netreq")
 });
 
+struct PsUrlRegexSpec {
+    regex: &'static Lazy<Regex>,
+    atoms: &'static [&'static [u8]],
+}
+
+const IWR_ATOMS: &[&[u8]] = &[b"invoke-webrequest", b"iwr", b"wget", b"curl"];
+const IRM_ATOMS: &[&[u8]] = &[b"invoke-restmethod", b"irm"];
+const CMDLET_URL_ATOMS: &[&[u8]] = &[
+    b"invoke-webrequest",
+    b"invoke-restmethod",
+    b"iwr",
+    b"irm",
+    b"wget",
+    b"curl",
+];
+const CURL_EXE_ATOMS: &[&[u8]] = &[b"curl.exe"];
+const MSHTA_ATOMS: &[&[u8]] = &[b"mshta"];
+const URL_SCHEME_ATOMS: &[&[u8]] = &[b"http:", b"https:", b"ftp:", b"file:"];
+const DOWNLOAD_METHOD_ATOMS: &[&[u8]] = &[b"downloadstring", b"downloadfile", b"downloaddata"];
+const DOWNLOAD_FRAGMENT_ATOMS: &[&[u8]] = &[b"loadstring", b"adstring"];
+const CALLBYNAME_ATOMS: &[&[u8]] = &[b"callbyname"];
+const START_BITS_ATOMS: &[&[u8]] = &[b"start-bitstransfer"];
+const NET_WEBREQUEST_ATOMS: &[&[u8]] = &[b"net.webrequest"];
+
+static PS_URL_REGEX_SPECS: &[PsUrlRegexSpec] = &[
+    PsUrlRegexSpec {
+        regex: &IWR_RE,
+        atoms: IWR_ATOMS,
+    },
+    PsUrlRegexSpec {
+        regex: &IRM_RE,
+        atoms: IRM_ATOMS,
+    },
+    PsUrlRegexSpec {
+        regex: &PS_SCHEMELESS_IP_CMDLET_RE,
+        atoms: CMDLET_URL_ATOMS,
+    },
+    PsUrlRegexSpec {
+        regex: &PS_SCHEMELESS_DOMAIN_CMDLET_RE,
+        atoms: CMDLET_URL_ATOMS,
+    },
+    PsUrlRegexSpec {
+        regex: &CURL_EXE_RE,
+        atoms: CURL_EXE_ATOMS,
+    },
+    PsUrlRegexSpec {
+        regex: &MSHTA_URL_RE,
+        atoms: MSHTA_ATOMS,
+    },
+    PsUrlRegexSpec {
+        regex: &DOWNLOADSTRING_RE,
+        atoms: DOWNLOAD_METHOD_ATOMS,
+    },
+    PsUrlRegexSpec {
+        regex: &BARE_DOWNLOADSTRING_RE,
+        atoms: DOWNLOAD_METHOD_ATOMS,
+    },
+    PsUrlRegexSpec {
+        regex: &DOWNLOADSTRING_FRAGMENT_RE,
+        atoms: DOWNLOAD_FRAGMENT_ATOMS,
+    },
+    PsUrlRegexSpec {
+        regex: &CALLBYNAME_DOWNLOADSTRING_RE,
+        atoms: CALLBYNAME_ATOMS,
+    },
+    PsUrlRegexSpec {
+        regex: &START_BITS_RE,
+        atoms: START_BITS_ATOMS,
+    },
+    PsUrlRegexSpec {
+        regex: &START_BITS_SCHEMELESS_SOURCE_RE,
+        atoms: START_BITS_ATOMS,
+    },
+    PsUrlRegexSpec {
+        regex: &NET_REQ_RE,
+        atoms: NET_WEBREQUEST_ATOMS,
+    },
+    PsUrlRegexSpec {
+        regex: &PS_GENERIC_URL_RE,
+        atoms: URL_SCHEME_ATOMS,
+    },
+];
+
 #[allow(clippy::expect_used)]
 static DYNAMIC_DOWNLOAD_INVOKE_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
@@ -4258,23 +4341,6 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
 
         let snippet: String = primary.chars().take(120).collect();
 
-        let regexes: &[&Lazy<Regex>] = &[
-            &IWR_RE,
-            &IRM_RE,
-            &PS_SCHEMELESS_IP_CMDLET_RE,
-            &PS_SCHEMELESS_DOMAIN_CMDLET_RE,
-            &CURL_EXE_RE,
-            &MSHTA_URL_RE,
-            &DOWNLOADSTRING_RE,
-            &BARE_DOWNLOADSTRING_RE,
-            &DOWNLOADSTRING_FRAGMENT_RE,
-            &CALLBYNAME_DOWNLOADSTRING_RE,
-            &START_BITS_RE,
-            &START_BITS_SCHEMELESS_SOURCE_RE,
-            &NET_REQ_RE,
-            &PS_GENERIC_URL_RE,
-        ];
-
         for text in &candidates {
             let stage_start = std::time::Instant::now();
             for (url, dst) in ps_downloadfile_calls(text) {
@@ -4290,8 +4356,11 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
             downloadfile_elapsed += stage_start.elapsed();
 
             let stage_start = std::time::Instant::now();
-            for re in regexes {
-                for caps in re.captures_iter(text) {
+            for spec in PS_URL_REGEX_SPECS {
+                if !ps_regex_spec_has_atom(text, spec.atoms) {
+                    continue;
+                }
+                for caps in spec.regex.captures_iter(text) {
                     let Some(url_match) = caps.get(1) else {
                         continue;
                     };
@@ -4474,6 +4543,12 @@ fn contains_ascii_case_insensitive_bytes(text: &str, atom: &[u8]) -> bool {
                 .zip(atom)
                 .all(|(byte, atom_byte)| byte.eq_ignore_ascii_case(atom_byte))
         })
+}
+
+fn ps_regex_spec_has_atom(text: &str, atoms: &[&[u8]]) -> bool {
+    atoms
+        .iter()
+        .any(|atom| contains_ascii_case_insensitive_bytes(text, atom))
 }
 
 fn ps_url_inside_non_download_hash_option(text: &str, url_start: usize) -> bool {
