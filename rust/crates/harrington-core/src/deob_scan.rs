@@ -5677,20 +5677,20 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
 }
 
 fn has_remote_access_atom(text: &str) -> bool {
-    [
-        b"terminal server".as_slice(),
-        b"allowtsconnections".as_slice(),
-        b"fdenytsconnections".as_slice(),
-        b"winlogon".as_slice(),
-        b"specialaccounts".as_slice(),
-        b"allowmultipletssessions".as_slice(),
-        b"fsinglesessionperuser".as_slice(),
-        b"rdp-tcp".as_slice(),
-        b"remote desktop".as_slice(),
-        b"3389".as_slice(),
-    ]
-    .iter()
-    .any(|atom| contains_ascii_case_insensitive_atom(text, atom))
+    const ATOMS: &[&str] = &[
+        "terminal server",
+        "allowtsconnections",
+        "fdenytsconnections",
+        "winlogon",
+        "specialaccounts",
+        "allowmultipletssessions",
+        "fsinglesessionperuser",
+        "rdp-tcp",
+        "remote desktop",
+        "3389",
+    ];
+    let lower = text.to_ascii_lowercase();
+    ATOMS.iter().any(|atom| lower.contains(atom))
 }
 
 #[cfg(test)]
