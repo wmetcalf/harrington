@@ -157,84 +157,141 @@ static NET_REQ_RE: Lazy<Regex> = Lazy::new(|| {
 
 struct PsUrlRegexSpec {
     regex: &'static Lazy<Regex>,
-    atoms: &'static [&'static [u8]],
+    atom_kind: PsUrlRegexAtomKind,
 }
 
-const IWR_ATOMS: &[&[u8]] = &[b"invoke-webrequest", b"iwr", b"wget", b"curl"];
-const IRM_ATOMS: &[&[u8]] = &[b"invoke-restmethod", b"irm"];
-const CMDLET_URL_ATOMS: &[&[u8]] = &[
-    b"invoke-webrequest",
-    b"invoke-restmethod",
-    b"iwr",
-    b"irm",
-    b"wget",
-    b"curl",
-];
-const CURL_EXE_ATOMS: &[&[u8]] = &[b"curl.exe"];
-const MSHTA_ATOMS: &[&[u8]] = &[b"mshta"];
-const URL_SCHEME_ATOMS: &[&[u8]] = &[b"http:", b"https:", b"ftp:", b"file:"];
-const DOWNLOAD_METHOD_ATOMS: &[&[u8]] = &[b"downloadstring", b"downloadfile", b"downloaddata"];
-const DOWNLOAD_FRAGMENT_ATOMS: &[&[u8]] = &[b"loadstring", b"adstring"];
-const CALLBYNAME_ATOMS: &[&[u8]] = &[b"callbyname"];
-const START_BITS_ATOMS: &[&[u8]] = &[b"start-bitstransfer"];
-const NET_WEBREQUEST_ATOMS: &[&[u8]] = &[b"net.webrequest"];
+#[derive(Clone, Copy, Debug)]
+enum PsUrlRegexAtomKind {
+    Iwr,
+    Irm,
+    CmdletUrl,
+    CurlExe,
+    Mshta,
+    UrlScheme,
+    DownloadMethod,
+    DownloadFragment,
+    CallByName,
+    StartBits,
+    NetWebRequest,
+}
+
+struct PsUrlRegexAtomProfile {
+    iwr: bool,
+    irm: bool,
+    cmdlet_url: bool,
+    curl_exe: bool,
+    mshta: bool,
+    url_scheme: bool,
+    download_method: bool,
+    download_fragment: bool,
+    callbyname: bool,
+    start_bits: bool,
+    net_webrequest: bool,
+}
+
+impl PsUrlRegexAtomProfile {
+    fn new(text: &str) -> Self {
+        let invoke_webrequest = contains_ascii_case_insensitive_bytes(text, b"invoke-webrequest");
+        let invoke_restmethod = contains_ascii_case_insensitive_bytes(text, b"invoke-restmethod");
+        let iwr = contains_ascii_case_insensitive_bytes(text, b"iwr");
+        let irm = contains_ascii_case_insensitive_bytes(text, b"irm");
+        let wget = contains_ascii_case_insensitive_bytes(text, b"wget");
+        let curl = contains_ascii_case_insensitive_bytes(text, b"curl");
+
+        Self {
+            iwr: invoke_webrequest || iwr || wget || curl,
+            irm: invoke_restmethod || irm,
+            cmdlet_url: invoke_webrequest || invoke_restmethod || iwr || irm || wget || curl,
+            curl_exe: contains_ascii_case_insensitive_bytes(text, b"curl.exe"),
+            mshta: contains_ascii_case_insensitive_bytes(text, b"mshta"),
+            url_scheme: contains_ascii_case_insensitive_bytes(text, b"http:")
+                || contains_ascii_case_insensitive_bytes(text, b"https:")
+                || contains_ascii_case_insensitive_bytes(text, b"ftp:")
+                || contains_ascii_case_insensitive_bytes(text, b"file:"),
+            download_method: contains_ascii_case_insensitive_bytes(text, b"downloadstring")
+                || contains_ascii_case_insensitive_bytes(text, b"downloadfile")
+                || contains_ascii_case_insensitive_bytes(text, b"downloaddata"),
+            download_fragment: contains_ascii_case_insensitive_bytes(text, b"loadstring")
+                || contains_ascii_case_insensitive_bytes(text, b"adstring"),
+            callbyname: contains_ascii_case_insensitive_bytes(text, b"callbyname"),
+            start_bits: contains_ascii_case_insensitive_bytes(text, b"start-bitstransfer"),
+            net_webrequest: contains_ascii_case_insensitive_bytes(text, b"net.webrequest"),
+        }
+    }
+
+    fn matches(&self, kind: PsUrlRegexAtomKind) -> bool {
+        match kind {
+            PsUrlRegexAtomKind::Iwr => self.iwr,
+            PsUrlRegexAtomKind::Irm => self.irm,
+            PsUrlRegexAtomKind::CmdletUrl => self.cmdlet_url,
+            PsUrlRegexAtomKind::CurlExe => self.curl_exe,
+            PsUrlRegexAtomKind::Mshta => self.mshta,
+            PsUrlRegexAtomKind::UrlScheme => self.url_scheme,
+            PsUrlRegexAtomKind::DownloadMethod => self.download_method,
+            PsUrlRegexAtomKind::DownloadFragment => self.download_fragment,
+            PsUrlRegexAtomKind::CallByName => self.callbyname,
+            PsUrlRegexAtomKind::StartBits => self.start_bits,
+            PsUrlRegexAtomKind::NetWebRequest => self.net_webrequest,
+        }
+    }
+}
 
 static PS_URL_REGEX_SPECS: &[PsUrlRegexSpec] = &[
     PsUrlRegexSpec {
         regex: &IWR_RE,
-        atoms: IWR_ATOMS,
+        atom_kind: PsUrlRegexAtomKind::Iwr,
     },
     PsUrlRegexSpec {
         regex: &IRM_RE,
-        atoms: IRM_ATOMS,
+        atom_kind: PsUrlRegexAtomKind::Irm,
     },
     PsUrlRegexSpec {
         regex: &PS_SCHEMELESS_IP_CMDLET_RE,
-        atoms: CMDLET_URL_ATOMS,
+        atom_kind: PsUrlRegexAtomKind::CmdletUrl,
     },
     PsUrlRegexSpec {
         regex: &PS_SCHEMELESS_DOMAIN_CMDLET_RE,
-        atoms: CMDLET_URL_ATOMS,
+        atom_kind: PsUrlRegexAtomKind::CmdletUrl,
     },
     PsUrlRegexSpec {
         regex: &CURL_EXE_RE,
-        atoms: CURL_EXE_ATOMS,
+        atom_kind: PsUrlRegexAtomKind::CurlExe,
     },
     PsUrlRegexSpec {
         regex: &MSHTA_URL_RE,
-        atoms: MSHTA_ATOMS,
+        atom_kind: PsUrlRegexAtomKind::Mshta,
     },
     PsUrlRegexSpec {
         regex: &DOWNLOADSTRING_RE,
-        atoms: DOWNLOAD_METHOD_ATOMS,
+        atom_kind: PsUrlRegexAtomKind::DownloadMethod,
     },
     PsUrlRegexSpec {
         regex: &BARE_DOWNLOADSTRING_RE,
-        atoms: DOWNLOAD_METHOD_ATOMS,
+        atom_kind: PsUrlRegexAtomKind::DownloadMethod,
     },
     PsUrlRegexSpec {
         regex: &DOWNLOADSTRING_FRAGMENT_RE,
-        atoms: DOWNLOAD_FRAGMENT_ATOMS,
+        atom_kind: PsUrlRegexAtomKind::DownloadFragment,
     },
     PsUrlRegexSpec {
         regex: &CALLBYNAME_DOWNLOADSTRING_RE,
-        atoms: CALLBYNAME_ATOMS,
+        atom_kind: PsUrlRegexAtomKind::CallByName,
     },
     PsUrlRegexSpec {
         regex: &START_BITS_RE,
-        atoms: START_BITS_ATOMS,
+        atom_kind: PsUrlRegexAtomKind::StartBits,
     },
     PsUrlRegexSpec {
         regex: &START_BITS_SCHEMELESS_SOURCE_RE,
-        atoms: START_BITS_ATOMS,
+        atom_kind: PsUrlRegexAtomKind::StartBits,
     },
     PsUrlRegexSpec {
         regex: &NET_REQ_RE,
-        atoms: NET_WEBREQUEST_ATOMS,
+        atom_kind: PsUrlRegexAtomKind::NetWebRequest,
     },
     PsUrlRegexSpec {
         regex: &PS_GENERIC_URL_RE,
-        atoms: URL_SCHEME_ATOMS,
+        atom_kind: PsUrlRegexAtomKind::UrlScheme,
     },
 ];
 
@@ -4455,8 +4512,9 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
             downloadfile_elapsed += stage_start.elapsed();
 
             let stage_start = std::time::Instant::now();
+            let regex_atom_profile = PsUrlRegexAtomProfile::new(text);
             for spec in PS_URL_REGEX_SPECS {
-                if !ps_regex_spec_has_atom(text, spec.atoms) {
+                if !regex_atom_profile.matches(spec.atom_kind) {
                     continue;
                 }
                 for caps in spec.regex.captures_iter(text) {
@@ -4642,12 +4700,6 @@ fn contains_ascii_case_insensitive_bytes(text: &str, atom: &[u8]) -> bool {
                 .zip(atom)
                 .all(|(byte, atom_byte)| byte.eq_ignore_ascii_case(atom_byte))
         })
-}
-
-fn ps_regex_spec_has_atom(text: &str, atoms: &[&[u8]]) -> bool {
-    atoms
-        .iter()
-        .any(|atom| contains_ascii_case_insensitive_bytes(text, atom))
 }
 
 fn ps_url_inside_non_download_hash_option(text: &str, url_start: usize) -> bool {
@@ -4892,5 +4944,41 @@ mod embedded_single_quote_signal_tests {
             signals.embedded_single_quote_assignment,
             "triple-quoted assignment was blocked"
         );
+    }
+}
+
+#[cfg(test)]
+mod ps_url_regex_atom_profile_tests {
+    use super::{PsUrlRegexAtomKind, PsUrlRegexAtomProfile};
+
+    #[test]
+    fn profile_reuses_cmdlet_and_method_atom_groups() {
+        let profile = PsUrlRegexAtomProfile::new("IWR https://profile.example/a");
+
+        assert!(profile.matches(PsUrlRegexAtomKind::Iwr));
+        assert!(profile.matches(PsUrlRegexAtomKind::CmdletUrl));
+        assert!(profile.matches(PsUrlRegexAtomKind::UrlScheme));
+        assert!(!profile.matches(PsUrlRegexAtomKind::StartBits));
+    }
+
+    #[test]
+    fn profile_blocks_text_without_url_extractor_atoms() {
+        let profile = PsUrlRegexAtomProfile::new("Write-Host inventory complete");
+
+        for kind in [
+            PsUrlRegexAtomKind::Iwr,
+            PsUrlRegexAtomKind::Irm,
+            PsUrlRegexAtomKind::CmdletUrl,
+            PsUrlRegexAtomKind::CurlExe,
+            PsUrlRegexAtomKind::Mshta,
+            PsUrlRegexAtomKind::UrlScheme,
+            PsUrlRegexAtomKind::DownloadMethod,
+            PsUrlRegexAtomKind::DownloadFragment,
+            PsUrlRegexAtomKind::CallByName,
+            PsUrlRegexAtomKind::StartBits,
+            PsUrlRegexAtomKind::NetWebRequest,
+        ] {
+            assert!(!profile.matches(kind), "unexpected match for {kind:?}");
+        }
     }
 }
