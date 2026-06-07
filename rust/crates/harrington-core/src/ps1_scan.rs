@@ -2161,6 +2161,12 @@ static PS_VAR_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static PS_DQ_INTERPOLATED_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"([^"]{0,4096})""#)
+        .expect("ps interpolated double-quoted assign")
+});
+
+#[allow(clippy::expect_used)]
 static PS_ARRAY_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*@?\(?\s*((?:(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*")\s*,\s*)+(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*"))\s*\)?"#)
         .expect("ps array assign")
@@ -2311,14 +2317,42 @@ fn expand_ps_variables(text: &str) -> String {
             bindings.insert(dst.as_str().to_ascii_lowercase(), joined);
         }
     }
+    for _ in 0..4 {
+        let mut changed = false;
+        for caps in PS_DQ_INTERPOLATED_ASSIGN_RE.captures_iter(text) {
+            let (Some(dst), Some(value)) = (caps.get(1), caps.get(2)) else {
+                continue;
+            };
+            let value = value.as_str();
+            if !value.contains('$') {
+                continue;
+            }
+            let Some(expanded) = interpolate_ps_double_quoted_string(value, &bindings) else {
+                continue;
+            };
+            if is_large_literal_carrier(&expanded) {
+                continue;
+            }
+            let key = dst.as_str().to_ascii_lowercase();
+            if bindings.get(&key) != Some(&expanded) {
+                bindings.insert(key, expanded);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
     if bindings.is_empty() {
         return text.to_string();
     }
 
+    let text = expand_ps_double_quoted_interpolations(text, &bindings);
+
     // Replace $name references with 'value' (quoted, so URL regexes still match).
     // Collect all replacements from original text, then apply in reverse order.
     let matches: Vec<(usize, usize, String)> = PS_VAR_REF_RE
-        .captures_iter(text)
+        .captures_iter(&text)
         .filter_map(|caps| {
             let full = caps.get(0)?;
             let name = caps.get(1)?.as_str();
@@ -2338,11 +2372,109 @@ fn expand_ps_variables(text: &str) -> String {
         })
         .collect();
 
+    let mut out = text;
+    for (start, end, replacement) in matches.into_iter().rev() {
+        out.replace_range(start..end, &replacement);
+    }
+    out
+}
+
+fn expand_ps_double_quoted_interpolations(
+    text: &str,
+    bindings: &std::collections::HashMap<String, String>,
+) -> String {
+    let matches: Vec<(usize, usize, String)> = PS_QUOTED_LITERAL_RE
+        .captures_iter(text)
+        .filter_map(|caps| {
+            let value = caps.get(2)?;
+            if !value.as_str().contains('$') {
+                return None;
+            }
+            if looks_like_quoted_ps_command_wrapper(value.as_str()) {
+                return None;
+            }
+            let expanded = interpolate_ps_double_quoted_string(value.as_str(), bindings)?;
+            Some((value.start(), value.end(), expanded))
+        })
+        .collect();
+    if matches.is_empty() {
+        return text.to_string();
+    }
     let mut out = text.to_string();
     for (start, end, replacement) in matches.into_iter().rev() {
         out.replace_range(start..end, &replacement);
     }
     out
+}
+
+fn looks_like_quoted_ps_command_wrapper(value: &str) -> bool {
+    value.contains(';') && value.contains('=') && value.contains('$')
+}
+
+fn interpolate_ps_double_quoted_string(
+    value: &str,
+    bindings: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut out = String::with_capacity(value.len());
+    let mut i = 0usize;
+    let mut changed = false;
+    while i < value.len() {
+        if bytes[i] != b'$' {
+            let ch = value[i..].chars().next()?;
+            out.push(ch);
+            i += ch.len_utf8();
+            continue;
+        }
+        if bytes.get(i + 1) == Some(&b'{') {
+            let name_start = i + 2;
+            let Some(rel_end) = value[name_start..].find('}') else {
+                out.push('$');
+                i += 1;
+                continue;
+            };
+            let name_end = name_start + rel_end;
+            let name = &value[name_start..name_end];
+            if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+                return None;
+            }
+            let replacement = bindings.get(&name.to_ascii_lowercase())?;
+            if is_large_literal_carrier(replacement) {
+                return None;
+            }
+            out.push_str(replacement);
+            i = name_end + 1;
+            changed = true;
+            continue;
+        }
+        let name_start = i + 1;
+        let Some(first) = bytes.get(name_start) else {
+            out.push('$');
+            i += 1;
+            continue;
+        };
+        if !(first.is_ascii_alphabetic() || *first == b'_') {
+            out.push('$');
+            i += 1;
+            continue;
+        }
+        let mut name_end = name_start + 1;
+        while bytes
+            .get(name_end)
+            .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
+        {
+            name_end += 1;
+        }
+        let name = &value[name_start..name_end];
+        let replacement = bindings.get(&name.to_ascii_lowercase())?;
+        if is_large_literal_carrier(replacement) {
+            return None;
+        }
+        out.push_str(replacement);
+        i = name_end;
+        changed = true;
+    }
+    changed.then_some(out)
 }
 
 fn is_large_literal_carrier(value: &str) -> bool {

