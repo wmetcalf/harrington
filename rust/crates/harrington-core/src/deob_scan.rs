@@ -2517,6 +2517,10 @@ mod url_variable_assignment_prefilter_tests {
 }
 
 fn scan_registry_url_values(deobfuscated: &str, env: &mut Environment) {
+    if !has_registry_url_values_atom(deobfuscated) {
+        return;
+    }
+
     let mut known: std::collections::HashSet<String> = env
         .traits
         .iter()
@@ -2581,6 +2585,33 @@ fn scan_registry_url_values(deobfuscated: &str, env: &mut Environment) {
             value,
             url,
         });
+    }
+}
+
+fn has_registry_url_values_atom(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("reg") && lower.contains("/d")
+}
+
+#[cfg(test)]
+mod registry_url_values_prefilter_tests {
+    use super::has_registry_url_values_atom;
+
+    #[test]
+    fn prefilter_allows_reg_url_value_shapes() {
+        assert!(has_registry_url_values_atom(
+            r#"reg add HKCU\Software\Run /v Updater /d https://evil.example/a.exe"#
+        ));
+    }
+
+    #[test]
+    fn prefilter_blocks_unrelated_registry_text() {
+        assert!(!has_registry_url_values_atom(
+            r#"reg query HKCU\Software\Classes"#
+        ));
+        assert!(!has_registry_url_values_atom(
+            r#"echo https://evil.example/a.exe"#
+        ));
     }
 }
 
@@ -4835,6 +4866,10 @@ fn scan_network_probe(deobfuscated: &str, env: &mut Environment) {
 /// Local account backdoor setup: create a local user or add an account
 /// to a local group such as Administrators / Remote Desktop Users.
 fn scan_account_modification(deobfuscated: &str, env: &mut Environment) {
+    if !has_account_modification_atom(deobfuscated) {
+        return;
+    }
+
     use once_cell::sync::Lazy;
     use regex::Regex;
     static NET_USER_ADD_RE: Lazy<Regex> = Lazy::new(|| {
@@ -4910,10 +4945,43 @@ fn scan_account_modification(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
+fn has_account_modification_atom(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("/add")
+        && lower.contains("net")
+        && (lower.contains("user") || lower.contains("localgroup"))
+}
+
+#[cfg(test)]
+mod account_modification_prefilter_tests {
+    use super::has_account_modification_atom;
+
+    #[test]
+    fn prefilter_allows_net_user_and_localgroup_adds() {
+        for sample in [
+            r#"net user support P@ssw0rd /add"#,
+            r#"net1.exe user support P@ssw0rd /ADD"#,
+            r#"net localgroup Administrators support /add"#,
+        ] {
+            assert!(has_account_modification_atom(sample), "blocked: {sample}");
+        }
+    }
+
+    #[test]
+    fn prefilter_blocks_unrelated_net_usage() {
+        assert!(!has_account_modification_atom(r#"net user"#));
+        assert!(!has_account_modification_atom(r#"echo /add"#));
+    }
+}
+
 /// File/directory concealment via `attrib +h` / `attrib +s`. Common
 /// malware batches hide staged scripts and binaries after writing them
 /// into AppData, Templates, or Startup directories.
 fn scan_file_concealment(deobfuscated: &str, env: &mut Environment) {
+    if !has_file_concealment_atom(deobfuscated) {
+        return;
+    }
+
     fn clean_token(token: &str) -> String {
         token
             .trim()
@@ -5007,10 +5075,36 @@ fn scan_file_concealment(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
+fn has_file_concealment_atom(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("attrib") && (lower.contains("+h") || lower.contains("+s"))
+}
+
+#[cfg(test)]
+mod file_concealment_prefilter_tests {
+    use super::has_file_concealment_atom;
+
+    #[test]
+    fn prefilter_allows_hidden_and_system_attrib_commands() {
+        assert!(has_file_concealment_atom(r#"attrib +h payload.exe"#));
+        assert!(has_file_concealment_atom(r#"ATTRIB +S "%APPDATA%\a.bat""#));
+    }
+
+    #[test]
+    fn prefilter_blocks_attrib_without_concealment_flags() {
+        assert!(!has_file_concealment_atom(r#"attrib -h payload.exe"#));
+        assert!(!has_file_concealment_atom(r#"echo +h payload.exe"#));
+    }
+}
+
 /// System enumeration / account discovery. `net user`, `net group`,
 /// `net localgroup administrators`, `whoami /priv`, `Get-LocalUser`,
 /// `Get-NetUser` (PowerView).
 fn scan_enumeration(deobfuscated: &str, env: &mut Environment) {
+    if !has_enumeration_atom(deobfuscated) {
+        return;
+    }
+
     use once_cell::sync::Lazy;
     use regex::Regex;
     static PATTERNS: Lazy<Vec<(Regex, &str)>> = Lazy::new(|| {
@@ -5070,10 +5164,59 @@ fn scan_enumeration(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
+fn has_enumeration_atom(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    [
+        "net",
+        "whoami",
+        "query session",
+        "quser",
+        "get-localuser",
+        "get-netuser",
+        "get-netgroup",
+        "systeminfo",
+        "tasklist",
+        "wmic process",
+    ]
+    .iter()
+    .any(|atom| lower.contains(atom))
+}
+
+#[cfg(test)]
+mod enumeration_prefilter_tests {
+    use super::has_enumeration_atom;
+
+    #[test]
+    fn prefilter_allows_known_enumeration_commands() {
+        for sample in [
+            "net user",
+            "whoami /priv",
+            "query session",
+            "quser",
+            "Get-LocalUser",
+            "Get-NetGroup",
+            "systeminfo",
+            "tasklist",
+            "wmic process list",
+        ] {
+            assert!(has_enumeration_atom(sample), "blocked: {sample}");
+        }
+    }
+
+    #[test]
+    fn prefilter_blocks_unrelated_commands() {
+        assert!(!has_enumeration_atom("echo hello"));
+    }
+}
+
 /// Credential access — lsass dumping, Mimikatz invocations, browser
 /// credential paths (Login Data SQLite, NSS key3.db, etc.), well-known
 /// credential-theft tooling.
 fn scan_credential_access(deobfuscated: &str, env: &mut Environment) {
+    if !has_credential_access_atom(deobfuscated) {
+        return;
+    }
+
     use once_cell::sync::Lazy;
     use regex::Regex;
     static PATTERNS: Lazy<Vec<(Regex, &str, fn(&str) -> String)>> = Lazy::new(|| {
@@ -5110,6 +5253,65 @@ fn scan_credential_access(deobfuscated: &str, env: &mut Environment) {
                 target,
             });
         }
+    }
+}
+
+fn has_credential_access_atom(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    [
+        "comsvcs.dll",
+        "minidump",
+        "procdump",
+        "sqldumper",
+        "lsass",
+        "invoke-mimikatz",
+        "mimikatz",
+        "sekurlsa::",
+        "kerberos::",
+        "crypto::",
+        "lsadump::",
+        "\\google\\chrome\\user data\\",
+        "login data",
+        "\\mozilla\\firefox\\profiles\\",
+        "key3.db",
+        "key4.db",
+        "logins.json",
+        "cookies.sqlite",
+        "\\bravesoftware\\",
+        "nirsoft",
+        "webbrowserpassview",
+        "mailpassview",
+        "chromepass",
+        "uselogoncredential",
+        "wdigest",
+    ]
+    .iter()
+    .any(|atom| lower.contains(atom))
+}
+
+#[cfg(test)]
+mod credential_access_prefilter_tests {
+    use super::has_credential_access_atom;
+
+    #[test]
+    fn prefilter_allows_known_credential_access_markers() {
+        for sample in [
+            "rundll32 comsvcs.dll MiniDump",
+            "procdump.exe -ma lsass.exe",
+            "Invoke-Mimikatz",
+            r#"\Google\Chrome\User Data\Default\Login Data"#,
+            "webbrowserpassview",
+            "UseLogonCredential",
+        ] {
+            assert!(has_credential_access_atom(sample), "blocked: {sample}");
+        }
+    }
+
+    #[test]
+    fn prefilter_blocks_unrelated_powershell_text() {
+        assert!(!has_credential_access_atom(
+            "Start-Process powershell.exe -WindowStyle Hidden"
+        ));
     }
 }
 
