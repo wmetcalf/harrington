@@ -330,10 +330,13 @@ const NOISE_URL_SUBSTRINGS: &[&str] = &[
     "ns.useplus.org/",
     "aiim.org/pdfa/ns/",
     "red-gate.com/products/dotnet-development/smartassembly",
+    "www.smartassembly.com/webservices/",
     "chiark.greenend.org.uk/~sgtatham/putty/",
     "tempuri.org/",
     "autoitscript.com/autoit3/",
     // Stock photo / template attribution
+    "commons.wikimedia.org/wiki/file:",
+    "www.iec.ch",
     "istockphoto.com/legal/license-agreement",
     "istockphoto.com/photo/license",
     // Common ad networks / analytics in legitimate page assets
@@ -9323,9 +9326,16 @@ mod noise_ip_tests {
             "http://www.red-gate.com/products/dotnet-development/smartassembly/?utm_source=x"
         ));
         assert!(super::is_noise_url("http://sawebservice.red-gate.com/"));
+        assert!(super::is_noise_url(
+            "http://www.smartassembly.com/webservices/Reporting/UploadReport2"
+        ));
         assert!(super::is_noise_url("http://www.aiim.org/pdfa/ns/id/"));
         assert!(super::is_noise_url(
             "http://schemas.openxmlformats.org/markup-compatibility/2006"
+        ));
+        assert!(super::is_noise_url("http://www.iec.ch"));
+        assert!(super::is_noise_url(
+            "http://commons.wikimedia.org/wiki/File:Case_miditower.jpg"
         ));
         assert!(super::is_noise_url(
             "https://www.chiark.greenend.org.uk/~sgtatham/putty/0"
