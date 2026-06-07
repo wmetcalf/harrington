@@ -3259,8 +3259,10 @@ fn analyze_inner(input: &[u8], cfg: &Config, file_path: Option<std::path::PathBu
 
 fn scan_recovered_artifact_strings(env: &mut Environment) {
     let mut artifacts = std::mem::take(&mut env.recovered_pe);
-    for (_, blob) in &artifacts {
-        scan_binary_input_urls(blob, env);
+    for (label, blob) in &artifacts {
+        if !label.starts_with("disguised-") {
+            scan_binary_input_urls(blob, env);
+        }
         let behavior_text = recovered_artifact_behavior_text(blob);
         if !behavior_text.is_empty() {
             deob_scan::scan_recovered_artifact_behavior_text(&behavior_text, env);
@@ -8330,8 +8332,10 @@ mod char_boundary_tests {
         input.extend_from_slice(
             b" random for /f %%i in (garbage) do echo %%i https://binary.example/payload",
         );
+        input.extend_from_slice(b" Set-MpPreference -DisableRealtimeMonitoring $true");
 
         let report = analyze(&input, &Config::default());
+        assert_eq!(report.recovered_pe.len(), 1);
         assert!(
             !report
                 .traits
@@ -8344,6 +8348,24 @@ mod char_boundary_tests {
             !report.deobfuscated.contains("for /f"),
             "PE binary content leaked into deob output:\n{}",
             report.deobfuscated
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DownloadInDeobText { src, line_hint }
+                    if src == "https://binary.example/payload" && line_hint == "binary-input"
+            )),
+            "PE binary URL was not extracted: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, .. }
+                    if action == "setmp-disablerealtimemonitoring"
+            )),
+            "PE binary behavior strings were not scanned: {:?}",
+            report.traits
         );
     }
 
