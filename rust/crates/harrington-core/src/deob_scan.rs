@@ -73,6 +73,14 @@ static PS_SCHEMELESS_URL_VAR_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static GLUED_RUNDLL32_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?i)(?:^|[^A-Za-z0-9_.-])(rundll32([A-Za-z0-9_.~$%{}\\/:-]{1,260}\.[A-Za-z0-9]{2,8})\s*,\s*[A-Za-z0-9_#@$.-]{1,80})"#,
+    )
+    .expect("glued rundll32 regex")
+});
+
+#[allow(clippy::expect_used)]
 static EMBEDDED_POWERSHELL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?i)(?:[A-Za-z]:\\[^\s"']*\\)?(?:powershell|pwsh)(?:\.exe)?\b"#)
         .expect("embedded PowerShell regex")
@@ -2639,6 +2647,95 @@ fn scan_rundll32_download_exports_deob_text(deobfuscated: &str, env: &mut Enviro
             });
         }
     }
+}
+
+fn scan_glued_rundll32_deob_text(deobfuscated: &str, env: &mut Environment) {
+    if !contains_ascii_case_insensitive_atom(deobfuscated, b"rundll32") {
+        return;
+    }
+    let downloads = download_urls_by_destination(env);
+    let mut known_cmds: std::collections::HashSet<String> = env
+        .traits
+        .iter()
+        .filter_map(|t| match t {
+            Trait::Rundll32 { cmd, .. } => Some(cmd.clone()),
+            _ => None,
+        })
+        .collect();
+
+    for line in deobfuscated.lines() {
+        if !contains_ascii_case_insensitive_atom(line, b"rundll32") {
+            continue;
+        }
+        for caps in GLUED_RUNDLL32_RE.captures_iter(line) {
+            let Some(cmd_match) = caps.get(1) else {
+                continue;
+            };
+            let Some(dll_match) = caps.get(2) else {
+                continue;
+            };
+            if dll_match.as_str().to_ascii_lowercase().starts_with(".exe") {
+                continue;
+            }
+            let cmd = cmd_match.as_str().trim().to_string();
+            if !known_cmds.insert(cmd.clone()) {
+                continue;
+            }
+            let dll = strip_quotes(dll_match.as_str());
+            let url = url_for_download_destination(dll, &downloads);
+            env.traits.push(Trait::Rundll32 { cmd, url });
+        }
+    }
+}
+
+fn download_urls_by_destination(env: &Environment) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    for t in &env.traits {
+        let Trait::Download {
+            src,
+            dst: Some(dst),
+            ..
+        } = t
+        else {
+            continue;
+        };
+        let key = normalized_path_key(dst);
+        if !key.is_empty() {
+            out.entry(key).or_insert_with(|| src.clone());
+        }
+        let basename = normalized_path_basename(dst);
+        if !basename.is_empty() {
+            out.entry(basename).or_insert_with(|| src.clone());
+        }
+    }
+    out
+}
+
+fn url_for_download_destination(
+    dll: &str,
+    downloads: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    let key = normalized_path_key(dll);
+    downloads
+        .get(&key)
+        .cloned()
+        .or_else(|| downloads.get(&normalized_path_basename(dll)).cloned())
+}
+
+fn normalized_path_key(path: &str) -> String {
+    strip_quotes(path)
+        .trim()
+        .trim_start_matches(".\\")
+        .replace('/', "\\")
+        .to_ascii_lowercase()
+}
+
+fn normalized_path_basename(path: &str) -> String {
+    normalized_path_key(path)
+        .rsplit('\\')
+        .next()
+        .unwrap_or("")
+        .to_string()
 }
 
 fn scan_desktopimgdownldr_deob_text(deobfuscated: &str, env: &mut Environment) {
@@ -6783,6 +6880,9 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     });
     scan_step!("embedded_powershell_download_deob_text", {
         scan_embedded_powershell_downloads_in_deob_text(deobfuscated, env);
+    });
+    scan_step!("glued_rundll32_deob_text", {
+        scan_glued_rundll32_deob_text(deobfuscated, env);
     });
 
     scan_step!("url_sweep", {

