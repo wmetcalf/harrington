@@ -5581,25 +5581,25 @@ fn scan_uac_bypass(deobfuscated: &str, env: &mut Environment) {
 }
 
 fn has_uac_bypass_atom(text: &str) -> bool {
-    [
-        b"fodhelper".as_slice(),
-        b"eventvwr".as_slice(),
-        b"sdclt".as_slice(),
-        b"computerdefaults".as_slice(),
-        b"wsreset".as_slice(),
-        b"cmstp".as_slice(),
-        b"msconfig".as_slice(),
-        b"hkcu\\software\\classes".as_slice(),
-        b"icolorproxy".as_slice(),
-        b"icolordataproxy".as_slice(),
-        b"icmluautil".as_slice(),
-        b"policies\\system".as_slice(),
-        b"enablelua".as_slice(),
-        b"consentpromptbehavioradmin".as_slice(),
-        b"localaccounttokenfilterpolicy".as_slice(),
-    ]
-    .iter()
-    .any(|atom| contains_ascii_case_insensitive_atom(text, atom))
+    const ATOMS: &[&str] = &[
+        "fodhelper",
+        "eventvwr",
+        "sdclt",
+        "computerdefaults",
+        "wsreset",
+        "cmstp",
+        "msconfig",
+        "hkcu\\software\\classes",
+        "icolorproxy",
+        "icolordataproxy",
+        "icmluautil",
+        "policies\\system",
+        "enablelua",
+        "consentpromptbehavioradmin",
+        "localaccounttokenfilterpolicy",
+    ];
+    let lower = text.to_ascii_lowercase();
+    ATOMS.iter().any(|atom| lower.contains(atom))
 }
 
 #[cfg(test)]
