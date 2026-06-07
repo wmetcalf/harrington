@@ -35,6 +35,9 @@ pub fn normalize_to_string(tokens: &[Token], env: &mut Environment) -> String {
 }
 
 pub(crate) fn normalize_literal_command_fast(input: &str) -> Option<String> {
+    if let Some(set) = normalize_quoted_set_assignment_fast(input) {
+        return Some(set);
+    }
     if input.is_empty() || input.starts_with(' ') || input.ends_with(' ') {
         return None;
     }
@@ -72,6 +75,42 @@ pub(crate) fn normalize_literal_command_fast(input: &str) -> Option<String> {
         return None;
     }
     Some(input.to_string())
+}
+
+fn normalize_quoted_set_assignment_fast(input: &str) -> Option<String> {
+    if input
+        .bytes()
+        .any(|b| matches!(b, b'%' | b'!' | b'^' | b'\t' | b'\r' | b'\n'))
+    {
+        return None;
+    }
+    let trimmed = input.trim();
+    if !trimmed.get(0..4)?.eq_ignore_ascii_case("set ") {
+        return None;
+    }
+    let quoted = trimmed[4..].strip_prefix('"')?.strip_suffix('"')?;
+    if !quoted.contains('=') {
+        return None;
+    }
+    let mut in_double_quote = true;
+    for &b in &trimmed.as_bytes()[5..trimmed.len() - 1] {
+        if b == b'"' {
+            in_double_quote = !in_double_quote;
+        } else if !in_double_quote
+            && matches!(b, b',' | b';' | b'&' | b'|' | b'<' | b'>' | b'(' | b')')
+        {
+            return None;
+        }
+    }
+    if !in_double_quote {
+        return None;
+    }
+    let processed = input.to_string();
+    if is_base64_fragment_set_assignment(&processed) || has_replace_marker_operation(&processed) {
+        Some(processed)
+    } else {
+        Some(strip_marker_noise(&processed))
+    }
 }
 
 /// CMD caret-process post-pass. See `normalize_to_string` for context.
@@ -1087,12 +1126,33 @@ mod dosfuscation_tests {
     }
 
     #[test]
+    fn literal_command_fast_path_accepts_quoted_set_assignments_like_full_normalizer() {
+        for input in [
+            r#" set "A=value with spaces" "#,
+            r#"set "A=& star""#,
+            r#"set "B=t "" /""#,
+            r#"set "A=aXYZbXYZ cXYZdXYZ""#,
+        ] {
+            let full = nm(input);
+            assert_eq!(
+                super::normalize_literal_command_fast(input).as_deref(),
+                Some(full.as_str()),
+                "fast path diverged for {input:?}"
+            );
+        }
+    }
+
+    #[test]
     fn literal_command_fast_path_rejects_lexer_sensitive_text() {
         for input in [
             "echo %COMSPEC%",
             "echo !VAR!",
             "echo ^&",
             r#"echo "quoted""#,
+            r#"set "A=%COMSPEC%""#,
+            r#"set "A=!VAR!""#,
+            r#"set "A=value"#,
+            r#"set "A""#,
             "echo one  two",
             "echo a,b",
             "echo a;b",
