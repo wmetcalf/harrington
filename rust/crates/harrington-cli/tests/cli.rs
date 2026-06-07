@@ -560,6 +560,81 @@ fn analyze_multiple_input_files_requires_jsonl() {
 }
 
 #[test]
+fn analyze_jsonl_accepts_file_list() {
+    let dir = TempDir::new().expect("tmp");
+    let first = dir.path().join("first.bat");
+    let second = dir.path().join("second.bat");
+    let list = dir.path().join("inputs.txt");
+    fs::write(&first, "curl http://list-one.example/a\r\n").expect("write first");
+    fs::write(&second, "curl http://list-two.example/b\r\n").expect("write second");
+    fs::write(
+        &list,
+        format!("{}\n{}\n\n", first.display(), second.display()),
+    )
+    .expect("write list");
+
+    let out = Command::cargo_bin("harrington")
+        .expect("bin")
+        .args([
+            "analyze",
+            "--file-list",
+            list.to_str().expect("list path"),
+            "--jsonl",
+        ])
+        .output()
+        .expect("run");
+    assert!(
+        out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let lines: Vec<serde_json::Value> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("valid jsonl"))
+        .collect();
+    let metas: Vec<_> = lines
+        .iter()
+        .filter(|line| line["kind"] == "meta")
+        .map(|line| line["input"].as_str().unwrap_or_default().to_string())
+        .collect();
+    assert_eq!(
+        metas,
+        vec![
+            first.to_string_lossy().to_string(),
+            second.to_string_lossy().to_string()
+        ]
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.to_string().contains("list-one.example"))
+            && lines
+                .iter()
+                .any(|line| line.to_string().contains("list-two.example")),
+        "missing one of the expected URL traits: {lines:#?}"
+    );
+}
+
+#[test]
+fn analyze_file_list_requires_jsonl() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    let list = dir.path().join("inputs.txt");
+    fs::write(&input, "echo hi\r\n").expect("write input");
+    fs::write(&list, format!("{}\n", input.display())).expect("write list");
+
+    Command::cargo_bin("harrington")
+        .expect("bin")
+        .args(["analyze", "--file-list", list.to_str().expect("list path")])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "analyze --file-list requires --jsonl",
+        ));
+}
+
+#[test]
 fn analyze_can_emit_drive_profile_to_stderr() {
     let dir = TempDir::new().expect("tmp");
     let input = dir.path().join("in.bat");

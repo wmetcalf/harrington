@@ -49,8 +49,11 @@ enum Command {
     },
     /// Like `deob --json-only`: JSON report to stdout, no files.
     Analyze {
-        #[arg(value_name = "FILE", required = true, num_args = 1..)]
+        #[arg(value_name = "FILE", num_args = 0..)]
         files: Vec<String>,
+        /// Read additional input paths from a newline-delimited file.
+        #[arg(long = "file-list", value_name = "PATH")]
+        file_list: Option<PathBuf>,
         #[arg(long, default_value_t = 12)]
         max_depth: u32,
         #[arg(long, default_value_t = 65_536)]
@@ -1208,6 +1211,32 @@ fn write_analyze_jsonl_report(
     write_stdout_line(&serde_json::to_string(&deob_line)?)
 }
 
+fn analyze_input_files(
+    mut files: Vec<String>,
+    file_list: Option<&Path>,
+    jsonl: bool,
+) -> Result<Vec<String>> {
+    if file_list.is_some() && !jsonl {
+        bail!("analyze --file-list requires --jsonl");
+    }
+    if let Some(path) = file_list {
+        let list = fs::read_to_string(path).with_context(|| format!("read {:?}", path))?;
+        files.extend(
+            list.lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(str::to_string),
+        );
+    }
+    if files.is_empty() {
+        bail!("analyze requires at least one input file or --file-list");
+    }
+    if files.len() > 1 && !jsonl {
+        bail!("multiple analyze inputs require --jsonl");
+    }
+    Ok(files)
+}
+
 fn run() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
@@ -1297,6 +1326,7 @@ fn run() -> Result<()> {
         }
         Command::Analyze {
             files,
+            file_list,
             max_depth,
             max_iterations,
             max_child_scripts,
@@ -1308,9 +1338,7 @@ fn run() -> Result<()> {
             jsonl,
             lolbas_json,
         } => {
-            if files.len() > 1 && !jsonl {
-                bail!("multiple analyze inputs require --jsonl");
-            }
+            let files = analyze_input_files(files, file_list.as_deref(), jsonl)?;
             let cfg = make_config(
                 max_depth,
                 max_iterations,
