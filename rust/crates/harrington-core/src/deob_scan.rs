@@ -1745,6 +1745,9 @@ fn python_string_literal_arg(arg: &str) -> Option<String> {
     } else {
         arg
     };
+    if let Some(literal) = python_adjacent_string_literal_expr(expr) {
+        return (!looks_like_direct_url(trim_url_suffix(&literal))).then_some(literal);
+    }
     python_quoted_literals(expr)
         .into_iter()
         .find(|literal| !looks_like_direct_url(trim_url_suffix(literal)))
@@ -2029,6 +2032,12 @@ fn find_matching_paren(text: &str, open: usize) -> Option<usize> {
 }
 
 fn first_url_literal(args: &str) -> Option<String> {
+    if let Some(literal) = python_adjacent_string_literal_expr(args) {
+        let trimmed = trim_url_suffix(&literal);
+        if looks_like_direct_url(trimmed) {
+            return Some(trimmed.to_string());
+        }
+    }
     python_quoted_literals(args)
         .into_iter()
         .find_map(|literal| {
@@ -2150,6 +2159,55 @@ fn collect_python_string_bindings(text: &str) -> HashMap<String, String> {
             Some((name.to_string(), value.to_string()))
         })
         .collect()
+}
+
+fn python_adjacent_string_literal_expr(expr: &str) -> Option<String> {
+    let expr = expr.trim();
+    if expr.is_empty() {
+        return None;
+    }
+    let mut out = String::new();
+    let mut count = 0usize;
+    let mut cursor = 0usize;
+    while cursor < expr.len() {
+        cursor = skip_ascii_ws(expr, cursor);
+        if cursor == expr.len() {
+            break;
+        }
+        let (end, literal) = parse_python_quoted_literal_at(expr, cursor)?;
+        out.push_str(&literal);
+        count += 1;
+        cursor = end;
+    }
+    (count > 0).then_some(out)
+}
+
+fn parse_python_quoted_literal_at(expr: &str, start: usize) -> Option<(usize, String)> {
+    let bytes = expr.as_bytes();
+    let quote = *bytes.get(start)?;
+    if quote != b'\'' && quote != b'"' {
+        return None;
+    }
+    let mut literal = String::new();
+    let mut i = start + 1;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if byte == b'\\' {
+            let Some(next) = bytes.get(i + 1) else {
+                literal.push('\\');
+                return Some((bytes.len(), literal));
+            };
+            literal.push(*next as char);
+            i += 2;
+            continue;
+        }
+        if byte == quote {
+            return Some((i + 1, literal));
+        }
+        literal.push(byte as char);
+        i += 1;
+    }
+    None
 }
 
 fn python_quoted_literals(args: &str) -> Vec<String> {
