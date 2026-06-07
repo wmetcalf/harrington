@@ -190,6 +190,12 @@ static JS_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
         .expect("js assignment")
 });
 
+#[allow(clippy::expect_used)]
+static JS_FUNCTION_DECL_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?is)\bfunction\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\("#)
+        .expect("js function declaration")
+});
+
 pub fn scan_js_payloads(env: &mut Environment) {
     let mut payloads = std::mem::take(&mut env.all_extracted_jscript);
     let mut seen: HashSet<(usize, String)> = HashSet::new();
@@ -231,6 +237,7 @@ pub fn scan_js_payloads(env: &mut Environment) {
             candidates.extend(decoded_js_atob_literals(&concat_resolved));
             candidates.extend(decoded_js_buffer_from_base64_literals(&concat_resolved));
             candidates.extend(decoded_js_atob_alias_calls(&concat_resolved));
+            candidates.extend(decoded_js_custom_base64_decoder_calls(&concat_resolved));
             if env.check_deadline() {
                 break 'payloads;
             }
@@ -241,6 +248,10 @@ pub fn scan_js_payloads(env: &mut Environment) {
             ));
             candidates.extend(decoded_js_array_join_literals(&concat_resolved));
             candidates.extend(decoded_js_string_bindings(&concat_resolved));
+        }
+
+        for candidate in candidates.iter().skip(1) {
+            queue_decoded_js_script_candidate(candidate, env);
         }
 
         // Now scan for URLs
@@ -289,6 +300,31 @@ pub fn scan_js_payloads(env: &mut Environment) {
     }
     payloads.append(&mut env.all_extracted_jscript);
     env.all_extracted_jscript = payloads;
+}
+
+fn queue_decoded_js_script_candidate(candidate: &str, env: &mut Environment) {
+    let lower = candidate.to_ascii_lowercase();
+    let looks_ps = lower.contains("powershell")
+        || lower.contains("invoke-")
+        || lower.contains("iex ")
+        || lower.contains("iex(")
+        || lower.contains("new-object")
+        || lower.contains("downloadstring")
+        || lower.contains("downloadfile")
+        || lower.contains("[system.")
+        || lower.contains("[reflection.")
+        || lower.contains("start-process");
+    if !looks_ps {
+        return;
+    }
+    let payload = candidate.as_bytes().to_vec();
+    if !env
+        .all_extracted_ps1
+        .iter()
+        .any(|existing| existing == &payload)
+    {
+        env.all_extracted_ps1.push(payload);
+    }
 }
 
 fn js_decoder_signal(text: &str) -> bool {
@@ -853,6 +889,77 @@ fn decoded_js_atob_literals(text: &str) -> Vec<String> {
 fn decoded_js_atob_alias_calls(text: &str) -> Vec<String> {
     let aliases = collect_js_decoder_aliases(text, "atob");
     decoded_js_decoder_alias_calls(text, &aliases, decode_js_base64_string)
+}
+
+fn decoded_js_custom_base64_decoder_calls(text: &str) -> Vec<String> {
+    let decoders = collect_js_custom_base64_decoders(text);
+    if decoders.is_empty() {
+        return Vec::new();
+    }
+    let (bindings, _) = collect_js_string_bindings(text);
+    let arrays = collect_js_string_array_bindings(text, &bindings);
+    let mut out = Vec::new();
+    let mut cursor = 0usize;
+    while cursor < text.len() && out.len() < 128 {
+        let Some((ident_end, ident)) = parse_js_identifier_at(text, cursor) else {
+            cursor += text[cursor..]
+                .chars()
+                .next()
+                .map(char::len_utf8)
+                .unwrap_or(1);
+            continue;
+        };
+        if !decoders.contains(ident) {
+            cursor = ident_end;
+            continue;
+        }
+        let Some(open) = consume_js_call_open(text, ident_end) else {
+            cursor = ident_end;
+            continue;
+        };
+        let arg_start = skip_ascii_ws(text, open + 1);
+        let Some((arg_end, encoded)) =
+            parse_js_decoder_string_arg(text, arg_start, &bindings, &arrays)
+        else {
+            cursor = ident_end;
+            continue;
+        };
+        let close = skip_ascii_ws(text, arg_end);
+        if text.as_bytes().get(close) != Some(&b')') {
+            cursor = arg_end;
+            continue;
+        }
+        if let Some(decoded) = decode_js_base64_string(&encoded) {
+            out.push(decoded);
+        }
+        cursor = close + 1;
+    }
+    out
+}
+
+fn collect_js_custom_base64_decoders(text: &str) -> HashSet<String> {
+    let mut decoders = HashSet::new();
+    for caps in JS_FUNCTION_DECL_RE.captures_iter(text).take(32) {
+        let Some(name) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(start) = caps.get(0).map(|m| m.end()) else {
+            continue;
+        };
+        let end = text.len().min(start + 4096);
+        let body = text[start..end].to_ascii_lowercase();
+        if body.contains("string.fromcharcode")
+            && body.contains(".charat")
+            && body.contains("<<")
+            && body.contains(">>>")
+            && (body.contains("[[65,91]")
+                || body.contains("[65, 91]")
+                || (body.contains("[97,123]") && body.contains("[48,58]")))
+        {
+            decoders.insert(name.to_string());
+        }
+    }
+    decoders
 }
 
 fn decoded_js_buffer_from_base64_literals(text: &str) -> Vec<String> {
