@@ -2943,6 +2943,7 @@ fn analyze_inner(input: &[u8], cfg: &Config, file_path: Option<std::path::PathBu
             ps1_scan::extract_self_embedded_ps1(&mut env, &out);
         }
         out = summarize_self_tail_base64_payloads(&out, &mut env);
+        out = summarize_encoded_set_carrier_line_runs(&out, &mut env);
         profile_mark!("self_embedded_ps1");
         if !env.check_deadline() {
             ps1_scan::scan_ps1_payloads(&mut env);
@@ -4850,6 +4851,25 @@ fn summarize_binary_noise_line_runs(text: &str, env: &mut Environment) -> String
     out
 }
 
+fn summarize_encoded_set_carrier_line_runs(text: &str, env: &mut Environment) -> String {
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+    let mut pending = String::new();
+    let mut pending_lines = 0usize;
+
+    for line in text.split_inclusive('\n') {
+        let (body, _) = split_line_ending(line);
+        if is_encoded_set_carrier_line(body) {
+            pending.push_str(line);
+            pending_lines += 1;
+            continue;
+        }
+        flush_encoded_set_carrier_run(&mut out, &mut pending, &mut pending_lines, env);
+        out.push_str(line);
+    }
+    flush_encoded_set_carrier_run(&mut out, &mut pending, &mut pending_lines, env);
+    out
+}
+
 fn summarize_nul_padding_lines(text: &str, env: &mut Environment) -> String {
     const MIN_NUL_PADDING_BYTES: usize = 1024;
 
@@ -5019,6 +5039,29 @@ fn flush_binary_noise_run(
     *pending_lines = 0;
 }
 
+fn flush_encoded_set_carrier_run(
+    out: &mut String,
+    pending: &mut String,
+    pending_lines: &mut usize,
+    env: &mut Environment,
+) {
+    if pending.is_empty() {
+        return;
+    }
+    if *pending_lines >= 16 && pending.len() >= 16 * 1024 {
+        rescue_truncated_urls(pending, pending.len(), env);
+        out.push_str(&format!(
+            "::==== harrington: omitted {} encoded SET carrier lines ({} bytes) ====\r\n",
+            *pending_lines,
+            pending.len()
+        ));
+    } else {
+        out.push_str(pending);
+    }
+    pending.clear();
+    *pending_lines = 0;
+}
+
 fn is_binary_noise_line(line: &str) -> bool {
     let trimmed = line.trim();
     if trimmed.is_empty() || trimmed.len() < 4 {
@@ -5030,6 +5073,44 @@ fn is_binary_noise_line(line: &str) -> bool {
         .filter(|&&b| (b < 0x20 && b != b'\t') || b >= 0x7f)
         .count();
     suspicious * 3 >= bytes.len()
+}
+
+fn is_encoded_set_carrier_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    let bytes = trimmed.as_bytes();
+    if bytes.len() < 4
+        || !bytes[0].eq_ignore_ascii_case(&b's')
+        || !bytes[1].eq_ignore_ascii_case(&b'e')
+        || !bytes[2].eq_ignore_ascii_case(&b't')
+        || !bytes[3].is_ascii_whitespace()
+    {
+        return false;
+    }
+    let rest = trimmed[4..].trim_start();
+    let Some((_, value)) = rest.split_once('=') else {
+        return false;
+    };
+    let value = value.trim().trim_matches('"').trim();
+    if value.len() < 256 {
+        return false;
+    }
+
+    let mut encoded = 0usize;
+    let mut marker = 0usize;
+    let mut other = 0usize;
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '+' | '/' | '=' | '-' | '_') {
+            encoded += 1;
+        } else if !ch.is_ascii() {
+            marker += ch.len_utf8();
+        } else if ch.is_ascii_whitespace() {
+            continue;
+        } else {
+            other += 1;
+        }
+    }
+    let total = encoded + marker + other;
+    total >= 256 && encoded * 100 >= total * 85 && other * 100 <= total * 5
 }
 
 fn contains_rem_comment_candidate(text: &str) -> bool {
@@ -5643,6 +5724,37 @@ mod line_cap_tests {
             "URL hidden in expanded alpha echo should be rescued: {:?}",
             report.traits
         );
+    }
+
+    #[test]
+    fn encoded_set_carrier_runs_are_summarized() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        let payload = "A".repeat(1024);
+        let text = (0..20)
+            .map(|idx| format!("set Carrier{idx}= 误{payload}\r\n"))
+            .collect::<String>();
+
+        let summarized = crate::summarize_encoded_set_carrier_line_runs(&text, &mut env);
+
+        assert!(
+            summarized.contains("harrington: omitted 20 encoded SET carrier lines"),
+            "carrier run was not summarized:\n{summarized}"
+        );
+        assert!(
+            !summarized.contains("Carrier0"),
+            "raw carrier line leaked into summary:\n{summarized}"
+        );
+    }
+
+    #[test]
+    fn isolated_encoded_set_assignment_is_preserved() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        let payload = "A".repeat(1024);
+        let text = format!("set Carrier= 误{payload}\r\n");
+
+        let summarized = crate::summarize_encoded_set_carrier_line_runs(&text, &mut env);
+
+        assert_eq!(summarized, text);
     }
 
     #[test]
