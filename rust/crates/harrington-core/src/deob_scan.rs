@@ -347,6 +347,7 @@ const NOISE_URL_SUBSTRINGS: &[&str] = &[
     "www.google.com/maps/place/",
     "sourceforge.net/p/compactview",
     "www.cyotek.com",
+    "www.skinstudio.net",
     // Common ad networks / analytics in legitimate page assets
     "doubleclick.net",
     "googletagmanager.com",
@@ -9365,6 +9366,7 @@ mod noise_ip_tests {
         assert!(super::is_noise_url("https://www.google.com/maps/place/"));
         assert!(super::is_noise_url("https://www.cyotek.com"));
         assert!(super::is_noise_url("http://sourceforge.net/p/compactview"));
+        assert!(super::is_noise_url("http://www.skinstudio.netG"));
     }
 
     #[test]
