@@ -129,6 +129,7 @@ enum Command {
 /// OOM from a multi-gigabyte input. A real batch file is well under a few
 /// MB; this is a generous safety ceiling.
 const MAX_INPUT_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_FILE_LIST_BYTES: u64 = 16 * 1024 * 1024;
 
 fn read_input(path: &str) -> Result<Vec<u8>> {
     if path == "-" {
@@ -172,6 +173,28 @@ where
         );
     }
     Ok(buf)
+}
+
+fn read_file_list(path: &Path) -> Result<String> {
+    let file = fs::File::open(path).with_context(|| format!("open file list {:?}", path))?;
+    let meta = file
+        .metadata()
+        .with_context(|| format!("stat file list {:?}", path))?;
+    if !meta.file_type().is_file() {
+        anyhow::bail!("{:?}: file list is not a regular file", path);
+    }
+    if meta.len() > MAX_FILE_LIST_BYTES {
+        anyhow::bail!(
+            "file list {:?}: {} bytes exceeds the {}-byte cap",
+            path,
+            meta.len(),
+            MAX_FILE_LIST_BYTES
+        );
+    }
+    let bytes = read_all_capped(file, MAX_FILE_LIST_BYTES, || {
+        format!("file list {:?}", path)
+    })?;
+    String::from_utf8(bytes).with_context(|| format!("parse file list {:?} as UTF-8", path))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1257,7 +1280,7 @@ fn analyze_input_files(
         bail!("analyze --file-list requires --jsonl");
     }
     if let Some(path) = file_list {
-        let list = fs::read_to_string(path).with_context(|| format!("read {:?}", path))?;
+        let list = read_file_list(path)?;
         files.extend(
             list.lines()
                 .map(str::trim)

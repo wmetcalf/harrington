@@ -635,6 +635,26 @@ fn analyze_file_list_requires_jsonl() {
 }
 
 #[test]
+fn analyze_file_list_is_size_capped() {
+    let dir = TempDir::new().expect("tmp");
+    let list = dir.path().join("inputs.txt");
+    fs::write(&list, "x".repeat(16 * 1024 * 1024 + 1)).expect("write list");
+
+    Command::cargo_bin("harrington")
+        .expect("bin")
+        .args([
+            "analyze",
+            "--file-list",
+            list.to_str().expect("list path"),
+            "--jsonl",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("file list"))
+        .stderr(predicates::str::contains("exceeds"));
+}
+
+#[test]
 fn analyze_can_emit_drive_profile_to_stderr() {
     let dir = TempDir::new().expect("tmp");
     let input = dir.path().join("in.bat");
