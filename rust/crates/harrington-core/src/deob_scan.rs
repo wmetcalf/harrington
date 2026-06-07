@@ -410,6 +410,22 @@ fn strip_quotes(s: &str) -> &str {
     }
 }
 
+fn trim_html_quote_entity_suffix(mut token: &str) -> &str {
+    loop {
+        let Some(trimmed) = token
+            .strip_suffix("&quot")
+            .or_else(|| token.strip_suffix("&apos"))
+            .or_else(|| token.strip_suffix("&#039"))
+            .or_else(|| token.strip_suffix("&#34"))
+            .or_else(|| token.strip_suffix("&#x27"))
+            .or_else(|| token.strip_suffix("&#X27"))
+        else {
+            return token;
+        };
+        token = trimmed;
+    }
+}
+
 pub(crate) fn normalize_liberal_url_token(token: &str) -> Option<String> {
     let mut token = token.trim().trim_matches(['"', '\'']);
     let end = token
@@ -422,6 +438,7 @@ pub(crate) fn normalize_liberal_url_token(token: &str) -> Option<String> {
         .unwrap_or(token.len());
     token = &token[..end];
     token = token.trim_end_matches(['.', ',', ';', ':', '\\']);
+    token = trim_html_quote_entity_suffix(token);
 
     let lower = token.to_ascii_lowercase();
     for scheme in ["http", "https", "ftp", "file"] {
@@ -459,6 +476,7 @@ pub(crate) fn normalize_liberal_url_token(token: &str) -> Option<String> {
 pub(crate) fn normalize_schemeless_domain_path_token(token: &str) -> Option<String> {
     let token = strip_quotes(token).trim();
     let token = token.trim_end_matches(['.', ',', ';', ':', '\\']);
+    let token = trim_html_quote_entity_suffix(token);
     let (host, path) = token.split_once('/')?;
     if host.is_empty() || path.is_empty() || host.contains('\\') || host.contains(':') {
         return None;
