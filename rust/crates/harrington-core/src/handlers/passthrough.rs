@@ -171,8 +171,18 @@ pub fn h_schtasks(raw: &str, env: &mut Environment) {
         hive: "ScheduledTask".to_string(),
         key: task_name,
         value_name: String::new(),
-        command: task_run,
+        command: task_run.clone(),
     });
+    if !task_run.is_empty() {
+        if let Some(inner) = super::cmd::extract_cmd_inner(&task_run) {
+            env.exec_cmd.push(inner);
+            env.exec_cmd_delayed
+                .push(super::cmd::has_v_on_raw(&task_run));
+        } else {
+            env.exec_cmd.push(task_run);
+            env.exec_cmd_delayed.push(false);
+        }
+    }
 }
 
 make_handler!(h_sc, "sc");

