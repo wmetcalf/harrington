@@ -392,9 +392,13 @@ fn expand_vbs_static_execute(text: &str) -> String {
     let mut array_bindings: VbsArrayBindings = HashMap::new();
     let mut expanded = Vec::new();
     let mut expanded_bytes = 0usize;
+    let mut pending: Vec<String> = text.lines().map(str::to_string).collect();
+    let mut cursor = 0usize;
 
-    for line in text.lines() {
-        for statement in split_vbs_statements(line) {
+    while cursor < pending.len() {
+        let line = pending[cursor].clone();
+        cursor += 1;
+        for statement in split_vbs_statements(&line) {
             if let Some(caps) = VBS_STRING_ASSIGN_RE.captures(statement) {
                 if let (Some(name), Some(value)) = (caps.get(1), caps.get(2)) {
                     let key = name.as_str().to_ascii_lowercase();
@@ -423,7 +427,11 @@ fn expand_vbs_static_execute(text: &str) -> String {
             if expanded_bytes > MAX_EXECUTE_EXPANSION_BYTES {
                 break;
             }
+            pending.extend(decoded.lines().map(str::to_string));
             expanded.push(decoded);
+        }
+        if expanded_bytes > MAX_EXECUTE_EXPANSION_BYTES {
+            break;
         }
     }
 
