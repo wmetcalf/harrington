@@ -683,7 +683,7 @@ fn has_python_download_scan_atom(text: &str) -> bool {
 }
 
 fn has_python_direct_download_scan_atom(text: &str) -> bool {
-    ["requests", "urllib", "urlopen", "urlretrieve"]
+    ["requests", "httpx", "urllib", "urlopen", "urlretrieve"]
         .iter()
         .any(|atom| find_ascii_case_insensitive(text, atom, 0).is_some())
 }
@@ -732,12 +732,14 @@ mod python_download_prefilter_tests {
 fn python_urlopen_call_names(text: &str) -> Vec<String> {
     let mut names = vec![
         "requests.get".to_string(),
+        "httpx.get".to_string(),
         "urllib.request.urlopen".to_string(),
         "urllib.urlopen".to_string(),
     ];
     for method in ["get", "post", "put", "patch", "delete", "head", "options"] {
         if method != "get" {
             names.push(format!("requests.{method}"));
+            names.push(format!("httpx.{method}"));
         }
         names.extend(collect_python_requests_method_aliases(text, method));
         names.extend(collect_python_requests_session_method_aliases(text, method));
