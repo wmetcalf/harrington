@@ -10,7 +10,7 @@ pub fn h_cscript(raw: &str, env: &mut Environment) {
         Some(p) => p,
         None => return,
     };
-    extract_script(&path, env, Trait::CscriptExec { src: path.clone() });
+    extract_script(raw, &path, env, Trait::CscriptExec { src: path.clone() });
 }
 
 pub fn h_wscript(raw: &str, env: &mut Environment) {
@@ -19,7 +19,7 @@ pub fn h_wscript(raw: &str, env: &mut Environment) {
         Some(p) => p,
         None => return,
     };
-    extract_script(&path, env, Trait::WscriptExec { src: path.clone() });
+    extract_script(raw, &path, env, Trait::WscriptExec { src: path.clone() });
 }
 
 fn find_script_arg(tokens: &[String]) -> Option<String> {
@@ -34,7 +34,13 @@ fn find_script_arg(tokens: &[String]) -> Option<String> {
     None
 }
 
-fn extract_script(path: &str, env: &mut Environment, trait_evt: Trait) {
+fn extract_script(raw: &str, path: &str, env: &mut Environment, trait_evt: Trait) {
+    if let Some(url) = crate::handlers::util::normalize_url_like_token(path) {
+        env.traits.push(Trait::UrlArgument {
+            cmd: raw.to_string(),
+            url,
+        });
+    }
     env.traits.push(trait_evt);
     let key = path.to_ascii_lowercase();
     let content: Option<Vec<u8>> = match env.modified_filesystem.get(&key) {

