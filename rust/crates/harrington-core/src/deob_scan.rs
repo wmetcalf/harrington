@@ -694,6 +694,12 @@ fn collect_python_requests_get_aliases(text: &str) -> Vec<String> {
 }
 
 fn collect_python_requests_call_aliases(text: &str, target_method: &str) -> Vec<String> {
+    if !contains_ascii_case_insensitive_atom(text, b"from")
+        && !contains_ascii_case_insensitive_atom(text, b" as ")
+    {
+        return Vec::new();
+    }
+
     #[allow(clippy::expect_used)]
     static PY_IMPORT_REQUESTS_ALIAS_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?is)\bimport\s+requests\s+as\s+([A-Za-z_][A-Za-z0-9_]*)"#)
@@ -740,6 +746,10 @@ fn collect_python_requests_call_aliases(text: &str, target_method: &str) -> Vec<
 }
 
 fn collect_python_requests_assigned_method_aliases(text: &str, target_method: &str) -> Vec<String> {
+    if !text.as_bytes().contains(&b'=') {
+        return Vec::new();
+    }
+
     #[allow(clippy::expect_used)]
     static PY_REQUESTS_METHOD_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\.(get|request)\b"#)
@@ -792,6 +802,10 @@ fn collect_python_requests_session_method_aliases(text: &str, target_method: &st
 }
 
 fn collect_python_requests_session_constructors(text: &str) -> Vec<String> {
+    if !contains_ascii_case_insensitive_atom(text, b"session") {
+        return Vec::new();
+    }
+
     #[allow(clippy::expect_used)]
     static PY_IMPORT_REQUESTS_ALIAS_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?is)\bimport\s+requests\s+as\s+([A-Za-z_][A-Za-z0-9_]*)"#)
@@ -844,6 +858,10 @@ fn collect_python_requests_bound_session_method_aliases(
     text: &str,
     target_method: &str,
 ) -> Vec<String> {
+    if !contains_ascii_case_insensitive_atom(text, b"session") || !text.as_bytes().contains(&b'=') {
+        return Vec::new();
+    }
+
     #[allow(clippy::expect_used)]
     static PY_REQUESTS_SESSION_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
@@ -1759,6 +1777,12 @@ fn python_keyword_string_arg(
 }
 
 fn collect_python_urllib_call_aliases(text: &str, target_method: &str) -> Vec<String> {
+    if !contains_ascii_case_insensitive_atom(text, b"urllib")
+        && !contains_ascii_case_insensitive_atom(text, target_method.as_bytes())
+    {
+        return Vec::new();
+    }
+
     #[allow(clippy::expect_used)]
     static PY_FROM_URLLIB_IMPORT_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
@@ -1804,6 +1828,10 @@ fn collect_python_urllib_call_aliases(text: &str, target_method: &str) -> Vec<St
 }
 
 fn collect_python_urllib_request_module_aliases(text: &str) -> Vec<String> {
+    if !contains_ascii_case_insensitive_atom(text, b"urllib") {
+        return vec!["urllib.request".to_string()];
+    }
+
     #[allow(clippy::expect_used)]
     static PY_IMPORT_URLLIB_REQUEST_ALIAS_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?is)\bimport\s+urllib\.request\s+as\s+([A-Za-z_][A-Za-z0-9_]*)"#)
@@ -1849,6 +1877,12 @@ fn collect_python_urllib_request_module_aliases(text: &str) -> Vec<String> {
 }
 
 fn collect_python_urllib_assigned_call_aliases(text: &str, target_method: &str) -> Vec<String> {
+    if !text.as_bytes().contains(&b'=')
+        || !contains_ascii_case_insensitive_atom(text, target_method.as_bytes())
+    {
+        return Vec::new();
+    }
+
     #[allow(clippy::expect_used)]
     static PY_URLLIB_METHOD_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
