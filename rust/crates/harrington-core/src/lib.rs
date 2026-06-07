@@ -5359,6 +5359,40 @@ fn contains_rem_comment_candidate(text: &str) -> bool {
         .any(|w| matches!(w, [b'r' | b'R', b'e' | b'E', b'm' | b'M', b' ']))
 }
 
+fn caret_obfuscated_rem_payload(line: &str) -> Option<(&str, &str)> {
+    let trimmed = line.trim_start_matches(['@', ' ', '\t']);
+    let leading = &line[..line.len() - trimmed.len()];
+    let bytes = trimmed.as_bytes();
+    let mut i = 0usize;
+    let mut saw_caret = false;
+    for expected in [b'r', b'e', b'm'] {
+        if bytes.get(i) == Some(&b'^') {
+            saw_caret = true;
+            i += 1;
+        }
+        let b = *bytes.get(i)?;
+        if !b.eq_ignore_ascii_case(&expected) {
+            return None;
+        }
+        i += 1;
+    }
+    if !saw_caret {
+        return None;
+    }
+    match bytes.get(i) {
+        None => Some((leading, "")),
+        Some(b' ' | b'\t') => Some((leading, trimmed[i..].trim_start_matches([' ', '\t']))),
+        _ => None,
+    }
+}
+
+fn render_long_rem_comment_summary(leading: &str, payload: &str, out: &mut String) {
+    out.push_str(leading);
+    out.push_str("rem ::==== harrington: omitted ");
+    out.push_str(&payload.len().to_string());
+    out.push_str(" bytes from long REM comment line ====\r\n");
+}
+
 fn split_line_ending(line: &str) -> (&str, &str) {
     if let Some(body) = line.strip_suffix("\r\n") {
         (body, "\r\n")
@@ -5507,6 +5541,16 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
             ));
             cursor = run.end_idx + 1;
             continue;
+        }
+
+        if let Some((leading, payload)) = caret_obfuscated_rem_payload(logical) {
+            const MIN_SUMMARY_BYTES: usize = 1024;
+            if payload.len() >= MIN_SUMMARY_BYTES {
+                rescue_truncated_urls(payload, logical.len(), env);
+                render_long_rem_comment_summary(leading, payload, out);
+                cursor += 1;
+                continue;
+            }
         }
 
         // Label-only lines and `rem` comments aren't interpreted, but we
@@ -6217,6 +6261,35 @@ mod line_cap_tests {
                 .iter()
                 .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
             "URL hidden in summarized REM line should be rescued: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn caret_obfuscated_long_rem_noise_is_summarized_and_tail_url_rescued() {
+        let url = "https://caret-rem-tail.attacker.example/payload.bat";
+        let noise = "B".repeat(4096);
+        let script = format!("@echo off\r\nR^E^M {noise} {url}\r\n");
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("bytes from long REM comment line"),
+            "caret-obfuscated REM noise should be summarized, got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.lines().all(|line| line.len() < 512),
+            "summarized caret-obfuscated REM output should stay compact, got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
+            "URL hidden in caret-obfuscated REM line should be rescued: {:?}",
             report.traits
         );
     }
