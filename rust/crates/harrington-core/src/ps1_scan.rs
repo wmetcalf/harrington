@@ -83,18 +83,20 @@ static PS_GENERIC_URL_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static DOWNLOADSTRING_RE: Lazy<Regex> = Lazy::new(|| {
     // (New-Object Net.WebClient).DownloadString('url') or .DownloadFile('url', 'dst')
-    Regex::new(r#"(?i)\.Download(?:String|File|Data)\s*\(\s*["']([^"']+)["']"#).expect("ds")
+    Regex::new(r#"(?i)\.Download(?:String|File|Data)(?:Async)?\s*\(\s*["']([^"']+)["']"#)
+        .expect("ds")
 });
 
 #[allow(clippy::expect_used)]
 static BARE_DOWNLOADSTRING_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"(?i)\bDownload(?:String|File|Data)\s*\(\s*["']([^"']+)["']"#)
+    Regex::new(r#"(?i)\bDownload(?:String|File|Data)(?:Async)?\s*\(\s*["']([^"']+)["']"#)
         .expect("bare downloadstring")
 });
 
 #[allow(clippy::expect_used)]
 static DOWNLOADFILE_CALL_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"(?is)\bDownloadFile\s*\(\s*([^)]{0,2048})\)"#).expect("downloadfile call")
+    Regex::new(r#"(?is)\bDownloadFile(?:Async)?\s*\(\s*([^)]{0,2048})\)"#)
+        .expect("downloadfile call")
 });
 
 #[allow(clippy::expect_used)]
@@ -210,7 +212,10 @@ impl PsUrlRegexAtomProfile {
                 || contains_ascii_case_insensitive_bytes(text, b"file:"),
             download_method: contains_ascii_case_insensitive_bytes(text, b"downloadstring")
                 || contains_ascii_case_insensitive_bytes(text, b"downloadfile")
-                || contains_ascii_case_insensitive_bytes(text, b"downloaddata"),
+                || contains_ascii_case_insensitive_bytes(text, b"downloaddata")
+                || contains_ascii_case_insensitive_bytes(text, b"downloadstringasync")
+                || contains_ascii_case_insensitive_bytes(text, b"downloadfileasync")
+                || contains_ascii_case_insensitive_bytes(text, b"downloaddataasync"),
             download_fragment: contains_ascii_case_insensitive_bytes(text, b"loadstring")
                 || contains_ascii_case_insensitive_bytes(text, b"adstring"),
             callbyname: contains_ascii_case_insensitive_bytes(text, b"callbyname"),

