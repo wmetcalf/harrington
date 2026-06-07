@@ -7,6 +7,7 @@ pub fn h_rundll32(raw: &str, env: &mut Environment) {
     if parts.len() < 2 {
         return;
     }
+    queue_inline_script_payload(raw, env);
     if let Some(url) = url_launch_export_argument(&parts) {
         env.traits.push(Trait::UrlLaunch {
             cmd: raw.to_string(),
@@ -29,6 +30,52 @@ pub fn h_rundll32(raw: &str, env: &mut Environment) {
         cmd: raw.to_string(),
         url,
     });
+}
+
+fn queue_inline_script_payload(raw: &str, env: &mut Environment) {
+    const MAX_INLINE_SCRIPT_BYTES: usize = 256 * 1024;
+
+    if let Some(body) = inline_payload_after(raw, "vbscript:") {
+        if body.len() <= MAX_INLINE_SCRIPT_BYTES {
+            let payload = body.as_bytes().to_vec();
+            if !env
+                .all_extracted_vbs
+                .iter()
+                .any(|existing| existing == &payload)
+            {
+                env.all_extracted_vbs.push(payload);
+            }
+        }
+    }
+
+    if let Some(body) =
+        inline_payload_after(raw, "javascript:").or_else(|| inline_payload_after(raw, "jscript:"))
+    {
+        if body.len() <= MAX_INLINE_SCRIPT_BYTES {
+            let payload = body.as_bytes().to_vec();
+            if !env
+                .all_extracted_jscript
+                .iter()
+                .any(|existing| existing == &payload)
+            {
+                env.all_extracted_jscript.push(payload);
+            }
+        }
+    }
+}
+
+fn inline_payload_after<'a>(raw: &'a str, marker: &str) -> Option<&'a str> {
+    let start = find_ascii_case_insensitive(raw, marker)? + marker.len();
+    let body = raw[start..].trim().trim_matches(['"', '\'']);
+    (!body.is_empty()).then_some(body)
+}
+
+fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
+    let needle = needle.as_bytes();
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .position(|window| window.eq_ignore_ascii_case(needle))
 }
 
 fn url_launch_export_argument(parts: &[String]) -> Option<String> {
