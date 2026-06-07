@@ -519,23 +519,35 @@ fn is_string_concat_start(text: &str, pos: usize) -> bool {
     }
 }
 
-#[allow(clippy::expect_used)]
-static DOUBLED_QUOTE_LITERAL_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r#"''([^'\r\n]{1,8192})''"#).expect("doubled quote literal"));
-
 fn expand_doubled_quote_literals(text: &str) -> String {
-    let matches: Vec<(usize, usize, String)> = DOUBLED_QUOTE_LITERAL_RE
-        .captures_iter(text)
-        .filter_map(|caps| {
-            let full = caps.get(0)?;
-            let inner = caps.get(1)?.as_str();
-            Some((full.start(), full.end(), format!("'{inner}'")))
-        })
-        .collect();
-    let mut out = text.to_string();
-    for (start, end, replacement) in matches.into_iter().rev() {
-        out.replace_range(start..end, &replacement);
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut cursor = 0usize;
+
+    while let Some(rel) = text[cursor..].find("''") {
+        let start = cursor + rel;
+        let inner_start = start + 2;
+        let limit = inner_start.saturating_add(8192).min(text.len());
+        let mut end = inner_start;
+        while end < limit {
+            match bytes[end] {
+                b'\'' | b'\r' | b'\n' => break,
+                _ => end += 1,
+            }
+        }
+
+        if end > inner_start && bytes.get(end..end + 2) == Some(b"''") {
+            out.push_str(&text[cursor..start]);
+            out.push('\'');
+            out.push_str(&text[inner_start..end]);
+            out.push('\'');
+            cursor = end + 2;
+        } else {
+            out.push_str(&text[cursor..start + 1]);
+            cursor = start + 1;
+        }
     }
+    out.push_str(&text[cursor..]);
     out
 }
 
@@ -2888,125 +2900,127 @@ static PS_VAR_REPLACE_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
 /// Pre-pass over a PowerShell text: expand common obfuscation patterns so that
 /// subsequent URL-extraction regexes see literal strings.
 fn expand_obfuscation(text: &str) -> String {
+    let expand_profile_enabled = std::env::var_os("HARRINGTON_PROFILE_PS1_EXPAND").is_some();
     let mut out = join_powershell_line_continuations(&normalize_powershell_quotes(text));
-    for _ in 0..8 {
+    macro_rules! profile_expand_step {
+        ($stage:literal, $iter:expr, $body:block) => {{
+            if expand_profile_enabled {
+                let before_len = out.len();
+                let start = std::time::Instant::now();
+                let result = { $body };
+                eprintln!(
+                    "harrington_profile_ps1_expand stage={} iter={} delta_ms={} bytes_before={} bytes_after={}",
+                    $stage,
+                    $iter,
+                    start.elapsed().as_millis(),
+                    before_len,
+                    out.len()
+                );
+                result
+            } else {
+                $body
+            }
+        }};
+    }
+    for iter in 0..8 {
+        let signal_start = std::time::Instant::now();
         let signals = PsObfuscationSignals::new(&out);
+        if expand_profile_enabled {
+            eprintln!(
+                "harrington_profile_ps1_expand stage=signals iter={} delta_ms={} bytes_before={} bytes_after={}",
+                iter,
+                signal_start.elapsed().as_millis(),
+                out.len(),
+                out.len()
+            );
+        }
         if !signals.has_any_expansion_signal() {
             break;
         }
+        let clone_start = std::time::Instant::now();
         let before = out.clone();
-        if signals.argument_list {
-            out = expand_start_process_argument_list(&out);
+        if expand_profile_enabled {
+            eprintln!(
+                "harrington_profile_ps1_expand stage=iteration_clone iter={} delta_ms={} bytes_before={} bytes_after={}",
+                iter,
+                clone_start.elapsed().as_millis(),
+                out.len(),
+                out.len()
+            );
         }
-        if signals.invoke_wrapper {
-            out = expand_invoke_expression_wrappers(&out);
-        }
-        if signals.dot_replace {
-            out = expand_ps_dot_replace(&out);
-        }
-        if signals.substring {
-            out = expand_ps_dot_substring(&out);
-        }
-        if signals.embedded_single_quote_assignment {
-            out = expand_ps_embedded_single_quote_assignments(&out);
-        }
-        if signals.doubled_single_quote {
-            out = expand_doubled_quote_literals(&out);
-        }
-        if signals.skip_nth {
-            out = expand_skip_nth(&out); // skip-nth-char decoder (Pattern B)
-            out = expand_skip_nth_for_substring(&out);
-        }
-        if signals.char_cast {
-            out = expand_char_concat(&out);
-            out = expand_char_literal_concat(&out);
-            out = expand_string_join_char_arrays(&out);
-            out = expand_unary_join_char_arrays(&out);
-            out = expand_char_array_concat_chunks(&out);
-            out = expand_char_array_chunks(&out); // char-array chunk decoder (Pattern D)
-        }
-        if signals.hex_split {
-            out = expand_hex_split_char_loop(&out);
-        }
-        if signals.space_concat {
-            out = expand_space_concat(&out); // space-separated string array (Pattern C)
-        }
-        if signals.single_quote_concat {
-            out = expand_string_concat(&out);
-        }
-        if signals.double_quote_concat {
-            out = expand_double_string_concat(&out);
-        }
-        if signals.format {
-            out = expand_format_literals(&out);
-            out = expand_ps_string_format_static(&out);
-        }
-        if signals.compressed_base64 {
-            out = expand_gzip_function_base64_variables(&out);
-            out = expand_gzip_base64_literals(&out);
-        }
-        if signals.json_script_base64 {
-            out = expand_json_script_base64(&out);
-        }
-        if signals.regex_replace_base64 {
-            out = expand_regex_replace_base64_variables(&out);
-        }
-        if signals.regex_replace {
-            out = expand_regex_replace_calls(&out);
-        }
-        if signals.base64_or_getstring {
-            out = expand_getstring_base64_literals(&out);
-            out = expand_getstring_base64_variables(&out);
-            out = expand_getstring_byte_arrays(&out);
-            out = expand_convert_frombase64_literals(&out);
-            out = append_decoded_frombase64_literals(&out);
-            out = expand_base64_literals(&out);
-            out = expand_getstring_wrapper(&out);
-        }
-        if signals.reverse_slice_join {
-            out = expand_reverse_string_slice_join(&out);
-        }
-        if signals.join {
-            out = expand_single_literal_join(&out);
-            out = expand_split_join_literals(&out);
-            out = expand_ps_join(&out);
-        }
-        if signals.to_char_array {
-            out = expand_tochararray_reverse_join(&out);
-        }
-        if signals.string_join {
-            out = expand_ps_string_join(&out);
-        }
-        if signals.string_concat {
-            out = expand_ps_string_concat_static(&out);
-        }
-        if signals.replace {
-            out = expand_ps_replace(&out);
-        }
-        if signals.dot_replace {
-            out = expand_ps_dot_replace(&out);
-        }
-        if signals.substring {
-            out = expand_ps_dot_substring(&out);
-        }
-        let variables_changed = if signals.variables {
-            let before_variables = out.clone();
-            out = expand_ps_index_concat_assignments(&out);
-            out = expand_ps_variables(&out);
-            out != before_variables
-        } else {
-            false
-        };
-        if variables_changed {
-            if signals.regex_replace {
-                out = expand_regex_replace_calls(&out);
+        profile_expand_step!("wrappers", iter, {
+            if signals.argument_list {
+                out = expand_start_process_argument_list(&out);
             }
-            if signals.compressed_base64 {
-                out = expand_gzip_function_base64_variables(&out);
+            if signals.invoke_wrapper {
+                out = expand_invoke_expression_wrappers(&out);
             }
+        });
+        profile_expand_step!("dot_substring_pre", iter, {
+            if signals.dot_replace {
+                out = expand_ps_dot_replace(&out);
+            }
+            if signals.substring {
+                out = expand_ps_dot_substring(&out);
+            }
+        });
+        profile_expand_step!("embedded_single_quote", iter, {
+            if signals.embedded_single_quote_assignment {
+                out = expand_ps_embedded_single_quote_assignments(&out);
+            }
+        });
+        profile_expand_step!("doubled_quote_literals", iter, {
+            if signals.doubled_single_quote {
+                out = expand_doubled_quote_literals(&out);
+            }
+        });
+        profile_expand_step!("skip_nth", iter, {
+            if signals.skip_nth {
+                out = expand_skip_nth(&out); // skip-nth-char decoder (Pattern B)
+                out = expand_skip_nth_for_substring(&out);
+            }
+        });
+        profile_expand_step!("char_cast", iter, {
             if signals.char_cast {
+                out = expand_char_concat(&out);
+                out = expand_char_literal_concat(&out);
                 out = expand_string_join_char_arrays(&out);
                 out = expand_unary_join_char_arrays(&out);
+                out = expand_char_array_concat_chunks(&out);
+                out = expand_char_array_chunks(&out); // char-array chunk decoder (Pattern D)
+            }
+        });
+        profile_expand_step!("literal_composition", iter, {
+            if signals.hex_split {
+                out = expand_hex_split_char_loop(&out);
+            }
+            if signals.space_concat {
+                out = expand_space_concat(&out); // space-separated string array (Pattern C)
+            }
+            if signals.single_quote_concat {
+                out = expand_string_concat(&out);
+            }
+            if signals.double_quote_concat {
+                out = expand_double_string_concat(&out);
+            }
+            if signals.format {
+                out = expand_format_literals(&out);
+                out = expand_ps_string_format_static(&out);
+            }
+        });
+        profile_expand_step!("encoded_payloads", iter, {
+            if signals.compressed_base64 {
+                out = expand_gzip_function_base64_variables(&out);
+                out = expand_gzip_base64_literals(&out);
+            }
+            if signals.json_script_base64 {
+                out = expand_json_script_base64(&out);
+            }
+            if signals.regex_replace_base64 {
+                out = expand_regex_replace_base64_variables(&out);
+            }
+            if signals.regex_replace {
+                out = expand_regex_replace_calls(&out);
             }
             if signals.base64_or_getstring {
                 out = expand_getstring_base64_literals(&out);
@@ -3017,7 +3031,69 @@ fn expand_obfuscation(text: &str) -> String {
                 out = expand_base64_literals(&out);
                 out = expand_getstring_wrapper(&out);
             }
-        }
+        });
+        profile_expand_step!("join_family", iter, {
+            if signals.reverse_slice_join {
+                out = expand_reverse_string_slice_join(&out);
+            }
+            if signals.join {
+                out = expand_single_literal_join(&out);
+                out = expand_split_join_literals(&out);
+                out = expand_ps_join(&out);
+            }
+        });
+        profile_expand_step!("replace_family", iter, {
+            if signals.to_char_array {
+                out = expand_tochararray_reverse_join(&out);
+            }
+            if signals.string_join {
+                out = expand_ps_string_join(&out);
+            }
+            if signals.string_concat {
+                out = expand_ps_string_concat_static(&out);
+            }
+            if signals.replace {
+                out = expand_ps_replace(&out);
+            }
+            if signals.dot_replace {
+                out = expand_ps_dot_replace(&out);
+            }
+            if signals.substring {
+                out = expand_ps_dot_substring(&out);
+            }
+        });
+        let mut variables_changed = false;
+        profile_expand_step!("variables", iter, {
+            if signals.variables {
+                let before_variables = out.clone();
+                out = expand_ps_index_concat_assignments(&out);
+                out = expand_ps_variables(&out);
+                variables_changed = out != before_variables;
+            }
+        });
+        profile_expand_step!("post_variables", iter, {
+            if variables_changed {
+                if signals.regex_replace {
+                    out = expand_regex_replace_calls(&out);
+                }
+                if signals.compressed_base64 {
+                    out = expand_gzip_function_base64_variables(&out);
+                }
+                if signals.char_cast {
+                    out = expand_string_join_char_arrays(&out);
+                    out = expand_unary_join_char_arrays(&out);
+                }
+                if signals.base64_or_getstring {
+                    out = expand_getstring_base64_literals(&out);
+                    out = expand_getstring_base64_variables(&out);
+                    out = expand_getstring_byte_arrays(&out);
+                    out = expand_convert_frombase64_literals(&out);
+                    out = append_decoded_frombase64_literals(&out);
+                    out = expand_base64_literals(&out);
+                    out = expand_getstring_wrapper(&out);
+                }
+            }
+        });
         if out == before {
             break;
         }
