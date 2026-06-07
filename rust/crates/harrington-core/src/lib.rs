@@ -3760,9 +3760,14 @@ fn recovered_artifact_string_is_behavior_hint(s: &str) -> bool {
         "[system.reflection.assembly]::load",
         "[reflection.assembly]::load",
         "amsiscanbuffer",
+        "invoke-nullamsi",
         "amsiinitfailed",
         "amsiutils",
+        "amsicontext",
+        "amsisession",
+        "amsi.dll",
         "etweventwrite",
+        "system.diagnostics.eventing.eventprovider",
     ];
     NEEDLES
         .iter()
@@ -8858,6 +8863,38 @@ mod certutil_tests {
                 )
             }),
             "decoded PE UTF-16 behavior string was not scanned: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn recovered_artifact_amsi_dll_and_eventprovider_strings_are_scanned() {
+        let mut pe = vec![0u8; 0x84];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&(0x80u32).to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        pe.extend_from_slice(b"LoadLibraryA amsi.dll VirtualProtect\0");
+        pe.extend_from_slice(b"System.Diagnostics.Eventing.EventProvider\0");
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&pe);
+        let script =
+            format!("echo {b64}>payload.b64\r\ncertutil -decode payload.b64 payload.dll\r\n");
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "amsi-bypass" && target.eq_ignore_ascii_case("amsi.dll")
+            )),
+            "recovered artifact amsi.dll marker was not scanned: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, .. } if action == "etw-patch"
+            )),
+            "recovered artifact EventProvider marker was not scanned: {:?}",
             report.traits
         );
     }
