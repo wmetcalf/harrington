@@ -551,6 +551,22 @@ fn scan_python_requests_get_deob_text(deobfuscated: &str, env: &mut Environment)
     if !has_direct_download && !has_base64_decode {
         return;
     }
+    let python_profile_enabled = std::env::var_os("HARRINGTON_PROFILE_PYTHON_SCAN").is_some();
+    macro_rules! profile_python_group {
+        ($stage:literal, $body:block) => {{
+            let profile_start = python_profile_enabled.then(std::time::Instant::now);
+            let result = $body;
+            if let Some(profile_start) = profile_start {
+                eprintln!(
+                    "harrington_profile_python_scan stage={} delta_ms={} bytes={}",
+                    $stage,
+                    profile_start.elapsed().as_millis(),
+                    deobfuscated.len()
+                );
+            }
+            result
+        }};
+    }
 
     let mut known: std::collections::HashSet<String> = env
         .traits
@@ -562,36 +578,47 @@ fn scan_python_requests_get_deob_text(deobfuscated: &str, env: &mut Environment)
         .collect();
 
     if has_direct_download {
-        let urlopen_names = python_urlopen_call_names(deobfuscated);
-        let urlopen_name_refs = urlopen_names.iter().map(String::as_str).collect::<Vec<_>>();
-        for url in find_call_url_literals(deobfuscated, &urlopen_name_refs) {
-            emit_python_download(&url, deobfuscated, env, &mut known);
-        }
-        for url in find_python_requests_request_get_literals(deobfuscated) {
-            emit_python_download(&url, deobfuscated, env, &mut known);
-        }
-        for (url, dst) in find_python_urlretrieve_literals(deobfuscated) {
-            emit_python_download_with_dst(&url, dst.as_deref(), deobfuscated, env, &mut known);
-        }
+        profile_python_group!("direct_urlopen_get", {
+            let urlopen_names = python_urlopen_call_names(deobfuscated);
+            let urlopen_name_refs = urlopen_names.iter().map(String::as_str).collect::<Vec<_>>();
+            for url in find_call_url_literals(deobfuscated, &urlopen_name_refs) {
+                emit_python_download(&url, deobfuscated, env, &mut known);
+            }
+        });
+        profile_python_group!("direct_request_get", {
+            for url in find_python_requests_request_get_literals(deobfuscated) {
+                emit_python_download(&url, deobfuscated, env, &mut known);
+            }
+        });
+        profile_python_group!("direct_urlretrieve", {
+            for (url, dst) in find_python_urlretrieve_literals(deobfuscated) {
+                emit_python_download_with_dst(&url, dst.as_deref(), deobfuscated, env, &mut known);
+            }
+        });
     }
 
     if has_base64_decode {
-        for decoded in decoded_python_b64decode_literals(deobfuscated) {
-            let decoded_urlopen_names = python_urlopen_call_names(&decoded);
-            let decoded_urlopen_name_refs = decoded_urlopen_names
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>();
-            for url in find_call_url_literals(&decoded, &decoded_urlopen_name_refs) {
-                emit_python_download(&url, &decoded, env, &mut known);
+        let decoded_payloads = profile_python_group!("decode_b64_literals", {
+            decoded_python_b64decode_literals(deobfuscated)
+        });
+        profile_python_group!("decoded_payload_scan", {
+            for decoded in decoded_payloads {
+                let decoded_urlopen_names = python_urlopen_call_names(&decoded);
+                let decoded_urlopen_name_refs = decoded_urlopen_names
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>();
+                for url in find_call_url_literals(&decoded, &decoded_urlopen_name_refs) {
+                    emit_python_download(&url, &decoded, env, &mut known);
+                }
+                for url in find_python_requests_request_get_literals(&decoded) {
+                    emit_python_download(&url, &decoded, env, &mut known);
+                }
+                for (url, dst) in find_python_urlretrieve_literals(&decoded) {
+                    emit_python_download_with_dst(&url, dst.as_deref(), &decoded, env, &mut known);
+                }
             }
-            for url in find_python_requests_request_get_literals(&decoded) {
-                emit_python_download(&url, &decoded, env, &mut known);
-            }
-            for (url, dst) in find_python_urlretrieve_literals(&decoded) {
-                emit_python_download_with_dst(&url, dst.as_deref(), &decoded, env, &mut known);
-            }
-        }
+        });
     }
 }
 
@@ -854,9 +881,7 @@ fn find_python_requests_request_get_literals(text: &str) -> Vec<String> {
     names.extend(collect_python_requests_bound_session_method_aliases(
         text, "request",
     ));
-    let string_bindings = collect_python_string_bindings(text);
-    let url_bindings = collect_python_url_string_bindings_from(&string_bindings);
-
+    let mut call_sites = Vec::new();
     for name in names {
         let mut search_start = 0;
         while let Some(name_start) = find_ascii_case_insensitive(text, &name, search_start) {
@@ -874,14 +899,22 @@ fn find_python_requests_request_get_literals(text: &str) -> Vec<String> {
                 search_start = open + 1;
                 continue;
             };
-            if let Some(url) = python_requests_request_get_url(
-                &text[open + 1..close],
-                &url_bindings,
-                &string_bindings,
-            ) {
-                found.push(url);
-            }
+            call_sites.push((open, close));
             search_start = close + 1;
+        }
+    }
+    if call_sites.is_empty() {
+        return found;
+    }
+
+    let string_bindings = collect_python_string_bindings(text);
+    let url_bindings = collect_python_url_string_bindings_from(&string_bindings);
+
+    for (open, close) in call_sites {
+        if let Some(url) =
+            python_requests_request_get_url(&text[open + 1..close], &url_bindings, &string_bindings)
+        {
+            found.push(url);
         }
     }
 
@@ -1505,11 +1538,7 @@ fn contains_ascii_case_insensitive_atom(text: &str, atom: &[u8]) -> bool {
 
 fn find_call_url_literals(text: &str, names: &[&str]) -> Vec<String> {
     let mut found = Vec::new();
-    let string_bindings = collect_python_string_bindings(text);
-    let mut bindings = collect_python_url_string_bindings_from(&string_bindings);
-    bindings.extend(collect_python_urllib_request_object_url_bindings(
-        text, &bindings,
-    ));
+    let mut call_sites = Vec::new();
     for name in names {
         let mut search_start = 0;
         while let Some(name_start) = find_ascii_case_insensitive(text, name, search_start) {
@@ -1527,10 +1556,22 @@ fn find_call_url_literals(text: &str, names: &[&str]) -> Vec<String> {
                 search_start = open + 1;
                 continue;
             };
-            if let Some(url) = first_python_url_arg(&text[open + 1..close], &bindings) {
-                found.push(url);
-            }
+            call_sites.push((open, close));
             search_start = close + 1;
+        }
+    }
+    if call_sites.is_empty() {
+        return found;
+    }
+
+    let string_bindings = collect_python_string_bindings(text);
+    let mut bindings = collect_python_url_string_bindings_from(&string_bindings);
+    bindings.extend(collect_python_urllib_request_object_url_bindings(
+        text, &bindings,
+    ));
+    for (open, close) in call_sites {
+        if let Some(url) = first_python_url_arg(&text[open + 1..close], &bindings) {
+            found.push(url);
         }
     }
     found
@@ -1593,8 +1634,7 @@ fn find_python_urlretrieve_literals(text: &str) -> Vec<(String, Option<String>)>
         "urllib.urlretrieve".to_string(),
     ];
     names.extend(collect_python_urllib_call_aliases(text, "urlretrieve"));
-    let string_bindings = collect_python_string_bindings(text);
-    let url_bindings = collect_python_url_string_bindings_from(&string_bindings);
+    let mut call_sites = Vec::new();
     for name in names {
         let mut search_start = 0;
         while let Some(name_start) = find_ascii_case_insensitive(text, &name, search_start) {
@@ -1612,14 +1652,23 @@ fn find_python_urlretrieve_literals(text: &str) -> Vec<(String, Option<String>)>
                 search_start = open + 1;
                 continue;
             };
-            if let Some((url, dst)) = python_urlretrieve_download_args(
-                &text[open + 1..close],
-                &url_bindings,
-                &string_bindings,
-            ) {
-                found.push((url, dst));
-            }
+            call_sites.push((open, close));
             search_start = close + 1;
+        }
+    }
+    if call_sites.is_empty() {
+        return found;
+    }
+
+    let string_bindings = collect_python_string_bindings(text);
+    let url_bindings = collect_python_url_string_bindings_from(&string_bindings);
+    for (open, close) in call_sites {
+        if let Some((url, dst)) = python_urlretrieve_download_args(
+            &text[open + 1..close],
+            &url_bindings,
+            &string_bindings,
+        ) {
+            found.push((url, dst));
         }
     }
     found
