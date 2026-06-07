@@ -742,6 +742,7 @@ fn python_urlopen_call_names(text: &str) -> Vec<String> {
             names.push(format!("httpx.{method}"));
         }
         names.extend(collect_python_httpx_method_aliases(text, method));
+        names.extend(collect_python_httpx_client_method_aliases(text, method));
         names.extend(collect_python_httpx_bound_client_method_aliases(
             text, method,
         ));
@@ -851,6 +852,17 @@ fn collect_python_httpx_module_aliases(text: &str) -> Vec<String> {
             .filter_map(|caps| caps.get(1).map(|m| m.as_str().to_string())),
     );
     aliases
+}
+
+fn collect_python_httpx_client_method_aliases(text: &str, target_method: &str) -> Vec<String> {
+    if !contains_ascii_case_insensitive_atom(text, b"client") {
+        return Vec::new();
+    }
+
+    collect_python_httpx_module_aliases(text)
+        .into_iter()
+        .map(|alias| format!("{alias}.Client().{target_method}"))
+        .collect()
 }
 
 fn collect_python_httpx_bound_client_method_aliases(
