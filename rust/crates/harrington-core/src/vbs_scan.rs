@@ -658,6 +658,12 @@ fn parse_vbs_string_literal(part: &str) -> Option<String> {
 }
 
 fn parse_vbs_chr(part: &str) -> Option<char> {
+    if let Some(inner) = vbs_function_args(part, "chrb") {
+        let value = parse_vbs_integer(inner)?;
+        return (value <= u8::MAX as u32)
+            .then_some(value)
+            .and_then(char::from_u32);
+    }
     let inner = vbs_function_args(part, "chr").or_else(|| vbs_function_args(part, "chrw"))?;
     let value = parse_vbs_integer(inner)?;
     char::from_u32(value)
