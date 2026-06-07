@@ -2289,6 +2289,10 @@ fn edit_distance_at_most(left: &str, right: &str, max_distance: usize) -> bool {
 }
 
 fn scan_url_launch_deob_text(deobfuscated: &str, env: &mut Environment) {
+    if !has_url_launch_atom(deobfuscated) {
+        return;
+    }
+
     let mut known: std::collections::HashSet<String> = env
         .traits
         .iter()
@@ -2304,6 +2308,9 @@ fn scan_url_launch_deob_text(deobfuscated: &str, env: &mut Environment) {
         .collect();
 
     for line in deobfuscated.lines() {
+        if !has_url_launch_line_atom(line) {
+            continue;
+        }
         let tokens = split_words(line);
         if tokens.is_empty() {
             continue;
@@ -2341,6 +2348,84 @@ fn scan_url_launch_deob_text(deobfuscated: &str, env: &mut Environment) {
                 url,
             });
         }
+    }
+}
+
+fn has_url_launch_atom(text: &str) -> bool {
+    let has_urlish = [
+        b"http:".as_slice(),
+        b"https:".as_slice(),
+        b"file:".as_slice(),
+    ]
+    .iter()
+    .any(|atom| contains_ascii_case_insensitive_atom(text, atom))
+        || (text.contains('/') && text.contains('.'));
+    if !has_urlish {
+        return false;
+    }
+    [
+        b"start".as_slice(),
+        b"explorer".as_slice(),
+        b"rundll32".as_slice(),
+        b"fileprotocolhandler".as_slice(),
+        b"openurl".as_slice(),
+        b"imageview_fullscreen".as_slice(),
+        b"start-process".as_slice(),
+        b"saps".as_slice(),
+        b"invoke-item".as_slice(),
+        b"msedge".as_slice(),
+        b"chrome".as_slice(),
+        b"firefox".as_slice(),
+        b"brave".as_slice(),
+        b"opera".as_slice(),
+        b"iexplore".as_slice(),
+        b"hh".as_slice(),
+    ]
+    .iter()
+    .any(|atom| contains_ascii_case_insensitive_atom(text, atom))
+}
+
+fn has_url_launch_line_atom(line: &str) -> bool {
+    if !has_url_launch_atom(line) {
+        return false;
+    }
+    let trimmed = line.trim_start_matches(['@', ' ', '\t', '(']);
+    let first = trimmed
+        .split_ascii_whitespace()
+        .next()
+        .unwrap_or("")
+        .trim_matches('"')
+        .to_ascii_lowercase();
+    !matches!(first.as_str(), "set" | "setx" | "echo" | "rem" | "::")
+}
+
+#[cfg(test)]
+mod url_launch_prefilter_tests {
+    use super::{has_url_launch_atom, has_url_launch_line_atom};
+
+    #[test]
+    fn prefilter_allows_supported_url_launch_shapes() {
+        assert!(has_url_launch_atom(
+            r#"start "" "https://lure.example/a.pdf""#
+        ));
+        assert!(has_url_launch_atom(
+            "explorer.exe portal-schemeless.example/privacy/"
+        ));
+        assert!(has_url_launch_atom(
+            "rundll32.exe url.dll,FileProtocolHandler https://launch.example/a"
+        ));
+        assert!(has_url_launch_atom(
+            "powershell -Command \"Start-Process -FilePath:pslaunch.example/e.pdf\""
+        ));
+        assert!(has_url_launch_atom("hh.exe https://hh.example/help.chm"));
+    }
+
+    #[test]
+    fn prefilter_blocks_unrelated_url_text() {
+        assert!(!has_url_launch_atom("echo https://plain.example/payload"));
+        assert!(!has_url_launch_line_atom(
+            "set browser=chrome.exe && set url=plain.example/payload"
+        ));
     }
 }
 
