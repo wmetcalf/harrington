@@ -5154,7 +5154,28 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
     }
     env.limits.depth += 1;
 
-    let lines = line_reader::read_logical_lines(input);
+    let drive_profile_enabled = std::env::var_os("HARRINGTON_PROFILE_DRIVE").is_some();
+    let drive_profile_start = std::time::Instant::now();
+    let mut profile_read_lines_ms = 0u128;
+    let mut profile_redirect_capture_ms = 0u128;
+    let mut profile_label_index_ms = 0u128;
+    let mut profile_split_ms = 0u128;
+    let mut profile_pre_dispatch_ms = 0u128;
+    let mut profile_normalize_ms = 0u128;
+    let mut profile_interpret_ms = 0u128;
+    let mut profile_output_ms = 0u128;
+    let mut profile_iter_output_ms = 0u128;
+    let mut profile_child_drain_ms = 0u128;
+    let mut profile_command_count = 0usize;
+
+    let lines = if drive_profile_enabled {
+        let start = std::time::Instant::now();
+        let lines = line_reader::read_logical_lines(input);
+        profile_read_lines_ms += start.elapsed().as_millis();
+        lines
+    } else {
+        line_reader::read_logical_lines(input)
+    };
     // Pre-scan grouped-output redirects: `( echo A\n echo B\n ) > "file"`.
     // The redirect applies to the whole block's stdout, but each echo line is
     // processed independently in the main loop, so without this the file is
@@ -5163,6 +5184,7 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
     // `)` redirect line is a block delimiter and never re-writes the file.
     let has_echo_redirect =
         input_contains_ascii_case_insensitive(input, b"echo") && input.contains(&b'>');
+    let redirect_capture_start = drive_profile_enabled.then(std::time::Instant::now);
     let captured_echo_blocks =
         if has_echo_redirect && input.contains(&b'(') && input.contains(&b')') {
             capture_block_echo_redirects(&lines, env)
@@ -5184,9 +5206,18 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
         } else {
             std::collections::HashMap::new()
         };
+    if let Some(start) = redirect_capture_start {
+        profile_redirect_capture_ms += start.elapsed().as_millis();
+    }
     // Save the caller's label_index and install one for this script frame.
     let prior_labels = std::mem::take(&mut env.label_index);
-    env.label_index = labels::build_label_index(&lines);
+    if drive_profile_enabled {
+        let start = std::time::Instant::now();
+        env.label_index = labels::build_label_index(&lines);
+        profile_label_index_ms += start.elapsed().as_millis();
+    } else {
+        env.label_index = labels::build_label_index(&lines);
+    }
 
     let mut cursor = 0usize;
     // High-water mark: the furthest line index we have linearly advanced past.
@@ -5304,21 +5335,46 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
                 .or_else(|| fast_expand_percent_var_chain_line(logical, env))
         };
 
-        'cmds: for cmd in split::split_commands(logical) {
+        let commands = if drive_profile_enabled {
+            let start = std::time::Instant::now();
+            let commands = split::split_commands(logical);
+            profile_split_ms += start.elapsed().as_millis();
+            commands
+        } else {
+            split::split_commands(logical)
+        };
+        profile_command_count += commands.len();
+        'cmds: for cmd in commands {
             if env.suppress_until_eol {
                 // Render the suppressed command (for visibility) but skip dispatch.
-                let toks = lex::lex(&cmd);
-                let normalized = normalize::normalize_to_string(&toks, env);
+                let normalized = if drive_profile_enabled {
+                    let start = std::time::Instant::now();
+                    let toks = lex::lex(&cmd);
+                    let normalized = normalize::normalize_to_string(&toks, env);
+                    profile_normalize_ms += start.elapsed().as_millis();
+                    normalized
+                } else {
+                    let toks = lex::lex(&cmd);
+                    normalize::normalize_to_string(&toks, env)
+                };
+                let output_start = drive_profile_enabled.then(std::time::Instant::now);
                 let normalized_capped = cap_line(normalized, env);
                 out.push_str(&normalized_capped);
                 out.push_str("\r\n");
+                if let Some(start) = output_start {
+                    profile_output_ms += start.elapsed().as_millis();
+                }
                 continue;
             }
 
             if let Some(rendered) = render_fast_long_plain_echo(&cmd, env) {
                 if !line_output_elided {
+                    let output_start = drive_profile_enabled.then(std::time::Instant::now);
                     out.push_str(&rendered);
                     out.push_str("\r\n");
+                    if let Some(start) = output_start {
+                        profile_output_ms += start.elapsed().as_millis();
+                    }
                 }
                 if env.limits.max_output_bytes > 0
                     && (out.len() as u64) >= env.limits.max_output_bytes
@@ -5340,31 +5396,54 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
 
             // Single pre-normalize dispatch hook: handles FOR loops (raw %%A)
             // and cmd /c child extraction (raw var refs) in one typed call.
-            let pre = interp::pre_dispatch(&cmd, env);
+            let pre = if drive_profile_enabled {
+                let start = std::time::Instant::now();
+                let pre = interp::pre_dispatch(&cmd, env);
+                profile_pre_dispatch_ms += start.elapsed().as_millis();
+                pre
+            } else {
+                interp::pre_dispatch(&cmd, env)
+            };
 
             let normalized = if let Some(fast) = fast_normalized.as_ref() {
                 fast.clone()
             } else {
+                let normalize_start = drive_profile_enabled.then(std::time::Instant::now);
                 let toks = lex::lex(&cmd);
-                normalize::normalize_to_string(&toks, env)
+                let normalized = normalize::normalize_to_string(&toks, env);
+                if let Some(start) = normalize_start {
+                    profile_normalize_ms += start.elapsed().as_millis();
+                }
+                normalized
             };
             env.pending_action = None;
             // Only dispatch via interpret_line if NOT already consumed by pre_dispatch.
             if !pre.consumed {
-                interp::interpret_line(&normalized, env);
+                if drive_profile_enabled {
+                    let start = std::time::Instant::now();
+                    interp::interpret_line(&normalized, env);
+                    profile_interpret_ms += start.elapsed().as_millis();
+                } else {
+                    interp::interpret_line(&normalized, env);
+                }
             }
             // Goto-loop output elision: visit count is tracked per source
             // line above; suppress the deob append once the line has been
             // visited more than GOTO_LOOP_ELIDE_AFTER times. Handlers
             // still run, so IOCs aren't lost.
             if !line_output_elided {
+                let output_start = drive_profile_enabled.then(std::time::Instant::now);
                 let normalized_capped = cap_line(normalized, env);
                 out.push_str(&normalized_capped);
                 out.push_str("\r\n");
+                if let Some(start) = output_start {
+                    profile_output_ms += start.elapsed().as_millis();
+                }
             }
 
             // Collect any output produced by FOR-loop body iterations.
             if !env.iter_output.is_empty() {
+                let iter_output_start = drive_profile_enabled.then(std::time::Instant::now);
                 let iter_out = std::mem::take(&mut env.iter_output);
                 // Apply per-line cap to each line in iter_output.
                 for iter_line in iter_out.split("\r\n") {
@@ -5374,6 +5453,9 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
                     let capped = cap_line(iter_line.to_string(), env);
                     out.push_str(&capped);
                     out.push_str("\r\n");
+                }
+                if let Some(start) = iter_output_start {
+                    profile_iter_output_ms += start.elapsed().as_millis();
                 }
             }
 
@@ -5436,6 +5518,7 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
             }
 
             // Drain any newly-queued child scripts.
+            let child_drain_start = drive_profile_enabled.then(std::time::Instant::now);
             let pending_cmd: Vec<String> = std::mem::take(&mut env.exec_cmd);
             let pending_cmd_delayed: Vec<bool> = std::mem::take(&mut env.exec_cmd_delayed);
             let pending_ps1: Vec<Vec<u8>> = std::mem::take(&mut env.exec_ps1);
@@ -5478,6 +5561,9 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
                 // Restore delayed expansion to the parent's state after the child.
                 env.delayed_expansion = saved_delayed;
             }
+            if let Some(start) = child_drain_start {
+                profile_child_drain_ms += start.elapsed().as_millis();
+            }
         }
 
         env.suppress_until_eol = false;
@@ -5496,6 +5582,27 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
 
     // Restore caller's label_index.
     env.label_index = prior_labels;
+    if drive_profile_enabled {
+        eprintln!(
+            "harrington_profile_drive depth={} lines={} commands={} bytes={} out_bytes={} total_ms={} read_lines_ms={} redirect_capture_ms={} label_index_ms={} split_ms={} pre_dispatch_ms={} normalize_ms={} interpret_ms={} output_ms={} iter_output_ms={} child_drain_ms={}",
+            env.limits.depth,
+            lines.len(),
+            profile_command_count,
+            input.len(),
+            out.len(),
+            drive_profile_start.elapsed().as_millis(),
+            profile_read_lines_ms,
+            profile_redirect_capture_ms,
+            profile_label_index_ms,
+            profile_split_ms,
+            profile_pre_dispatch_ms,
+            profile_normalize_ms,
+            profile_interpret_ms,
+            profile_output_ms,
+            profile_iter_output_ms,
+            profile_child_drain_ms
+        );
+    }
     env.limits.depth -= 1;
 }
 

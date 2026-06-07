@@ -559,6 +559,21 @@ fn analyze_multiple_input_files_requires_jsonl() {
         ));
 }
 
+#[test]
+fn analyze_can_emit_drive_profile_to_stderr() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(&input, "set X=hi\r\necho %X%\r\n").expect("write");
+
+    Command::cargo_bin("harrington")
+        .expect("bin")
+        .env("HARRINGTON_PROFILE_DRIVE", "1")
+        .args(["analyze", input.to_str().expect("path"), "--jsonl"])
+        .assert()
+        .success()
+        .stderr(predicates::str::contains("harrington_profile_drive"));
+}
+
 #[cfg(unix)]
 #[test]
 fn analyze_jsonl_handles_closed_stdout_without_panic() {
