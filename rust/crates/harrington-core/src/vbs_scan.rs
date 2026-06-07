@@ -373,6 +373,22 @@ fn push_downloads_from_vbs_command(
             dst: dst_hint.clone(),
         });
     }
+
+    for token in command.split_ascii_whitespace() {
+        let candidate = token.trim_matches(['"', '\'', '(', ')', '[', ']', '{', '}', ',', ';']);
+        let Some(url) = crate::deob_scan::normalize_schemeless_domain_path_token(candidate) else {
+            continue;
+        };
+        if crate::deob_scan::is_noise_url(&url) || !seen.insert((idx, url.clone())) {
+            continue;
+        }
+        let snippet: String = text.chars().take(120).collect();
+        env.traits.push(Trait::Download {
+            cmd: format!("(vbs #{idx}) {snippet}"),
+            src: url,
+            dst: dst_hint.clone(),
+        });
+    }
 }
 
 fn join_vbs_line_continuations(text: &str) -> String {
