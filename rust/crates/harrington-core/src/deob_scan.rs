@@ -339,6 +339,14 @@ const NOISE_URL_SUBSTRINGS: &[&str] = &[
     "www.iec.ch",
     "istockphoto.com/legal/license-agreement",
     "istockphoto.com/photo/license",
+    // UI resource templates / app about-box links in recovered binaries
+    "www.youtube.com/embed/",
+    "player.vimeo.com/video/",
+    "ok.ru/videoembed/",
+    "music.yandex.ru/iframe/",
+    "www.google.com/maps/place/",
+    "sourceforge.net/p/compactview",
+    "www.cyotek.com",
     // Common ad networks / analytics in legitimate page assets
     "doubleclick.net",
     "googletagmanager.com",
@@ -9344,6 +9352,19 @@ mod noise_ip_tests {
             "http://tempuri.org/Database1DataSet.xsd"
         ));
         assert!(super::is_noise_url("https://www.autoitscript.com/autoit3/"));
+    }
+
+    #[test]
+    fn binary_resource_template_urls_are_noise() {
+        assert!(super::is_noise_url("https://www.youtube.com/embed/"));
+        assert!(super::is_noise_url("https://player.vimeo.com/video/"));
+        assert!(super::is_noise_url("https://ok.ru/videoembed/"));
+        assert!(super::is_noise_url(
+            "https://music.yandex.ru/iframe/#track/"
+        ));
+        assert!(super::is_noise_url("https://www.google.com/maps/place/"));
+        assert!(super::is_noise_url("https://www.cyotek.com"));
+        assert!(super::is_noise_url("http://sourceforge.net/p/compactview"));
     }
 
     #[test]
