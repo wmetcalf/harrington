@@ -1582,13 +1582,21 @@ fn find_call_url_literals(text: &str, names: &[&str]) -> Vec<String> {
         return found;
     }
 
-    let string_bindings = collect_python_string_bindings(text);
-    let mut bindings = collect_python_url_string_bindings_from(&string_bindings);
-    bindings.extend(collect_python_urllib_request_object_url_bindings(
-        text, &bindings,
-    ));
+    let empty_bindings = HashMap::new();
+    let mut bindings = None;
     for (open, close) in call_sites {
-        if let Some(url) = first_python_url_arg(&text[open + 1..close], &bindings) {
+        let args = &text[open + 1..close];
+        if let Some(url) = first_python_url_arg(args, &empty_bindings).or_else(|| {
+            let bindings = bindings.get_or_insert_with(|| {
+                let string_bindings = collect_python_string_bindings(text);
+                let mut bindings = collect_python_url_string_bindings_from(&string_bindings);
+                bindings.extend(collect_python_urllib_request_object_url_bindings(
+                    text, &bindings,
+                ));
+                bindings
+            });
+            first_python_url_arg(args, bindings)
+        }) {
             found.push(url);
         }
     }
