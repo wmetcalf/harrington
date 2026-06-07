@@ -218,6 +218,8 @@ pub fn scan_js_payloads(env: &mut Environment) {
         } else {
             decoded
         };
+        let should_run_fromcharcode_decoders =
+            js_should_run_fromcharcode_decoders(&concat_resolved);
         let mut candidates = vec![concat_resolved.clone()];
         if js_signals.any() {
             if js_signals.percent_decoder {
@@ -229,14 +231,16 @@ pub fn scan_js_payloads(env: &mut Environment) {
             if js_signals.percent_decoder {
                 candidates.extend(decoded_js_percent_alias_calls(&concat_resolved));
             }
-            if js_signals.charcode_decoder || js_signals.string_bindings {
+            if should_run_fromcharcode_decoders {
                 candidates.extend(decoded_js_fromcharcode_literals(&concat_resolved));
             }
             if env.check_deadline() {
                 break 'payloads;
             }
-            if js_signals.charcode_decoder || js_signals.string_bindings {
+            if should_run_fromcharcode_decoders {
                 candidates.extend(decoded_js_fromcharcode_array_bindings(&concat_resolved));
+            }
+            if js_signals.string_bindings {
                 candidates.extend(decoded_js_custom_base64_decoder_calls(&concat_resolved));
             }
             if js_signals.text_decoder {
@@ -418,6 +422,52 @@ fn js_decoder_signals(text: &str) -> JsDecoderSignals {
         string_bindings,
         unicode_escape: U_ESCAPE_RE.is_match(text),
     }
+}
+
+fn js_should_run_fromcharcode_decoders(text: &str) -> bool {
+    if !ascii_case_insensitive_contains(text, b"fromcharcode")
+        && !ascii_case_insensitive_contains(text, b"fromcodepoint")
+    {
+        return false;
+    }
+    if ascii_case_insensitive_contains(text, b"string[") {
+        return true;
+    }
+    has_inline_charcode_call_shape(text, b"fromcharcode")
+        || has_inline_charcode_call_shape(text, b"fromcodepoint")
+}
+
+fn has_inline_charcode_call_shape(text: &str, needle: &[u8]) -> bool {
+    let bytes = text.as_bytes();
+    for start in 0..bytes.len().saturating_sub(needle.len()).saturating_add(1) {
+        if !bytes[start..].starts_with(needle)
+            && !bytes[start..start + needle.len()].eq_ignore_ascii_case(needle)
+        {
+            continue;
+        }
+        let after_name = skip_ascii_ws(text, start + needle.len());
+        if bytes.get(after_name) == Some(&b'(') {
+            return true;
+        }
+        if bytes.get(after_name) != Some(&b'.') {
+            continue;
+        }
+        let method = skip_ascii_ws(text, after_name + 1);
+        if bytes[method..].starts_with(b"apply")
+            || bytes[method..].starts_with(b"call")
+            || bytes[method..].starts_with(b"bind")
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn ascii_case_insensitive_contains(haystack: &str, needle: &[u8]) -> bool {
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle))
 }
 
 fn decoded_js_percent_literals(text: &str) -> Vec<String> {
@@ -3728,5 +3778,30 @@ mod tests {
         ] {
             assert!(js_decoder_signal(sample), "missed signal: {sample}");
         }
+    }
+
+    #[test]
+    fn js_charcode_decoder_gate_uses_concat_resolved_vocabulary() {
+        assert!(
+            !js_should_run_fromcharcode_decoders(r#"var u = "http://already-visible.example/p";"#),
+            "ordinary JS bindings should not trigger the fromCharCode decoder suite"
+        );
+        assert!(
+            !js_should_run_fromcharcode_decoders(
+                r#"var w = String.fromCharCode; function d(x) { return w(x); }"#
+            ),
+            "assignment-only fromCharCode aliases are handled by custom decoder logic, not this regex suite"
+        );
+        assert!(
+            js_should_run_fromcharcode_decoders(r#"String.fromCharCode(104,116,116,112)"#),
+            "direct fromCharCode calls should still run"
+        );
+        let concat_resolved = expand_js_string_concat(r#"var m = "from" + "CharCode";"#);
+        assert!(
+            js_should_run_fromcharcode_decoders(&format!(
+                r#"{concat_resolved}; String[m](104,116,116,112)"#
+            )),
+            "split fromCharCode aliases should still trigger after concat resolution: {concat_resolved}"
+        );
     }
 }
