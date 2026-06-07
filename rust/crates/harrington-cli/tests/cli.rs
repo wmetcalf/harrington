@@ -646,7 +646,8 @@ fn analyze_can_emit_drive_profile_to_stderr() {
         .args(["analyze", input.to_str().expect("path"), "--jsonl"])
         .assert()
         .success()
-        .stderr(predicates::str::contains("harrington_profile_drive"));
+        .stderr(predicates::str::contains("harrington_profile_drive"))
+        .stderr(predicates::str::contains("fast_expand_ms="));
 }
 
 #[test]

@@ -5308,22 +5308,23 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
 
     let drive_profile_enabled = std::env::var_os("HARRINGTON_PROFILE_DRIVE").is_some();
     let drive_profile_start = std::time::Instant::now();
-    let mut profile_read_lines_ms = 0u128;
-    let mut profile_redirect_capture_ms = 0u128;
-    let mut profile_label_index_ms = 0u128;
-    let mut profile_split_ms = 0u128;
-    let mut profile_pre_dispatch_ms = 0u128;
-    let mut profile_normalize_ms = 0u128;
-    let mut profile_interpret_ms = 0u128;
-    let mut profile_output_ms = 0u128;
-    let mut profile_iter_output_ms = 0u128;
-    let mut profile_child_drain_ms = 0u128;
+    let mut profile_read_lines_us = 0u128;
+    let mut profile_redirect_capture_us = 0u128;
+    let mut profile_label_index_us = 0u128;
+    let mut profile_fast_expand_us = 0u128;
+    let mut profile_split_us = 0u128;
+    let mut profile_pre_dispatch_us = 0u128;
+    let mut profile_normalize_us = 0u128;
+    let mut profile_interpret_us = 0u128;
+    let mut profile_output_us = 0u128;
+    let mut profile_iter_output_us = 0u128;
+    let mut profile_child_drain_us = 0u128;
     let mut profile_command_count = 0usize;
 
     let lines = if drive_profile_enabled {
         let start = std::time::Instant::now();
         let lines = line_reader::read_logical_lines(input);
-        profile_read_lines_ms += start.elapsed().as_millis();
+        profile_read_lines_us += start.elapsed().as_micros();
         lines
     } else {
         line_reader::read_logical_lines(input)
@@ -5358,14 +5359,14 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
             std::collections::HashMap::new()
         };
     if let Some(start) = redirect_capture_start {
-        profile_redirect_capture_ms += start.elapsed().as_millis();
+        profile_redirect_capture_us += start.elapsed().as_micros();
     }
     // Save the caller's label_index and install one for this script frame.
     let prior_labels = std::mem::take(&mut env.label_index);
     if drive_profile_enabled {
         let start = std::time::Instant::now();
         env.label_index = labels::build_label_index(&lines);
-        profile_label_index_ms += start.elapsed().as_millis();
+        profile_label_index_us += start.elapsed().as_micros();
     } else {
         env.label_index = labels::build_label_index(&lines);
     }
@@ -5479,17 +5480,21 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
         // When true, we advance past the high-water mark to avoid re-executing
         // subroutine bodies that were already visited via a call.
         let mut top_level_exit = false;
+        let fast_expand_start = drive_profile_enabled.then(std::time::Instant::now);
         let fast_normalized = if env.suppress_until_eol {
             None
         } else {
             fast_expand_percent_substr_chain_line(logical, env)
                 .or_else(|| fast_expand_percent_var_chain_line(logical, env))
         };
+        if let Some(start) = fast_expand_start {
+            profile_fast_expand_us += start.elapsed().as_micros();
+        }
 
         let commands = if drive_profile_enabled {
             let start = std::time::Instant::now();
             let commands = split::split_commands(logical);
-            profile_split_ms += start.elapsed().as_millis();
+            profile_split_us += start.elapsed().as_micros();
             commands
         } else {
             split::split_commands(logical)
@@ -5505,7 +5510,7 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
                             let toks = lex::lex(&cmd);
                             normalize::normalize_to_string(&toks, env)
                         });
-                    profile_normalize_ms += start.elapsed().as_millis();
+                    profile_normalize_us += start.elapsed().as_micros();
                     normalized
                 } else {
                     normalize::normalize_literal_command_fast(&cmd).unwrap_or_else(|| {
@@ -5518,7 +5523,7 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
                 out.push_str(&normalized_capped);
                 out.push_str("\r\n");
                 if let Some(start) = output_start {
-                    profile_output_ms += start.elapsed().as_millis();
+                    profile_output_us += start.elapsed().as_micros();
                 }
                 continue;
             }
@@ -5529,7 +5534,7 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
                     out.push_str(&rendered);
                     out.push_str("\r\n");
                     if let Some(start) = output_start {
-                        profile_output_ms += start.elapsed().as_millis();
+                        profile_output_us += start.elapsed().as_micros();
                     }
                 }
                 if env.limits.max_output_bytes > 0
@@ -5555,7 +5560,7 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
             let pre = if drive_profile_enabled {
                 let start = std::time::Instant::now();
                 let pre = interp::pre_dispatch(&cmd, env);
-                profile_pre_dispatch_ms += start.elapsed().as_millis();
+                profile_pre_dispatch_us += start.elapsed().as_micros();
                 pre
             } else {
                 interp::pre_dispatch(&cmd, env)
@@ -5571,7 +5576,7 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
                         normalize::normalize_to_string(&toks, env)
                     });
                 if let Some(start) = normalize_start {
-                    profile_normalize_ms += start.elapsed().as_millis();
+                    profile_normalize_us += start.elapsed().as_micros();
                 }
                 normalized
             };
@@ -5581,7 +5586,7 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
                 if drive_profile_enabled {
                     let start = std::time::Instant::now();
                     interp::interpret_line(&normalized, env);
-                    profile_interpret_ms += start.elapsed().as_millis();
+                    profile_interpret_us += start.elapsed().as_micros();
                 } else {
                     interp::interpret_line(&normalized, env);
                 }
@@ -5596,7 +5601,7 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
                 out.push_str(&normalized_capped);
                 out.push_str("\r\n");
                 if let Some(start) = output_start {
-                    profile_output_ms += start.elapsed().as_millis();
+                    profile_output_us += start.elapsed().as_micros();
                 }
             }
 
@@ -5614,7 +5619,7 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
                     out.push_str("\r\n");
                 }
                 if let Some(start) = iter_output_start {
-                    profile_iter_output_ms += start.elapsed().as_millis();
+                    profile_iter_output_us += start.elapsed().as_micros();
                 }
             }
 
@@ -5721,7 +5726,7 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
                 env.delayed_expansion = saved_delayed;
             }
             if let Some(start) = child_drain_start {
-                profile_child_drain_ms += start.elapsed().as_millis();
+                profile_child_drain_us += start.elapsed().as_micros();
             }
         }
 
@@ -5743,23 +5748,24 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
     env.label_index = prior_labels;
     if drive_profile_enabled {
         eprintln!(
-            "harrington_profile_drive depth={} lines={} commands={} bytes={} out_bytes={} total_ms={} read_lines_ms={} redirect_capture_ms={} label_index_ms={} split_ms={} pre_dispatch_ms={} normalize_ms={} interpret_ms={} output_ms={} iter_output_ms={} child_drain_ms={}",
+            "harrington_profile_drive depth={} lines={} commands={} bytes={} out_bytes={} total_ms={} read_lines_ms={} redirect_capture_ms={} label_index_ms={} fast_expand_ms={} split_ms={} pre_dispatch_ms={} normalize_ms={} interpret_ms={} output_ms={} iter_output_ms={} child_drain_ms={}",
             env.limits.depth,
             lines.len(),
             profile_command_count,
             input.len(),
             out.len(),
             drive_profile_start.elapsed().as_millis(),
-            profile_read_lines_ms,
-            profile_redirect_capture_ms,
-            profile_label_index_ms,
-            profile_split_ms,
-            profile_pre_dispatch_ms,
-            profile_normalize_ms,
-            profile_interpret_ms,
-            profile_output_ms,
-            profile_iter_output_ms,
-            profile_child_drain_ms
+            profile_read_lines_us / 1000,
+            profile_redirect_capture_us / 1000,
+            profile_label_index_us / 1000,
+            profile_fast_expand_us / 1000,
+            profile_split_us / 1000,
+            profile_pre_dispatch_us / 1000,
+            profile_normalize_us / 1000,
+            profile_interpret_us / 1000,
+            profile_output_us / 1000,
+            profile_iter_output_us / 1000,
+            profile_child_drain_us / 1000
         );
     }
     env.limits.depth -= 1;
