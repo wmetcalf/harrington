@@ -2492,6 +2492,9 @@ fn scan_url_variable_assignments(deobfuscated: &str, env: &mut Environment) {
         .collect();
 
     for line in deobfuscated.lines() {
+        if !has_url_variable_assignment_atom(line) {
+            continue;
+        }
         for caps in CMD_URL_VAR_RE.captures_iter(line) {
             emit_url_variable(
                 caps.get(1).map(|m| m.as_str()),
@@ -2535,14 +2538,18 @@ fn has_url_variable_assignment_atom(text: &str) -> bool {
     if !text.as_bytes().contains(&b'=') {
         return false;
     }
-    let lower = text.to_ascii_lowercase();
-    if ["http:", "https:", "ftp:", "file:"]
-        .iter()
-        .any(|atom| lower.contains(atom))
+    if [
+        b"http:".as_slice(),
+        b"https:".as_slice(),
+        b"ftp:".as_slice(),
+        b"file:".as_slice(),
+    ]
+    .iter()
+    .any(|atom| contains_ascii_case_insensitive_atom(text, atom))
     {
         return true;
     }
-    lower.contains("url") && text.contains('/') && text.contains('.')
+    contains_ascii_case_insensitive_atom(text, b"url") && text.contains('/') && text.contains('.')
 }
 
 #[cfg(test)]
