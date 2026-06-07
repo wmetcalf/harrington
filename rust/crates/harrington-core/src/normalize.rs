@@ -34,6 +34,46 @@ pub fn normalize_to_string(tokens: &[Token], env: &mut Environment) -> String {
     }
 }
 
+pub(crate) fn normalize_literal_command_fast(input: &str) -> Option<String> {
+    if input.is_empty() || input.starts_with(' ') || input.ends_with(' ') {
+        return None;
+    }
+    let mut prev_space = false;
+    for &b in input.as_bytes() {
+        if b == b' ' {
+            if prev_space {
+                return None;
+            }
+            prev_space = true;
+            continue;
+        }
+        prev_space = false;
+        if matches!(
+            b,
+            b'%' | b'!'
+                | b'^'
+                | b'"'
+                | b'\t'
+                | b'\r'
+                | b'\n'
+                | b','
+                | b';'
+                | b'&'
+                | b'|'
+                | b'<'
+                | b'>'
+                | b'('
+                | b')'
+        ) {
+            return None;
+        }
+    }
+    if marker_noise::has_repeated_sandwich_candidate_shape(input) {
+        return None;
+    }
+    Some(input.to_string())
+}
+
 /// CMD caret-process post-pass. See `normalize_to_string` for context.
 /// Only operates on `^` chars that survived normalization (i.e., were
 /// preserved by CaretBeforeSigil-with-empty-var); doesn't touch the
@@ -1036,6 +1076,42 @@ mod dosfuscation_tests {
     #[test]
     fn whitespace_tabs_in_op() {
         assert_eq!(nm("%coMSPec:~\t-7,\t+3%"), "cmd");
+    }
+
+    #[test]
+    fn literal_command_fast_path_accepts_plain_single_spaced_text() {
+        assert_eq!(
+            super::normalize_literal_command_fast("cmd.exe /c dir C:\\Temp"),
+            Some("cmd.exe /c dir C:\\Temp".to_string())
+        );
+    }
+
+    #[test]
+    fn literal_command_fast_path_rejects_lexer_sensitive_text() {
+        for input in [
+            "echo %COMSPEC%",
+            "echo !VAR!",
+            "echo ^&",
+            r#"echo "quoted""#,
+            "echo one  two",
+            "echo a,b",
+            "echo a;b",
+            "echo a&b",
+            "echo a|b",
+            "echo > out.txt",
+            "(echo hi)",
+        ] {
+            assert!(
+                super::normalize_literal_command_fast(input).is_none(),
+                "fast path unexpectedly accepted {input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn literal_command_fast_path_rejects_marker_noise_shape() {
+        let input = "pXYZoXYZwershell eXYZcXYZho";
+        assert!(super::normalize_literal_command_fast(input).is_none());
     }
     #[test]
     fn assembled_set_token() {

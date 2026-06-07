@@ -5472,13 +5472,18 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
                 // Render the suppressed command (for visibility) but skip dispatch.
                 let normalized = if drive_profile_enabled {
                     let start = std::time::Instant::now();
-                    let toks = lex::lex(&cmd);
-                    let normalized = normalize::normalize_to_string(&toks, env);
+                    let normalized = normalize::normalize_literal_command_fast(&cmd)
+                        .unwrap_or_else(|| {
+                            let toks = lex::lex(&cmd);
+                            normalize::normalize_to_string(&toks, env)
+                        });
                     profile_normalize_ms += start.elapsed().as_millis();
                     normalized
                 } else {
-                    let toks = lex::lex(&cmd);
-                    normalize::normalize_to_string(&toks, env)
+                    normalize::normalize_literal_command_fast(&cmd).unwrap_or_else(|| {
+                        let toks = lex::lex(&cmd);
+                        normalize::normalize_to_string(&toks, env)
+                    })
                 };
                 let output_start = drive_profile_enabled.then(std::time::Instant::now);
                 let normalized_capped = cap_line(normalized, env);
@@ -5532,8 +5537,11 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
                 fast.clone()
             } else {
                 let normalize_start = drive_profile_enabled.then(std::time::Instant::now);
-                let toks = lex::lex(&cmd);
-                let normalized = normalize::normalize_to_string(&toks, env);
+                let normalized =
+                    normalize::normalize_literal_command_fast(&cmd).unwrap_or_else(|| {
+                        let toks = lex::lex(&cmd);
+                        normalize::normalize_to_string(&toks, env)
+                    });
                 if let Some(start) = normalize_start {
                     profile_normalize_ms += start.elapsed().as_millis();
                 }

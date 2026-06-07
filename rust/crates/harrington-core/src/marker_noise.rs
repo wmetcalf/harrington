@@ -187,7 +187,7 @@ pub fn strip_line(text: &str) -> String {
     out
 }
 
-fn has_repeated_sandwich_candidate_shape(text: &str) -> bool {
+pub(crate) fn has_repeated_sandwich_candidate_shape(text: &str) -> bool {
     // The real stripper requires the same candidate marker to appear at
     // least twice inside at least two alphabetic runs. A 3-byte marker
     // appearing twice needs a run of at least 8 bytes (`aXYZbXYZ`).
