@@ -3733,6 +3733,10 @@ fn dynamic_download_invoke_urls(text: &str) -> Vec<String> {
 }
 
 fn ps_downloadfile_calls(text: &str) -> Vec<(String, Option<String>)> {
+    if !contains_ascii_case_insensitive_bytes(text, b"downloadfile") {
+        return Vec::new();
+    }
+
     let bindings = ps_string_bindings(text);
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -4158,40 +4162,96 @@ fn extract_herestring_replace_iex_from_text(text: &str) -> Vec<String> {
 }
 
 pub fn scan_ps1_payloads(env: &mut Environment) {
+    let ps1_profile_enabled = std::env::var_os("HARRINGTON_PROFILE_PS1_SCAN").is_some();
+    let ps1_profile_start = std::time::Instant::now();
+    let traits_before_scan = env.traits.len();
+    macro_rules! ps1_profile_emit {
+        ($stage:literal, $elapsed:expr, $payloads:expr, $bytes:expr, $added_traits:expr) => {
+            if ps1_profile_enabled {
+                eprintln!(
+                    "harrington_profile_ps1_scan stage={} delta_ms={} payloads={} bytes={} added_traits={}",
+                    $stage,
+                    $elapsed.as_millis(),
+                    $payloads,
+                    $bytes,
+                    $added_traits
+                );
+            }
+        };
+    }
+
     // Pre-pass: extract herestring + -replace + IEX inner payloads from raw
     // PS bytes, decoding one round of outer `[Convert]::FromBase64String(...)`
     // first. Adds decoded inners to `all_extracted_ps1` so the main scan loop
     // sees them. Run on raw bytes (before strip_marker_noise) so the marker-
     // noise stripper doesn't eat the `-replace` target chars from inside the
     // herestring body.
+    let prepass_start = std::time::Instant::now();
     extract_herestring_replace_iex_inners(env);
+    ps1_profile_emit!(
+        "extract_herestring_replace_iex_inners",
+        prepass_start.elapsed(),
+        env.all_extracted_ps1.len(),
+        env.all_extracted_ps1.iter().map(Vec::len).sum::<usize>(),
+        env.traits.len().saturating_sub(traits_before_scan)
+    );
 
     // Use all_extracted_ps1 to cover every payload across the run, not just
     // the latest exec_ps1 (which gets drained).
     let mut payloads = std::mem::take(&mut env.all_extracted_ps1);
     let mut seen: std::collections::HashSet<(usize, String)> = std::collections::HashSet::new();
+    let payload_bytes = payloads.iter().map(Vec::len).sum::<usize>();
+    let mut decoded_payloads = 0usize;
+    let mut skipped_payloads = 0usize;
+    let mut scanned_payloads = 0usize;
+    let mut candidate_texts = 0usize;
+    let mut decode_elapsed = std::time::Duration::ZERO;
+    let mut signal_elapsed = std::time::Duration::ZERO;
+    let mut expand_elapsed = std::time::Duration::ZERO;
+    let mut cache_normalize_elapsed = std::time::Duration::ZERO;
+    let mut alias_elapsed = std::time::Duration::ZERO;
+    let mut downloadfile_elapsed = std::time::Duration::ZERO;
+    let mut regex_elapsed = std::time::Duration::ZERO;
+    let mut dynamic_elapsed = std::time::Duration::ZERO;
+    let mut literal_elapsed = std::time::Duration::ZERO;
 
     for (idx, payload) in payloads.iter().enumerate() {
+        let stage_start = std::time::Instant::now();
         let raw_owned = decode_payload(payload).into_owned();
+        decode_elapsed += stage_start.elapsed();
+        decoded_payloads += 1;
+
+        let stage_start = std::time::Instant::now();
         if !ps1_payload_has_download_signal(&raw_owned) {
+            signal_elapsed += stage_start.elapsed();
+            skipped_payloads += 1;
             continue;
         }
+        signal_elapsed += stage_start.elapsed();
+        scanned_payloads += 1;
 
+        let stage_start = std::time::Instant::now();
         let text_expanded = expand_obfuscation(&raw_owned);
+        expand_elapsed += stage_start.elapsed();
         if env.ps1_scan_cache_normalized {
+            let stage_start = std::time::Instant::now();
             env.ps1_normalized_cache
                 .entry(payload.clone())
                 .or_insert_with(|| normalize_expanded_ps1_text(&text_expanded));
+            cache_normalize_elapsed += stage_start.elapsed();
         }
         // Dual-scan: also run URL regexes over alias-expanded version so that
         // `iwr`, `irm`, `wget` etc. are caught even if obfuscation expansion
         // didn't surface them.
+        let stage_start = std::time::Instant::now();
         let text_aliased = crate::ps_alias::expand_aliases_if_ps(&text_expanded);
+        alias_elapsed += stage_start.elapsed();
         let candidates: Vec<String> = if text_aliased != text_expanded {
             vec![text_expanded, text_aliased]
         } else {
             vec![text_expanded]
         };
+        candidate_texts += candidates.len();
 
         // Use the first candidate for OutFile / snippet display.
         let primary = &candidates[0];
@@ -4216,6 +4276,7 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
         ];
 
         for text in &candidates {
+            let stage_start = std::time::Instant::now();
             for (url, dst) in ps_downloadfile_calls(text) {
                 if !seen.insert((idx, url.clone())) {
                     continue;
@@ -4226,7 +4287,9 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
                     dst,
                 });
             }
+            downloadfile_elapsed += stage_start.elapsed();
 
+            let stage_start = std::time::Instant::now();
             for re in regexes {
                 for caps in re.captures_iter(text) {
                     let Some(url_match) = caps.get(1) else {
@@ -4262,7 +4325,9 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
                     });
                 }
             }
+            regex_elapsed += stage_start.elapsed();
 
+            let stage_start = std::time::Instant::now();
             for url in dynamic_download_invoke_urls(text) {
                 if !seen.insert((idx, url.clone())) {
                     continue;
@@ -4273,7 +4338,9 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
                     dst: outfile_hint_from(primary),
                 });
             }
+            dynamic_elapsed += stage_start.elapsed();
 
+            let stage_start = std::time::Instant::now();
             for url in ps_literal_urls_in_download_context(text) {
                 if !seen.insert((idx, url.clone())) {
                     continue;
@@ -4284,8 +4351,80 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
                     dst: outfile_hint_from(primary),
                 });
             }
+            literal_elapsed += stage_start.elapsed();
         }
     }
+    let added_traits = env.traits.len().saturating_sub(traits_before_scan);
+    ps1_profile_emit!(
+        "decode_payload",
+        decode_elapsed,
+        decoded_payloads,
+        payload_bytes,
+        added_traits
+    );
+    ps1_profile_emit!(
+        "download_signal",
+        signal_elapsed,
+        skipped_payloads,
+        payload_bytes,
+        added_traits
+    );
+    ps1_profile_emit!(
+        "expand_obfuscation",
+        expand_elapsed,
+        scanned_payloads,
+        payload_bytes,
+        added_traits
+    );
+    ps1_profile_emit!(
+        "cache_normalize",
+        cache_normalize_elapsed,
+        scanned_payloads,
+        payload_bytes,
+        added_traits
+    );
+    ps1_profile_emit!(
+        "alias_expand",
+        alias_elapsed,
+        scanned_payloads,
+        payload_bytes,
+        added_traits
+    );
+    ps1_profile_emit!(
+        "downloadfile_calls",
+        downloadfile_elapsed,
+        candidate_texts,
+        payload_bytes,
+        added_traits
+    );
+    ps1_profile_emit!(
+        "regex_extractors",
+        regex_elapsed,
+        candidate_texts,
+        payload_bytes,
+        added_traits
+    );
+    ps1_profile_emit!(
+        "dynamic_downloads",
+        dynamic_elapsed,
+        candidate_texts,
+        payload_bytes,
+        added_traits
+    );
+    ps1_profile_emit!(
+        "literal_context_urls",
+        literal_elapsed,
+        candidate_texts,
+        payload_bytes,
+        added_traits
+    );
+    ps1_profile_emit!(
+        "total",
+        ps1_profile_start.elapsed(),
+        payloads.len(),
+        payload_bytes,
+        added_traits
+    );
     payloads.append(&mut env.all_extracted_ps1);
     env.all_extracted_ps1 = payloads;
 }
