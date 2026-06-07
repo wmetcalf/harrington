@@ -424,6 +424,10 @@ fn strip_for_header_noise(raw: &str, env: &Environment) -> String {
 /// Called by `drive()` on the **raw** (pre-normalization) command string.
 /// Returns true if this was a FOR command that was handled.
 pub fn run_for_from_raw(raw: &str, env: &mut Environment) -> bool {
+    if !raw_might_start_with_for(raw) {
+        preserve_for_probe_random_lookups(raw, env);
+        return false;
+    }
     // Trim leading `@` and whitespace (echo-suppression prefix).
     // Build a noise-stripped copy so the keyword regex can match even when
     // the FOR header is shrouded in caret escapes + non-ASCII-named empty
@@ -541,6 +545,93 @@ pub fn run_for_from_raw(raw: &str, env: &mut Environment) -> bool {
             .collect();
         run_iter_body(&body, var, values.into_iter(), env);
         return true;
+    }
+
+    false
+}
+
+fn preserve_for_probe_random_lookups(raw: &str, env: &Environment) {
+    if !ascii_case_insensitive_contains(raw.as_bytes(), b"random") {
+        return;
+    }
+
+    let chars: Vec<(usize, char)> = raw.char_indices().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i].1 != '%' {
+            i += 1;
+            continue;
+        }
+        if i + 1 < chars.len() && chars[i + 1].1 == '%' {
+            i += 2;
+            continue;
+        }
+        let mut j = i + 1;
+        while j < chars.len() && chars[j].1 != '%' && chars[j].1 != '\n' {
+            j += 1;
+        }
+        if j < chars.len() && chars[j].1 == '%' && j > i + 1 {
+            let name = &raw[chars[i + 1].0..chars[j].0];
+            if !name.starts_with('~')
+                && !name
+                    .chars()
+                    .any(|c| c.is_whitespace() || c == '"' || c == '\'')
+            {
+                let name_clean: String = name.chars().filter(|c| *c != '^').collect();
+                let base = name_clean.split(':').next().unwrap_or(&name_clean);
+                if base.eq_ignore_ascii_case("random") {
+                    let _ = env.get(base);
+                }
+            }
+            i = j + 1;
+        } else {
+            i += 1;
+        }
+    }
+}
+
+fn ascii_case_insensitive_contains(haystack: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty()
+        && haystack.windows(needle.len()).any(|window| {
+            window
+                .iter()
+                .zip(needle)
+                .all(|(byte, needle_byte)| byte.eq_ignore_ascii_case(needle_byte))
+        })
+}
+
+fn raw_might_start_with_for(raw: &str) -> bool {
+    let mut token = [0u8; 3];
+    let mut token_len = 0usize;
+    let mut chars = raw.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '^' {
+            continue;
+        }
+        if c == '%' {
+            if chars.peek() == Some(&'%') {
+                break;
+            }
+            for next in chars.by_ref() {
+                if next == '%' || next == '\n' || next == '\r' {
+                    break;
+                }
+            }
+            continue;
+        }
+        if token_len == 0 && (c.is_whitespace() || matches!(c, '@' | '(' | ',' | ';')) {
+            continue;
+        }
+        if c.is_ascii_alphabetic() {
+            token[token_len] = c.to_ascii_lowercase() as u8;
+            token_len += 1;
+            if token_len == token.len() {
+                return token == *b"for";
+            }
+            continue;
+        }
+        break;
     }
 
     false
