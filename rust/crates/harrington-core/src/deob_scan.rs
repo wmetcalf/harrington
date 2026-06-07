@@ -324,9 +324,11 @@ const NOISE_URL_SUBSTRINGS: &[&str] = &[
     "w3.org/xml/1998/namespace",
     "schemas.microsoft.com/",
     "schemas.dmtf.org/wbem/wsman/",
+    "schemas.openxmlformats.org/markup-compatibility/",
     "iptc.org/std/",
     "xmp.gettyimages.com/",
     "ns.useplus.org/",
+    "aiim.org/pdfa/ns/",
     "red-gate.com/products/dotnet-development/smartassembly",
     "chiark.greenend.org.uk/~sgtatham/putty/",
     "tempuri.org/",
@@ -9321,6 +9323,10 @@ mod noise_ip_tests {
             "http://www.red-gate.com/products/dotnet-development/smartassembly/?utm_source=x"
         ));
         assert!(super::is_noise_url("http://sawebservice.red-gate.com/"));
+        assert!(super::is_noise_url("http://www.aiim.org/pdfa/ns/id/"));
+        assert!(super::is_noise_url(
+            "http://schemas.openxmlformats.org/markup-compatibility/2006"
+        ));
         assert!(super::is_noise_url(
             "https://www.chiark.greenend.org.uk/~sgtatham/putty/0"
         ));
