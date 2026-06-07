@@ -3148,10 +3148,9 @@ impl PsObfuscationSignals {
         let embedded_single_quote_assignment = text.contains("'''") && text.contains('$');
         let doubled_single_quote = text.contains("''");
         let skip_nth = has_function_def
-            && (lower.contains("do")
-                || lower.contains("for")
-                || lower.contains("until")
-                || lower.contains(".invoke"));
+            && lower.contains("+=")
+            && ((lower.contains("do") && lower.contains("until") && text.contains('['))
+                || (lower.contains("for") && lower.contains("invoke") && text.contains("'su'")));
         let char_cast = lower.contains("[char");
         let hex_split = lower.contains("-split") && lower.contains("toint16");
         let space_concat = text.contains("' ") && (text.contains(" '") || text.contains("\t'"));
@@ -4821,4 +4820,34 @@ fn line_has_powershell_payload_flag(line: &str) -> bool {
             Some("EncodedCommand" | "Command")
         )
     })
+}
+
+#[cfg(test)]
+mod skip_nth_signal_tests {
+    use super::PsObfuscationSignals;
+
+    #[test]
+    fn skip_nth_signal_blocks_generic_function_loops() {
+        let signals = PsObfuscationSignals::new(
+            "function Inventory($items) { for ($i = 0; $i -lt $items.Length; $i++) { $items[$i] } }",
+        );
+
+        assert!(
+            !signals.skip_nth,
+            "generic function loops should not run skip-nth expansion"
+        );
+    }
+
+    #[test]
+    fn skip_nth_signal_allows_supported_stride_decoders() {
+        let do_until = PsObfuscationSignals::new(
+            "function Decode($x){$i=1;do{$out+=$x[$i];$i+=3}until(!$x[$i]);$out}",
+        );
+        assert!(do_until.skip_nth, "do/until stride decoder was blocked");
+
+        let substring = PsObfuscationSignals::new(
+            "function Decode($x){for($i=2;$i -lt $x.Length;$i+=3){$out+=$x.'su'.'Invoke'($i,1)}$out}",
+        );
+        assert!(substring.skip_nth, "substring stride decoder was blocked");
+    }
 }
