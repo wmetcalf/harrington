@@ -3711,8 +3711,10 @@ fn recovered_artifact_behavior_text(blob: &[u8]) -> String {
     const MAX_STRINGS: usize = 512;
     let mut strings = Vec::new();
     collect_recovered_artifact_ascii_strings(blob, &mut strings, MAX_STRINGS);
-    collect_recovered_artifact_utf16le_strings(blob, 0, &mut strings, MAX_STRINGS);
-    collect_recovered_artifact_utf16le_strings(blob, 1, &mut strings, MAX_STRINGS);
+    if blob.contains(&0) {
+        collect_recovered_artifact_utf16le_strings(blob, 0, &mut strings, MAX_STRINGS);
+        collect_recovered_artifact_utf16le_strings(blob, 1, &mut strings, MAX_STRINGS);
+    }
 
     let mut seen = std::collections::HashSet::new();
     let mut text = String::new();
