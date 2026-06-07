@@ -5023,7 +5023,14 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
     // never populated. Capturing it up front lets certutil -decode / call
     // resolve the written file. Safe to run before the main loop: the close
     // `)` redirect line is a block delimiter and never re-writes the file.
-    let captured_echo_blocks = capture_block_echo_redirects(&lines, env);
+    let has_echo_redirect =
+        input_contains_ascii_case_insensitive(input, b"echo") && input.contains(&b'>');
+    let captured_echo_blocks =
+        if has_echo_redirect && input.contains(&b'(') && input.contains(&b')') {
+            capture_block_echo_redirects(&lines, env)
+        } else {
+            Vec::new()
+        };
     let collapsed_echo_blocks: std::collections::HashMap<usize, CapturedEchoBlock> =
         captured_echo_blocks
             .into_iter()
@@ -5031,10 +5038,14 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
             .map(|block| (block.open_idx, block))
             .collect();
     let collapsed_echo_runs: std::collections::HashMap<usize, CapturedEchoRun> =
-        capture_top_level_echo_redirect_runs(&lines, env)
-            .into_iter()
-            .map(|run| (run.start_idx, run))
-            .collect();
+        if has_echo_redirect {
+            capture_top_level_echo_redirect_runs(&lines, env)
+                .into_iter()
+                .map(|run| (run.start_idx, run))
+                .collect()
+        } else {
+            std::collections::HashMap::new()
+        };
     // Save the caller's label_index and install one for this script frame.
     let prior_labels = std::mem::take(&mut env.label_index);
     env.label_index = labels::build_label_index(&lines);
@@ -5348,6 +5359,16 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
     // Restore caller's label_index.
     env.label_index = prior_labels;
     env.limits.depth -= 1;
+}
+
+fn input_contains_ascii_case_insensitive(input: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty()
+        && input.windows(needle.len()).any(|window| {
+            window
+                .iter()
+                .zip(needle)
+                .all(|(byte, needle_byte)| byte.eq_ignore_ascii_case(needle_byte))
+        })
 }
 
 #[cfg(test)]
