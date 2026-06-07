@@ -2788,26 +2788,33 @@ fn expand_skip_nth(text: &str) -> String {
 
 fn expand_skip_nth_for_substring(text: &str) -> String {
     let mut out = text.to_string();
-    let mut defs: Vec<(String, usize, usize)> = SKIP_NTH_FOR_SUBSTRING_DEF_RE
-        .captures_iter(text)
-        .filter_map(|caps| {
-            let name = caps.get(1)?.as_str().to_string();
-            let init_var = caps.get(2)?.as_str();
-            let step_var = caps.get(4)?.as_str();
-            let invoke_var = caps.get(6)?.as_str();
-            if !init_var.eq_ignore_ascii_case(step_var)
-                || !init_var.eq_ignore_ascii_case(invoke_var)
-            {
-                return None;
-            }
-            let start: usize = caps.get(3)?.as_str().parse().ok()?;
-            let step: usize = caps.get(5)?.as_str().parse().ok()?;
-            if start > 10 || step == 0 || step > 10 {
-                return None;
-            }
-            Some((name, start, step))
-        })
-        .collect();
+    let mut defs: Vec<(String, usize, usize)> =
+        if contains_ascii_case_insensitive_bytes(text, b"'su'")
+            && contains_ascii_case_insensitive_bytes(text, b"'invoke'")
+        {
+            SKIP_NTH_FOR_SUBSTRING_DEF_RE
+                .captures_iter(text)
+                .filter_map(|caps| {
+                    let name = caps.get(1)?.as_str().to_string();
+                    let init_var = caps.get(2)?.as_str();
+                    let step_var = caps.get(4)?.as_str();
+                    let invoke_var = caps.get(6)?.as_str();
+                    if !init_var.eq_ignore_ascii_case(step_var)
+                        || !init_var.eq_ignore_ascii_case(invoke_var)
+                    {
+                        return None;
+                    }
+                    let start: usize = caps.get(3)?.as_str().parse().ok()?;
+                    let step: usize = caps.get(5)?.as_str().parse().ok()?;
+                    if start > 10 || step == 0 || step > 10 {
+                        return None;
+                    }
+                    Some((name, start, step))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
     // Musculos-style do/until variants. Same (start, step) carrier semantics.
     defs.extend(MUSCULOS_DEF_RE.captures_iter(text).filter_map(|caps| {
         let name = caps.get(1)?.as_str().to_string();
