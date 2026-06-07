@@ -3439,20 +3439,37 @@ fn has_embedded_base64_pe_carrier_hint(input: &[u8]) -> bool {
     // Base64 for a PE starts with "TV" because the decoded header starts
     // with "MZ". Also allow the encoded ASCII-hex carriers this collector
     // decodes: "4d5a" -> "NGQ1..." and "4D5A" -> "NEQ1...".
-    for idx in 0..input.len().saturating_sub(1) {
-        if input[idx] == b'T' && input[idx + 1] == b'V' {
-            return true;
+    // Match the collector's real shape instead of treating incidental `TV`
+    // bytes inside large binary-ish samples as a reason to walk every line.
+    for line in input.split(|b| matches!(*b, b'\r' | b'\n')) {
+        let trimmed = trim_ascii_whitespace_bytes(line);
+        if trimmed.len() < 64 {
+            continue;
         }
-        if idx + 3 < input.len()
-            && input[idx] == b'N'
-            && (input[idx + 1] == b'G' || input[idx + 1] == b'E')
-            && input[idx + 2] == b'Q'
-            && input[idx + 3] == b'1'
+        if !trimmed.iter().take(64).all(|b| is_base64_byte(*b)) {
+            continue;
+        }
+        if trimmed.starts_with(b"TV")
+            || trimmed.starts_with(b"NGQ1")
+            || trimmed.starts_with(b"NEQ1")
         {
             return true;
         }
     }
     false
+}
+
+fn trim_ascii_whitespace_bytes(bytes: &[u8]) -> &[u8] {
+    let start = bytes
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .unwrap_or(bytes.len());
+    let end = bytes
+        .iter()
+        .rposition(|b| !b.is_ascii_whitespace())
+        .map(|idx| idx + 1)
+        .unwrap_or(start);
+    &bytes[start..end]
 }
 
 fn flush_embedded_base64_pe_artifact_block(
@@ -8819,15 +8836,32 @@ mod certutil_tests {
 
     #[test]
     fn embedded_base64_pe_carrier_hint_recognizes_supported_prefixes() {
-        let mut direct_pe = vec![b'A'; 4096];
-        direct_pe[128..130].copy_from_slice(b"TV");
-        let mut hex_lower = vec![b'A'; 4096];
-        hex_lower[128..132].copy_from_slice(b"NGQ1");
-        let mut hex_upper = vec![b'A'; 4096];
-        hex_upper[128..132].copy_from_slice(b"NEQ1");
-        assert!(crate::has_embedded_base64_pe_carrier_hint(&direct_pe));
-        assert!(crate::has_embedded_base64_pe_carrier_hint(&hex_lower));
-        assert!(crate::has_embedded_base64_pe_carrier_hint(&hex_upper));
+        let mut direct_pe = vec![0u8; 0x84];
+        direct_pe[0..2].copy_from_slice(b"MZ");
+        direct_pe[0x3c..0x40].copy_from_slice(&(0x80u32).to_le_bytes());
+        direct_pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        direct_pe.resize(4096, 0);
+        let direct_b64 = base64::engine::general_purpose::STANDARD.encode(&direct_pe);
+        let hex_lower_b64 =
+            base64::engine::general_purpose::STANDARD.encode(hex::encode(&direct_pe));
+        let hex_upper_b64 =
+            base64::engine::general_purpose::STANDARD.encode(hex::encode_upper(&direct_pe));
+
+        assert!(crate::has_embedded_base64_pe_carrier_hint(
+            format!("goto :eof\r\n{direct_b64}\r\n").as_bytes()
+        ));
+        assert!(crate::has_embedded_base64_pe_carrier_hint(
+            format!("goto :eof\r\n {hex_lower_b64}\r\n").as_bytes()
+        ));
+        assert!(crate::has_embedded_base64_pe_carrier_hint(
+            format!("goto :eof\r\n\t{hex_upper_b64}\r\n").as_bytes()
+        ));
+        assert!(!crate::has_embedded_base64_pe_carrier_hint(
+            b"echo ordinary script text with incidental TV bytes\r\n"
+        ));
+        assert!(!crate::has_embedded_base64_pe_carrier_hint(
+            b"echo TVAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\r\n"
+        ));
         assert!(!crate::has_embedded_base64_pe_carrier_hint(
             b"echo ordinary script text\r\n"
         ));
