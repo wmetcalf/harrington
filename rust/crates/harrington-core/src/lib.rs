@@ -2924,45 +2924,44 @@ fn analyze_inner(input: &[u8], cfg: &Config, file_path: Option<std::path::PathBu
         env.input_bytes = Some(std::sync::Arc::from(input));
     }
     let mut out = String::new();
-    // FE-DOSfuscation pattern: scripts that reference `!VAR!` without an
-    // explicit `setlocal enabledelayedexpansion` are almost certainly meant
-    // to run under `cmd /v:on` (the FireEye DOSfuscation report's
-    // test_echo_pipe / test_call_var cases match this). 173/1187 corpus
-    // .bat samples use this pattern; refusing to expand `!X!` leaves
-    // their IOCs literally bracketed in `!`. Auto-enable delayed
-    // expansion when at least one `!IDENT!` reference exists and the
-    // script doesn't explicitly DISABLE it. Real `setlocal
-    // enabledelayedexpansion` / `cmd /v:on` codepaths re-set this same
-    // flag, so this only matters when both are missing.
-    if has_bang_var_reference(input) && !has_disable_delayed_expansion(input) {
-        env.delayed_expansion = true;
-    }
-    pre_scan_polyglot_script_block(input, &mut env);
-    deob_scan::scan_raw_marker_powershell_urls(input, &mut env);
-    profile_mark!("setup_and_prescan");
-    if looks_like_pe(input) {
-        env.traits.push(Trait::DisguisedBinary {
-            format: "pe".to_string(),
-            size: input.len() as u64,
-        });
-        env.recovered_pe
-            .push(("disguised-pe-input".to_string(), input.to_vec()));
-        scan_binary_input_urls(input, &mut env);
-        profile_mark!("binary_input");
-    } else if let Some(fmt) = detect_disguised_binary(input) {
-        // Non-PE binary formats masquerading as `.bat`/`.cmd`/`.ps1`
-        // (CAB / ZIP / RAR / 7z / LNK / PDF / image). Persist the bytes
-        // so analysts can pull the real file out — same dump mechanism
-        // as the AES-recovered PE blobs.
+    let disguised_binary_format = if looks_like_pe(input) {
+        Some("pe")
+    } else {
+        detect_disguised_binary(input)
+    };
+    if let Some(fmt) = disguised_binary_format {
         env.traits.push(Trait::DisguisedBinary {
             format: fmt.to_string(),
             size: input.len() as u64,
         });
-        env.recovered_pe
-            .push((format!("disguised-{fmt}-input"), input.to_vec()));
+        env.recovered_pe.push((
+            if fmt == "pe" {
+                "disguised-pe-input".to_string()
+            } else {
+                format!("disguised-{fmt}-input")
+            },
+            input.to_vec(),
+        ));
+        profile_mark!("setup_and_prescan");
         scan_binary_input_urls(input, &mut env);
         profile_mark!("binary_input");
     } else {
+        // FE-DOSfuscation pattern: scripts that reference `!VAR!` without an
+        // explicit `setlocal enabledelayedexpansion` are almost certainly meant
+        // to run under `cmd /v:on` (the FireEye DOSfuscation report's
+        // test_echo_pipe / test_call_var cases match this). 173/1187 corpus
+        // .bat samples use this pattern; refusing to expand `!X!` leaves
+        // their IOCs literally bracketed in `!`. Auto-enable delayed
+        // expansion when at least one `!IDENT!` reference exists and the
+        // script doesn't explicitly DISABLE it. Real `setlocal
+        // enabledelayedexpansion` / `cmd /v:on` codepaths re-set this same
+        // flag, so this only matters when both are missing.
+        if has_bang_var_reference(input) && !has_disable_delayed_expansion(input) {
+            env.delayed_expansion = true;
+        }
+        pre_scan_polyglot_script_block(input, &mut env);
+        deob_scan::scan_raw_marker_powershell_urls(input, &mut env);
+        profile_mark!("setup_and_prescan");
         if let Some(decoded) = decode_utf16le_script_blob(input) {
             pre_scan_utf16_script_blob(&decoded, &mut env);
             out = decoded;
@@ -21614,7 +21613,7 @@ mod cmd_path_flags_tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod disguised_binary_tests {
-    use super::{detect_disguised_binary, looks_like_pe};
+    use super::{analyze, detect_disguised_binary, looks_like_pe, Config, Trait};
 
     #[test]
     fn cab_magic_recognized_as_disguised() {
@@ -21668,6 +21667,34 @@ mod disguised_binary_tests {
         buf[0x41] = b'E';
         assert!(looks_like_pe(&buf));
         assert_eq!(detect_disguised_binary(&buf), None);
+    }
+
+    #[test]
+    fn analyze_disguised_pdf_recovers_blob_and_scans_urls() {
+        let mut buf = b"%PDF-1.7\n".to_vec();
+        buf.extend_from_slice(b"stream http://pdf-disguised.example/payload.exe endstream\n");
+
+        let report = analyze(&buf, &Config::default());
+
+        assert!(report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::DisguisedBinary { format, size }
+                    if format == "pdf" && *size == buf.len() as u64
+            )
+        }));
+        assert!(report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::DownloadInDeobText { src, line_hint }
+                    if src == "http://pdf-disguised.example/payload.exe"
+                        && line_hint == "binary-input"
+            )
+        }));
+        assert_eq!(report.recovered_pe.len(), 1);
+        assert_eq!(report.recovered_pe[0].0, "disguised-pdf-input");
+        assert_eq!(report.recovered_pe[0].1, buf);
+        assert!(report.deobfuscated.is_empty());
     }
 
     #[test]
