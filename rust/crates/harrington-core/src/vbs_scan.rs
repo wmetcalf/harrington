@@ -63,7 +63,7 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
         }
         let raw = String::from_utf8_lossy(payload);
         let uncommented = strip_vbs_apostrophe_comments(&raw);
-        let text = join_vbs_line_continuations(&uncommented);
+        let text = expand_vbs_static_execute(&join_vbs_line_continuations(&uncommented));
         let mut bindings: VbsStringBindings = HashMap::new();
         let mut array_bindings: VbsArrayBindings = HashMap::new();
         for line in text.lines() {
@@ -383,6 +383,79 @@ fn join_vbs_line_continuations(text: &str) -> String {
         }
     }
     out
+}
+
+fn expand_vbs_static_execute(text: &str) -> String {
+    const MAX_EXECUTE_EXPANSION_BYTES: usize = 1024 * 1024;
+
+    let empty_bindings = HashMap::new();
+    let empty_arrays = HashMap::new();
+    let mut expanded = Vec::new();
+    let mut expanded_bytes = 0usize;
+
+    for line in text.lines() {
+        for statement in split_vbs_statements(line) {
+            let Some(expr) = vbs_execute_expr(statement) else {
+                continue;
+            };
+            let Some(decoded) = eval_vbs_string_expr(expr, &empty_bindings, &empty_arrays) else {
+                continue;
+            };
+            if decoded.trim().is_empty() {
+                continue;
+            }
+            expanded_bytes = expanded_bytes.saturating_add(decoded.len());
+            if expanded_bytes > MAX_EXECUTE_EXPANSION_BYTES {
+                break;
+            }
+            expanded.push(decoded);
+        }
+    }
+
+    if expanded.is_empty() {
+        return text.to_string();
+    }
+
+    let mut out = String::with_capacity(
+        text.len()
+            .saturating_add(1)
+            .saturating_add(expanded.iter().map(String::len).sum::<usize>()),
+    );
+    out.push_str(text);
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    for decoded in expanded {
+        out.push_str(&decoded);
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+    out
+}
+
+fn vbs_execute_expr(statement: &str) -> Option<&str> {
+    let trimmed = statement.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    for name in ["executeglobal", "execute"] {
+        let Some(rest) = lower.strip_prefix(name) else {
+            continue;
+        };
+        let original_rest = &trimmed[name.len()..];
+        if !rest
+            .as_bytes()
+            .first()
+            .is_some_and(|b| b.is_ascii_whitespace() || *b == b'(')
+        {
+            continue;
+        }
+        let expr = original_rest.trim_start();
+        if expr.starts_with('(') && expr.ends_with(')') {
+            return expr.get(1..expr.len().saturating_sub(1)).map(str::trim);
+        }
+        return Some(expr);
+    }
+    None
 }
 
 fn strip_vbs_apostrophe_comments(text: &str) -> String {

