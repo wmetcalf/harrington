@@ -4331,11 +4331,13 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
 }
 
 fn has_defender_evasion_atom(text: &str) -> bool {
-    const ATOMS: &[&str] = &[
+    const DIRECT_ATOMS: &[&str] = &[
         "add-mppreference",
         "set-mppreference",
         "windefend",
         "msmpsvc",
+        "mpssvc",
+        "wuauserv",
         "wdnissvc",
         "wdboot",
         "wdfilter",
@@ -4362,6 +4364,8 @@ fn has_defender_evasion_atom(text: &str) -> bool {
         "amsi.dll",
         "etweventwrite",
         "system.diagnostics.eventing.eventprovider",
+    ];
+    const SECURITY_PRODUCT_ATOMS: &[&str] = &[
         "trend micro",
         "sophos",
         "kaspersky",
@@ -4418,8 +4422,16 @@ fn has_defender_evasion_atom(text: &str) -> bool {
         "avgui",
         "superantispyware",
     ];
+    const OPERATION_ATOMS: &[&str] = &[
+        "taskkill", "takeown", "icacls", "rename", "ren ", "ren\t", "reg", "rmdir", "rd ", "rd\t",
+        "del ", "del\t", "del.",
+    ];
     let lower = text.to_ascii_lowercase();
-    ATOMS.iter().any(|atom| lower.contains(atom))
+    DIRECT_ATOMS.iter().any(|atom| lower.contains(atom))
+        || (SECURITY_PRODUCT_ATOMS
+            .iter()
+            .any(|atom| lower.contains(atom))
+            && OPERATION_ATOMS.iter().any(|atom| lower.contains(atom)))
 }
 
 #[cfg(test)]
@@ -4441,6 +4453,9 @@ mod defender_evasion_prefilter_tests {
             "netsh advfirewall set allprofiles state off",
             r#"rmdir /s /q "C:\Program Files (x86)\Trend Micro""#,
             r#"reg delete HKLM\SYSTEM\CurrentControlSet\services\MBAMService /f"#,
+            r#"reg delete HKLM\SYSTEM\CurrentControlSet\services\AVP21.3 /f"#,
+            r#"reg delete HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run /v "AVGUI.exe" /f"#,
+            r#"taskkill /im avgui.exe /f"#,
             "Invoke-NullAMSI",
             "EtwEventWrite",
         ] {
@@ -4453,6 +4468,9 @@ mod defender_evasion_prefilter_tests {
         assert!(!has_defender_evasion_atom("echo hello && whoami"));
         assert!(!has_defender_evasion_atom(
             r#"reg add HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v App /d app.exe"#,
+        ));
+        assert!(!has_defender_evasion_atom(
+            "echo avg payload size && echo avp staging note"
         ));
     }
 }
