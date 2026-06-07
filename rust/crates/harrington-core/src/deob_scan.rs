@@ -7,7 +7,7 @@
 
 #![allow(clippy::expect_used, clippy::type_complexity, clippy::unwrap_used)]
 
-use crate::env::Environment;
+use crate::env::{Config, Environment};
 use crate::handlers::util::{flag_url_value_after, split_words};
 use crate::traits::Trait;
 use once_cell::sync::Lazy;
@@ -6749,6 +6749,9 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     scan_step!("resolved_deob_var_fragment_urls", {
         scan_resolved_deob_var_fragment_urls(deobfuscated, env);
     });
+    scan_step!("embedded_powershell_download_deob_text", {
+        scan_embedded_powershell_downloads_in_deob_text(deobfuscated, env);
+    });
 
     scan_step!("url_sweep", {
         // Build a set of URLs already known
@@ -7133,6 +7136,78 @@ pub fn scan_renamed_powershell_invocations(text: &str, env: &mut Environment) {
         crate::handlers::powershell::h_powershell(&replay, env);
     }
     dedup_exec_ps1(env);
+}
+
+fn scan_embedded_powershell_downloads_in_deob_text(text: &str, env: &mut Environment) {
+    let normalized = text.replace('^', "");
+    let mut payload_env = Environment::new(&Config {
+        max_depth: env.limits.max_depth,
+        max_iterations: env.limits.max_iterations,
+        max_child_scripts: env.limits.max_child_scripts,
+        timeout_secs: 0,
+        self_extract: false,
+        winver: env.winver,
+        max_output_bytes: env.limits.max_output_bytes,
+        max_output_line_bytes: env.limits.max_output_line_bytes,
+        max_traits_per_kind: 100,
+    });
+    payload_env.ps1_scan_cache_normalized = false;
+
+    for line in normalized.lines() {
+        for m in EMBEDDED_POWERSHELL_RE.find_iter(line) {
+            let tail = &line[m.start()..];
+            if !has_powershell_download_atom(tail) {
+                continue;
+            }
+            crate::handlers::powershell::h_powershell(tail, &mut payload_env);
+        }
+    }
+    if payload_env.exec_ps1.is_empty() {
+        return;
+    }
+
+    payload_env
+        .all_extracted_ps1
+        .extend(std::mem::take(&mut payload_env.exec_ps1));
+    crate::ps1_scan::scan_ps1_payloads(&mut payload_env);
+
+    let mut known = env.known_extracted_urls();
+    for t in payload_env.traits {
+        if let Some(url) = trait_url(&t) {
+            if known.contains(url) {
+                continue;
+            }
+            known.insert(url.to_string());
+        }
+        env.traits.push(t);
+    }
+}
+
+fn has_powershell_download_atom(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    PS_DOWNLOAD_VERB_RE.is_match(&lower)
+        || lower.contains("invoke-webrequest")
+        || lower.contains("invoke-restmethod")
+        || lower.contains("downloadstring")
+        || lower.contains("downloadfile")
+        || lower.contains("downloaddata")
+        || lower.contains("start-bitstransfer")
+        || lower.contains("new-object net.webclient")
+}
+
+fn trait_url(t: &Trait) -> Option<&str> {
+    match t {
+        Trait::Download { src, .. } | Trait::DownloadInDeobText { src, .. } => Some(src),
+        Trait::CertutilDownload { url, .. }
+        | Trait::BitsadminDownload { url, .. }
+        | Trait::UrlLaunch { url, .. }
+        | Trait::UrlArgument { url, .. }
+        | Trait::UrlVariable { url, .. }
+        | Trait::RegistryUrl { url, .. } => Some(url),
+        Trait::Rundll32 { url: Some(url), .. } => Some(url),
+        Trait::UncWebDavC2 { http_url, .. } if !http_url.is_empty() => Some(http_url),
+        _ => None,
+    }
 }
 
 fn command_basename(word: &str) -> String {
