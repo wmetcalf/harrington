@@ -3774,29 +3774,20 @@ fn summarize_base64_pe_carrier_line(line: &str) -> Option<String> {
 
 fn recovered_artifact_behavior_text(blob: &[u8]) -> String {
     const MAX_STRINGS: usize = 512;
-    let mut strings = Vec::new();
-    collect_recovered_artifact_ascii_strings(blob, &mut strings, MAX_STRINGS);
-    if blob.contains(&0) {
-        collect_recovered_artifact_utf16le_strings(blob, 0, &mut strings, MAX_STRINGS);
-        collect_recovered_artifact_utf16le_strings(blob, 1, &mut strings, MAX_STRINGS);
-    }
-
     let mut seen = std::collections::HashSet::new();
     let mut text = String::new();
-    for s in strings {
-        if seen.contains(&s) {
-            continue;
-        }
-        text.push_str(&s);
-        text.push('\n');
-        seen.insert(s);
+    collect_recovered_artifact_ascii_strings(blob, &mut seen, &mut text, MAX_STRINGS);
+    if blob.contains(&0) {
+        collect_recovered_artifact_utf16le_strings(blob, 0, &mut seen, &mut text, MAX_STRINGS);
+        collect_recovered_artifact_utf16le_strings(blob, 1, &mut seen, &mut text, MAX_STRINGS);
     }
     text
 }
 
 fn collect_recovered_artifact_ascii_strings(
     blob: &[u8],
-    strings: &mut Vec<String>,
+    seen: &mut std::collections::HashSet<String>,
+    text: &mut String,
     max_strings: usize,
 ) {
     const MIN_LEN: usize = 8;
@@ -3807,22 +3798,23 @@ fn collect_recovered_artifact_ascii_strings(
         if b == b'\t' || (0x20..=0x7e).contains(&b) {
             run.push(b);
             if run.len() >= MAX_LEN {
-                push_recovered_artifact_string(&mut run, strings, max_strings, MIN_LEN);
+                push_recovered_artifact_string(&mut run, seen, text, max_strings, MIN_LEN);
             }
         } else {
-            push_recovered_artifact_string(&mut run, strings, max_strings, MIN_LEN);
+            push_recovered_artifact_string(&mut run, seen, text, max_strings, MIN_LEN);
         }
-        if strings.len() >= max_strings {
+        if seen.len() >= max_strings {
             return;
         }
     }
-    push_recovered_artifact_string(&mut run, strings, max_strings, MIN_LEN);
+    push_recovered_artifact_string(&mut run, seen, text, max_strings, MIN_LEN);
 }
 
 fn collect_recovered_artifact_utf16le_strings(
     blob: &[u8],
     offset: usize,
-    strings: &mut Vec<String>,
+    seen: &mut std::collections::HashSet<String>,
+    text: &mut String,
     max_strings: usize,
 ) {
     const MIN_LEN: usize = 8;
@@ -3837,28 +3829,33 @@ fn collect_recovered_artifact_utf16le_strings(
         if ch == u16::from(b'\t') || (0x20u16..=0x7eu16).contains(&ch) {
             run.push(ch as u8);
             if run.len() >= MAX_LEN {
-                push_recovered_artifact_string(&mut run, strings, max_strings, MIN_LEN);
+                push_recovered_artifact_string(&mut run, seen, text, max_strings, MIN_LEN);
             }
         } else {
-            push_recovered_artifact_string(&mut run, strings, max_strings, MIN_LEN);
+            push_recovered_artifact_string(&mut run, seen, text, max_strings, MIN_LEN);
         }
-        if strings.len() >= max_strings {
+        if seen.len() >= max_strings {
             return;
         }
     }
-    push_recovered_artifact_string(&mut run, strings, max_strings, MIN_LEN);
+    push_recovered_artifact_string(&mut run, seen, text, max_strings, MIN_LEN);
 }
 
 fn push_recovered_artifact_string(
     run: &mut Vec<u8>,
-    strings: &mut Vec<String>,
+    seen: &mut std::collections::HashSet<String>,
+    text: &mut String,
     max_strings: usize,
     min_len: usize,
 ) {
-    if run.len() >= min_len && strings.len() < max_strings {
+    if run.len() >= min_len && seen.len() < max_strings {
         let candidate = String::from_utf8_lossy(run);
-        if recovered_artifact_string_is_behavior_hint(&candidate) {
-            strings.push(candidate.to_string());
+        if recovered_artifact_string_is_behavior_hint(&candidate)
+            && !seen.contains(candidate.as_ref())
+        {
+            text.push_str(&candidate);
+            text.push('\n');
+            seen.insert(candidate.into_owned());
         }
     }
     run.clear();
@@ -9082,6 +9079,28 @@ mod certutil_tests {
         assert!(
             text.contains("vssadmin delete shadows"),
             "late behavior string was dropped after junk strings: {text:?}"
+        );
+    }
+
+    #[test]
+    fn recovered_artifact_behavior_strings_cap_unique_hints() {
+        let mut blob = Vec::new();
+        for _ in 0..600 {
+            blob.extend_from_slice(b"vssadmin delete shadows /all /quiet\0");
+        }
+        for unit in "Set-MpPreference -DisableRealtimeMonitoring $true".encode_utf16() {
+            blob.extend_from_slice(&unit.to_le_bytes());
+        }
+
+        let text = crate::recovered_artifact_behavior_text(&blob);
+
+        assert!(
+            text.contains("vssadmin delete shadows"),
+            "duplicate ASCII behavior string was not retained: {text:?}"
+        );
+        assert!(
+            text.contains("Set-MpPreference -DisableRealtimeMonitoring"),
+            "later distinct UTF-16LE behavior string was dropped after duplicate ASCII hints: {text:?}"
         );
     }
 
