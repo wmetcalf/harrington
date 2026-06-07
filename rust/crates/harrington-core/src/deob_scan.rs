@@ -4304,8 +4304,11 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
     for caps in SECURITY_PRODUCT_REMOVE_RE.captures_iter(deobfuscated) {
         let target = caps
             .get(1)
-            .map(|m| m.as_str().trim().chars().take(160).collect())
+            .map(|m| m.as_str().trim().chars().take(160).collect::<String>())
             .unwrap_or_default();
+        if is_encoded_security_product_remove_noise(&target) {
+            continue;
+        }
         push("security-product-remove", target);
     }
     for caps in SECURITY_SERVICE_DELETE_RE.captures_iter(deobfuscated) {
@@ -4328,6 +4331,20 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
     if ETW_PATCH_RE.is_match(deobfuscated) {
         push("etw-patch", String::new());
     }
+}
+
+fn is_encoded_security_product_remove_noise(target: &str) -> bool {
+    let target = target.trim().trim_matches('"').trim_matches('\'');
+    if target.len() < 80 || target.chars().any(char::is_whitespace) || target.contains(['\\', ':'])
+    {
+        return false;
+    }
+
+    let encodedish = target
+        .bytes()
+        .filter(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'+' | b'=' | b'@' | b'#'))
+        .count();
+    encodedish.saturating_mul(100) >= target.len() * 90
 }
 
 fn has_defender_evasion_atom(text: &str) -> bool {

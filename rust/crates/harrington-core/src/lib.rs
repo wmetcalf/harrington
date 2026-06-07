@@ -1408,6 +1408,21 @@ reg add \"HKCU\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v S
     }
 
     #[test]
+    fn encoded_delete_argument_does_not_emit_security_product_remove() {
+        let script = b"@echo off\r\n\
+            del /Q/y7M9xGPM3j2XhHgf0w4zHagLBfEMC1TdV4bp1b433LXCSeBRCAVGxz55NtXDPzMGP1yBeIDxfhab3qOrkSIPvOuoBQG1Mfv8KxjvXRb7TsNmN8h1lQN3yrN\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, .. } if action == "security-product-remove"
+            )),
+            "encoded delete argument should not be DefenderEvasion: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn defender_security_binary_tampering_emits_evasion_traits() {
         let script = b"@echo off\r\n\
             takeown /f \"C:\\Windows\\System32\\SecurityHealthService.exe\"\r\n\
