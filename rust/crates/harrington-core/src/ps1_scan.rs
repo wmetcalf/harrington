@@ -5030,6 +5030,19 @@ fn inline_powershell_text_has_payload_signal(text: &str) -> bool {
         return true;
     }
 
+    let has_url_atom = contains_ascii_case_insensitive_bytes(text, b"http://")
+        || contains_ascii_case_insensitive_bytes(text, b"https://")
+        || contains_ascii_case_insensitive_bytes(text, b"ftp://");
+    if has_url_atom
+        && (contains_ascii_case_insensitive_bytes(text, b"invoke-webrequest")
+            || contains_ascii_case_insensitive_bytes(text, b"invoke-restmethod")
+            || contains_ascii_case_insensitive_bytes(text, b"start-bitstransfer")
+            || contains_ascii_case_insensitive_bytes(text, b"iwr ")
+            || contains_ascii_case_insensitive_bytes(text, b"irm "))
+    {
+        return true;
+    }
+
     text.lines().any(|line| {
         (contains_ascii_case_insensitive_bytes(line, b"powershell")
             || contains_ascii_case_insensitive_bytes(line, b"pwsh"))
