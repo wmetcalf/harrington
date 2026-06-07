@@ -3145,7 +3145,7 @@ impl PsObfuscationSignals {
         let invoke_wrapper = has_function_def && lower.contains("invoke-expression");
         let dot_replace = lower.contains(".replace");
         let substring = lower.contains(".substring");
-        let embedded_single_quote_assignment = text.contains("'''") && text.contains('$');
+        let embedded_single_quote_assignment = has_embedded_single_quote_assignment_signal(text);
         let doubled_single_quote = text.contains("''");
         let skip_nth = has_function_def
             && lower.contains("+=")
@@ -3234,6 +3234,23 @@ impl PsObfuscationSignals {
             || self.replace
             || self.variables
     }
+}
+
+fn has_embedded_single_quote_assignment_signal(text: &str) -> bool {
+    text.lines().any(|line| {
+        let Some(triple_quote_pos) = line.find("'''") else {
+            return false;
+        };
+        let before = &line[..triple_quote_pos];
+        let before_assignment = before.trim_end();
+        if !before_assignment.ends_with('=') {
+            return false;
+        }
+        let Some(dollar_pos) = before.rfind('$') else {
+            return false;
+        };
+        before[dollar_pos..].contains('=')
+    })
 }
 
 fn join_powershell_line_continuations(text: &str) -> String {
@@ -4849,5 +4866,31 @@ mod skip_nth_signal_tests {
             "function Decode($x){for($i=2;$i -lt $x.Length;$i+=3){$out+=$x.'su'.'Invoke'($i,1)}$out}",
         );
         assert!(substring.skip_nth, "substring stride decoder was blocked");
+    }
+}
+
+#[cfg(test)]
+mod embedded_single_quote_signal_tests {
+    use super::PsObfuscationSignals;
+
+    #[test]
+    fn embedded_single_quote_signal_blocks_generic_triple_quotes() {
+        let signals = PsObfuscationSignals::new("$name = 'demo'; Write-Host '''quoted'''");
+
+        assert!(
+            !signals.embedded_single_quote_assignment,
+            "generic triple-quoted text should not run embedded assignment expansion"
+        );
+    }
+
+    #[test]
+    fn embedded_single_quote_signal_allows_assignments() {
+        let signals =
+            PsObfuscationSignals::new("$payload = '''Invoke-WebRequest https://x.test/a'''");
+
+        assert!(
+            signals.embedded_single_quote_assignment,
+            "triple-quoted assignment was blocked"
+        );
     }
 }
