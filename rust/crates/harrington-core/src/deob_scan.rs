@@ -758,23 +758,15 @@ fn collect_python_httpx_method_aliases(text: &str, target_method: &str) -> Vec<S
     }
 
     #[allow(clippy::expect_used)]
-    static PY_IMPORT_HTTPX_ALIAS_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?is)\bimport\s+httpx\s+as\s+([A-Za-z_][A-Za-z0-9_]*)"#)
-            .expect("python httpx import alias regex")
-    });
-    #[allow(clippy::expect_used)]
     static PY_FROM_HTTPX_IMPORT_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?is)\bfrom\s+httpx\s+import\s*(?:\(([^)]{0,512})\)|([^;"'\r\n]+))"#)
             .expect("python httpx from import regex")
     });
 
-    let mut aliases: Vec<String> = PY_IMPORT_HTTPX_ALIAS_RE
-        .captures_iter(text)
-        .take(8)
-        .filter_map(|caps| {
-            caps.get(1)
-                .map(|m| format!("{}.{}", m.as_str(), target_method))
-        })
+    let module_aliases = collect_python_httpx_module_aliases(text);
+    let mut aliases: Vec<String> = module_aliases
+        .iter()
+        .map(|alias| format!("{alias}.{target_method}"))
         .collect();
     for caps in PY_FROM_HTTPX_IMPORT_RE.captures_iter(text).take(8) {
         let Some(imports) = caps.get(1).or_else(|| caps.get(2)).map(|m| m.as_str()) else {
@@ -799,6 +791,59 @@ fn collect_python_httpx_method_aliases(text: &str, target_method: &str) -> Vec<S
             }
         }
     }
+    aliases.extend(collect_python_httpx_assigned_method_aliases(
+        text,
+        target_method,
+        &module_aliases,
+    ));
+    aliases
+}
+
+fn collect_python_httpx_assigned_method_aliases(
+    text: &str,
+    target_method: &str,
+    module_aliases: &[String],
+) -> Vec<String> {
+    if !text.as_bytes().contains(&b'=') {
+        return Vec::new();
+    }
+
+    #[allow(clippy::expect_used)]
+    static PY_HTTPX_METHOD_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\.(get|post|put|patch|delete|head|options)\b"#)
+            .expect("python httpx method assignment regex")
+    });
+
+    PY_HTTPX_METHOD_ASSIGN_RE
+        .captures_iter(text)
+        .take(8)
+        .filter_map(|caps| {
+            let alias = caps.get(1)?.as_str();
+            let module = caps.get(2)?.as_str();
+            let method = caps.get(3)?.as_str();
+            if method == target_method && module_aliases.iter().any(|known| known == module) {
+                Some(alias.to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn collect_python_httpx_module_aliases(text: &str) -> Vec<String> {
+    #[allow(clippy::expect_used)]
+    static PY_IMPORT_HTTPX_ALIAS_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)\bimport\s+httpx\s+as\s+([A-Za-z_][A-Za-z0-9_]*)"#)
+            .expect("python httpx import alias regex")
+    });
+
+    let mut aliases = vec!["httpx".to_string()];
+    aliases.extend(
+        PY_IMPORT_HTTPX_ALIAS_RE
+            .captures_iter(text)
+            .take(8)
+            .filter_map(|caps| caps.get(1).map(|m| m.as_str().to_string())),
+    );
     aliases
 }
 

