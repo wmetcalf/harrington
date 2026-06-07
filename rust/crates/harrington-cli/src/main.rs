@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -49,7 +49,8 @@ enum Command {
     },
     /// Like `deob --json-only`: JSON report to stdout, no files.
     Analyze {
-        file: String,
+        #[arg(value_name = "FILE", required = true, num_args = 1..)]
+        files: Vec<String>,
         #[arg(long, default_value_t = 12)]
         max_depth: u32,
         #[arg(long, default_value_t = 65_536)]
@@ -1174,6 +1175,39 @@ fn write_stdout_line(s: &str) -> Result<bool> {
     write_stdout("\n")
 }
 
+fn write_analyze_jsonl_report(
+    file: &str,
+    input: &[u8],
+    report: &harrington_core::Report,
+    lolbas_matches: Option<Vec<serde_json::Value>>,
+) -> Result<bool> {
+    let meta = serde_json::json!({
+        "kind": "meta",
+        "input": file,
+        "input_size": input.len(),
+        "deobfuscated_size": report.deobfuscated.len(),
+    });
+    if !write_stdout_line(&serde_json::to_string(&meta)?)? {
+        return Ok(false);
+    }
+    for t in &report.traits {
+        let line = serde_json::json!({"kind": "trait", "trait": t});
+        if !write_stdout_line(&serde_json::to_string(&line)?)? {
+            return Ok(false);
+        }
+    }
+    if let Some(matches) = lolbas_matches {
+        for item in matches {
+            let line = serde_json::json!({"kind": "lolbas_match", "match": item});
+            if !write_stdout_line(&serde_json::to_string(&line)?)? {
+                return Ok(false);
+            }
+        }
+    }
+    let deob_line = serde_json::json!({"kind": "deob", "content": &report.deobfuscated});
+    write_stdout_line(&serde_json::to_string(&deob_line)?)
+}
+
 fn run() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
@@ -1262,7 +1296,7 @@ fn run() -> Result<()> {
             }
         }
         Command::Analyze {
-            file,
+            files,
             max_depth,
             max_iterations,
             max_child_scripts,
@@ -1274,7 +1308,9 @@ fn run() -> Result<()> {
             jsonl,
             lolbas_json,
         } => {
-            let input = read_input(&file)?;
+            if files.len() > 1 && !jsonl {
+                bail!("multiple analyze inputs require --jsonl");
+            }
             let cfg = make_config(
                 max_depth,
                 max_iterations,
@@ -1285,38 +1321,25 @@ fn run() -> Result<()> {
                 max_output_line_bytes,
                 max_traits_per_kind,
             );
-            let report = analyze_for_file(&file, &input, &cfg);
-            let lolbas_matches = optional_lolbas_matches(&report, lolbas_json.as_deref())?;
+            let lolbas_index = lolbas_json.as_deref().map(load_lolbas_index).transpose()?;
             if jsonl {
-                let meta = serde_json::json!({
-                    "kind": "meta",
-                    "input": file,
-                    "input_size": input.len(),
-                    "deobfuscated_size": report.deobfuscated.len(),
-                });
-                if !write_stdout_line(&serde_json::to_string(&meta)?)? {
-                    return Ok(());
-                }
-                for t in &report.traits {
-                    let line = serde_json::json!({"kind": "trait", "trait": t});
-                    if !write_stdout_line(&serde_json::to_string(&line)?)? {
+                for file in files {
+                    let input = read_input(&file)?;
+                    let report = analyze_for_file(&file, &input, &cfg);
+                    let lolbas_matches = lolbas_index
+                        .as_ref()
+                        .map(|index| lolbas_matches(&report, index));
+                    if !write_analyze_jsonl_report(&file, &input, &report, lolbas_matches)? {
                         return Ok(());
                     }
                 }
-                if let Some(matches) = lolbas_matches {
-                    for item in matches {
-                        let line = serde_json::json!({"kind": "lolbas_match", "match": item});
-                        if !write_stdout_line(&serde_json::to_string(&line)?)? {
-                            return Ok(());
-                        }
-                    }
-                }
-                let deob_line =
-                    serde_json::json!({"kind": "deob", "content": &report.deobfuscated});
-                if !write_stdout_line(&serde_json::to_string(&deob_line)?)? {
-                    return Ok(());
-                }
             } else {
+                let file = &files[0];
+                let input = read_input(file)?;
+                let report = analyze_for_file(file, &input, &cfg);
+                let lolbas_matches = lolbas_index
+                    .as_ref()
+                    .map(|index| lolbas_matches(&report, index));
                 let mut json = serde_json::json!({
                     "deobfuscated": report.deobfuscated,
                     "traits": report.traits,
