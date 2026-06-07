@@ -2128,7 +2128,37 @@ fn python_keyword_url_arg(
 }
 
 fn python_url_arg_expr(arg: &str, bindings: &HashMap<String, String>) -> Option<String> {
-    first_url_literal(arg).or_else(|| python_url_arg_from_binding(arg, bindings))
+    python_inline_urllib_request_url_arg(arg, bindings)
+        .or_else(|| first_url_literal(arg))
+        .or_else(|| python_url_arg_from_binding(arg, bindings))
+}
+
+fn python_inline_urllib_request_url_arg(
+    arg: &str,
+    bindings: &HashMap<String, String>,
+) -> Option<String> {
+    let expr = arg.trim();
+    for name in ["urllib.request.Request", "urllib.Request", "Request"] {
+        if !expr
+            .get(..name.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(name))
+        {
+            continue;
+        }
+        if !is_callable_name_boundary(expr, 0, name.len()) {
+            continue;
+        }
+        let open = skip_ascii_ws(expr, name.len());
+        if expr.as_bytes().get(open) != Some(&b'(') {
+            continue;
+        }
+        let close = find_matching_paren(expr, open)?;
+        if skip_ascii_ws(expr, close + 1) != expr.len() {
+            continue;
+        }
+        return first_python_url_arg(&expr[open + 1..close], bindings);
+    }
+    None
 }
 
 fn python_url_arg_from_binding(arg: &str, bindings: &HashMap<String, String>) -> Option<String> {
