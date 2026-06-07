@@ -287,7 +287,17 @@ pub fn scan_js_payloads(env: &mut Environment) {
             if env.check_deadline() {
                 break 'payloads;
             }
-            push_downloads_from_js_shell_run(env, idx, &concat_resolved, &candidate, &mut seen);
+            if find_ascii_case_insensitive_from(&candidate, b".run", 0).is_some() {
+                let (bindings, _) = collect_js_string_bindings(&candidate);
+                push_downloads_from_js_shell_run(
+                    env,
+                    idx,
+                    &concat_resolved,
+                    &candidate,
+                    &bindings,
+                    &mut seen,
+                );
+            }
             if env.check_deadline() {
                 break 'payloads;
             }
@@ -339,6 +349,7 @@ fn push_downloads_from_js_shell_run(
     idx: usize,
     snippet_source: &str,
     text: &str,
+    bindings: &HashMap<String, String>,
     seen: &mut HashSet<(usize, String)>,
 ) {
     let mut cursor = 0usize;
@@ -351,7 +362,7 @@ fn push_downloads_from_js_shell_run(
             continue;
         };
         let arg_start = skip_ascii_ws(text, open + 1);
-        let Some((_arg_end, command)) = parse_js_string_literal_at(text, arg_start) else {
+        let Some((_arg_end, command)) = eval_js_string_expr(text, arg_start, bindings) else {
             cursor = open + 1;
             continue;
         };
