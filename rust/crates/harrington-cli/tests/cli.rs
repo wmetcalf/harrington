@@ -118,6 +118,30 @@ fn deob_force_removes_stale_generated_artifacts() {
 }
 
 #[test]
+fn deob_force_refuses_generated_output_directory_collision() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(&input, "echo hi\r\n").expect("write");
+    let out_dir = dir.path().join("out");
+    fs::create_dir_all(out_dir.join("0123456789.exe")).expect("mkdir generated collision");
+
+    Command::cargo_bin("harrington")
+        .expect("bin")
+        .args([
+            "deob",
+            input.to_str().expect("path"),
+            "-o",
+            out_dir.to_str().expect("path"),
+            "--force",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "refusing to remove generated output directory",
+        ));
+}
+
+#[test]
 fn deob_writes_extracted_child_bat() {
     let dir = TempDir::new().expect("tmp");
     let input = dir.path().join("in.bat");

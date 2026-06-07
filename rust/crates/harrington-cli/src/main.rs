@@ -536,6 +536,11 @@ fn remove_stale_generated_outputs(canonical_out: &Path) -> Result<()> {
             .with_context(|| format!("stat output path {:?}", path))?;
         if file_type.is_file() || file_type.is_symlink() {
             fs::remove_file(&path).with_context(|| format!("remove stale output {:?}", path))?;
+        } else if file_type.is_dir() {
+            anyhow::bail!(
+                "refusing to remove generated output directory {:?}; remove it manually",
+                path
+            );
         }
     }
     Ok(())
