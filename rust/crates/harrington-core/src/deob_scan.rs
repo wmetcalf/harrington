@@ -546,7 +546,9 @@ fn first_unquoted_ampersand_segment(text: &str) -> &str {
 }
 
 fn scan_python_requests_get_deob_text(deobfuscated: &str, env: &mut Environment) {
-    if !has_python_download_scan_atom(deobfuscated) {
+    let has_direct_download = has_python_direct_download_scan_atom(deobfuscated);
+    let has_base64_decode = has_python_base64_decode_scan_atom(deobfuscated);
+    if !has_direct_download && !has_base64_decode {
         return;
     }
 
@@ -559,47 +561,55 @@ fn scan_python_requests_get_deob_text(deobfuscated: &str, env: &mut Environment)
         })
         .collect();
 
-    let urlopen_names = python_urlopen_call_names(deobfuscated);
-    let urlopen_name_refs = urlopen_names.iter().map(String::as_str).collect::<Vec<_>>();
-    for url in find_call_url_literals(deobfuscated, &urlopen_name_refs) {
-        emit_python_download(&url, deobfuscated, env, &mut known);
-    }
-    for url in find_python_requests_request_get_literals(deobfuscated) {
-        emit_python_download(&url, deobfuscated, env, &mut known);
-    }
-    for (url, dst) in find_python_urlretrieve_literals(deobfuscated) {
-        emit_python_download_with_dst(&url, dst.as_deref(), deobfuscated, env, &mut known);
+    if has_direct_download {
+        let urlopen_names = python_urlopen_call_names(deobfuscated);
+        let urlopen_name_refs = urlopen_names.iter().map(String::as_str).collect::<Vec<_>>();
+        for url in find_call_url_literals(deobfuscated, &urlopen_name_refs) {
+            emit_python_download(&url, deobfuscated, env, &mut known);
+        }
+        for url in find_python_requests_request_get_literals(deobfuscated) {
+            emit_python_download(&url, deobfuscated, env, &mut known);
+        }
+        for (url, dst) in find_python_urlretrieve_literals(deobfuscated) {
+            emit_python_download_with_dst(&url, dst.as_deref(), deobfuscated, env, &mut known);
+        }
     }
 
-    for decoded in decoded_python_b64decode_literals(deobfuscated) {
-        let decoded_urlopen_names = python_urlopen_call_names(&decoded);
-        let decoded_urlopen_name_refs = decoded_urlopen_names
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>();
-        for url in find_call_url_literals(&decoded, &decoded_urlopen_name_refs) {
-            emit_python_download(&url, &decoded, env, &mut known);
-        }
-        for url in find_python_requests_request_get_literals(&decoded) {
-            emit_python_download(&url, &decoded, env, &mut known);
-        }
-        for (url, dst) in find_python_urlretrieve_literals(&decoded) {
-            emit_python_download_with_dst(&url, dst.as_deref(), &decoded, env, &mut known);
+    if has_base64_decode {
+        for decoded in decoded_python_b64decode_literals(deobfuscated) {
+            let decoded_urlopen_names = python_urlopen_call_names(&decoded);
+            let decoded_urlopen_name_refs = decoded_urlopen_names
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            for url in find_call_url_literals(&decoded, &decoded_urlopen_name_refs) {
+                emit_python_download(&url, &decoded, env, &mut known);
+            }
+            for url in find_python_requests_request_get_literals(&decoded) {
+                emit_python_download(&url, &decoded, env, &mut known);
+            }
+            for (url, dst) in find_python_urlretrieve_literals(&decoded) {
+                emit_python_download_with_dst(&url, dst.as_deref(), &decoded, env, &mut known);
+            }
         }
     }
 }
 
+#[cfg(test)]
 fn has_python_download_scan_atom(text: &str) -> bool {
-    [
-        "requests",
-        "urllib",
-        "urlopen",
-        "urlretrieve",
-        "b64decode",
-        "urlsafe_b64decode",
-    ]
-    .iter()
-    .any(|atom| find_ascii_case_insensitive(text, atom, 0).is_some())
+    has_python_direct_download_scan_atom(text) || has_python_base64_decode_scan_atom(text)
+}
+
+fn has_python_direct_download_scan_atom(text: &str) -> bool {
+    ["requests", "urllib", "urlopen", "urlretrieve"]
+        .iter()
+        .any(|atom| find_ascii_case_insensitive(text, atom, 0).is_some())
+}
+
+fn has_python_base64_decode_scan_atom(text: &str) -> bool {
+    ["b64decode", "urlsafe_b64decode"]
+        .iter()
+        .any(|atom| find_ascii_case_insensitive(text, atom, 0).is_some())
 }
 
 #[cfg(test)]
