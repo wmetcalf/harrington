@@ -4220,6 +4220,12 @@ mod herestring_iex_tests {
     }
 
     #[test]
+    fn inline_powershell_gate_allows_mixed_case_encoded_invocation() {
+        let text = "PoWeRsHeLl.ExE -EnC AAAA";
+        assert!(inline_powershell_text_has_payload_signal(text));
+    }
+
+    #[test]
     fn inline_powershell_gate_allows_short_encoded_invocation() {
         let text = "powershell.exe -e AAAA";
         assert!(inline_powershell_text_has_payload_signal(text));
@@ -4844,8 +4850,7 @@ fn is_schemeless_ip_url(url: &str) -> bool {
 }
 
 pub fn scan_inline_powershell_text(text: &str, env: &mut Environment) {
-    let lower = text.to_ascii_lowercase();
-    if !inline_powershell_text_has_payload_signal(&lower) {
+    if !inline_powershell_text_has_payload_signal(text) {
         return;
     }
     let known_downloads: std::collections::HashSet<String> = env
@@ -4877,21 +4882,22 @@ pub fn scan_inline_powershell_text(text: &str, env: &mut Environment) {
         }));
 }
 
-fn inline_powershell_text_has_payload_signal(lower: &str) -> bool {
-    if lower.contains("downloadstring")
-        || lower.contains("downloadfile")
-        || lower.contains("downloaddata")
-        || lower.contains("callbyname")
+fn inline_powershell_text_has_payload_signal(text: &str) -> bool {
+    if contains_ascii_case_insensitive_bytes(text, b"downloadstring")
+        || contains_ascii_case_insensitive_bytes(text, b"downloadfile")
+        || contains_ascii_case_insensitive_bytes(text, b"downloaddata")
+        || contains_ascii_case_insensitive_bytes(text, b"callbyname")
     {
         return true;
     }
 
-    lower.lines().any(|line| {
-        (line.contains("powershell") || line.contains("pwsh"))
+    text.lines().any(|line| {
+        (contains_ascii_case_insensitive_bytes(line, b"powershell")
+            || contains_ascii_case_insensitive_bytes(line, b"pwsh"))
             && (line_has_powershell_payload_flag(line)
-                || line.contains("http://")
-                || line.contains("https://")
-                || line.contains("iex "))
+                || contains_ascii_case_insensitive_bytes(line, b"http://")
+                || contains_ascii_case_insensitive_bytes(line, b"https://")
+                || contains_ascii_case_insensitive_bytes(line, b"iex "))
     })
 }
 
