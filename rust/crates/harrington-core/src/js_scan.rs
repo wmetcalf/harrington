@@ -342,11 +342,10 @@ fn push_downloads_from_js_shell_run(
     seen: &mut HashSet<(usize, String)>,
 ) {
     let mut cursor = 0usize;
-    while let Some(rel) = text[cursor..].find(".Run") {
+    while let Some(run_start) = find_ascii_case_insensitive_from(text, b".run", cursor) {
         if env.check_deadline() {
             return;
         }
-        let run_start = cursor + rel;
         let Some(open) = consume_js_call_open(text, run_start + ".Run".len()) else {
             cursor = run_start + ".Run".len();
             continue;
@@ -359,6 +358,16 @@ fn push_downloads_from_js_shell_run(
         push_downloads_from_js_command(env, idx, snippet_source, &command, seen);
         cursor = open + 1;
     }
+}
+
+fn find_ascii_case_insensitive_from(haystack: &str, needle: &[u8], start: usize) -> Option<usize> {
+    let bytes = haystack.as_bytes();
+    if needle.is_empty() || start >= bytes.len() || needle.len() > bytes.len().saturating_sub(start)
+    {
+        return None;
+    }
+    (start..=bytes.len() - needle.len())
+        .find(|&idx| bytes[idx..idx + needle.len()].eq_ignore_ascii_case(needle))
 }
 
 fn push_downloads_from_js_command(
