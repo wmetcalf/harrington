@@ -4560,18 +4560,35 @@ fn fast_expand_percent_substr_chain_line(line: &str, env: &Environment) -> Optio
 
         let name_start = cursor + 1;
         let after_start = &line[name_start..];
-        let colon_rel = after_start.find(':')?;
+        let close_rel = after_start.find('%')?;
+        let colon_rel = after_start.find(':');
+        let Some(colon_rel) = colon_rel.filter(|colon_rel| *colon_rel < close_rel) else {
+            let name_end = name_start + close_rel;
+            if name_end == name_start {
+                return None;
+            }
+            let name = &line[name_start..name_end];
+            if name.contains(['!', '^', '&', '|', '<', '>', '"']) {
+                return None;
+            }
+            if let Some(value) = env.get(name) {
+                out.push_str(&value);
+            }
+            refs += 1;
+            cursor = name_end + 1;
+            continue;
+        };
+
         let name_end = name_start + colon_rel;
         if name_end == name_start {
             return None;
         }
         let op_start = name_end + 1;
-        let op_rest = &line[op_start..];
+        let op_end = name_start + close_rel;
+        let op_rest = &line[op_start..op_end];
         if !op_rest.trim_start().starts_with('~') {
             return None;
         }
-        let close_rel = op_rest.find('%')?;
-        let op_end = op_start + close_rel;
         let op = &line[op_start..op_end];
         let crate::lex::VarOp::Substr { index, length } = crate::lex::parse_substr(op)? else {
             return None;
@@ -5625,6 +5642,19 @@ mod line_cap_tests {
             .expect("chain-only line should use fast path");
 
         assert_eq!(expanded, "echo bacecho bacecho bacecho bac");
+    }
+
+    #[test]
+    fn percent_substring_chain_fast_path_drops_undefined_noise_refs() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.set("A", "echo");
+        let chunk = "%A:~0,1%%øNoise%%A:~1,1%%A:~2,1%%A:~3,1%";
+        let line = chunk.repeat(4);
+
+        let expanded = crate::fast_expand_percent_substr_chain_line(&line, &env)
+            .expect("substring chain with undefined noise refs should use fast path");
+
+        assert_eq!(expanded, "echoechoechoecho");
     }
 
     #[test]
