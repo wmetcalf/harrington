@@ -83,13 +83,13 @@ static PS_GENERIC_URL_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static DOWNLOADSTRING_RE: Lazy<Regex> = Lazy::new(|| {
     // (New-Object Net.WebClient).DownloadString('url') or .DownloadFile('url', 'dst')
-    Regex::new(r#"(?i)\.Download(?:String|File|Data)(?:(?:Task)?Async)?\s*\(\s*["']([^"']+)["']"#)
+    Regex::new(r#"(?i)\.(?:Download(?:String|File|Data)|OpenRead)(?:(?:Task)?Async)?\s*\(\s*["']([^"']+)["']"#)
         .expect("ds")
 });
 
 #[allow(clippy::expect_used)]
 static BARE_DOWNLOADSTRING_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"(?i)\bDownload(?:String|File|Data)(?:(?:Task)?Async)?\s*\(\s*["']([^"']+)["']"#)
+    Regex::new(r#"(?i)\b(?:Download(?:String|File|Data)|OpenRead)(?:(?:Task)?Async)?\s*\(\s*["']([^"']+)["']"#)
         .expect("bare downloadstring")
 });
 
@@ -213,6 +213,7 @@ impl PsUrlRegexAtomProfile {
             download_method: contains_ascii_case_insensitive_bytes(text, b"downloadstring")
                 || contains_ascii_case_insensitive_bytes(text, b"downloadfile")
                 || contains_ascii_case_insensitive_bytes(text, b"downloaddata")
+                || contains_ascii_case_insensitive_bytes(text, b"openread")
                 || contains_ascii_case_insensitive_bytes(text, b"downloadstringasync")
                 || contains_ascii_case_insensitive_bytes(text, b"downloadfileasync")
                 || contains_ascii_case_insensitive_bytes(text, b"downloaddataasync"),
@@ -4837,6 +4838,7 @@ fn ps1_payload_has_download_signal(text: &str) -> bool {
         b"downloadstring",
         b"downloadfile",
         b"downloaddata",
+        b"openread",
         b"start-bitstransfer",
         b"webclient",
         b"webrequest",
@@ -5160,6 +5162,13 @@ mod ps_url_regex_atom_profile_tests {
         assert!(profile.matches(PsUrlRegexAtomKind::CmdletUrl));
         assert!(profile.matches(PsUrlRegexAtomKind::UrlScheme));
         assert!(!profile.matches(PsUrlRegexAtomKind::StartBits));
+    }
+
+    #[test]
+    fn profile_allows_openread_as_download_method() {
+        let profile = PsUrlRegexAtomProfile::new("$wc.OpenReadAsync('host.example/a')");
+
+        assert!(profile.matches(PsUrlRegexAtomKind::DownloadMethod));
     }
 
     #[test]

