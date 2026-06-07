@@ -3099,6 +3099,26 @@ fn analyze_inner(input: &[u8], cfg: &Config, file_path: Option<std::path::PathBu
     let extracted_ps1_normalized =
         normalize_extracted_ps1_payloads(&env.all_extracted_ps1, &env.ps1_normalized_cache);
     profile_mark!("normalize_ps1_payloads");
+    let final_profile_enabled = std::env::var_os("HARRINGTON_PROFILE_FINAL").is_some();
+    let final_profile_start = std::time::Instant::now();
+    let mut final_profile_last = final_profile_start;
+    macro_rules! final_profile_mark {
+        ($stage:literal) => {
+            if final_profile_enabled {
+                let now = std::time::Instant::now();
+                eprintln!(
+                    "harrington_profile_final stage={} delta_ms={} total_ms={} out_bytes={} traits={} recovered_pe={}",
+                    $stage,
+                    now.duration_since(final_profile_last).as_millis(),
+                    now.duration_since(final_profile_start).as_millis(),
+                    out.len(),
+                    env.traits.len(),
+                    env.recovered_pe.len()
+                );
+                final_profile_last = now;
+            }
+        };
+    }
     // Surface decoded/extracted PowerShell payloads in the deob with a
     // banner so analysts can read the reconstructed PS body — critical
     // for set-fragment-assembled `$ddsdfgo = '<b64>'; iex $x` chains
@@ -3185,6 +3205,7 @@ fn analyze_inner(input: &[u8], cfg: &Config, file_path: Option<std::path::PathBu
         out.push_str(&format!("::==== end extracted {kind} payload ====\r\n"));
         debug_assert!(scan_start <= out.len());
     }
+    final_profile_mark!("append_extracted_payloads");
     // Run targeted scans on the FINAL `out` so detectors that live in
     // scan_deob_text but are gated on banner-only text (PS payloads
     // surfaced after the initial scan_deob_text pass) still fire.
@@ -3209,13 +3230,22 @@ fn analyze_inner(input: &[u8], cfg: &Config, file_path: Option<std::path::PathBu
         let max_per_kind = cfg.max_traits_per_kind;
         dedup_traits(&mut env.traits, max_per_kind);
     }
+    final_profile_mark!("late_scan_and_dedup");
     collect_ps1_self_tail_reversed_gzip_pe(input, &extracted_ps1_normalized, &mut env);
-    let raw_input_text = String::from_utf8_lossy(input);
-    collect_embedded_base64_pe_carrier_artifacts(&raw_input_text, &mut env);
+    final_profile_mark!("self_tail_reversed_gzip_pe");
+    if has_embedded_base64_pe_carrier_hint(input) {
+        let raw_input_text = String::from_utf8_lossy(input);
+        collect_embedded_base64_pe_carrier_artifacts(&raw_input_text, &mut env);
+    }
+    final_profile_mark!("embedded_base64_pe_carriers");
     out = summarize_multiline_base64_pe_carrier_blocks(out, &mut env);
+    final_profile_mark!("summarize_multiline_base64_pe");
     scan_recovered_artifact_strings(&mut env);
+    final_profile_mark!("recovered_artifact_strings");
     dedup_traits(&mut env.traits, cfg.max_traits_per_kind);
+    final_profile_mark!("final_dedup");
     profile_mark!("final_scan_and_dedup");
+    let _ = final_profile_last;
     let _ = profile_last;
     Report {
         deobfuscated: out,
@@ -3368,6 +3398,29 @@ fn collect_embedded_base64_pe_carrier_artifacts(text: &str, env: &mut Environmen
         recovered_count,
         MAX_EMBEDDED_PE_CARRIER_ARTIFACTS,
     );
+}
+
+fn has_embedded_base64_pe_carrier_hint(input: &[u8]) -> bool {
+    if input.len() < 4096 {
+        return false;
+    }
+    // Base64 for a PE starts with "TV" because the decoded header starts
+    // with "MZ". Also allow the encoded ASCII-hex carriers this collector
+    // decodes: "4d5a" -> "NGQ1..." and "4D5A" -> "NEQ1...".
+    for idx in 0..input.len().saturating_sub(1) {
+        if input[idx] == b'T' && input[idx + 1] == b'V' {
+            return true;
+        }
+        if idx + 3 < input.len()
+            && input[idx] == b'N'
+            && (input[idx + 1] == b'G' || input[idx + 1] == b'E')
+            && input[idx + 2] == b'Q'
+            && input[idx + 3] == b'1'
+        {
+            return true;
+        }
+    }
+    false
 }
 
 fn flush_embedded_base64_pe_artifact_block(
@@ -8682,6 +8735,55 @@ mod certutil_tests {
                 .iter()
                 .any(|(label, blob)| label.contains("embedded-base64-pe") && blob == &pe),
             "unreachable raw PEM PE carrier was not exported: {:?}",
+            report
+                .recovered_pe
+                .iter()
+                .map(|(label, blob)| (label.as_str(), blob.len()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn embedded_base64_pe_carrier_hint_recognizes_supported_prefixes() {
+        let mut direct_pe = vec![b'A'; 4096];
+        direct_pe[128..130].copy_from_slice(b"TV");
+        let mut hex_lower = vec![b'A'; 4096];
+        hex_lower[128..132].copy_from_slice(b"NGQ1");
+        let mut hex_upper = vec![b'A'; 4096];
+        hex_upper[128..132].copy_from_slice(b"NEQ1");
+        assert!(crate::has_embedded_base64_pe_carrier_hint(&direct_pe));
+        assert!(crate::has_embedded_base64_pe_carrier_hint(&hex_lower));
+        assert!(crate::has_embedded_base64_pe_carrier_hint(&hex_upper));
+        assert!(!crate::has_embedded_base64_pe_carrier_hint(
+            b"echo ordinary script text\r\n"
+        ));
+    }
+
+    #[test]
+    fn unreachable_base64_hex_pe_carrier_is_exported() {
+        let mut pe = vec![0u8; 0x84];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&(0x80u32).to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        pe.resize(4096, 0);
+        let hex = hex::encode(&pe);
+        let b64 = base64::engine::general_purpose::STANDARD.encode(hex);
+        let wrapped = b64
+            .as_bytes()
+            .chunks(64)
+            .map(|chunk| std::str::from_utf8(chunk).expect("ascii"))
+            .collect::<Vec<_>>()
+            .join("\r\n");
+        let script = format!("goto :eof\r\n{wrapped}\r\n");
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .recovered_pe
+                .iter()
+                .any(|(label, blob)| label.contains("embedded-base64-hex-pe") && blob == &pe),
+            "unreachable base64-hex PE carrier was not exported: {:?}",
             report
                 .recovered_pe
                 .iter()

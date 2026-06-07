@@ -649,6 +649,25 @@ fn analyze_can_emit_drive_profile_to_stderr() {
         .stderr(predicates::str::contains("harrington_profile_drive"));
 }
 
+#[test]
+fn analyze_can_emit_final_profile_to_stderr() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(
+        &input,
+        "echo powershell -Command [Reflection.Assembly]::Load($b)\r\n",
+    )
+    .expect("write");
+
+    Command::cargo_bin("harrington")
+        .expect("bin")
+        .env("HARRINGTON_PROFILE_FINAL", "1")
+        .args(["analyze", input.to_str().expect("path"), "--jsonl"])
+        .assert()
+        .success()
+        .stderr(predicates::str::contains("harrington_profile_final"));
+}
+
 #[cfg(unix)]
 #[test]
 fn analyze_jsonl_handles_closed_stdout_without_panic() {
