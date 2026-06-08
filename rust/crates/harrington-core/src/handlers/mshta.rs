@@ -1,5 +1,5 @@
 use super::util::split_words;
-use crate::env::Environment;
+use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
 
 pub fn h_mshta(raw: &str, env: &mut Environment) {
@@ -8,7 +8,8 @@ pub fn h_mshta(raw: &str, env: &mut Environment) {
     });
     queue_inline_script_payload(raw, env);
 
-    for token in split_words(raw).iter().skip(1) {
+    let tokens = split_words(raw);
+    for token in tokens.iter().skip(1) {
         let url = strip_quotes(token);
         if let Some(src) = crate::deob_scan::normalize_liberal_url_token(url)
             .or_else(|| crate::deob_scan::normalize_schemeless_domain_path_token(url))
@@ -20,6 +21,9 @@ pub fn h_mshta(raw: &str, env: &mut Environment) {
             });
             break;
         }
+    }
+    if let Some(url) = prior_download_url(&tokens, env) {
+        push_url_argument(raw, url, env);
     }
 }
 
@@ -76,4 +80,44 @@ fn strip_quotes(s: &str) -> &str {
         return &s[1..s.len() - 1];
     }
     s
+}
+
+fn prior_download_url(tokens: &[String], env: &Environment) -> Option<String> {
+    for token in tokens.iter().skip(1).take(8) {
+        let candidate = strip_quotes(token)
+            .trim()
+            .trim_end_matches(['"', '\'', ')', ']', '}', ';', ',']);
+        if candidate.is_empty() || candidate.starts_with(['/', '-']) {
+            continue;
+        }
+        if !is_hta_target(candidate) {
+            continue;
+        }
+        let key = candidate.to_ascii_lowercase();
+        if let Some(FsEntry::Download { src }) = env.modified_filesystem.get(&key) {
+            return Some(src.clone());
+        }
+    }
+    None
+}
+
+fn is_hta_target(candidate: &str) -> bool {
+    let lower = candidate.to_ascii_lowercase();
+    [".hta", ".htm", ".html"]
+        .iter()
+        .any(|suffix| lower.ends_with(suffix))
+}
+
+fn push_url_argument(raw: &str, url: String, env: &mut Environment) {
+    if !env.traits.iter().any(|t| {
+        matches!(
+            t,
+            Trait::UrlArgument { cmd, url: existing } if cmd == raw && existing == &url
+        )
+    }) {
+        env.traits.push(Trait::UrlArgument {
+            cmd: raw.to_string(),
+            url,
+        });
+    }
 }

@@ -3062,6 +3062,74 @@ fn scan_glued_rundll32_deob_text(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
+fn scan_mshta_local_deob_text(deobfuscated: &str, env: &mut Environment) {
+    if !contains_ascii_case_insensitive_atom(deobfuscated, b"mshta") {
+        return;
+    }
+    let downloads = download_urls_by_destination(env);
+    if downloads.is_empty() {
+        return;
+    }
+    let mut known: std::collections::HashSet<(String, String)> = env
+        .traits
+        .iter()
+        .filter_map(|t| match t {
+            Trait::UrlArgument { cmd, url } => Some((cmd.clone(), url.clone())),
+            _ => None,
+        })
+        .collect();
+
+    for line in deobfuscated.lines() {
+        if !contains_ascii_case_insensitive_atom(line, b"mshta") {
+            continue;
+        }
+        let tokens = split_words(line);
+        for i in 0..tokens.len() {
+            let cmd = command_name(strip_quotes(&tokens[i]));
+            if cmd != "mshta" && cmd != "mshta.exe" {
+                continue;
+            }
+            let Some(url) = mshta_prior_download_url_after(&tokens, i + 1, &downloads) else {
+                continue;
+            };
+            if is_noise_url(&url) || !known.insert((line.to_string(), url.clone())) {
+                continue;
+            }
+            env.traits.push(Trait::UrlArgument {
+                cmd: line.to_string(),
+                url,
+            });
+        }
+    }
+}
+
+fn mshta_prior_download_url_after(
+    tokens: &[String],
+    start: usize,
+    downloads: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    for token in tokens.iter().skip(start).take(8) {
+        let candidate = trim_url_suffix(strip_quotes(token)).trim();
+        if candidate.is_empty() || candidate.starts_with(['/', '-']) {
+            continue;
+        }
+        if !is_hta_target(candidate) {
+            continue;
+        }
+        if let Some(url) = url_for_download_destination(candidate, downloads) {
+            return Some(url);
+        }
+    }
+    None
+}
+
+fn is_hta_target(candidate: &str) -> bool {
+    let lower = trim_url_suffix(candidate).to_ascii_lowercase();
+    [".hta", ".htm", ".html"]
+        .iter()
+        .any(|suffix| lower.ends_with(suffix))
+}
+
 fn download_urls_by_destination(env: &Environment) -> std::collections::HashMap<String, String> {
     let mut out = std::collections::HashMap::new();
     for t in &env.traits {
@@ -7386,6 +7454,9 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     });
     scan_step!("glued_rundll32_deob_text", {
         scan_glued_rundll32_deob_text(deobfuscated, env);
+    });
+    scan_step!("mshta_local_deob_text", {
+        scan_mshta_local_deob_text(deobfuscated, env);
     });
 
     scan_step!("url_sweep", {

