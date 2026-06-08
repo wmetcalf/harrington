@@ -791,6 +791,35 @@ if exist "%B64FILE%" del "%B64FILE%"
     }
 
     #[test]
+    fn block_prefix_redirect_writes_file_for_certutil_decode() {
+        use base64::Engine;
+
+        let b64 = base64::engine::general_purpose::STANDARD.encode(b"prefix redirect payload");
+        let (a, b) = b64.split_at(b64.len() / 2);
+        let script = format!(
+            "set \"tempB64File=%TEMP%\\embedded.b64\"\r\n\
+             set \"outputExe=%TEMP%\\embedded.exe\"\r\n\
+             > \"%tempB64File%\" (\r\n\
+             echo {a}\r\n\
+             echo {b}\r\n\
+             \r\n\
+             )\r\n\
+             certutil -decode \"%tempB64File%\" \"%outputExe%\"\r\n"
+        );
+
+        let report = analyze(script.as_bytes(), &AnalyzeConfig::default());
+
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::CertutilDecode { src_resolved, .. } if *src_resolved)),
+            "prefix-redirect block b64 should resolve the certutil source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn large_block_echo_blob_is_collapsed_but_decoded_child_is_analyzed() {
         use base64::Engine;
 
@@ -4978,6 +5007,15 @@ fn write_captured_echo_content(
         .insert(key, crate::env::FsEntry::Content { content, append });
 }
 
+fn expand_redirect_path(raw_path: &str, scratch: &mut Environment) -> String {
+    if raw_path.contains('%') || raw_path.contains('!') {
+        let toks = lex::lex(raw_path);
+        normalize::normalize_to_string(&toks, scratch)
+    } else {
+        raw_path.to_string()
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct EchoRedirectPrescanShapes {
     grouped_block: bool,
@@ -4991,6 +5029,7 @@ fn echo_redirect_prescan_shapes(input: &[u8]) -> EchoRedirectPrescanShapes {
 
     let text = String::from_utf8_lossy(input);
     let mut saw_group_open = false;
+    let mut saw_redirected_group_open = false;
     let mut echo_redirect_lines = 0usize;
     let mut shapes = EchoRedirectPrescanShapes::default();
     for raw_line in text.lines() {
@@ -5002,15 +5041,30 @@ fn echo_redirect_prescan_shapes(input: &[u8]) -> EchoRedirectPrescanShapes {
         if lower.starts_with("rem ") || lower == "rem" || lower.starts_with("::") {
             continue;
         }
-        if trimmed.trim_end() == "(" {
+        let (opens_group, redirected_group_open) = if trimmed.trim_end() == "(" {
+            (true, false)
+        } else if trimmed.trim_end().ends_with('(') && trimmed.contains('>') {
+            let (cleaned, redir) = crate::redirect::extract_redirections(trimmed.trim_end());
+            let redirected = cleaned.trim() == "(" && redir.stdout.is_some();
+            (redirected, redirected)
+        } else {
+            (false, false)
+        };
+        if opens_group {
             saw_group_open = true;
+            saw_redirected_group_open = redirected_group_open;
             continue;
         }
-        if saw_group_open && trimmed.trim_start().starts_with(')') && trimmed.contains('>') {
+        if saw_group_open
+            && trimmed.trim_start().starts_with(')')
+            && (trimmed.contains('>') || saw_redirected_group_open)
+        {
             shapes.grouped_block = true;
             if shapes.grouped_block && shapes.top_level_run {
                 return shapes;
             }
+            saw_group_open = false;
+            saw_redirected_group_open = false;
         }
         if block_echo_payload(trimmed).is_some() && trimmed.contains('>') {
             echo_redirect_lines += 1;
@@ -5133,9 +5187,17 @@ fn capture_block_echo_redirects(lines: &[String], env: &mut Environment) -> Vec<
             crate::handlers::set::h_set(stripped, &mut scratch);
         }
         let opener = lines[i].trim_start_matches(['@', ' ', '\t']).trim_end();
-        // A bare `(` opens a grouped block (possibly `@(`). Anything else
-        // (e.g. `if (`, `for ... (`) is handled by the normal interpreter.
-        if opener != "(" {
+        // A bare `(` opens a grouped block (possibly `@(`). CMD also allows
+        // the block stdout redirection to prefix the group: `> "file" (`.
+        // Anything else (e.g. `if (`, `for ... (`) is handled by the normal
+        // interpreter.
+        let (opener_cleaned, opener_redir) = crate::redirect::extract_redirections(opener);
+        let prefix_target = if opener_cleaned.trim() == "(" {
+            opener_redir.stdout
+        } else {
+            None
+        };
+        if opener != "(" && prefix_target.is_none() {
             i += 1;
             continue;
         }
@@ -5150,6 +5212,10 @@ fn capture_block_echo_redirects(lines: &[String], env: &mut Environment) -> Vec<
             if body_trimmed.starts_with(')') {
                 close_idx = Some(j);
                 break;
+            }
+            if body_trimmed.is_empty() {
+                j += 1;
+                continue;
             }
             if let Some(payload) = block_echo_payload(body) {
                 payloads.push(payload.to_string());
@@ -5167,29 +5233,32 @@ fn capture_block_echo_redirects(lines: &[String], env: &mut Environment) -> Vec<
             i = close + 1;
             continue;
         }
-        // The closing line must redirect the block's stdout to a file.
+        // The closing line must redirect the block's stdout to a file, unless
+        // the opener already used CMD's prefix redirection form.
         let close_line = lines[close].trim_start_matches(['@', ' ', '\t']);
         // Strip the leading `)` then parse redirections from the remainder.
         let after_paren = close_line.trim_start_matches(')').trim();
-        let (_, redir) = crate::redirect::extract_redirections(after_paren);
-        let Some(target) = redir.stdout else {
-            i = close + 1;
-            continue;
+        let target = if let Some(prefix_target) = prefix_target {
+            let (close_cleaned, close_redir) = crate::redirect::extract_redirections(after_paren);
+            if close_redir.stdout.is_some() || !close_cleaned.trim().is_empty() {
+                i = close + 1;
+                continue;
+            }
+            prefix_target
+        } else {
+            let (_, redir) = crate::redirect::extract_redirections(after_paren);
+            let Some(target) = redir.stdout else {
+                i = close + 1;
+                continue;
+            };
+            target
         };
         // Var-expand the redirect target — without this, `> "%_t%"` stores
         // the file under the literal key `%_t%`, but the following
         // `certutil -decode "%_t%" "%_b%"` arrives already var-expanded
         // (the dispatcher renders the line through normalize first), so
         // the lookup misses. (Contract_Project_Agreement family.)
-        let target_expanded = {
-            let raw_path = target.path();
-            if raw_path.contains('%') || raw_path.contains('!') {
-                let toks = lex::lex(raw_path);
-                normalize::normalize_to_string(&toks, &mut scratch)
-            } else {
-                raw_path.to_string()
-            }
-        };
+        let target_expanded = expand_redirect_path(target.path(), &mut scratch);
         let target = if target.append() {
             crate::redirect::RedirTarget::Append(target_expanded)
         } else {
