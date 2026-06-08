@@ -9669,6 +9669,11 @@ mod synth_tests {
     }
 
     #[test]
+    fn synth_can_run_pipeline_accepts_ping_handler() {
+        assert!(crate::synth::can_run_pipeline("ping -n 1 example.com"));
+    }
+
+    #[test]
     fn synth_set_with_prefix() {
         let mut env = Environment::new(&Config::default());
         env.set("FOO", "1");

@@ -275,6 +275,7 @@ fn is_supported_command(cmd: &str) -> bool {
             | "tasklist"
             | "where"
             | "wmic"
+            | "ping"
     )
 }
 
