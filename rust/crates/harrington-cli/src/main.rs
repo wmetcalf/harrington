@@ -384,10 +384,10 @@ fn is_drive_path(token: &str) -> bool {
 
 /// Safely join `name` onto the canonical `out_dir`, refusing if the result
 /// would escape that directory. All `name`s in this tool are either static
-/// strings ("deobfuscated.bat", "traits.json") or `<sha10>.bat|ps1` — so a
-/// successful escape would require a bug in the SHA encoder. Belt and
-/// braces; the canonicalize step also catches the case where `out_dir`
-/// itself is a symlink to a sensitive location.
+/// strings ("deobfuscated.bat", "traits.json") or sha-prefixed artifact
+/// filenames — so a successful escape would require a bug in the filename
+/// generator. Belt and braces; the canonicalize step also catches the case
+/// where `out_dir` itself is a symlink to a sensitive location.
 fn safe_join(canonical_out: &Path, name: &str) -> Result<PathBuf> {
     // Refuse anything that looks like a path traversal upfront.
     if name.contains('/') || name.contains('\\') || name.contains("..") {
@@ -1274,6 +1274,12 @@ fn write_analyze_jsonl_report(
         "input": file,
         "input_size": input.len(),
         "deobfuscated_size": report.deobfuscated.len(),
+        "extracted": {
+            "cmd": report.extracted_cmd.len(),
+            "powershell": report.extracted_ps1.len(),
+            "jscript": report.extracted_jscript.len(),
+            "vbs": report.extracted_vbs.len(),
+        },
     });
     if !write_line_to(writer, &serde_json::to_string(&meta)?)? {
         return Ok(false);

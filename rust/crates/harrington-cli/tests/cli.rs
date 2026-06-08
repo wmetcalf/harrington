@@ -579,6 +579,48 @@ fn analyze_jsonl_emits_lines() {
 }
 
 #[test]
+fn analyze_jsonl_meta_includes_extracted_counts() {
+    use base64::Engine;
+
+    let payload = "Write-Host meta";
+    let utf16: Vec<u8> = payload
+        .encode_utf16()
+        .flat_map(|u| u.to_le_bytes())
+        .collect();
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&utf16);
+
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(&input, format!("powershell -EncodedCommand {}", b64)).expect("write");
+
+    let out = Command::cargo_bin("harrington")
+        .expect("bin")
+        .args(["analyze", input.to_str().expect("path"), "--jsonl"])
+        .output()
+        .expect("run");
+    assert!(
+        out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let first_line = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()
+        .expect("meta line")
+        .to_string();
+    let meta: serde_json::Value = serde_json::from_str(&first_line).expect("meta json");
+    assert_eq!(meta["kind"], "meta");
+    assert!(
+        meta["extracted"]["powershell"].as_u64().unwrap_or_default() >= 1,
+        "PowerShell extracted count missing from meta: {meta}"
+    );
+    assert_eq!(meta["extracted"]["cmd"].as_u64(), Some(0));
+    assert_eq!(meta["extracted"]["jscript"].as_u64(), Some(0));
+    assert_eq!(meta["extracted"]["vbs"].as_u64(), Some(0));
+}
+
+#[test]
 fn analyze_jsonl_accepts_multiple_input_files() {
     let dir = TempDir::new().expect("tmp");
     let first = dir.path().join("first.bat");
