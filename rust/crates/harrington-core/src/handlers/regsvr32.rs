@@ -49,7 +49,11 @@ fn regsvr32_scriptlet_url_after(tokens: &[String], start: usize) -> Option<Strin
 }
 
 fn regsvr32_remote_unc_target_after(tokens: &[String], start: usize) -> bool {
-    regsvr32_webdav_url_after(tokens, start).is_some()
+    let limit = tokens.len().min(start.saturating_add(12));
+    tokens[start..limit]
+        .iter()
+        .map(|token| strip_quotes(token))
+        .any(regsvr32_unc_load_target)
 }
 
 fn regsvr32_webdav_url_after(tokens: &[String], start: usize) -> Option<String> {
@@ -58,6 +62,11 @@ fn regsvr32_webdav_url_after(tokens: &[String], start: usize) -> Option<String> 
         .iter()
         .map(|token| strip_quotes(token))
         .find_map(webdav_url_for_candidate)
+}
+
+fn regsvr32_unc_load_target(token: &str) -> bool {
+    let candidate = trim_url_suffix(strip_quotes(token)).trim();
+    candidate.starts_with(r"\\") && regsvr32_loadable_target(candidate)
 }
 
 fn regsvr32_loadable_target(token: &str) -> bool {

