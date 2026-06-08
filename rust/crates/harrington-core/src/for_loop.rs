@@ -46,6 +46,30 @@ pub fn substitute_loop_var(body: &str, var: char, value: &str) -> String {
     let mut i = 0;
     while i < chars.len() {
         if chars[i] == '%' {
+            // Try `%%~nX` / `%%~X` script-form modifiers.
+            if chars.get(i + 1) == Some(&'%') && chars.get(i + 2) == Some(&'~') {
+                if chars
+                    .get(i + 3)
+                    .map(|c| c.eq_ignore_ascii_case(&var))
+                    .unwrap_or(false)
+                {
+                    out.push_str(value);
+                    i += 4;
+                    continue;
+                }
+                if chars
+                    .get(i + 3)
+                    .is_some_and(|c| c.eq_ignore_ascii_case(&'n'))
+                    && chars
+                        .get(i + 4)
+                        .map(|c| c.eq_ignore_ascii_case(&var))
+                        .unwrap_or(false)
+                {
+                    out.push_str(loop_var_name_stem(value));
+                    i += 5;
+                    continue;
+                }
+            }
             // Try `%%X` first.
             if chars.get(i + 1) == Some(&'%')
                 && chars
@@ -56,6 +80,30 @@ pub fn substitute_loop_var(body: &str, var: char, value: &str) -> String {
                 out.push_str(value);
                 i += 3;
                 continue;
+            }
+            // Try `%~nX` / `%~X` interactive-form modifiers.
+            if chars.get(i + 1) == Some(&'~') {
+                if chars
+                    .get(i + 2)
+                    .map(|c| c.eq_ignore_ascii_case(&var))
+                    .unwrap_or(false)
+                {
+                    out.push_str(value);
+                    i += 3;
+                    continue;
+                }
+                if chars
+                    .get(i + 2)
+                    .is_some_and(|c| c.eq_ignore_ascii_case(&'n'))
+                    && chars
+                        .get(i + 3)
+                        .map(|c| c.eq_ignore_ascii_case(&var))
+                        .unwrap_or(false)
+                {
+                    out.push_str(loop_var_name_stem(value));
+                    i += 4;
+                    continue;
+                }
             }
             // Try `%X`.
             if chars
@@ -72,4 +120,13 @@ pub fn substitute_loop_var(body: &str, var: char, value: &str) -> String {
         i += 1;
     }
     out
+}
+
+fn loop_var_name_stem(value: &str) -> &str {
+    let filename = value
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(value)
+        .trim_matches('"');
+    filename.rsplit_once('.').map_or(filename, |(stem, _)| stem)
 }

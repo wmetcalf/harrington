@@ -9706,6 +9706,28 @@ mod for_f_tests {
     }
 
     #[test]
+    fn for_f_substitutes_tilde_name_modifier() {
+        let script =
+            br#"for /F "delims=" %%A in ("driver.inf") do if "%%~nA" NEQ "%%~A" echo stem=%%~nA full=%%~A"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report
+                .deobfuscated
+                .contains("echo stem=driver full=driver.inf"),
+            "got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, crate::traits::Trait::IfNotResolved { .. })),
+            "modifier-backed IF should resolve: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn for_f_file_source_expands_variable_to_tracked_file() {
         use crate::traits::Trait;
         let script = br#"echo alpha=one>config.ini
