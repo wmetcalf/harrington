@@ -820,6 +820,12 @@ fn lolbas_is_ps_process_argument_operand(tokens: &[LolbasCommandToken<'_>], idx:
             | "/workingdirectory"
             | "-wd"
             | "/wd"
+            | "-redirectstandarderror"
+            | "/redirectstandarderror"
+            | "-redirectstandardinput"
+            | "/redirectstandardinput"
+            | "-redirectstandardoutput"
+            | "/redirectstandardoutput"
     )
 }
 
