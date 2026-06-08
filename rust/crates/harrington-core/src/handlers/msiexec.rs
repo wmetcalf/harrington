@@ -1,12 +1,12 @@
 //! msiexec handler — surfaces URL package arguments.
 
 use super::util::split_words;
-use crate::env::Environment;
+use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
 
 pub fn h_msiexec(raw: &str, env: &mut Environment) {
     let tokens = split_words(raw);
-    let Some(url) = tokens
+    if let Some(url) = tokens
         .iter()
         .skip(1)
         .filter_map(|token| {
@@ -14,14 +14,28 @@ pub fn h_msiexec(raw: &str, env: &mut Environment) {
             msiexec_url_from_token(token)
         })
         .next()
-    else {
-        return;
-    };
+    {
+        env.traits.push(Trait::UrlArgument {
+            cmd: raw.to_string(),
+            url,
+        });
+    }
 
-    env.traits.push(Trait::UrlArgument {
-        cmd: raw.to_string(),
-        url,
-    });
+    if let Some(url) = msiexec_prior_download_url(&tokens, env) {
+        let already = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { cmd, url: existing }
+                    if cmd == raw && existing == &url
+            )
+        });
+        if !already {
+            env.traits.push(Trait::UrlArgument {
+                cmd: raw.to_string(),
+                url,
+            });
+        }
+    }
 }
 
 fn strip_quotes(s: &str) -> &str {
@@ -61,6 +75,41 @@ fn msiexec_url_from_token(token: &str) -> Option<String> {
             .or_else(|| crate::deob_scan::normalize_schemeless_domain_path_token(candidate))
         {
             return Some(url);
+        }
+    }
+    None
+}
+
+fn msiexec_prior_download_url(tokens: &[String], env: &Environment) -> Option<String> {
+    for (idx, token) in tokens.iter().enumerate().skip(1) {
+        if let Some(candidate) = msiexec_package_candidate(token, tokens.get(idx + 1)) {
+            let key = candidate.to_ascii_lowercase();
+            if let Some(FsEntry::Download { src }) = env.modified_filesystem.get(&key) {
+                return Some(src.clone());
+            }
+        }
+    }
+    None
+}
+
+fn msiexec_package_candidate<'a>(token: &'a str, next: Option<&'a String>) -> Option<String> {
+    let token = strip_quotes(token).trim();
+    let lower = token.to_ascii_lowercase();
+    for prefix in ["/i", "-i", "/package", "-package", "/update", "-update"] {
+        if lower == prefix {
+            return next
+                .map(|value| trim_url_suffix(strip_quotes(value)).trim().to_string())
+                .filter(|candidate| !candidate.is_empty());
+        }
+        let Some(rest) = lower.strip_prefix(prefix) else {
+            continue;
+        };
+        let original_rest = &token[token.len() - rest.len()..];
+        let candidate = trim_url_suffix(original_rest.trim_start_matches([':', '=']))
+            .trim()
+            .to_string();
+        if !candidate.is_empty() {
+            return Some(candidate);
         }
     }
     None
