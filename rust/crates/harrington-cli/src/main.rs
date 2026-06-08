@@ -754,7 +754,7 @@ fn lolbas_is_regsvr32_input_operand(tokens: &[LolbasCommandToken<'_>], idx: usiz
 }
 
 fn lolbas_is_rundll32_load_target_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
-    if idx != 1 || program_stem(tokens[0].text) != "rundll32" {
+    if idx == 0 || program_stem(tokens[0].text) != "rundll32" {
         return false;
     }
     lolbas_file_management_path_operand(tokens[idx].text)
