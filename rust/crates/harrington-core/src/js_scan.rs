@@ -349,6 +349,7 @@ pub fn scan_js_payloads(env: &mut Environment) {
 fn has_js_shell_command_call_candidate(text: &str) -> bool {
     find_ascii_case_insensitive_from(text, b".run", 0).is_some()
         || find_ascii_case_insensitive_from(text, b".exec", 0).is_some()
+        || find_ascii_case_insensitive_from(text, b".shellexecute", 0).is_some()
         || find_js_bracket_shell_command_method_from(text, 0).is_some()
 }
 
@@ -388,6 +389,42 @@ fn push_downloads_from_js_shell_command_calls(
             push_downloads_from_js_command(env, idx, snippet_source, &command, seen);
             cursor = open + 1;
         }
+    }
+
+    let mut cursor = 0usize;
+    while let Some(method_start) = find_ascii_case_insensitive_from(text, b".shellexecute", cursor)
+    {
+        if env.check_deadline() {
+            return;
+        }
+        let method_end = method_start + b".shellexecute".len();
+        if !has_nearby_wscript_shell_context(text, method_start) {
+            cursor = method_end;
+            continue;
+        }
+        let Some(open) = consume_js_call_open(text, method_end) else {
+            cursor = method_end;
+            continue;
+        };
+        let arg_start = skip_ascii_ws(text, open + 1);
+        let Some((program_end, mut command)) =
+            parse_js_decoder_string_arg(text, arg_start, bindings, arrays)
+        else {
+            cursor = open + 1;
+            continue;
+        };
+        let comma = skip_ascii_ws(text, program_end);
+        if text.as_bytes().get(comma) == Some(&b',') {
+            let args_start = skip_ascii_ws(text, comma + 1);
+            if let Some((_args_end, args)) =
+                parse_js_decoder_string_arg(text, args_start, bindings, arrays)
+            {
+                command.push(' ');
+                command.push_str(&args);
+            }
+        }
+        push_downloads_from_js_command(env, idx, snippet_source, &command, seen);
+        cursor = open + 1;
     }
 
     let mut cursor = 0usize;
