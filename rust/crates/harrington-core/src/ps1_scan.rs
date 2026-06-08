@@ -120,7 +120,7 @@ static SELF_B64_MATCH_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static FILE_B64_XOR_LOADER_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\d{1,3})\s*;.*?\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:\(\s*(?:gc|Get-Content)\s*['"]([^'"]+)['"]\s*\)\s*-join\s*['"]{2}|(?:gc|Get-Content)\s+-Raw\s+['"]([^'"]+)['"]|(?:gc|Get-Content)\s+['"]([^'"]+)['"]\s+-Raw\b).*?\[(?:System\.)?Convert\]::FromBase64String\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\).*?-bxor\s*\$([A-Za-z_][A-Za-z0-9_]*)"#,
+        r#"(?is)\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\d{1,3})\s*;.*?\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:\(\s*(?:gc|cat|type|Get-Content)\s*['"]([^'"]+)['"]\s*\)\s*-join\s*['"]{2}|(?:gc|cat|type|Get-Content)\s+-Raw\s+['"]([^'"]+)['"]|(?:gc|cat|type|Get-Content)\s+['"]([^'"]+)['"]\s+-Raw\b).*?\[(?:System\.)?Convert\]::FromBase64String\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\).*?-bxor\s*\$([A-Za-z_][A-Za-z0-9_]*)"#,
     )
     .expect("file b64 xor loader regex")
 });
