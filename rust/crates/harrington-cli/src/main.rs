@@ -447,27 +447,30 @@ fn write_report_files(report: &harrington_core::Report, out_dir: &Path, force: b
         force,
     )?;
 
-    let mut seen = std::collections::HashSet::new();
+    let mut seen_names = std::collections::HashSet::new();
     for child in &report.extracted_cmd {
         let bytes = child.as_bytes();
         let sha = short_sha(bytes);
-        if !seen.insert(sha.clone()) {
+        let name = format!("{sha}.bat");
+        if !seen_names.insert(name.clone()) {
             continue;
         }
-        let name = format!("{sha}.bat");
         safe_write(&safe_join(&canonical_out, &name)?, bytes, force)?;
     }
     for (idx, child) in report.extracted_ps1.iter().enumerate() {
         let sha = short_sha(child);
-        if !seen.insert(sha.clone()) {
+        let name = format!("{sha}.ps1");
+        if !seen_names.insert(name.clone()) {
             continue;
         }
-        let name = format!("{sha}.ps1");
         safe_write(&safe_join(&canonical_out, &name)?, child, force)?;
         if let Some(normalized) = report.extracted_ps1_normalized.get(idx) {
             let raw_text = String::from_utf8_lossy(child);
             if normalized != raw_text.as_ref() {
                 let name = format!("{sha}.normalized.ps1");
+                if !seen_names.insert(name.clone()) {
+                    continue;
+                }
                 safe_write(
                     &safe_join(&canonical_out, &name)?,
                     normalized.as_bytes(),
@@ -478,18 +481,18 @@ fn write_report_files(report: &harrington_core::Report, out_dir: &Path, force: b
     }
     for child in &report.extracted_jscript {
         let sha = short_sha(child);
-        if !seen.insert(sha.clone()) {
+        let name = format!("{sha}.js");
+        if !seen_names.insert(name.clone()) {
             continue;
         }
-        let name = format!("{sha}.js");
         safe_write(&safe_join(&canonical_out, &name)?, child, force)?;
     }
     for child in &report.extracted_vbs {
         let sha = short_sha(child);
-        if !seen.insert(sha.clone()) {
+        let name = format!("{sha}.vbs");
+        if !seen_names.insert(name.clone()) {
             continue;
         }
-        let name = format!("{sha}.vbs");
         safe_write(&safe_join(&canonical_out, &name)?, child, force)?;
     }
 
@@ -506,11 +509,11 @@ fn write_report_files(report: &harrington_core::Report, out_dir: &Path, force: b
     for (label, blob) in &report.recovered_pe {
         let bytes = blob.as_slice();
         let sha = short_sha(bytes);
-        if !seen.insert(sha.clone()) {
-            continue;
-        }
         let ext = detect_blob_extension(bytes);
         let name = format!("{sha}.{ext}");
+        if !seen_names.insert(name.clone()) {
+            continue;
+        }
         safe_write(&safe_join(&canonical_out, &name)?, bytes, force)?;
         // Companion `.meta` text file documents what each blob is so an
         // analyst eyeballing the out-dir doesn't have to guess.
@@ -519,11 +522,13 @@ fn write_report_files(report: &harrington_core::Report, out_dir: &Path, force: b
             "origin: {label}\nsize: {}\nsha256-prefix: {sha}\n",
             bytes.len()
         );
-        safe_write(
-            &safe_join(&canonical_out, &meta_name)?,
-            meta.as_bytes(),
-            force,
-        )?;
+        if seen_names.insert(meta_name.clone()) {
+            safe_write(
+                &safe_join(&canonical_out, &meta_name)?,
+                meta.as_bytes(),
+                force,
+            )?;
+        }
     }
 
     let traits_json = serde_json::to_string_pretty(&report.traits)?;
