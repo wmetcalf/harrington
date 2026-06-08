@@ -336,21 +336,21 @@ static PS_QUOTED_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
 
 #[allow(clippy::expect_used)]
 static OUTFILE_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"(?i)-Out(?:F(?:ile)?)?(?:\s+|:|=)(?:'([^'\r\n;]+)'?|"([^"\r\n;]+)"?|([^"'\s]+))"#)
+    Regex::new(r#"(?i)-Out(?:F(?:ile)?)?(?:\s+|:|=)(?:\\?'([^'\r\n;]+)\\?'?|\\?"([^"\r\n;]+)\\?"?|([^"'\s]+))"#)
         .expect("outfile")
 });
 
 #[allow(clippy::expect_used)]
 static CURL_OUTPUT_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?i)(?:^|\s)(?:--output(?:\s+|:|=)|-o\s+)(?:'([^'\r\n;]+)'?|"([^"\r\n;]+)"?|([^"'\s;]+))|(?:^|\s)-[A-Za-z]*o(?:'([^'\r\n;]+)'?|"([^"\r\n;]+)"?|((?:[A-Za-z]:|[\\/])[^"'\s;]+))"#,
+        r#"(?i)(?:^|\s)(?:--output(?:\s+|:|=)|-o\s+)(?:\\?'([^'\r\n;]+)\\?'?|\\?"([^"\r\n;]+)\\?"?|([^"'\s;]+))|(?:^|\s)-[A-Za-z]*o(?:\\?'([^'\r\n;]+)\\?'?|\\?"([^"\r\n;]+)\\?"?|((?:[A-Za-z]:|[\\/])[^"'\s;]+))"#,
     )
     .expect("curl output")
 });
 
 #[allow(clippy::expect_used)]
 static BITS_DESTINATION_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"(?i)-Dest(?:ination)?(?:\s+|:|=)(?:'([^'\r\n;]+)'?|"([^"\r\n;]+)"?|([^"'\s;]+))"#)
+    Regex::new(r#"(?i)-Dest(?:ination)?(?:\s+|:|=)(?:\\?'([^'\r\n;]+)\\?'?|\\?"([^"\r\n;]+)\\?"?|([^"'\s;]+))"#)
         .expect("bits destination")
 });
 
@@ -379,6 +379,32 @@ fn outfile_hint_from(text: &str) -> Option<String> {
         .or_else(|| CURL_OUTPUT_RE.captures(text))
         .or_else(|| BITS_DESTINATION_RE.captures(text))
         .and_then(first_capture_string)
+        .map(normalize_destination_hint)
+}
+
+fn normalize_destination_hint(mut value: String) -> String {
+    if value.ends_with('\\') && destination_basename_looks_like_file(&value[..value.len() - 1]) {
+        value.pop();
+    }
+    value
+}
+
+fn destination_basename_looks_like_file(value: &str) -> bool {
+    let Some(basename) = value
+        .rsplit(['\\', '/'])
+        .next()
+        .filter(|name| !name.is_empty())
+    else {
+        return false;
+    };
+    let Some((stem, ext)) = basename.rsplit_once('.') else {
+        return false;
+    };
+    !stem.is_empty()
+        && (1..=8).contains(&ext.len())
+        && ext
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 #[allow(clippy::expect_used)]
