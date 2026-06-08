@@ -987,15 +987,26 @@ fn lolbas_is_cmd_echo_text_operand(tokens: &[LolbasCommandToken<'_>], idx: usize
     if idx <= 2 || program_stem(tokens[0].text) != "cmd" {
         return false;
     }
-    let switch = tokens[1]
-        .text
-        .trim_matches(['"', '\''])
-        .to_ascii_lowercase();
-    let command = tokens[2]
-        .text
-        .trim_matches(['"', '\''])
-        .to_ascii_lowercase();
-    matches!(switch.as_str(), "/c" | "/k" | "-c" | "-k") && command == "echo"
+    let Some(command_idx) = tokens.iter().enumerate().skip(1).find_map(|(idx, token)| {
+        let switch = token.text.trim_matches(['"', '\'']).to_ascii_lowercase();
+        matches!(switch.as_str(), "/c" | "/k" | "-c" | "-k").then_some(idx + 1)
+    }) else {
+        return false;
+    };
+    if idx <= command_idx {
+        return false;
+    }
+    let command = tokens
+        .get(command_idx)
+        .map(|token| {
+            token
+                .text
+                .trim_matches(['"', '\''])
+                .trim_start_matches('@')
+                .to_ascii_lowercase()
+        })
+        .unwrap_or_default();
+    matches!(command.as_str(), "echo" | "rem")
 }
 
 fn lolbas_is_ps_process_argument_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {

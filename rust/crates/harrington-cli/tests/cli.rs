@@ -1866,7 +1866,11 @@ fn summarize_lolbas_enrichment_ignores_program_names_in_cmd_echo_wrappers() {
     let input = dir.path().join("in.bat");
     fs::write(
         &input,
-        "wmic process call create \"cmd /c echo mshta.exe\"\r\n",
+        "wmic process call create \"cmd /c echo mshta.exe\"\r\n\
+         wmic process call create \"cmd /d /c echo mshta.exe\"\r\n\
+         wmic process call create \"cmd /q /c echo mshta.exe\"\r\n\
+         wmic process call create \"cmd /v:on /c echo mshta.exe\"\r\n\
+         wmic process call create \"cmd /c rem mshta.exe\"\r\n",
     )
     .expect("write input");
     let lolbas = dir.path().join("lolbas.json");
