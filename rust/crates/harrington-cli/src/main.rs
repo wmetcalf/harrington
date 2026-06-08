@@ -1644,10 +1644,7 @@ fn push_ps_lolbas_process_launch_segments<'a>(
     require_ps_host: bool,
 ) {
     let line = line.trim();
-    if require_ps_host
-        && !line_contains_ascii_case_insensitive(line, "powershell")
-        && !line_contains_ascii_case_insensitive(line, "pwsh")
-    {
+    if require_ps_host && !lolbas_line_invokes_powershell_host(line) {
         return;
     }
     if ps_lolbas_process_launch_line(line) {
@@ -1679,6 +1676,9 @@ fn ps_lolbas_process_launch_segments(line: &str) -> Vec<&str> {
             if !lolbas_callable_name_boundary(line, name_start, name_end) {
                 continue;
             }
+            if !ps_lolbas_process_launch_start_boundary(line, name_start) {
+                continue;
+            }
             let command =
                 trim_ps_lolbas_process_launch_segment(ps_command_segment(line, name_start));
             if ps_lolbas_process_launch_line(command) {
@@ -1687,6 +1687,37 @@ fn ps_lolbas_process_launch_segments(line: &str) -> Vec<&str> {
         }
     }
     commands
+}
+
+fn lolbas_line_invokes_powershell_host(line: &str) -> bool {
+    let tokens = lolbas_command_tokens(line);
+    for (idx, token) in tokens.iter().enumerate() {
+        match program_stem(token.text).as_str() {
+            "powershell" | "pwsh" => {
+                if idx == 0 {
+                    return true;
+                }
+                if idx >= 2 && program_stem(tokens[idx - 2].text) == "cmd" {
+                    let switch = tokens[idx - 1]
+                        .text
+                        .trim_matches(['"', '\''])
+                        .to_ascii_lowercase();
+                    if matches!(switch.as_str(), "/c" | "/k" | "-c" | "-k") {
+                        return true;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+fn ps_lolbas_process_launch_start_boundary(line: &str, start: usize) -> bool {
+    let before = line[..start].chars().rev().find(|ch| !ch.is_whitespace());
+    before
+        .map(|ch| matches!(ch, '"' | '\'' | ';' | '|' | '&' | '('))
+        .unwrap_or(true)
 }
 
 fn ps_command_segment(line: &str, start: usize) -> &str {
@@ -1733,10 +1764,6 @@ fn find_ascii_case_insensitive(haystack: &str, needle: &str, start: usize) -> Op
     }
     (start..=haystack.len() - needle.len())
         .find(|idx| haystack[*idx..*idx + needle.len()].eq_ignore_ascii_case(needle))
-}
-
-fn line_contains_ascii_case_insensitive(haystack: &str, needle: &str) -> bool {
-    find_ascii_case_insensitive(haystack, needle, 0).is_some()
 }
 
 /// Human-readable one-paragraph TLDR for analyst triage.
