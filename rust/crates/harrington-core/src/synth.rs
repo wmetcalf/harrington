@@ -25,7 +25,7 @@ pub fn can_run_pipeline(pipeline: &str) -> bool {
     !stages.is_empty()
         && stages
             .iter()
-            .all(|stage| stage_command(stage).is_some_and(is_supported_command))
+            .all(|stage| stage_command(stage).is_some_and(|cmd| is_supported_command(&cmd)))
 }
 
 fn split_pipeline(p: &str) -> Vec<String> {
@@ -223,16 +223,30 @@ fn stage_command(stage: &str) -> Option<String> {
 
 fn synth_command_key(token: &str) -> String {
     let token = token.trim_matches('"');
-    token
+    let key = token
         .rsplit(['\\', '/'])
         .next()
         .unwrap_or(token)
-        .to_ascii_lowercase()
+        .to_ascii_lowercase();
+    if is_supported_command(&key) {
+        return key;
+    }
+    if !key.contains('%') && key.is_ascii() {
+        return key;
+    }
+    let skeleton: String = key
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '.')
+        .collect();
+    if !skeleton.is_empty() && is_supported_command(&skeleton) {
+        return skeleton;
+    }
+    key
 }
 
-fn is_supported_command(cmd: String) -> bool {
+fn is_supported_command(cmd: &str) -> bool {
     matches!(
-        cmd.as_str(),
+        cmd,
         "set"
             | "findstr"
             | "find"

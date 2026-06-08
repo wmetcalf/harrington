@@ -2922,6 +2922,28 @@ wget --no-check-certificate %urlgit%/win/get.vbs -O %windir%\get.vbs
             report.traits
         );
     }
+
+    #[test]
+    fn for_f_pipeline_drops_undefined_percent_noise_inside_command_name() {
+        let script = "echo token one two>tmp\r\nfor /f \"tokens=3\" %%i in ('ty%ヾ(⌐■_■)ノ%%(◕‿◕)%pe tmp') do echo value=%%i\r\n";
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo value=two"),
+            "obfuscated type pipeline did not feed FOR body: {:?}\ndeob:\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ForUnresolvedSource { pipeline }
+                    if pipeline.contains("ty")
+                        && pipeline.contains("pe tmp")
+            )),
+            "undefined percent-noise pipeline should not be unresolved: {:?}",
+            report.traits
+        );
+    }
 }
 
 #[cfg(test)]
@@ -9556,7 +9578,7 @@ mod for_f_tests {
 
 #[cfg(test)]
 mod synth_tests {
-    use crate::env::{Config, Environment};
+    use crate::env::{Config, Environment, FsEntry};
     use crate::synth::run_pipeline;
 
     #[test]
@@ -9669,6 +9691,28 @@ mod synth_tests {
                 .iter()
                 .any(|t| matches!(t, Trait::ForUnresolvedSource { .. })),
             "expected ForUnresolvedSource trait: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn synth_command_key_recovers_ascii_skeleton_from_percent_noise() {
+        use crate::traits::Trait;
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "tmp".to_string(),
+            FsEntry::Content {
+                content: b"token one two\r\n".to_vec(),
+                append: false,
+            },
+        );
+        let lines = run_pipeline("ty%ヾ(⌐■_■)ノ%%(◕‿◕)%pe tmp", &mut env);
+        assert_eq!(lines, vec!["token one two"]);
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::ForUnresolvedSource { .. })),
+            "noisy supported command should not be unresolved: {:?}",
             env.traits
         );
     }
