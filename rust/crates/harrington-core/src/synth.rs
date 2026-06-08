@@ -1132,5 +1132,10 @@ fn synth_curl(args: &[&str]) -> Vec<String> {
     {
         return vec!["203.0.113.10".to_string()];
     }
+    if lower == "http://www.geoplugin.net/php.gp?ip"
+        || lower == "https://www.geoplugin.net/php.gp?ip"
+    {
+        return vec!["geoplugin_request:203.0.113.10".to_string()];
+    }
     Vec::new()
 }

@@ -2301,12 +2301,12 @@ for /f "tokens=1 delims=:" %%A in ('curl -# -k "http://www.geoplugin.net/php.gp?
             report.traits
         );
         assert!(
-            report.traits.iter().any(|t| matches!(
+            !report.traits.iter().any(|t| matches!(
                 t,
                 Trait::ForUnresolvedSource { pipeline }
                     if pipeline.contains("www.geoplugin.net/php.gp?ip")
             )),
-            "unsupported geoplugin curl output should stay explicitly unresolved: {:?}",
+            "geoplugin public-IP curl endpoint should synthesize a stable response: {:?}",
             report.traits
         );
     }
