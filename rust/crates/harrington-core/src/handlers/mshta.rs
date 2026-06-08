@@ -6,10 +6,9 @@ pub fn h_mshta(raw: &str, env: &mut Environment) {
     env.traits.push(Trait::Mshta {
         cmd: raw.to_string(),
     });
-    queue_inline_script_payload(raw, env);
+    let mut matched_lolbas = queue_inline_script_payload(raw, env);
 
     let tokens = split_words(raw);
-    let mut matched_lolbas = false;
     for token in tokens.iter().skip(1) {
         let url = strip_quotes(token);
         if let Some(src) = crate::deob_scan::normalize_liberal_url_token(url)
@@ -34,8 +33,9 @@ pub fn h_mshta(raw: &str, env: &mut Environment) {
     queue_local_hta_script_blocks(&tokens, env);
 }
 
-fn queue_inline_script_payload(raw: &str, env: &mut Environment) {
+fn queue_inline_script_payload(raw: &str, env: &mut Environment) -> bool {
     const MAX_INLINE_SCRIPT_BYTES: usize = 256 * 1024;
+    let mut queued = false;
 
     if let Some(body) = inline_payload_after(raw, "vbscript:") {
         if body.len() <= MAX_INLINE_SCRIPT_BYTES {
@@ -47,6 +47,7 @@ fn queue_inline_script_payload(raw: &str, env: &mut Environment) {
             {
                 env.all_extracted_vbs.push(payload);
             }
+            queued = true;
         }
     }
     if let Some(body) =
@@ -61,8 +62,10 @@ fn queue_inline_script_payload(raw: &str, env: &mut Environment) {
             {
                 env.all_extracted_jscript.push(payload);
             }
+            queued = true;
         }
     }
+    queued
 }
 
 fn inline_payload_after<'a>(raw: &'a str, marker: &str) -> Option<&'a str> {
