@@ -296,9 +296,6 @@ fn synth_command_key_inner(token: &str, env: Option<&Environment>) -> String {
             }
         }
     }
-    if !key.contains('%') && key.is_ascii() {
-        return key;
-    }
     let skeleton: String = key
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == '.')
@@ -306,7 +303,17 @@ fn synth_command_key_inner(token: &str, env: Option<&Environment>) -> String {
     if !skeleton.is_empty() && is_supported_command(&skeleton) {
         return skeleton;
     }
+    if is_type_with_one_missing_char(&skeleton) {
+        return "type".to_string();
+    }
+    if !key.contains('%') && key.is_ascii() {
+        return key;
+    }
     key
+}
+
+fn is_type_with_one_missing_char(s: &str) -> bool {
+    matches!(s, "typ" | "tye" | "tpe" | "ype")
 }
 
 fn expand_percent_vars_for_command_key(key: &str, env: &Environment) -> Option<String> {

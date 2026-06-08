@@ -9826,6 +9826,26 @@ echo archive=W_%USERNAME%_!publicIP!.zip
     }
 
     #[test]
+    fn for_f_noisy_non_ascii_type_command_reads_tracked_file() {
+        use crate::traits::Trait;
+        let script = "echo alpha>tmp\r\nfor /F \"tokens=*\" %%A in ('t%(◕‿◕)%%(⊙ω⊙)%pe tmp') do echo got=%%A\r\n";
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo got=alpha"),
+            "got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ForUnresolvedSource { pipeline } if pipeline.contains("tmp")
+            )),
+            "noisy supported type command should resolve: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn for_f_usebackq_double_quoted_source_reads_tracked_file() {
         let script = br#"echo alpha=one>config.ini
 for /F "usebackq tokens=1,2 delims==" %%A in ("config.ini") do echo key=%%A value=%%B
