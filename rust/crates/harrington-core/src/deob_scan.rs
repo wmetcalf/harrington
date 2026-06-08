@@ -6807,7 +6807,7 @@ fn scan_process_injection(deobfuscated: &str, env: &mut Environment) {
         // them via reflection — and that resolution is the canonical
         // marker of an in-memory shellcode loader. Flag them as
         // ProcessInjection so the high-signal IOC surfaces.
-        Regex::new(r#"(?i)\b(VirtualAllocEx|VirtualAlloc|VirtualProtect(?:Ex)?|WriteProcessMemory|CreateRemoteThread(?:Ex)?|CreateThread|NtMapViewOfSection|NtCreateThreadEx|QueueUserAPC|SetWindowsHookEx|RtlMoveMemory|ZwAllocateVirtualMemory|GetProcAddress|GetModuleHandle|LoadLibraryA?|UnsafeNativeMethods)\b"#)
+        Regex::new(r#"(?i)\b(VirtualAllocEx|VirtualAlloc|VirtualProtect(?:Ex)?|WriteProcessMemory|CreateRemoteThread(?:Ex)?|CreateThread|NtMapViewOfSection|NtCreateThreadEx|NtAllocateVirtualMemory|QueueUserAPC|SetWindowsHookEx|RtlMoveMemory|ZwAllocateVirtualMemory|GetDelegateForFunctionPointer|GetProcAddress|GetModuleHandle|LoadLibraryA?|UnsafeNativeMethods)\b"#)
             .expect("inject api re")
     });
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -6838,10 +6838,12 @@ fn has_process_injection_atom(text: &str) -> bool {
         "createthread",
         "ntmapviewofsection",
         "ntcreatethreadex",
+        "ntallocatevirtualmemory",
         "queueuserapc",
         "setwindowshookex",
         "rtlmovememory",
         "zwallocatevirtualmemory",
+        "getdelegateforfunctionpointer",
         "getprocaddress",
         "getmodulehandle",
         "loadlibrary",
@@ -6853,7 +6855,9 @@ fn has_process_injection_atom(text: &str) -> bool {
 
 #[cfg(test)]
 mod process_injection_prefilter_tests {
-    use super::has_process_injection_atom;
+    use super::{has_process_injection_atom, scan_process_injection};
+    use crate::env::{Config, Environment};
+    use crate::traits::Trait;
 
     #[test]
     fn prefilter_allows_known_process_injection_apis() {
@@ -6865,10 +6869,12 @@ mod process_injection_prefilter_tests {
             "CreateThread",
             "NtMapViewOfSection",
             "NtCreateThreadEx",
+            "NtAllocateVirtualMemory",
             "QueueUserAPC",
             "SetWindowsHookEx",
             "RtlMoveMemory",
             "ZwAllocateVirtualMemory",
+            "Marshal.GetDelegateForFunctionPointer",
             "GetProcAddress",
             "GetModuleHandle",
             "LoadLibraryA",
@@ -6886,6 +6892,40 @@ mod process_injection_prefilter_tests {
         assert!(!has_process_injection_atom(
             "Get-Process | Select-Object ProcessName"
         ));
+    }
+
+    #[test]
+    fn scanner_flags_nt_allocate_virtual_memory_delegate_loader() {
+        let script = r#"
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public class Loader {
+  [DllImport("ntdll.dll")]
+  private static extern int NtAllocateVirtualMemory(IntPtr process, ref IntPtr baseAddress, IntPtr zeroBits, ref ulong regionSize, uint allocationType, uint protect);
+  public static void Run(byte[] shellcode) {
+    IntPtr addr = IntPtr.Zero;
+    ulong size = (ulong)shellcode.Length;
+    NtAllocateVirtualMemory((IntPtr)(-1), ref addr, IntPtr.Zero, ref size, 0x3000, 0x40);
+    Marshal.Copy(shellcode, 0, addr, shellcode.Length);
+    ((Action)Marshal.GetDelegateForFunctionPointer(addr, typeof(Action)))();
+  }
+}
+"@
+"#;
+        let mut env = Environment::new(&Config::default());
+        scan_process_injection(script, &mut env);
+
+        for expected in ["NtAllocateVirtualMemory", "GetDelegateForFunctionPointer"] {
+            assert!(
+                env.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::ProcessInjection { api } if api == expected
+                )),
+                "missing process injection marker {expected}: {:?}",
+                env.traits
+            );
+        }
     }
 }
 
