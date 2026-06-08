@@ -1574,6 +1574,25 @@ reg add \"HKCU\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v S
     }
 
     #[test]
+    fn schtasks_create_xml_emits_persistence_xml_path() {
+        let script = br#"@echo off
+schtasks /create /tn office_get /xml C:\WINDOWS\office_get.xml /F
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { hive, key, command, .. }
+                    if hive == "ScheduledTask"
+                        && key == "office_get"
+                        && command == "xml:C:\\WINDOWS\\office_get.xml"
+            )),
+            "ScheduledTask XML Persistence missing XML path: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn schtasks_create_tr_recurses_into_nested_download() {
         let script = br#"@echo off
 setlocal DisableDelayedExpansion

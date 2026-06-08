@@ -152,6 +152,8 @@ pub fn h_schtasks(raw: &str, env: &mut Environment) {
         Lazy::new(|| Regex::new(r#"(?i)/tn\s+(?:"([^"]+)"|(\S+))"#).expect("/tn regex"));
     static TR_RE: Lazy<Regex> =
         Lazy::new(|| Regex::new(r#"(?i)/tr\s+(?:"([^"]+)"|(\S+))"#).expect("/tr regex"));
+    static XML_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r#"(?i)/xml\s+(?:"([^"]+)"|(\S+))"#).expect("/xml regex"));
     let task_name = TN_RE
         .captures(raw)
         .and_then(|c| {
@@ -166,6 +168,13 @@ pub fn h_schtasks(raw: &str, env: &mut Environment) {
             c.get(1)
                 .or_else(|| c.get(2))
                 .map(|m| m.as_str().to_string())
+        })
+        .or_else(|| {
+            XML_RE.captures(raw).and_then(|c| {
+                c.get(1)
+                    .or_else(|| c.get(2))
+                    .map(|m| format!("xml:{}", m.as_str()))
+            })
         })
         .unwrap_or_default();
     env.traits.push(Trait::Persistence {
