@@ -398,7 +398,7 @@ fn push_downloads_from_js_shell_command_calls(
             return;
         }
         let method_end = method_start + b".shellexecute".len();
-        if !has_nearby_wscript_shell_context(text, method_start) {
+        if !has_nearby_js_shell_execute_context(text, method_start) {
             cursor = method_end;
             continue;
         }
@@ -434,7 +434,13 @@ fn push_downloads_from_js_shell_command_calls(
         if env.check_deadline() {
             return;
         }
-        if !has_nearby_wscript_shell_context(text, method_start) {
+        let has_context = match kind {
+            JsShellCommandKind::Command => has_nearby_wscript_shell_context(text, method_start),
+            JsShellCommandKind::ShellExecute => {
+                has_nearby_js_shell_execute_context(text, method_start)
+            }
+        };
+        if !has_context {
             cursor = method_end;
             continue;
         }
@@ -511,6 +517,16 @@ fn has_nearby_wscript_shell_context(text: &str, idx: usize) -> bool {
     let end = idx.min(bytes.len());
     range_contains_ascii_case_insensitive(bytes, start, end, b"wscript.shell")
         || range_contains_ascii_case_insensitive(bytes, start, end, b"activexobject")
+}
+
+fn has_nearby_js_shell_execute_context(text: &str, idx: usize) -> bool {
+    if has_nearby_wscript_shell_context(text, idx) {
+        return true;
+    }
+    let bytes = text.as_bytes();
+    let start = idx.saturating_sub(256);
+    let end = idx.min(bytes.len());
+    range_contains_ascii_case_insensitive(bytes, start, end, b"shell.application")
 }
 
 fn range_contains_ascii_case_insensitive(
