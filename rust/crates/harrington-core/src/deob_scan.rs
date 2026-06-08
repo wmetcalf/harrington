@@ -7979,6 +7979,9 @@ pub fn scan_renamed_powershell_invocations(text: &str, env: &mut Environment) {
 }
 
 fn scan_embedded_powershell_downloads_in_deob_text(text: &str, env: &mut Environment) {
+    if !has_embedded_powershell_invocation_atom(text) {
+        return;
+    }
     let normalized = text.replace('^', "");
     let mut payload_env = Environment::new(&Config {
         max_depth: env.limits.max_depth,
