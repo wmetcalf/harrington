@@ -350,7 +350,7 @@ fn command_invokes_program(command: &str, wanted_stem: &str) -> bool {
             return false;
         }
         if idx > 0
-            && lolbas_is_whitespace_separated(command, tokens[idx - 1].end, token.start)
+            && lolbas_is_destination_separator(command, tokens[idx - 1].end, token.start)
             && is_url_like_program_token(tokens[idx - 1].text)
             && is_local_path_like_program_token(token.text)
         {
@@ -417,9 +417,12 @@ fn lolbas_command_tokens(command: &str) -> Vec<LolbasCommandToken<'_>> {
     tokens
 }
 
-fn lolbas_is_whitespace_separated(command: &str, prev_end: usize, next_start: usize) -> bool {
+fn lolbas_is_destination_separator(command: &str, prev_end: usize, next_start: usize) -> bool {
     let between = &command[prev_end..next_start];
-    !between.is_empty() && between.chars().all(char::is_whitespace)
+    !between.is_empty()
+        && between
+            .chars()
+            .all(|ch| ch.is_whitespace() || matches!(ch, ','))
 }
 
 fn lolbas_non_exec_value_option(token: &str) -> bool {
