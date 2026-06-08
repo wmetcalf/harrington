@@ -41,6 +41,21 @@ fn extract_script(raw: &str, path: &str, env: &mut Environment, trait_evt: Trait
             url,
         });
     }
+    if let Some(url) = prior_download_url(path, env) {
+        let already = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { cmd, url: existing }
+                    if cmd == raw && existing == &url
+            )
+        });
+        if !already {
+            env.traits.push(Trait::UrlArgument {
+                cmd: raw.to_string(),
+                url,
+            });
+        }
+    }
     env.traits.push(trait_evt);
     let key = path.to_ascii_lowercase();
     let content: Option<Vec<u8>> = match env.modified_filesystem.get(&key) {
@@ -57,5 +72,13 @@ fn extract_script(raw: &str, path: &str, env: &mut Environment, trait_evt: Trait
             env.all_extracted_jscript.push(c.clone());
             env.exec_jscript.push(c);
         }
+    }
+}
+
+fn prior_download_url(path: &str, env: &Environment) -> Option<String> {
+    let key = path.to_ascii_lowercase();
+    match env.modified_filesystem.get(&key) {
+        Some(FsEntry::Download { src }) => Some(src.clone()),
+        _ => None,
     }
 }
