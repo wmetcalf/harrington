@@ -362,6 +362,9 @@ fn command_invokes_program(command: &str, wanted_stem: &str) -> bool {
         if lolbas_is_split_msi_log_operand(&tokens, idx) {
             return false;
         }
+        if lolbas_is_file_management_operand(&tokens, idx) {
+            return false;
+        }
         if lolbas_attached_non_exec_value_option(token.text) {
             return false;
         }
@@ -616,6 +619,32 @@ fn lolbas_is_split_msi_log_operand(tokens: &[LolbasCommandToken<'_>], idx: usize
                     | '+'
             )
         })
+}
+
+fn lolbas_is_file_management_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx == 0 || !is_local_path_like_program_token(tokens[idx].text) {
+        return false;
+    }
+    matches!(
+        tokens
+            .first()
+            .map(|token| program_stem(token.text))
+            .as_deref(),
+        Some(
+            "del"
+                | "erase"
+                | "copy"
+                | "xcopy"
+                | "move"
+                | "ren"
+                | "rename"
+                | "attrib"
+                | "mkdir"
+                | "md"
+                | "rmdir"
+                | "rd"
+        )
+    )
 }
 
 fn is_url_like_program_token(token: &str) -> bool {
