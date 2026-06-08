@@ -880,6 +880,8 @@ fn lolbas_is_sc_service_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -
             .to_ascii_lowercase()
             .as_str(),
         "continue"
+            | "config"
+            | "create"
             | "delete"
             | "description"
             | "failure"
