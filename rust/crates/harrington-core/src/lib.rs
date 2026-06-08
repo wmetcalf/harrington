@@ -9609,6 +9609,29 @@ mod for_f_tests {
     }
 
     #[test]
+    fn for_f_file_source_expands_variable_to_tracked_file() {
+        use crate::traits::Trait;
+        let script = br#"echo alpha=one>config.ini
+set "CFG=config.ini"
+for /F "tokens=1,2 delims==" %%A in (%CFG%) do echo key=%%A value=%%B
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo key=alpha value=one"),
+            "got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ForUnresolvedSource { pipeline } if pipeline == "%CFG%"
+            )),
+            "variable-backed file source should resolve: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn for_f_huge_tokens_range_is_capped_not_oom() {
         // Regression: parse_token_range used to extend Vec<usize> by start..=end
         // with no upper bound; `tokens=1-2147483647` allocated ~17 GB and OOM-

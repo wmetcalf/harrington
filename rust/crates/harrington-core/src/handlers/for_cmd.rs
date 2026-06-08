@@ -210,7 +210,9 @@ fn resolve_f_source(src: &str, env: &mut crate::env::Environment) -> Vec<String>
         let pipeline = normalize_f_pipeline(pipeline, env);
         return crate::synth::run_pipeline(&pipeline, env);
     }
-    let file_lines = crate::synth::run_pipeline(&format!("type {}", s), env);
+    let source = resolve_pure_percent_var_source(s, env);
+    let source = source.as_deref().unwrap_or(s);
+    let file_lines = crate::synth::run_pipeline(&format!("type {}", source), env);
     if !file_lines.is_empty() {
         return file_lines;
     }
@@ -218,6 +220,16 @@ fn resolve_f_source(src: &str, env: &mut crate::env::Environment) -> Vec<String>
         pipeline: s.to_string(),
     });
     Vec::new()
+}
+
+fn resolve_pure_percent_var_source(s: &str, env: &crate::env::Environment) -> Option<String> {
+    let inner = s.strip_prefix('%')?.strip_suffix('%')?;
+    if inner.is_empty() || inner.contains(['%', ':', '!', '^', '&', '|', '<', '>', '"']) {
+        return None;
+    }
+    env.get(inner)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn normalize_f_pipeline(pipeline: &str, env: &mut crate::env::Environment) -> String {
