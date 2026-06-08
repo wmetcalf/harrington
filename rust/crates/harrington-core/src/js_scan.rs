@@ -287,9 +287,11 @@ pub fn scan_js_payloads(env: &mut Environment) {
             if env.check_deadline() {
                 break 'payloads;
             }
-            if find_ascii_case_insensitive_from(&candidate, b".run", 0).is_some() {
+            if find_ascii_case_insensitive_from(&candidate, b".run", 0).is_some()
+                || find_ascii_case_insensitive_from(&candidate, b".exec", 0).is_some()
+            {
                 let (bindings, _) = collect_js_string_bindings(&candidate);
-                push_downloads_from_js_shell_run(
+                push_downloads_from_js_shell_command_calls(
                     env,
                     idx,
                     &concat_resolved,
@@ -344,7 +346,7 @@ pub fn scan_js_payloads(env: &mut Environment) {
     env.all_extracted_jscript = payloads;
 }
 
-fn push_downloads_from_js_shell_run(
+fn push_downloads_from_js_shell_command_calls(
     env: &mut Environment,
     idx: usize,
     snippet_source: &str,
@@ -352,23 +354,57 @@ fn push_downloads_from_js_shell_run(
     bindings: &HashMap<String, String>,
     seen: &mut HashSet<(usize, String)>,
 ) {
-    let mut cursor = 0usize;
-    while let Some(run_start) = find_ascii_case_insensitive_from(text, b".run", cursor) {
-        if env.check_deadline() {
-            return;
-        }
-        let Some(open) = consume_js_call_open(text, run_start + ".Run".len()) else {
-            cursor = run_start + ".Run".len();
-            continue;
-        };
-        let arg_start = skip_ascii_ws(text, open + 1);
-        let Some((_arg_end, command)) = eval_js_string_expr(text, arg_start, bindings) else {
+    for (method, requires_shell_context) in
+        [(b".run".as_slice(), false), (b".exec".as_slice(), true)]
+    {
+        let mut cursor = 0usize;
+        while let Some(method_start) = find_ascii_case_insensitive_from(text, method, cursor) {
+            if env.check_deadline() {
+                return;
+            }
+            let method_end = method_start + method.len();
+            if requires_shell_context && !has_nearby_wscript_shell_context(text, method_start) {
+                cursor = method_end;
+                continue;
+            }
+            let Some(open) = consume_js_call_open(text, method_end) else {
+                cursor = method_end;
+                continue;
+            };
+            let arg_start = skip_ascii_ws(text, open + 1);
+            let Some((_arg_end, command)) = eval_js_string_expr(text, arg_start, bindings) else {
+                cursor = open + 1;
+                continue;
+            };
+            push_downloads_from_js_command(env, idx, snippet_source, &command, seen);
             cursor = open + 1;
-            continue;
-        };
-        push_downloads_from_js_command(env, idx, snippet_source, &command, seen);
-        cursor = open + 1;
+        }
     }
+}
+
+fn has_nearby_wscript_shell_context(text: &str, idx: usize) -> bool {
+    let bytes = text.as_bytes();
+    let start = idx.saturating_sub(256);
+    let end = idx.min(bytes.len());
+    range_contains_ascii_case_insensitive(bytes, start, end, b"wscript.shell")
+        || range_contains_ascii_case_insensitive(bytes, start, end, b"activexobject")
+}
+
+fn range_contains_ascii_case_insensitive(
+    haystack: &[u8],
+    start: usize,
+    end: usize,
+    needle: &[u8],
+) -> bool {
+    let end = end.min(haystack.len());
+    let Some(width) = end.checked_sub(start) else {
+        return false;
+    };
+    if needle.is_empty() || needle.len() > width {
+        return false;
+    }
+    (start..=end - needle.len())
+        .any(|idx| haystack[idx..idx + needle.len()].eq_ignore_ascii_case(needle))
 }
 
 fn find_ascii_case_insensitive_from(haystack: &str, needle: &[u8], start: usize) -> Option<usize> {

