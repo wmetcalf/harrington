@@ -2,6 +2,7 @@
 
 use crate::env::Environment;
 
+pub mod auto_elevate;
 pub mod bitsadmin;
 pub mod call;
 pub mod certoc;
@@ -48,6 +49,9 @@ pub fn lookup(name: &str) -> Option<Handler> {
     // understand it.
     let base = basename_no_ext(&lower);
     match base {
+        "computerdefaults" | "eventvwr" | "fodhelper" | "sdclt" | "wsreset" => {
+            return Some(auto_elevate::h_auto_elevate);
+        }
         "cmd" => return Some(cmd::h_cmd),
         "powershell" | "pwsh" => return Some(powershell::h_powershell),
         "curl" => return Some(curl::h_curl),
