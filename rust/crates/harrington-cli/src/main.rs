@@ -344,26 +344,64 @@ fn program_stem(name: &str) -> String {
 }
 
 fn command_invokes_program(command: &str, wanted_stem: &str) -> bool {
-    let tokens: Vec<&str> = command
-        .split(|ch: char| {
-            !(ch.is_ascii_alphanumeric()
-                || matches!(ch, '.' | '_' | '-' | '\\' | '/' | ':' | '"' | '\''))
-        })
-        .filter(|token| !token.is_empty())
-        .collect();
+    let tokens = lolbas_command_tokens(command);
     tokens.iter().enumerate().any(|(idx, token)| {
-        if idx > 0 && lolbas_non_exec_value_option(tokens[idx - 1]) {
+        if idx > 0 && lolbas_non_exec_value_option(tokens[idx - 1].text) {
             return false;
         }
-        if lolbas_attached_non_exec_value_option(token) {
+        if idx > 0
+            && lolbas_is_whitespace_separated(command, tokens[idx - 1].end, token.start)
+            && is_url_like_program_token(tokens[idx - 1].text)
+            && is_local_path_like_program_token(token.text)
+        {
             return false;
         }
-        if is_url_like_program_token(token) {
+        if lolbas_attached_non_exec_value_option(token.text) {
             return false;
         }
-        let stem = program_stem(token);
+        if is_url_like_program_token(token.text) {
+            return false;
+        }
+        let stem = program_stem(token.text);
         !stem.is_empty() && stem == wanted_stem
     })
+}
+
+struct LolbasCommandToken<'a> {
+    text: &'a str,
+    start: usize,
+    end: usize,
+}
+
+fn lolbas_command_tokens(command: &str) -> Vec<LolbasCommandToken<'_>> {
+    let mut tokens = Vec::new();
+    let mut start = None;
+    for (idx, ch) in command.char_indices() {
+        if ch.is_ascii_alphanumeric()
+            || matches!(ch, '.' | '_' | '-' | '\\' | '/' | ':' | '"' | '\'')
+        {
+            start.get_or_insert(idx);
+        } else if let Some(token_start) = start.take() {
+            tokens.push(LolbasCommandToken {
+                text: &command[token_start..idx],
+                start: token_start,
+                end: idx,
+            });
+        }
+    }
+    if let Some(token_start) = start {
+        tokens.push(LolbasCommandToken {
+            text: &command[token_start..],
+            start: token_start,
+            end: command.len(),
+        });
+    }
+    tokens
+}
+
+fn lolbas_is_whitespace_separated(command: &str, prev_end: usize, next_start: usize) -> bool {
+    let between = &command[prev_end..next_start];
+    !between.is_empty() && between.chars().all(char::is_whitespace)
 }
 
 fn lolbas_non_exec_value_option(token: &str) -> bool {
@@ -420,6 +458,11 @@ fn is_url_like_program_token(token: &str) -> bool {
     };
     let first_segment = &token[..slash];
     first_segment.contains('.') && !is_drive_path(&token)
+}
+
+fn is_local_path_like_program_token(token: &str) -> bool {
+    let token = token.trim_matches(['"', '\'']);
+    is_drive_path(token) || token.contains(['\\', '/'])
 }
 
 fn is_drive_path(token: &str) -> bool {
