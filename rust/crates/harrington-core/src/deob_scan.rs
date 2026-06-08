@@ -4206,6 +4206,61 @@ fn basename_lower(path: &str) -> String {
         .to_ascii_lowercase()
 }
 
+fn scan_copied_bitsadmin_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    let mut aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for t in &env.traits {
+        let Trait::WindowsUtilManip { src, dst, .. } = t else {
+            continue;
+        };
+        let src_base = basename_lower(src);
+        if src_base != "bitsadmin.exe" && src_base != "bitsadmin" {
+            continue;
+        }
+        insert_alias_names(&mut aliases, dst);
+    }
+    if aliases.is_empty() {
+        return;
+    }
+
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        let Some(cmd) = tokens.first() else {
+            continue;
+        };
+        if !aliases.contains(&basename_lower(cmd))
+            && !aliases.contains(&cmd.trim_matches(['"', '\'']).to_ascii_lowercase())
+        {
+            continue;
+        }
+        if tokens.len() < 2 {
+            continue;
+        }
+        if env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::ManipulatedExec {
+                    cmd: existing_cmd,
+                    target
+                } if existing_cmd == line && target.eq_ignore_ascii_case(cmd.trim_matches(['"', '\'']))
+            )
+        }) {
+            continue;
+        }
+
+        push_manipulated_exec_once(env, line, cmd);
+        let rest = line
+            .get(cmd.len()..)
+            .map(str::trim_start)
+            .unwrap_or_default();
+        let replay = if rest.is_empty() {
+            "bitsadmin.exe".to_string()
+        } else {
+            format!("bitsadmin.exe {rest}")
+        };
+        crate::handlers::bitsadmin::h_bitsadmin(&replay, env);
+    }
+}
+
 fn scan_copied_curl_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
     let mut aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
     for t in &env.traits {
@@ -8233,6 +8288,9 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     });
     scan_step!("echoed_vbs_deob_text", {
         scan_echoed_vbs_deob_text(deobfuscated, env);
+    });
+    scan_step!("copied_bitsadmin_alias_deob_text", {
+        scan_copied_bitsadmin_alias_deob_text(deobfuscated, env);
     });
     scan_step!("copied_curl_alias_deob_text", {
         scan_copied_curl_alias_deob_text(deobfuscated, env);
