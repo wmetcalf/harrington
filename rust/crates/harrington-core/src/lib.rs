@@ -570,7 +570,10 @@ mod echo_tests {
     use crate::env::{Config, Environment, FsEntry};
     use crate::interp::interpret_line;
     use crate::traits::Trait;
-    use crate::{analyze, has_echo_redirect_prescan_shape, Config as AnalyzeConfig};
+    use crate::{
+        analyze, echo_redirect_prescan_shapes, has_echo_redirect_prescan_shape,
+        Config as AnalyzeConfig,
+    };
     use base64::Engine;
 
     #[test]
@@ -681,6 +684,19 @@ if exist "%B64FILE%" del "%B64FILE%"
         assert!(!has_echo_redirect_prescan_shape(
             b"set X=SGVsbG8=\r\necho %X%>out.b64\r\n"
         ));
+    }
+
+    #[test]
+    fn echo_redirect_prescan_shapes_distinguish_block_from_run() {
+        let block = echo_redirect_prescan_shapes(b"(\r\necho SGVsbG8=\r\n) > out.b64\r\n");
+        assert!(block.grouped_block);
+        assert!(!block.top_level_run);
+
+        let run = echo_redirect_prescan_shapes(
+            b"echo SGVsbG8=>>out.b64\r\necho V29ybGQ=>>out.b64\r\nrem unrelated ( )\r\n",
+        );
+        assert!(!run.grouped_block);
+        assert!(run.top_level_run);
     }
 
     #[test]
@@ -4680,14 +4696,21 @@ fn write_captured_echo_content(
         .insert(key, crate::env::FsEntry::Content { content, append });
 }
 
-fn has_echo_redirect_prescan_shape(input: &[u8]) -> bool {
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct EchoRedirectPrescanShapes {
+    grouped_block: bool,
+    top_level_run: bool,
+}
+
+fn echo_redirect_prescan_shapes(input: &[u8]) -> EchoRedirectPrescanShapes {
     if !input_contains_ascii_case_insensitive(input, b"echo") || !input.contains(&b'>') {
-        return false;
+        return EchoRedirectPrescanShapes::default();
     }
 
     let text = String::from_utf8_lossy(input);
     let mut saw_group_open = false;
     let mut echo_redirect_lines = 0usize;
+    let mut shapes = EchoRedirectPrescanShapes::default();
     for raw_line in text.lines() {
         let trimmed = raw_line.trim_start_matches(['@', ' ', '\t']);
         if trimmed.is_empty() {
@@ -4702,12 +4725,18 @@ fn has_echo_redirect_prescan_shape(input: &[u8]) -> bool {
             continue;
         }
         if saw_group_open && trimmed.trim_start().starts_with(')') && trimmed.contains('>') {
-            return true;
+            shapes.grouped_block = true;
+            if shapes.grouped_block && shapes.top_level_run {
+                return shapes;
+            }
         }
         if block_echo_payload(trimmed).is_some() && trimmed.contains('>') {
             echo_redirect_lines += 1;
             if echo_redirect_lines >= 2 {
-                return true;
+                shapes.top_level_run = true;
+                if shapes.grouped_block && shapes.top_level_run {
+                    return shapes;
+                }
             }
             continue;
         }
@@ -4715,7 +4744,13 @@ fn has_echo_redirect_prescan_shape(input: &[u8]) -> bool {
             echo_redirect_lines = 0;
         }
     }
-    false
+    shapes
+}
+
+#[cfg(test)]
+fn has_echo_redirect_prescan_shape(input: &[u8]) -> bool {
+    let shapes = echo_redirect_prescan_shapes(input);
+    shapes.grouped_block || shapes.top_level_run
 }
 
 fn capture_top_level_echo_redirect_runs(
@@ -5884,10 +5919,10 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
     // never populated. Capturing it up front lets certutil -decode / call
     // resolve the written file. Safe to run before the main loop: the close
     // `)` redirect line is a block delimiter and never re-writes the file.
-    let has_echo_redirect = has_echo_redirect_prescan_shape(input);
+    let echo_redirect_shapes = echo_redirect_prescan_shapes(input);
     let redirect_capture_start = drive_profile_enabled.then(std::time::Instant::now);
     let captured_echo_blocks =
-        if has_echo_redirect && input.contains(&b'(') && input.contains(&b')') {
+        if echo_redirect_shapes.grouped_block && input.contains(&b'(') && input.contains(&b')') {
             capture_block_echo_redirects(&lines, env)
         } else {
             Vec::new()
@@ -5899,7 +5934,7 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
             .map(|block| (block.open_idx, block))
             .collect();
     let collapsed_echo_runs: std::collections::HashMap<usize, CapturedEchoRun> =
-        if has_echo_redirect {
+        if echo_redirect_shapes.top_level_run {
             capture_top_level_echo_redirect_runs(&lines, env)
                 .into_iter()
                 .map(|run| (run.start_idx, run))
