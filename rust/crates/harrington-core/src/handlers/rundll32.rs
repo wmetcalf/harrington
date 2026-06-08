@@ -21,6 +21,9 @@ pub fn h_rundll32(raw: &str, env: &mut Environment) {
             dst: None,
         });
     }
+    if let Some(url) = download_export_prior_download_argument(&parts, env) {
+        push_url_argument(raw, url, env);
+    }
     let dll = strip_quotes(parts[1].split(',').next().unwrap_or(""));
     let url = match env.modified_filesystem.get(&dll.to_ascii_lowercase()) {
         Some(FsEntry::Download { src }) => Some(src.clone()),
@@ -110,6 +113,32 @@ fn download_export_argument(parts: &[String]) -> Option<String> {
     first_url_after(parts, export_idx + 1)
 }
 
+fn download_export_prior_download_argument(parts: &[String], env: &Environment) -> Option<String> {
+    let export_idx = parts
+        .iter()
+        .enumerate()
+        .skip(1)
+        .take(4)
+        .find_map(|(idx, part)| {
+            if rundll32_download_export(strip_quotes(part)) {
+                Some(idx)
+            } else {
+                None
+            }
+        })?;
+    for token in parts.iter().skip(export_idx + 1).take(4) {
+        let candidate = trim_arg_suffix(strip_quotes(token)).trim();
+        if candidate.is_empty() || candidate.starts_with(['/', '-']) {
+            continue;
+        }
+        let key = candidate.to_ascii_lowercase();
+        if let Some(FsEntry::Download { src }) = env.modified_filesystem.get(&key) {
+            return Some(src.clone());
+        }
+    }
+    None
+}
+
 fn rundll32_url_launch_export(token: &str) -> bool {
     let lower = token.to_ascii_lowercase();
     lower.contains("url.dll,fileprotocolhandler")
@@ -139,6 +168,10 @@ fn first_url_after(parts: &[String], start: usize) -> Option<String> {
         })
 }
 
+fn trim_arg_suffix(value: &str) -> &str {
+    value.trim_end_matches(['"', '\'', ')', ']', '}', ';', ','])
+}
+
 fn strip_quotes(s: &str) -> &str {
     let s = s.trim();
     if ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')))
@@ -147,4 +180,18 @@ fn strip_quotes(s: &str) -> &str {
         return &s[1..s.len() - 1];
     }
     s
+}
+
+fn push_url_argument(raw: &str, url: String, env: &mut Environment) {
+    if !env.traits.iter().any(|t| {
+        matches!(
+            t,
+            Trait::UrlArgument { cmd, url: existing } if cmd == raw && existing == &url
+        )
+    }) {
+        env.traits.push(Trait::UrlArgument {
+            cmd: raw.to_string(),
+            url,
+        });
+    }
 }

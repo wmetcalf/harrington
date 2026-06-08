@@ -2961,6 +2961,15 @@ fn scan_rundll32_download_exports_deob_text(deobfuscated: &str, env: &mut Enviro
     if !has_rundll32_download_export_atom(deobfuscated) {
         return;
     }
+    let downloads = download_urls_by_destination(env);
+    let mut known_source_cmds: std::collections::HashSet<(String, String)> = env
+        .traits
+        .iter()
+        .filter_map(|t| match t {
+            Trait::UrlArgument { cmd, url } => Some((cmd.clone(), url.clone())),
+            _ => None,
+        })
+        .collect();
     let mut known: std::collections::HashSet<String> = env
         .traits
         .iter()
@@ -2987,19 +2996,50 @@ fn scan_rundll32_download_exports_deob_text(deobfuscated: &str, env: &mut Enviro
             else {
                 continue;
             };
-            let Some(url) = first_url_after(&tokens, export_idx + 1, false, true) else {
-                continue;
-            };
-            if is_noise_url(&url) || !known.insert(url.clone()) {
+            if let Some(url) = first_url_after(&tokens, export_idx + 1, false, true) {
+                if is_noise_url(&url) || !known.insert(url.clone()) {
+                    continue;
+                }
+                env.traits.push(Trait::Download {
+                    cmd: line.to_string(),
+                    src: url,
+                    dst: None,
+                });
                 continue;
             }
-            env.traits.push(Trait::Download {
+            let Some(url) = rundll32_download_export_prior_download_url_after(
+                &tokens,
+                export_idx + 1,
+                &downloads,
+            ) else {
+                continue;
+            };
+            if is_noise_url(&url) || !known_source_cmds.insert((line.to_string(), url.clone())) {
+                continue;
+            }
+            env.traits.push(Trait::UrlArgument {
                 cmd: line.to_string(),
-                src: url,
-                dst: None,
+                url,
             });
         }
     }
+}
+
+fn rundll32_download_export_prior_download_url_after(
+    tokens: &[String],
+    start: usize,
+    downloads: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    for token in tokens.iter().skip(start).take(4) {
+        let candidate = trim_url_suffix(strip_quotes(token)).trim();
+        if candidate.is_empty() || candidate.starts_with(['/', '-']) {
+            continue;
+        }
+        if let Some(url) = url_for_download_destination(candidate, downloads) {
+            return Some(url);
+        }
+    }
+    None
 }
 
 fn scan_glued_rundll32_deob_text(deobfuscated: &str, env: &mut Environment) {

