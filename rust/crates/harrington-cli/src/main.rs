@@ -363,6 +363,9 @@ fn command_invokes_program(command: &str, wanted_stem: &str) -> bool {
         if lolbas_is_split_msi_log_operand(&tokens, idx) {
             return false;
         }
+        if lolbas_is_msiexec_package_operand(&tokens, idx) {
+            return false;
+        }
         if lolbas_is_file_management_operand(&tokens, idx) {
             return false;
         }
@@ -650,6 +653,35 @@ fn lolbas_is_split_msi_log_operand(tokens: &[LolbasCommandToken<'_>], idx: usize
                     | '+'
             )
         })
+}
+
+fn lolbas_is_msiexec_package_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx == 0 || program_stem(tokens[0].text) != "msiexec" {
+        return false;
+    }
+    let Some(prev) = tokens.get(idx - 1) else {
+        return false;
+    };
+    let option = prev.text.trim_matches(['"', '\'']).to_ascii_lowercase();
+    if !matches!(
+        option.as_str(),
+        "/i" | "-i"
+            | "/package"
+            | "-package"
+            | "/x"
+            | "-x"
+            | "/uninstall"
+            | "-uninstall"
+            | "/update"
+            | "-update"
+    ) {
+        return false;
+    }
+    let value = tokens[idx].text.trim_matches(['"', '\'']);
+    let lower_value = value.to_ascii_lowercase();
+    lolbas_file_management_path_operand(value)
+        || lower_value.ends_with(".msi")
+        || lower_value.ends_with(".msp")
 }
 
 fn lolbas_is_file_management_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
