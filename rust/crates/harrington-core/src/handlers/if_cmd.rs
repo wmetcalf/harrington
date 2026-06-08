@@ -30,7 +30,16 @@ pub fn h_if(raw: &str, env: &mut Environment) {
     let allow_errorlevel_invariants = !inline_body
         .as_deref()
         .is_some_and(|body| body.trim_start().starts_with('('));
-    let result = evaluate(rest, env, allow_errorlevel_invariants);
+    let unresolved_unknown_quoted_space_exist = negate
+        && inline_body
+            .as_deref()
+            .is_some_and(|body| body.trim_start().to_ascii_lowercase().starts_with("goto"));
+    let result = evaluate(
+        rest,
+        env,
+        allow_errorlevel_invariants,
+        unresolved_unknown_quoted_space_exist,
+    );
     let final_result = match result {
         Some(b) => {
             if negate {
@@ -71,7 +80,12 @@ pub fn h_if(raw: &str, env: &mut Environment) {
     }
 }
 
-fn evaluate(rest: &str, env: &Environment, allow_errorlevel_invariants: bool) -> Option<bool> {
+fn evaluate(
+    rest: &str,
+    env: &Environment,
+    allow_errorlevel_invariants: bool,
+    unresolved_unknown_quoted_space_exist: bool,
+) -> Option<bool> {
     let trimmed = rest.trim_start();
 
     if let Some(after) = strip_kw(trimmed, "defined") {
@@ -83,14 +97,21 @@ fn evaluate(rest: &str, env: &Environment, allow_errorlevel_invariants: bool) ->
     }
 
     if let Some(after) = strip_kw(trimmed, "exist") {
-        let path = after.split_whitespace().next().unwrap_or("");
-        if path.is_empty() {
+        let raw_path = first_condition_token_raw(after)?;
+        if raw_path.is_empty() {
             return None;
         }
-        return Some(
-            env.modified_filesystem
-                .contains_key(&path.to_ascii_lowercase()),
-        );
+        let raw_key = raw_path.to_ascii_lowercase();
+        let unquoted_path = unquote_condition_token(raw_path);
+        let unquoted_key = unquoted_path.to_ascii_lowercase();
+        let is_simple_quoted_space =
+            is_simple_quoted_token(raw_path) && unquoted_path.contains(char::is_whitespace);
+        let exists = env.modified_filesystem.contains_key(&raw_key)
+            || (is_simple_quoted_space && env.modified_filesystem.contains_key(&unquoted_key));
+        if !exists && is_simple_quoted_space && unresolved_unknown_quoted_space_exist {
+            return None;
+        }
+        return Some(exists);
     }
 
     if let Some(after) = strip_kw(trimmed, "errorlevel") {
@@ -335,9 +356,8 @@ fn extract_inline_body(rest: &str) -> Option<String> {
             if after_kw.starts_with(' ') || after_kw.starts_with('\t') {
                 let consumed = trimmed.len() - after_kw.len();
                 let rest_after_kw = trimmed[consumed..].trim_start();
-                let mut parts = rest_after_kw.splitn(2, |c: char| c.is_whitespace());
-                let _operand = parts.next()?;
-                return parts.next().map(|s| s.to_string());
+                first_condition_token_raw(rest_after_kw)?;
+                return Some(skip_one_token(rest_after_kw).to_string());
             }
         }
     }
@@ -385,6 +405,38 @@ fn skip_one_token(s: &str) -> &str {
         Some(p) => s[p..].trim_start(),
         None => "",
     }
+}
+
+fn first_condition_token_raw(s: &str) -> Option<&str> {
+    let s = s.trim_start();
+    if s.is_empty() {
+        return None;
+    }
+    if let Some(inner) = s.strip_prefix('"') {
+        if let Some(end) = inner.find('"') {
+            let after = &inner[end + 1..];
+            if after.is_empty()
+                || after
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_whitespace() || c == ')')
+            {
+                return Some(&s[..end + 2]);
+            }
+        }
+    }
+    let end = s.find(char::is_whitespace).unwrap_or(s.len());
+    Some(&s[..end])
+}
+
+fn unquote_condition_token(s: &str) -> &str {
+    s.strip_prefix('"')
+        .and_then(|inner| inner.strip_suffix('"'))
+        .unwrap_or(s)
+}
+
+fn is_simple_quoted_token(s: &str) -> bool {
+    s.len() >= 2 && s.starts_with('"') && s.ends_with('"')
 }
 
 fn split_parenthesized_else_branches(body: &str) -> Option<(&str, &str)> {

