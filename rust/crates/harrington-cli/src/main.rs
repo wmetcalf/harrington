@@ -476,6 +476,22 @@ fn write_report_files(report: &harrington_core::Report, out_dir: &Path, force: b
             }
         }
     }
+    for child in &report.extracted_jscript {
+        let sha = short_sha(child);
+        if !seen.insert(sha.clone()) {
+            continue;
+        }
+        let name = format!("{sha}.js");
+        safe_write(&safe_join(&canonical_out, &name)?, child, force)?;
+    }
+    for child in &report.extracted_vbs {
+        let sha = short_sha(child);
+        if !seen.insert(sha.clone()) {
+            continue;
+        }
+        let name = format!("{sha}.vbs");
+        safe_write(&safe_join(&canonical_out, &name)?, child, force)?;
+    }
 
     // Dump recovered binary blobs:
     //   * `.exe`/`.dll` payloads decrypted out of AES-chain droppers
@@ -560,6 +576,8 @@ fn is_generated_output_name(name: &str) -> bool {
             "bat"
                 | "ps1"
                 | "normalized.ps1"
+                | "js"
+                | "vbs"
                 | "exe"
                 | "dll"
                 | "cab"
@@ -875,6 +893,8 @@ fn build_summary(
         "extracted": {
             "cmd": report.extracted_cmd.len(),
             "powershell": ps_count,
+            "jscript": report.extracted_jscript.len(),
+            "vbs": report.extracted_vbs.len(),
             "powershell_samples": ps_samples,
         },
         "lolbas": lolbas,

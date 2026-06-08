@@ -3372,6 +3372,8 @@ pub struct Report {
     pub extracted_cmd: Vec<String>,
     pub extracted_ps1: Vec<Vec<u8>>,
     pub extracted_ps1_normalized: Vec<String>,
+    pub extracted_jscript: Vec<Vec<u8>>,
+    pub extracted_vbs: Vec<Vec<u8>>,
     /// Recovered PE blobs from AES-chain droppers, paired with a short
     /// human-readable label (e.g. `"ps-aes-stage1-asm0"`). The CLI's
     /// `write_report_files` writes each as `<sha>.<ext>` so analysts
@@ -3620,7 +3622,7 @@ fn looks_like_utf16le(bytes: &[u8]) -> bool {
 /// # Returns
 ///
 /// A [`Report`] with the deobfuscated text, typed traits (IOCs +
-/// structural signals + caps), and extracted child cmd/ps1 payloads
+/// structural signals + caps), and extracted child cmd/ps1/js/vbs payloads
 /// (raw bytes plus a normalized form for the ps1 cases).
 pub fn analyze(input: &[u8], cfg: &Config) -> Report {
     analyze_inner(input, cfg, None)
@@ -4060,6 +4062,8 @@ fn analyze_inner(input: &[u8], cfg: &Config, file_path: Option<std::path::PathBu
         extracted_cmd: std::mem::take(&mut env.all_extracted_cmd),
         extracted_ps1: std::mem::take(&mut env.all_extracted_ps1),
         extracted_ps1_normalized,
+        extracted_jscript: std::mem::take(&mut env.all_extracted_jscript),
+        extracted_vbs: std::mem::take(&mut env.all_extracted_vbs),
         recovered_pe: std::mem::take(&mut env.recovered_pe),
     }
 }

