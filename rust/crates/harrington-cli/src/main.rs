@@ -386,6 +386,9 @@ fn command_invokes_program(command: &str, wanted_stem: &str) -> bool {
         if lolbas_is_forfiles_non_exec_operand(&tokens, idx) {
             return false;
         }
+        if lolbas_is_ps_process_argument_operand(&tokens, idx) {
+            return false;
+        }
         if lolbas_attached_non_exec_value_option(token.text) {
             return false;
         }
@@ -793,6 +796,20 @@ fn lolbas_is_forfiles_non_exec_operand(tokens: &[LolbasCommandToken<'_>], idx: u
             .to_ascii_lowercase()
             .as_str(),
         "/m" | "-m" | "/p" | "-p"
+    )
+}
+
+fn lolbas_is_ps_process_argument_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx == 0 || !ps_lolbas_process_launch_line(tokens[0].text) {
+        return false;
+    }
+    matches!(
+        tokens[idx - 1]
+            .text
+            .trim_matches(['"', '\''])
+            .to_ascii_lowercase()
+            .as_str(),
+        "-argumentlist" | "/argumentlist" | "-args" | "/args"
     )
 }
 
@@ -1443,11 +1460,34 @@ fn command_lines_for_lolbas(report: &harrington_core::Report) -> Vec<&str> {
         let Some(command) = command else {
             continue;
         };
-        if !command.is_empty() && !out.contains(&command) {
-            out.push(command);
+        push_lolbas_command_line(&mut out, command);
+    }
+    for ps in &report.extracted_ps1_normalized {
+        for line in ps.lines() {
+            let command = line.trim();
+            if ps_lolbas_process_launch_line(command) {
+                push_lolbas_command_line(&mut out, command);
+            }
         }
     }
     out
+}
+
+fn push_lolbas_command_line<'a>(out: &mut Vec<&'a str>, command: &'a str) {
+    if !command.is_empty() && !out.contains(&command) {
+        out.push(command);
+    }
+}
+
+fn ps_lolbas_process_launch_line(line: &str) -> bool {
+    let line = line.trim_start_matches('&').trim_start();
+    let Some(head) = line.split_whitespace().next() else {
+        return false;
+    };
+    matches!(
+        head.trim_matches(['"', '\'']).to_ascii_lowercase().as_str(),
+        "start-process" | "saps" | "start" | "invoke-item" | "ii"
+    )
 }
 
 /// Human-readable one-paragraph TLDR for analyst triage.
