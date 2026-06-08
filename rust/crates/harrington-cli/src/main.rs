@@ -826,6 +826,14 @@ fn lolbas_is_ps_process_argument_operand(tokens: &[LolbasCommandToken<'_>], idx:
             | "/redirectstandardinput"
             | "-redirectstandardoutput"
             | "/redirectstandardoutput"
+            | "-credential"
+            | "/credential"
+            | "-environment"
+            | "/environment"
+            | "-verb"
+            | "/verb"
+            | "-windowstyle"
+            | "/windowstyle"
     )
 }
 
