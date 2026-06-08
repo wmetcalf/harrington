@@ -18,6 +18,7 @@ pub mod extrac32;
 pub mod for_cmd;
 pub mod forfiles;
 pub mod goto;
+pub mod hh;
 pub mod if_cmd;
 pub mod mshta;
 pub mod msiexec;
@@ -58,6 +59,7 @@ pub fn lookup(name: &str) -> Option<Handler> {
         "desktopimgdownldr" => return Some(desktopimgdownldr::h_desktopimgdownldr),
         "esentutl" => return Some(esentutl::h_esentutl),
         "forfiles" => return Some(forfiles::h_forfiles),
+        "hh" => return Some(hh::h_hh),
         _ => {}
     }
     match lower.as_str() {
