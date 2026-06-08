@@ -86,6 +86,19 @@ fn regsvr32_prior_download_url(tokens: &[String], env: &Environment) -> Option<S
             return Some(src.clone());
         }
     }
+    for token in tokens.iter().skip(1).take(12) {
+        let candidate = trim_url_suffix(strip_quotes(token)).trim();
+        if candidate.is_empty() || candidate.starts_with(['/', '-']) {
+            continue;
+        }
+        if !regsvr32_loadable_target(candidate) {
+            continue;
+        }
+        let key = candidate.to_ascii_lowercase();
+        if let Some(FsEntry::Download { src }) = env.modified_filesystem.get(&key) {
+            return Some(src.clone());
+        }
+    }
     None
 }
 

