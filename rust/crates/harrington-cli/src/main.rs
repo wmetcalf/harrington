@@ -928,17 +928,29 @@ fn lolbas_is_wevtutil_log_name_operand(tokens: &[LolbasCommandToken<'_>], idx: u
 }
 
 fn lolbas_is_reg_key_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
-    if idx != 2 || program_stem(tokens[0].text) != "reg" {
+    if idx < 2 || program_stem(tokens[0].text) != "reg" {
         return false;
     }
-    matches!(
-        tokens[1]
-            .text
-            .trim_matches(['"', '\''])
-            .to_ascii_lowercase()
-            .as_str(),
-        "copy" | "delete" | "export" | "load" | "query" | "restore" | "save" | "unload"
-    )
+    let subcommand = tokens[1]
+        .text
+        .trim_matches(['"', '\''])
+        .to_ascii_lowercase();
+    if subcommand == "compare" {
+        return matches!(idx, 2 | 3);
+    }
+    idx == 2
+        && matches!(
+            subcommand.as_str(),
+            "copy"
+                | "delete"
+                | "export"
+                | "flags"
+                | "load"
+                | "query"
+                | "restore"
+                | "save"
+                | "unload"
+        )
 }
 
 fn lolbas_is_reg_value_or_file_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
