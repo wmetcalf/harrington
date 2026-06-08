@@ -27,7 +27,7 @@ pub fn normalize_to_string(tokens: &[Token], env: &mut Environment) -> String {
     // `^>^>` left intact and arith errors out, breaking the dynamic-
     // goto chain.
     let processed = caret_postprocess(&normalized);
-    if is_base64_fragment_set_assignment(&processed) || has_replace_marker_operation(&processed) {
+    if should_preserve_normalized_text(&processed) {
         processed
     } else {
         strip_marker_noise(&processed)
@@ -117,7 +117,7 @@ fn normalize_caret_plain_command_fast(input: &str) -> Option<String> {
     if marker_noise::has_repeated_sandwich_candidate_shape(&processed) {
         return None;
     }
-    if is_base64_fragment_set_assignment(&processed) || has_replace_marker_operation(&processed) {
+    if should_preserve_normalized_text(&processed) {
         Some(processed)
     } else {
         Some(strip_marker_noise(&processed))
@@ -153,7 +153,7 @@ fn normalize_quoted_set_assignment_fast(input: &str) -> Option<String> {
         return None;
     }
     let processed = input.to_string();
-    if is_base64_fragment_set_assignment(&processed) || has_replace_marker_operation(&processed) {
+    if should_preserve_normalized_text(&processed) {
         Some(processed)
     } else {
         Some(strip_marker_noise(&processed))
@@ -248,6 +248,12 @@ fn has_replace_marker_operation(text: &str) -> bool {
     lower.contains(".replace(") || lower.contains("::replace(") || lower.contains("-replace")
 }
 
+fn should_preserve_normalized_text(text: &str) -> bool {
+    is_base64_fragment_set_assignment(text)
+        || is_encoded_set_carrier_assignment(text)
+        || has_replace_marker_operation(text)
+}
+
 fn is_base64_fragment_set_assignment(text: &str) -> bool {
     let trimmed = text.trim_start_matches(|c: char| c == '@' || c == '(' || c.is_whitespace());
     let Some(rest) = trimmed
@@ -287,6 +293,59 @@ fn is_base64_fragment_set_assignment(text: &str) -> bool {
             Some(idx) => value[idx..].bytes().all(|b| b == b'='),
             None => true,
         }
+}
+
+fn is_encoded_set_carrier_assignment(text: &str) -> bool {
+    let trimmed = text.trim_start_matches(|c: char| c == '@' || c == '(' || c.is_whitespace());
+    let Some(rest) = trimmed
+        .strip_prefix("set")
+        .or_else(|| trimmed.strip_prefix("SET"))
+    else {
+        return false;
+    };
+    if !rest
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_whitespace() || c == '"')
+    {
+        return false;
+    }
+    let rest = rest.trim_start();
+    if rest
+        .get(..2)
+        .is_some_and(|flag| flag.eq_ignore_ascii_case("/a"))
+    {
+        return false;
+    }
+    let body = if let Some(stripped) = rest.strip_prefix('"') {
+        stripped.strip_suffix('"').unwrap_or(stripped)
+    } else {
+        rest
+    };
+    let Some((_, value)) = body.split_once('=') else {
+        return false;
+    };
+    let value = value.trim().trim_matches('"').trim();
+    if value.len() < 256 {
+        return false;
+    }
+
+    let mut encoded = 0usize;
+    let mut marker = 0usize;
+    let mut other = 0usize;
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '+' | '/' | '=' | '-' | '_') {
+            encoded += 1;
+        } else if !ch.is_ascii() {
+            marker += ch.len_utf8();
+        } else if ch.is_ascii_whitespace() {
+            continue;
+        } else {
+            other += 1;
+        }
+    }
+    let total = encoded + marker + other;
+    marker > 0 && total >= 256 && encoded * 100 >= total * 85 && other * 100 <= total * 5
 }
 
 fn strip_marker_noise_preserving_base64(text: &str) -> String {
@@ -1238,6 +1297,17 @@ mod dosfuscation_tests {
     fn literal_command_fast_path_rejects_marker_noise_shape() {
         let input = "pXYZoXYZwershell eXYZcXYZho";
         assert!(super::normalize_literal_command_fast(input).is_none());
+    }
+
+    #[test]
+    fn marker_prefixed_encoded_set_carrier_preserves_raw_payload() {
+        let mut payload = String::from("set Carrier= \u{8bef}");
+        for _ in 0..40 {
+            payload.push_str("aXYZbXYZ cXYZdXYZ ");
+        }
+
+        let normalized = nm(&payload);
+        assert_eq!(normalized, payload);
     }
     #[test]
     fn assembled_set_token() {
