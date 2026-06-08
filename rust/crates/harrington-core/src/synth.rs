@@ -596,6 +596,8 @@ fn filter_find(args: &[&str], input: Vec<String>) -> Vec<String> {
 fn type_file(path: &str, env: &mut Environment) -> Vec<String> {
     use crate::env::FsEntry;
 
+    let path = path.trim_matches('"');
+
     // %~f0 / explicit input path → read input bytes
     let is_self = path.contains("script.bat")
         || env

@@ -191,8 +191,23 @@ fn extract_tokens(line: &str, opts: &FOpts) -> Option<Vec<String>> {
     None
 }
 
-fn resolve_f_source(src: &str, env: &mut crate::env::Environment) -> Vec<String> {
+fn resolve_f_source(src: &str, env: &mut crate::env::Environment, usebackq: bool) -> Vec<String> {
     let s = src.trim();
+    if usebackq {
+        // With usebackq, double quotes denote a filename and single quotes are
+        // literal data. Backticks remain command substitution.
+        if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
+            let inner = &s[1..s.len() - 1];
+            if inner.contains(['%', '!']) {
+                return vec![inner.to_string()];
+            }
+            return resolve_f_file_source(&format!("\"{}\"", inner), s, env);
+        }
+        if s.starts_with('\'') && s.ends_with('\'') && s.len() >= 2 {
+            let inner = &s[1..s.len() - 1];
+            return vec![inner.to_string()];
+        }
+    }
     // Double-quoted string: literal data (one line).
     if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
         let inner = &s[1..s.len() - 1];
@@ -210,14 +225,23 @@ fn resolve_f_source(src: &str, env: &mut crate::env::Environment) -> Vec<String>
         let pipeline = normalize_f_pipeline(pipeline, env);
         return crate::synth::run_pipeline(&pipeline, env);
     }
+
     let source = resolve_pure_percent_var_source(s, env);
     let source = source.as_deref().unwrap_or(s);
+    resolve_f_file_source(source, s, env)
+}
+
+fn resolve_f_file_source(
+    source: &str,
+    original: &str,
+    env: &mut crate::env::Environment,
+) -> Vec<String> {
     let file_lines = crate::synth::run_pipeline(&format!("type {}", source), env);
     if !file_lines.is_empty() {
         return file_lines;
     }
     env.traits.push(crate::traits::Trait::ForUnresolvedSource {
-        pipeline: s.to_string(),
+        pipeline: original.to_string(),
     });
     Vec::new()
 }
@@ -504,7 +528,7 @@ pub fn run_for_from_raw(raw: &str, env: &mut Environment) -> bool {
             .unwrap_or_default();
 
         let parsed = parse_f_opts_full(&opts);
-        let lines = resolve_f_source(&src, env);
+        let lines = resolve_f_source(&src, env, parsed.usebackq);
         let values: Vec<Vec<String>> = lines
             .into_iter()
             .skip(parsed.skip)

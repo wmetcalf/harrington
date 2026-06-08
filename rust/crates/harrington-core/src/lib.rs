@@ -9764,6 +9764,47 @@ for /F "tokens=1,2 delims==" %%A in (%CFG%) do echo key=%%A value=%%B
     }
 
     #[test]
+    fn for_f_usebackq_double_quoted_source_reads_tracked_file() {
+        let script = br#"echo alpha=one>config.ini
+for /F "usebackq tokens=1,2 delims==" %%A in ("config.ini") do echo key=%%A value=%%B
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo key=alpha value=one"),
+            "got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, crate::traits::Trait::ForUnresolvedSource { .. })),
+            "usebackq file source should resolve: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn for_f_usebackq_dynamic_double_quoted_source_preserves_fallback() {
+        let script =
+            br#"for /F "usebackq tokens=1,* delims==" %%A in ("%%~i") do echo key=%%A value=%%B"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo key=%%~i value=%%B"),
+            "got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, crate::traits::Trait::ForUnresolvedSource { .. })),
+            "dynamic usebackq source should preserve fallback without adding unresolved trait: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn for_f_huge_tokens_range_is_capped_not_oom() {
         // Regression: parse_token_range used to extend Vec<usize> by start..=end
         // with no upper bound; `tokens=1-2147483647` allocated ~17 GB and OOM-
