@@ -682,7 +682,16 @@ fn has_python_download_scan_atom(text: &str) -> bool {
     has_python_direct_download_scan_atom(text) || has_python_base64_decode_scan_atom(text)
 }
 
+fn has_python_direct_download_family_atom(text: &str) -> bool {
+    ["request", "httpx", "urllib", "urlopen", "urlretrieve"]
+        .iter()
+        .any(|atom| find_ascii_case_insensitive(text, atom, 0).is_some())
+}
+
 fn has_python_direct_download_scan_atom(text: &str) -> bool {
+    if !has_python_direct_download_family_atom(text) {
+        return false;
+    }
     [
         "requests.get",
         "requests.post",
@@ -729,7 +738,7 @@ fn has_python_base64_decode_scan_atom(text: &str) -> bool {
 
 #[cfg(test)]
 mod python_download_prefilter_tests {
-    use super::has_python_download_scan_atom;
+    use super::{has_python_direct_download_family_atom, has_python_download_scan_atom};
 
     #[test]
     fn prefilter_allows_direct_download_apis() {
@@ -765,6 +774,22 @@ mod python_download_prefilter_tests {
     fn prefilter_blocks_html_prose_with_python_words() {
         assert!(!has_python_download_scan_atom(
             r#"<a href="/pulls">Pull requests</a><link href="https://example.test/urllib-doc.css">"#
+        ));
+    }
+
+    #[test]
+    fn direct_family_prefilter_blocks_python_and_urls_without_download_apis() {
+        assert!(!has_python_direct_download_family_atom(
+            "python http://example.test/a ".repeat(128).as_str()
+        ));
+        assert!(has_python_direct_download_family_atom(
+            "import requests; requests.get('https://example.test/p')"
+        ));
+        assert!(has_python_direct_download_family_atom(
+            "urllib.request.urlopen('https://example.test/p')"
+        ));
+        assert!(has_python_direct_download_family_atom(
+            "import httpx; httpx.Client().get('https://example.test/p')"
         ));
     }
 }
