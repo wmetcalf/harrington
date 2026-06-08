@@ -8,7 +8,7 @@
 #![allow(clippy::expect_used)]
 
 use super::util::split_words;
-use crate::env::Environment;
+use crate::env::{Environment, FsEntry};
 use base64::Engine;
 
 // (canonical_camel, takes_value). Listed in PowerShell.exe's canonical
@@ -164,6 +164,7 @@ pub fn h_powershell(raw: &str, env: &mut Environment) {
                 let body = command_body_from_attached_value(value, &tokens[i + 1..]);
                 let body = trim_nul_padding_body(&body);
                 if !body.is_empty() {
+                    record_downloadfile_side_effects(body, env);
                     env.exec_ps1.push(body.as_bytes().to_vec());
                 }
                 return;
@@ -190,6 +191,7 @@ pub fn h_powershell(raw: &str, env: &mut Environment) {
                 let body = body.trim_matches('"').trim_matches('\'');
                 let body = trim_nul_padding_body(body);
                 if !body.is_empty() {
+                    record_downloadfile_side_effects(body, env);
                     env.exec_ps1.push(body.as_bytes().to_vec());
                 }
                 return;
@@ -209,8 +211,26 @@ pub fn h_powershell(raw: &str, env: &mut Environment) {
     let body = skip_ps_meta_flags(&tokens[1..]);
     let body = trim_nul_padding_body(&body);
     if !body.is_empty() {
+        record_downloadfile_side_effects(body, env);
         env.exec_ps1.push(body.as_bytes().to_vec());
     }
+}
+
+fn record_downloadfile_side_effects(body: &str, env: &mut Environment) {
+    for (src, dst) in crate::ps1_scan::ps_downloadfile_calls(body) {
+        let Some(dst) = dst else {
+            continue;
+        };
+        if !downloadfile_side_effect_content_supported(&src) {
+            continue;
+        }
+        env.modified_filesystem
+            .insert(dst.to_ascii_lowercase(), FsEntry::Download { src });
+    }
+}
+
+fn downloadfile_side_effect_content_supported(src: &str) -> bool {
+    src.to_ascii_lowercase().contains("ip-api.com/csv")
 }
 
 fn trim_nul_padding_body(body: &str) -> &str {

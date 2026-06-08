@@ -9826,6 +9826,30 @@ echo archive=W_%USERNAME%_!publicIP!.zip
     }
 
     #[test]
+    fn for_f_reads_ip_api_csv_downloaded_by_powershell() {
+        use crate::traits::Trait;
+        let script = br#"powershell -Command "(New-Object Net.WebClient).DownloadFile('http://ip-api.com/csv', 'GEO.csv')"
+for /f "tokens=6 delims=, " %%A in (GEO.csv) do echo city=%%A>location.txt
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report
+                .deobfuscated
+                .contains("echo city=Metropolis>location.txt"),
+            "got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ForUnresolvedSource { pipeline } if pipeline == "GEO.csv"
+            )),
+            "downloaded ip-api CSV file source should resolve: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn for_f_noisy_non_ascii_type_command_reads_tracked_file() {
         use crate::traits::Trait;
         let script = "echo alpha>tmp\r\nfor /F \"tokens=*\" %%A in ('t%(◕‿◕)%%(⊙ω⊙)%pe tmp') do echo got=%%A\r\n";

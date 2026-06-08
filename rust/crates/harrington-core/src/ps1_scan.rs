@@ -4154,7 +4154,7 @@ fn dynamic_download_invoke_urls(text: &str) -> Vec<String> {
     urls
 }
 
-fn ps_downloadfile_calls(text: &str) -> Vec<(String, Option<String>)> {
+pub(crate) fn ps_downloadfile_calls(text: &str) -> Vec<(String, Option<String>)> {
     if !contains_ascii_case_insensitive_bytes(text, b"downloadfile") {
         return Vec::new();
     }

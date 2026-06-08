@@ -647,8 +647,20 @@ fn type_file(path: &str, env: &mut Environment) -> Vec<String> {
                 .map(|l| l.trim_end_matches(['\r', '\n']).to_string())
                 .collect()
         }
+        Some(FsEntry::Download { src }) => synth_downloaded_file_lines(src),
         _ => Vec::new(),
     }
+}
+
+fn synth_downloaded_file_lines(src: &str) -> Vec<String> {
+    let lower = src.to_ascii_lowercase();
+    if lower.contains("ip-api.com/csv") {
+        return vec![
+            "success,Exampleland,EX,CA,ExampleState,Metropolis,00000,0,0,UTC,ExampleISP,ExampleOrg,AS64500,203.0.113.10"
+                .to_string(),
+        ];
+    }
+    Vec::new()
 }
 
 fn synth_assoc(args: &[&str], env: &Environment) -> Vec<String> {
