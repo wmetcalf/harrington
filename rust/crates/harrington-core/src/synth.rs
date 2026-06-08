@@ -313,7 +313,7 @@ fn synth_command_key_inner(token: &str, env: Option<&Environment>) -> String {
 }
 
 fn is_type_with_one_missing_char(s: &str) -> bool {
-    matches!(s, "typ" | "tye" | "tpe" | "ype")
+    matches!(s, "typ" | "tye" | "tpe" | "ype" | "te")
 }
 
 fn expand_percent_vars_for_command_key(key: &str, env: &Environment) -> Option<String> {
