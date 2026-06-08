@@ -1577,12 +1577,12 @@ fn command_lines_for_lolbas(report: &harrington_core::Report) -> Vec<&str> {
         };
         push_lolbas_command_line(&mut out, command);
     }
+    for line in report.deobfuscated.lines() {
+        push_ps_lolbas_process_launch_segments(&mut out, line, true);
+    }
     for ps in &report.extracted_ps1_normalized {
         for line in ps.lines() {
-            let command = line.trim();
-            if ps_lolbas_process_launch_line(command) {
-                push_lolbas_command_line(&mut out, command);
-            }
+            push_ps_lolbas_process_launch_segments(&mut out, line, false);
         }
     }
     out
@@ -1591,6 +1591,26 @@ fn command_lines_for_lolbas(report: &harrington_core::Report) -> Vec<&str> {
 fn push_lolbas_command_line<'a>(out: &mut Vec<&'a str>, command: &'a str) {
     if !command.is_empty() && !out.contains(&command) {
         out.push(command);
+    }
+}
+
+fn push_ps_lolbas_process_launch_segments<'a>(
+    out: &mut Vec<&'a str>,
+    line: &'a str,
+    require_ps_host: bool,
+) {
+    let line = line.trim();
+    if require_ps_host
+        && !line_contains_ascii_case_insensitive(line, "powershell")
+        && !line_contains_ascii_case_insensitive(line, "pwsh")
+    {
+        return;
+    }
+    if ps_lolbas_process_launch_line(line) {
+        push_lolbas_command_line(out, line);
+    }
+    for command in ps_lolbas_process_launch_segments(line) {
+        push_lolbas_command_line(out, command);
     }
 }
 
@@ -1603,6 +1623,76 @@ fn ps_lolbas_process_launch_line(line: &str) -> bool {
         head.trim_matches(['"', '\'']).to_ascii_lowercase().as_str(),
         "start-process" | "saps" | "start" | "invoke-item" | "ii"
     )
+}
+
+fn ps_lolbas_process_launch_segments(line: &str) -> Vec<&str> {
+    let mut commands = Vec::new();
+    for name in ["start-process", "saps", "invoke-item", "ii", "start"] {
+        let mut search_start = 0;
+        while let Some(name_start) = find_ascii_case_insensitive(line, name, search_start) {
+            let name_end = name_start + name.len();
+            search_start = name_end;
+            if !lolbas_callable_name_boundary(line, name_start, name_end) {
+                continue;
+            }
+            let command =
+                trim_ps_lolbas_process_launch_segment(ps_command_segment(line, name_start));
+            if ps_lolbas_process_launch_line(command) {
+                commands.push(command);
+            }
+        }
+    }
+    commands
+}
+
+fn ps_command_segment(line: &str, start: usize) -> &str {
+    let segment = &line[start..];
+    let mut quote = None;
+    for (idx, ch) in segment.char_indices() {
+        if let Some(active) = quote {
+            if ch == active {
+                quote = None;
+            }
+            continue;
+        }
+        if matches!(ch, '"' | '\'') {
+            quote = Some(ch);
+            continue;
+        }
+        if idx > 0 && matches!(ch, ';' | '|' | '&') {
+            return &segment[..idx];
+        }
+    }
+    segment
+}
+
+fn trim_ps_lolbas_process_launch_segment(segment: &str) -> &str {
+    segment.trim().trim_matches(['"', '\'']).trim()
+}
+
+fn lolbas_callable_name_boundary(line: &str, start: usize, end: usize) -> bool {
+    let before = line[..start].chars().next_back();
+    let after = line[end..].chars().next();
+    !before
+        .map(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+        .unwrap_or(false)
+        && !after
+            .map(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+            .unwrap_or(false)
+}
+
+fn find_ascii_case_insensitive(haystack: &str, needle: &str, start: usize) -> Option<usize> {
+    let haystack = haystack.as_bytes();
+    let needle = needle.as_bytes();
+    if needle.is_empty() || start >= haystack.len() || needle.len() > haystack.len() {
+        return None;
+    }
+    (start..=haystack.len() - needle.len())
+        .find(|idx| haystack[*idx..*idx + needle.len()].eq_ignore_ascii_case(needle))
+}
+
+fn line_contains_ascii_case_insensitive(haystack: &str, needle: &str) -> bool {
+    find_ascii_case_insensitive(haystack, needle, 0).is_some()
 }
 
 /// Human-readable one-paragraph TLDR for analyst triage.
