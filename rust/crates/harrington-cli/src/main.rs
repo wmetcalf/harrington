@@ -375,26 +375,44 @@ struct LolbasCommandToken<'a> {
 
 fn lolbas_command_tokens(command: &str) -> Vec<LolbasCommandToken<'_>> {
     let mut tokens = Vec::new();
-    let mut start = None;
-    for (idx, ch) in command.char_indices() {
-        if ch.is_ascii_alphanumeric()
-            || matches!(ch, '.' | '_' | '-' | '\\' | '/' | ':' | '"' | '\'')
-        {
-            start.get_or_insert(idx);
-        } else if let Some(token_start) = start.take() {
+    let mut chars = command.char_indices().peekable();
+    while let Some((idx, ch)) = chars.next() {
+        if matches!(ch, '"' | '\'') {
+            let quote = ch;
+            let token_start = idx;
+            let mut token_end = idx + ch.len_utf8();
+            for (quoted_idx, quoted_ch) in chars.by_ref() {
+                token_end = quoted_idx + quoted_ch.len_utf8();
+                if quoted_ch == quote {
+                    break;
+                }
+            }
             tokens.push(LolbasCommandToken {
-                text: &command[token_start..idx],
+                text: &command[token_start..token_end],
                 start: token_start,
-                end: idx,
+                end: token_end,
+            });
+            continue;
+        }
+        if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | '\\' | '/' | ':') {
+            let token_start = idx;
+            let mut token_end = idx + ch.len_utf8();
+            while let Some(&(next_idx, next_ch)) = chars.peek() {
+                if next_ch.is_ascii_alphanumeric()
+                    || matches!(next_ch, '.' | '_' | '-' | '\\' | '/' | ':' | '"' | '\'')
+                {
+                    chars.next();
+                    token_end = next_idx + next_ch.len_utf8();
+                } else {
+                    break;
+                }
+            }
+            tokens.push(LolbasCommandToken {
+                text: &command[token_start..token_end],
+                start: token_start,
+                end: token_end,
             });
         }
-    }
-    if let Some(token_start) = start {
-        tokens.push(LolbasCommandToken {
-            text: &command[token_start..],
-            start: token_start,
-            end: command.len(),
-        });
     }
     tokens
 }
