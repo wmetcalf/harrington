@@ -383,6 +383,9 @@ fn command_invokes_program(command: &str, wanted_stem: &str) -> bool {
         if lolbas_is_net_account_operand(&tokens, idx) {
             return false;
         }
+        if lolbas_is_forfiles_non_exec_operand(&tokens, idx) {
+            return false;
+        }
         if lolbas_attached_non_exec_value_option(token.text) {
             return false;
         }
@@ -777,6 +780,20 @@ fn lolbas_is_net_account_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) 
         "group" | "groups" | "localgroup" | "localgroups" => idx == 2 || idx == 3,
         _ => false,
     }
+}
+
+fn lolbas_is_forfiles_non_exec_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx == 0 || program_stem(tokens[0].text) != "forfiles" {
+        return false;
+    }
+    matches!(
+        tokens[idx - 1]
+            .text
+            .trim_matches(['"', '\''])
+            .to_ascii_lowercase()
+            .as_str(),
+        "/m" | "-m" | "/p" | "-p"
+    )
 }
 
 fn is_url_like_program_token(token: &str) -> bool {
