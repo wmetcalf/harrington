@@ -37,6 +37,11 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
             i += 1;
             continue;
         }
+        if short_option_cluster_remote_name(t) {
+            remote_name = true;
+            i += 1;
+            continue;
+        }
         if t.eq_ignore_ascii_case("--output-dir") {
             if let Some(v) = tokens.get(i + 1) {
                 output_dir = Some(strip_quotes(v).to_string());
@@ -225,6 +230,13 @@ fn short_option_cluster_output(token: &str) -> Option<&str> {
     }
     let idx = cluster.find('o')?;
     Some(&cluster[idx + 1..])
+}
+
+fn short_option_cluster_remote_name(token: &str) -> bool {
+    let Some(cluster) = token.strip_prefix('-') else {
+        return false;
+    };
+    !cluster.starts_with('-') && cluster.len() > 1 && cluster.contains('O')
 }
 
 fn url_basename(url: &str) -> Option<String> {

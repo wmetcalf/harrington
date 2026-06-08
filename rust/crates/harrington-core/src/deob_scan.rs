@@ -4375,6 +4375,11 @@ fn parse_curl_like_download(tokens: &[String]) -> Option<(String, Option<String>
             }
             continue;
         }
+        if short_option_cluster_remote_name(raw_token) {
+            remote_name = true;
+            i += 1;
+            continue;
+        }
         if raw_token == "-O" || lower == "--remote-name" {
             remote_name = true;
             i += 1;
@@ -4516,6 +4521,13 @@ fn short_option_cluster_output(token: &str, output_flag: char) -> Option<&str> {
     }
     let idx = cluster.find(output_flag)?;
     Some(&cluster[idx + output_flag.len_utf8()..])
+}
+
+fn short_option_cluster_remote_name(token: &str) -> bool {
+    let Some(cluster) = token.strip_prefix('-') else {
+        return false;
+    };
+    !cluster.starts_with('-') && cluster.len() > 1 && cluster.contains('O')
 }
 
 fn strip_ascii_case_insensitive_prefix<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
