@@ -1716,7 +1716,7 @@ fn lolbas_line_invokes_powershell_host(line: &str) -> bool {
 fn ps_lolbas_process_launch_start_boundary(line: &str, start: usize) -> bool {
     let before = line[..start].chars().rev().find(|ch| !ch.is_whitespace());
     before
-        .map(|ch| matches!(ch, '"' | '\'' | ';' | '|' | '&' | '('))
+        .map(|ch| matches!(ch, '"' | '\'' | ';' | '|' | '&' | '(' | '{'))
         .unwrap_or(true)
 }
 
