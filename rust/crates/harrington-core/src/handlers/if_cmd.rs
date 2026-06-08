@@ -13,8 +13,17 @@ pub fn h_if(raw: &str, env: &mut Environment) {
     let Some(caps) = IF_RE.captures(raw) else {
         return;
     };
-    let negate = caps.name("neg").is_some();
-    let rest = caps.name("rest").map(|m| m.as_str()).unwrap_or("");
+    let mut negate = caps.name("neg").is_some();
+    let original_rest = caps.name("rest").map(|m| m.as_str()).unwrap_or("");
+    let mut rest = original_rest;
+    let rest_with_slash_i = strip_kw(rest.trim_start(), "/i").and_then(|after_i| {
+        let after_not = strip_kw(after_i.trim_start(), "not")?;
+        negate = !negate;
+        Some(format!("/i {}", after_not.trim_start()))
+    });
+    if let Some(rest_with_slash_i) = rest_with_slash_i.as_deref() {
+        rest = rest_with_slash_i;
+    }
     let inline_body = extract_inline_body(rest);
     let allow_errorlevel_invariants = !inline_body
         .as_deref()
@@ -30,7 +39,7 @@ pub fn h_if(raw: &str, env: &mut Environment) {
         }
         None => {
             env.traits.push(crate::traits::Trait::IfNotResolved {
-                condition: rest.to_string(),
+                condition: original_rest.to_string(),
             });
             return;
         }

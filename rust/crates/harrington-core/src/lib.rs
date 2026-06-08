@@ -7791,6 +7791,26 @@ mod if_constant_fold_tests {
     }
 
     #[test]
+    fn if_slash_i_not_order_is_case_insensitive_negated() {
+        let script = b"if /I not \"script.bat\"==\"other.bat\" set MARK=value\r\nif /I not \"script.bat\"==\"SCRIPT.BAT\" set MARK=bad\r\necho %MARK%\r\n";
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo value"),
+            "negated case-insensitive comparison did not run inline body:\n{}",
+            report.deobfuscated
+        );
+        let has_unresolved = report
+            .traits
+            .iter()
+            .any(|t| matches!(t, crate::traits::Trait::IfNotResolved { .. }));
+        assert!(
+            !has_unresolved,
+            "/I before NOT should fold cleanly: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn if_gtr_lss_geq_leq() {
         for (op, expected_unresolved) in [
             ("gtr 5", false),
