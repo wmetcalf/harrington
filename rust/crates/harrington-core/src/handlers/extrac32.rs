@@ -10,6 +10,7 @@ pub fn h_extrac32(raw: &str, env: &mut Environment) {
         return;
     };
 
+    push_lolbas(raw, env);
     // Self-reference if the src path matches our synthetic input path.
     let self_reference = src.contains("script.bat");
     env.traits.push(Trait::Extrac32 {
@@ -132,4 +133,17 @@ fn strip_quotes(s: &str) -> &str {
         return &s[1..s.len() - 1];
     }
     s
+}
+
+fn push_lolbas(raw: &str, env: &mut Environment) {
+    if !env
+        .traits
+        .iter()
+        .any(|t| matches!(t, Trait::Lolbas { name, cmd } if name == "extrac32" && cmd == raw))
+    {
+        env.traits.push(Trait::Lolbas {
+            name: "extrac32".to_string(),
+            cmd: raw.to_string(),
+        });
+    }
 }
