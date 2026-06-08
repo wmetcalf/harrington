@@ -16,6 +16,7 @@ cargo build --workspace --release
 
 ```bash
 # deobfuscate a script, writing deobfuscated.bat + extracted children
+# (.bat, .ps1, .js, .vbs, and recovered binary blobs when present)
 harrington deob path/to/script.bat -o ./out
 
 # JSON-only report to stdout
