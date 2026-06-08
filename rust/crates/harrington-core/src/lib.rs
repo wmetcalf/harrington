@@ -2472,6 +2472,14 @@ mod cmd_tests {
         interpret_line(r#"cmd.exe /v:on /c "set X=v&&echo !X!""#, &mut env);
         assert_eq!(env.exec_cmd, vec!["set X=v&&echo !X!".to_string()]);
     }
+
+    #[test]
+    fn cmd_comspec_v_d_c_extracts() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(r#"cmd %ComSpec% /V/D/c "set X=v&&echo !X!""#, &mut env);
+        assert_eq!(env.exec_cmd, vec!["set X=v&&echo !X!".to_string()]);
+        assert_eq!(env.exec_cmd_delayed, vec![true]);
+    }
 }
 
 #[cfg(test)]

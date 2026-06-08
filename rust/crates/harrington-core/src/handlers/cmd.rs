@@ -40,7 +40,15 @@ fn find_cmd_executable_end(raw: &str) -> Option<usize> {
     if tok2_start < j && is_cmd_token(&raw[tok2_start..j]) {
         i = j;
     }
+    if tok2_start < j && is_comspec_token(&raw[tok2_start..j]) {
+        i = j;
+    }
     Some(i)
+}
+
+fn is_comspec_token(tok: &str) -> bool {
+    tok.trim_matches(['"', '\'', '\\'])
+        .eq_ignore_ascii_case("%comspec%")
 }
 
 fn is_cmd_token(tok: &str) -> bool {
