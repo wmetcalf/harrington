@@ -106,6 +106,39 @@ pub fn h_xcopy(raw: &str, env: &mut Environment) {
         .insert(dst.to_ascii_lowercase(), entry);
 }
 
+pub fn h_move(raw: &str, env: &mut Environment) {
+    env.traits.push(Trait::AdminCommand {
+        name: "move".to_string(),
+        cmd: raw.to_string(),
+    });
+    track_rename_like(raw, env, &["/y", "/-y"]);
+}
+
+pub fn h_ren(raw: &str, env: &mut Environment) {
+    track_rename_like(raw, env, &[]);
+}
+
+fn track_rename_like(raw: &str, env: &mut Environment, options: &[&str]) {
+    let tokens: Vec<String> = split_words(raw);
+    let mut args: Vec<String> = Vec::new();
+    for t in tokens.iter().skip(1) {
+        let stripped = strip_quotes(t);
+        let lower = stripped.to_ascii_lowercase();
+        if options.contains(&lower.as_str()) {
+            continue;
+        }
+        args.push(stripped.to_string());
+    }
+    if args.len() != 2 {
+        return;
+    }
+    let src = collapse_slashes(&args[0]);
+    let dst = collapse_slashes(&args[1]);
+    let entry = copied_entry(&src, env).unwrap_or(FsEntry::Copy { src });
+    env.modified_filesystem
+        .insert(dst.to_ascii_lowercase(), entry);
+}
+
 fn copied_entry(src: &str, env: &Environment) -> Option<FsEntry> {
     match env.modified_filesystem.get(&src.to_ascii_lowercase()) {
         Some(FsEntry::Download { src }) => Some(FsEntry::Download { src: src.clone() }),
