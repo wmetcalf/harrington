@@ -365,6 +365,9 @@ fn command_invokes_program(command: &str, wanted_stem: &str) -> bool {
         if lolbas_is_file_management_operand(&tokens, idx) {
             return false;
         }
+        if lolbas_is_taskkill_image_operand(&tokens, idx) {
+            return false;
+        }
         if lolbas_attached_non_exec_value_option(token.text) {
             return false;
         }
@@ -660,6 +663,20 @@ fn lolbas_file_management_path_operand(token: &str) -> bool {
         || lower.ends_with(".com")
         || lower.ends_with(".scr")
         || lower.ends_with(".hta")
+}
+
+fn lolbas_is_taskkill_image_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx < 2 || program_stem(tokens[0].text) != "taskkill" {
+        return false;
+    }
+    matches!(
+        tokens[idx - 1]
+            .text
+            .trim_matches(['"', '\''])
+            .to_ascii_lowercase()
+            .as_str(),
+        "/im" | "-im"
+    )
 }
 
 fn is_url_like_program_token(token: &str) -> bool {
