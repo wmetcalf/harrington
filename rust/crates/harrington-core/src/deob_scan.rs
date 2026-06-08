@@ -4417,6 +4417,61 @@ fn is_certutil_operation_flag(token: &str) -> bool {
     )
 }
 
+fn scan_copied_rundll32_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    let mut aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for t in &env.traits {
+        let Trait::WindowsUtilManip { src, dst, .. } = t else {
+            continue;
+        };
+        let src_base = basename_lower(src);
+        if src_base != "rundll32.exe" && src_base != "rundll32" {
+            continue;
+        }
+        insert_alias_names(&mut aliases, dst);
+    }
+    if aliases.is_empty() {
+        return;
+    }
+
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        let Some(cmd) = tokens.first() else {
+            continue;
+        };
+        if !aliases.contains(&basename_lower(cmd))
+            && !aliases.contains(&cmd.trim_matches(['"', '\'']).to_ascii_lowercase())
+        {
+            continue;
+        }
+        if tokens.len() < 2 {
+            continue;
+        }
+        if env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::ManipulatedExec {
+                    cmd: existing_cmd,
+                    target
+                } if existing_cmd == line && target.eq_ignore_ascii_case(cmd.trim_matches(['"', '\'']))
+            )
+        }) {
+            continue;
+        }
+
+        push_manipulated_exec_once(env, line, cmd);
+        let rest = line
+            .get(cmd.len()..)
+            .map(str::trim_start)
+            .unwrap_or_default();
+        let replay = if rest.is_empty() {
+            "rundll32.exe".to_string()
+        } else {
+            format!("rundll32.exe {rest}")
+        };
+        crate::handlers::rundll32::h_rundll32(&replay, env);
+    }
+}
+
 fn insert_alias_names(aliases: &mut std::collections::HashSet<String>, path: &str) {
     let full = path.trim_matches(['"', '\'']).to_ascii_lowercase();
     if !full.is_empty() {
@@ -8038,6 +8093,9 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     });
     scan_step!("copied_certutil_alias_deob_text", {
         scan_copied_certutil_alias_deob_text(deobfuscated, env);
+    });
+    scan_step!("copied_rundll32_alias_deob_text", {
+        scan_copied_rundll32_alias_deob_text(deobfuscated, env);
     });
     scan_step!("curl_style_compact_flags_deob_text", {
         scan_curl_style_compact_flags_deob_text(deobfuscated, env);
