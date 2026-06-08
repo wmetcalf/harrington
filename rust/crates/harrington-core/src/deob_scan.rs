@@ -4878,6 +4878,22 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
             i += 2;
             continue;
         }
+        if lower == "--directory-prefix" && tokens.get(i + 1).is_some() {
+            dst = tokens
+                .get(i + 1)
+                .map(|s| s.trim_matches(['"', '\'', ')']).to_string());
+            i += 2;
+            continue;
+        }
+        if let Some(rest) = strip_ascii_case_insensitive_prefix(raw_token, "--directory-prefix=")
+            .or_else(|| strip_ascii_case_insensitive_prefix(raw_token, "--directory-prefix:"))
+        {
+            if !rest.is_empty() {
+                dst = Some(rest.trim_matches(['"', '\'', ')']).to_string());
+            }
+            i += 1;
+            continue;
+        }
         if lower == "-i" && tokens.get(i + 1).is_some() {
             let candidate = tokens
                 .get(i + 1)
