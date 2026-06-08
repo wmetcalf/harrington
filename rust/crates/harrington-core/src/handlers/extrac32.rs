@@ -17,12 +17,39 @@ pub fn h_extrac32(raw: &str, env: &mut Environment) {
         dst: dst.clone(),
         self_reference,
     });
-    let entry = match env.modified_filesystem.get(&src.to_ascii_lowercase()) {
-        Some(FsEntry::Download { src }) => FsEntry::Download { src: src.clone() },
-        _ => FsEntry::Copy { src },
+    let entry = match downloaded_src_for_candidate(&src, env) {
+        Some(src) => FsEntry::Download { src },
+        None => FsEntry::Copy { src },
     };
     env.modified_filesystem
         .insert(dst.to_ascii_lowercase(), entry);
+}
+
+fn downloaded_src_for_candidate(candidate: &str, env: &Environment) -> Option<String> {
+    let key = candidate.to_ascii_lowercase();
+    if let Some(FsEntry::Download { src }) = env.modified_filesystem.get(&key) {
+        return Some(src.clone());
+    }
+    if candidate.contains(['\\', '/']) {
+        return None;
+    }
+    for (path, entry) in &env.modified_filesystem {
+        let Some(name) = windows_basename(path) else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case(candidate) {
+            if let FsEntry::Download { src } = entry {
+                return Some(src.clone());
+            }
+        }
+    }
+    None
+}
+
+fn windows_basename(path: &str) -> Option<&str> {
+    path.rsplit(['\\', '/'])
+        .next()
+        .filter(|name| !name.is_empty())
 }
 
 fn parse_extrac32_paths(tokens: &[String]) -> Option<(String, String)> {
