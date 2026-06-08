@@ -61,12 +61,18 @@ fn extract_script(raw: &str, path: &str, env: &mut Environment, trait_evt: Trait
     if let Some(c) = content {
         let ext_lower = path.to_ascii_lowercase();
         if ext_lower.ends_with(".vbs") || ext_lower.ends_with(".vbe") {
-            env.all_extracted_vbs.push(c.clone());
-            env.exec_vbs.push(c);
+            push_unique_payload(&mut env.all_extracted_vbs, c.clone());
+            push_unique_payload(&mut env.exec_vbs, c);
         } else if ext_lower.ends_with(".js") || ext_lower.ends_with(".jse") {
-            env.all_extracted_jscript.push(c.clone());
-            env.exec_jscript.push(c);
+            push_unique_payload(&mut env.all_extracted_jscript, c.clone());
+            push_unique_payload(&mut env.exec_jscript, c);
         }
+    }
+}
+
+fn push_unique_payload(payloads: &mut Vec<Vec<u8>>, payload: Vec<u8>) {
+    if !payloads.iter().any(|existing| existing == &payload) {
+        payloads.push(payload);
     }
 }
 

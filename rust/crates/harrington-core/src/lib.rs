@@ -11521,6 +11521,58 @@ mod cscript_tests {
     }
 
     #[test]
+    fn cscript_repeated_vbs_content_is_queued_once() {
+        let mut env = Environment::new(&Config::default());
+        let vbs_content = b"WScript.Echo \"dedupe\"\r\n".to_vec();
+        env.modified_filesystem.insert(
+            "dropper.vbs".to_string(),
+            FsEntry::Content {
+                content: vbs_content.clone(),
+                append: false,
+            },
+        );
+
+        interpret_line("cscript //nologo dropper.vbs", &mut env);
+        interpret_line("cscript //nologo dropper.vbs", &mut env);
+
+        assert_eq!(
+            env.all_extracted_vbs
+                .iter()
+                .filter(|content| *content == &vbs_content)
+                .count(),
+            1,
+            "duplicate VBS payload queued: {:?}",
+            env.all_extracted_vbs
+        );
+    }
+
+    #[test]
+    fn wscript_repeated_js_content_is_queued_once() {
+        let mut env = Environment::new(&Config::default());
+        let js_content = b"WScript.Echo('dedupe')\r\n".to_vec();
+        env.modified_filesystem.insert(
+            "drop.js".to_string(),
+            FsEntry::Content {
+                content: js_content.clone(),
+                append: false,
+            },
+        );
+
+        interpret_line("wscript drop.js", &mut env);
+        interpret_line("wscript drop.js", &mut env);
+
+        assert_eq!(
+            env.all_extracted_jscript
+                .iter()
+                .filter(|content| *content == &js_content)
+                .count(),
+            1,
+            "duplicate JScript payload queued: {:?}",
+            env.all_extracted_jscript
+        );
+    }
+
+    #[test]
     fn script_hosts_emit_url_argument_for_remote_script_url() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
