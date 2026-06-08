@@ -2232,6 +2232,15 @@ for /f "tokens=1 delims=:" %%A in ('curl -# -k "http://www.geoplugin.net/php.gp?
             "geoplugin public-IP lookup was not typed as NetworkProbe: {:?}",
             report.traits
         );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ForUnresolvedSource { pipeline }
+                    if pipeline.contains("www.geoplugin.net/php.gp?ip")
+            )),
+            "unsupported geoplugin curl output should stay explicitly unresolved: {:?}",
+            report.traits
+        );
     }
 
     #[test]
@@ -9787,6 +9796,31 @@ for /F "tokens=1,2 delims==" %%A in (%CFG%) do echo key=%%A value=%%B
                 Trait::ForUnresolvedSource { pipeline } if pipeline == "%CFG%"
             )),
             "variable-backed file source should resolve: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn for_f_curl_public_ip_endpoint_feeds_later_variable() {
+        use crate::traits::Trait;
+        let script = br#"setlocal EnableDelayedExpansion
+for /F "tokens=* delims=" %%I in ('curl -s https://api.ipify.org') do set "publicIP=%%I"
+echo archive=W_%USERNAME%_!publicIP!.zip
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report
+                .deobfuscated
+                .contains("echo archive=W_puncher_203.0.113.10.zip"),
+            "got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ForUnresolvedSource { pipeline } if pipeline.contains("api.ipify.org")
+            )),
+            "public-IP curl endpoint should synthesize a stable response: {:?}",
             report.traits
         );
     }

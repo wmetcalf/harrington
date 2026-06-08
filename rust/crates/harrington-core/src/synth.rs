@@ -175,6 +175,15 @@ fn run_stage(stage: &str, input: Vec<String>, env: &mut Environment) -> Vec<Stri
         "where" => synth_where(&rest_args, env),
         "wmic" => synth_wmic(&rest_args),
         "ping" => synth_ping(&rest_args),
+        "curl" | "curl.exe" => {
+            let out = synth_curl(&rest_args);
+            if out.is_empty() {
+                env.traits.push(crate::traits::Trait::ForUnresolvedSource {
+                    pipeline: stage.to_string(),
+                });
+            }
+            out
+        }
         _ => {
             env.traits.push(crate::traits::Trait::ForUnresolvedSource {
                 pipeline: stage.to_string(),
@@ -364,6 +373,8 @@ fn is_supported_command(cmd: &str) -> bool {
             | "where"
             | "wmic"
             | "ping"
+            | "curl"
+            | "curl.exe"
     )
 }
 
@@ -1083,4 +1094,24 @@ fn synth_ping(args: &[&str]) -> Vec<String> {
     vec![format!(
         "Pinging {target} [{target}] with 32 bytes of data:"
     )]
+}
+
+fn synth_curl(args: &[&str]) -> Vec<String> {
+    let Some(url) = args
+        .iter()
+        .rev()
+        .map(|arg| arg.trim_matches(['"', '\'']))
+        .find(|arg| arg.starts_with("http://") || arg.starts_with("https://"))
+    else {
+        return Vec::new();
+    };
+    let lower = url.to_ascii_lowercase();
+    if lower == "https://api.ipify.org"
+        || lower == "http://api.ipify.org"
+        || lower.starts_with("https://api.ipify.org?")
+        || lower.starts_with("http://api.ipify.org?")
+    {
+        return vec!["203.0.113.10".to_string()];
+    }
+    Vec::new()
 }
