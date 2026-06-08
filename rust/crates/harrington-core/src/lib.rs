@@ -2732,6 +2732,37 @@ mod for_f_misc_tests {
     }
 
     #[test]
+    fn for_f_reads_wmic_inventory_output() {
+        let script = concat!(
+            "for /f \"tokens=*\" %%d in ('wmic logicaldisk where \"Size=250954240000\" get Size') do echo disk=%%d\r\n",
+            "for /f \"tokens=*\" %%m in ('wmic computersystem get manufacturer /value') do echo maker=%%m\r\n",
+            "for /f \"tokens=*\" %%g in ('WMIC Group Where \"SID = ''S-1-5-32-544''\" Get Name /Value') do echo group=%%g\r\n",
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo disk=Size")
+                && report.deobfuscated.contains("echo disk=250954240000")
+                && report
+                    .deobfuscated
+                    .contains("echo maker=Manufacturer=Microsoft Corporation")
+                && report
+                    .deobfuscated
+                    .contains("echo group=Name=Administrators"),
+            "deobf:\n{}\ntraits: {:?}",
+            report.deobfuscated,
+            report.traits
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::ForUnresolvedSource { .. })),
+            "wmic inventory commands should resolve: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn for_f_pipeline_allows_echo_suppression_prefix() {
         let script = b"for /f \"tokens=*\" %%f in ('@find 2^>^&1') do echo %%f\r\n";
         let report = analyze(script, &Config::default());

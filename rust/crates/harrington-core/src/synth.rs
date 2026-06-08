@@ -156,6 +156,7 @@ fn run_stage(stage: &str, input: Vec<String>, env: &mut Environment) -> Vec<Stri
         "powershell" | "powershell.exe" => synth_powershell(&rest_args, env),
         "tasklist" => synth_tasklist(&rest_args),
         "where" => synth_where(&rest_args, env),
+        "wmic" => synth_wmic(&rest_args),
         _ => {
             env.traits.push(crate::traits::Trait::ForUnresolvedSource {
                 pipeline: stage.to_string(),
@@ -206,6 +207,7 @@ fn is_supported_command(cmd: String) -> bool {
             | "powershell.exe"
             | "tasklist"
             | "where"
+            | "wmic"
     )
 }
 
@@ -844,6 +846,44 @@ fn synth_where(args: &[&str], env: &Environment) -> Vec<String> {
                 return vec![path.clone()];
             }
         }
+    }
+    Vec::new()
+}
+
+fn synth_wmic(args: &[&str]) -> Vec<String> {
+    let filtered: Vec<String> = non_redirect_args(args)
+        .map(|arg| arg.trim_matches('"').to_ascii_lowercase())
+        .collect();
+    let joined = filtered.join(" ");
+    if filtered
+        .first()
+        .is_some_and(|arg| arg.eq_ignore_ascii_case("logicaldisk"))
+        && joined.contains("get size")
+    {
+        return vec!["Size".to_string(), "250954240000".to_string()];
+    }
+    if filtered
+        .first()
+        .is_some_and(|arg| arg.eq_ignore_ascii_case("computersystem"))
+        && joined.contains("manufacturer")
+    {
+        if joined.contains("/value") {
+            return vec!["Manufacturer=Microsoft Corporation".to_string()];
+        }
+        return vec![
+            "Manufacturer".to_string(),
+            "Microsoft Corporation".to_string(),
+        ];
+    }
+    if filtered
+        .first()
+        .is_some_and(|arg| arg.eq_ignore_ascii_case("group"))
+        && joined.contains("get name")
+    {
+        if joined.contains("/value") {
+            return vec!["Name=Administrators".to_string()];
+        }
+        return vec!["Name".to_string(), "Administrators".to_string()];
     }
     Vec::new()
 }
