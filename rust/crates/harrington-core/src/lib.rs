@@ -12093,6 +12093,29 @@ C:\Users\Public\expha.pif /c /y "C:\Windows\System32\cmd.exe" "C:\Users\Public\a
     }
 
     #[test]
+    fn copied_certutil_alias_nested_after_cmd_c_emits_decode_trait() {
+        let report = crate::analyze(
+            br#"extrac32 /c /y "C:\Windows\System32\extrac32.exe" "C:\Users\Public\expha.pif"
+C:\Users\Public\expha.pif /c /y "C:\Windows\System32\certutil.exe" "C:\Users\Public\ghf.pif"
+C:\Users\Public\alpha.pif /C C:\Users\Public\ghf.pif -decodehex -f "%~f0" "C:\Users\Public\HEW.3GP" 9
+"#,
+            &Config::default(),
+        );
+        let has = report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::CertutilDecode { src, dst, .. }
+                    if src == "%~f0" && dst == r#"C:\Users\Public\HEW.3GP"#
+            )
+        });
+        assert!(
+            has,
+            "copied certutil alias did not replay nested decode command: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn extrac32_l_option_value_is_not_treated_as_source() {
         let mut env = Environment::new(&Config::default());
         interpret_line(

@@ -4341,6 +4341,82 @@ fn scan_copied_extrac32_alias_deob_text(deobfuscated: &str, env: &mut Environmen
     }
 }
 
+fn scan_copied_certutil_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    let mut aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for t in &env.traits {
+        let Trait::WindowsUtilManip { src, dst, .. } = t else {
+            continue;
+        };
+        let src_base = basename_lower(src);
+        if src_base != "certutil.exe" && src_base != "certutil" {
+            continue;
+        }
+        insert_alias_names(&mut aliases, dst);
+    }
+    if aliases.is_empty() {
+        return;
+    }
+
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        for (idx, token) in tokens.iter().enumerate() {
+            if !aliases.contains(&basename_lower(token))
+                && !aliases.contains(&token.trim_matches(['"', '\'']).to_ascii_lowercase())
+            {
+                continue;
+            }
+            if !tokens[idx + 1..]
+                .iter()
+                .any(|arg| is_certutil_operation_flag(arg))
+            {
+                continue;
+            }
+
+            let replay = if let Some(start) = line.find(token) {
+                let rest = line[start + token.len()..].trim_start();
+                if rest.is_empty() {
+                    "certutil.exe".to_string()
+                } else {
+                    format!("certutil.exe {rest}")
+                }
+            } else {
+                format!("certutil.exe {}", tokens[idx + 1..].join(" "))
+            };
+            if env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ManipulatedExec {
+                        cmd: existing_cmd,
+                        target
+                    } if existing_cmd == line
+                        && target.eq_ignore_ascii_case(token.trim_matches(['"', '\'']))
+                )
+            }) {
+                continue;
+            }
+            push_manipulated_exec_once(env, line, token);
+            crate::handlers::certutil::h_certutil(&replay, env);
+        }
+    }
+}
+
+fn is_certutil_operation_flag(token: &str) -> bool {
+    matches!(
+        token
+            .trim_matches(['"', '\''])
+            .to_ascii_lowercase()
+            .as_str(),
+        "-decode"
+            | "/decode"
+            | "-decodehex"
+            | "/decodehex"
+            | "-urlcache"
+            | "/urlcache"
+            | "-verifyctl"
+            | "/verifyctl"
+    )
+}
+
 fn insert_alias_names(aliases: &mut std::collections::HashSet<String>, path: &str) {
     let full = path.trim_matches(['"', '\'']).to_ascii_lowercase();
     if !full.is_empty() {
@@ -7959,6 +8035,9 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     });
     scan_step!("copied_extrac32_alias_deob_text", {
         scan_copied_extrac32_alias_deob_text(deobfuscated, env);
+    });
+    scan_step!("copied_certutil_alias_deob_text", {
+        scan_copied_certutil_alias_deob_text(deobfuscated, env);
     });
     scan_step!("curl_style_compact_flags_deob_text", {
         scan_curl_style_compact_flags_deob_text(deobfuscated, env);
