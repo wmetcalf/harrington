@@ -366,6 +366,9 @@ fn command_invokes_program(command: &str, wanted_stem: &str) -> bool {
         if lolbas_is_msiexec_package_operand(&tokens, idx) {
             return false;
         }
+        if lolbas_is_attached_msiexec_package_operand(&tokens, idx) {
+            return false;
+        }
         if lolbas_is_file_management_operand(&tokens, idx) {
             return false;
         }
@@ -677,7 +680,48 @@ fn lolbas_is_msiexec_package_operand(tokens: &[LolbasCommandToken<'_>], idx: usi
     ) {
         return false;
     }
-    let value = tokens[idx].text.trim_matches(['"', '\'']);
+    lolbas_msiexec_package_value_operand(tokens[idx].text)
+}
+
+fn lolbas_is_attached_msiexec_package_operand(
+    tokens: &[LolbasCommandToken<'_>],
+    idx: usize,
+) -> bool {
+    if idx == 0 || program_stem(tokens[0].text) != "msiexec" {
+        return false;
+    }
+    let token = tokens[idx].text.trim_matches(['"', '\'']);
+    let lower = token.to_ascii_lowercase();
+    for prefix in ["/i", "-i", "/x", "-x"] {
+        if let Some(value) = lower.strip_prefix(prefix) {
+            return !value.is_empty()
+                && lolbas_msiexec_package_value_operand(&token[prefix.len()..]);
+        }
+    }
+    for prefix in [
+        "/package:",
+        "-package:",
+        "/package=",
+        "-package=",
+        "/uninstall:",
+        "-uninstall:",
+        "/uninstall=",
+        "-uninstall=",
+        "/update:",
+        "-update:",
+        "/update=",
+        "-update=",
+    ] {
+        if let Some(value) = lower.strip_prefix(prefix) {
+            return !value.is_empty()
+                && lolbas_msiexec_package_value_operand(&token[prefix.len()..]);
+        }
+    }
+    false
+}
+
+fn lolbas_msiexec_package_value_operand(token: &str) -> bool {
+    let value = token.trim_matches(['"', '\'']);
     let lower_value = value.to_ascii_lowercase();
     lolbas_file_management_path_operand(value)
         || lower_value.ends_with(".msi")
