@@ -372,6 +372,9 @@ fn command_invokes_program(command: &str, wanted_stem: &str) -> bool {
         if lolbas_is_regsvr32_input_operand(&tokens, idx) {
             return false;
         }
+        if lolbas_is_rundll32_load_target_operand(&tokens, idx) {
+            return false;
+        }
         if lolbas_is_file_management_operand(&tokens, idx) {
             return false;
         }
@@ -733,6 +736,13 @@ fn lolbas_msiexec_package_value_operand(token: &str) -> bool {
 
 fn lolbas_is_regsvr32_input_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
     if idx == 0 || program_stem(tokens[0].text) != "regsvr32" {
+        return false;
+    }
+    lolbas_file_management_path_operand(tokens[idx].text)
+}
+
+fn lolbas_is_rundll32_load_target_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx != 1 || program_stem(tokens[0].text) != "rundll32" {
         return false;
     }
     lolbas_file_management_path_operand(tokens[idx].text)
