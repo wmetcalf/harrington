@@ -6328,7 +6328,7 @@ mod evidence_cleanup_prefilter_tests {
 }
 
 /// Network/IP discovery probes: nslookup, Resolve-DnsName, ping to
-/// non-loopback IPs, calls to ipify/checkip/ip-api.
+/// non-loopback IPs, calls to ipify/checkip/ip-api/geolocation APIs.
 fn scan_network_probe(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
@@ -6350,6 +6350,7 @@ fn scan_network_probe(deobfuscated: &str, env: &mut Environment) {
         "ifconfig.me",
         "ip-api.com",
         "ipinfo.io",
+        "www.geoplugin.net",
         "reallyfreegeoip.org",
     ];
     let mut push = |kind: &str, target: String| {

