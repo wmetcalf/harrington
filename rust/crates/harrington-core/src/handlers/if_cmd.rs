@@ -49,6 +49,9 @@ pub fn h_if(raw: &str, env: &mut Environment) {
             }
         }
         None => {
+            if looks_like_vbs_if_then(original_rest) {
+                return;
+            }
             env.traits.push(crate::traits::Trait::IfNotResolved {
                 condition: original_rest.to_string(),
             });
@@ -208,6 +211,29 @@ fn evaluate(
     }
 
     None
+}
+
+fn looks_like_vbs_if_then(rest: &str) -> bool {
+    let trimmed = rest.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    let Some(before_then) = lower.strip_suffix("then") else {
+        return false;
+    };
+    if !before_then.ends_with(char::is_whitespace) {
+        return false;
+    }
+    let condition = trimmed[..trimmed.len() - "then".len()].trim_end();
+    if condition.is_empty() {
+        return false;
+    }
+    let condition_lower = condition.to_ascii_lowercase();
+    if ["defined", "exist", "errorlevel", "cmdextversion", "/i"]
+        .iter()
+        .any(|kw| strip_kw(&condition_lower, kw).is_some())
+    {
+        return false;
+    }
+    condition.contains('.') || condition.contains('(') || condition.contains("<>")
 }
 
 fn normalize_comparison_operand(operand: &str, env: &Environment) -> Option<String> {

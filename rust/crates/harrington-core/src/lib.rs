@@ -8006,6 +8006,24 @@ echo done
             report.traits
         );
     }
+
+    #[test]
+    fn vbs_style_if_then_does_not_emit_batch_if_unresolved() {
+        let script = br#"If backbear.Status = 200 Then
+WScript.Echo "ok"
+End If
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                crate::traits::Trait::IfNotResolved { condition }
+                    if condition.contains("backbear.Status")
+            )),
+            "VBS If...Then line should not be reported as unresolved batch IF: {:?}",
+            report.traits
+        );
+    }
 }
 
 #[cfg(test)]
