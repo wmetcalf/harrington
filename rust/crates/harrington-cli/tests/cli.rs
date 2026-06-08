@@ -498,6 +498,70 @@ fn analyze_emits_json_to_stdout() {
 }
 
 #[test]
+fn analyze_json_includes_extracted_counts() {
+    use base64::Engine;
+
+    let payload = "Write-Host analyze-json";
+    let utf16: Vec<u8> = payload
+        .encode_utf16()
+        .flat_map(|u| u.to_le_bytes())
+        .collect();
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&utf16);
+
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(&input, format!("powershell -EncodedCommand {}", b64)).expect("write");
+
+    let out = Command::cargo_bin("harrington")
+        .expect("bin")
+        .args(["analyze", input.to_str().expect("path")])
+        .output()
+        .expect("run");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    assert!(
+        v["extracted"]["powershell"].as_u64().unwrap_or_default() >= 1,
+        "PowerShell extracted count missing from analyze JSON: {v}"
+    );
+}
+
+#[test]
+fn deob_json_only_includes_extracted_counts() {
+    use base64::Engine;
+
+    let payload = "Write-Host deob-json";
+    let utf16: Vec<u8> = payload
+        .encode_utf16()
+        .flat_map(|u| u.to_le_bytes())
+        .collect();
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&utf16);
+
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(&input, format!("powershell -EncodedCommand {}", b64)).expect("write");
+
+    let out = Command::cargo_bin("harrington")
+        .expect("bin")
+        .args(["deob", input.to_str().expect("path"), "--json-only"])
+        .output()
+        .expect("run");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    assert!(
+        v["extracted"]["powershell"].as_u64().unwrap_or_default() >= 1,
+        "PowerShell extracted count missing from deob JSON: {v}"
+    );
+}
+
+#[test]
 fn report_default_omits_raw_text_includes_full_traits() {
     let dir = TempDir::new().expect("tmp");
     let input = dir.path().join("in.bat");

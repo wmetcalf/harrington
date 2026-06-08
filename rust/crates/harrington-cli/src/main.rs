@@ -914,6 +914,15 @@ fn build_summary(
     summary
 }
 
+fn extracted_counts_json(report: &harrington_core::Report) -> serde_json::Value {
+    serde_json::json!({
+        "cmd": report.extracted_cmd.len(),
+        "powershell": report.extracted_ps1.len(),
+        "jscript": report.extracted_jscript.len(),
+        "vbs": report.extracted_vbs.len(),
+    })
+}
+
 fn lolbas_matches(report: &harrington_core::Report, index: &LolbasIndex) -> Vec<serde_json::Value> {
     let mut matches = Vec::new();
     let commands = command_lines_for_lolbas(report);
@@ -1274,12 +1283,7 @@ fn write_analyze_jsonl_report(
         "input": file,
         "input_size": input.len(),
         "deobfuscated_size": report.deobfuscated.len(),
-        "extracted": {
-            "cmd": report.extracted_cmd.len(),
-            "powershell": report.extracted_ps1.len(),
-            "jscript": report.extracted_jscript.len(),
-            "vbs": report.extracted_vbs.len(),
-        },
+        "extracted": extracted_counts_json(report),
     });
     if !write_line_to(writer, &serde_json::to_string(&meta)?)? {
         return Ok(false);
@@ -1469,6 +1473,7 @@ fn run() -> Result<()> {
                 let mut json = serde_json::json!({
                     "deobfuscated": report.deobfuscated,
                     "traits": report.traits,
+                    "extracted": extracted_counts_json(&report),
                 });
                 if let Some(matches) = lolbas_matches {
                     if let serde_json::Value::Object(ref mut obj) = json {
@@ -1519,6 +1524,7 @@ fn run() -> Result<()> {
                 let mut val = serde_json::json!({
                     "deobfuscated": report.deobfuscated,
                     "traits": report.traits,
+                    "extracted": extracted_counts_json(&report),
                 });
                 if let Some(matches) = lolbas_matches {
                     if let serde_json::Value::Object(ref mut obj) = val {
