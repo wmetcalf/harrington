@@ -437,7 +437,7 @@ fn find_js_bracket_shell_command_method_from(
             continue;
         }
         if property.eq_ignore_ascii_case("run") {
-            return Some((member_start, close + 1, false));
+            return Some((member_start, close + 1, true));
         }
         if property.eq_ignore_ascii_case("exec") {
             return Some((member_start, close + 1, true));
