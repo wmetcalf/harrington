@@ -4691,6 +4691,9 @@ fn dedup_traits(traits: &mut Vec<Trait>, max_per_kind: u32) {
         .collect();
     traits.retain(|t| match t {
         Trait::DownloadInDeobText { src, .. } => !structured_downloads.contains(src),
+        Trait::UrlArgument { cmd, url } => {
+            !(structured_downloads.contains(url) && cmd.contains(url))
+        }
         _ => true,
     });
 
@@ -12135,6 +12138,29 @@ wscript //nologo "child.vbs"
                 .iter()
                 .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
             "structured URL double-emitted as generic: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn generic_url_argument_is_removed_when_structured_download_exists() {
+        let url = "https://dedupe-urlarg.example/payload.exe";
+        let script = format!(r#""C:\Tools\rdl.exe" -LJOk {url}"#);
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::Download { src, .. } if src == url)),
+            "structured process download missing: {:?}",
+            report.traits
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::UrlArgument { url: got, .. } if got == url)),
+            "structured process download double-emitted as UrlArgument: {:?}",
             report.traits
         );
     }
