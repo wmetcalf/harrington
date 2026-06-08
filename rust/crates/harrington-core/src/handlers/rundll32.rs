@@ -25,10 +25,7 @@ pub fn h_rundll32(raw: &str, env: &mut Environment) {
         push_url_argument(raw, url, env);
     }
     let dll = strip_quotes(parts[1].split(',').next().unwrap_or(""));
-    let url = match env.modified_filesystem.get(&dll.to_ascii_lowercase()) {
-        Some(FsEntry::Download { src }) => Some(src.clone()),
-        _ => None,
-    };
+    let url = downloaded_src_for_candidate(dll, env);
     env.traits.push(Trait::Rundll32 {
         cmd: raw.to_string(),
         url,
@@ -131,12 +128,38 @@ fn download_export_prior_download_argument(parts: &[String], env: &Environment) 
         if candidate.is_empty() || candidate.starts_with(['/', '-']) {
             continue;
         }
-        let key = candidate.to_ascii_lowercase();
-        if let Some(FsEntry::Download { src }) = env.modified_filesystem.get(&key) {
-            return Some(src.clone());
+        if let Some(src) = downloaded_src_for_candidate(candidate, env) {
+            return Some(src);
         }
     }
     None
+}
+
+fn downloaded_src_for_candidate(candidate: &str, env: &Environment) -> Option<String> {
+    let key = candidate.to_ascii_lowercase();
+    if let Some(FsEntry::Download { src }) = env.modified_filesystem.get(&key) {
+        return Some(src.clone());
+    }
+    if candidate.contains(['\\', '/']) {
+        return None;
+    }
+    for (path, entry) in &env.modified_filesystem {
+        let Some(name) = windows_basename(path) else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case(candidate) {
+            if let FsEntry::Download { src } = entry {
+                return Some(src.clone());
+            }
+        }
+    }
+    None
+}
+
+fn windows_basename(path: &str) -> Option<&str> {
+    path.rsplit(['\\', '/'])
+        .next()
+        .filter(|name| !name.is_empty())
 }
 
 fn rundll32_url_launch_export(token: &str) -> bool {

