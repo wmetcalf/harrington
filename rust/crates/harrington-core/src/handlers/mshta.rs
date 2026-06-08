@@ -25,6 +25,7 @@ pub fn h_mshta(raw: &str, env: &mut Environment) {
     if let Some(url) = prior_download_url(&tokens, env) {
         push_url_argument(raw, url, env);
     }
+    queue_local_hta_script_blocks(&tokens, env);
 }
 
 fn queue_inline_script_payload(raw: &str, env: &mut Environment) {
@@ -111,6 +112,54 @@ fn prior_download_url(tokens: &[String], env: &Environment) -> Option<String> {
         }
     }
     None
+}
+
+fn queue_local_hta_script_blocks(tokens: &[String], env: &mut Environment) {
+    for token in tokens.iter().skip(1).take(8) {
+        let candidate = strip_quotes(token)
+            .trim()
+            .trim_end_matches(['"', '\'', ')', ']', '}', ';', ',']);
+        if candidate.is_empty() || candidate.starts_with(['/', '-']) {
+            continue;
+        }
+        if !is_hta_target(candidate) {
+            continue;
+        }
+        let Some(content) = tracked_hta_content(candidate, env) else {
+            continue;
+        };
+        crate::pre_scan_polyglot_script_block(&content, env);
+        break;
+    }
+}
+
+fn tracked_hta_content(candidate: &str, env: &Environment) -> Option<Vec<u8>> {
+    let key = candidate.to_ascii_lowercase();
+    if let Some(content) = content_from_entry(env.modified_filesystem.get(&key)) {
+        return Some(content);
+    }
+    if candidate.contains(['\\', '/']) {
+        return None;
+    }
+    for (path, entry) in &env.modified_filesystem {
+        let Some(name) = windows_basename(path) else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case(candidate) {
+            if let Some(content) = content_from_entry(Some(entry)) {
+                return Some(content);
+            }
+        }
+    }
+    None
+}
+
+fn content_from_entry(entry: Option<&FsEntry>) -> Option<Vec<u8>> {
+    match entry {
+        Some(FsEntry::Content { content, .. }) => Some(content.clone()),
+        Some(FsEntry::Decoded { content, .. }) => Some(content.clone()),
+        _ => None,
+    }
 }
 
 fn windows_basename(path: &str) -> Option<&str> {
