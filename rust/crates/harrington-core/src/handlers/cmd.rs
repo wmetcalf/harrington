@@ -292,7 +292,7 @@ fn contains_top_level(s: &str, ops: &[char]) -> bool {
 
 static START_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?i)^\s*start(?:\.exe)?(?:\s+(?:/(?:min|max|wait|low|normal|abovenormal|belownormal|high|realtime|b|i|w)|"[^"]*"))*\s+(?P<cmd>.+)$"#
+        r#"(?i)^\s*start(?:\.exe)?(?:\s+/(?:min|max|wait|low|normal|abovenormal|belownormal|high|realtime|b|i|w))*\s+(?:(?:"[^"]*")(?:\s+/(?:min|max|wait|low|normal|abovenormal|belownormal|high|realtime|b|i|w))*)?\s*(?P<cmd>.+)$"#
     ).expect("start regex")
 });
 
@@ -314,15 +314,14 @@ pub fn h_start(raw: &str, env: &mut Environment) {
             url,
         });
     }
-    // Strip optional quoted title: start "" /flags cmd  OR  start "title" cmd
-    // (defense-in-depth: the regex already consumes quoted titles in the prefix,
-    // but handle any that slip through)
-    let inner = strip_leading_quoted_title(inner_raw);
+    // The regex consumes the optional title. If the real command is a
+    // quoted executable, remove only that executable's quotes before dispatch.
+    let inner = unquote_start_executable(inner_raw);
     if inner.is_empty() {
         return;
     }
     // Recurse: interpret the inner command inline.
-    crate::interp::interpret_line(inner, env);
+    crate::interp::interpret_line(inner.as_ref(), env);
 }
 
 /// Extract a URL from the start of `s`, stopping at whitespace, quotes,
@@ -411,17 +410,22 @@ fn strip_quotes(s: &str) -> &str {
     }
 }
 
-fn strip_leading_quoted_title(s: &str) -> &str {
+fn unquote_start_executable(s: &str) -> Cow<'_, str> {
     let s = s.trim_start();
     if !s.starts_with('"') {
-        return s;
+        return Cow::Borrowed(s);
     }
     let after_open = &s[1..];
-    if let Some(close_idx) = after_open.find('"') {
-        let after_close = &after_open[close_idx + 1..];
-        return after_close.trim_start();
+    let Some(close_idx) = after_open.find('"') else {
+        return Cow::Borrowed(s);
+    };
+    let executable = &after_open[..close_idx];
+    let rest = after_open[close_idx + 1..].trim_start();
+    if rest.is_empty() {
+        Cow::Owned(executable.to_string())
+    } else {
+        Cow::Owned(format!("{executable} {rest}"))
     }
-    s
 }
 
 #[cfg(test)]

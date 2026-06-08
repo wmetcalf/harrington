@@ -8411,6 +8411,17 @@ mod start_tests {
             env.exec_cmd
         );
     }
+
+    #[test]
+    fn start_empty_title_flag_quoted_cmd_recurses() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(r#"start "" /B "cmd.exe" /c echo quoted-start"#, &mut env);
+        assert!(
+            env.exec_cmd.iter().any(|cmd| cmd == "echo quoted-start"),
+            "quoted start executable did not recurse into cmd: {:?}",
+            env.exec_cmd
+        );
+    }
 }
 
 #[cfg(test)]
