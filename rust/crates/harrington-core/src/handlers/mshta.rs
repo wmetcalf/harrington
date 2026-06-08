@@ -9,6 +9,7 @@ pub fn h_mshta(raw: &str, env: &mut Environment) {
     queue_inline_script_payload(raw, env);
 
     let tokens = split_words(raw);
+    let mut matched_lolbas = false;
     for token in tokens.iter().skip(1) {
         let url = strip_quotes(token);
         if let Some(src) = crate::deob_scan::normalize_liberal_url_token(url)
@@ -19,11 +20,16 @@ pub fn h_mshta(raw: &str, env: &mut Environment) {
                 src,
                 dst: None,
             });
+            matched_lolbas = true;
             break;
         }
     }
     if let Some(url) = prior_download_url(&tokens, env) {
         push_url_argument(raw, url, env);
+        matched_lolbas = true;
+    }
+    if matched_lolbas {
+        push_lolbas(raw, env);
     }
     queue_local_hta_script_blocks(&tokens, env);
 }
@@ -185,6 +191,19 @@ fn push_url_argument(raw: &str, url: String, env: &mut Environment) {
         env.traits.push(Trait::UrlArgument {
             cmd: raw.to_string(),
             url,
+        });
+    }
+}
+
+fn push_lolbas(raw: &str, env: &mut Environment) {
+    if !env
+        .traits
+        .iter()
+        .any(|t| matches!(t, Trait::Lolbas { name, cmd } if name == "mshta" && cmd == raw))
+    {
+        env.traits.push(Trait::Lolbas {
+            name: "mshta".to_string(),
+            cmd: raw.to_string(),
         });
     }
 }
