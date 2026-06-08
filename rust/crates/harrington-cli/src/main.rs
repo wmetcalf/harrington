@@ -408,6 +408,9 @@ fn command_invokes_program(command: &str, wanted_stem: &str) -> bool {
         if lolbas_is_forfiles_command_operand(&tokens, idx) {
             return false;
         }
+        if lolbas_is_cmd_echo_text_operand(&tokens, idx) {
+            return false;
+        }
         if lolbas_is_forfiles_non_exec_operand(&tokens, idx) {
             return false;
         }
@@ -978,6 +981,21 @@ fn lolbas_is_forfiles_command_operand(tokens: &[LolbasCommandToken<'_>], idx: us
                 Some(rest) if rest.starts_with("c:") || rest.starts_with("c=")
             )
         })
+}
+
+fn lolbas_is_cmd_echo_text_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx <= 2 || program_stem(tokens[0].text) != "cmd" {
+        return false;
+    }
+    let switch = tokens[1]
+        .text
+        .trim_matches(['"', '\''])
+        .to_ascii_lowercase();
+    let command = tokens[2]
+        .text
+        .trim_matches(['"', '\''])
+        .to_ascii_lowercase();
+    matches!(switch.as_str(), "/c" | "/k" | "-c" | "-k") && command == "echo"
 }
 
 fn lolbas_is_ps_process_argument_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
