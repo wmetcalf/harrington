@@ -12070,6 +12070,29 @@ mod extrac32_tests {
     }
 
     #[test]
+    fn copied_extrac32_alias_replays_copy_arguments() {
+        let report = crate::analyze(
+            br#"extrac32 /c /y "C:\Windows\System32\extrac32.exe" "C:\Users\Public\expha.pif"
+C:\Users\Public\expha.pif /c /y "C:\Windows\System32\cmd.exe" "C:\Users\Public\alpha.pif"
+"#,
+            &Config::default(),
+        );
+        let has = report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::WindowsUtilManip { src, dst, .. }
+                    if src == r#"C:\Windows\System32\cmd.exe"#
+                        && dst == r#"C:\Users\Public\alpha.pif"#
+            )
+        });
+        assert!(
+            has,
+            "copied extrac32 alias did not replay copy arguments: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn extrac32_l_option_value_is_not_treated_as_source() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
