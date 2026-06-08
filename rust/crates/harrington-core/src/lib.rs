@@ -1551,6 +1551,19 @@ echo UAC.ShellExecute "cmd.exe", "/c ""%~s0""", "", "runas", 1 >> "%temp%\getadm
     }
 
     #[test]
+    fn msconfig_exe_4_in_deob_text_emits_uac_bypass_trait() {
+        let mut env = crate::env::Environment::new(&AnalyzeConfig::default());
+        crate::deob_scan::scan_deob_text("msconfig.exe /4", &mut env);
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::UacBypass { technique } if technique == "msconfig-4")),
+            "msconfig.exe /4 was not surfaced in deob text: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn reg_add_run_key_emits_persistence_trait() {
         // `reg add HKCU\…\Run /v X /d "C:\dropper.exe" /f` is the
         // classic registry-Run persistence. Surface as Persistence
