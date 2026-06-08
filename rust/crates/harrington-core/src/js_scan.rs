@@ -428,13 +428,13 @@ fn push_downloads_from_js_shell_command_calls(
     }
 
     let mut cursor = 0usize;
-    while let Some((method_start, method_end, requires_shell_context)) =
+    while let Some((method_start, method_end, kind)) =
         find_js_bracket_shell_command_method_from(text, cursor)
     {
         if env.check_deadline() {
             return;
         }
-        if requires_shell_context && !has_nearby_wscript_shell_context(text, method_start) {
+        if !has_nearby_wscript_shell_context(text, method_start) {
             cursor = method_end;
             continue;
         }
@@ -443,21 +443,39 @@ fn push_downloads_from_js_shell_command_calls(
             continue;
         };
         let arg_start = skip_ascii_ws(text, open + 1);
-        let Some((_arg_end, command)) =
+        let Some((arg_end, mut command)) =
             parse_js_decoder_string_arg(text, arg_start, bindings, arrays)
         else {
             cursor = open + 1;
             continue;
         };
+        if matches!(kind, JsShellCommandKind::ShellExecute) {
+            let comma = skip_ascii_ws(text, arg_end);
+            if text.as_bytes().get(comma) == Some(&b',') {
+                let args_start = skip_ascii_ws(text, comma + 1);
+                if let Some((_args_end, args)) =
+                    parse_js_decoder_string_arg(text, args_start, bindings, arrays)
+                {
+                    command.push(' ');
+                    command.push_str(&args);
+                }
+            }
+        }
         push_downloads_from_js_command(env, idx, snippet_source, &command, seen);
         cursor = open + 1;
     }
 }
 
+#[derive(Clone, Copy)]
+enum JsShellCommandKind {
+    Command,
+    ShellExecute,
+}
+
 fn find_js_bracket_shell_command_method_from(
     text: &str,
     start: usize,
-) -> Option<(usize, usize, bool)> {
+) -> Option<(usize, usize, JsShellCommandKind)> {
     let bytes = text.as_bytes();
     let mut cursor = start.min(bytes.len());
     while cursor < bytes.len() {
@@ -474,10 +492,13 @@ fn find_js_bracket_shell_command_method_from(
             continue;
         }
         if property.eq_ignore_ascii_case("run") {
-            return Some((member_start, close + 1, true));
+            return Some((member_start, close + 1, JsShellCommandKind::Command));
         }
         if property.eq_ignore_ascii_case("exec") {
-            return Some((member_start, close + 1, true));
+            return Some((member_start, close + 1, JsShellCommandKind::Command));
+        }
+        if property.eq_ignore_ascii_case("shellexecute") {
+            return Some((member_start, close + 1, JsShellCommandKind::ShellExecute));
         }
         cursor = member_start + 1;
     }
