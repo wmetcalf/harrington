@@ -289,12 +289,14 @@ pub fn scan_js_payloads(env: &mut Environment) {
             }
             if has_js_shell_command_call_candidate(&candidate) {
                 let (bindings, _) = collect_js_string_bindings(&candidate);
+                let arrays = collect_js_string_array_bindings(&candidate, &bindings);
                 push_downloads_from_js_shell_command_calls(
                     env,
                     idx,
                     &concat_resolved,
                     &candidate,
                     &bindings,
+                    &arrays,
                     &mut seen,
                 );
             }
@@ -356,6 +358,7 @@ fn push_downloads_from_js_shell_command_calls(
     snippet_source: &str,
     text: &str,
     bindings: &HashMap<String, String>,
+    arrays: &HashMap<String, Vec<String>>,
     seen: &mut HashSet<(usize, String)>,
 ) {
     for (method, requires_shell_context) in
@@ -376,7 +379,9 @@ fn push_downloads_from_js_shell_command_calls(
                 continue;
             };
             let arg_start = skip_ascii_ws(text, open + 1);
-            let Some((_arg_end, command)) = eval_js_string_expr(text, arg_start, bindings) else {
+            let Some((_arg_end, command)) =
+                parse_js_decoder_string_arg(text, arg_start, bindings, arrays)
+            else {
                 cursor = open + 1;
                 continue;
             };
@@ -401,7 +406,9 @@ fn push_downloads_from_js_shell_command_calls(
             continue;
         };
         let arg_start = skip_ascii_ws(text, open + 1);
-        let Some((_arg_end, command)) = eval_js_string_expr(text, arg_start, bindings) else {
+        let Some((_arg_end, command)) =
+            parse_js_decoder_string_arg(text, arg_start, bindings, arrays)
+        else {
             cursor = open + 1;
             continue;
         };
