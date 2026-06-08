@@ -4871,7 +4871,7 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
             i += 1;
             continue;
         }
-        if lower == "-p" && tokens.get(i + 1).is_some() {
+        if raw_token == "-P" && tokens.get(i + 1).is_some() {
             dst = tokens
                 .get(i + 1)
                 .map(|s| s.trim_matches(['"', '\'', ')']).to_string());

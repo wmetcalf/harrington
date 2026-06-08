@@ -8142,6 +8142,32 @@ mod wget_tests {
     }
 
     #[test]
+    fn wget_lowercase_p_page_requisites_is_not_destination_prefix() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(r#"wget -p https://wget-page.example/index.html"#, &mut env);
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![("https://wget-page.example/index.html", None)],
+            "traits: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.modified_filesystem
+                .contains_key("https://wget-page.example/index.html"),
+            "wget page-requisites URL was tracked as a destination: {:?}",
+            env.modified_filesystem
+        );
+    }
+
+    #[test]
     fn wget_schemeless_domain_path_records_download() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
@@ -19157,6 +19183,29 @@ powershll.exe -mmand"(Nw-ject-ypame Sstem.Net.Welint).Dwnloadile('https://raw.ex
         assert_eq!(
             downloads,
             vec![("https://wget-log-deob.example/payload.bin", None)],
+            "traits: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn wget_lowercase_p_page_requisites_in_deob_text_is_not_destination_prefix() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"wget -p https://wget-page-deob.example/index.html"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![("https://wget-page-deob.example/index.html", None)],
             "traits: {:?}",
             env.traits
         );
