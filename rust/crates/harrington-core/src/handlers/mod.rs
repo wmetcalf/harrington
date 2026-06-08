@@ -21,6 +21,7 @@ pub mod forfiles;
 pub mod goto;
 pub mod hh;
 pub mod if_cmd;
+pub mod msconfig;
 pub mod mshta;
 pub mod msiexec;
 pub mod net;
@@ -63,6 +64,7 @@ pub fn lookup(name: &str) -> Option<Handler> {
         "esentutl" => return Some(esentutl::h_esentutl),
         "forfiles" => return Some(forfiles::h_forfiles),
         "hh" => return Some(hh::h_hh),
+        "msconfig" => return Some(msconfig::h_msconfig),
         "brave" | "chrome" | "explorer" | "firefox" | "iexplore" | "msedge" | "opera" => {
             return Some(url_launch::h_url_launch);
         }
