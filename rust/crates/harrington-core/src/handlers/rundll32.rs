@@ -25,7 +25,7 @@ pub fn h_rundll32(raw: &str, env: &mut Environment) {
         push_url_argument(raw, url, env);
     }
     let dll = strip_quotes(parts[1].split(',').next().unwrap_or(""));
-    let url = downloaded_src_for_candidate(dll, env);
+    let url = downloaded_src_for_candidate(dll, env).or_else(|| webdav_url_for_candidate(dll));
     env.traits.push(Trait::Rundll32 {
         cmd: raw.to_string(),
         url,
@@ -154,6 +154,38 @@ fn downloaded_src_for_candidate(candidate: &str, env: &Environment) -> Option<St
         }
     }
     None
+}
+
+fn webdav_url_for_candidate(candidate: &str) -> Option<String> {
+    let candidate = trim_arg_suffix(strip_quotes(candidate)).trim();
+    if !candidate.starts_with(r"\\")
+        || !contains_ascii_case_insensitive(candidate, r"\davwwwroot\")
+        || !candidate.contains('@')
+    {
+        return None;
+    }
+    let parts: Vec<&str> = candidate
+        .split('\\')
+        .filter(|part| !part.is_empty())
+        .collect();
+    let host_port = parts.first()?;
+    let (host, port) = host_port.split_once('@')?;
+    if host.is_empty() || port.is_empty() {
+        return None;
+    }
+    Some(crate::deob_scan::unc_webdav_to_http_url(
+        host, port, candidate,
+    ))
+}
+
+fn contains_ascii_case_insensitive(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
 }
 
 fn windows_basename(path: &str) -> Option<&str> {
