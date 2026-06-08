@@ -683,9 +683,42 @@ fn has_python_download_scan_atom(text: &str) -> bool {
 }
 
 fn has_python_direct_download_scan_atom(text: &str) -> bool {
-    ["requests", "httpx", "urllib", "urlopen", "urlretrieve"]
-        .iter()
-        .any(|atom| find_ascii_case_insensitive(text, atom, 0).is_some())
+    [
+        "requests.get",
+        "requests.post",
+        "requests.put",
+        "requests.patch",
+        "requests.delete",
+        "requests.head",
+        "requests.options",
+        "requests.request",
+        "httpx.get",
+        "httpx.post",
+        "httpx.put",
+        "httpx.patch",
+        "httpx.delete",
+        "httpx.head",
+        "httpx.options",
+        "httpx.request",
+        "httpx.client",
+        "urllib.",
+        "urlopen(",
+        "urlretrieve(",
+        "import requests",
+        "import httpx",
+        "import urllib",
+        "from requests",
+        "from httpx",
+        "from urllib",
+        "__import__('requests')",
+        "__import__(\"requests\")",
+        "__import__('httpx')",
+        "__import__(\"httpx\")",
+        "__import__('urllib')",
+        "__import__(\"urllib\")",
+    ]
+    .iter()
+    .any(|atom| find_ascii_case_insensitive(text, atom, 0).is_some())
 }
 
 fn has_python_base64_decode_scan_atom(text: &str) -> bool {
@@ -725,6 +758,13 @@ mod python_download_prefilter_tests {
     fn prefilter_blocks_base64_import_without_decoder() {
         assert!(!has_python_download_scan_atom(
             "import base64; print(base64.standard_b64encode(b'data'))"
+        ));
+    }
+
+    #[test]
+    fn prefilter_blocks_html_prose_with_python_words() {
+        assert!(!has_python_download_scan_atom(
+            r#"<a href="/pulls">Pull requests</a><link href="https://example.test/urllib-doc.css">"#
         ));
     }
 }
