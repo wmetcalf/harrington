@@ -381,6 +381,9 @@ fn command_invokes_program(command: &str, wanted_stem: &str) -> bool {
         if lolbas_is_extrac32_path_operand(&tokens, idx) {
             return false;
         }
+        if lolbas_is_uac_helper_path_operand(&tokens, idx) {
+            return false;
+        }
         if lolbas_is_file_management_operand(&tokens, idx) {
             return false;
         }
@@ -787,6 +790,16 @@ fn lolbas_is_extrac32_path_operand(tokens: &[LolbasCommandToken<'_>], idx: usize
     idx > 0
         && program_stem(tokens[0].text) == "extrac32"
         && lolbas_file_management_path_operand(tokens[idx].text)
+}
+
+fn lolbas_is_uac_helper_path_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx == 0 || !lolbas_file_management_path_operand(tokens[idx].text) {
+        return false;
+    }
+    matches!(
+        program_stem(tokens[0].text).as_str(),
+        "cmstp" | "msconfig" | "fodhelper" | "eventvwr" | "sdclt" | "computerdefaults" | "wsreset"
+    )
 }
 
 fn lolbas_is_file_management_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
