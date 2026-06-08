@@ -6676,41 +6676,61 @@ fn scan_enumeration(deobfuscated: &str, env: &mut Environment) {
 
     use once_cell::sync::Lazy;
     use regex::Regex;
-    static PATTERNS: Lazy<Vec<(Regex, &str)>> = Lazy::new(|| {
+    static PATTERNS: Lazy<Vec<(Regex, &str, bool)>> = Lazy::new(|| {
         vec![
             (
                 Regex::new(r"(?im)^[^\r\n]*?\bnet(?:\.exe)?\s+(?:user|group|localgroup)\b[^\r\n]*")
                     .unwrap(),
                 "net-user",
+                false,
             ),
             (
                 Regex::new(r"(?i)\bwhoami(?:\.exe)?\s+/(?:priv|groups|all)\b").unwrap(),
                 "whoami-priv",
+                false,
             ),
             (
                 Regex::new(r"(?i)\b(?:query\s+session|quser)\b").unwrap(),
                 "query-session",
+                false,
             ),
             (
                 Regex::new(r"(?i)\bGet-LocalUser\b").unwrap(),
                 "get-localuser",
+                false,
             ),
             (
                 Regex::new(r"(?i)\bGet-NetUser\b|\bGet-NetGroup\b").unwrap(),
                 "powerview-get",
+                false,
             ),
             (
                 Regex::new(r"(?i)\bsysteminfo(?:\.exe)?\b").unwrap(),
                 "systeminfo",
+                false,
             ),
             (
                 Regex::new(r"(?i)\b(?:tasklist|wmic\s+process)\b").unwrap(),
                 "tasklist",
+                false,
+            ),
+            (
+                Regex::new(
+                    r"(?im)\bwmic(?:\.exe)?\s+(?:cpu|computersystem|logicaldisk|partition|path\s+softwareLicensingService)\b[^\r\n]*?\bget\b[^\r\n]*",
+                )
+                .unwrap(),
+                "wmic-enum",
+                true,
             ),
         ]
     });
-    for (re, kind) in PATTERNS.iter() {
-        if let Some(m) = re.find(deobfuscated) {
+    for (re, kind, multi) in PATTERNS.iter() {
+        let matches: Box<dyn Iterator<Item = regex::Match<'_>> + '_> = if *multi {
+            Box::new(re.find_iter(deobfuscated))
+        } else {
+            Box::new(re.find(deobfuscated).into_iter())
+        };
+        for m in matches {
             let cmd = m
                 .as_str()
                 .chars()
@@ -6718,9 +6738,16 @@ fn scan_enumeration(deobfuscated: &str, env: &mut Environment) {
                 .collect::<String>()
                 .trim()
                 .to_string();
+            let cmd = if *kind == "wmic-enum" {
+                sanitize_wmic_enum_command(&cmd)
+            } else {
+                cmd
+            };
             if env.traits.iter().any(|t| {
                 matches!(
-                    t, crate::traits::Trait::Enumeration { enum_kind: k, command: _ } if k == kind
+                    t,
+                    crate::traits::Trait::Enumeration { enum_kind: k, command }
+                        if k == kind && (!*multi || command == &cmd)
                 )
             }) {
                 continue;
@@ -6731,6 +6758,20 @@ fn scan_enumeration(deobfuscated: &str, env: &mut Environment) {
             });
         }
     }
+}
+
+fn sanitize_wmic_enum_command(command: &str) -> String {
+    let mut end = command.len();
+    for marker in ["') do", "\") do", "` ) do", "`n", "\\n"] {
+        if let Some(idx) = command.find(marker) {
+            end = end.min(idx);
+        }
+    }
+    command[..end]
+        .trim()
+        .trim_end_matches(['\'', ')'])
+        .trim()
+        .to_string()
 }
 
 fn has_enumeration_atom(text: &str) -> bool {
@@ -6746,6 +6787,11 @@ fn has_enumeration_atom(text: &str) -> bool {
         "systeminfo",
         "tasklist",
         "wmic process",
+        "wmic cpu",
+        "wmic computersystem",
+        "wmic logicaldisk",
+        "wmic partition",
+        "wmic path softwarelicensingservice",
     ]
     .iter()
     .any(|atom| lower.contains(atom))
@@ -6767,6 +6813,9 @@ mod enumeration_prefilter_tests {
             "systeminfo",
             "tasklist",
             "wmic process list",
+            "wmic cpu get name",
+            "wmic logicaldisk get size",
+            "wmic path softwareLicensingService get OA3xOriginalProductKey",
         ] {
             assert!(has_enumeration_atom(sample), "blocked: {sample}");
         }

