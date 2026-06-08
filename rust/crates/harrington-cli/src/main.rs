@@ -441,6 +441,10 @@ fn lolbas_non_exec_value_option(token: &str) -> bool {
             | "/outfile"
             | "-outf"
             | "/outf"
+            | "-destination"
+            | "/destination"
+            | "-dest"
+            | "/dest"
     )
 }
 
@@ -460,6 +464,14 @@ fn lolbas_attached_non_exec_value_option(token: &str) -> bool {
         || lower.starts_with("-outf=")
         || lower.starts_with("/outf:")
         || lower.starts_with("/outf=")
+        || lower.starts_with("-destination:")
+        || lower.starts_with("-destination=")
+        || lower.starts_with("/destination:")
+        || lower.starts_with("/destination=")
+        || lower.starts_with("-dest:")
+        || lower.starts_with("-dest=")
+        || lower.starts_with("/dest:")
+        || lower.starts_with("/dest=")
         || (lower.len() > 2
             && (lower.starts_with("-o") || lower.starts_with("/o"))
             && lower[2..].contains(['\\', '/']))
