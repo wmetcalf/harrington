@@ -375,6 +375,9 @@ fn command_invokes_program(command: &str, wanted_stem: &str) -> bool {
         if lolbas_is_rundll32_load_target_operand(&tokens, idx) {
             return false;
         }
+        if lolbas_is_esentutl_copy_operand(&tokens, idx) {
+            return false;
+        }
         if lolbas_is_file_management_operand(&tokens, idx) {
             return false;
         }
@@ -746,6 +749,35 @@ fn lolbas_is_rundll32_load_target_operand(tokens: &[LolbasCommandToken<'_>], idx
         return false;
     }
     lolbas_file_management_path_operand(tokens[idx].text)
+}
+
+fn lolbas_is_esentutl_copy_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx == 0 || program_stem(tokens[0].text) != "esentutl" {
+        return false;
+    }
+    if !tokens.iter().take(idx).any(|token| {
+        matches!(
+            token
+                .text
+                .trim_matches(['"', '\''])
+                .to_ascii_lowercase()
+                .as_str(),
+            "/y" | "-y"
+        )
+    }) {
+        return false;
+    }
+    if !lolbas_file_management_path_operand(tokens[idx].text) {
+        return false;
+    }
+    matches!(
+        tokens[idx - 1]
+            .text
+            .trim_matches(['"', '\''])
+            .to_ascii_lowercase()
+            .as_str(),
+        "/y" | "-y" | "/d" | "-d"
+    )
 }
 
 fn lolbas_is_file_management_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
