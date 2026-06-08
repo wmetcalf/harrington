@@ -392,6 +392,9 @@ fn command_invokes_program(command: &str, wanted_stem: &str) -> bool {
         if lolbas_attached_ps_process_exec_operand(&tokens, idx, wanted_stem) {
             return true;
         }
+        if lolbas_attached_ps_process_non_exec_operand(&tokens, idx) {
+            return false;
+        }
         if lolbas_attached_non_exec_value_option(token.text) {
             return false;
         }
@@ -862,6 +865,67 @@ fn lolbas_attached_ps_process_exec_operand(
         }
     }
     false
+}
+
+fn lolbas_attached_ps_process_non_exec_operand(
+    tokens: &[LolbasCommandToken<'_>],
+    idx: usize,
+) -> bool {
+    if idx == 0 || !ps_lolbas_process_launch_line(tokens[0].text) {
+        return false;
+    }
+    let lower = tokens[idx]
+        .text
+        .trim_matches(['"', '\''])
+        .to_ascii_lowercase();
+    [
+        "-argumentlist:",
+        "/argumentlist:",
+        "-argumentlist=",
+        "/argumentlist=",
+        "-args:",
+        "/args:",
+        "-args=",
+        "/args=",
+        "-workingdirectory:",
+        "/workingdirectory:",
+        "-workingdirectory=",
+        "/workingdirectory=",
+        "-wd:",
+        "/wd:",
+        "-wd=",
+        "/wd=",
+        "-redirectstandarderror:",
+        "/redirectstandarderror:",
+        "-redirectstandarderror=",
+        "/redirectstandarderror=",
+        "-redirectstandardinput:",
+        "/redirectstandardinput:",
+        "-redirectstandardinput=",
+        "/redirectstandardinput=",
+        "-redirectstandardoutput:",
+        "/redirectstandardoutput:",
+        "-redirectstandardoutput=",
+        "/redirectstandardoutput=",
+        "-credential:",
+        "/credential:",
+        "-credential=",
+        "/credential=",
+        "-environment:",
+        "/environment:",
+        "-environment=",
+        "/environment=",
+        "-verb:",
+        "/verb:",
+        "-verb=",
+        "/verb=",
+        "-windowstyle:",
+        "/windowstyle:",
+        "-windowstyle=",
+        "/windowstyle=",
+    ]
+    .iter()
+    .any(|prefix| lower.starts_with(prefix))
 }
 
 fn is_url_like_program_token(token: &str) -> bool {
