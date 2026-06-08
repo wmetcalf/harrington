@@ -178,19 +178,32 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
             push_downloads_from_vbs_command(env, idx, &text, &command, &dst_hint, &mut seen);
         }
 
-        for (program_expr, args_expr) in extract_shell_execute_command_exprs(&text) {
+        for (program_expr, args_expr, verb_expr) in extract_shell_execute_command_exprs(&text) {
             if env.check_deadline() {
                 break 'payloads;
             }
-            let Some(mut command) = eval_vbs_string_expr(program_expr, &bindings, &array_bindings)
+            let Some(program) = eval_vbs_string_expr(program_expr, &bindings, &array_bindings)
             else {
                 continue;
             };
+            let mut args_value = None;
+            let mut command = program.clone();
             if let Some(args_expr) = args_expr {
                 if let Some(args) = eval_vbs_string_expr(args_expr, &bindings, &array_bindings) {
                     if !args.trim().is_empty() {
                         command.push(' ');
                         command.push_str(&args);
+                        args_value = Some(args);
+                    }
+                }
+            }
+            if let Some(verb_expr) = verb_expr {
+                if let Some(verb) = eval_vbs_string_expr(verb_expr, &bindings, &array_bindings) {
+                    if verb.trim().eq_ignore_ascii_case("runas") {
+                        env.traits.push(Trait::SelfElevation {
+                            target: program.clone(),
+                            args: args_value.clone(),
+                        });
                     }
                 }
             }
@@ -281,7 +294,7 @@ fn extract_shell_run_command_exprs(text: &str) -> Vec<&str> {
     out
 }
 
-fn extract_shell_execute_command_exprs(text: &str) -> Vec<(&str, Option<&str>)> {
+fn extract_shell_execute_command_exprs(text: &str) -> Vec<(&str, Option<&str>, Option<&str>)> {
     let mut out = Vec::new();
     for line in text.lines() {
         let lower = line.to_ascii_lowercase();
@@ -300,7 +313,7 @@ fn extract_shell_execute_command_exprs(text: &str) -> Vec<(&str, Option<&str>)> 
             }
             let parts = split_vbs_args(args);
             if let Some(program) = parts.first() {
-                out.push((*program, parts.get(1).copied()));
+                out.push((*program, parts.get(1).copied(), parts.get(3).copied()));
             }
             cursor = args_start;
         }

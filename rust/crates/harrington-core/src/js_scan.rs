@@ -407,21 +407,29 @@ fn push_downloads_from_js_shell_command_calls(
             continue;
         };
         let arg_start = skip_ascii_ws(text, open + 1);
-        let Some((program_end, mut command)) =
+        let Some((program_end, program)) =
             parse_js_decoder_string_arg(text, arg_start, bindings, arrays)
         else {
             cursor = open + 1;
             continue;
         };
+        let mut command = program.clone();
+        let mut args_value = None;
         let comma = skip_ascii_ws(text, program_end);
+        let mut args_end = program_end;
         if text.as_bytes().get(comma) == Some(&b',') {
             let args_start = skip_ascii_ws(text, comma + 1);
-            if let Some((_args_end, args)) =
+            if let Some((parsed_args_end, args)) =
                 parse_js_decoder_string_arg(text, args_start, bindings, arrays)
             {
+                args_end = parsed_args_end;
                 command.push(' ');
                 command.push_str(&args);
+                args_value = Some(args);
             }
+        }
+        if let Some(verb) = parse_js_shell_execute_verb_arg(text, args_end, bindings, arrays) {
+            push_js_shell_execute_self_elevation(env, &program, args_value.as_deref(), &verb);
         }
         push_downloads_from_js_command(env, idx, snippet_source, &command, seen);
         cursor = open + 1;
@@ -449,27 +457,72 @@ fn push_downloads_from_js_shell_command_calls(
             continue;
         };
         let arg_start = skip_ascii_ws(text, open + 1);
-        let Some((arg_end, mut command)) =
+        let Some((arg_end, program)) =
             parse_js_decoder_string_arg(text, arg_start, bindings, arrays)
         else {
             cursor = open + 1;
             continue;
         };
+        let mut command = program.clone();
         if matches!(kind, JsShellCommandKind::ShellExecute) {
             let comma = skip_ascii_ws(text, arg_end);
+            let mut args_end = arg_end;
+            let mut args_value = None;
             if text.as_bytes().get(comma) == Some(&b',') {
                 let args_start = skip_ascii_ws(text, comma + 1);
-                if let Some((_args_end, args)) =
+                if let Some((parsed_args_end, args)) =
                     parse_js_decoder_string_arg(text, args_start, bindings, arrays)
                 {
+                    args_end = parsed_args_end;
                     command.push(' ');
                     command.push_str(&args);
+                    args_value = Some(args);
                 }
+            }
+            if let Some(verb) = parse_js_shell_execute_verb_arg(text, args_end, bindings, arrays) {
+                push_js_shell_execute_self_elevation(env, &program, args_value.as_deref(), &verb);
             }
         }
         push_downloads_from_js_command(env, idx, snippet_source, &command, seen);
         cursor = open + 1;
     }
+}
+
+fn parse_js_shell_execute_verb_arg(
+    text: &str,
+    args_end: usize,
+    bindings: &HashMap<String, String>,
+    arrays: &HashMap<String, Vec<String>>,
+) -> Option<String> {
+    let comma = skip_ascii_ws(text, args_end);
+    if text.as_bytes().get(comma) != Some(&b',') {
+        return None;
+    }
+    let dir_start = skip_ascii_ws(text, comma + 1);
+    let (dir_end, _) = parse_js_decoder_string_arg(text, dir_start, bindings, arrays)?;
+    let comma = skip_ascii_ws(text, dir_end);
+    if text.as_bytes().get(comma) != Some(&b',') {
+        return None;
+    }
+    let verb_start = skip_ascii_ws(text, comma + 1);
+    parse_js_decoder_string_arg(text, verb_start, bindings, arrays).map(|(_, verb)| verb)
+}
+
+fn push_js_shell_execute_self_elevation(
+    env: &mut Environment,
+    program: &str,
+    args: Option<&str>,
+    verb: &str,
+) {
+    if !verb.trim().eq_ignore_ascii_case("runas") {
+        return;
+    }
+    env.traits.push(Trait::SelfElevation {
+        target: program.to_string(),
+        args: args
+            .map(str::to_string)
+            .filter(|value| !value.trim().is_empty()),
+    });
 }
 
 #[derive(Clone, Copy)]
