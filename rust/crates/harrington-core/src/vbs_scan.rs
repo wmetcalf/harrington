@@ -178,6 +178,25 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
             push_downloads_from_vbs_command(env, idx, &text, &command, &dst_hint, &mut seen);
         }
 
+        for (program_expr, args_expr) in extract_shell_execute_command_exprs(&text) {
+            if env.check_deadline() {
+                break 'payloads;
+            }
+            let Some(mut command) = eval_vbs_string_expr(program_expr, &bindings, &array_bindings)
+            else {
+                continue;
+            };
+            if let Some(args_expr) = args_expr {
+                if let Some(args) = eval_vbs_string_expr(args_expr, &bindings, &array_bindings) {
+                    if !args.trim().is_empty() {
+                        command.push(' ');
+                        command.push_str(&args);
+                    }
+                }
+            }
+            push_downloads_from_vbs_command(env, idx, &text, &command, &dst_hint, &mut seen);
+        }
+
         for expr in extract_xmlhttp_open_url_exprs(&text) {
             if env.check_deadline() {
                 break 'payloads;
@@ -257,6 +276,33 @@ fn extract_shell_run_command_exprs(text: &str) -> Vec<&str> {
                 }
                 cursor = args_start;
             }
+        }
+    }
+    out
+}
+
+fn extract_shell_execute_command_exprs(text: &str) -> Vec<(&str, Option<&str>)> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let lower = line.to_ascii_lowercase();
+        let mut cursor = 0usize;
+        while let Some(rel) = lower[cursor..].find(".shellexecute") {
+            let method_start = cursor + rel;
+            let args_start = method_start + ".shellexecute".len();
+            let next = line[args_start..].chars().next();
+            if !next.is_some_and(|c| c.is_ascii_whitespace() || c == '(') {
+                cursor = args_start;
+                continue;
+            }
+            let mut args = line[args_start..].trim_start();
+            if let Some(rest) = args.strip_prefix('(') {
+                args = rest;
+            }
+            let parts = split_vbs_args(args);
+            if let Some(program) = parts.first() {
+                out.push((*program, parts.get(1).copied()));
+            }
+            cursor = args_start;
         }
     }
     out
