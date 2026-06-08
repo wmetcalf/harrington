@@ -140,10 +140,9 @@ fn track_rename_like(raw: &str, env: &mut Environment, options: &[&str]) {
 }
 
 fn copied_entry(src: &str, env: &Environment) -> Option<FsEntry> {
-    match env.modified_filesystem.get(&src.to_ascii_lowercase()) {
-        Some(FsEntry::Download { src }) => Some(FsEntry::Download { src: src.clone() }),
-        _ => None,
-    }
+    env.modified_filesystem
+        .get(&src.to_ascii_lowercase())
+        .cloned()
 }
 
 fn is_windows_util_copy(src: &str, dst: &str) -> bool {
