@@ -9,6 +9,9 @@ pub fn h_regsvr32(raw: &str, env: &mut Environment) {
     if regsvr32_remote_unc_target_after(&tokens, 1) {
         push_lolbas(raw, env);
     }
+    if let Some(url) = regsvr32_webdav_url_after(&tokens, 1) {
+        push_url_argument(raw, url, env);
+    }
     if let Some(url) = regsvr32_scriptlet_url_after(&tokens, 1) {
         env.traits.push(Trait::UrlArgument {
             cmd: raw.to_string(),
@@ -46,13 +49,15 @@ fn regsvr32_scriptlet_url_after(tokens: &[String], start: usize) -> Option<Strin
 }
 
 fn regsvr32_remote_unc_target_after(tokens: &[String], start: usize) -> bool {
+    regsvr32_webdav_url_after(tokens, start).is_some()
+}
+
+fn regsvr32_webdav_url_after(tokens: &[String], start: usize) -> Option<String> {
     let limit = tokens.len().min(start.saturating_add(12));
-    tokens[start..limit].iter().any(|token| {
-        let token = strip_quotes(token);
-        token.starts_with(r"\\")
-            && token.to_ascii_lowercase().contains(r"\davwwwroot\")
-            && regsvr32_loadable_target(token)
-    })
+    tokens[start..limit]
+        .iter()
+        .map(|token| strip_quotes(token))
+        .find_map(webdav_url_for_candidate)
 }
 
 fn regsvr32_loadable_target(token: &str) -> bool {
@@ -119,6 +124,39 @@ fn downloaded_src_for_candidate(candidate: &str, env: &Environment) -> Option<St
         }
     }
     None
+}
+
+fn webdav_url_for_candidate(candidate: &str) -> Option<String> {
+    let candidate = trim_url_suffix(strip_quotes(candidate)).trim();
+    if !candidate.starts_with(r"\\")
+        || !contains_ascii_case_insensitive(candidate, r"\davwwwroot\")
+        || !candidate.contains('@')
+        || !regsvr32_loadable_target(candidate)
+    {
+        return None;
+    }
+    let parts: Vec<&str> = candidate
+        .split('\\')
+        .filter(|part| !part.is_empty())
+        .collect();
+    let host_port = parts.first()?;
+    let (host, port) = host_port.split_once('@')?;
+    if host.is_empty() || port.is_empty() {
+        return None;
+    }
+    Some(crate::deob_scan::unc_webdav_to_http_url(
+        host, port, candidate,
+    ))
+}
+
+fn contains_ascii_case_insensitive(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
 }
 
 fn windows_basename(path: &str) -> Option<&str> {

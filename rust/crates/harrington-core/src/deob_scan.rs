@@ -10345,21 +10345,11 @@ pub fn scan_unc_webdav(deobfuscated: &str, env: &mut Environment) {
             if cmd != "regsvr32" && cmd != "regsvr32.exe" {
                 continue;
             }
-            if tokens
-                .iter()
-                .skip(i + 1)
-                .take(12)
-                .map(|token| strip_quotes(token))
-                .any(|token| {
-                    contains_ascii_case_insensitive_atom(token, b"davwwwroot")
-                        && token.contains(r"\\")
-                        && token.contains('@')
-                        && regsvr32_loadable_target(token)
-                })
-            {
-                let command = line.chars().take(240).collect::<String>();
-                push_lolbas_once(env, "regsvr32", &command);
-            }
+            let Some((command, url)) = regsvr32_webdav_target_after(line, &tokens, i + 1) else {
+                continue;
+            };
+            push_lolbas_once(env, "regsvr32", &command);
+            push_url_argument_once(env, &command, url);
         }
         for (i, token) in tokens.iter().enumerate() {
             let cmd = command_name(strip_quotes(token));
@@ -10408,6 +10398,30 @@ pub fn scan_unc_webdav(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
+fn regsvr32_webdav_target_after(
+    line: &str,
+    tokens: &[String],
+    start: usize,
+) -> Option<(String, String)> {
+    let limit = tokens.len().min(start.saturating_add(12));
+    for token in &tokens[start..limit] {
+        let candidate = strip_quotes(token);
+        if !regsvr32_webdav_loadable_target(candidate) {
+            continue;
+        }
+        let url = webdav_unc_to_http_url(candidate)?;
+        return Some((line.chars().take(240).collect::<String>(), url));
+    }
+    None
+}
+
+fn regsvr32_webdav_loadable_target(token: &str) -> bool {
+    contains_ascii_case_insensitive_atom(token, b"davwwwroot")
+        && token.contains(r"\\")
+        && token.contains('@')
+        && regsvr32_loadable_target(token)
+}
+
 fn rundll32_webdav_target_after(
     line: &str,
     tokens: &[String],
@@ -10444,6 +10458,24 @@ fn webdav_unc_to_http_url(unc: &str) -> Option<String> {
         return None;
     }
     Some(unc_webdav_to_http_url(host, port, unc))
+}
+
+fn push_url_argument_once(env: &mut Environment, cmd: &str, url: String) {
+    if env.traits.iter().any(|t| {
+        matches!(
+            t,
+            Trait::UrlArgument {
+                url: existing_url,
+                ..
+            } if existing_url == &url
+        )
+    }) {
+        return;
+    }
+    env.traits.push(Trait::UrlArgument {
+        cmd: cmd.to_string(),
+        url,
+    });
 }
 
 fn push_rundll32_once(env: &mut Environment, cmd: &str, url: String) {

