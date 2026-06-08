@@ -9,6 +9,10 @@ pub fn h_certutil(raw: &str, env: &mut Environment) {
     let tokens = split_words(raw);
     let lower: Vec<String> = tokens.iter().map(|s| s.to_ascii_lowercase()).collect();
 
+    if certutil_lolbas_use(&lower) {
+        push_lolbas(raw, env);
+    }
+
     // -urlcache/-verifyctl -split -f URL DST
     if lower.iter().any(|t| {
         matches!(
@@ -99,6 +103,40 @@ pub fn h_certutil(raw: &str, env: &mut Environment) {
                 },
             );
         }
+    }
+}
+
+fn certutil_lolbas_use(lower_tokens: &[String]) -> bool {
+    lower_tokens.iter().skip(1).any(|token| {
+        matches!(
+            token.as_str(),
+            "-decode"
+                | "/decode"
+                | "-decodehex"
+                | "/decodehex"
+                | "-encode"
+                | "/encode"
+                | "-encodehex"
+                | "/encodehex"
+                | "-urlcache"
+                | "/urlcache"
+                | "-verifyctl"
+                | "/verifyctl"
+        )
+    })
+}
+
+fn push_lolbas(raw: &str, env: &mut Environment) {
+    if !env.traits.iter().any(|t| {
+        matches!(
+            t,
+            Trait::Lolbas { name, cmd } if name == "certutil" && cmd == raw
+        )
+    }) {
+        env.traits.push(Trait::Lolbas {
+            name: "certutil".to_string(),
+            cmd: raw.to_string(),
+        });
     }
 }
 

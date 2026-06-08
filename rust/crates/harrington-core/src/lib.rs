@@ -11604,6 +11604,21 @@ mod certutil_tests {
     }
 
     #[test]
+    fn certutil_encode_emits_lolbas_trait() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(r#"certutil -encode "%%~A" "%%~nA.enc""#, &mut env);
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Lolbas { name, cmd }
+                    if name == "certutil" && cmd == r#"certutil -encode "%%~A" "%%~nA.enc""#
+            )),
+            "certutil -encode did not emit LOLBAS provenance: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn certutil_decode_unresolved_src_still_emits_trait() {
         let mut env = Environment::new(&Config::default());
         interpret_line("certutil -decode missing.b64 dst.bin", &mut env);
