@@ -122,6 +122,20 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<WgetDes
                 continue;
             }
         }
+        if let Some(rest) = short_option_cluster_directory_prefix(raw_token) {
+            if rest.is_empty() {
+                dst = tokens.get(i + 1).map(|s| {
+                    WgetDestination::DirectoryPrefix(s.trim_matches(['"', '\'', ')']).to_string())
+                });
+                i += 2;
+            } else {
+                dst = Some(WgetDestination::DirectoryPrefix(
+                    rest.trim_matches(['"', '\'', ')']).to_string(),
+                ));
+                i += 1;
+            }
+            continue;
+        }
         if lower == "--directory-prefix" && tokens.get(i + 1).is_some() {
             dst = tokens.get(i + 1).map(|s| {
                 WgetDestination::DirectoryPrefix(s.trim_matches(['"', '\'', ')']).to_string())
@@ -224,6 +238,15 @@ fn short_option_cluster_output(token: &str) -> Option<&str> {
         return None;
     }
     let idx = cluster.find('O')?;
+    Some(&cluster[idx + 1..])
+}
+
+fn short_option_cluster_directory_prefix(token: &str) -> Option<&str> {
+    let cluster = token.strip_prefix('-')?;
+    if cluster.starts_with('-') || cluster.len() <= 1 {
+        return None;
+    }
+    let idx = cluster.find('P')?;
     Some(&cluster[idx + 1..])
 }
 

