@@ -10222,6 +10222,31 @@ pub fn unc_webdav_to_http_url(host: &str, port: &str, share_path: &str) -> Strin
 }
 
 pub fn scan_unc_webdav(deobfuscated: &str, env: &mut Environment) {
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        for (i, token) in tokens.iter().enumerate() {
+            let cmd = command_name(strip_quotes(token));
+            if cmd != "regsvr32" && cmd != "regsvr32.exe" {
+                continue;
+            }
+            if tokens
+                .iter()
+                .skip(i + 1)
+                .take(12)
+                .map(|token| strip_quotes(token))
+                .any(|token| {
+                    contains_ascii_case_insensitive_atom(token, b"davwwwroot")
+                        && token.contains(r"\\")
+                        && token.contains('@')
+                        && regsvr32_loadable_target(token)
+                })
+            {
+                let command = line.chars().take(240).collect::<String>();
+                push_lolbas_once(env, "regsvr32", &command);
+            }
+        }
+    }
+
     // Dedup by (host, port) — same WebDAV server on the same port is one C2 regardless
     // of which share path or file within it was accessed.
     let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
@@ -10255,6 +10280,24 @@ pub fn scan_unc_webdav(deobfuscated: &str, env: &mut Environment) {
             http_url,
         });
     }
+}
+
+fn push_lolbas_once(env: &mut Environment, name: &str, cmd: &str) {
+    if env.traits.iter().any(|t| {
+        matches!(
+            t,
+            Trait::Lolbas {
+                name: existing_name,
+                cmd: existing_cmd,
+            } if existing_name == name && existing_cmd == cmd
+        )
+    }) {
+        return;
+    }
+    env.traits.push(Trait::Lolbas {
+        name: name.to_string(),
+        cmd: cmd.to_string(),
+    });
 }
 
 #[cfg(test)]

