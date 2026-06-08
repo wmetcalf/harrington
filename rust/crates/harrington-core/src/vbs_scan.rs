@@ -84,6 +84,11 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
                     array_bindings.insert(key, values);
                     continue;
                 }
+                if !bindings.contains_key(&key)
+                    && vbs_concat_expr_references_name(value.as_str(), &key)
+                {
+                    bindings.insert(key.clone(), String::new());
+                }
                 let Some(value) = eval_vbs_string_expr(value.as_str(), &bindings, &array_bindings)
                 else {
                     continue;
@@ -437,7 +442,7 @@ fn push_downloads_from_vbs_command(
 
     for token in command.split_ascii_whitespace() {
         let candidate = token.trim_matches(['"', '\'', '(', ')', '[', ']', '{', '}', ',', ';']);
-        let Some(url) = crate::deob_scan::normalize_schemeless_domain_path_token(candidate) else {
+        let Some(url) = normalize_vbs_command_token_url(candidate) else {
             continue;
         };
         if crate::deob_scan::is_noise_url(&url) || !seen.insert((idx, url.clone())) {
@@ -450,6 +455,16 @@ fn push_downloads_from_vbs_command(
             dst: dst_hint.clone(),
         });
     }
+}
+
+fn normalize_vbs_command_token_url(candidate: &str) -> Option<String> {
+    crate::deob_scan::normalize_schemeless_domain_path_token(candidate).or_else(|| {
+        candidate
+            .to_ascii_lowercase()
+            .starts_with("ttp://")
+            .then(|| format!("h{candidate}"))
+            .and_then(|repaired| crate::deob_scan::normalize_liberal_url_token(&repaired))
+    })
 }
 
 fn join_vbs_line_continuations(text: &str) -> String {
@@ -692,6 +707,14 @@ fn eval_vbs_string_expr(
         return None;
     }
     saw_part.then_some(out)
+}
+
+fn vbs_concat_expr_references_name(expr: &str, name_lower: &str) -> bool {
+    split_vbs_concat(expr).into_iter().any(|part| {
+        part.trim()
+            .trim_matches(['(', ')'])
+            .eq_ignore_ascii_case(name_lower)
+    })
 }
 
 fn split_vbs_concat(expr: &str) -> Vec<&str> {

