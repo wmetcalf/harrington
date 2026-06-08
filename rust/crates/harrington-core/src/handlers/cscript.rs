@@ -57,12 +57,7 @@ fn extract_script(raw: &str, path: &str, env: &mut Environment, trait_evt: Trait
         }
     }
     env.traits.push(trait_evt);
-    let key = path.to_ascii_lowercase();
-    let content: Option<Vec<u8>> = match env.modified_filesystem.get(&key) {
-        Some(FsEntry::Content { content, .. }) => Some(content.clone()),
-        Some(FsEntry::Decoded { content, .. }) => Some(content.clone()),
-        _ => None,
-    };
+    let content = tracked_script_content(path, env);
     if let Some(c) = content {
         let ext_lower = path.to_ascii_lowercase();
         if ext_lower.ends_with(".vbs") || ext_lower.ends_with(".vbe") {
@@ -72,6 +67,35 @@ fn extract_script(raw: &str, path: &str, env: &mut Environment, trait_evt: Trait
             env.all_extracted_jscript.push(c.clone());
             env.exec_jscript.push(c);
         }
+    }
+}
+
+fn tracked_script_content(path: &str, env: &Environment) -> Option<Vec<u8>> {
+    let key = path.to_ascii_lowercase();
+    if let Some(content) = content_from_entry(env.modified_filesystem.get(&key)) {
+        return Some(content);
+    }
+    if path.contains(['\\', '/']) {
+        return None;
+    }
+    for (tracked_path, entry) in &env.modified_filesystem {
+        let Some(name) = windows_basename(tracked_path) else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case(path) {
+            if let Some(content) = content_from_entry(Some(entry)) {
+                return Some(content);
+            }
+        }
+    }
+    None
+}
+
+fn content_from_entry(entry: Option<&FsEntry>) -> Option<Vec<u8>> {
+    match entry {
+        Some(FsEntry::Content { content, .. }) => Some(content.clone()),
+        Some(FsEntry::Decoded { content, .. }) => Some(content.clone()),
+        _ => None,
     }
 }
 

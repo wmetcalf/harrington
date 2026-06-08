@@ -10229,6 +10229,25 @@ mod cscript_tests {
     }
 
     #[test]
+    fn cscript_basename_vbs_content_extracts_full_path_payload() {
+        let mut env = Environment::new(&Config::default());
+        let vbs_content = b"WScript.Echo \"full path\"\r\n".to_vec();
+        env.modified_filesystem.insert(
+            r#"c:\temp\dropper.vbs"#.to_string(),
+            FsEntry::Content {
+                content: vbs_content.clone(),
+                append: false,
+            },
+        );
+        interpret_line("cscript //nologo dropper.vbs", &mut env);
+        assert!(
+            env.exec_vbs.iter().any(|c| c == &vbs_content),
+            "basename VBS content was not extracted from full-path tracked file: {:?}",
+            env.exec_vbs
+        );
+    }
+
+    #[test]
     fn wscript_with_js_content_extracts_payload() {
         let mut env = Environment::new(&Config::default());
         let js_content = b"WScript.Echo('hi')\r\n".to_vec();
