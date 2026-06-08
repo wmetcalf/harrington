@@ -15,7 +15,11 @@ pub fn h_if(raw: &str, env: &mut Environment) {
     };
     let negate = caps.name("neg").is_some();
     let rest = caps.name("rest").map(|m| m.as_str()).unwrap_or("");
-    let result = evaluate(rest, env);
+    let inline_body = extract_inline_body(rest);
+    let allow_errorlevel_invariants = !inline_body
+        .as_deref()
+        .is_some_and(|body| body.trim_start().starts_with('('));
+    let result = evaluate(rest, env, allow_errorlevel_invariants);
     let final_result = match result {
         Some(b) => {
             if negate {
@@ -37,7 +41,7 @@ pub fn h_if(raw: &str, env: &mut Environment) {
     }
     // Condition resolves true: if there's an inline body (the rest of the
     // condition string after the operator + RHS), re-dispatch it.
-    if let Some(body) = extract_inline_body(rest) {
+    if let Some(body) = inline_body {
         let body = body.trim().to_string();
         if !body.is_empty() && !body.starts_with('(') {
             crate::interp::interpret_line(&body, env);
@@ -45,7 +49,7 @@ pub fn h_if(raw: &str, env: &mut Environment) {
     }
 }
 
-fn evaluate(rest: &str, env: &Environment) -> Option<bool> {
+fn evaluate(rest: &str, env: &Environment, allow_errorlevel_invariants: bool) -> Option<bool> {
     let trimmed = rest.trim_start();
 
     if let Some(after) = strip_kw(trimmed, "defined") {
@@ -116,6 +120,11 @@ fn evaluate(rest: &str, env: &Environment) -> Option<bool> {
                 .find(|c: char| c.is_whitespace() || c == ')')
                 .unwrap_or(rhs_full.len());
             let rhs = rhs_full[..rhs_end].trim().trim_matches('"');
+            if allow_errorlevel_invariants {
+                if let Some(result) = evaluate_errorlevel_nonnegative_invariant(lhs, op_kind, rhs) {
+                    return Some(result);
+                }
+            }
             if lhs.contains('%') || lhs.contains('!') || rhs.contains('%') || rhs.contains('!') {
                 return None;
             }
@@ -152,6 +161,50 @@ fn evaluate(rest: &str, env: &Environment) -> Option<bool> {
     }
 
     None
+}
+
+fn evaluate_errorlevel_nonnegative_invariant(lhs: &str, op_kind: &str, rhs: &str) -> Option<bool> {
+    let lhs_is_errorlevel = is_errorlevel_reference(lhs);
+    let rhs_is_errorlevel = is_errorlevel_reference(rhs);
+    let lhs_num = parse_quoted_i64(lhs);
+    let rhs_num = parse_quoted_i64(rhs);
+
+    match (
+        lhs_is_errorlevel,
+        rhs_num,
+        lhs_num,
+        rhs_is_errorlevel,
+        op_kind,
+    ) {
+        // CMD exit codes are non-negative in the obfuscation gates this targets.
+        // Fold only comparisons that are invariant under that model; keep
+        // EQU/NEQ and block-form branches dynamic.
+        (true, Some(0), _, _, "ge") => Some(true),
+        (true, Some(0), _, _, "lt") => Some(false),
+        (_, _, Some(0), true, "le") => Some(true),
+        (_, _, Some(0), true, "gt") => Some(false),
+        _ => None,
+    }
+}
+
+fn is_errorlevel_reference(s: &str) -> bool {
+    let s = s.trim().trim_matches('"').trim_matches('\'');
+    let Some(inner) = s
+        .strip_prefix('%')
+        .and_then(|s| s.strip_suffix('%'))
+        .or_else(|| s.strip_prefix('!').and_then(|s| s.strip_suffix('!')))
+    else {
+        return false;
+    };
+    inner.eq_ignore_ascii_case("errorlevel")
+}
+
+fn parse_quoted_i64(s: &str) -> Option<i64> {
+    s.trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .parse::<i64>()
+        .ok()
 }
 
 fn strip_kw<'a>(s: &'a str, kw: &str) -> Option<&'a str> {

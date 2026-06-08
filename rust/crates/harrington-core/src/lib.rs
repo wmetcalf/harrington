@@ -7795,6 +7795,26 @@ mod if_constant_fold_tests {
             "all 4 relational ops should fold cleanly"
         );
     }
+
+    #[test]
+    fn if_percent_errorlevel_geq_zero_inline_set_is_constant_true() {
+        let script = b"if %ERRORLEVEL% GEQ 0 set MARK=value\r\necho %MARK%\r\n";
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo value"),
+            "inline set did not run, got:\n{}",
+            report.deobfuscated
+        );
+        let has_unresolved = report
+            .traits
+            .iter()
+            .any(|t| matches!(t, crate::traits::Trait::IfNotResolved { .. }));
+        assert!(
+            !has_unresolved,
+            "invariant errorlevel GEQ 0 should fold true: {:?}",
+            report.traits
+        );
+    }
 }
 
 #[cfg(test)]
