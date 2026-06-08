@@ -8,6 +8,7 @@ pub mod certoc;
 pub mod certreq;
 pub mod certutil;
 pub mod cmd;
+pub mod cmstp;
 pub mod copy;
 pub mod cscript;
 pub mod curl;
@@ -57,6 +58,7 @@ pub fn lookup(name: &str) -> Option<Handler> {
         "certoc" => return Some(certoc::h_certoc),
         "certreq" => return Some(certreq::h_certreq),
         "certutil" => return Some(certutil::h_certutil),
+        "cmstp" => return Some(cmstp::h_cmstp),
         "desktopimgdownldr" => return Some(desktopimgdownldr::h_desktopimgdownldr),
         "esentutl" => return Some(esentutl::h_esentutl),
         "forfiles" => return Some(forfiles::h_forfiles),
