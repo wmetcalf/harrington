@@ -622,7 +622,7 @@ fn lolbas_is_split_msi_log_operand(tokens: &[LolbasCommandToken<'_>], idx: usize
 }
 
 fn lolbas_is_file_management_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
-    if idx == 0 || !is_local_path_like_program_token(tokens[idx].text) {
+    if idx == 0 || !lolbas_file_management_path_operand(tokens[idx].text) {
         return false;
     }
     matches!(
@@ -645,6 +645,21 @@ fn lolbas_is_file_management_operand(tokens: &[LolbasCommandToken<'_>], idx: usi
                 | "rd"
         )
     )
+}
+
+fn lolbas_file_management_path_operand(token: &str) -> bool {
+    let token = token.trim_matches(['"', '\'']);
+    if token.starts_with(['/', '-']) {
+        return false;
+    }
+    if is_local_path_like_program_token(token) {
+        return true;
+    }
+    let lower = token.to_ascii_lowercase();
+    lower.ends_with(".exe")
+        || lower.ends_with(".com")
+        || lower.ends_with(".scr")
+        || lower.ends_with(".hta")
 }
 
 fn is_url_like_program_token(token: &str) -> bool {
