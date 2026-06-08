@@ -71,8 +71,12 @@ fn evaluate(rest: &str, env: &Environment, allow_errorlevel_invariants: bool) ->
         );
     }
 
-    if strip_kw(trimmed, "errorlevel").is_some() {
-        return Some(false);
+    if let Some(after) = strip_kw(trimmed, "errorlevel") {
+        return match parse_errorlevel_threshold(after) {
+            Some(0) => Some(true),
+            Some(_) => None,
+            None => None,
+        };
     }
 
     if strip_kw(trimmed, "cmdextversion").is_some() {
@@ -205,6 +209,25 @@ fn parse_quoted_i64(s: &str) -> Option<i64> {
         .trim_matches('\'')
         .parse::<i64>()
         .ok()
+}
+
+fn parse_errorlevel_threshold(s: &str) -> Option<i64> {
+    let s = s.trim_start();
+    if let Some(inner) = s.strip_prefix('"') {
+        let end = inner.find('"')?;
+        return inner[..end].trim().parse::<i64>().ok();
+    }
+    if let Some(inner) = s.strip_prefix('\'') {
+        let end = inner.find('\'')?;
+        return inner[..end].trim().parse::<i64>().ok();
+    }
+    let end = s
+        .find(|c: char| !(c == '+' || c == '-' || c.is_ascii_digit()))
+        .unwrap_or(s.len());
+    if end == 0 {
+        return None;
+    }
+    s[..end].parse::<i64>().ok()
 }
 
 fn strip_kw<'a>(s: &'a str, kw: &str) -> Option<&'a str> {

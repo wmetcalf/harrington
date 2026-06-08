@@ -7815,6 +7815,46 @@ mod if_constant_fold_tests {
             report.traits
         );
     }
+
+    #[test]
+    fn if_errorlevel_zero_inline_set_is_constant_true() {
+        let script = b"if errorlevel 0 set MARK=value\r\necho %MARK%\r\n";
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo value"),
+            "inline set did not run, got:\n{}",
+            report.deobfuscated
+        );
+        let has_unresolved = report
+            .traits
+            .iter()
+            .any(|t| matches!(t, crate::traits::Trait::IfNotResolved { .. }));
+        assert!(
+            !has_unresolved,
+            "errorlevel 0 should fold true: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn if_errorlevel_nonzero_stays_unresolved() {
+        let script = b"if errorlevel 1 echo MAYBE\r\necho AFTER\r\n";
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                crate::traits::Trait::IfNotResolved { condition }
+                    if condition == "errorlevel 1 echo MAYBE"
+            )),
+            "dynamic errorlevel threshold should stay unresolved: {:?}",
+            report.traits
+        );
+        assert!(
+            report.deobfuscated.contains("echo AFTER"),
+            "following line should remain visible, got:\n{}",
+            report.deobfuscated
+        );
+    }
 }
 
 #[cfg(test)]
