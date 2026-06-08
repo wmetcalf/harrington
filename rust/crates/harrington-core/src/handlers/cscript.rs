@@ -10,7 +10,13 @@ pub fn h_cscript(raw: &str, env: &mut Environment) {
         Some(p) => p,
         None => return,
     };
-    extract_script(raw, &path, env, Trait::CscriptExec { src: path.clone() });
+    extract_script(
+        raw,
+        "cscript",
+        &path,
+        env,
+        Trait::CscriptExec { src: path.clone() },
+    );
 }
 
 pub fn h_wscript(raw: &str, env: &mut Environment) {
@@ -19,7 +25,13 @@ pub fn h_wscript(raw: &str, env: &mut Environment) {
         Some(p) => p,
         None => return,
     };
-    extract_script(raw, &path, env, Trait::WscriptExec { src: path.clone() });
+    extract_script(
+        raw,
+        "wscript",
+        &path,
+        env,
+        Trait::WscriptExec { src: path.clone() },
+    );
 }
 
 fn find_script_arg(tokens: &[String]) -> Option<String> {
@@ -34,12 +46,20 @@ fn find_script_arg(tokens: &[String]) -> Option<String> {
     None
 }
 
-fn extract_script(raw: &str, path: &str, env: &mut Environment, trait_evt: Trait) {
+fn extract_script(
+    raw: &str,
+    lolbas_name: &str,
+    path: &str,
+    env: &mut Environment,
+    trait_evt: Trait,
+) {
+    let mut resolved_remote_source = false;
     if let Some(url) = crate::handlers::util::normalize_url_like_token(path) {
         env.traits.push(Trait::UrlArgument {
             cmd: raw.to_string(),
             url,
         });
+        resolved_remote_source = true;
     }
     if let Some(url) = prior_download_url(path, env) {
         let already = env.traits.iter().any(|t| {
@@ -55,6 +75,10 @@ fn extract_script(raw: &str, path: &str, env: &mut Environment, trait_evt: Trait
                 url,
             });
         }
+        resolved_remote_source = true;
+    }
+    if resolved_remote_source {
+        push_lolbas(env, lolbas_name, raw);
     }
     env.traits.push(trait_evt);
     let content = tracked_script_content(path, env);
@@ -130,4 +154,15 @@ fn windows_basename(path: &str) -> Option<&str> {
     path.rsplit(['\\', '/'])
         .next()
         .filter(|name| !name.is_empty())
+}
+
+fn push_lolbas(env: &mut Environment, name: &str, raw: &str) {
+    if !env.traits.iter().any(
+        |t| matches!(t, Trait::Lolbas { name: got_name, cmd } if got_name == name && cmd == raw),
+    ) {
+        env.traits.push(Trait::Lolbas {
+            name: name.to_string(),
+            cmd: raw.to_string(),
+        });
+    }
 }

