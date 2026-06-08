@@ -7824,6 +7824,9 @@ pub fn scan_raw_marker_powershell_urls(input: &[u8], env: &mut Environment) {
 }
 
 pub fn scan_embedded_powershell_invocations(text: &str, env: &mut Environment) {
+    if !has_embedded_powershell_invocation_atom(text) {
+        return;
+    }
     let normalized = text.replace('^', "");
     for line in normalized.lines() {
         for m in EMBEDDED_POWERSHELL_RE.find_iter(line) {
@@ -7835,6 +7838,70 @@ pub fn scan_embedded_powershell_invocations(text: &str, env: &mut Environment) {
         }
     }
     dedup_exec_ps1(env);
+}
+
+fn has_embedded_powershell_invocation_atom(text: &str) -> bool {
+    contains_ascii_case_insensitive_with_optional_carets(text.as_bytes(), b"powershell")
+        || contains_ascii_case_insensitive_with_optional_carets(text.as_bytes(), b"pwsh")
+}
+
+fn contains_ascii_case_insensitive_with_optional_carets(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+
+    for (start, &b) in haystack.iter().enumerate() {
+        if !b.eq_ignore_ascii_case(&needle[0]) {
+            continue;
+        }
+
+        let mut hay_idx = start + 1;
+        let mut needle_idx = 1;
+        while needle_idx < needle.len() && hay_idx < haystack.len() {
+            let current = haystack[hay_idx];
+            if current == b'^' {
+                hay_idx += 1;
+                continue;
+            }
+            if !current.eq_ignore_ascii_case(&needle[needle_idx]) {
+                break;
+            }
+            hay_idx += 1;
+            needle_idx += 1;
+        }
+        if needle_idx == needle.len() {
+            return true;
+        }
+    }
+
+    false
+}
+
+#[cfg(test)]
+mod embedded_powershell_invocation_gate_tests {
+    use super::has_embedded_powershell_invocation_atom;
+
+    #[test]
+    fn allows_plain_powershell_and_pwsh_atoms() {
+        assert!(has_embedded_powershell_invocation_atom(
+            "powershell -enc AAAA"
+        ));
+        assert!(has_embedded_powershell_invocation_atom("PwSh -c iwr"));
+    }
+
+    #[test]
+    fn allows_caret_obfuscated_powershell_atom() {
+        assert!(has_embedded_powershell_invocation_atom(
+            "p^o^w^e^r^s^h^e^l^l -enc AAAA"
+        ));
+    }
+
+    #[test]
+    fn blocks_unrelated_caret_heavy_text() {
+        assert!(!has_embedded_powershell_invocation_atom(
+            "^p ^o ^w ^not ^a ^shell command"
+        ));
+    }
 }
 
 pub fn scan_renamed_powershell_invocations(text: &str, env: &mut Environment) {
