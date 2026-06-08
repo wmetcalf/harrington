@@ -852,16 +852,37 @@ fn lolbas_attached_ps_process_exec_operand(
         .text
         .trim_matches(['"', '\''])
         .to_ascii_lowercase();
-    for prefix in [
+    let head = tokens[0]
+        .text
+        .trim_matches(['"', '\''])
+        .to_ascii_lowercase();
+    let start_process_prefixes = [
         "-filepath:",
         "/filepath:",
         "-filepath=",
         "/filepath=",
         "-file:",
         "/file:",
-    ] {
+    ];
+    for prefix in start_process_prefixes {
         if let Some(value) = lower.strip_prefix(prefix) {
             return program_stem(value) == wanted_stem;
+        }
+    }
+    if matches!(head.as_str(), "invoke-item" | "ii") {
+        for prefix in [
+            "-path:",
+            "/path:",
+            "-path=",
+            "/path=",
+            "-literalpath:",
+            "/literalpath:",
+            "-literalpath=",
+            "/literalpath=",
+        ] {
+            if let Some(value) = lower.strip_prefix(prefix) {
+                return program_stem(value) == wanted_stem;
+            }
         }
     }
     false
