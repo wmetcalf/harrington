@@ -3459,7 +3459,7 @@ fn scan_process_url_arguments(deobfuscated: &str, env: &mut Environment) {
     }
 
     let downloads = download_urls_by_destination(env);
-    let mut known_regsvr32_source_cmds: std::collections::HashSet<(String, String)> = env
+    let mut known_source_cmds: std::collections::HashSet<(String, String)> = env
         .traits
         .iter()
         .filter_map(|t| match t {
@@ -3527,9 +3527,23 @@ fn scan_process_url_arguments(deobfuscated: &str, env: &mut Environment) {
             let Some(url) = regsvr32_prior_download_url_after(&tokens, i + 1, &downloads) else {
                 continue;
             };
-            if is_noise_url(&url)
-                || !known_regsvr32_source_cmds.insert((line.to_string(), url.clone()))
-            {
+            if is_noise_url(&url) || !known_source_cmds.insert((line.to_string(), url.clone())) {
+                continue;
+            }
+            env.traits.push(Trait::UrlArgument {
+                cmd: line.to_string(),
+                url,
+            });
+        }
+        for i in 0..tokens.len() {
+            let cmd = command_name(strip_quotes(&tokens[i]));
+            if cmd != "msiexec" && cmd != "msiexec.exe" {
+                continue;
+            }
+            let Some(url) = msiexec_prior_download_url_after(&tokens, i + 1, &downloads) else {
+                continue;
+            };
+            if is_noise_url(&url) || !known_source_cmds.insert((line.to_string(), url.clone())) {
                 continue;
             }
             env.traits.push(Trait::UrlArgument {
@@ -3721,6 +3735,46 @@ fn regsvr32_loadable_target(token: &str) -> bool {
     [".dll", ".sct", ".ocx", ".cpl"]
         .iter()
         .any(|suffix| trimmed.ends_with(suffix))
+}
+
+fn msiexec_prior_download_url_after(
+    tokens: &[String],
+    start: usize,
+    downloads: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    let limit = tokens.len().min(start.saturating_add(12));
+    for i in start..limit {
+        let Some(candidate) = msiexec_package_candidate(&tokens[i], tokens.get(i + 1)) else {
+            continue;
+        };
+        if let Some(url) = url_for_download_destination(&candidate, downloads) {
+            return Some(url);
+        }
+    }
+    None
+}
+
+fn msiexec_package_candidate<'a>(token: &'a str, next: Option<&'a String>) -> Option<String> {
+    let token = strip_quotes(token).trim();
+    let lower = token.to_ascii_lowercase();
+    for prefix in ["/i", "-i", "/package", "-package", "/update", "-update"] {
+        if lower == prefix {
+            return next
+                .map(|value| trim_url_suffix(strip_quotes(value)).trim().to_string())
+                .filter(|candidate| !candidate.is_empty());
+        }
+        let Some(rest) = lower.strip_prefix(prefix) else {
+            continue;
+        };
+        let original_rest = &token[token.len() - rest.len()..];
+        let candidate = trim_url_suffix(original_rest.trim_start_matches([':', '=']))
+            .trim()
+            .to_string();
+        if !candidate.is_empty() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 fn url_launch_after_start(tokens: &[String], mut i: usize) -> Option<String> {

