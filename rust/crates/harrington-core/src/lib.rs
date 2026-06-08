@@ -2763,6 +2763,33 @@ mod for_f_misc_tests {
     }
 
     #[test]
+    fn for_f_pipeline_allows_leading_stderr_redirection() {
+        let script =
+            br#"for /f "tokens=*" %%d in ('2^>NUL dir /b "%appdata%\discord\Local Storage\leveldb\"') do echo %%d"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::DirListing { path, flags }
+                        if path.contains(r"\discord\Local Storage\leveldb")
+                            && flags.iter().any(|flag| flag.eq_ignore_ascii_case("/b"))
+                )
+            }),
+            "leading stderr redirection should still allow dir synthesis: {:?}",
+            report.traits
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::ForUnresolvedSource { pipeline } if pipeline.contains("dir /b"))),
+            "leading stderr redirection should not hide the command: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn for_f_pipeline_allows_echo_suppression_prefix() {
         let script = b"for /f \"tokens=*\" %%f in ('@find 2^>^&1') do echo %%f\r\n";
         let report = analyze(script, &Config::default());

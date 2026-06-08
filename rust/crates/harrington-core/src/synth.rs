@@ -3,6 +3,7 @@
 //! `findstr "%~f0"` style gadgets can resolve without an actual shell.
 
 use crate::env::Environment;
+use crate::handlers::util::split_words;
 
 pub fn run_pipeline(pipeline: &str, env: &mut Environment) -> Vec<String> {
     // Split on top-level `|` (not inside quotes) and run each stage in order
@@ -63,12 +64,11 @@ fn split_pipeline(p: &str) -> Vec<String> {
 fn run_stage(stage: &str, input: Vec<String>, env: &mut Environment) -> Vec<String> {
     // First token is the command
     let stage = normalize_stage_prefix(stage);
-    let Some(cmd) = stage_command(stage) else {
+    let parts = split_words(stage);
+    let Some(cmd) = parts.first().map(|part| part.to_ascii_lowercase()) else {
         return Vec::new();
     };
-    let mut parts = stage.split_whitespace();
-    let _ = parts.next();
-    let rest_args: Vec<&str> = parts.collect();
+    let rest_args: Vec<&str> = parts.iter().skip(1).map(String::as_str).collect();
     match cmd.as_str() {
         "set" => {
             let prefix = rest_args
@@ -167,14 +167,57 @@ fn run_stage(stage: &str, input: Vec<String>, env: &mut Environment) -> Vec<Stri
 }
 
 fn normalize_stage_prefix(stage: &str) -> &str {
-    stage.trim_start_matches(|c: char| c == '@' || c == ';' || c.is_whitespace())
+    let mut s = stage.trim_start_matches(|c: char| {
+        c == '@' || c == '(' || c == ';' || c == ',' || c.is_whitespace()
+    });
+    loop {
+        let Some(rest) = strip_leading_redirection(s) else {
+            return s;
+        };
+        s = rest.trim_start_matches(|c: char| {
+            c == '@' || c == '(' || c == ';' || c == ',' || c.is_whitespace()
+        });
+    }
+}
+
+fn strip_leading_redirection(s: &str) -> Option<&str> {
+    let mut chars = s.char_indices().peekable();
+    while matches!(chars.peek(), Some((_, c)) if c.is_ascii_digit()) {
+        chars.next();
+    }
+    let op_start = chars.peek().map(|(idx, _)| *idx).unwrap_or(s.len());
+    let op = s[op_start..].chars().next()?;
+    if op != '>' && op != '<' {
+        return None;
+    }
+    let mut after_op = op_start + op.len_utf8();
+    if op == '>' && s[after_op..].starts_with('>') {
+        after_op += 1;
+    }
+    let mut rest = s[after_op..].trim_start();
+    if rest.starts_with('&') {
+        rest = rest[1..].trim_start();
+    }
+    if let Some(quoted) = rest.strip_prefix('"') {
+        for (idx, c) in quoted.char_indices() {
+            if c == '"' {
+                return Some(&rest[idx + 2..]);
+            }
+        }
+        return Some("");
+    }
+    for (idx, c) in rest.char_indices() {
+        if c.is_whitespace() || c == '<' || c == '>' || c == '&' || c == '|' {
+            return Some(&rest[idx..]);
+        }
+    }
+    Some("")
 }
 
 fn stage_command(stage: &str) -> Option<String> {
-    normalize_stage_prefix(stage)
-        .split_whitespace()
-        .next()
-        .map(str::to_ascii_lowercase)
+    split_words(normalize_stage_prefix(stage))
+        .first()
+        .map(|part| part.to_ascii_lowercase())
 }
 
 fn is_supported_command(cmd: String) -> bool {
