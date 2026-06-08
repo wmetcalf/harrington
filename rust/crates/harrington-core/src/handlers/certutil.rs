@@ -9,8 +9,13 @@ pub fn h_certutil(raw: &str, env: &mut Environment) {
     let tokens = split_words(raw);
     let lower: Vec<String> = tokens.iter().map(|s| s.to_ascii_lowercase()).collect();
 
-    // -urlcache -split -f URL DST
-    if lower.iter().any(|t| t == "-urlcache" || t == "/urlcache") {
+    // -urlcache/-verifyctl -split -f URL DST
+    if lower.iter().any(|t| {
+        matches!(
+            t.as_str(),
+            "-urlcache" | "/urlcache" | "-verifyctl" | "/verifyctl"
+        )
+    }) {
         if let Some(url) = find_first_url(&tokens) {
             let dst = find_dst_after_url(&tokens, &url);
             env.traits.push(Trait::CertutilDownload {

