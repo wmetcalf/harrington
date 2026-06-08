@@ -372,7 +372,16 @@ fn lolbas_non_exec_value_option(token: &str) -> bool {
             .trim_matches(['"', '\''])
             .to_ascii_lowercase()
             .as_str(),
-        "-o" | "/o" | "--output" | "--output-document" | "-output" | "/out" | "-out"
+        "-o" | "/o"
+            | "--output"
+            | "--output-document"
+            | "-output"
+            | "/out"
+            | "-out"
+            | "-outfile"
+            | "/outfile"
+            | "-outf"
+            | "/outf"
     )
 }
 
@@ -384,6 +393,14 @@ fn lolbas_attached_non_exec_value_option(token: &str) -> bool {
         || lower.starts_with("-output=")
         || lower.starts_with("/out:")
         || lower.starts_with("/out=")
+        || lower.starts_with("-outfile:")
+        || lower.starts_with("-outfile=")
+        || lower.starts_with("/outfile:")
+        || lower.starts_with("/outfile=")
+        || lower.starts_with("-outf:")
+        || lower.starts_with("-outf=")
+        || lower.starts_with("/outf:")
+        || lower.starts_with("/outf=")
         || (lower.len() > 2
             && (lower.starts_with("-o") || lower.starts_with("/o"))
             && lower[2..].contains(['\\', '/']))
