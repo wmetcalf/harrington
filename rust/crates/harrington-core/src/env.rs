@@ -126,6 +126,8 @@ pub struct Environment {
     pub setlocal_stack: Vec<SetlocalSnapshot>,
     /// Whether `!VAR!` resolves to its value (true after `setlocal enabledelayedexpansion`).
     pub delayed_expansion: bool,
+    /// Current CMD echo state, used for bare `echo` redirected into files.
+    pub(crate) echo_enabled: bool,
 
     // ===== Static input / configuration =====
     /// Path to the input file, for `%~f0` self-extract resolution.
@@ -234,6 +236,7 @@ impl Default for Environment {
             modified_filesystem: HashMap::new(),
             setlocal_stack: Vec::new(),
             delayed_expansion: false,
+            echo_enabled: true,
             file_path: None,
             input_bytes: None,
             winver: WinVer::Win10,

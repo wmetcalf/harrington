@@ -634,6 +634,25 @@ mod echo_tests {
     }
 
     #[test]
+    fn redirected_bare_echo_records_current_echo_state_for_for_f() {
+        let script = b"@echo off\r\necho>tmp\r\nfor /F \"tokens=3\" %%i in ('type tmp') do if \"%%i\" EQU \"off.\" echo CONTINUE\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            report.deobfuscated.contains("echo CONTINUE"),
+            "FOR /F did not resolve redirected echo state, got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::IfNotResolved { condition } if condition.contains("%%i")
+            )),
+            "loop variable stayed unresolved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn large_top_level_echo_base64_run_is_collapsed_but_materialized() {
         let mut child = String::from("@echo off\r\ncurl http://large-echo-run.example/p\r\n");
         while child.len() < 220 * 1024 {
