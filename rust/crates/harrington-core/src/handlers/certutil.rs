@@ -42,16 +42,7 @@ pub fn h_certutil(raw: &str, env: &mut Environment) {
         return;
     };
 
-    let src_key = src.to_ascii_lowercase();
-    let src_content = env
-        .modified_filesystem
-        .get(&src_key)
-        .and_then(|e| match e {
-            FsEntry::Content { content, .. } => Some(content.clone()),
-            FsEntry::Decoded { content, .. } => Some(content.clone()),
-            _ => None,
-        })
-        .or_else(|| resolve_self_source(&src, env));
+    let src_content = resolve_tracked_source(&src, env).or_else(|| resolve_self_source(&src, env));
 
     let src_resolved = src_content.is_some();
     env.traits.push(Trait::CertutilDecode {
@@ -103,6 +94,35 @@ pub fn h_certutil(raw: &str, env: &mut Environment) {
                 },
             );
         }
+    }
+}
+
+fn resolve_tracked_source(src: &str, env: &Environment) -> Option<Vec<u8>> {
+    let key = src.to_ascii_lowercase();
+    if let Some(content) = content_from_entry(env.modified_filesystem.get(&key)) {
+        return Some(content);
+    }
+    if src.contains(['\\', '/']) {
+        return None;
+    }
+    for (path, entry) in &env.modified_filesystem {
+        let Some(name) = windows_basename(path) else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case(src) {
+            if let Some(content) = content_from_entry(Some(entry)) {
+                return Some(content);
+            }
+        }
+    }
+    None
+}
+
+fn content_from_entry(entry: Option<&FsEntry>) -> Option<Vec<u8>> {
+    match entry {
+        Some(FsEntry::Content { content, .. }) => Some(content.clone()),
+        Some(FsEntry::Decoded { content, .. }) => Some(content.clone()),
+        _ => None,
     }
 }
 
