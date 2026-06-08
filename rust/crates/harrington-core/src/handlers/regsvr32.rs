@@ -1,4 +1,4 @@
-//! regsvr32 handler — surfaces remote scriptlet URLs passed via /i.
+//! regsvr32 handler — surfaces remote scriptlet URLs and WebDAV/UNC targets.
 
 use super::util::split_words;
 use crate::env::Environment;
@@ -6,13 +6,15 @@ use crate::traits::Trait;
 
 pub fn h_regsvr32(raw: &str, env: &mut Environment) {
     let tokens = split_words(raw);
-    let Some(url) = regsvr32_scriptlet_url_after(&tokens, 1) else {
-        return;
-    };
-    env.traits.push(Trait::UrlArgument {
-        cmd: raw.to_string(),
-        url,
-    });
+    if regsvr32_remote_unc_target_after(&tokens, 1) {
+        push_lolbas(raw, env);
+    }
+    if let Some(url) = regsvr32_scriptlet_url_after(&tokens, 1) {
+        env.traits.push(Trait::UrlArgument {
+            cmd: raw.to_string(),
+            url,
+        });
+    }
 }
 
 fn regsvr32_scriptlet_url_after(tokens: &[String], start: usize) -> Option<String> {
@@ -38,6 +40,37 @@ fn regsvr32_scriptlet_url_after(tokens: &[String], start: usize) -> Option<Strin
         }
     }
     None
+}
+
+fn regsvr32_remote_unc_target_after(tokens: &[String], start: usize) -> bool {
+    let limit = tokens.len().min(start.saturating_add(12));
+    tokens[start..limit].iter().any(|token| {
+        let token = strip_quotes(token);
+        token.starts_with(r"\\")
+            && token.to_ascii_lowercase().contains(r"\davwwwroot\")
+            && regsvr32_loadable_target(token)
+    })
+}
+
+fn regsvr32_loadable_target(token: &str) -> bool {
+    let trimmed = trim_url_suffix(token).to_ascii_lowercase();
+    [".dll", ".sct", ".ocx", ".cpl"]
+        .iter()
+        .any(|suffix| trimmed.ends_with(suffix))
+}
+
+fn push_lolbas(raw: &str, env: &mut Environment) {
+    if !env.traits.iter().any(|t| {
+        matches!(
+            t,
+            Trait::Lolbas { name, cmd } if name == "regsvr32" && cmd == raw
+        )
+    }) {
+        env.traits.push(Trait::Lolbas {
+            name: "regsvr32".to_string(),
+            cmd: raw.to_string(),
+        });
+    }
 }
 
 fn strip_quotes(s: &str) -> &str {

