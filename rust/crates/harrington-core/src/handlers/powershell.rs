@@ -142,6 +142,11 @@ fn is_file_flag(flag: &str) -> bool {
     flag == "File"
 }
 
+fn has_non_redirection_body(body: &str) -> bool {
+    let (cleaned, _) = crate::redirect::extract_redirections(body);
+    !cleaned.trim().is_empty()
+}
+
 pub fn h_powershell(raw: &str, env: &mut Environment) {
     let tokens = split_words(raw);
     if tokens.is_empty() {
@@ -163,7 +168,7 @@ pub fn h_powershell(raw: &str, env: &mut Environment) {
             if is_command_flag(flag) {
                 let body = command_body_from_attached_value(value, &tokens[i + 1..]);
                 let body = trim_nul_padding_body(&body);
-                if !body.is_empty() {
+                if !body.is_empty() && has_non_redirection_body(body) {
                     record_downloadfile_side_effects(body, env);
                     env.exec_ps1.push(body.as_bytes().to_vec());
                 }
@@ -190,7 +195,7 @@ pub fn h_powershell(raw: &str, env: &mut Environment) {
                 let body = body.trim();
                 let body = body.trim_matches('"').trim_matches('\'');
                 let body = trim_nul_padding_body(body);
-                if !body.is_empty() {
+                if !body.is_empty() && has_non_redirection_body(body) {
                     record_downloadfile_side_effects(body, env);
                     env.exec_ps1.push(body.as_bytes().to_vec());
                 }
@@ -210,7 +215,7 @@ pub fn h_powershell(raw: &str, env: &mut Environment) {
     // when they take one) and push the remainder as the script body.
     let body = skip_ps_meta_flags(&tokens[1..]);
     let body = trim_nul_padding_body(&body);
-    if !body.is_empty() {
+    if !body.is_empty() && has_non_redirection_body(body) {
         record_downloadfile_side_effects(body, env);
         env.exec_ps1.push(body.as_bytes().to_vec());
     }
@@ -320,6 +325,7 @@ fn is_base64_char(c: char) -> bool {
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::env::{Config, Environment};
 
     #[test]
     fn canonical_resolves_prefix_shorthand() {
@@ -389,5 +395,36 @@ mod tests {
         // to Command without needing the override.
         assert_eq!(canonical_ps_flag("-com"), Some("Command"));
         assert_eq!(canonical_ps_flag("-Command"), Some("Command"));
+    }
+
+    #[test]
+    fn command_with_only_redirections_is_not_extracted() {
+        let mut env = Environment::new(&Config::default());
+
+        h_powershell(
+            "powershell -WindowStyle Hidden -Command 2>nul >nul",
+            &mut env,
+        );
+
+        assert!(
+            env.exec_ps1.is_empty(),
+            "redirection-only -Command should not be a payload: {:?}",
+            env.exec_ps1
+        );
+    }
+
+    #[test]
+    fn command_with_real_body_and_redirection_is_extracted() {
+        let mut env = Environment::new(&Config::default());
+
+        h_powershell(
+            "powershell -Command \"Invoke-WebRequest https://example.test/a\" >nul 2>nul",
+            &mut env,
+        );
+
+        assert_eq!(
+            env.exec_ps1,
+            vec![b"Invoke-WebRequest https://example.test/a\" >nul 2>nul".to_vec()]
+        );
     }
 }
