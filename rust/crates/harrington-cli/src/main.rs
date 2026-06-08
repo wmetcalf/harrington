@@ -405,6 +405,9 @@ fn command_invokes_program(command: &str, wanted_stem: &str) -> bool {
         if lolbas_is_net_account_operand(&tokens, idx) {
             return false;
         }
+        if lolbas_is_forfiles_command_operand(&tokens, idx) {
+            return false;
+        }
         if lolbas_is_forfiles_non_exec_operand(&tokens, idx) {
             return false;
         }
@@ -954,6 +957,27 @@ fn lolbas_is_forfiles_non_exec_operand(tokens: &[LolbasCommandToken<'_>], idx: u
             .as_str(),
         "/m" | "-m" | "/p" | "-p"
     )
+}
+
+fn lolbas_is_forfiles_command_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx == 0 || program_stem(tokens[0].text) != "forfiles" {
+        return false;
+    }
+    tokens
+        .iter()
+        .enumerate()
+        .skip(1)
+        .take(idx)
+        .any(|(arg_idx, token)| {
+            let lower = token.text.trim_matches(['"', '\'']).to_ascii_lowercase();
+            if matches!(lower.as_str(), "/c" | "-c") {
+                return arg_idx < idx;
+            }
+            matches!(
+                lower.strip_prefix(['/', '-']),
+                Some(rest) if rest.starts_with("c:") || rest.starts_with("c=")
+            )
+        })
 }
 
 fn lolbas_is_ps_process_argument_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
