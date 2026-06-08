@@ -6,7 +6,7 @@ use crate::traits::Trait;
 
 pub fn h_regsvr32(raw: &str, env: &mut Environment) {
     let tokens = split_words(raw);
-    if regsvr32_remote_unc_target_after(&tokens, 1) {
+    if regsvr32_remote_unc_target_after(&tokens, 1) || regsvr32_local_target_after(&tokens, 1) {
         push_lolbas(raw, env);
     }
     if let Some(url) = regsvr32_webdav_url_after(&tokens, 1) {
@@ -54,6 +54,14 @@ fn regsvr32_remote_unc_target_after(tokens: &[String], start: usize) -> bool {
         .iter()
         .map(|token| strip_quotes(token))
         .any(regsvr32_unc_load_target)
+}
+
+fn regsvr32_local_target_after(tokens: &[String], start: usize) -> bool {
+    let limit = tokens.len().min(start.saturating_add(12));
+    tokens[start..limit].iter().any(|token| {
+        let candidate = trim_url_suffix(strip_quotes(token)).trim();
+        !candidate.is_empty() && !candidate.starts_with(['/', '-']) && !candidate.starts_with(r"\\")
+    })
 }
 
 fn regsvr32_webdav_url_after(tokens: &[String], start: usize) -> Option<String> {

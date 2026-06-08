@@ -9640,6 +9640,21 @@ mod regsvr32_tests {
     }
 
     #[test]
+    fn regsvr32_local_target_emits_lolbas_trait() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line("regsvr32 /s younewrules.get", &mut env);
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Lolbas { name, cmd }
+                    if name == "regsvr32" && cmd == "regsvr32 /s younewrules.get"
+            )),
+            "local regsvr32 target did not emit LOLBAS trait: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn regsvr32_unc_webdav_target_emits_url_argument() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
