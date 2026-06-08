@@ -87,9 +87,27 @@ fn msiexec_prior_download_url(tokens: &[String], env: &Environment) -> Option<St
             if let Some(FsEntry::Download { src }) = env.modified_filesystem.get(&key) {
                 return Some(src.clone());
             }
+            if !candidate.contains(['\\', '/']) {
+                for (path, entry) in &env.modified_filesystem {
+                    let Some(name) = windows_basename(path) else {
+                        continue;
+                    };
+                    if name.eq_ignore_ascii_case(&candidate) {
+                        if let FsEntry::Download { src } = entry {
+                            return Some(src.clone());
+                        }
+                    }
+                }
+            }
         }
     }
     None
+}
+
+fn windows_basename(path: &str) -> Option<&str> {
+    path.rsplit(['\\', '/'])
+        .next()
+        .filter(|name| !name.is_empty())
 }
 
 fn msiexec_package_candidate<'a>(token: &'a str, next: Option<&'a String>) -> Option<String> {
