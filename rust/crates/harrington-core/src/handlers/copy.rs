@@ -74,8 +74,9 @@ pub fn h_copy(raw: &str, env: &mut Environment) {
             dst: dst.clone(),
         });
     }
+    let entry = copied_entry(&src, env).unwrap_or(FsEntry::Copy { src });
     env.modified_filesystem
-        .insert(dst.to_ascii_lowercase(), FsEntry::Copy { src });
+        .insert(dst.to_ascii_lowercase(), entry);
 }
 
 pub fn h_xcopy(raw: &str, env: &mut Environment) {
@@ -100,8 +101,16 @@ pub fn h_xcopy(raw: &str, env: &mut Environment) {
             dst: dst.clone(),
         });
     }
+    let entry = copied_entry(&src, env).unwrap_or(FsEntry::Copy { src });
     env.modified_filesystem
-        .insert(dst.to_ascii_lowercase(), FsEntry::Copy { src });
+        .insert(dst.to_ascii_lowercase(), entry);
+}
+
+fn copied_entry(src: &str, env: &Environment) -> Option<FsEntry> {
+    match env.modified_filesystem.get(&src.to_ascii_lowercase()) {
+        Some(FsEntry::Download { src }) => Some(FsEntry::Download { src: src.clone() }),
+        _ => None,
+    }
 }
 
 fn is_windows_util_copy(src: &str, dst: &str) -> bool {

