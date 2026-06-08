@@ -120,7 +120,7 @@ static SELF_B64_MATCH_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static FILE_B64_XOR_LOADER_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\d{1,3})\s*;.*?\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:\(\s*(?:gc|cat|type|Get-Content)\s+(?:-(?:Literal)?Path\s+)?['"]([^'"]+)['"]\s*\)\s*-join\s*['"]{2}|(?:gc|cat|type|Get-Content)\s+-Raw\s+(?:-(?:Literal)?Path\s+)?['"]([^'"]+)['"]|(?:gc|cat|type|Get-Content)\s+(?:-(?:Literal)?Path\s+)?['"]([^'"]+)['"]\s+-Raw\b).*?\[(?:System\.)?Convert\]::FromBase64String\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\).*?-bxor\s*\$([A-Za-z_][A-Za-z0-9_]*)"#,
+        r#"(?is)\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\d{1,3})\s*;.*?\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:\(\s*(?:gc|cat|type|Get-Content)\s+(?:-(?:Literal)?Path\s+)?(?:['"]([^'"]+)['"]|\$([A-Za-z_][A-Za-z0-9_]*))\s*\)\s*-join\s*['"]{2}|(?:gc|cat|type|Get-Content)\s+-Raw\s+(?:-(?:Literal)?Path\s+)?(?:['"]([^'"]+)['"]|\$([A-Za-z_][A-Za-z0-9_]*))|(?:gc|cat|type|Get-Content)\s+(?:-(?:Literal)?Path\s+)?(?:['"]([^'"]+)['"]|\$([A-Za-z_][A-Za-z0-9_]*))\s+-Raw\b).*?\[(?:System\.)?Convert\]::FromBase64String\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\).*?-bxor\s*\$([A-Za-z_][A-Za-z0-9_]*)"#,
     )
     .expect("file b64 xor loader regex")
 });
@@ -3839,6 +3839,7 @@ fn extract_file_backed_xor_ps1(env: &mut Environment, deobfuscated: &str) {
         if !lower.contains("frombase64string") || !lower.contains("-bxor") {
             continue;
         }
+        let string_bindings = ps_string_bindings(&text);
 
         for caps in FILE_B64_XOR_LOADER_RE.captures_iter(&text) {
             let Some(key_var) = caps.get(1).map(|m| m.as_str()) else {
@@ -3850,18 +3851,13 @@ fn extract_file_backed_xor_ps1(env: &mut Environment, deobfuscated: &str) {
             let Some(data_var) = caps.get(3).map(|m| m.as_str()) else {
                 continue;
             };
-            let Some(path) = caps
-                .get(4)
-                .or_else(|| caps.get(5))
-                .or_else(|| caps.get(6))
-                .map(|m| m.as_str())
-            else {
+            let Some(path) = file_b64_xor_loader_path(&caps, &string_bindings) else {
                 continue;
             };
-            let Some(from_b64_var) = caps.get(7).map(|m| m.as_str()) else {
+            let Some(from_b64_var) = caps.get(10).map(|m| m.as_str()) else {
                 continue;
             };
-            let Some(xor_key_var) = caps.get(8).map(|m| m.as_str()) else {
+            let Some(xor_key_var) = caps.get(11).map(|m| m.as_str()) else {
                 continue;
             };
             if !data_var.eq_ignore_ascii_case(from_b64_var)
@@ -3870,8 +3866,8 @@ fn extract_file_backed_xor_ps1(env: &mut Environment, deobfuscated: &str) {
                 continue;
             }
 
-            let Some(content) = filesystem_content_for_path(env, path)
-                .or_else(|| grouped_echo_content_for_path(deobfuscated, path))
+            let Some(content) = filesystem_content_for_path(env, &path)
+                .or_else(|| grouped_echo_content_for_path(deobfuscated, &path))
             else {
                 continue;
             };
@@ -3904,6 +3900,26 @@ fn extract_file_backed_xor_ps1(env: &mut Environment, deobfuscated: &str) {
     }
 
     env.all_extracted_ps1.extend(decoded_payloads);
+}
+
+fn file_b64_xor_loader_path(
+    caps: &regex::Captures<'_>,
+    string_bindings: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    for literal_idx in [4, 6, 8] {
+        if let Some(path) = caps.get(literal_idx).map(|m| m.as_str()) {
+            return Some(path.to_string());
+        }
+    }
+    for var_idx in [5, 7, 9] {
+        let Some(var) = caps.get(var_idx).map(|m| m.as_str()) else {
+            continue;
+        };
+        if let Some(path) = string_bindings.get(&var.to_ascii_lowercase()) {
+            return Some(path.clone());
+        }
+    }
+    None
 }
 
 fn filesystem_content_for_path(env: &Environment, path: &str) -> Option<Vec<u8>> {
