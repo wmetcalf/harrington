@@ -97,8 +97,26 @@ fn prior_download_url(tokens: &[String], env: &Environment) -> Option<String> {
         if let Some(FsEntry::Download { src }) = env.modified_filesystem.get(&key) {
             return Some(src.clone());
         }
+        if !candidate.contains(['\\', '/']) {
+            for (path, entry) in &env.modified_filesystem {
+                let Some(name) = windows_basename(path) else {
+                    continue;
+                };
+                if name.eq_ignore_ascii_case(candidate) {
+                    if let FsEntry::Download { src } = entry {
+                        return Some(src.clone());
+                    }
+                }
+            }
+        }
     }
     None
+}
+
+fn windows_basename(path: &str) -> Option<&str> {
+    path.rsplit(['\\', '/'])
+        .next()
+        .filter(|name| !name.is_empty())
 }
 
 fn is_hta_target(candidate: &str) -> bool {
