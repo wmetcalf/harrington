@@ -6,6 +6,9 @@ use crate::traits::Trait;
 
 pub fn h_msiexec(raw: &str, env: &mut Environment) {
     let tokens = split_words(raw);
+    if msiexec_has_package_argument(&tokens) {
+        push_lolbas(raw, env);
+    }
     if let Some(url) = tokens
         .iter()
         .skip(1)
@@ -35,6 +38,20 @@ pub fn h_msiexec(raw: &str, env: &mut Environment) {
                 url,
             });
         }
+    }
+}
+
+fn push_lolbas(raw: &str, env: &mut Environment) {
+    if !env.traits.iter().any(|t| {
+        matches!(
+            t,
+            Trait::Lolbas { name, cmd } if name == "msiexec" && cmd == raw
+        )
+    }) {
+        env.traits.push(Trait::Lolbas {
+            name: "msiexec".to_string(),
+            cmd: raw.to_string(),
+        });
     }
 }
 
@@ -78,6 +95,14 @@ fn msiexec_url_from_token(token: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn msiexec_has_package_argument(tokens: &[String]) -> bool {
+    tokens
+        .iter()
+        .enumerate()
+        .skip(1)
+        .any(|(idx, token)| msiexec_package_candidate(token, tokens.get(idx + 1)).is_some())
 }
 
 fn msiexec_prior_download_url(tokens: &[String], env: &Environment) -> Option<String> {
