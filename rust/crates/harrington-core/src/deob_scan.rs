@@ -4243,6 +4243,7 @@ fn scan_copied_curl_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
         if !aliases.contains(&basename_lower(cmd)) {
             continue;
         }
+        push_manipulated_exec_once(env, line, cmd);
 
         if let Some((url, dst)) = parse_curl_like_download(&tokens) {
             if known.insert(url.clone()) {

