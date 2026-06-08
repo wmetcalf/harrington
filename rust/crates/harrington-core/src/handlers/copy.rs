@@ -133,6 +133,13 @@ fn track_rename_like(raw: &str, env: &mut Environment, options: &[&str]) {
     }
     let src = collapse_slashes(&args[0]);
     let dst = collapse_slashes(&args[1]);
+    if is_windows_util_copy(&src, &dst) || is_windows_util_rename(&src, &dst) {
+        env.traits.push(Trait::WindowsUtilManip {
+            cmd: raw.to_string(),
+            src: src.clone(),
+            dst: dst.clone(),
+        });
+    }
     let entry = copied_entry(&src, env).unwrap_or(FsEntry::Copy { src });
     env.modified_filesystem
         .insert(dst.to_ascii_lowercase(), entry);
@@ -169,10 +176,22 @@ fn windows_basename(path: &str) -> Option<&str> {
 fn is_windows_util_copy(src: &str, dst: &str) -> bool {
     let src_lower = src.to_ascii_lowercase();
     let dst_lower = dst.to_ascii_lowercase();
-    (src_lower.starts_with("c:\\windows\\system32")
-        || src_lower.starts_with("c:\\windows\\syswow64"))
+    is_windows_system_path(&src_lower)
         && !(dst_lower.starts_with("c:\\windows\\system32")
             || dst_lower.starts_with("c:\\windows\\syswow64"))
+}
+
+fn is_windows_util_rename(src: &str, dst: &str) -> bool {
+    let src_lower = src.to_ascii_lowercase();
+    let dst_lower = dst.to_ascii_lowercase();
+    is_windows_system_path(&src_lower)
+        && windows_basename(&src_lower)
+            .zip(windows_basename(&dst_lower))
+            .is_some_and(|(src_name, dst_name)| src_name != dst_name)
+}
+
+fn is_windows_system_path(path: &str) -> bool {
+    path.starts_with("c:\\windows\\system32") || path.starts_with("c:\\windows\\syswow64")
 }
 
 fn strip_quotes(s: &str) -> &str {

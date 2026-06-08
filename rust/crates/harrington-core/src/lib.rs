@@ -10182,6 +10182,44 @@ rundll32 c:\programdata\COIm.jpg,init"#,
     }
 
     #[test]
+    fn move_system32_utility_emits_manipulation_trait() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"move /y C:\Windows\System32\cmd.exe C:\Users\Public\alpha.pif"#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::WindowsUtilManip { src, dst, .. }
+                    if src == r#"C:\Windows\System32\cmd.exe"#
+                        && dst == r#"C:\Users\Public\alpha.pif"#
+            )),
+            "move did not surface Windows utility manipulation: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn ren_system32_security_utility_emits_manipulation_trait() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"rename C:\Windows\System32\SecurityHealthService.exe Celka.sej"#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::WindowsUtilManip { src, dst, .. }
+                    if src == r#"C:\Windows\System32\SecurityHealthService.exe"#
+                        && dst == "Celka.sej"
+            )),
+            "rename did not surface Windows utility manipulation: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn net_use_share_records() {
         let mut env = Environment::new(&Config::default());
         interpret_line(r#"net use Z: \\evil\share /user:adm pass"#, &mut env);
