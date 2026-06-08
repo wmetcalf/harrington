@@ -378,6 +378,9 @@ fn command_invokes_program(command: &str, wanted_stem: &str) -> bool {
         if lolbas_is_esentutl_copy_operand(&tokens, idx) {
             return false;
         }
+        if lolbas_is_extrac32_path_operand(&tokens, idx) {
+            return false;
+        }
         if lolbas_is_file_management_operand(&tokens, idx) {
             return false;
         }
@@ -778,6 +781,12 @@ fn lolbas_is_esentutl_copy_operand(tokens: &[LolbasCommandToken<'_>], idx: usize
             .as_str(),
         "/y" | "-y" | "/d" | "-d"
     )
+}
+
+fn lolbas_is_extrac32_path_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    idx > 0
+        && program_stem(tokens[0].text) == "extrac32"
+        && lolbas_file_management_path_operand(tokens[idx].text)
 }
 
 fn lolbas_is_file_management_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
