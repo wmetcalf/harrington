@@ -9728,6 +9728,19 @@ mod for_f_tests {
     }
 
     #[test]
+    fn for_f_substitutes_common_tilde_path_modifiers() {
+        let script = br#"for /F "delims=" %%A in ("C:\Temp\driver.inf") do echo d=%%~dA p=%%~pA dp=%%~dpA n=%%~nA x=%%~xA nx=%%~nxA short=%%~sA full=%%~A"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains(
+                r#"echo d=C: p=\Temp\ dp=C:\Temp\ n=driver x=.inf nx=driver.inf short=C:\Temp\driver.inf full=C:\Temp\driver.inf"#
+            ),
+            "got:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn for_f_file_source_expands_variable_to_tracked_file() {
         use crate::traits::Trait;
         let script = br#"echo alpha=one>config.ini
