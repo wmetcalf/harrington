@@ -1409,6 +1409,7 @@ fn ps_string_bindings(text: &str) -> std::collections::HashMap<String, String> {
             bindings.insert(name.as_str().to_ascii_lowercase(), value);
         }
     }
+    insert_ps_path_combine_bindings(text, &mut bindings);
     bindings
 }
 
@@ -2196,6 +2197,14 @@ static PS_VAR_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static PS_PATH_COMBINE_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\[(?:System\.)?IO\.Path\]\s*::\s*Combine\s*\(\s*([^,()]{1,256})\s*,\s*(?:'((?:''|[^'])*)'|"([^"`$\\]*(?:\\.[^"`$\\]*)*)")\s*\)"#,
+    )
+    .expect("ps Path.Combine assign")
+});
+
+#[allow(clippy::expect_used)]
 static PS_DQ_INTERPOLATED_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"([^"]{0,4096})""#)
         .expect("ps interpolated double-quoted assign")
@@ -2246,6 +2255,53 @@ fn ps_literal_assignment_value(caps: &regex::Captures<'_>) -> Option<String> {
         .or_else(|| caps.get(3).map(|m| m.as_str().to_string()))
 }
 
+fn insert_ps_path_combine_bindings(
+    text: &str,
+    bindings: &mut std::collections::HashMap<String, String>,
+) {
+    for caps in PS_PATH_COMBINE_ASSIGN_RE.captures_iter(text) {
+        let Some(name) = caps.get(1) else {
+            continue;
+        };
+        let Some(base) = caps.get(2).map(|m| ps_unquote_path_component(m.as_str())) else {
+            continue;
+        };
+        let Some(leaf) = caps
+            .get(3)
+            .map(|m| m.as_str().replace("''", "'"))
+            .or_else(|| caps.get(4).map(|m| m.as_str().to_string()))
+        else {
+            continue;
+        };
+        if base.is_empty() || leaf.is_empty() || is_large_literal_carrier(&leaf) {
+            continue;
+        }
+        let joined = join_ps_path_components(&base, &leaf);
+        bindings.insert(name.as_str().to_ascii_lowercase(), joined);
+    }
+}
+
+fn ps_unquote_path_component(value: &str) -> String {
+    let trimmed = value.trim();
+    if let Some(literal) = ps_literal_arg(trimmed) {
+        literal
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn join_ps_path_components(base: &str, leaf: &str) -> String {
+    let base = base.trim_end_matches(['\\', '/']);
+    let leaf = leaf.trim_start_matches(['\\', '/']);
+    if base.is_empty() {
+        leaf.to_string()
+    } else if leaf.is_empty() {
+        base.to_string()
+    } else {
+        format!("{base}\\{leaf}")
+    }
+}
+
 fn expand_ps_index_concat_assignments(text: &str) -> String {
     let mut bindings: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for caps in PS_VAR_ASSIGN_RE.captures_iter(text) {
@@ -2294,6 +2350,7 @@ fn expand_ps_variables(text: &str) -> String {
             bindings.insert(n.as_str().to_ascii_lowercase(), v);
         }
     }
+    insert_ps_path_combine_bindings(text, &mut bindings);
     for caps in PS_ARRAY_ASSIGN_RE.captures_iter(text) {
         let (Some(n), Some(parts_text)) = (caps.get(1), caps.get(2)) else {
             continue;
