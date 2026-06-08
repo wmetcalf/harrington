@@ -402,6 +402,9 @@ fn command_invokes_program(command: &str, wanted_stem: &str) -> bool {
         if lolbas_is_reg_key_operand(&tokens, idx) {
             return false;
         }
+        if lolbas_is_reg_value_or_file_operand(&tokens, idx) {
+            return false;
+        }
         if lolbas_is_reg_add_operand(&tokens, idx) {
             return false;
         }
@@ -934,6 +937,42 @@ fn lolbas_is_reg_key_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> b
             .as_str(),
         "copy" | "delete" | "export" | "load" | "query" | "restore" | "save" | "unload"
     )
+}
+
+fn lolbas_is_reg_value_or_file_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx < 2 || program_stem(tokens[0].text) != "reg" {
+        return false;
+    }
+    let Some(subcommand) = tokens
+        .get(1)
+        .map(|token| token.text.trim_matches(['"', '\'']).to_ascii_lowercase())
+    else {
+        return false;
+    };
+
+    if matches!(subcommand.as_str(), "query" | "delete")
+        && tokens
+            .get(idx - 1)
+            .map(|prev| {
+                matches!(
+                    prev.text
+                        .trim_matches(['"', '\''])
+                        .to_ascii_lowercase()
+                        .as_str(),
+                    "/v" | "-v"
+                )
+            })
+            .unwrap_or(false)
+    {
+        return true;
+    }
+
+    match subcommand.as_str() {
+        "copy" => idx == 3,
+        "export" | "save" | "load" | "restore" => idx == 3,
+        "import" => idx == 2,
+        _ => false,
+    }
 }
 
 fn lolbas_is_reg_add_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
