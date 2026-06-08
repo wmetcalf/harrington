@@ -359,6 +359,9 @@ fn command_invokes_program(command: &str, wanted_stem: &str) -> bool {
         if lolbas_is_certutil_file_operand(&tokens, idx) {
             return false;
         }
+        if lolbas_is_split_msi_log_operand(&tokens, idx) {
+            return false;
+        }
         if lolbas_attached_non_exec_value_option(token.text) {
             return false;
         }
@@ -482,7 +485,7 @@ fn lolbas_non_exec_value_option(token: &str) -> bool {
             | "-log"
             | "/log"
             | "--log"
-    )
+    ) || lolbas_msi_log_option(token)
 }
 
 fn lolbas_attached_non_exec_value_option(token: &str) -> bool {
@@ -517,6 +520,102 @@ fn lolbas_attached_non_exec_value_option(token: &str) -> bool {
         || (lower.len() > 2
             && (lower.starts_with("-o") || lower.starts_with("/o"))
             && lower[2..].contains(['\\', '/']))
+        || lolbas_attached_msi_log_option(&lower)
+}
+
+fn lolbas_msi_log_option(token: &str) -> bool {
+    let lower = token.trim_matches(['"', '\'']).to_ascii_lowercase();
+    let Some(rest) = lower.strip_prefix(['/', '-']) else {
+        return false;
+    };
+    rest.starts_with('l')
+        && rest.len() >= 2
+        && rest[1..].chars().all(|ch| {
+            matches!(
+                ch,
+                '*' | '!'
+                    | 'v'
+                    | 'o'
+                    | 'i'
+                    | 'w'
+                    | 'e'
+                    | 'a'
+                    | 'r'
+                    | 'u'
+                    | 'c'
+                    | 'm'
+                    | 'p'
+                    | 'x'
+                    | '+'
+            )
+        })
+}
+
+fn lolbas_attached_msi_log_option(lower: &str) -> bool {
+    let Some(rest) = lower.strip_prefix(['/', '-']) else {
+        return false;
+    };
+    let Some(path_start) = rest.find([':', '=']) else {
+        return false;
+    };
+    path_start >= 2
+        && rest.starts_with('l')
+        && rest[1..path_start].chars().all(|ch| {
+            matches!(
+                ch,
+                '*' | '!'
+                    | 'v'
+                    | 'o'
+                    | 'i'
+                    | 'w'
+                    | 'e'
+                    | 'a'
+                    | 'r'
+                    | 'u'
+                    | 'c'
+                    | 'm'
+                    | 'p'
+                    | 'x'
+                    | '+'
+            )
+        })
+}
+
+fn lolbas_is_split_msi_log_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx < 2 || !is_local_path_like_program_token(tokens[idx].text) {
+        return false;
+    }
+    let log_prefix = tokens[idx - 2]
+        .text
+        .trim_matches(['"', '\''])
+        .to_ascii_lowercase();
+    if !matches!(log_prefix.as_str(), "/l" | "-l") {
+        return false;
+    }
+    let flags = tokens[idx - 1]
+        .text
+        .trim_matches(['"', '\''])
+        .to_ascii_lowercase();
+    !flags.is_empty()
+        && flags.chars().all(|ch| {
+            matches!(
+                ch,
+                '*' | '!'
+                    | 'v'
+                    | 'o'
+                    | 'i'
+                    | 'w'
+                    | 'e'
+                    | 'a'
+                    | 'r'
+                    | 'u'
+                    | 'c'
+                    | 'm'
+                    | 'p'
+                    | 'x'
+                    | '+'
+            )
+        })
 }
 
 fn is_url_like_program_token(token: &str) -> bool {
