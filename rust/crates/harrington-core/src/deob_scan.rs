@@ -8428,6 +8428,7 @@ pub fn scan_renamed_powershell_invocations(text: &str, env: &mut Environment) {
         if !looks_like_embedded_powershell_payload(line) {
             continue;
         }
+        push_manipulated_exec_once(env, line, command);
         let rest = line
             .get(command.len()..)
             .map(str::trim_start)
@@ -8440,6 +8441,24 @@ pub fn scan_renamed_powershell_invocations(text: &str, env: &mut Environment) {
         crate::handlers::powershell::h_powershell(&replay, env);
     }
     dedup_exec_ps1(env);
+}
+
+fn push_manipulated_exec_once(env: &mut Environment, cmd: &str, target: &str) {
+    let target = target.trim_matches(['"', '\'']).to_string();
+    if !env.traits.iter().any(|t| {
+        matches!(
+            t,
+            Trait::ManipulatedExec {
+                cmd: existing_cmd,
+                target: existing_target
+            } if existing_cmd == cmd && existing_target == &target
+        )
+    }) {
+        env.traits.push(Trait::ManipulatedExec {
+            cmd: cmd.to_string(),
+            target,
+        });
+    }
 }
 
 fn scan_embedded_powershell_downloads_in_deob_text(text: &str, env: &mut Environment) {

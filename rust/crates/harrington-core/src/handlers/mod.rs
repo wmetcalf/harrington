@@ -13,6 +13,7 @@ pub mod cscript;
 pub mod curl;
 pub mod desktopimgdownldr;
 pub mod echo;
+pub mod esentutl;
 pub mod extrac32;
 pub mod for_cmd;
 pub mod forfiles;
@@ -55,6 +56,7 @@ pub fn lookup(name: &str) -> Option<Handler> {
         "certreq" => return Some(certreq::h_certreq),
         "certutil" => return Some(certutil::h_certutil),
         "desktopimgdownldr" => return Some(desktopimgdownldr::h_desktopimgdownldr),
+        "esentutl" => return Some(esentutl::h_esentutl),
         "forfiles" => return Some(forfiles::h_forfiles),
         _ => {}
     }

