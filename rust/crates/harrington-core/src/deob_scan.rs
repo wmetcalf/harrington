@@ -4250,15 +4250,23 @@ fn url_basename(url: &str) -> Option<String> {
         .split_once("://")
         .map(|(_, rest)| rest)
         .unwrap_or(url)
-        .split('?')
+        .split(['?', '#'])
         .next()
         .unwrap_or(url)
-        .trim_end_matches('/');
-    let name = path.rsplit('/').next()?.trim();
+        .trim_end_matches(['/', '\\']);
+    let name = path.rsplit(['/', '\\']).next()?.trim();
     if name.is_empty() {
         None
     } else {
         Some(name.to_string())
+    }
+}
+
+fn join_windows_path(prefix: &str, name: &str) -> String {
+    if prefix.ends_with(['\\', '/']) {
+        format!("{prefix}{name}")
+    } else {
+        format!("{prefix}\\{name}")
     }
 }
 
@@ -4348,6 +4356,8 @@ fn is_known_non_curl_compact_flag_host(cmd_base: &str) -> bool {
 fn parse_curl_like_download(tokens: &[String]) -> Option<(String, Option<String>)> {
     let mut url: Option<String> = None;
     let mut dst: Option<String> = None;
+    let mut output_dir: Option<String> = None;
+    let mut remote_name = false;
     let mut i = 1;
     while i < tokens.len() {
         let raw_token = tokens[i].trim_matches(['"', '\'', ')']);
@@ -4365,11 +4375,32 @@ fn parse_curl_like_download(tokens: &[String]) -> Option<(String, Option<String>
             }
             continue;
         }
+        if raw_token == "-O" || lower == "--remote-name" {
+            remote_name = true;
+            i += 1;
+            continue;
+        }
         if (lower == "-o" || lower == "--output") && tokens.get(i + 1).is_some() {
             dst = tokens
                 .get(i + 1)
                 .map(|s| s.trim_matches(['"', '\'', ')']).to_string());
             i += 2;
+            continue;
+        }
+        if lower == "--output-dir" && tokens.get(i + 1).is_some() {
+            output_dir = tokens
+                .get(i + 1)
+                .map(|s| s.trim_matches(['"', '\'', ')']).to_string());
+            i += 2;
+            continue;
+        }
+        if let Some(rest) = strip_ascii_case_insensitive_prefix(raw_token, "--output-dir=")
+            .or_else(|| strip_ascii_case_insensitive_prefix(raw_token, "--output-dir:"))
+        {
+            if !rest.is_empty() {
+                output_dir = Some(rest.trim_matches(['"', '\'', ')']).to_string());
+            }
+            i += 1;
             continue;
         }
         if let Some(rest) = strip_ascii_case_insensitive_prefix(raw_token, "--output=")
@@ -4410,7 +4441,19 @@ fn parse_curl_like_download(tokens: &[String]) -> Option<(String, Option<String>
         }
         i += 1;
     }
-    url.map(|u| (u, dst))
+    url.map(|u| {
+        let dst = dst.or_else(|| {
+            remote_name.then(|| {
+                url_basename(&u).map(|name| {
+                    output_dir
+                        .as_deref()
+                        .map(|dir| join_windows_path(dir, &name))
+                        .unwrap_or(name)
+                })
+            })?
+        });
+        (u, dst)
+    })
 }
 
 fn normalize_curl_url_token(token: &str) -> Option<String> {
@@ -4648,11 +4691,22 @@ fn normalize_curl_text(curl_text: &str) -> std::borrow::Cow<'_, str> {
         out.insert(prefix_len, ' ');
     }
 
-    for needle in ["http://", "https://", "ftp://", "--output", "-o"] {
+    for needle in [
+        "http://",
+        "https://",
+        "ftp://",
+        "--output-dir",
+        "--output",
+        "-o",
+    ] {
         let mut search_start = 0;
         while let Some(rel) = out[search_start..].find(needle) {
             let pos = search_start + rel;
             let is_scheme = matches!(needle, "http://" | "https://" | "ftp://");
+            if needle == "--output" && out[pos..].starts_with("--output-dir") {
+                search_start = pos + "--output-dir".len();
+                continue;
+            }
             if needle == "-o"
                 && pos > 0
                 && !out[..pos].chars().last().is_some_and(|c| c.is_whitespace())

