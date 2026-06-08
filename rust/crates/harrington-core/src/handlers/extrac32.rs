@@ -17,8 +17,12 @@ pub fn h_extrac32(raw: &str, env: &mut Environment) {
         dst: dst.clone(),
         self_reference,
     });
+    let entry = match env.modified_filesystem.get(&src.to_ascii_lowercase()) {
+        Some(FsEntry::Download { src }) => FsEntry::Download { src: src.clone() },
+        _ => FsEntry::Copy { src },
+    };
     env.modified_filesystem
-        .insert(dst.to_ascii_lowercase(), FsEntry::Copy { src });
+        .insert(dst.to_ascii_lowercase(), entry);
 }
 
 fn parse_extrac32_paths(tokens: &[String]) -> Option<(String, String)> {

