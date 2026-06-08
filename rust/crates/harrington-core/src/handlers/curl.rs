@@ -7,6 +7,7 @@ use crate::traits::Trait;
 pub fn h_curl(raw: &str, env: &mut Environment) {
     let tokens = split_words(raw);
     let mut output: Option<String> = None;
+    let mut output_dir: Option<String> = None;
     let mut remote_name = false;
     let mut url: Option<String> = None;
     let mut i = 1;
@@ -36,6 +37,13 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
             i += 1;
             continue;
         }
+        if t.eq_ignore_ascii_case("--output-dir") {
+            if let Some(v) = tokens.get(i + 1) {
+                output_dir = Some(strip_quotes(v).to_string());
+            }
+            i += 2;
+            continue;
+        }
         match t.as_str() {
             _ if t.eq_ignore_ascii_case("--url") => {
                 if let Some(v) = tokens.get(i + 1) {
@@ -53,6 +61,19 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
                     .unwrap_or_default();
                 if !value.is_empty() {
                     output = Some(strip_quotes(value).to_string());
+                }
+                i += 1;
+                continue;
+            }
+            _ if strip_ascii_case_insensitive_prefix(t, "--output-dir=")
+                .or_else(|| strip_ascii_case_insensitive_prefix(t, "--output-dir:"))
+                .is_some() =>
+            {
+                let value = strip_ascii_case_insensitive_prefix(t, "--output-dir=")
+                    .or_else(|| strip_ascii_case_insensitive_prefix(t, "--output-dir:"))
+                    .unwrap_or_default();
+                if !value.is_empty() {
+                    output_dir = Some(strip_quotes(value).to_string());
                 }
                 i += 1;
                 continue;
@@ -103,7 +124,12 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
     let dst = if let Some(o) = output {
         Some(o)
     } else if remote_name {
-        url_basename(&url)
+        url_basename(&url).map(|name| {
+            output_dir
+                .as_deref()
+                .map(|dir| join_windows_path(dir, &name))
+                .unwrap_or(name)
+        })
     } else {
         None
     };
@@ -208,5 +234,13 @@ fn url_basename(url: &str) -> Option<String> {
         None
     } else {
         Some(last.to_string())
+    }
+}
+
+fn join_windows_path(prefix: &str, name: &str) -> String {
+    if prefix.ends_with(['\\', '/']) {
+        format!("{prefix}{name}")
+    } else {
+        format!("{prefix}\\{name}")
     }
 }
