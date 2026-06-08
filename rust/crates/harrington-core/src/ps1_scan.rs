@@ -1286,6 +1286,9 @@ fn expand_base64_literals(text: &str) -> String {
             let full = caps.get(0)?;
             let b64 = caps.get(1)?.as_str();
             let decoded = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
+            if !should_inline_base64_decoded_payload(&decoded) {
+                return None;
+            }
             let s = decode_payload(&decoded).into_owned();
             Some((full.start(), full.end(), format!("'{}'", s)))
         })

