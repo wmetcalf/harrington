@@ -3903,7 +3903,8 @@ fn extract_file_backed_xor_ps1(env: &mut Environment, deobfuscated: &str) {
 
 fn filesystem_content_for_path(env: &Environment, path: &str) -> Option<Vec<u8>> {
     let key = normalize_fs_lookup_path(path);
-    env.modified_filesystem
+    if let Some(content) = env
+        .modified_filesystem
         .iter()
         .find_map(|(candidate, entry)| {
             if normalize_fs_lookup_path(candidate) == key {
@@ -3912,6 +3913,26 @@ fn filesystem_content_for_path(env: &Environment, path: &str) -> Option<Vec<u8>>
                 None
             }
         })
+    {
+        return Some(content);
+    }
+
+    let basename = windows_basename(&key)?;
+    env.modified_filesystem
+        .iter()
+        .find_map(|(candidate, entry)| {
+            if windows_basename(&normalize_fs_lookup_path(candidate))
+                .is_some_and(|candidate_basename| candidate_basename == basename)
+            {
+                fs_entry_content(entry)
+            } else {
+                None
+            }
+        })
+}
+
+fn windows_basename(path: &str) -> Option<&str> {
+    path.rsplit('\\').next().filter(|name| !name.is_empty())
 }
 
 fn grouped_echo_content_for_path(deobfuscated: &str, path: &str) -> Option<Vec<u8>> {
