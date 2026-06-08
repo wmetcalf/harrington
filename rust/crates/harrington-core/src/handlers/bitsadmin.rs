@@ -65,6 +65,10 @@ pub fn h_bitsadmin(raw: &str, env: &mut Environment) {
         downloads.push((url, String::new()));
     }
 
+    if !downloads.is_empty() {
+        push_lolbas(env, raw);
+    }
+
     for (u, d) in downloads {
         env.traits.push(Trait::BitsadminDownload {
             url: u.clone(),
@@ -90,4 +94,17 @@ fn normalize_bitsadmin_url_token(token: &str) -> Option<String> {
         return Some(url);
     }
     crate::deob_scan::normalize_schemeless_domain_path_token(token)
+}
+
+fn push_lolbas(env: &mut Environment, raw: &str) {
+    if !env
+        .traits
+        .iter()
+        .any(|t| matches!(t, Trait::Lolbas { name, cmd } if name == "bitsadmin" && cmd == raw))
+    {
+        env.traits.push(Trait::Lolbas {
+            name: "bitsadmin".to_string(),
+            cmd: raw.to_string(),
+        });
+    }
 }

