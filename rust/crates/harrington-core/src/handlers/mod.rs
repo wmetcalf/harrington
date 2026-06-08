@@ -29,6 +29,7 @@ pub mod regsvr32;
 pub mod rundll32;
 pub mod set;
 pub mod setlocal;
+pub mod url_launch;
 pub(crate) mod util;
 pub mod wget;
 pub mod wmic;
@@ -60,6 +61,9 @@ pub fn lookup(name: &str) -> Option<Handler> {
         "esentutl" => return Some(esentutl::h_esentutl),
         "forfiles" => return Some(forfiles::h_forfiles),
         "hh" => return Some(hh::h_hh),
+        "brave" | "chrome" | "explorer" | "firefox" | "iexplore" | "msedge" | "opera" => {
+            return Some(url_launch::h_url_launch);
+        }
         _ => {}
     }
     match lower.as_str() {
