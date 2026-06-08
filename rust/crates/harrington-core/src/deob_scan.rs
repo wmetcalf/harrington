@@ -3458,6 +3458,15 @@ fn scan_process_url_arguments(deobfuscated: &str, env: &mut Environment) {
         return;
     }
 
+    let downloads = download_urls_by_destination(env);
+    let mut known_regsvr32_source_cmds: std::collections::HashSet<(String, String)> = env
+        .traits
+        .iter()
+        .filter_map(|t| match t {
+            Trait::UrlArgument { cmd, url } => Some((cmd.clone(), url.clone())),
+            _ => None,
+        })
+        .collect();
     let mut known: std::collections::HashSet<String> = env
         .traits
         .iter()
@@ -3503,6 +3512,24 @@ fn scan_process_url_arguments(deobfuscated: &str, env: &mut Environment) {
                 continue;
             };
             if is_noise_url(&url) || !known.insert(url.clone()) {
+                continue;
+            }
+            env.traits.push(Trait::UrlArgument {
+                cmd: line.to_string(),
+                url,
+            });
+        }
+        for i in 0..tokens.len() {
+            let cmd = command_name(strip_quotes(&tokens[i]));
+            if cmd != "regsvr32" && cmd != "regsvr32.exe" {
+                continue;
+            }
+            let Some(url) = regsvr32_prior_download_url_after(&tokens, i + 1, &downloads) else {
+                continue;
+            };
+            if is_noise_url(&url)
+                || !known_regsvr32_source_cmds.insert((line.to_string(), url.clone()))
+            {
                 continue;
             }
             env.traits.push(Trait::UrlArgument {
@@ -3648,6 +3675,52 @@ fn regsvr32_scriptlet_url_after(tokens: &[String], start: usize) -> Option<Strin
         }
     }
     None
+}
+
+fn regsvr32_prior_download_url_after(
+    tokens: &[String],
+    start: usize,
+    downloads: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    let limit = tokens.len().min(start.saturating_add(12));
+    for i in start..limit {
+        let token = strip_quotes(&tokens[i]).trim();
+        let lower = token.to_ascii_lowercase();
+        let candidate = if lower.starts_with("/i:") || lower.starts_with("-i:") {
+            token.get(3..)
+        } else if lower == "/i" || lower == "-i" {
+            tokens.get(i + 1).map(|next| strip_quotes(next).trim())
+        } else {
+            None
+        };
+        let Some(candidate) = candidate else {
+            continue;
+        };
+        let candidate = trim_url_suffix(candidate).trim();
+        if let Some(url) = url_for_download_destination(candidate, downloads) {
+            return Some(url);
+        }
+    }
+    for token in tokens.iter().skip(start).take(12) {
+        let candidate = trim_url_suffix(strip_quotes(token)).trim();
+        if candidate.is_empty() || candidate.starts_with(['/', '-']) {
+            continue;
+        }
+        if !regsvr32_loadable_target(candidate) {
+            continue;
+        }
+        if let Some(url) = url_for_download_destination(candidate, downloads) {
+            return Some(url);
+        }
+    }
+    None
+}
+
+fn regsvr32_loadable_target(token: &str) -> bool {
+    let trimmed = trim_url_suffix(token).to_ascii_lowercase();
+    [".dll", ".sct", ".ocx", ".cpl"]
+        .iter()
+        .any(|suffix| trimmed.ends_with(suffix))
 }
 
 fn url_launch_after_start(tokens: &[String], mut i: usize) -> Option<String> {
