@@ -201,12 +201,14 @@ fn resolve_f_source(src: &str, env: &mut crate::env::Environment) -> Vec<String>
     // Single-quoted: `for /F ... in ('command')` — run as pipeline command.
     if s.starts_with('\'') && s.ends_with('\'') && s.len() >= 2 {
         let pipeline = &s[1..s.len() - 1];
-        return crate::synth::run_pipeline(pipeline, env);
+        let pipeline = normalize_f_pipeline(pipeline, env);
+        return crate::synth::run_pipeline(&pipeline, env);
     }
     // Backtick-quoted: run as pipeline (usebackq style).
     if s.starts_with('`') && s.ends_with('`') {
         let pipeline = &s[1..s.len() - 1];
-        return crate::synth::run_pipeline(pipeline, env);
+        let pipeline = normalize_f_pipeline(pipeline, env);
+        return crate::synth::run_pipeline(&pipeline, env);
     }
     let file_lines = crate::synth::run_pipeline(&format!("type {}", s), env);
     if !file_lines.is_empty() {
@@ -216,6 +218,37 @@ fn resolve_f_source(src: &str, env: &mut crate::env::Environment) -> Vec<String>
         pipeline: s.to_string(),
     });
     Vec::new()
+}
+
+fn normalize_f_pipeline(pipeline: &str, env: &mut crate::env::Environment) -> String {
+    let trimmed = pipeline.trim_start();
+    let leading_ws = pipeline.len().saturating_sub(trimmed.len());
+    let Some(after_percent) = trimmed.strip_prefix('%') else {
+        return pipeline.to_string();
+    };
+    let Some(close_rel) = after_percent.find('%') else {
+        return pipeline.to_string();
+    };
+    let var_name = &after_percent[..close_rel];
+    if var_name.is_empty() || var_name.contains([':', '!', '^', '&', '|', '<', '>', '"']) {
+        return pipeline.to_string();
+    }
+    let token_end = leading_ws + close_rel + 2;
+    if pipeline[token_end..]
+        .chars()
+        .next()
+        .is_some_and(|c| !c.is_whitespace())
+    {
+        return pipeline.to_string();
+    }
+    let Some(value) = env.get(var_name) else {
+        return pipeline.to_string();
+    };
+    let mut out = String::with_capacity(pipeline.len() + value.len());
+    out.push_str(&pipeline[..leading_ws]);
+    out.push_str(&value);
+    out.push_str(&pipeline[token_end..]);
+    out
 }
 
 // ── public entry point ───────────────────────────────────────────────────────

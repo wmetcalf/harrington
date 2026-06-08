@@ -382,6 +382,18 @@ mod lex_type_tests {
             length: Some(3),
         };
     }
+
+    #[test]
+    fn percent_tilde_path_search_lexes_env_qualifier() {
+        assert_eq!(
+            crate::lex::lex("%~$PATH:1"),
+            vec![Token::PercentTilde {
+                flags: PercentTildeFlags::default(),
+                path_search: Some("PATH".to_string()),
+                arg_index: 1
+            }]
+        );
+    }
 }
 
 #[cfg(test)]
@@ -2467,6 +2479,21 @@ mod positional_tests {
         let out = normalize_to_string(&lex("%~1"), &mut env);
         assert_eq!(out, "");
     }
+
+    #[test]
+    fn percent_tilde_path_search_resolves_call_arg_with_snapshot_where() {
+        let mut env = Environment::new(&Config::default());
+        env.call_stack.push(Frame {
+            return_line: 0,
+            args: vec!["powershell.exe".into()],
+            locals_snapshot: None,
+        });
+        let out = normalize_to_string(&lex("%~$PATH:1"), &mut env);
+        assert!(
+            out.to_ascii_lowercase().ends_with(r"\powershell.exe"),
+            "got: {out}"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -2785,6 +2812,35 @@ mod for_f_misc_tests {
                 .iter()
                 .any(|t| matches!(t, Trait::ForUnresolvedSource { pipeline } if pipeline.contains("dir /b"))),
             "leading stderr redirection should not hide the command: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn for_f_resolves_percent_tilde_path_search_powershell() {
+        let script = concat!(
+            "call :find.powershell powershell.exe\r\n",
+            "if defined POSH (\r\n",
+            "  for /f %%d in ( '%POSH% -Command \"Get-Date -UFormat '%%H%%M%%S'\" ^<nul' ) do echo time=%%d\r\n",
+            ")\r\n",
+            "goto :EOF\r\n",
+            ":find.powershell\r\n",
+            "set \"POSH=%~$PATH:1\"\r\n",
+            "goto :EOF\r\n",
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo time=120000"),
+            "deobf:\n{}\ntraits: {:?}",
+            report.deobfuscated,
+            report.traits
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::ForUnresolvedSource { pipeline } if pipeline.contains("Get-Date"))),
+            "resolved PATH powershell should run synthetic Get-Date: {:?}",
             report.traits
         );
     }

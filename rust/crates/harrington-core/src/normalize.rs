@@ -475,8 +475,17 @@ pub(crate) fn normalize_inner(tokens: &[Token], env: &mut Environment, depth: u3
                     out.push_str(&frame.args.join(" "));
                 }
             }
-            Token::PercentTilde { flags, arg_index } => {
-                out.push_str(&render_percent_tilde(env, *flags, *arg_index));
+            Token::PercentTilde {
+                flags,
+                path_search,
+                arg_index,
+            } => {
+                out.push_str(&render_percent_tilde(
+                    env,
+                    *flags,
+                    path_search.as_deref(),
+                    *arg_index,
+                ));
             }
             Token::ForVar(c) => {
                 // Loop variable seen outside an iterating FOR body —
@@ -764,12 +773,15 @@ fn expand_vars_in_string(s: &str, env: &mut Environment, depth: u32) -> String {
                         continue;
                     }
                 }
-                // If followed by '~' this is a %~flags0 / %~f1 PercentTilde construct —
-                // NOT a %VARNAME% reference.  Emit the '%' literally and continue; the
-                // rest of the modifier (e.g. `~f0`) will be emitted as normal characters
-                // by the `_ =>` arm.  This avoids consuming large swaths of text up to
-                // the next unrelated '%'.
                 if chars.get(i + 1) == Some(&'~') {
+                    if let Some((rendered, next)) = render_percent_tilde_from_chars(&chars, i, env)
+                    {
+                        out.push_str(&rendered);
+                        i = next;
+                        continue;
+                    }
+                    // Invalid tilde form: emit the percent literally to avoid consuming
+                    // unrelated later `%` delimiters as a variable reference.
                     out.push('%');
                     i += 1;
                     continue;
@@ -831,6 +843,72 @@ fn expand_vars_in_string(s: &str, env: &mut Environment, depth: u32) -> String {
         }
     }
     out
+}
+
+fn render_percent_tilde_from_chars(
+    chars: &[char],
+    start: usize,
+    env: &crate::env::Environment,
+) -> Option<(String, usize)> {
+    if chars.get(start) != Some(&'%') || chars.get(start + 1) != Some(&'~') {
+        return None;
+    }
+    let mut j = start + 2;
+    let mut flag_str = String::new();
+    let mut path_search: Option<String> = None;
+    while j < chars.len() {
+        let cc = chars[j];
+        if cc.is_ascii_digit() || cc == '$' {
+            break;
+        }
+        if matches!(
+            cc,
+            'f' | 'd'
+                | 'p'
+                | 'n'
+                | 'x'
+                | 's'
+                | 'a'
+                | 't'
+                | 'z'
+                | 'F'
+                | 'D'
+                | 'P'
+                | 'N'
+                | 'X'
+                | 'S'
+                | 'A'
+                | 'T'
+                | 'Z'
+        ) {
+            flag_str.push(cc.to_ascii_lowercase());
+            j += 1;
+        } else {
+            return None;
+        }
+    }
+    if chars.get(j) == Some(&'$') {
+        j += 1;
+        let env_start = j;
+        while j < chars.len() && chars[j] != ':' {
+            j += 1;
+        }
+        if j >= chars.len() || j == env_start {
+            return None;
+        }
+        path_search = Some(chars[env_start..j].iter().collect());
+        j += 1;
+    }
+    path_search.as_ref()?;
+    if j >= chars.len() || !chars[j].is_ascii_digit() {
+        return None;
+    }
+    let flags = crate::lex::PercentTildeFlags::parse(&flag_str)?;
+    let arg_index = (chars[j] as u32).saturating_sub('0' as u32) as u8;
+    Some((
+        render_percent_tilde(env, flags, path_search.as_deref(), arg_index),
+        j + 1,
+    ))
 }
 
 /// Resolve a single var-ref body (the part between sigils). Handles bare
@@ -899,10 +977,11 @@ fn resolve_var_ref(body: &str, env: &mut Environment, _is_bang: bool, depth: u32
 fn render_percent_tilde(
     env: &crate::env::Environment,
     flags: crate::lex::PercentTildeFlags,
+    path_search: Option<&str>,
     arg_index: u8,
 ) -> String {
     // Mirrors batch_interpreter.py::percent_tilde (line 910).
-    let bare = if arg_index == 0 {
+    let mut bare = if arg_index == 0 {
         percent_tilde_arg0_path(env)
     } else if let Some(frame) = env.call_stack.last() {
         frame
@@ -913,6 +992,9 @@ fn render_percent_tilde(
     } else {
         String::new()
     };
+    if let Some(env_name) = path_search {
+        bare = resolve_percent_tilde_path_search(env, env_name, &bare).unwrap_or_default();
+    }
 
     if !flags.f
         && !flags.d
@@ -966,6 +1048,23 @@ fn render_percent_tilde(
         }
     }
     out.trim().to_string()
+}
+
+fn resolve_percent_tilde_path_search(
+    env: &crate::env::Environment,
+    env_name: &str,
+    candidate: &str,
+) -> Option<String> {
+    if !env_name.eq_ignore_ascii_case("PATH") {
+        return None;
+    }
+    let candidate = candidate.trim_matches('"');
+    let basename = candidate
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(candidate)
+        .to_ascii_lowercase();
+    crate::snapshot::get(env.winver).and_then(|snap| snap.r#where.get(&basename).cloned())
 }
 
 struct PercentTildePathParts {

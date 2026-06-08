@@ -65,7 +65,7 @@ fn run_stage(stage: &str, input: Vec<String>, env: &mut Environment) -> Vec<Stri
     // First token is the command
     let stage = normalize_stage_prefix(stage);
     let parts = split_words(stage);
-    let Some(cmd) = parts.first().map(|part| part.to_ascii_lowercase()) else {
+    let Some(cmd) = parts.first().map(|part| synth_command_key(part)) else {
         return Vec::new();
     };
     let rest_args: Vec<&str> = parts.iter().skip(1).map(String::as_str).collect();
@@ -217,7 +217,16 @@ fn strip_leading_redirection(s: &str) -> Option<&str> {
 fn stage_command(stage: &str) -> Option<String> {
     split_words(normalize_stage_prefix(stage))
         .first()
-        .map(|part| part.to_ascii_lowercase())
+        .map(|part| synth_command_key(part))
+}
+
+fn synth_command_key(token: &str) -> String {
+    let token = token.trim_matches('"');
+    token
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(token)
+        .to_ascii_lowercase()
 }
 
 fn is_supported_command(cmd: String) -> bool {
@@ -846,6 +855,9 @@ fn synth_powershell(args: &[&str], env: &Environment) -> Vec<String> {
         return vec![env
             .get("COMPUTERNAME")
             .unwrap_or_else(|| "DESKTOP-EXAMPLE".to_string())];
+    }
+    if lower.contains("get-date") && lower.contains("uformat") {
+        return vec!["120000".to_string()];
     }
     if lower.contains("get-ciminstance")
         && lower.contains("securitycenter")
