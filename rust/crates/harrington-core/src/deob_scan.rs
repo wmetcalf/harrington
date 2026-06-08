@@ -3173,13 +3173,16 @@ fn is_hta_target(candidate: &str) -> bool {
 fn download_urls_by_destination(env: &Environment) -> std::collections::HashMap<String, String> {
     let mut out = std::collections::HashMap::new();
     for t in &env.traits {
-        let Trait::Download {
-            src,
-            dst: Some(dst),
-            ..
-        } = t
-        else {
-            continue;
+        let (src, dst) = match t {
+            Trait::Download {
+                src,
+                dst: Some(dst),
+                ..
+            } => (src, dst),
+            Trait::CertutilDownload { url, dst } | Trait::BitsadminDownload { url, dst } => {
+                (url, dst)
+            }
+            _ => continue,
         };
         let key = normalized_path_key(dst);
         if !key.is_empty() {
