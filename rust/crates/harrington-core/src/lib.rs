@@ -18661,6 +18661,13 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
             "process URL argument double-emitted as generic: {:?}",
             env.traits
         );
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::Lolbas { name, .. } if name == "regsvr32")),
+            "generic process URL argument mislabeled as regsvr32 LOLBAS: {:?}",
+            env.traits
+        );
     }
 
     #[test]

@@ -3654,7 +3654,6 @@ fn scan_process_url_arguments(deobfuscated: &str, env: &mut Environment) {
             if is_noise_url(&url) || !known.insert(url.clone()) {
                 continue;
             }
-            push_lolbas_once(env, "regsvr32", line);
             env.traits.push(Trait::UrlArgument {
                 cmd: line.to_string(),
                 url,
