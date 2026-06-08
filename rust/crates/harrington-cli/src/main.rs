@@ -402,6 +402,9 @@ fn command_invokes_program(command: &str, wanted_stem: &str) -> bool {
         if lolbas_is_reg_key_operand(&tokens, idx) {
             return false;
         }
+        if lolbas_is_reg_add_operand(&tokens, idx) {
+            return false;
+        }
         if lolbas_is_net_account_operand(&tokens, idx) {
             return false;
         }
@@ -931,6 +934,59 @@ fn lolbas_is_reg_key_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> b
             .as_str(),
         "copy" | "delete" | "export" | "load" | "query" | "restore" | "save" | "unload"
     )
+}
+
+fn lolbas_is_reg_add_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx == 0 || program_stem(tokens[0].text) != "reg" {
+        return false;
+    }
+    if tokens.get(1).map(|token| {
+        token
+            .text
+            .trim_matches(['"', '\''])
+            .eq_ignore_ascii_case("add")
+    }) != Some(true)
+    {
+        return false;
+    }
+    if idx == 2 {
+        return true;
+    }
+    let token = tokens[idx].text.trim_matches(['"', '\'']);
+    let lower = token.to_ascii_lowercase();
+    if matches!(
+        lower.as_str(),
+        "/v" | "-v" | "/ve" | "-ve" | "/d" | "-d" | "/t" | "-t" | "/f" | "-f"
+    ) {
+        return true;
+    }
+    if lower.starts_with("/v:")
+        || lower.starts_with("-v:")
+        || lower.starts_with("/v=")
+        || lower.starts_with("-v=")
+        || lower.starts_with("/d:")
+        || lower.starts_with("-d:")
+        || lower.starts_with("/d=")
+        || lower.starts_with("-d=")
+        || lower.starts_with("/t:")
+        || lower.starts_with("-t:")
+        || lower.starts_with("/t=")
+        || lower.starts_with("-t=")
+    {
+        return true;
+    }
+    tokens
+        .get(idx - 1)
+        .map(|prev| {
+            matches!(
+                prev.text
+                    .trim_matches(['"', '\''])
+                    .to_ascii_lowercase()
+                    .as_str(),
+                "/v" | "-v" | "/d" | "-d" | "/t" | "-t"
+            )
+        })
+        .unwrap_or(false)
 }
 
 fn lolbas_is_net_account_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
