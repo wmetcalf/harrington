@@ -36,6 +36,12 @@ static UNC_WEBDAV_RE: Lazy<Regex> = Lazy::new(|| {
         .expect("unc webdav regex")
 });
 
+#[allow(clippy::expect_used)]
+static BARE_UNC_WEBDAV_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?i)\\\\([A-Za-z0-9.\-]+)\\webdav\\[^\s"'<>(){}\[\]|^&;`,]+"#)
+        .expect("bare unc webdav regex")
+});
+
 static IP_DISCOVERY_HOSTS: &[&str] = &[
     "api.ipify.org",
     "ipv4.icanhazip.com",
@@ -10551,6 +10557,33 @@ pub fn scan_unc_webdav(deobfuscated: &str, env: &mut Environment) {
             http_url,
         });
     }
+    for caps in BARE_UNC_WEBDAV_RE.captures_iter(deobfuscated) {
+        let host = caps
+            .get(1)
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default();
+        let Some(full_match) = caps.get(0).map(|m| m.as_str()) else {
+            continue;
+        };
+        if !bare_webdav_unc_path(full_match) || !seen.insert((host.clone(), "80".to_string())) {
+            continue;
+        }
+        let command = deobfuscated
+            .lines()
+            .find(|l| l.contains(full_match))
+            .map(|l| l.chars().take(240).collect::<String>())
+            .unwrap_or_default();
+        if !contains_ascii_case_insensitive_atom(&command, b"rundll32") {
+            continue;
+        }
+        env.traits.push(Trait::UncWebDavC2 {
+            host: host.clone(),
+            port: "80".to_string(),
+            share_path: full_match.to_string(),
+            command,
+            http_url: unc_webdav_to_http_url(&host, "80", full_match),
+        });
+    }
 }
 
 fn regsvr32_webdav_target_after(
@@ -10571,10 +10604,7 @@ fn regsvr32_webdav_target_after(
 }
 
 fn regsvr32_webdav_loadable_target(token: &str) -> bool {
-    contains_ascii_case_insensitive_atom(token, b"davwwwroot")
-        && token.contains(r"\\")
-        && token.contains('@')
-        && regsvr32_loadable_target(token)
+    strict_webdav_unc_path(token) && regsvr32_loadable_target(token)
 }
 
 fn rundll32_webdav_target_after(
@@ -10599,20 +10629,37 @@ fn rundll32_webdav_target_after(
 }
 
 fn rundll32_webdav_loadable_target(token: &str) -> bool {
-    contains_ascii_case_insensitive_atom(token, b"davwwwroot")
-        && token.contains(r"\\")
-        && token.contains('@')
+    (strict_webdav_unc_path(token) || bare_webdav_unc_path(token))
         && token.to_ascii_lowercase().ends_with(".dll")
 }
 
 fn webdav_unc_to_http_url(unc: &str) -> Option<String> {
     let parts: Vec<&str> = unc.split('\\').filter(|part| !part.is_empty()).collect();
     let host_port = parts.first()?;
-    let (host, port) = host_port.split_once('@')?;
-    if host.is_empty() || port.is_empty() {
+    if let Some((host, port)) = host_port.split_once('@') {
+        if host.is_empty() || port.is_empty() {
+            return None;
+        }
+        return Some(unc_webdav_to_http_url(host, port, unc));
+    }
+    if !bare_webdav_unc_path(unc) || host_port.is_empty() {
         return None;
     }
-    Some(unc_webdav_to_http_url(host, port, unc))
+    Some(unc_webdav_to_http_url(host_port, "80", unc))
+}
+
+fn strict_webdav_unc_path(token: &str) -> bool {
+    contains_ascii_case_insensitive_atom(token, b"davwwwroot")
+        && token.contains(r"\\")
+        && token.contains('@')
+}
+
+fn bare_webdav_unc_path(token: &str) -> bool {
+    let parts: Vec<&str> = token.split('\\').filter(|part| !part.is_empty()).collect();
+    parts.len() >= 3
+        && !parts[0].contains('@')
+        && parts[1].eq_ignore_ascii_case("webdav")
+        && !parts[2].is_empty()
 }
 
 fn push_url_argument_once(env: &mut Environment, cmd: &str, url: String) {

