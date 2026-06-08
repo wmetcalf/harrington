@@ -389,6 +389,9 @@ fn command_invokes_program(command: &str, wanted_stem: &str) -> bool {
         if lolbas_is_ps_process_argument_operand(&tokens, idx) {
             return false;
         }
+        if lolbas_attached_ps_process_exec_operand(&tokens, idx, wanted_stem) {
+            return true;
+        }
         if lolbas_attached_non_exec_value_option(token.text) {
             return false;
         }
@@ -809,8 +812,42 @@ fn lolbas_is_ps_process_argument_operand(tokens: &[LolbasCommandToken<'_>], idx:
             .trim_matches(['"', '\''])
             .to_ascii_lowercase()
             .as_str(),
-        "-argumentlist" | "/argumentlist" | "-args" | "/args"
+        "-argumentlist"
+            | "/argumentlist"
+            | "-args"
+            | "/args"
+            | "-workingdirectory"
+            | "/workingdirectory"
+            | "-wd"
+            | "/wd"
     )
+}
+
+fn lolbas_attached_ps_process_exec_operand(
+    tokens: &[LolbasCommandToken<'_>],
+    idx: usize,
+    wanted_stem: &str,
+) -> bool {
+    if idx == 0 || !ps_lolbas_process_launch_line(tokens[0].text) {
+        return false;
+    }
+    let lower = tokens[idx]
+        .text
+        .trim_matches(['"', '\''])
+        .to_ascii_lowercase();
+    for prefix in [
+        "-filepath:",
+        "/filepath:",
+        "-filepath=",
+        "/filepath=",
+        "-file:",
+        "/file:",
+    ] {
+        if let Some(value) = lower.strip_prefix(prefix) {
+            return program_stem(value) == wanted_stem;
+        }
+    }
+    false
 }
 
 fn is_url_like_program_token(token: &str) -> bool {
