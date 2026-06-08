@@ -80,11 +80,12 @@ fn split_pipeline(p: &str) -> Vec<String> {
 fn run_stage(stage: &str, input: Vec<String>, env: &mut Environment) -> Vec<String> {
     // First token is the command
     let stage = normalize_stage_prefix(stage);
-    let parts = split_words(stage);
-    let Some(cmd) = parts.first().map(|part| synth_command_key(part)) else {
+    let Some((cmd_token, rest)) = split_stage_command(stage) else {
         return Vec::new();
     };
-    let rest_args: Vec<&str> = parts.iter().skip(1).map(String::as_str).collect();
+    let cmd = synth_command_key_with_env(cmd_token, env);
+    let parts = split_words(rest);
+    let rest_args: Vec<&str> = parts.iter().map(String::as_str).collect();
     match cmd.as_str() {
         "set" => {
             let prefix = rest_args
@@ -232,12 +233,44 @@ fn strip_leading_redirection(s: &str) -> Option<&str> {
 }
 
 fn stage_command(stage: &str) -> Option<String> {
-    split_words(normalize_stage_prefix(stage))
-        .first()
-        .map(|part| synth_command_key(part))
+    split_stage_command(normalize_stage_prefix(stage)).map(|(part, _)| synth_command_key(part))
+}
+
+fn split_stage_command(stage: &str) -> Option<(&str, &str)> {
+    let mut in_dq = false;
+    let mut in_sq = false;
+    let mut in_percent = false;
+    for (idx, c) in stage.char_indices() {
+        if c == '"' && !in_sq && !in_percent {
+            in_dq = !in_dq;
+            continue;
+        }
+        if c == '\'' && !in_dq && !in_percent {
+            in_sq = !in_sq;
+            continue;
+        }
+        if c == '%' && !in_dq && !in_sq {
+            in_percent = !in_percent;
+            continue;
+        }
+        if c.is_whitespace() && !in_dq && !in_sq && !in_percent {
+            let cmd = &stage[..idx];
+            let rest = stage[idx..].trim_start();
+            return (!cmd.is_empty()).then_some((cmd, rest));
+        }
+    }
+    (!stage.is_empty()).then_some((stage, ""))
 }
 
 fn synth_command_key(token: &str) -> String {
+    synth_command_key_inner(token, None)
+}
+
+fn synth_command_key_with_env(token: &str, env: &Environment) -> String {
+    synth_command_key_inner(token, Some(env))
+}
+
+fn synth_command_key_inner(token: &str, env: Option<&Environment>) -> String {
     let token = token.trim_matches('"');
     let key = token
         .rsplit(['\\', '/'])
@@ -246,6 +279,13 @@ fn synth_command_key(token: &str) -> String {
         .to_ascii_lowercase();
     if is_supported_command(&key) {
         return key;
+    }
+    if let Some(env) = env {
+        if let Some(expanded) = expand_percent_vars_for_command_key(&key, env) {
+            if is_supported_command(&expanded) {
+                return expanded;
+            }
+        }
     }
     if !key.contains('%') && key.is_ascii() {
         return key;
@@ -258,6 +298,38 @@ fn synth_command_key(token: &str) -> String {
         return skeleton;
     }
     key
+}
+
+fn expand_percent_vars_for_command_key(key: &str, env: &Environment) -> Option<String> {
+    if !key.contains('%') {
+        return None;
+    }
+    let chars: Vec<char> = key.chars().collect();
+    let mut out = String::with_capacity(key.len());
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i] != '%' {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        let mut end = i + 1;
+        while end < chars.len() && chars[end] != '%' {
+            end += 1;
+        }
+        if end >= chars.len() || end == i + 1 {
+            return None;
+        }
+        let name: String = chars[i + 1..end].iter().collect();
+        if name.contains(['%', ':', '!', '^', '&', '|', '<', '>', '"', '\'']) {
+            return None;
+        }
+        if let Some(value) = env.get(&name) {
+            out.push_str(&value.to_ascii_lowercase());
+        }
+        i = end + 1;
+    }
+    (!out.is_empty()).then_some(out)
 }
 
 fn is_supported_command(cmd: &str) -> bool {

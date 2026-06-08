@@ -9908,6 +9908,28 @@ mod synth_tests {
     }
 
     #[test]
+    fn synth_command_key_expands_adjacent_undefined_percent_noise() {
+        use crate::traits::Trait;
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "tmp".to_string(),
+            FsEntry::Content {
+                content: b"token one two\r\n".to_vec(),
+                append: false,
+            },
+        );
+        let lines = run_pipeline("ty%ASCII NOISE%%MORE NOISE%pe tmp", &mut env);
+        assert_eq!(lines, vec!["token one two"]);
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::ForUnresolvedSource { .. })),
+            "adjacent undefined percent-noise command should not be unresolved: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn synth_caret_escaped_pipe_not_split() {
         let mut env = Environment::new(&Config::default());
         env.set("X", "y");
