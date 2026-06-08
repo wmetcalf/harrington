@@ -237,24 +237,26 @@ fn extract_shell_run_command_exprs(text: &str) -> Vec<&str> {
     let mut out = Vec::new();
     for line in text.lines() {
         let lower = line.to_ascii_lowercase();
-        let mut cursor = 0usize;
-        while let Some(rel) = lower[cursor..].find(".run") {
-            let run_start = cursor + rel;
-            let args_start = run_start + ".run".len();
-            let next = line[args_start..].chars().next();
-            if !next.is_some_and(|c| c.is_ascii_whitespace() || c == '(') {
+        for method in [".run", ".exec"] {
+            let mut cursor = 0usize;
+            while let Some(rel) = lower[cursor..].find(method) {
+                let run_start = cursor + rel;
+                let args_start = run_start + method.len();
+                let next = line[args_start..].chars().next();
+                if !next.is_some_and(|c| c.is_ascii_whitespace() || c == '(') {
+                    cursor = args_start;
+                    continue;
+                }
+                let mut args = line[args_start..].trim_start();
+                if let Some(rest) = args.strip_prefix('(') {
+                    args = rest;
+                }
+                let parts = split_vbs_args(args);
+                if let Some(expr) = parts.first() {
+                    out.push(*expr);
+                }
                 cursor = args_start;
-                continue;
             }
-            let mut args = line[args_start..].trim_start();
-            if let Some(rest) = args.strip_prefix('(') {
-                args = rest;
-            }
-            let parts = split_vbs_args(args);
-            if let Some(expr) = parts.first() {
-                out.push(*expr);
-            }
-            cursor = args_start;
         }
     }
     out

