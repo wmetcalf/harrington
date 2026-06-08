@@ -157,6 +157,7 @@ fn run_stage(stage: &str, input: Vec<String>, env: &mut Environment) -> Vec<Stri
         "tasklist" => synth_tasklist(&rest_args),
         "where" => synth_where(&rest_args, env),
         "wmic" => synth_wmic(&rest_args),
+        "ping" => synth_ping(&rest_args),
         _ => {
             env.traits.push(crate::traits::Trait::ForUnresolvedSource {
                 pipeline: stage.to_string(),
@@ -941,4 +942,40 @@ fn synth_wmic(args: &[&str]) -> Vec<String> {
         return vec!["Name".to_string(), "Administrators".to_string()];
     }
     Vec::new()
+}
+
+fn synth_ping(args: &[&str]) -> Vec<String> {
+    let mut target = None;
+    let mut skip_next = false;
+    for arg in args {
+        let arg = arg.trim_matches('"');
+        if arg.is_empty() {
+            continue;
+        }
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if arg.starts_with(['-', '/']) {
+            let option = arg
+                .trim_start_matches(['-', '/'])
+                .chars()
+                .next()
+                .map(|c| c.to_ascii_lowercase());
+            if matches!(
+                option,
+                Some('n' | 'l' | 'w' | 'i' | 'v' | 'r' | 's' | 'j' | 'k' | '4' | '6')
+            ) {
+                skip_next = !matches!(option, Some('4' | '6'));
+            }
+            continue;
+        }
+        target = Some(arg);
+    }
+    let Some(target) = target else {
+        return Vec::new();
+    };
+    vec![format!(
+        "Pinging {target} [{target}] with 32 bytes of data:"
+    )]
 }
