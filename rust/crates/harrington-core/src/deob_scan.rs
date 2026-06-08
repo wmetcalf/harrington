@@ -4417,6 +4417,44 @@ fn is_certutil_operation_flag(token: &str) -> bool {
     )
 }
 
+fn scan_copied_cmd_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    let mut aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for t in &env.traits {
+        let Trait::WindowsUtilManip { src, dst, .. } = t else {
+            continue;
+        };
+        let src_base = basename_lower(src);
+        if src_base != "cmd.exe" && src_base != "cmd" {
+            continue;
+        }
+        insert_alias_names(&mut aliases, dst);
+    }
+    if aliases.is_empty() {
+        return;
+    }
+
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        let (Some(cmd), Some(switch)) = (tokens.first(), tokens.get(1)) else {
+            continue;
+        };
+        if !aliases.contains(&basename_lower(cmd))
+            && !aliases.contains(&cmd.trim_matches(['"', '\'']).to_ascii_lowercase())
+        {
+            continue;
+        }
+        let switch = switch.trim_matches(['"', '\'']);
+        if !switch.eq_ignore_ascii_case("/c")
+            && !switch.eq_ignore_ascii_case("-c")
+            && !switch.eq_ignore_ascii_case("/k")
+            && !switch.eq_ignore_ascii_case("-k")
+        {
+            continue;
+        }
+        push_manipulated_exec_once(env, line, cmd);
+    }
+}
+
 fn scan_copied_rundll32_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
     let mut aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
     for t in &env.traits {
@@ -8093,6 +8131,9 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     });
     scan_step!("copied_certutil_alias_deob_text", {
         scan_copied_certutil_alias_deob_text(deobfuscated, env);
+    });
+    scan_step!("copied_cmd_alias_deob_text", {
+        scan_copied_cmd_alias_deob_text(deobfuscated, env);
     });
     scan_step!("copied_rundll32_alias_deob_text", {
         scan_copied_rundll32_alias_deob_text(deobfuscated, env);

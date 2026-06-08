@@ -12149,6 +12149,28 @@ C:\Users\Public\rdha.pif zipfldr.dll,RouteTheCall C:\Users\Public\ANYDESK.PIF
     }
 
     #[test]
+    fn copied_cmd_alias_emits_manipulated_exec_for_c_switch() {
+        let report = crate::analyze(
+            br#"extrac32 /c /y "C:\Windows\System32\extrac32.exe" "C:\Users\Public\expha.pif"
+C:\Users\Public\expha.pif /c /y "C:\Windows\System32\cmd.exe" "C:\Users\Public\alpha.pif"
+C:\Users\Public\alpha.pif /C ping -n 2 127.0.0.1
+"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ManipulatedExec { target, .. }
+                        if target == r#"C:\Users\Public\alpha.pif"#
+                )
+            }),
+            "copied cmd alias did not emit manipulated execution: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn extrac32_l_option_value_is_not_treated_as_source() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
