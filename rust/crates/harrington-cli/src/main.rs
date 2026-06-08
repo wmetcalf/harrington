@@ -1,6 +1,7 @@
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -1532,9 +1533,15 @@ fn lolbas_matches(report: &harrington_core::Report, index: &LolbasIndex) -> Vec<
             if !command_invokes_program(command, &entry.stem) {
                 continue;
             }
+            let command_key = lolbas_match_command_key(command);
             let duplicate = matches.iter().any(|item: &serde_json::Value| {
                 item.get("name").and_then(|v| v.as_str()) == Some(entry.name.as_str())
-                    && item.get("command").and_then(|v| v.as_str()) == Some(command)
+                    && item
+                        .get("command")
+                        .and_then(|v| v.as_str())
+                        .map(lolbas_match_command_key)
+                        .as_deref()
+                        == Some(command_key.as_ref())
             });
             if duplicate {
                 continue;
@@ -1549,6 +1556,22 @@ fn lolbas_matches(report: &harrington_core::Report, index: &LolbasIndex) -> Vec<
         }
     }
     matches
+}
+
+fn lolbas_match_command_key(command: &str) -> Cow<'_, str> {
+    let trimmed = command.trim();
+    let command = trimmed.trim_start_matches('&').trim_start();
+    let head_end = command.find(char::is_whitespace).unwrap_or(command.len());
+    let head = command[..head_end]
+        .trim_matches(['"', '\''])
+        .to_ascii_lowercase();
+    let canonical_head = match head.as_str() {
+        "start-process" | "saps" | "start" => "start-process",
+        "invoke-item" | "ii" => "invoke-item",
+        _ => return Cow::Borrowed(trimmed),
+    };
+    let rest = &command[head_end..];
+    Cow::Owned(format!("{canonical_head}{rest}").to_ascii_lowercase())
 }
 
 fn optional_lolbas_matches(
