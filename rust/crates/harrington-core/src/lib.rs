@@ -4701,9 +4701,10 @@ fn scan_binary_input_urls(input: &[u8], env: &mut Environment) {
             continue;
         }
         env.traits.push(Trait::DownloadInDeobText {
-            src: url,
+            src: url.clone(),
             line_hint: "binary-input".to_string(),
         });
+        deob_scan::scan_network_probe_url(&url, env);
     }
     // bat/CAB dual-detonation pattern: a CAB file whose header area
     // embeds a batch payload like
@@ -9965,6 +9966,60 @@ mod char_boundary_tests {
             )),
             "PE binary behavior strings were not scanned: {:?}",
             report.traits
+        );
+    }
+
+    #[test]
+    fn binary_input_public_ip_url_emits_network_probe() {
+        let mut input = vec![0u8; 9000];
+        input.extend_from_slice(b"embedded http://ip-api.com/line?fields=proxy string");
+        let mut env = crate::env::Environment::new(&crate::env::Config::default());
+
+        crate::scan_binary_input_urls(&input, &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::DownloadInDeobText { src, line_hint }
+                    if src == "http://ip-api.com/line?fields=proxy" && line_hint == "binary-input"
+            )),
+            "PE binary URL was not extracted: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::NetworkProbe { probe_kind, target }
+                    if probe_kind == "ip-discovery" && target == "ip-api.com"
+            )),
+            "binary public-IP URL was not typed as NetworkProbe: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn binary_input_public_ip_host_match_does_not_use_url_path() {
+        let mut input = vec![0u8; 9000];
+        input.extend_from_slice(b"embedded http://example.com/path/ip-api.com/line string");
+        let mut env = crate::env::Environment::new(&crate::env::Config::default());
+
+        crate::scan_binary_input_urls(&input, &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::DownloadInDeobText { src, line_hint }
+                    if src == "http://example.com/path/ip-api.com/line" && line_hint == "binary-input"
+            )),
+            "PE binary URL was not extracted: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::NetworkProbe { .. })),
+            "URL path substring was incorrectly typed as NetworkProbe: {:?}",
+            env.traits
         );
     }
 

@@ -36,6 +36,19 @@ static UNC_WEBDAV_RE: Lazy<Regex> = Lazy::new(|| {
         .expect("unc webdav regex")
 });
 
+static IP_DISCOVERY_HOSTS: &[&str] = &[
+    "api.ipify.org",
+    "ipv4.icanhazip.com",
+    "icanhazip.com",
+    "checkip.dyndns.org",
+    "checkip.amazonaws.com",
+    "ifconfig.me",
+    "ip-api.com",
+    "ipinfo.io",
+    "www.geoplugin.net",
+    "reallyfreegeoip.org",
+];
+
 #[allow(clippy::expect_used)]
 static BITSADMIN_WORD_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?i)\bbitsadmin(?:\.exe)?\b").expect("bitsadmin word regex"));
@@ -6341,38 +6354,9 @@ fn scan_network_probe(deobfuscated: &str, env: &mut Environment) {
         )
         .expect("resolve-dns re")
     });
-    static IP_DISCOVERY_HOSTS: &[&str] = &[
-        "api.ipify.org",
-        "ipv4.icanhazip.com",
-        "icanhazip.com",
-        "checkip.dyndns.org",
-        "checkip.amazonaws.com",
-        "ifconfig.me",
-        "ip-api.com",
-        "ipinfo.io",
-        "www.geoplugin.net",
-        "reallyfreegeoip.org",
-    ];
-    let mut push = |kind: &str, target: String| {
-        if target.is_empty() {
-            return;
-        }
-        if env.traits.iter().any(|t| {
-            matches!(
-                t, crate::traits::Trait::NetworkProbe { probe_kind: k, target: tg }
-                    if k == kind && tg == &target
-            )
-        }) {
-            return;
-        }
-        env.traits.push(crate::traits::Trait::NetworkProbe {
-            probe_kind: kind.to_string(),
-            target,
-        });
-    };
     for c in NSLOOKUP_RE.captures_iter(deobfuscated) {
         if let Some(m) = c.get(1) {
-            push("dns-lookup", m.as_str().to_string());
+            push_network_probe(env, "dns-lookup", m.as_str().to_string());
         }
     }
     for c in RESOLVE_DNS_RE.captures_iter(deobfuscated) {
@@ -6382,14 +6366,66 @@ fn scan_network_probe(deobfuscated: &str, env: &mut Environment) {
             .or_else(|| c.get(3))
             .map(|m| m.as_str().to_string())
             .unwrap_or_default();
-        push("dns-lookup", h);
+        push_network_probe(env, "dns-lookup", h);
     }
     let lower = deobfuscated.to_ascii_lowercase();
     for host in IP_DISCOVERY_HOSTS {
         if lower.contains(host) {
-            push("ip-discovery", (*host).to_string());
+            push_network_probe(env, "ip-discovery", (*host).to_string());
         }
     }
+}
+
+pub(crate) fn scan_network_probe_url(url: &str, env: &mut Environment) {
+    let Some(host) = url_host_lower(url) else {
+        return;
+    };
+    if IP_DISCOVERY_HOSTS.iter().any(|known| host == *known) {
+        push_network_probe(env, "ip-discovery", host);
+    }
+}
+
+fn url_host_lower(url: &str) -> Option<String> {
+    let (_, rest) = url.split_once(':')?;
+    let rest = rest.trim_start_matches(['/', '\\']);
+    if rest.is_empty() {
+        return None;
+    }
+    let authority = rest
+        .split(['/', '\\', '?', '#'])
+        .next()
+        .unwrap_or_default()
+        .rsplit('@')
+        .next()
+        .unwrap_or_default();
+    let host = authority
+        .strip_prefix('[')
+        .and_then(|s| s.split_once(']').map(|(host, _)| host))
+        .unwrap_or_else(|| authority.split(':').next().unwrap_or_default())
+        .trim_end_matches('.');
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_ascii_lowercase())
+    }
+}
+
+fn push_network_probe(env: &mut Environment, kind: &str, target: String) {
+    if target.is_empty() {
+        return;
+    }
+    if env.traits.iter().any(|t| {
+        matches!(
+            t, crate::traits::Trait::NetworkProbe { probe_kind, target: tg }
+                if probe_kind == kind && tg == &target
+        )
+    }) {
+        return;
+    }
+    env.traits.push(crate::traits::Trait::NetworkProbe {
+        probe_kind: kind.to_string(),
+        target,
+    });
 }
 
 /// Local account backdoor setup: create a local user or add an account
