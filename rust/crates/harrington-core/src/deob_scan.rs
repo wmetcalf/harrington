@@ -5129,7 +5129,11 @@ fn scan_certutil_urlcache_deob_text(deobfuscated: &str, env: &mut Environment) {
 
     for line in deobfuscated.lines() {
         let lower = line.to_ascii_lowercase();
-        if !lower.contains("-urlcache") && !lower.contains("/urlcache") {
+        if !lower.contains("-urlcache")
+            && !lower.contains("/urlcache")
+            && !lower.contains("-verifyctl")
+            && !lower.contains("/verifyctl")
+        {
             continue;
         }
         let tokens = split_words(line);
@@ -8538,6 +8542,7 @@ fn is_download_context_line(line: &str) -> bool {
         || lower.contains("new-object net.webclient")
         || lower.contains("bitsadmin")
         || lower.contains("urlcache")
+        || lower.contains("verifyctl")
         || lower.contains("curl ")
         || lower.contains("curl.exe")
         || lower.contains("wget ")

