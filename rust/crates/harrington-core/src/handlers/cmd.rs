@@ -2,8 +2,10 @@
 #![allow(clippy::expect_used)]
 
 use crate::env::Environment;
+use crate::handlers::util::split_words;
 use once_cell::sync::Lazy;
 use regex::Regex;
+use std::borrow::Cow;
 
 /// Find the `cmd[.exe]` executable token at the start of `raw` and return
 /// the byte index just after it. Handles optional `@`, `(`, leading
@@ -294,23 +296,15 @@ pub fn h_start(raw: &str, env: &mut Environment) {
     if inner_raw.is_empty() {
         return;
     }
-    // `start "" "URL"` and `start "" firefox -url URL` both open the URL in
-    // the default app / specified browser. Detect the URL on `inner_raw`
-    // BEFORE strip_leading_quoted_title (which would treat `"URL"` as a
-    // title and strip the URL away).
-    if let Some(url_start) = inner_raw
-        .find("http://")
-        .or_else(|| inner_raw.find("https://"))
-        .or_else(|| inner_raw.find("ftp://"))
-    {
-        let url = extract_url_at(&inner_raw[url_start..]);
-        if !url.is_empty() {
-            env.traits.push(crate::traits::Trait::Download {
-                src: url.clone(),
-                dst: None,
-                cmd: format!("start {}", inner_raw),
-            });
-        }
+    // `start "" "URL"` and `start "" firefox -url URL` open the URL in
+    // the default handler / specified browser. Classify only those direct
+    // launch forms here; nested commands such as `start powershell ... iwr URL`
+    // are handled by the recursive interpretation below.
+    if let Some(url) = start_url_launch(inner_raw) {
+        env.traits.push(crate::traits::Trait::UrlLaunch {
+            cmd: format!("start {}", inner_raw),
+            url,
+        });
     }
     // Strip optional quoted title: start "" /flags cmd  OR  start "title" cmd
     // (defense-in-depth: the regex already consumes quoted titles in the prefix,
@@ -345,6 +339,68 @@ fn extract_url_at(s: &str) -> String {
                 && *c != '&'
         })
         .collect()
+}
+
+fn start_url_launch(inner_raw: &str) -> Option<String> {
+    let tokens = split_words(inner_raw);
+    let first = tokens.first().map(|token| strip_quotes(token.trim()))?;
+    if let Some(url) = normalize_start_url_token(first) {
+        return Some(url);
+    }
+    if !is_known_url_launcher(first) {
+        return None;
+    }
+    tokens
+        .iter()
+        .skip(1)
+        .filter_map(|token| normalize_start_url_token(strip_quotes(token.trim())))
+        .next()
+}
+
+fn normalize_start_url_token(token: &str) -> Option<String> {
+    let token = token.trim_start_matches(['"', '\'']);
+    let token = if token.contains("\"\"") || token.contains("''") {
+        Cow::Owned(token.replace("\"\"", "").replace("''", ""))
+    } else {
+        Cow::Borrowed(token)
+    };
+    let token = extract_url_at(&token);
+    if token.is_empty() {
+        return None;
+    }
+    crate::deob_scan::normalize_liberal_url_token(&token)
+        .or_else(|| crate::deob_scan::normalize_schemeless_domain_path_token(&token))
+}
+
+fn is_known_url_launcher(token: &str) -> bool {
+    let lower = token.to_ascii_lowercase();
+    let basename = lower
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(lower.as_str())
+        .trim_end_matches(".exe");
+    matches!(
+        basename,
+        "explorer"
+            | "iexplore"
+            | "msedge"
+            | "edge"
+            | "chrome"
+            | "firefox"
+            | "brave"
+            | "opera"
+            | "vivaldi"
+    )
+}
+
+fn strip_quotes(s: &str) -> &str {
+    if ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')))
+        && s.len() >= 2
+    {
+        &s[1..s.len() - 1]
+    } else {
+        s
+    }
 }
 
 fn strip_leading_quoted_title(s: &str) -> &str {

