@@ -11786,6 +11786,89 @@ wscript loader.js
             env.traits
         );
     }
+
+    #[test]
+    fn script_host_invocation_in_deob_text_emits_exec_trait() {
+        let mut env = Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"for /f "delims=" %%I in ('cscript /nologo "%~f0?.wsf" script.bat "%~2"') do set "%~1=%%I""#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::CscriptExec { src } if src == "%~f0?.wsf"
+            )),
+            "deob-text cscript invocation did not emit CscriptExec: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn conditional_wscript_invocation_in_deob_text_emits_exec_trait() {
+        let mut env = Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"if exist CPU.bat (wscript.exe invisible.vbs CPU.bat)"#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::WscriptExec { src } if src == "invisible.vbs"
+            )),
+            "deob-text wscript invocation did not emit WscriptExec: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn script_host_prose_in_deob_text_does_not_emit_exec_trait() {
+        let mut env = Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"' Checks if this script is running under cscript.exe
+if InStrRev(LCase(WScript.FullName), "cscript.exe", -1) <> 0 then"#,
+            &mut env,
+        );
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| { matches!(t, Trait::CscriptExec { .. } | Trait::WscriptExec { .. }) }),
+            "prose/comment cscript mention emitted script-host trait: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn script_host_registry_value_in_deob_text_does_not_emit_exec_trait() {
+        let mut env = Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "Teams" /t REG_SZ /d "wscript.exe //B //Nologo \"C:\Users\Public\Hate.vbs\"" /f"#,
+            &mut env,
+        );
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| { matches!(t, Trait::CscriptExec { .. } | Trait::WscriptExec { .. }) }),
+            "registry value wscript command emitted immediate script-host trait: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn script_host_non_script_source_in_deob_text_does_not_emit_exec_trait() {
+        let mut env = Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"wscript.exe C:\Users\Public\renamed-copy.exe"#,
+            &mut env,
+        );
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| { matches!(t, Trait::CscriptExec { .. } | Trait::WscriptExec { .. }) }),
+            "non-script wscript source emitted script-host trait: {:?}",
+            env.traits
+        );
+    }
 }
 
 #[cfg(test)]

@@ -7660,6 +7660,109 @@ fn has_shellcode_marker_atom(text: &str) -> bool {
         || contains_ascii_case_insensitive_atom(text, b"0xfc")
 }
 
+fn scan_script_host_deob_text(deobfuscated: &str, env: &mut Environment) {
+    if !contains_ascii_case_insensitive_atom(deobfuscated, b"cscript")
+        && !contains_ascii_case_insensitive_atom(deobfuscated, b"wscript")
+    {
+        return;
+    }
+
+    use once_cell::sync::Lazy;
+    use regex::Regex;
+    static SCRIPT_HOST_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?im)(?:^|[\s&|('"`(])(?P<cmd>(?:[A-Za-z]:[\\/][^\r\n&|'"`()]*)?(?P<host>[cw]script)(?:\.exe)?\s+[^\r\n]*)"#,
+        )
+        .expect("script host command")
+    });
+
+    for caps in SCRIPT_HOST_RE.captures_iter(deobfuscated) {
+        let Some(cmd_match) = caps.name("cmd") else {
+            continue;
+        };
+        if script_host_match_is_registry_value(deobfuscated, cmd_match.start()) {
+            continue;
+        }
+        let host = caps
+            .name("host")
+            .map(|m| m.as_str().to_ascii_lowercase())
+            .unwrap_or_default();
+        let command = trim_script_host_wrapper_tail(cmd_match.as_str());
+        let Some(src) = script_host_source_arg(command) else {
+            continue;
+        };
+        if !script_host_source_looks_script_like(&src) {
+            continue;
+        }
+        push_script_host_exec_trait(&host, src, env);
+    }
+}
+
+fn push_script_host_exec_trait(host: &str, src: String, env: &mut Environment) {
+    let already = env.traits.iter().any(|t| match (host, t) {
+        ("cscript", crate::traits::Trait::CscriptExec { src: s }) => s == &src,
+        ("wscript", crate::traits::Trait::WscriptExec { src: s }) => s == &src,
+        _ => false,
+    });
+    if already {
+        return;
+    }
+    match host {
+        "cscript" => env.traits.push(crate::traits::Trait::CscriptExec { src }),
+        "wscript" => env.traits.push(crate::traits::Trait::WscriptExec { src }),
+        _ => {}
+    }
+}
+
+fn script_host_match_is_registry_value(text: &str, start: usize) -> bool {
+    let line_start = text[..start]
+        .rfind(['\n', '\r'])
+        .map(|idx| idx + 1)
+        .unwrap_or(0);
+    let prefix = text[line_start..start].to_ascii_lowercase();
+    prefix.contains("reg add") && (prefix.contains(" /d ") || prefix.contains(" -d "))
+}
+
+fn trim_script_host_wrapper_tail(command: &str) -> &str {
+    let mut end = command.len();
+    for marker in ["') do", "\") do", "` ) do", "\\n", "\n", "\r"] {
+        if let Some(idx) = command.find(marker) {
+            end = end.min(idx);
+        }
+    }
+    command[..end]
+        .trim()
+        .trim_end_matches([')', '\'', '"'])
+        .trim()
+}
+
+fn script_host_source_arg(command: &str) -> Option<String> {
+    let tokens = crate::handlers::util::split_words(command);
+    for token in tokens.iter().skip(1) {
+        let token = token.trim_matches(['"', '\'']);
+        if token.starts_with("//") || token.starts_with('/') {
+            continue;
+        }
+        if token.is_empty() || token.starts_with('-') {
+            continue;
+        }
+        return Some(token.to_string());
+    }
+    None
+}
+
+fn script_host_source_looks_script_like(src: &str) -> bool {
+    let src = src
+        .trim()
+        .trim_matches(['"', '\''])
+        .trim_start_matches("\\\"")
+        .trim_end_matches("\\\"");
+    let lower = src.to_ascii_lowercase();
+    [".vbs", ".vbe", ".js", ".jse", ".wsf", ".wsh"]
+        .iter()
+        .any(|ext| lower.ends_with(ext) || lower.contains(&format!("{ext}?")))
+}
+
 pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     let scan_profile_enabled = std::env::var_os("HARRINGTON_PROFILE_DEOB_SCAN").is_some();
     macro_rules! scan_step {
@@ -7740,6 +7843,9 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     });
     scan_step!("shellcode_marker", {
         scan_shellcode_marker(deobfuscated, env);
+    });
+    scan_step!("script_host_deob_text", {
+        scan_script_host_deob_text(deobfuscated, env);
     });
     scan_step!("bitsadmin_deob_text", {
         scan_bitsadmin_deob_text(deobfuscated, env);
