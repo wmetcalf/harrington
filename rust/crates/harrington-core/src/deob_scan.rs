@@ -3864,9 +3864,11 @@ fn command_name(token: &str) -> String {
         .to_ascii_lowercase()
 }
 
-fn scan_echoed_vbs_xmlhttp_deob_text(deobfuscated: &str, env: &mut Environment) {
+fn scan_echoed_vbs_deob_text(deobfuscated: &str, env: &mut Environment) {
     let lower = deobfuscated.to_ascii_lowercase();
-    if !lower.contains("xmlhttp") || !lower.contains(".open") {
+    let has_vbs_downloader = lower.contains("xmlhttp") && lower.contains(".open");
+    let has_shell_execute_runas = lower.contains("shellexecute") && lower.contains("runas");
+    if !has_vbs_downloader && !has_shell_execute_runas {
         return;
     }
 
@@ -7204,8 +7206,8 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     scan_step!("registry_url_values", {
         scan_registry_url_values(deobfuscated, env);
     });
-    scan_step!("echoed_vbs_xmlhttp_deob_text", {
-        scan_echoed_vbs_xmlhttp_deob_text(deobfuscated, env);
+    scan_step!("echoed_vbs_deob_text", {
+        scan_echoed_vbs_deob_text(deobfuscated, env);
     });
     scan_step!("copied_curl_alias_deob_text", {
         scan_copied_curl_alias_deob_text(deobfuscated, env);

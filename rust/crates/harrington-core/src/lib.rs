@@ -1391,6 +1391,26 @@ UAC.ShellExecute "cmd.exe", "/c ""C:\Users\me\dropper.bat""", "", "runas", 1"#;
     }
 
     #[test]
+    fn echoed_vbs_shell_execute_runas_emits_self_elevation_trait() {
+        let script = br#"@echo off
+echo Set UAC = CreateObject^("Shell.Application"^) > "%temp%\getadmin.vbs"
+echo UAC.ShellExecute "cmd.exe", "/c ""%~s0""", "", "runas", 1 >> "%temp%\getadmin.vbs""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::SelfElevation { target, args }
+                    if target == "cmd.exe"
+                        && args
+                            .as_deref()
+                            .is_some_and(|value| value.contains("%~s0"))
+            )),
+            "echoed VBS ShellExecute runas SelfElevation not detected: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn js_shell_execute_runas_emits_self_elevation_trait() {
         let script = br#"WScript.CreateObject("Shell.Application").ShellExecute("cmd.exe", "/c C:\\Users\\me\\dropper.bat", "", "runas", 1);"#;
         let mut env = crate::env::Environment::new(&crate::env::Config::default());
