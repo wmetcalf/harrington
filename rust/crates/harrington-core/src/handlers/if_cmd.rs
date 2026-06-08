@@ -1,6 +1,8 @@
 //! `if` handler — evaluates the condition and signals body suppression via env.suppress_until_eol.
 
 use crate::env::Environment;
+use crate::lex::lex;
+use crate::normalize::normalize_to_string;
 use once_cell::sync::Lazy;
 use regex::Regex;
 
@@ -109,17 +111,16 @@ fn evaluate(rest: &str, env: &Environment, allow_errorlevel_invariants: bool) ->
         (false, trimmed)
     };
     if let Some(eq_pos) = body.find("==") {
-        let lhs = body[..eq_pos].trim().trim_matches('"');
+        let lhs_raw = body[..eq_pos].trim().trim_matches('"');
         let rhs_full = body[eq_pos + 2..].trim_start();
         let rhs_end = rhs_full
             .find(|c: char| c.is_whitespace() || c == ')')
             .unwrap_or(rhs_full.len());
-        let rhs = rhs_full[..rhs_end].trim().trim_matches('"');
-        if lhs.contains('%') || lhs.contains('!') || rhs.contains('%') || rhs.contains('!') {
-            return None;
-        }
+        let rhs_raw = rhs_full[..rhs_end].trim().trim_matches('"');
+        let lhs = normalize_comparison_operand(lhs_raw, env)?;
+        let rhs = normalize_comparison_operand(rhs_raw, env)?;
         let eq = if case_insensitive {
-            lhs.eq_ignore_ascii_case(rhs)
+            lhs.eq_ignore_ascii_case(&rhs)
         } else {
             lhs == rhs
         };
@@ -137,21 +138,22 @@ fn evaluate(rest: &str, env: &Environment, allow_errorlevel_invariants: bool) ->
         (" GEQ ", "ge"),
     ] {
         if let Some(pos) = upper.find(op_str) {
-            let lhs = body[..pos].trim().trim_matches('"');
+            let lhs_raw = body[..pos].trim().trim_matches('"');
             let rhs_start = pos + op_str.len();
             let rhs_full = body[rhs_start..].trim_start();
             let rhs_end = rhs_full
                 .find(|c: char| c.is_whitespace() || c == ')')
                 .unwrap_or(rhs_full.len());
-            let rhs = rhs_full[..rhs_end].trim().trim_matches('"');
+            let rhs_raw = rhs_full[..rhs_end].trim().trim_matches('"');
             if allow_errorlevel_invariants {
-                if let Some(result) = evaluate_errorlevel_nonnegative_invariant(lhs, op_kind, rhs) {
+                if let Some(result) =
+                    evaluate_errorlevel_nonnegative_invariant(lhs_raw, op_kind, rhs_raw)
+                {
                     return Some(result);
                 }
             }
-            if lhs.contains('%') || lhs.contains('!') || rhs.contains('%') || rhs.contains('!') {
-                return None;
-            }
+            let lhs = normalize_comparison_operand(lhs_raw, env)?;
+            let rhs = normalize_comparison_operand(rhs_raw, env)?;
             // Try numeric first
             let l_n = lhs.parse::<i64>().ok();
             let r_n = rhs.parse::<i64>().ok();
@@ -185,6 +187,64 @@ fn evaluate(rest: &str, env: &Environment, allow_errorlevel_invariants: bool) ->
     }
 
     None
+}
+
+fn normalize_comparison_operand(operand: &str, env: &Environment) -> Option<String> {
+    if operand.contains('!') {
+        return None;
+    }
+    if operand.contains('%') && !has_only_positional_percent_refs(operand) {
+        return None;
+    }
+    if !operand.contains('%') {
+        return Some(operand.to_string());
+    }
+    let mut scratch = env.clone();
+    let normalized = normalize_to_string(&lex(operand), &mut scratch);
+    if normalized.contains('%') || normalized.contains('!') {
+        return None;
+    }
+    Some(normalized)
+}
+
+fn has_only_positional_percent_refs(operand: &str) -> bool {
+    let bytes = operand.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] != b'%' {
+            i += 1;
+            continue;
+        }
+        let Some(next) = bytes.get(i + 1).copied() else {
+            return false;
+        };
+        if next == b'%' {
+            return false;
+        }
+        if next == b'*' || next.is_ascii_digit() {
+            i += 2;
+            continue;
+        }
+        if next != b'~' {
+            return false;
+        }
+        let mut j = i + 2;
+        while let Some(byte) = bytes.get(j) {
+            if *byte == b'*' || byte.is_ascii_digit() {
+                i = j + 1;
+                break;
+            }
+            if byte.is_ascii_alphanumeric() || matches!(*byte, b'$' | b':' | b'-') {
+                j += 1;
+                continue;
+            }
+            return false;
+        }
+        if i != j + 1 {
+            return false;
+        }
+    }
+    true
 }
 
 fn evaluate_errorlevel_nonnegative_invariant(lhs: &str, op_kind: &str, rhs: &str) -> Option<bool> {

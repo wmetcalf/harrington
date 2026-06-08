@@ -7936,6 +7936,46 @@ mod if_constant_fold_tests {
     }
 
     #[test]
+    fn if_top_level_percent_one_defaults_empty() {
+        let script = b"if \"%1\"==\"\" set MARK=empty\r\necho %MARK%\r\n";
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo empty"),
+            "top-level %1 should fold to empty and run inline body:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, crate::traits::Trait::IfNotResolved { condition } if condition.contains("%1"))),
+            "top-level %1 condition should not stay unresolved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn if_top_level_percent_tilde_one_defaults_empty() {
+        let script = b"if \"%~1\"==\"hidden\" set MARK=bad\r\necho after\r\n";
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo after"),
+            "top-level %~1 false branch should not suppress following line:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, crate::traits::Trait::IfNotResolved { condition } if condition.contains("%~1"))),
+            "top-level %~1 condition should not stay unresolved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn if_gtr_lss_geq_leq() {
         for (op, expected_unresolved) in [
             ("gtr 5", false),
