@@ -223,11 +223,21 @@ pub fn command_name(line: &str) -> Option<String> {
         return None;
     }
     let mut name = String::new();
-    for c in s.chars() {
-        if c.is_whitespace() || c == '/' || c == '<' || c == '>' || c == '&' || c == '|' {
-            break;
+    if let Some(quote @ ('"' | '\'')) = s.chars().next() {
+        name.push(quote);
+        for c in s[quote.len_utf8()..].chars() {
+            name.push(c);
+            if c == quote {
+                break;
+            }
         }
-        name.push(c);
+    } else {
+        for c in s.chars() {
+            if c.is_whitespace() || c == '/' || c == '<' || c == '>' || c == '&' || c == '|' {
+                break;
+            }
+            name.push(c);
+        }
     }
     if name.is_empty() {
         return None;

