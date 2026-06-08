@@ -7897,7 +7897,7 @@ fn scan_uac_bypass(deobfuscated: &str, env: &mut Environment) {
             (Regex::new(r"(?i)\bsdclt(?:\.exe)?\b").unwrap(), "sdclt"),
             (Regex::new(r"(?i)\bcomputerdefaults(?:\.exe)?\b").unwrap(), "computerdefaults"),
             (Regex::new(r"(?i)\bwsreset(?:\.exe)?\b").unwrap(), "wsreset"),
-            (Regex::new(r"(?i)\bcmstp(?:\.exe)?\s+/au\b").unwrap(), "cmstp-au"),
+            (Regex::new(r"(?i)\bcmstp(?:\.exe)?(?:\s+[^\r\n]*)?\s+/au\b").unwrap(), "cmstp-au"),
             (Regex::new(r"(?i)\bmsconfig(?:\.exe)?\s+/4\b").unwrap(), "msconfig-4"),
             (Regex::new(r"(?i)HKCU\\Software\\Classes\\(?:ms-settings|Folder|exefile|mscfile)\\Shell\\Open\\command").unwrap(), "classes-shell-open-hijack"),
             (Regex::new(r"(?i)IColorDataProxy|ICMLuaUtil").unwrap(), "com-elevation"),

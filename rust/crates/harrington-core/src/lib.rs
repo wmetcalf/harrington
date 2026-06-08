@@ -1564,6 +1564,19 @@ echo UAC.ShellExecute "cmd.exe", "/c ""%~s0""", "", "runas", 1 >> "%temp%\getadm
     }
 
     #[test]
+    fn cmstp_au_after_other_flags_in_deob_text_emits_uac_bypass_trait() {
+        let mut env = crate::env::Environment::new(&AnalyzeConfig::default());
+        crate::deob_scan::scan_deob_text(r#"cmstp.exe /s /au C:\Users\Public\stage.inf"#, &mut env);
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::UacBypass { technique } if technique == "cmstp-au")),
+            "cmstp /au after other flags was not surfaced in deob text: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn reg_add_run_key_emits_persistence_trait() {
         // `reg add HKCU\…\Run /v X /d "C:\dropper.exe" /f` is the
         // classic registry-Run persistence. Surface as Persistence
