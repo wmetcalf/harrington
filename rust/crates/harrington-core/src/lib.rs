@@ -12026,6 +12026,50 @@ mod extrac32_tests {
     }
 
     #[test]
+    fn extrac32_copy_windows_util_emits_manipulation_trait() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"extrac32 /c /y "C:\Windows\System32\cmd.exe" "C:\Users\Public\alpha.pif""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::WindowsUtilManip { src, dst, .. }
+                    if src == r#"C:\Windows\System32\cmd.exe"#
+                        && dst == r#"C:\Users\Public\alpha.pif"#
+            )
+        });
+        assert!(
+            has,
+            "extrac32 copied Windows utility was not surfaced: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn extrac32_doubled_backslash_windows_util_emits_manipulation_trait() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"extrac32 /c /y "C:\\Windows\\System32\\cmd.exe" "C:\\Users\\Public\\alpha.pif""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::WindowsUtilManip { src, dst, .. }
+                    if src == r#"C:\Windows\System32\cmd.exe"#
+                        && dst == r#"C:\Users\Public\alpha.pif"#
+            )
+        });
+        assert!(
+            has,
+            "extrac32 copied Windows utility with doubled slashes was not surfaced: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn extrac32_l_option_value_is_not_treated_as_source() {
         let mut env = Environment::new(&Config::default());
         interpret_line(

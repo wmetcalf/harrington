@@ -17,6 +17,13 @@ pub fn h_extrac32(raw: &str, env: &mut Environment) {
         dst: dst.clone(),
         self_reference,
     });
+    if is_windows_util_copy(&src, &dst) {
+        env.traits.push(Trait::WindowsUtilManip {
+            cmd: raw.to_string(),
+            src: src.clone(),
+            dst: dst.clone(),
+        });
+    }
     let entry = match downloaded_src_for_candidate(&src, env) {
         Some(src) => FsEntry::Download { src },
         None => FsEntry::Copy { src },
@@ -61,7 +68,7 @@ fn parse_extrac32_paths(tokens: &[String]) -> Option<(String, String)> {
         let lower = token.to_ascii_lowercase();
         if lower == "/l" || lower == "-l" {
             if let Some(value) = tokens.get(i + 1).map(|s| strip_quotes(s)) {
-                output_dir = Some(value.to_string());
+                output_dir = Some(collapse_slashes(value));
                 i += 2;
                 continue;
             }
@@ -74,7 +81,7 @@ fn parse_extrac32_paths(tokens: &[String]) -> Option<(String, String)> {
             let offset = token.len() - value.len();
             let value = token[offset..].trim();
             if !value.is_empty() {
-                output_dir = Some(value.to_string());
+                output_dir = Some(collapse_slashes(value));
             }
             i += 1;
             continue;
@@ -83,7 +90,7 @@ fn parse_extrac32_paths(tokens: &[String]) -> Option<(String, String)> {
             i += 1;
             continue;
         }
-        positional.push(token.to_string());
+        positional.push(collapse_slashes(token));
         i += 1;
     }
     let src = positional.first()?.clone();
@@ -93,6 +100,28 @@ fn parse_extrac32_paths(tokens: &[String]) -> Option<(String, String)> {
         .or(output_dir)
         .filter(|s| !s.is_empty())?;
     Some((src, dst))
+}
+
+fn is_windows_util_copy(src: &str, dst: &str) -> bool {
+    let src_lower = src.to_ascii_lowercase();
+    let dst_lower = dst.to_ascii_lowercase();
+    (src_lower.starts_with("c:\\windows\\system32")
+        || src_lower.starts_with("c:\\windows\\syswow64"))
+        && !(dst_lower.starts_with("c:\\windows\\system32")
+            || dst_lower.starts_with("c:\\windows\\syswow64"))
+}
+
+fn collapse_slashes(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut prev = '\0';
+    for c in s.chars() {
+        if c == '\\' && prev == '\\' {
+            continue;
+        }
+        out.push(c);
+        prev = c;
+    }
+    out
 }
 
 fn strip_quotes(s: &str) -> &str {
