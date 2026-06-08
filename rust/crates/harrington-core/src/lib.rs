@@ -11434,6 +11434,17 @@ mod inline_if_tests {
             report.deobfuscated
         );
     }
+
+    #[test]
+    fn inline_if_false_runs_parenthesized_else_body() {
+        let script = b"if \"off.\" EQU \"on.\" (set X=bad) else (set X=good)\r\necho %X%\r\n";
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo good"),
+            "else branch did not run, got:\n{}",
+            report.deobfuscated
+        );
+    }
 }
 
 #[cfg(test)]
