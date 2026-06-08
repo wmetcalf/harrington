@@ -589,6 +589,7 @@ fn scan_bitsadmin_deob_text(deobfuscated: &str, env: &mut Environment) {
                         .map(|s| strip_quotes(s).to_string())
                         .unwrap_or_default();
                     if known.insert(url.clone()) {
+                        push_lolbas_once(env, "bitsadmin", line);
                         env.traits.push(Trait::BitsadminDownload { url, dst });
                     }
                     i += 2;
@@ -3653,6 +3654,7 @@ fn scan_process_url_arguments(deobfuscated: &str, env: &mut Environment) {
             if is_noise_url(&url) || !known.insert(url.clone()) {
                 continue;
             }
+            push_lolbas_once(env, "regsvr32", line);
             env.traits.push(Trait::UrlArgument {
                 cmd: line.to_string(),
                 url,
@@ -3668,7 +3670,11 @@ fn scan_process_url_arguments(deobfuscated: &str, env: &mut Environment) {
             let Some(url) = regsvr32_scriptlet_url_after(&tokens, i + 1) else {
                 continue;
             };
-            if is_noise_url(&url) || !known.insert(url.clone()) {
+            if is_noise_url(&url) {
+                continue;
+            }
+            push_lolbas_once(env, "regsvr32", line);
+            if !known.insert(url.clone()) {
                 continue;
             }
             env.traits.push(Trait::UrlArgument {
@@ -3687,6 +3693,7 @@ fn scan_process_url_arguments(deobfuscated: &str, env: &mut Environment) {
             if is_noise_url(&url) || !known_source_cmds.insert((line.to_string(), url.clone())) {
                 continue;
             }
+            push_lolbas_once(env, "regsvr32", line);
             env.traits.push(Trait::UrlArgument {
                 cmd: line.to_string(),
                 url,
@@ -3703,6 +3710,7 @@ fn scan_process_url_arguments(deobfuscated: &str, env: &mut Environment) {
             if is_noise_url(&url) || !known_source_cmds.insert((line.to_string(), url.clone())) {
                 continue;
             }
+            push_lolbas_once(env, "msiexec", line);
             env.traits.push(Trait::UrlArgument {
                 cmd: line.to_string(),
                 url,
@@ -3742,7 +3750,13 @@ fn scan_process_url_arguments(deobfuscated: &str, env: &mut Environment) {
         else {
             continue;
         };
-        if is_noise_url(&url) || !known.insert(url.clone()) {
+        if is_noise_url(&url) {
+            continue;
+        }
+        if cmd == "msiexec" || cmd == "msiexec.exe" {
+            push_lolbas_once(env, "msiexec", line);
+        }
+        if !known.insert(url.clone()) {
             continue;
         }
         env.traits.push(Trait::UrlArgument {

