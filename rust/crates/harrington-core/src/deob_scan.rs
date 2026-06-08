@@ -5941,6 +5941,10 @@ fn scan_inmem_assembly_load(deobfuscated: &str, env: &mut Environment) {
         )
         .expect("dynamic reflect load regex")
     });
+    static CUSTOM_LOADASSEMBLY_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)\bLoadAssembly\s*\([^)]*\).*?\bGetTypes\s*\(.*?\bGetMethod\s*\(.*?\bInvoke\s*\("#)
+            .expect("custom loadassembly regex")
+    });
 
     fn push_inmem_assembly_load(
         env: &mut Environment,
@@ -5975,6 +5979,9 @@ fn scan_inmem_assembly_load(deobfuscated: &str, env: &mut Environment) {
     }
     if DYNAMIC_REFLECT_LOAD_RE.is_match(deobfuscated) {
         push_inmem_assembly_load(env, &mut seen, "DynamicLoad".to_string());
+    }
+    if CUSTOM_LOADASSEMBLY_RE.is_match(deobfuscated) {
+        push_inmem_assembly_load(env, &mut seen, "LoadAssembly".to_string());
     }
 }
 
