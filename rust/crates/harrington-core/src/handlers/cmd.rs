@@ -290,20 +290,10 @@ fn contains_top_level(s: &str, ops: &[char]) -> bool {
     false
 }
 
-static START_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(
-        r#"(?i)^\s*start(?:\.exe)?(?:\s+/(?:min|max|wait|low|normal|abovenormal|belownormal|high|realtime|b|i|w))*\s+(?:(?:"[^"]*")(?:\s+/(?:min|max|wait|low|normal|abovenormal|belownormal|high|realtime|b|i|w))*)?\s*(?P<cmd>.+)$"#
-    ).expect("start regex")
-});
-
 pub fn h_start(raw: &str, env: &mut Environment) {
-    let Some(caps) = START_RE.captures(raw) else {
+    let Some(inner_raw) = start_child_command(raw) else {
         return;
     };
-    let inner_raw = caps.name("cmd").map(|m| m.as_str()).unwrap_or("").trim();
-    if inner_raw.is_empty() {
-        return;
-    }
     // `start "" "URL"` and `start "" firefox -url URL` open the URL in
     // the default handler / specified browser. Classify only those direct
     // launch forms here; nested commands such as `start powershell ... iwr URL`
@@ -322,6 +312,93 @@ pub fn h_start(raw: &str, env: &mut Environment) {
     }
     // Recurse: interpret the inner command inline.
     crate::interp::interpret_line(inner.as_ref(), env);
+}
+
+fn start_child_command(raw: &str) -> Option<&str> {
+    let mut rest = strip_start_command(raw)?.trim_start();
+    let mut title_consumed = false;
+    loop {
+        if rest.is_empty() {
+            return None;
+        }
+        let (arg, after_arg) = split_start_arg(rest);
+        if let Some(after_option) = start_option_remainder(arg, after_arg) {
+            rest = after_option.trim_start();
+            continue;
+        }
+        if !title_consumed && arg.starts_with('"') {
+            title_consumed = true;
+            rest = after_arg.trim_start();
+            continue;
+        }
+        return Some(rest);
+    }
+}
+
+fn strip_start_command(raw: &str) -> Option<&str> {
+    let raw = raw.trim_start();
+    let lower = raw.to_ascii_lowercase();
+    for prefix in ["start.exe", "start"] {
+        let Some(rest) = lower.strip_prefix(prefix) else {
+            continue;
+        };
+        if rest.is_empty() {
+            return Some("");
+        }
+        if rest.starts_with(char::is_whitespace) {
+            return Some(&raw[prefix.len()..]);
+        }
+    }
+    None
+}
+
+fn split_start_arg(s: &str) -> (&str, &str) {
+    let s = s.trim_start();
+    if let Some(after_open) = s.strip_prefix('"') {
+        let mut escaped = false;
+        for (idx, ch) in after_open.char_indices() {
+            if ch == '\\' && !escaped {
+                escaped = true;
+                continue;
+            }
+            if ch == '"' && !escaped {
+                let end = idx + 2;
+                return (&s[..end], &s[end..]);
+            }
+            escaped = false;
+        }
+        return (s, "");
+    }
+    let end = s
+        .char_indices()
+        .find_map(|(idx, ch)| ch.is_whitespace().then_some(idx))
+        .unwrap_or(s.len());
+    (&s[..end], &s[end..])
+}
+
+fn start_option_remainder<'a>(arg: &str, after_arg: &'a str) -> Option<&'a str> {
+    let option = arg.trim_matches('"').to_ascii_lowercase();
+    let option = option.strip_prefix(['/', '-'])?;
+    if matches!(option, "d" | "node" | "affinity" | "machine") {
+        let (_value, after_value) = split_start_arg(after_arg);
+        return Some(after_value);
+    }
+    matches!(
+        option,
+        "min"
+            | "max"
+            | "wait"
+            | "low"
+            | "normal"
+            | "abovenormal"
+            | "belownormal"
+            | "high"
+            | "realtime"
+            | "b"
+            | "i"
+            | "w"
+    )
+    .then_some(after_arg)
 }
 
 /// Extract a URL from the start of `s`, stopping at whitespace, quotes,

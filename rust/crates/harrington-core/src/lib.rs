@@ -3427,6 +3427,20 @@ mod start_title_tests {
         });
         assert!(has, "start title broke chain: {:?}", report.traits);
     }
+
+    #[test]
+    fn start_quoted_title_alone_is_not_interpreted_as_command() {
+        let script = b"start \"mshta.exe\"\r\n";
+        let report = analyze(script, &Config::default());
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::Mshta { .. })),
+            "start title was interpreted as mshta command: {:?}",
+            report.traits
+        );
+    }
 }
 
 pub use env::{Config, Environment, WinVer};
