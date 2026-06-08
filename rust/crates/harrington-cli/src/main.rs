@@ -356,6 +356,9 @@ fn command_invokes_program(command: &str, wanted_stem: &str) -> bool {
         {
             return false;
         }
+        if lolbas_is_certutil_file_operand(&tokens, idx) {
+            return false;
+        }
         if lolbas_attached_non_exec_value_option(token.text) {
             return false;
         }
@@ -423,6 +426,37 @@ fn lolbas_is_destination_separator(command: &str, prev_end: usize, next_start: u
         && between
             .chars()
             .all(|ch| ch.is_whitespace() || matches!(ch, ','))
+}
+
+fn lolbas_is_certutil_file_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    let Some(first) = tokens.first() else {
+        return false;
+    };
+    if program_stem(first.text) != "certutil" || !is_local_path_like_program_token(tokens[idx].text)
+    {
+        return false;
+    }
+    tokens
+        .iter()
+        .take(idx)
+        .any(|token| certutil_file_transform_verb(token.text))
+}
+
+fn certutil_file_transform_verb(token: &str) -> bool {
+    matches!(
+        token
+            .trim_matches(['"', '\''])
+            .to_ascii_lowercase()
+            .as_str(),
+        "-encode"
+            | "/encode"
+            | "-encodehex"
+            | "/encodehex"
+            | "-decode"
+            | "/decode"
+            | "-decodehex"
+            | "/decodehex"
+    )
 }
 
 fn lolbas_non_exec_value_option(token: &str) -> bool {
