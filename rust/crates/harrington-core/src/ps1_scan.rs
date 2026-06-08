@@ -120,7 +120,7 @@ static SELF_B64_MATCH_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static FILE_B64_XOR_LOADER_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\d{1,3})\s*;.*?\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\(\s*(?:gc|Get-Content)\s*['"]([^'"]+)['"]\s*\)\s*-join\s*['"]{2}.*?\[Convert\]::FromBase64String\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\).*?-bxor\s*\$([A-Za-z_][A-Za-z0-9_]*)"#,
+        r#"(?is)\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\d{1,3})\s*;.*?\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:\(\s*(?:gc|Get-Content)\s*['"]([^'"]+)['"]\s*\)\s*-join\s*['"]{2}|(?:gc|Get-Content)\s+-Raw\s+['"]([^'"]+)['"]).*?\[Convert\]::FromBase64String\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\).*?-bxor\s*\$([A-Za-z_][A-Za-z0-9_]*)"#,
     )
     .expect("file b64 xor loader regex")
 });
@@ -3850,13 +3850,13 @@ fn extract_file_backed_xor_ps1(env: &mut Environment, deobfuscated: &str) {
             let Some(data_var) = caps.get(3).map(|m| m.as_str()) else {
                 continue;
             };
-            let Some(path) = caps.get(4).map(|m| m.as_str()) else {
+            let Some(path) = caps.get(4).or_else(|| caps.get(5)).map(|m| m.as_str()) else {
                 continue;
             };
-            let Some(from_b64_var) = caps.get(5).map(|m| m.as_str()) else {
+            let Some(from_b64_var) = caps.get(6).map(|m| m.as_str()) else {
                 continue;
             };
-            let Some(xor_key_var) = caps.get(6).map(|m| m.as_str()) else {
+            let Some(xor_key_var) = caps.get(7).map(|m| m.as_str()) else {
                 continue;
             };
             if !data_var.eq_ignore_ascii_case(from_b64_var)
