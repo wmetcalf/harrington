@@ -287,9 +287,7 @@ pub fn scan_js_payloads(env: &mut Environment) {
             if env.check_deadline() {
                 break 'payloads;
             }
-            if find_ascii_case_insensitive_from(&candidate, b".run", 0).is_some()
-                || find_ascii_case_insensitive_from(&candidate, b".exec", 0).is_some()
-            {
+            if has_js_shell_command_call_candidate(&candidate) {
                 let (bindings, _) = collect_js_string_bindings(&candidate);
                 push_downloads_from_js_shell_command_calls(
                     env,
@@ -346,6 +344,12 @@ pub fn scan_js_payloads(env: &mut Environment) {
     env.all_extracted_jscript = payloads;
 }
 
+fn has_js_shell_command_call_candidate(text: &str) -> bool {
+    find_ascii_case_insensitive_from(text, b".run", 0).is_some()
+        || find_ascii_case_insensitive_from(text, b".exec", 0).is_some()
+        || find_js_bracket_shell_command_method_from(text, 0).is_some()
+}
+
 fn push_downloads_from_js_shell_command_calls(
     env: &mut Environment,
     idx: usize,
@@ -380,6 +384,60 @@ fn push_downloads_from_js_shell_command_calls(
             cursor = open + 1;
         }
     }
+
+    let mut cursor = 0usize;
+    while let Some((method_start, method_end, requires_shell_context)) =
+        find_js_bracket_shell_command_method_from(text, cursor)
+    {
+        if env.check_deadline() {
+            return;
+        }
+        if requires_shell_context && !has_nearby_wscript_shell_context(text, method_start) {
+            cursor = method_end;
+            continue;
+        }
+        let Some(open) = consume_js_call_open(text, method_end) else {
+            cursor = method_end;
+            continue;
+        };
+        let arg_start = skip_ascii_ws(text, open + 1);
+        let Some((_arg_end, command)) = eval_js_string_expr(text, arg_start, bindings) else {
+            cursor = open + 1;
+            continue;
+        };
+        push_downloads_from_js_command(env, idx, snippet_source, &command, seen);
+        cursor = open + 1;
+    }
+}
+
+fn find_js_bracket_shell_command_method_from(
+    text: &str,
+    start: usize,
+) -> Option<(usize, usize, bool)> {
+    let bytes = text.as_bytes();
+    let mut cursor = start.min(bytes.len());
+    while cursor < bytes.len() {
+        let rel = bytes[cursor..].iter().position(|byte| *byte == b'[')?;
+        let member_start = cursor + rel;
+        let literal_start = skip_ascii_ws(text, member_start + 1);
+        let Some((literal_end, property)) = parse_js_string_literal_at(text, literal_start) else {
+            cursor = member_start + 1;
+            continue;
+        };
+        let close = skip_ascii_ws(text, literal_end);
+        if bytes.get(close) != Some(&b']') {
+            cursor = member_start + 1;
+            continue;
+        }
+        if property.eq_ignore_ascii_case("run") {
+            return Some((member_start, close + 1, false));
+        }
+        if property.eq_ignore_ascii_case("exec") {
+            return Some((member_start, close + 1, true));
+        }
+        cursor = member_start + 1;
+    }
+    None
 }
 
 fn has_nearby_wscript_shell_context(text: &str, idx: usize) -> bool {
