@@ -8091,16 +8091,24 @@ pub fn scan_embedded_powershell_invocations(text: &str, env: &mut Environment) {
 }
 
 fn has_embedded_powershell_invocation_atom(text: &str) -> bool {
-    contains_ascii_case_insensitive_with_optional_carets(text.as_bytes(), b"powershell")
-        || contains_ascii_case_insensitive_with_optional_carets(text.as_bytes(), b"pwsh")
+    contains_ascii_case_insensitive_command_atom_with_optional_carets(
+        text.as_bytes(),
+        b"powershell",
+    ) || contains_ascii_case_insensitive_command_atom_with_optional_carets(text.as_bytes(), b"pwsh")
 }
 
-fn contains_ascii_case_insensitive_with_optional_carets(haystack: &[u8], needle: &[u8]) -> bool {
+fn contains_ascii_case_insensitive_command_atom_with_optional_carets(
+    haystack: &[u8],
+    needle: &[u8],
+) -> bool {
     if needle.is_empty() {
         return true;
     }
 
     for (start, &b) in haystack.iter().enumerate() {
+        if !is_ascii_command_atom_start_boundary(haystack, start) {
+            continue;
+        }
         if !b.eq_ignore_ascii_case(&needle[0]) {
             continue;
         }
@@ -8119,12 +8127,35 @@ fn contains_ascii_case_insensitive_with_optional_carets(haystack: &[u8], needle:
             hay_idx += 1;
             needle_idx += 1;
         }
-        if needle_idx == needle.len() {
+        if needle_idx == needle.len() && is_ascii_command_atom_end_boundary(haystack, hay_idx) {
             return true;
         }
     }
 
     false
+}
+
+fn is_ascii_command_atom_start_boundary(haystack: &[u8], start: usize) -> bool {
+    start == 0
+        || haystack
+            .get(start - 1)
+            .map_or(true, |b| !b.is_ascii_alphanumeric() && *b != b'_')
+}
+
+fn is_ascii_command_atom_end_boundary(haystack: &[u8], mut end: usize) -> bool {
+    if haystack.get(end) == Some(&b'.')
+        && haystack
+            .get(end + 1..end + 4)
+            .is_some_and(|suffix| suffix.eq_ignore_ascii_case(b"exe"))
+    {
+        end += 4;
+    }
+    let boundary = haystack
+        .get(end)
+        .map_or(true, |b| !b.is_ascii_alphanumeric() && *b != b'_');
+    // Avoid treating `powershell.dll` / `powershellconsole` style paths
+    // as invocations; `.exe` is the only dotted command suffix accepted.
+    boundary && haystack.get(end) != Some(&b'.')
 }
 
 #[cfg(test)]
@@ -8136,13 +8167,31 @@ mod embedded_powershell_invocation_gate_tests {
         assert!(has_embedded_powershell_invocation_atom(
             "powershell -enc AAAA"
         ));
+        assert!(has_embedded_powershell_invocation_atom(
+            "powershell.exe -enc AAAA"
+        ));
         assert!(has_embedded_powershell_invocation_atom("PwSh -c iwr"));
+        assert!(has_embedded_powershell_invocation_atom("PwSh.exe -c iwr"));
     }
 
     #[test]
     fn allows_caret_obfuscated_powershell_atom() {
         assert!(has_embedded_powershell_invocation_atom(
             "p^o^w^e^r^s^h^e^l^l -enc AAAA"
+        ));
+    }
+
+    #[test]
+    fn blocks_pwsh_inside_encoded_token() {
+        assert!(!has_embedded_powershell_invocation_atom(
+            "set X=abcPWSHdef123"
+        ));
+    }
+
+    #[test]
+    fn blocks_powershell_inside_path_component() {
+        assert!(!has_embedded_powershell_invocation_atom(
+            r"copy C:\Windows\System32\WindowsPowerShell\v1.0\profile.ps1 out.txt"
         ));
     }
 
