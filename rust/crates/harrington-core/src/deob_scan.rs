@@ -5935,6 +5935,12 @@ fn scan_inmem_assembly_load(deobfuscated: &str, env: &mut Environment) {
         Regex::new(r#"(?i)\[(?:system\.)?AppDomain\]::CurrentDomain\.Load\s*\("#)
             .expect("appdomain load regex")
     });
+    static DYNAMIC_REFLECT_LOAD_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?is)\[(?:system\.)?Reflection\.Assembly\]::\s*\([^)]+\)\s*\(\s*\[byte\[\]\]"#,
+        )
+        .expect("dynamic reflect load regex")
+    });
 
     fn push_inmem_assembly_load(
         env: &mut Environment,
@@ -5966,6 +5972,9 @@ fn scan_inmem_assembly_load(deobfuscated: &str, env: &mut Environment) {
     }
     if APPDOMAIN_LOAD_RE.is_match(deobfuscated) {
         push_inmem_assembly_load(env, &mut seen, "AppDomain.Load".to_string());
+    }
+    if DYNAMIC_REFLECT_LOAD_RE.is_match(deobfuscated) {
+        push_inmem_assembly_load(env, &mut seen, "DynamicLoad".to_string());
     }
 }
 
