@@ -6807,7 +6807,7 @@ fn scan_process_injection(deobfuscated: &str, env: &mut Environment) {
         // them via reflection — and that resolution is the canonical
         // marker of an in-memory shellcode loader. Flag them as
         // ProcessInjection so the high-signal IOC surfaces.
-        Regex::new(r#"(?i)\b(VirtualAllocEx|VirtualAlloc|VirtualProtect(?:Ex)?|WriteProcessMemory|CreateRemoteThread(?:Ex)?|CreateThread|NtMapViewOfSection|NtCreateThreadEx|NtAllocateVirtualMemory|QueueUserAPC|SetWindowsHookEx|RtlMoveMemory|ZwAllocateVirtualMemory|GetDelegateForFunctionPointer|GetProcAddress|GetModuleHandle|LoadLibraryA?|UnsafeNativeMethods)\b"#)
+        Regex::new(r#"(?i)\b(VirtualAllocEx|VirtualAlloc|VirtualProtect(?:Ex)?|WriteProcessMemory|CreateRemoteThread(?:Ex)?|CreateThread|NtMapViewOfSection|NtCreateThreadEx|NtAllocateVirtualMemory|NtWriteVirtualMemory|QueueUserAPC|SetWindowsHookEx|RtlMoveMemory|ZwAllocateVirtualMemory|GetDelegateForFunctionPointer|GetProcAddress|GetModuleHandle|LoadLibraryA?|UnsafeNativeMethods)\b"#)
             .expect("inject api re")
     });
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -6839,6 +6839,7 @@ fn has_process_injection_atom(text: &str) -> bool {
         "ntmapviewofsection",
         "ntcreatethreadex",
         "ntallocatevirtualmemory",
+        "ntwritevirtualmemory",
         "queueuserapc",
         "setwindowshookex",
         "rtlmovememory",
@@ -6870,6 +6871,7 @@ mod process_injection_prefilter_tests {
             "NtMapViewOfSection",
             "NtCreateThreadEx",
             "NtAllocateVirtualMemory",
+            "NtWriteVirtualMemory",
             "QueueUserAPC",
             "SetWindowsHookEx",
             "RtlMoveMemory",
@@ -6926,6 +6928,35 @@ public class Loader {
                 env.traits
             );
         }
+    }
+
+    #[test]
+    fn scanner_flags_nt_write_virtual_memory_loader() {
+        let script = r#"
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public class Loader {
+  [DllImport("ntdll.dll")]
+  private static extern int NtWriteVirtualMemory(IntPtr process, IntPtr baseAddress, byte[] buffer, uint size, ref uint written);
+  public static void Run(IntPtr process, IntPtr address, byte[] shellcode) {
+    uint written = 0;
+    NtWriteVirtualMemory(process, address, shellcode, (uint)shellcode.Length, ref written);
+  }
+}
+"@
+"#;
+        let mut env = Environment::new(&Config::default());
+        scan_process_injection(script, &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::ProcessInjection { api } if api == "NtWriteVirtualMemory"
+            )),
+            "missing process injection marker NtWriteVirtualMemory: {:?}",
+            env.traits
+        );
     }
 }
 
