@@ -6,6 +6,9 @@ use crate::env::Environment;
 use crate::handlers::util::split_words;
 
 pub fn run_pipeline(pipeline: &str, env: &mut Environment) -> Vec<String> {
+    if is_cmd_prompt_escape_probe(pipeline) {
+        return vec!["[ESC]".to_string()];
+    }
     // Split on top-level `|` (not inside quotes) and run each stage in order
     let stages = split_pipeline(pipeline);
     let mut buf: Vec<String> = Vec::new();
@@ -20,7 +23,20 @@ pub fn run_pipeline(pipeline: &str, env: &mut Environment) -> Vec<String> {
     buf
 }
 
+fn is_cmd_prompt_escape_probe(pipeline: &str) -> bool {
+    let stages = split_pipeline(pipeline);
+    if stages.len() != 2 {
+        return false;
+    }
+    let first = stages[0].trim();
+    let second = stages[1].trim();
+    first.eq_ignore_ascii_case("echo prompt $E") && second.eq_ignore_ascii_case("cmd")
+}
+
 pub fn can_run_pipeline(pipeline: &str) -> bool {
+    if is_cmd_prompt_escape_probe(pipeline) {
+        return true;
+    }
     let stages = split_pipeline(pipeline);
     !stages.is_empty()
         && stages

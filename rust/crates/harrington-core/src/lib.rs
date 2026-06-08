@@ -9674,6 +9674,20 @@ mod synth_tests {
     }
 
     #[test]
+    fn synth_cmd_prompt_escape_probe_returns_escape_byte() {
+        let mut env = Environment::new(&Config::default());
+        let lines = run_pipeline("echo prompt $E | cmd", &mut env);
+        assert_eq!(lines, vec!["[ESC]"]);
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, crate::traits::Trait::ForUnresolvedSource { .. })),
+            "escape probe should not emit unresolved pipeline traits: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn synth_set_with_prefix() {
         let mut env = Environment::new(&Config::default());
         env.set("FOO", "1");
