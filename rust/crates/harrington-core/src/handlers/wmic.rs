@@ -48,12 +48,31 @@ fn wmic_process_create_inner(raw: &str) -> Option<String> {
         .get(process_idx + 3)
         .map(|token| raw.find(token))
         .unwrap_or(None)?;
-    let inner = strip_quotes(raw[tail_start..].trim()).trim().to_string();
+    let inner = wmic_create_commandline_argument(raw[tail_start..].trim())?;
     if inner.is_empty() {
         None
     } else {
         Some(inner)
     }
+}
+
+fn wmic_create_commandline_argument(tail: &str) -> Option<String> {
+    let mut in_dq = false;
+    let mut in_sq = false;
+    let mut end = tail.len();
+    for (idx, c) in tail.char_indices() {
+        match c {
+            '"' if !in_sq => in_dq = !in_dq,
+            '\'' if !in_dq => in_sq = !in_sq,
+            ',' if !in_dq && !in_sq => {
+                end = idx;
+                break;
+            }
+            _ => {}
+        }
+    }
+    let inner = strip_quotes(tail[..end].trim()).trim().to_string();
+    (!inner.is_empty()).then_some(inner)
 }
 
 fn strip_quotes(text: &str) -> &str {

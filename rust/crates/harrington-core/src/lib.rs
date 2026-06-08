@@ -11760,6 +11760,30 @@ mod wmic_tests {
             env.exec_cmd
         );
     }
+
+    #[test]
+    fn wmic_process_call_create_ignores_current_directory_argument() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"wmic process call create "cmd /c echo payload", "C:\Users\Public""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::WmicProcessCreate { inner_cmd } if inner_cmd == "cmd /c echo payload"
+            )
+        });
+        assert!(
+            has,
+            "current-directory argument was not stripped from WMIC child: {:?}",
+            env.traits
+        );
+        assert!(
+            env.exec_cmd.iter().any(|c| c == "cmd /c echo payload"),
+            "current-directory argument leaked into recursive cmd: {:?}",
+            env.exec_cmd
+        );
+    }
 }
 
 #[cfg(test)]
