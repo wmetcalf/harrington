@@ -20251,6 +20251,28 @@ CallByName sh, methodName, vbMethod, cmd"#;
     }
 
     #[test]
+    fn vbs_getref_zero_arg_function_shell_run_powershell_extracted() {
+        let vbs = br#"Function JoinCmd()
+  JoinCmd = "power" & "shell.exe -EncodedCommand VwByAGkAdABlAC0ASABvAHMAdAAgAGYAcgBvAG0ALQBmAHUAbgBjAA=="
+End Function
+
+Set sh = CreateObject("WScript.Shell")
+Set thunk = GetRef("JoinCmd")
+sh.Run thunk(), 0, False"#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|ps| ps.contains("Write-Host from-func")),
+            "GetRef zero-arg VBS function shell command was not extracted: {:?}",
+            report.extracted_ps1_normalized
+        );
+    }
+
+    #[test]
     fn vbs_shell_application_shellexecute_schemeless_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let vbs = br#"Set sh = CreateObject("Shell.Application")

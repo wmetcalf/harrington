@@ -10,6 +10,7 @@ use std::collections::HashMap;
 
 type VbsStringBindings = HashMap<String, String>;
 type VbsArrayBindings = HashMap<String, Vec<String>>;
+type VbsGetRefBindings = HashMap<String, String>;
 
 #[allow(clippy::expect_used)]
 static XMLHTTP_OPEN_RE: Lazy<Regex> = Lazy::new(|| {
@@ -27,6 +28,14 @@ static XMLHTTP_OPEN_VAR_RE: Lazy<Regex> = Lazy::new(|| {
 static VBS_STRING_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?im)^\s*(?:Const\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+?)\s*$"#)
         .expect("vbs string assignment")
+});
+
+#[allow(clippy::expect_used)]
+static VBS_GETREF_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?i)^\s*(?:Set\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*GetRef\s*\(\s*"([^"]+)"\s*\)\s*$"#,
+    )
+    .expect("vbs getref assignment")
 });
 
 #[allow(clippy::expect_used)]
@@ -144,12 +153,22 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
         let text = expand_vbs_static_execute(&join_vbs_line_continuations(&uncommented));
         let mut bindings: VbsStringBindings = HashMap::new();
         let mut array_bindings: VbsArrayBindings = HashMap::new();
+        let mut getref_bindings: VbsGetRefBindings = HashMap::new();
         for line in text.lines() {
             if env.check_deadline() {
                 break 'payloads;
             }
             for statement in split_vbs_statements(line) {
                 if bind_vbs_numeric_array_index(statement, &mut array_bindings) {
+                    continue;
+                }
+                if let Some(caps) = VBS_GETREF_ASSIGN_RE.captures(statement) {
+                    if let (Some(alias), Some(target)) = (caps.get(1), caps.get(2)) {
+                        getref_bindings.insert(
+                            alias.as_str().to_ascii_lowercase(),
+                            target.as_str().to_ascii_lowercase(),
+                        );
+                    }
                     continue;
                 }
                 let Some(caps) = VBS_STRING_ASSIGN_RE.captures(statement) else {
@@ -282,7 +301,9 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
             if env.check_deadline() {
                 break 'payloads;
             }
-            let Some(command) = eval_vbs_string_expr(expr, &bindings, &array_bindings) else {
+            let Some(command) =
+                eval_vbs_shell_command_expr(expr, &bindings, &array_bindings, &getref_bindings)
+            else {
                 continue;
             };
             push_downloads_from_vbs_command(
@@ -306,8 +327,12 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
             if !matches!(method.trim().to_ascii_lowercase().as_str(), "run" | "exec") {
                 continue;
             }
-            let Some(command) = eval_vbs_string_expr(command_expr, &bindings, &array_bindings)
-            else {
+            let Some(command) = eval_vbs_shell_command_expr(
+                command_expr,
+                &bindings,
+                &array_bindings,
+                &getref_bindings,
+            ) else {
                 continue;
             };
             push_downloads_from_vbs_command(
@@ -2413,6 +2438,39 @@ fn eval_vbs_string_expr(
         return None;
     }
     saw_part.then_some(out)
+}
+
+fn eval_vbs_shell_command_expr(
+    expr: &str,
+    bindings: &VbsStringBindings,
+    array_bindings: &VbsArrayBindings,
+    getref_bindings: &VbsGetRefBindings,
+) -> Option<String> {
+    eval_vbs_string_expr(expr, bindings, array_bindings)
+        .or_else(|| eval_vbs_getref_zero_arg_call(expr, bindings, getref_bindings))
+}
+
+fn eval_vbs_getref_zero_arg_call(
+    expr: &str,
+    bindings: &VbsStringBindings,
+    getref_bindings: &VbsGetRefBindings,
+) -> Option<String> {
+    let trimmed = expr.trim();
+    let callee = trimmed.strip_suffix("()")?.trim();
+    if !is_vbs_identifier(callee) {
+        return None;
+    }
+    let target = getref_bindings.get(&callee.to_ascii_lowercase())?;
+    bindings.get(target).cloned()
+}
+
+fn is_vbs_identifier(value: &str) -> bool {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first == '_' || first.is_ascii_alphabetic())
+        && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
 }
 
 fn vbs_concat_expr_references_name(expr: &str, name_lower: &str) -> bool {
