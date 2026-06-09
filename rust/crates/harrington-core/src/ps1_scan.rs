@@ -1079,6 +1079,14 @@ static PS_LITERAL_INDEX_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static PS_LITERAL_CONST_INDEX_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)(?:\breturn\s+)?(?:\(\s*)?\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\)\s*)?\[\s*(\d{1,6})\s*\]"#,
+    )
+    .expect("ps literal const index extractor body regex")
+});
+
+#[allow(clippy::expect_used)]
 static PS_LITERAL_CHARS_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)(?:\breturn\s+)?(?:\(\s*)?\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\)\s*)?\.\s*(?:get_)?Chars\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)"#,
@@ -3818,6 +3826,27 @@ fn expand_literal_index_extractor_calls(text: &str) -> String {
             .or_else(|| PS_LITERAL_CHARS_EXTRACTOR_BODY_RE.captures(&body))
             .or_else(|| PS_LITERAL_TOCHARARRAY_INDEX_EXTRACTOR_BODY_RE.captures(&body))
         else {
+            if let Some(caps) = PS_LITERAL_CONST_INDEX_EXTRACTOR_BODY_RE.captures(&body) {
+                let Some(value_var) = caps.get(1).map(|m| m.as_str()) else {
+                    continue;
+                };
+                let Some(index) = caps.get(2).and_then(|m| m.as_str().parse::<usize>().ok()) else {
+                    continue;
+                };
+                let param_index = parse_ps_function_param_indices(&params);
+                let Some(value_idx) = param_index.get(&value_var.to_ascii_lowercase()).copied()
+                else {
+                    continue;
+                };
+                out = inline_ps_literal_const_index_calls(
+                    &out,
+                    &name,
+                    value_idx,
+                    value_var,
+                    param_index.len(),
+                    index,
+                );
+            }
             continue;
         };
         let Some(value_var) = caps.get(1).map(|m| m.as_str()) else {
@@ -5355,6 +5384,95 @@ fn inline_ps_named_literal_index_call(
 fn ps_literal_index_replacement(value: &str, index: usize) -> Option<String> {
     let ch = value.chars().nth(index)?;
     Some(format!("'{}'", ch.to_string().replace('\'', "''")))
+}
+
+fn inline_ps_literal_const_index_calls(
+    text: &str,
+    name: &str,
+    value_idx: usize,
+    value_name: &str,
+    arg_count: usize,
+    index: usize,
+) -> String {
+    let lower = text.to_ascii_lowercase();
+    let needles = ps_literal_extractor_call_needles(text, name);
+    let bytes = text.as_bytes();
+    let mut matches = Vec::new();
+    let mut match_count = 0;
+
+    for needle in needles {
+        let mut search_from = 0;
+        while match_count < 128 {
+            let Some(rel) = lower[search_from..].find(&needle) else {
+                break;
+            };
+            let call_start = search_from + rel;
+            let end_name = call_start + needle.len();
+            let Some((replace_start, mut pos)) =
+                ps_literal_extractor_call_start_and_arg_pos(bytes, call_start, end_name)
+            else {
+                search_from = end_name;
+                continue;
+            };
+            let parenthesized = bytes.get(pos) == Some(&b'(');
+            if parenthesized {
+                pos = skip_ascii_ws(bytes, pos + 1);
+            }
+            if bytes.get(pos) == Some(&b'-') {
+                if let Some((call_end, replacement)) = inline_ps_named_literal_const_index_call(
+                    text,
+                    pos,
+                    parenthesized,
+                    value_name,
+                    index,
+                ) {
+                    matches.push((replace_start, call_end, replacement));
+                    search_from = call_end;
+                    match_count += 1;
+                    continue;
+                }
+            }
+            let Some((call_end, value)) = parse_ps_positional_static_literal_arg(
+                text,
+                pos,
+                parenthesized,
+                value_idx,
+                arg_count,
+            ) else {
+                search_from = end_name;
+                continue;
+            };
+            let Some(replacement) = ps_literal_index_replacement(&value, index) else {
+                search_from = call_end;
+                continue;
+            };
+            matches.push((replace_start, call_end, replacement));
+            search_from = call_end;
+            match_count += 1;
+        }
+    }
+
+    let mut out = text.to_string();
+    for (start, end, replacement) in matches.into_iter().rev() {
+        out.replace_range(start..end, &replacement);
+    }
+    out
+}
+
+fn inline_ps_named_literal_const_index_call(
+    text: &str,
+    pos: usize,
+    parenthesized: bool,
+    value_name: &str,
+    index: usize,
+) -> Option<(usize, String)> {
+    let (call_end, args) = parse_ps_named_static_literal_args(text, pos, parenthesized, 2)?;
+    let value = args
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(value_name))?
+        .1
+        .as_str();
+    Some((call_end, ps_literal_index_replacement(value, index)?))
 }
 
 fn inline_ps_literal_replace_calls(
