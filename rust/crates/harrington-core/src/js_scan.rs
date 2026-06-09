@@ -2820,6 +2820,7 @@ fn consume_js_filter_boolean_call(text: &str, idx: usize) -> Option<usize> {
     let arg_start = skip_ascii_ws(text, open + 1);
     consume_js_filter_boolean_arg(text, arg_start)
         .or_else(|| consume_js_filter_identity_function_arg(text, arg_start))
+        .or_else(|| consume_js_filter_identity_arrow_arg(text, arg_start))
 }
 
 fn consume_js_filter_boolean_arg(text: &str, arg_start: usize) -> Option<usize> {
@@ -2890,6 +2891,34 @@ fn consume_js_filter_identity_function_arg(text: &str, arg_start: usize) -> Opti
     }
 
     let close = skip_ascii_ws(text, after_return + 1);
+    (text.as_bytes().get(close) == Some(&b')')).then_some(close + 1)
+}
+
+fn consume_js_filter_identity_arrow_arg(text: &str, arg_start: usize) -> Option<usize> {
+    let (after_param, ident) = if text.as_bytes().get(arg_start) == Some(&b'(') {
+        let ident_start = skip_ascii_ws(text, arg_start + 1);
+        let (ident_end, ident) = parse_js_identifier_at(text, ident_start)?;
+        let close_param = skip_ascii_ws(text, ident_end);
+        if text.as_bytes().get(close_param) != Some(&b')') {
+            return None;
+        }
+        (close_param + 1, ident)
+    } else {
+        parse_js_identifier_at(text, arg_start)?
+    };
+
+    let arrow_start = skip_ascii_ws(text, after_param);
+    if text.get(arrow_start..arrow_start.checked_add(2)?) != Some("=>") {
+        return None;
+    }
+
+    let returned_start = skip_ascii_ws(text, arrow_start + 2);
+    let (returned_end, returned) = parse_js_identifier_at(text, returned_start)?;
+    if returned != ident {
+        return None;
+    }
+
+    let close = skip_ascii_ws(text, returned_end);
     (text.as_bytes().get(close) == Some(&b')')).then_some(close + 1)
 }
 
