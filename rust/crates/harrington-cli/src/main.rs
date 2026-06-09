@@ -585,6 +585,8 @@ fn lolbas_non_exec_value_option(token: &str) -> bool {
             | "--preproxy"
             | "--socks5"
             | "--socks5-hostname"
+            | "--connect-to"
+            | "--resolve"
     ) || lolbas_msi_log_option(token)
 }
 
@@ -632,6 +634,8 @@ fn lolbas_attached_non_exec_value_option(token: &str) -> bool {
         || lower.starts_with("--preproxy=")
         || lower.starts_with("--socks5=")
         || lower.starts_with("--socks5-hostname=")
+        || lower.starts_with("--connect-to=")
+        || lower.starts_with("--resolve=")
         || (lower.len() > 2
             && (lower.starts_with("-o") || lower.starts_with("/o"))
             && lower[2..].contains(['\\', '/']))
