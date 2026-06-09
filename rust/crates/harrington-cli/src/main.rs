@@ -2203,8 +2203,14 @@ fn build_summary(
     }
 
     let ps_count = report.extracted_ps1.len();
-    for s in report.extracted_ps1_normalized.iter().take(3) {
-        ps_samples.push(s.chars().take(500).collect());
+    for s in &report.extracted_ps1_normalized {
+        let sample = s.chars().take(500).collect();
+        if !ps_samples.contains(&sample) {
+            ps_samples.push(sample);
+            if ps_samples.len() >= 3 {
+                break;
+            }
+        }
     }
 
     let preview: String = report.deobfuscated.chars().take(1000).collect();

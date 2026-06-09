@@ -1033,6 +1033,33 @@ fn summarize_omits_console_noise_from_admin_commands() {
 }
 
 #[test]
+fn summarize_dedupes_repeated_powershell_samples_without_changing_count() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(
+        &input,
+        "powershell -Command \"Start-Process 'msedge.exe' -ArgumentList \\\"--kiosk $env:temp\\readme.pdf\\\"\"\r\n",
+    )
+    .expect("write input");
+
+    let out = Command::cargo_bin("harrington")
+        .expect("bin")
+        .args(["summarize", input.to_str().expect("input path")])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("json");
+    let extracted = v["extracted"].as_object().expect("extracted object");
+    assert_eq!(extracted["powershell"].as_u64(), Some(2), "{extracted:?}");
+    let samples = extracted["powershell_samples"]
+        .as_array()
+        .expect("powershell_samples");
+    assert_eq!(samples.len(), 1, "duplicate samples: {samples:?}");
+}
+
+#[test]
 fn summarize_can_enrich_lolbas_matches_from_external_json() {
     let dir = TempDir::new().expect("tmp");
     let input = dir.path().join("in.bat");
