@@ -4137,6 +4137,8 @@ fn analyze_inner(input: &[u8], cfg: &Config, file_path: Option<std::path::PathBu
         profile_mark!("summarize_binary_noise");
         out = summarize_nul_padding_lines(&out, &mut env);
         profile_mark!("summarize_nul_padding");
+        out = summarize_high_unicode_carrier_lines(&out, &mut env);
+        profile_mark!("summarize_high_unicode_carriers");
         let raw_text = String::from_utf8_lossy(input);
         let raw_text_for_embedded = {
             let mut scratch = env.clone();
@@ -4417,11 +4419,17 @@ fn analyze_inner(input: &[u8], cfg: &Config, file_path: Option<std::path::PathBu
             "child"
         };
         let scan_start = *appended_payload_scan_start.get_or_insert(out.len());
+        let payload_to_emit = summarize_high_unicode_carrier_lines(trimmed, &mut env);
+        if payload_to_emit.starts_with("::==== harrington: omitted ")
+            && out.contains(payload_to_emit.trim())
+        {
+            continue;
+        }
         out.push_str(&format!(
             "\r\n::==== harrington: extracted {kind} payload ====\r\n"
         ));
-        out.push_str(ps.trim_end());
-        if !ps.ends_with('\n') {
+        out.push_str(payload_to_emit.trim_end());
+        if !payload_to_emit.ends_with('\n') {
             out.push_str("\r\n");
         }
         out.push_str(&format!("::==== end extracted {kind} payload ====\r\n"));
@@ -5965,6 +5973,9 @@ fn cap_line(line: String, env: &mut Environment) -> String {
     if let Some(summary) = summarize_base64_pe_carrier_line(&line) {
         return summary;
     }
+    if let Some(summary) = summarize_high_unicode_carrier_line(&line, env) {
+        return summary;
+    }
     let limit = env.limits.max_output_line_bytes;
     if limit == 0 || line.len() as u64 <= limit {
         return line;
@@ -5988,6 +5999,67 @@ fn cap_line(line: String, env: &mut Environment) -> String {
     let mut s = line[..end].to_string();
     s.push_str("…[truncated]");
     s
+}
+
+fn summarize_high_unicode_carrier_line(line: &str, env: &mut Environment) -> Option<String> {
+    const MIN_HIGH_UNICODE_CHARS: usize = 1024;
+
+    let lower = line.to_ascii_lowercase();
+    if !lower.contains("scriptblock") && !lower.contains("powershell") {
+        return None;
+    }
+
+    let high_unicode_chars = line
+        .chars()
+        .filter(|ch| matches!(*ch as u32, 0x4e00..=0x9fff))
+        .count();
+    if high_unicode_chars < MIN_HIGH_UNICODE_CHARS {
+        return None;
+    }
+
+    let truncated = input_has_truncation_marker(line.as_bytes());
+    if !env.traits.iter().any(|t| {
+        matches!(
+            t,
+            crate::traits::Trait::HighUnicodePayload {
+                char_count,
+                truncated: existing_truncated,
+            } if *char_count == high_unicode_chars as u64 && *existing_truncated == truncated
+        )
+    }) {
+        env.traits.push(crate::traits::Trait::HighUnicodePayload {
+            char_count: high_unicode_chars as u64,
+            truncated,
+        });
+    }
+
+    let truncated_label = if truncated { "truncated " } else { "" };
+    Some(format!(
+        "::==== harrington: omitted {high_unicode_chars} high-Unicode chars from {truncated_label}PowerShell carrier ===="
+    ))
+}
+
+fn summarize_high_unicode_carrier_lines(text: &str, env: &mut Environment) -> String {
+    if !text.chars().any(|ch| matches!(ch as u32, 0x4e00..=0x9fff)) {
+        return text.to_string();
+    }
+
+    let mut out = String::with_capacity(text.len().min(4096));
+    for segment in text.split_inclusive('\n') {
+        let (line, eol) = segment
+            .strip_suffix('\n')
+            .map_or((segment, ""), |without_lf| (without_lf, "\n"));
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        let cr = if segment.ends_with("\r\n") { "\r" } else { "" };
+        if let Some(summary) = summarize_high_unicode_carrier_line(line, env) {
+            out.push_str(&summary);
+        } else {
+            out.push_str(line);
+        }
+        out.push_str(cr);
+        out.push_str(eol);
+    }
+    out
 }
 
 fn summarize_expanded_long_alpha_echo_line(line: &str, env: &mut Environment) -> Option<String> {
@@ -7399,6 +7471,26 @@ mod line_cap_tests {
             }),
             "sandbox-capped high-Unicode carrier should be surfaced: {:?}",
             report.traits
+        );
+    }
+
+    #[test]
+    fn sandbox_truncated_high_unicode_payload_is_summarized_in_deob_text() {
+        let carrier = "亓亮亊乑乑予之亖丱乵亞以仃仉产乆".repeat(256);
+        let script = format!("&([scriptblock]::Create($payload=({carrier});$i=0;...[truncated]");
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("omitted 4096 high-Unicode chars from truncated PowerShell carrier"),
+            "high-Unicode carrier was not summarized: {}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&carrier),
+            "opaque carrier should not be dumped into deobfuscated output"
         );
     }
 
