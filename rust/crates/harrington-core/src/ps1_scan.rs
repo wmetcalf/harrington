@@ -2380,6 +2380,13 @@ static JOIN_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static UNARY_JOIN_RE: Lazy<Regex> = Lazy::new(|| {
+    // -join @('a',"b",'c') or -join ('a',"b",'c')
+    Regex::new(r#"(?is)-join\s+@?\(\s*((?:(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*")\s*,\s*)+(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*"))\s*\)"#)
+        .expect("unary join")
+});
+
+#[allow(clippy::expect_used)]
 static JOIN_PART_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"'([^'\\]*(?:\\.[^'\\]*)*)'|"([^"\\]*(?:\\.[^"\\]*)*)""#).expect("join part")
 });
@@ -2632,6 +2639,41 @@ fn expand_ps_join(text: &str) -> String {
                 return None;
             }
             Some((full.start(), full.end(), format!("'{}'", parts.join(sep))))
+        })
+        .collect();
+    let mut out = text.to_string();
+    for (start, end, replacement) in matches.into_iter().rev() {
+        out.replace_range(start..end, &replacement);
+    }
+    out
+}
+
+fn expand_ps_unary_join(text: &str) -> String {
+    let matches: Vec<(usize, usize, String)> = UNARY_JOIN_RE
+        .captures_iter(text)
+        .filter_map(|caps| {
+            let full = caps.get(0)?;
+            let parts_text = caps.get(1)?.as_str();
+            let parts: Vec<String> = JOIN_PART_RE
+                .captures_iter(parts_text)
+                .filter_map(|c| {
+                    c.get(1)
+                        .or_else(|| c.get(2))
+                        .map(|m| m.as_str().to_string())
+                })
+                .collect();
+            if parts.is_empty() || parts.len() > 128 {
+                return None;
+            }
+            let joined = parts.join("");
+            if joined.len() > 8192 {
+                return None;
+            }
+            Some((
+                full.start(),
+                full.end(),
+                format!("'{}'", joined.replace('\'', "''")),
+            ))
         })
         .collect();
     let mut out = text.to_string();
@@ -7012,6 +7054,7 @@ fn expand_obfuscation(text: &str) -> String {
             if signals.join {
                 out = expand_single_literal_join(&out);
                 out = expand_split_join_literals(&out);
+                out = expand_ps_unary_join(&out);
                 out = expand_ps_join(&out);
             }
         });

