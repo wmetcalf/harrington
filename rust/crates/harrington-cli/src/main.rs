@@ -1573,12 +1573,11 @@ fn ps_attached_param_value(token: &str) -> Option<(&str, &str)> {
 }
 
 fn ps_start_process_exec_param_name(name: &str) -> bool {
-    name == "file" || (name.len() >= "filep".len() && "filepath".starts_with(name))
+    !name.is_empty() && ("filepath".starts_with(name) || name == "file")
 }
 
 fn ps_invoke_item_exec_param_name(name: &str) -> bool {
-    (!name.is_empty() && "path".starts_with(name))
-        || (name.len() >= "literalp".len() && "literalpath".starts_with(name))
+    !name.is_empty() && ("path".starts_with(name) || "literalpath".starts_with(name))
 }
 
 fn lolbas_attached_ps_process_non_exec_operand(
