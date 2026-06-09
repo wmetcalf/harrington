@@ -2757,10 +2757,18 @@ fn consume_js_array_join_chain(
     idx = concat_end;
     parts = concat_parts;
 
+    let (filter_end, filtered_parts) = consume_js_filter_boolean_chain(text, idx, parts);
+    idx = filter_end;
+    parts = filtered_parts;
+
     if let Some((slice_end, sliced)) = consume_js_slice_call(text, idx, &parts) {
         idx = slice_end;
         parts = sliced;
     }
+
+    let (filter_end, filtered_parts) = consume_js_filter_boolean_chain(text, idx, parts);
+    idx = filter_end;
+    parts = filtered_parts;
 
     if let Some((join_end, sep)) = consume_js_string_arg_method(text, idx, "join") {
         let joined = join_js_string_parts(parts, &sep)?;
@@ -2775,15 +2783,50 @@ fn consume_js_array_join_chain(
         consume_js_concat_chain(text, after_reverse, parts, bindings, arrays)?;
     after_reverse = concat_end;
     parts = concat_parts;
+    let (filter_end, filtered_parts) = consume_js_filter_boolean_chain(text, after_reverse, parts);
+    after_reverse = filter_end;
+    parts = filtered_parts;
     if let Some((slice_end, sliced)) = consume_js_slice_call(text, after_reverse, &parts) {
         after_reverse = slice_end;
         parts = sliced;
     }
+    let (filter_end, filtered_parts) = consume_js_filter_boolean_chain(text, after_reverse, parts);
+    after_reverse = filter_end;
+    parts = filtered_parts;
     let (join_end, sep) = consume_js_string_arg_method(text, after_reverse, "join")?;
     let joined = join_js_string_parts(parts, &sep)?;
     Some(consume_js_string_transform_chain(
         text, join_end, joined, bindings,
     ))
+}
+
+fn consume_js_filter_boolean_chain(
+    text: &str,
+    mut idx: usize,
+    mut parts: Vec<String>,
+) -> (usize, Vec<String>) {
+    for _ in 0..8 {
+        let Some(filter_end) = consume_js_filter_boolean_call(text, idx) else {
+            break;
+        };
+        parts.retain(|part| !part.is_empty());
+        idx = filter_end;
+    }
+    (idx, parts)
+}
+
+fn consume_js_filter_boolean_call(text: &str, idx: usize) -> Option<usize> {
+    let open = consume_js_method_open(text, idx, "filter")?;
+    let arg_start = skip_ascii_ws(text, open + 1);
+    let arg_end = arg_start.checked_add("Boolean".len())?;
+    if text.get(arg_start..arg_end) != Some("Boolean") {
+        return None;
+    }
+    if text[arg_end..].chars().next().is_some_and(is_js_ident_char) {
+        return None;
+    }
+    let close = skip_ascii_ws(text, arg_end);
+    (text.as_bytes().get(close) == Some(&b')')).then_some(close + 1)
 }
 
 fn consume_js_concat_chain(
