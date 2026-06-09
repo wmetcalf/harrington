@@ -1007,7 +1007,7 @@ fn lolbas_is_schtasks_account_operand(tokens: &[LolbasCommandToken<'_>], idx: us
             .trim_matches(['"', '\''])
             .to_ascii_lowercase()
             .as_str(),
-        "/ru" | "-ru" | "/rp" | "-rp"
+        "/p" | "-p" | "/rp" | "-rp" | "/ru" | "-ru" | "/s" | "-s" | "/u" | "-u"
     )
 }
 
