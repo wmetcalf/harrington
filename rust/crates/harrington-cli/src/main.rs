@@ -396,6 +396,9 @@ fn command_invokes_program(command: &str, wanted_stem: &str) -> bool {
         if lolbas_is_sc_account_operand(&tokens, idx) {
             return false;
         }
+        if lolbas_is_sc_description_operand(&tokens, idx) {
+            return false;
+        }
         if lolbas_is_schtasks_task_name_operand(&tokens, idx) {
             return false;
         }
@@ -917,6 +920,16 @@ fn lolbas_is_sc_account_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -
             .as_str(),
         "obj" | "password"
     )
+}
+
+fn lolbas_is_sc_description_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx < 3 || program_stem(tokens[0].text) != "sc" {
+        return false;
+    }
+    tokens[1]
+        .text
+        .trim_matches(['"', '\''])
+        .eq_ignore_ascii_case("description")
 }
 
 fn lolbas_is_schtasks_task_name_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
