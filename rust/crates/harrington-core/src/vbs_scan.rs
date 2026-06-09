@@ -30,6 +30,12 @@ static VBS_STRING_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static VBS_PROPERTY_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?i)^\s*([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+?)\s*$"#)
+        .expect("vbs property assignment")
+});
+
+#[allow(clippy::expect_used)]
 static VBS_FOR_UBOUND_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?i)^\s*For\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*0\s+To\s+UBound\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*$"#,
@@ -311,6 +317,49 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
             );
         }
 
+        for (consumer_name, command) in
+            extract_wmi_commandline_consumer_commands(&text, &bindings, &array_bindings)
+        {
+            if env.check_deadline() {
+                break 'payloads;
+            }
+            if command.trim().is_empty() || command.len() > 256 * 1024 {
+                continue;
+            }
+            if !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Persistence {
+                        hive,
+                        key,
+                        value_name,
+                        command: existing,
+                    } if hive == "WMIEventConsumer"
+                        && key == &consumer_name
+                        && value_name == "CommandLineTemplate"
+                        && existing == &command
+                )
+            }) {
+                env.traits.push(Trait::Persistence {
+                    hive: "WMIEventConsumer".to_string(),
+                    key: consumer_name,
+                    value_name: "CommandLineTemplate".to_string(),
+                    command: command.clone(),
+                });
+            }
+            env.exec_cmd.push(command.clone());
+            env.exec_cmd_delayed.push(false);
+            push_downloads_from_vbs_command(
+                env,
+                idx,
+                &text,
+                &command,
+                &dst_hint,
+                &env_bindings,
+                &mut seen,
+            );
+        }
+
         for (program_expr, args_expr, verb_expr) in extract_shell_execute_command_exprs(&text) {
             if env.check_deadline() {
                 break 'payloads;
@@ -462,6 +511,83 @@ fn extract_wmi_process_create_command_exprs(text: &str) -> Vec<&str> {
             }
             cursor = args_start;
         }
+    }
+    out
+}
+
+fn extract_wmi_commandline_consumer_commands(
+    text: &str,
+    bindings: &VbsStringBindings,
+    array_bindings: &VbsArrayBindings,
+) -> Vec<(String, String)> {
+    if !text
+        .to_ascii_lowercase()
+        .contains("commandlineeventconsumer")
+    {
+        return Vec::new();
+    }
+
+    #[derive(Default)]
+    struct ConsumerProps {
+        name: Option<String>,
+        executable_path: Option<String>,
+        command_line_template: Option<String>,
+    }
+
+    let mut props: HashMap<String, ConsumerProps> = HashMap::new();
+    for line in text.lines() {
+        for statement in split_vbs_statements(line) {
+            let Some(caps) = VBS_PROPERTY_ASSIGN_RE.captures(statement) else {
+                continue;
+            };
+            let (Some(object), Some(property), Some(value_expr)) =
+                (caps.get(1), caps.get(2), caps.get(3))
+            else {
+                continue;
+            };
+            let property = property.as_str().to_ascii_lowercase();
+            if !matches!(
+                property.as_str(),
+                "name" | "executablepath" | "commandlinetemplate"
+            ) {
+                continue;
+            }
+            let Some(value) = eval_vbs_string_expr(value_expr.as_str(), bindings, array_bindings)
+            else {
+                continue;
+            };
+            let entry = props
+                .entry(object.as_str().to_ascii_lowercase())
+                .or_default();
+            match property.as_str() {
+                "name" => entry.name = Some(value),
+                "executablepath" => entry.executable_path = Some(value),
+                "commandlinetemplate" => entry.command_line_template = Some(value),
+                _ => {}
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    for (object, prop) in props {
+        let Some(template) = prop.command_line_template else {
+            continue;
+        };
+        let template = template.trim();
+        if template.is_empty() {
+            continue;
+        }
+        let command = if let Some(exe) = prop.executable_path {
+            let exe = exe.trim();
+            if exe.is_empty() {
+                template.to_string()
+            } else {
+                format!("{exe} {template}")
+            }
+        } else {
+            template.to_string()
+        };
+        out.push((prop.name.unwrap_or(object), command));
     }
     out
 }

@@ -3679,6 +3679,8 @@ fn looks_like_vbs_script(lower: &str) -> bool {
     lower.contains("createobject")
         || lower.contains("wscript")
         || lower.contains("xmlhttp")
+        || lower.contains("winmgmts")
+        || lower.contains("commandlineeventconsumer")
         || lower.contains("private function")
         || lower.contains("option explicit")
         || lower.contains("\ndim ")
@@ -3727,6 +3729,7 @@ fn starts_like_standalone_vbs(lower: &str) -> bool {
     first.starts_with("dim ")
         || (first.starts_with("const ") && !looks_like_js_script(lower))
         || (first.starts_with("set ") && first.contains("createobject"))
+        || (first.starts_with("set ") && first.contains("getobject") && first.contains("winmgmts"))
         || (first.starts_with("with ") && first.contains("createobject"))
         || first.starts_with("createobject(")
         || first.starts_with("createobject (")
@@ -20120,6 +20123,72 @@ objProcess.Create cmd, Null, Null, iPID"#;
             report.deobfuscated.contains("Win32_Process"),
             "standalone VBS source was not preserved: {}",
             report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_wmi_commandline_consumer_emits_persistence_and_queues_ps() {
+        let vbs = br#"Set wmi = GetObject("winmgmts:\\.\root\subscription")
+Set consumer = wmi.Get("CommandLineEventConsumer").SpawnInstance_()
+consumer.Name = "CmdConsumer"
+consumer.CommandLineTemplate = "cmd.exe /c powershell.exe -NoP -Command Write-Host consumer"
+consumer.Put_()"#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence {
+                    hive,
+                    key,
+                    value_name,
+                    command,
+                } if hive == "WMIEventConsumer"
+                    && key == "CmdConsumer"
+                    && value_name == "CommandLineTemplate"
+                    && command == "cmd.exe /c powershell.exe -NoP -Command Write-Host consumer"
+            )),
+            "no WMI CommandLineEventConsumer Persistence trait: {:?}",
+            report.traits
+        );
+        assert_eq!(
+            report.extracted_ps1.len(),
+            1,
+            "consumer command should be recursively routed through powershell"
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_wmi_commandline_consumer_combines_executable_path() {
+        let vbs = br#"Set wmi = GetObject("winmgmts:\\.\root\subscription")
+Set consumer = wmi.Get("CommandLineEventConsumer").SpawnInstance_()
+consumer.Name = "ExePathConsumer"
+consumer.ExecutablePath = "powershell.exe"
+consumer.CommandLineTemplate = "-NoP -EncodedCommand VwByAGkAdABlAC0ASABvAHMAdAAgAGUAeABlAHAAYQB0AGgA"
+consumer.Put_()"#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence {
+                    hive,
+                    key,
+                    command,
+                    ..
+                } if hive == "WMIEventConsumer"
+                    && key == "ExePathConsumer"
+                    && command == "powershell.exe -NoP -EncodedCommand VwByAGkAdABlAC0ASABvAHMAdAAgAGUAeABlAHAAYQB0AGgA"
+            )),
+            "split executable/template WMI consumer not surfaced: {:?}",
+            report.traits
+        );
+        assert_eq!(
+            report.extracted_ps1.len(),
+            1,
+            "consumer executable/template should be routed through powershell"
         );
     }
 
