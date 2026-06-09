@@ -610,6 +610,8 @@ fn lolbas_non_exec_value_option(token: &str) -> bool {
             | "--pass"
             | "--ciphers"
             | "--tls13-ciphers"
+            | "--dns-servers"
+            | "--doh-url"
     ) || lolbas_msi_log_option(token)
 }
 
@@ -682,6 +684,8 @@ fn lolbas_attached_non_exec_value_option(token: &str) -> bool {
         || lower.starts_with("--pass=")
         || lower.starts_with("--ciphers=")
         || lower.starts_with("--tls13-ciphers=")
+        || lower.starts_with("--dns-servers=")
+        || lower.starts_with("--doh-url=")
         || (lower.len() > 2
             && (lower.starts_with("-o") || lower.starts_with("/o"))
             && lower[2..].contains(['\\', '/']))
