@@ -458,6 +458,49 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
             );
         }
 
+        for (hive, key, value_name, command) in
+            extract_regwrite_run_key_commands(&text, &bindings, &array_bindings)
+        {
+            if env.check_deadline() {
+                break 'payloads;
+            }
+            if command.trim().is_empty() || command.len() > 256 * 1024 {
+                continue;
+            }
+            if !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Persistence {
+                        hive: existing_hive,
+                        key: existing_key,
+                        value_name: existing_value_name,
+                        command: existing_command,
+                    } if existing_hive == &hive
+                        && existing_key == &key
+                        && existing_value_name == &value_name
+                        && existing_command == &command
+                )
+            }) {
+                env.traits.push(Trait::Persistence {
+                    hive,
+                    key,
+                    value_name,
+                    command: command.clone(),
+                });
+            }
+            env.exec_cmd.push(command.clone());
+            env.exec_cmd_delayed.push(false);
+            push_downloads_from_vbs_command(
+                env,
+                idx,
+                &text,
+                &command,
+                &dst_hint,
+                &env_bindings,
+                &mut seen,
+            );
+        }
+
         for (program_expr, args_expr, verb_expr) in extract_shell_execute_command_exprs(&text) {
             if env.check_deadline() {
                 break 'payloads;
@@ -720,6 +763,94 @@ fn task_xml_exec_command(xml: &str) -> Option<String> {
     } else {
         Some(format!("{command} {args}"))
     }
+}
+
+fn extract_regwrite_run_key_commands(
+    text: &str,
+    bindings: &VbsStringBindings,
+    array_bindings: &VbsArrayBindings,
+) -> Vec<(String, String, String, String)> {
+    if !text.to_ascii_lowercase().contains(".regwrite") {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    for line in text.lines() {
+        for statement in split_vbs_statements(line) {
+            let lower = statement.to_ascii_lowercase();
+            let mut cursor = 0usize;
+            while let Some(rel) = lower[cursor..].find(".regwrite") {
+                let method_start = cursor + rel;
+                let args_start = method_start + ".regwrite".len();
+                let next = statement[args_start..].chars().next();
+                if !next.is_some_and(|c| c.is_ascii_whitespace() || c == '(') {
+                    cursor = args_start;
+                    continue;
+                }
+                let mut args = statement[args_start..].trim_start();
+                if let Some(rest) = args.strip_prefix('(') {
+                    args = rest;
+                }
+                let parts = split_vbs_args(args);
+                let (Some(path_expr), Some(command_expr)) = (parts.first(), parts.get(1)) else {
+                    cursor = args_start;
+                    continue;
+                };
+                let Some(path) = eval_vbs_string_expr(path_expr, bindings, array_bindings) else {
+                    cursor = args_start;
+                    continue;
+                };
+                let Some((hive, key, value_name)) = parse_run_key_reg_path(&path) else {
+                    cursor = args_start;
+                    continue;
+                };
+                let Some(command) = eval_vbs_string_expr(command_expr, bindings, array_bindings)
+                else {
+                    cursor = args_start;
+                    continue;
+                };
+                out.push((hive, key, value_name, command.trim().to_string()));
+                cursor = args_start;
+            }
+        }
+    }
+    out
+}
+
+fn parse_run_key_reg_path(path: &str) -> Option<(String, String, String)> {
+    let normalized = path.trim().replace('/', r"\");
+    let mut parts: Vec<&str> = normalized
+        .split('\\')
+        .filter(|part| !part.trim().is_empty())
+        .collect();
+    if parts.len() < 3 {
+        return None;
+    }
+
+    let hive = match parts.first()?.trim().to_ascii_lowercase().as_str() {
+        "hkcu" | "hkey_current_user" => "HKCU",
+        "hklm" | "hkey_local_machine" => "HKLM",
+        _ => return None,
+    };
+    parts.remove(0);
+    let value_name = parts.pop()?.trim();
+    if value_name.is_empty() {
+        return None;
+    }
+    let key = parts.join(r"\");
+    if !is_run_key_path(&key) {
+        return None;
+    }
+    Some((hive.to_string(), key, value_name.to_string()))
+}
+
+fn is_run_key_path(key: &str) -> bool {
+    let lower = key.to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        r"software\microsoft\windows\currentversion\run"
+            | r"software\microsoft\windows\currentversion\runonce"
+    )
 }
 
 fn extract_wmi_scheduledjob_create_command_exprs(text: &str) -> Vec<&str> {

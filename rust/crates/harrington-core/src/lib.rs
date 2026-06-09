@@ -20381,6 +20381,36 @@ rootFolder.RegisterTaskDefinition "XmlUpdater", xml, 6, "", "", 3"#;
     }
 
     #[test]
+    fn standalone_vbs_regwrite_run_key_emits_persistence() {
+        let vbs = br#"Set sh = CreateObject("WScript.Shell")
+cmd = "powershell.exe -EncodedCommand VwByAGkAdABlAC0ASABvAHMAdAAgAGYAcgBvAG0ALQByAHUAbgBrAGUAeQA="
+sh.RegWrite "HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Updater", cmd, "REG_SZ""#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence {
+                    hive,
+                    key,
+                    value_name,
+                    command,
+                } if hive == "HKCU"
+                    && key == r"Software\Microsoft\Windows\CurrentVersion\Run"
+                    && value_name == "Updater"
+                    && command == "powershell.exe -EncodedCommand VwByAGkAdABlAC0ASABvAHMAdAAgAGYAcgBvAG0ALQByAHUAbgBrAGUAeQA="
+            )),
+            "no Run-key Persistence from VBS RegWrite: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.extracted_ps1.is_empty(),
+            "RegWrite Run value should be routed through powershell"
+        );
+    }
+
+    #[test]
     fn vbs_wscript_shell_run_self_accumulated_chr_command_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let vbs = br#"Dim pdf, GG
