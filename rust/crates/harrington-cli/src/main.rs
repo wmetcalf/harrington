@@ -893,6 +893,8 @@ fn lolbas_is_msiexec_package_operand(tokens: &[LolbasCommandToken<'_>], idx: usi
     if !matches!(
         option.as_str(),
         "/i" | "-i"
+            | "/p"
+            | "-p"
             | "/package"
             | "-package"
             | "/x"
@@ -916,7 +918,7 @@ fn lolbas_is_attached_msiexec_package_operand(
     }
     let token = tokens[idx].text.trim_matches(['"', '\'']);
     let lower = token.to_ascii_lowercase();
-    for prefix in ["/i", "-i", "/x", "-x"] {
+    for prefix in ["/i", "-i", "/p", "-p", "/x", "-x"] {
         if let Some(value) = lower.strip_prefix(prefix) {
             return !value.is_empty()
                 && lolbas_msiexec_package_value_operand(&token[prefix.len()..]);

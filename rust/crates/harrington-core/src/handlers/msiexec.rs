@@ -78,7 +78,9 @@ fn msiexec_url_from_token(token: &str) -> Option<String> {
     }
     let token = token.trim();
     let lower = token.to_ascii_lowercase();
-    for prefix in ["/i", "-i", "/package", "-package", "/update", "-update"] {
+    for prefix in [
+        "/i", "-i", "/p", "-p", "/package", "-package", "/update", "-update",
+    ] {
         let Some(rest) = lower.strip_prefix(prefix) else {
             continue;
         };
@@ -138,7 +140,9 @@ fn windows_basename(path: &str) -> Option<&str> {
 fn msiexec_package_candidate<'a>(token: &'a str, next: Option<&'a String>) -> Option<String> {
     let token = strip_quotes(token).trim();
     let lower = token.to_ascii_lowercase();
-    for prefix in ["/i", "-i", "/package", "-package", "/update", "-update"] {
+    for prefix in [
+        "/i", "-i", "/p", "-p", "/package", "-package", "/update", "-update",
+    ] {
         if lower == prefix {
             return next
                 .map(|value| trim_url_suffix(strip_quotes(value)).trim().to_string())

