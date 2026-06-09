@@ -18655,7 +18655,9 @@ powershell -Command "saps -FilePath https://pslaunch.example/b.pdf"
 powershell -Command "Invoke-Item https://pslaunch.example/c.pdf"
 powershell -Command "saps -WindowStyle Hidden -FilePath pslaunch-schemeless.example/d.pdf"
 powershell -Command "Start-Process -FilePath:pslaunch-attached.example/e.pdf"
-powershell -Command "Invoke-Item -Path=pslaunch-equals.example/f.pdf""#,
+powershell -Command "Invoke-Item -Path=pslaunch-equals.example/f.pdf"
+powershell -Command "Start-Process -F:pslaunch-short.example/g.pdf"
+powershell -Command "ii -L:pslaunch-literal.example/h.pdf""#,
             &mut env,
         );
         for expected in [
@@ -18665,6 +18667,8 @@ powershell -Command "Invoke-Item -Path=pslaunch-equals.example/f.pdf""#,
             "http://pslaunch-schemeless.example/d.pdf",
             "http://pslaunch-attached.example/e.pdf",
             "http://pslaunch-equals.example/f.pdf",
+            "http://pslaunch-short.example/g.pdf",
+            "http://pslaunch-literal.example/h.pdf",
         ] {
             assert!(
                 env.traits

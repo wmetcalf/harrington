@@ -2897,6 +2897,7 @@ fn has_url_launch_atom(text: &str) -> bool {
         b"start-process".as_slice(),
         b"saps".as_slice(),
         b"invoke-item".as_slice(),
+        b"ii ".as_slice(),
         b"msedge".as_slice(),
         b"chrome".as_slice(),
         b"firefox".as_slice(),
@@ -4043,19 +4044,26 @@ fn first_url_after(
 
 fn ps_url_launch_attached_url_token(token: &str) -> Option<&str> {
     let lower = token.to_ascii_lowercase();
-    for prefix in ["-filepath", "-file", "-path", "-literalpath", "-literal"] {
-        let Some(rest) = lower.strip_prefix(prefix) else {
-            continue;
-        };
-        let original_rest = &token[token.len() - rest.len()..];
-        let candidate = original_rest.trim_start_matches([':', '=']);
-        if looks_like_direct_url(candidate)
-            || normalize_schemeless_domain_path_token(candidate).is_some()
-        {
-            return Some(candidate);
-        }
+    let rest = lower.strip_prefix('-')?;
+    let split = rest.find([':', '='])?;
+    let name = &rest[..split];
+    if !ps_url_launch_attached_param_name(name) {
+        return None;
+    }
+    let candidate = &token[1 + split + 1..];
+    if looks_like_direct_url(candidate)
+        || normalize_schemeless_domain_path_token(candidate).is_some()
+    {
+        return Some(candidate);
     }
     None
+}
+
+fn ps_url_launch_attached_param_name(name: &str) -> bool {
+    !name.is_empty()
+        && ("filepath".starts_with(name)
+            || "path".starts_with(name)
+            || "literalpath".starts_with(name))
 }
 
 fn msiexec_attached_url_token(token: &str) -> Option<&str> {
