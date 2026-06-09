@@ -940,12 +940,18 @@ fn extract_shell_run_command_exprs(text: &str) -> Vec<&str> {
                     continue;
                 }
                 let mut args = line[args_start..].trim_start();
+                let parenthesized = args.starts_with('(');
                 if let Some(rest) = args.strip_prefix('(') {
                     args = rest;
                 }
                 let parts = split_vbs_args(args);
                 if let Some(expr) = parts.first() {
-                    out.push(*expr);
+                    let expr = if parenthesized {
+                        expr.trim_end_matches(')').trim_end()
+                    } else {
+                        expr
+                    };
+                    out.push(expr);
                 }
                 cursor = args_start;
             }
