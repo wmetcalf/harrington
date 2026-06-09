@@ -2242,7 +2242,20 @@ fn build_summary(
 }
 
 fn summarize_omits_admin_command(name: &str) -> bool {
-    matches!(name, "chcp" | "cls" | "color" | "pause" | "title" | "ver")
+    matches!(
+        name,
+        "chcp"
+            | "cls"
+            | "color"
+            | "doskey"
+            | "md"
+            | "mkdir"
+            | "move"
+            | "pause"
+            | "timeout"
+            | "title"
+            | "ver"
+    )
 }
 
 fn extracted_counts_json(report: &harrington_core::Report) -> serde_json::Value {

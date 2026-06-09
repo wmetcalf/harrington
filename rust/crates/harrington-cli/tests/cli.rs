@@ -1003,7 +1003,9 @@ fn summarize_omits_console_noise_from_admin_commands() {
     let input = dir.path().join("in.bat");
     fs::write(
         &input,
-        "color f0\r\ncls\r\npause harmless text\r\ntitle benign window title\r\nreg query HKCU\\Software\r\n",
+        "color f0\r\ncls\r\npause harmless text\r\ntitle benign window title\r\n\
+         md C:\\Temp\\stage\r\nmkdir C:\\Temp\\stage2\r\nmove a.tmp b.tmp\r\n\
+         timeout /t 5\r\ndoskey clear=cls\r\nreg query HKCU\\Software\r\n",
     )
     .expect("write");
     let out = Command::cargo_bin("harrington")
@@ -1020,7 +1022,9 @@ fn summarize_omits_console_noise_from_admin_commands() {
     let v: serde_json::Value = serde_json::from_str(&s).expect("valid json");
     let admin = v["admin_commands"].as_object().expect("admin_commands");
     assert!(admin.get("reg").is_some(), "reg should remain: {admin:?}");
-    for noisy in ["color", "cls", "pause", "title"] {
+    for noisy in [
+        "color", "cls", "pause", "title", "md", "mkdir", "move", "timeout", "doskey",
+    ] {
         assert!(
             !admin.contains_key(noisy),
             "summary kept noisy admin command {noisy}: {admin:?}"
