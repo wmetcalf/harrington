@@ -270,6 +270,25 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
                 dst,
             });
         }
+        for url_expr in extract_getobject_script_moniker_exprs(&text) {
+            if env.check_deadline() {
+                break 'payloads;
+            }
+            let Some(url) = eval_vbs_string_expr(url_expr, &bindings, &array_bindings)
+                .and_then(|value| normalize_vbs_script_moniker_url(&value))
+            else {
+                continue;
+            };
+            if !seen.insert((idx, url.clone())) {
+                continue;
+            }
+            let snippet: String = text.chars().take(120).collect();
+            env.traits.push(Trait::Download {
+                cmd: format!("(vbs #{idx}) {snippet}"),
+                src: url,
+                dst: dst_hint.clone(),
+            });
+        }
         let regexes: &[&Lazy<Regex>] = &[&XMLHTTP_OPEN_RE, &URLDOWN_RE];
         for re in regexes {
             for caps in re.captures_iter(&text) {
@@ -883,6 +902,17 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
 fn normalize_vbs_download_url(value: &str) -> Option<String> {
     crate::deob_scan::normalize_liberal_url_token(value)
         .or_else(|| crate::deob_scan::normalize_schemeless_domain_path_token(value))
+}
+
+fn normalize_vbs_script_moniker_url(value: &str) -> Option<String> {
+    let value = value.trim();
+    if !value
+        .get(..("script:".len()))
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("script:"))
+    {
+        return None;
+    }
+    normalize_vbs_download_url(value.get("script:".len()..)?.trim_start())
 }
 
 fn normalize_vbs_recovered_command(command: &str) -> String {
@@ -2173,6 +2203,33 @@ fn extract_urldownloadtofile_arg_exprs(text: &str) -> Vec<(&str, Option<&str>)> 
                 out.push((*expr, parts.get(2).copied()));
             }
             cursor = args_start;
+        }
+    }
+    out
+}
+
+fn extract_getobject_script_moniker_exprs(text: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        for statement in split_vbs_statements(line) {
+            let lower = statement.to_ascii_lowercase();
+            let mut cursor = 0usize;
+            while let Some(rel) = lower[cursor..].find("getobject") {
+                let args_start = cursor + rel + "getobject".len();
+                let next = statement[args_start..].chars().next();
+                if !next.is_some_and(|ch| ch.is_ascii_whitespace() || ch == '(') {
+                    cursor = args_start;
+                    continue;
+                }
+                let mut args = statement[args_start..].trim_start();
+                if let Some(rest) = args.strip_prefix('(') {
+                    args = extract_vbs_parenthesized_arg_prefix(rest).unwrap_or(rest);
+                }
+                if let Some(expr) = split_vbs_args(args).first() {
+                    out.push(trim_one_trailing_call_paren(expr));
+                }
+                cursor = args_start;
+            }
         }
     }
     out

