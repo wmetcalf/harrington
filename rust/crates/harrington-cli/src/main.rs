@@ -589,6 +589,15 @@ fn lolbas_non_exec_value_option(token: &str) -> bool {
             | "--resolve"
             | "--interface"
             | "--dns-interface"
+            | "--limit-rate"
+            | "--rate"
+            | "--connect-timeout"
+            | "--max-time"
+            | "--retry"
+            | "--retry-delay"
+            | "--retry-max-time"
+            | "--speed-limit"
+            | "--speed-time"
     ) || lolbas_msi_log_option(token)
 }
 
@@ -640,6 +649,15 @@ fn lolbas_attached_non_exec_value_option(token: &str) -> bool {
         || lower.starts_with("--resolve=")
         || lower.starts_with("--interface=")
         || lower.starts_with("--dns-interface=")
+        || lower.starts_with("--limit-rate=")
+        || lower.starts_with("--rate=")
+        || lower.starts_with("--connect-timeout=")
+        || lower.starts_with("--max-time=")
+        || lower.starts_with("--retry=")
+        || lower.starts_with("--retry-delay=")
+        || lower.starts_with("--retry-max-time=")
+        || lower.starts_with("--speed-limit=")
+        || lower.starts_with("--speed-time=")
         || (lower.len() > 2
             && (lower.starts_with("-o") || lower.starts_with("/o"))
             && lower[2..].contains(['\\', '/']))
