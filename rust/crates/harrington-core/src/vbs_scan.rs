@@ -249,6 +249,27 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
                 dst: dst.or_else(|| dst_hint.clone()),
             });
         }
+        for macro_expr in extract_execute_excel4_macro_exprs(&text) {
+            if env.check_deadline() {
+                break 'payloads;
+            }
+            let Some(macro_body) = eval_vbs_string_expr(macro_expr, &bindings, &array_bindings)
+            else {
+                continue;
+            };
+            let Some((url, dst)) = parse_excel4_urldownloadtofile_call(&macro_body) else {
+                continue;
+            };
+            if !seen.insert((idx, url.clone())) {
+                continue;
+            }
+            let snippet: String = text.chars().take(120).collect();
+            env.traits.push(Trait::Download {
+                cmd: format!("(vbs #{idx}) {snippet}"),
+                src: url,
+                dst,
+            });
+        }
         let regexes: &[&Lazy<Regex>] = &[&XMLHTTP_OPEN_RE, &URLDOWN_RE];
         for re in regexes {
             for caps in re.captures_iter(&text) {
@@ -2155,6 +2176,50 @@ fn extract_urldownloadtofile_arg_exprs(text: &str) -> Vec<(&str, Option<&str>)> 
         }
     }
     out
+}
+
+fn extract_execute_excel4_macro_exprs(text: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        for statement in split_vbs_statements(line) {
+            let trimmed = statement.trim();
+            let lower = trimmed.to_ascii_lowercase();
+            if !lower.starts_with("executeexcel4macro") {
+                continue;
+            }
+            let rest = trimmed["executeexcel4macro".len()..].trim();
+            let expr = rest
+                .strip_prefix('(')
+                .and_then(|inner| inner.strip_suffix(')'))
+                .unwrap_or(rest)
+                .trim();
+            if !expr.is_empty() {
+                out.push(expr);
+            }
+        }
+    }
+    out
+}
+
+fn parse_excel4_urldownloadtofile_call(macro_body: &str) -> Option<(String, Option<String>)> {
+    let args = vbs_function_args(macro_body.trim(), "call")?;
+    let args = split_vbs_args(args);
+    if args.len() < 6 {
+        return None;
+    }
+    let empty_bindings = VbsStringBindings::new();
+    let empty_arrays = VbsArrayBindings::new();
+    let function_name = eval_vbs_string_expr(args[1], &empty_bindings, &empty_arrays)?;
+    if !function_name
+        .to_ascii_lowercase()
+        .starts_with("urldownloadtofile")
+    {
+        return None;
+    }
+    let url = eval_vbs_string_expr(args[4], &empty_bindings, &empty_arrays)
+        .and_then(|value| normalize_vbs_download_url(&value))?;
+    let dst = eval_vbs_string_expr(args[5], &empty_bindings, &empty_arrays);
+    Some((url, dst))
 }
 
 fn extract_savetofile_dest_exprs(text: &str) -> Vec<&str> {

