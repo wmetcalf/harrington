@@ -3681,6 +3681,7 @@ fn looks_like_vbs_script(lower: &str) -> bool {
         || lower.contains("xmlhttp")
         || lower.contains("winmgmts")
         || (lower.contains("getobject") && lower.contains("script:"))
+        || lower.contains("response.redirect")
         || lower.contains("commandlineeventconsumer")
         || looks_like_office_vbs_startup_save(lower)
         || lower.contains("private function")
@@ -3734,6 +3735,7 @@ fn starts_like_standalone_vbs(lower: &str) -> bool {
         || (first.starts_with("set ") && first.contains("createobject"))
         || (first.starts_with("set ") && first.contains("getobject") && first.contains("winmgmts"))
         || (first.starts_with("getobject") && first.contains("script:"))
+        || first.starts_with("response.redirect")
         || (first.starts_with("with ") && first.contains("createobject"))
         || first.starts_with("createobject(")
         || first.starts_with("createobject (")
@@ -3786,6 +3788,7 @@ fn pre_scan_standalone_script_input(input: &[u8], env: &mut Environment) -> bool
         b"binarygeturl",
         b"followhyperlink",
         b"navigate",
+        b"response.redirect",
         b"option explicit",
         b"application.startuppath",
         b"executeexcel4macro",
@@ -21506,6 +21509,25 @@ End Sub"#;
                 report.traits
             );
         }
+    }
+
+    #[test]
+    fn standalone_vbs_response_redirect_is_url_launch() {
+        let vbs = br#"Response.Redirect "https://standalone-vbs-redirect.example/panel""#;
+        let report = analyze(vbs, &Config::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(t,
+                Trait::UrlLaunch { url, .. }
+                    if url == "https://standalone-vbs-redirect.example/panel"
+            )),
+            "Response.Redirect did not emit UrlLaunch: {:?}",
+            report.traits
+        );
+        assert_eq!(
+            report.extracted_vbs.len(),
+            1,
+            "standalone Response.Redirect input was not queued as VBS/ASP"
+        );
     }
 
     #[test]

@@ -865,7 +865,10 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
                 dst: dst_hint.clone(),
             });
         }
-        for url_expr in extract_vbs_named_first_arg_exprs(&text, &["followhyperlink", "navigate"]) {
+        for url_expr in extract_vbs_named_first_arg_exprs(
+            &text,
+            &["followhyperlink", "navigate", "response.redirect"],
+        ) {
             if env.check_deadline() {
                 break 'payloads;
             }
