@@ -455,6 +455,14 @@ fn push_downloads_from_vbs_command(
             dst: dst_hint.clone(),
         });
     }
+
+    if command.len() <= 256 * 1024 && vbs_command_may_launch_powershell(command) {
+        crate::interp::interpret_line(command, env);
+        let pending_ps1 = std::mem::take(&mut env.exec_ps1);
+        for payload in pending_ps1 {
+            push_unique_payload(&mut env.all_extracted_ps1, payload);
+        }
+    }
 }
 
 fn normalize_vbs_command_token_url(candidate: &str) -> Option<String> {
@@ -465,6 +473,26 @@ fn normalize_vbs_command_token_url(candidate: &str) -> Option<String> {
             .then(|| format!("h{candidate}"))
             .and_then(|repaired| crate::deob_scan::normalize_liberal_url_token(&repaired))
     })
+}
+
+fn vbs_command_may_launch_powershell(command: &str) -> bool {
+    command
+        .split(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '(' | ')' | ','))
+        .map(|token| {
+            token
+                .rsplit(['\\', '/'])
+                .next()
+                .unwrap_or(token)
+                .trim_end_matches(".exe")
+                .to_ascii_lowercase()
+        })
+        .any(|program| program == "powershell" || program == "pwsh")
+}
+
+fn push_unique_payload(payloads: &mut Vec<Vec<u8>>, payload: Vec<u8>) {
+    if !payloads.iter().any(|existing| existing == &payload) {
+        payloads.push(payload);
+    }
 }
 
 fn join_vbs_line_continuations(text: &str) -> String {

