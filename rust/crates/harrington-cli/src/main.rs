@@ -347,6 +347,9 @@ fn program_stem(name: &str) -> String {
 fn command_invokes_program(command: &str, wanted_stem: &str) -> bool {
     let tokens = lolbas_command_tokens(command);
     tokens.iter().enumerate().any(|(idx, token)| {
+        if lolbas_is_redirection_operand(command, token.start) {
+            return false;
+        }
         if idx > 0 && lolbas_non_exec_value_option(tokens[idx - 1].text) {
             return false;
         }
@@ -540,6 +543,17 @@ fn lolbas_is_destination_separator(command: &str, prev_end: usize, next_start: u
         && between
             .chars()
             .all(|ch| ch.is_whitespace() || matches!(ch, ','))
+}
+
+fn lolbas_is_redirection_operand(command: &str, token_start: usize) -> bool {
+    let Some(prefix) = command.get(..token_start) else {
+        return false;
+    };
+    prefix
+        .chars()
+        .rev()
+        .find(|ch| !ch.is_whitespace())
+        .is_some_and(|ch| matches!(ch, '<' | '>'))
 }
 
 fn lolbas_is_certutil_file_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
