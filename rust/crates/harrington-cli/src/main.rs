@@ -1,7 +1,6 @@
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use sha2::{Digest, Sha256};
-use std::borrow::Cow;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -2303,9 +2302,10 @@ fn lolbas_matches(report: &harrington_core::Report, index: &LolbasIndex) -> Vec<
     matches
 }
 
-fn lolbas_match_command_key(command: &str) -> Cow<'_, str> {
+fn lolbas_match_command_key(command: &str) -> String {
     let trimmed = command.trim();
-    let command = trimmed.trim_start_matches('&').trim_start();
+    let normalized = trimmed.replace("\\\"", "\"").replace("\\'", "'");
+    let command = normalized.trim_start_matches('&').trim_start();
     let head_end = command.find(char::is_whitespace).unwrap_or(command.len());
     let head = command[..head_end]
         .trim_matches(['"', '\''])
@@ -2313,10 +2313,10 @@ fn lolbas_match_command_key(command: &str) -> Cow<'_, str> {
     let canonical_head = match head.as_str() {
         "start-process" | "saps" | "start" => "start-process",
         "invoke-item" | "ii" => "invoke-item",
-        _ => return Cow::Borrowed(trimmed),
+        _ => return normalized,
     };
     let rest = &command[head_end..];
-    Cow::Owned(format!("{canonical_head}{rest}").to_ascii_lowercase())
+    format!("{canonical_head}{rest}").to_ascii_lowercase()
 }
 
 fn optional_lolbas_matches(
