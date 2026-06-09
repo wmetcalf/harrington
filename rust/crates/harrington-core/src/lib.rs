@@ -16357,6 +16357,30 @@ iex $stage
     }
 
     #[test]
+    fn ps1_normalization_decodes_constant_sum_stride_calls_before_definition() {
+        let ps = concat!(
+            "$preeditorially=4;$tungetalerens=55;",
+            "function serviettens ($x) {",
+            "$haandhvende=helligaanden('Phlogisma Firsaarsfdselsdages Diastrophe Ungkokkens Gar????[IIIIi== =n,tttt: ::]y yy$ &&&t%%%rGGG,owwwwsddddrFFFFe<<<<tWWW nmmmmizzzznMMMMgVVVVeUU UrQQ.Q1ooo 4;;;;5 jjj MMMM-!!!!b tt.x')",
+            "};",
+            "function helligaanden ($pauver) {",
+            "$legman8=$preeditorially+$tungetalerens;",
+            "do {$mitraille+=$pauver[$legman8];$legman8+=5} while ($pauver[$legman8])",
+            "$mitraille",
+            "};",
+            "serviettens 'x'"
+        );
+
+        let normalized = crate::ps1_scan::normalize_ps1_text(ps);
+
+        assert!(
+            normalized.contains("[int]$tGwdF<WmzMVUQo; M! "),
+            "constant-sum stride call before decoder definition was not decoded:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
     fn ps1_normalization_decodes_smart_quote_url_concat() {
         let ps = concat!(
             "Invoke-WebRequest -Uri (",

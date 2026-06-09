@@ -5206,7 +5206,9 @@ impl PsObfuscationSignals {
         let doubled_single_quote = text.contains("''");
         let skip_nth = has_function_def
             && lower.contains("+=")
-            && ((lower.contains("do") && lower.contains("until") && text.contains('['))
+            && ((lower.contains("do")
+                && (lower.contains("until") || lower.contains("while"))
+                && text.contains('['))
                 || (lower.contains("for") && lower.contains("invoke") && text.contains("'su'")));
         let char_cast = lower.contains("[char");
         let hex_split = lower.contains("-split") && lower.contains("toint16");
@@ -7788,6 +7790,11 @@ mod skip_nth_signal_tests {
         );
         assert!(do_until.skip_nth, "do/until stride decoder was blocked");
 
+        let do_while = PsObfuscationSignals::new(
+            "function Decode($x){$a=1;$b=2;$i=$a+$b;do{$out+=$x[$i];$i+=3}while($x[$i]);$out}",
+        );
+        assert!(do_while.skip_nth, "do/while stride decoder was blocked");
+
         let substring = PsObfuscationSignals::new(
             "function Decode($x){for($i=2;$i -lt $x.Length;$i+=3){$out+=$x.'su'.'Invoke'($i,1)}$out}",
         );
@@ -7828,6 +7835,29 @@ Pick 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxIxxxxnxxxxvxxxx
         assert!(
             out.contains("'[int]$tGwdF<WmzMVUQo; M! '"),
             "sample-syntax do/while stride call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn do_while_stride_extractor_call_inside_prior_function_is_rewritten() {
+        let text = concat!(
+            "$preeditorially=4;$tungetalerens=55;",
+            "function serviettens ($x) {",
+            "$haandhvende=helligaanden('Phlogisma Firsaarsfdselsdages Diastrophe Ungkokkens Gar????[IIIIi== =n,tttt: ::]y yy$ &&&t%%%rGGG,owwwwsddddrFFFFe<<<<tWWW nmmmmizzzznMMMMgVVVVeUU UrQQ.Q1ooo 4;;;;5 jjj MMMM-!!!!b tt.x')",
+            "};",
+            "function helligaanden ($pauver) {",
+            "$legman8=$preeditorially+$tungetalerens;",
+            "do {$mitraille+=$pauver[$legman8];$legman8+=5} while ($pauver[$legman8])",
+            "$mitraille",
+            "};",
+            "serviettens 'x'"
+        );
+
+        let out = expand_skip_nth_for_substring(text);
+
+        assert!(
+            out.contains("'[int]$tGwdF<WmzMVUQo; M! '"),
+            "do/while stride call inside prior function was not rewritten:\n{out}"
         );
     }
 }
