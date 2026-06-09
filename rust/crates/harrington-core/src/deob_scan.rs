@@ -3931,7 +3931,9 @@ fn msiexec_prior_download_url_after(
 fn msiexec_package_candidate<'a>(token: &'a str, next: Option<&'a String>) -> Option<String> {
     let token = strip_quotes(token).trim();
     let lower = token.to_ascii_lowercase();
-    for prefix in ["/i", "-i", "/package", "-package", "/update", "-update"] {
+    for prefix in [
+        "/i", "-i", "/p", "-p", "/package", "-package", "/update", "-update",
+    ] {
         if lower == prefix {
             return next
                 .map(|value| trim_url_suffix(strip_quotes(value)).trim().to_string())
@@ -4058,7 +4060,9 @@ fn ps_url_launch_attached_url_token(token: &str) -> Option<&str> {
 
 fn msiexec_attached_url_token(token: &str) -> Option<&str> {
     let lower = token.to_ascii_lowercase();
-    for prefix in ["/i", "-i", "/package", "-package", "/update", "-update"] {
+    for prefix in [
+        "/i", "-i", "/p", "-p", "/package", "-package", "/update", "-update",
+    ] {
         let Some(rest) = lower.strip_prefix(prefix) else {
             continue;
         };
