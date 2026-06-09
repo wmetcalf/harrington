@@ -405,6 +405,9 @@ fn command_invokes_program(command: &str, wanted_stem: &str) -> bool {
         if lolbas_is_sc_config_metadata_operand(&tokens, idx) {
             return false;
         }
+        if lolbas_is_sc_config_metadata_key(&tokens, idx) {
+            return false;
+        }
         if lolbas_is_sc_failure_metadata_operand(&tokens, idx) {
             return false;
         }
@@ -1114,6 +1117,27 @@ fn lolbas_is_sc_config_metadata_operand(tokens: &[LolbasCommandToken<'_>], idx: 
     }
     matches!(
         tokens[idx - 1]
+            .text
+            .trim_matches(['"', '\''])
+            .to_ascii_lowercase()
+            .as_str(),
+        "depend" | "displayname" | "error" | "group" | "start" | "tag" | "type"
+    )
+}
+
+fn lolbas_is_sc_config_metadata_key(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx < 3 || program_stem(tokens[0].text) != "sc" {
+        return false;
+    }
+    if !tokens[1]
+        .text
+        .trim_matches(['"', '\''])
+        .eq_ignore_ascii_case("config")
+    {
+        return false;
+    }
+    matches!(
+        tokens[idx]
             .text
             .trim_matches(['"', '\''])
             .to_ascii_lowercase()

@@ -3062,6 +3062,59 @@ fn summarize_lolbas_enrichment_ignores_program_names_in_sc_config_metadata_field
 }
 
 #[test]
+fn summarize_lolbas_enrichment_ignores_sc_config_start_key_as_start_binary() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(
+        &input,
+        "sc config windefend start= disabled\r\n\
+         sc create TestSvc binPath= C:\\Temp\\start.exe\r\n",
+    )
+    .expect("write input");
+    let lolbas = dir.path().join("lolbas.json");
+    fs::write(
+        &lolbas,
+        r#"[
+          {
+            "Name": "Start.exe",
+            "url": "https://lolbas-project.github.io/lolbas/Binaries/Start/",
+            "Commands": [
+              {
+                "Category": "Execute",
+                "MitreID": "T1202"
+              }
+            ]
+          }
+        ]"#,
+    )
+    .expect("write lolbas");
+
+    let out = Command::cargo_bin("harrington")
+        .expect("bin")
+        .args([
+            "summarize",
+            input.to_str().expect("input path"),
+            "--lolbas-json",
+            lolbas.to_str().expect("lolbas path"),
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("json");
+    let matches = v
+        .get("lolbas_matches")
+        .and_then(|v| v.as_array())
+        .expect("lolbas_matches array");
+    assert_eq!(matches.len(), 1, "unexpected matches: {matches:?}");
+    assert_eq!(
+        matches[0].get("command").and_then(|v| v.as_str()),
+        Some("sc create TestSvc binPath= C:\\Temp\\start.exe")
+    );
+}
+
+#[test]
 fn summarize_lolbas_enrichment_ignores_program_names_in_sc_failure_metadata_fields() {
     let dir = TempDir::new().expect("tmp");
     let input = dir.path().join("in.bat");
