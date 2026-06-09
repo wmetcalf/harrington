@@ -29,6 +29,12 @@ pub(crate) static URL_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static ROT13_URL_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?i)\b(uggcf?:[\x2f\x5c]+[^\s"'<>(){}\[\]|^&;`,]+)"#)
+        .expect("rot13 url sweep regex")
+});
+
+#[allow(clippy::expect_used)]
 static UNC_WEBDAV_RE: Lazy<Regex> = Lazy::new(|| {
     // Matches:  \\<host>@<port>\<share>...
     // Where host is IP or hostname, port is digits or "SSL", share is anything non-whitespace
@@ -8441,6 +8447,9 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     scan_step!("mshta_local_deob_text", {
         scan_mshta_local_deob_text(deobfuscated, env);
     });
+    scan_step!("rot13_url_sweep", {
+        scan_rot13_urls_in_deob_text(deobfuscated, env);
+    });
 
     scan_step!("url_sweep", {
         // Build a set of URLs already known
@@ -8494,6 +8503,74 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
             });
         }
     });
+}
+
+fn scan_rot13_urls_in_deob_text(deobfuscated: &str, env: &mut Environment) {
+    let known = env.known_extracted_urls();
+    let mut seen_new: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for caps in ROT13_URL_RE.captures_iter(deobfuscated) {
+        let Some(m) = caps.get(1) else { continue };
+        let encoded = trim_url_match(m.as_str());
+        if encoded.len() < "uggc://k".len() {
+            continue;
+        }
+
+        let decoded = rot13_ascii(encoded);
+        let Some(mut url) = normalize_liberal_url_token(&decoded) else {
+            continue;
+        };
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
+            continue;
+        }
+        if is_noise_url(&url) {
+            continue;
+        }
+        if is_known_or_known_query_prefix(&known, &url) {
+            continue;
+        }
+        if !seen_new.insert(url.clone()) {
+            continue;
+        }
+
+        let line_hint = deobfuscated
+            .lines()
+            .find(|line| line.contains(encoded) || line.contains(&url))
+            .map(|line| line.chars().take(200).collect::<String>())
+            .unwrap_or_default();
+        if is_noise_url_context(&line_hint, &url) {
+            continue;
+        }
+
+        env.traits.push(Trait::DownloadInDeobText {
+            src: std::mem::take(&mut url),
+            line_hint,
+        });
+    }
+}
+
+fn trim_url_match(mut url: &str) -> &str {
+    while let Some(last) = url.chars().last() {
+        if matches!(
+            last,
+            ',' | '.' | ';' | ':' | ')' | ']' | '}' | '"' | '\'' | '!' | '?' | '\\' | '&'
+        ) {
+            url = &url[..url.len() - last.len_utf8()];
+        } else {
+            break;
+        }
+    }
+    url
+}
+
+fn rot13_ascii(text: &str) -> String {
+    text.bytes()
+        .map(|byte| match byte {
+            b'a'..=b'z' => (((byte - b'a' + 13) % 26) + b'a') as char,
+            b'A'..=b'Z' => (((byte - b'A' + 13) % 26) + b'A') as char,
+            _ => byte as char,
+        })
+        .collect()
 }
 
 /// Scan the small synthetic text assembled from recovered binary artifact

