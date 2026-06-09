@@ -417,6 +417,9 @@ fn command_invokes_program(command: &str, wanted_stem: &str) -> bool {
         if lolbas_is_schtasks_schedule_operand(&tokens, idx) {
             return false;
         }
+        if lolbas_is_attached_schtasks_metadata_operand(&tokens, idx) {
+            return false;
+        }
         if lolbas_is_wevtutil_log_name_operand(&tokens, idx) {
             return false;
         }
@@ -1186,6 +1189,30 @@ fn lolbas_is_schtasks_schedule_operand(tokens: &[LolbasCommandToken<'_>], idx: u
             | "/st"
             | "-st"
     )
+}
+
+fn lolbas_is_attached_schtasks_metadata_operand(
+    tokens: &[LolbasCommandToken<'_>],
+    idx: usize,
+) -> bool {
+    if idx == 0 || program_stem(tokens[0].text) != "schtasks" {
+        return false;
+    }
+    let lower = tokens[idx]
+        .text
+        .trim_matches(['"', '\''])
+        .to_ascii_lowercase();
+    [
+        "/tn:", "-tn:", "/tn=", "-tn=", "/xml:", "-xml:", "/xml=", "-xml=", "/p:", "-p:", "/p=",
+        "-p=", "/rp:", "-rp:", "/rp=", "-rp=", "/ru:", "-ru:", "/ru=", "-ru=", "/s:", "-s:", "/s=",
+        "-s=", "/u:", "-u:", "/u=", "-u=", "/d:", "-d:", "/d=", "-d=", "/du:", "-du:", "/du=",
+        "-du=", "/ed:", "-ed:", "/ed=", "-ed=", "/et:", "-et:", "/et=", "-et=", "/i:", "-i:",
+        "/i=", "-i=", "/m:", "-m:", "/m=", "-m=", "/mo:", "-mo:", "/mo=", "-mo=", "/ri:", "-ri:",
+        "/ri=", "-ri=", "/sc:", "-sc:", "/sc=", "-sc=", "/sd:", "-sd:", "/sd=", "-sd=", "/st:",
+        "-st:", "/st=", "-st=",
+    ]
+    .iter()
+    .any(|prefix| lower.starts_with(prefix))
 }
 
 fn lolbas_is_wevtutil_log_name_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
