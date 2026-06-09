@@ -592,6 +592,7 @@ fn analyze_json_includes_extracted_counts() {
         v["extracted"]["powershell"].as_u64().unwrap_or_default() >= 1,
         "PowerShell extracted count missing from analyze JSON: {v}"
     );
+    assert_eq!(v["recovered"]["pe"].as_u64(), Some(0));
 }
 
 #[test]
@@ -624,6 +625,7 @@ fn deob_json_only_includes_extracted_counts() {
         v["extracted"]["powershell"].as_u64().unwrap_or_default() >= 1,
         "PowerShell extracted count missing from deob JSON: {v}"
     );
+    assert_eq!(v["recovered"]["pe"].as_u64(), Some(0));
 }
 
 #[test]
@@ -747,6 +749,7 @@ fn analyze_jsonl_meta_includes_extracted_counts() {
     assert_eq!(meta["extracted"]["cmd"].as_u64(), Some(0));
     assert_eq!(meta["extracted"]["jscript"].as_u64(), Some(0));
     assert_eq!(meta["extracted"]["vbs"].as_u64(), Some(0));
+    assert_eq!(meta["recovered"]["pe"].as_u64(), Some(0));
 }
 
 #[test]
