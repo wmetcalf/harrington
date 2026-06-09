@@ -2237,7 +2237,11 @@ fn lolbas_matches(report: &harrington_core::Report, index: &LolbasIndex) -> Vec<
     let mut matches = Vec::new();
     let commands = command_lines_for_lolbas(report);
     for command in commands {
+        let command_lower = command.to_ascii_lowercase();
         for entry in &index.entries {
+            if !command_lower.contains(&entry.stem) {
+                continue;
+            }
             if !command_invokes_program(command, &entry.stem) {
                 continue;
             }
