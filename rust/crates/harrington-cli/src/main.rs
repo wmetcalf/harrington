@@ -1532,35 +1532,7 @@ fn lolbas_is_ps_process_argument_operand(tokens: &[LolbasCommandToken<'_>], idx:
     if idx == 0 || !ps_lolbas_process_launch_line(tokens[0].text) {
         return false;
     }
-    matches!(
-        tokens[idx - 1]
-            .text
-            .trim_matches(['"', '\''])
-            .to_ascii_lowercase()
-            .as_str(),
-        "-argumentlist"
-            | "/argumentlist"
-            | "-args"
-            | "/args"
-            | "-workingdirectory"
-            | "/workingdirectory"
-            | "-wd"
-            | "/wd"
-            | "-redirectstandarderror"
-            | "/redirectstandarderror"
-            | "-redirectstandardinput"
-            | "/redirectstandardinput"
-            | "-redirectstandardoutput"
-            | "/redirectstandardoutput"
-            | "-credential"
-            | "/credential"
-            | "-environment"
-            | "/environment"
-            | "-verb"
-            | "/verb"
-            | "-windowstyle"
-            | "/windowstyle"
-    )
+    ps_start_process_non_exec_param(tokens[idx - 1].text)
 }
 
 fn lolbas_attached_ps_process_exec_operand(
@@ -1670,6 +1642,33 @@ fn lolbas_attached_ps_process_non_exec_operand(
     ]
     .iter()
     .any(|prefix| lower.starts_with(prefix))
+}
+
+fn ps_start_process_non_exec_param(token: &str) -> bool {
+    let lower = token.trim_matches(['"', '\'']).to_ascii_lowercase();
+    let Some(name) = lower.strip_prefix(['-', '/']) else {
+        return false;
+    };
+    if matches!(name, "args" | "wd") {
+        return true;
+    }
+    ps_start_process_non_exec_param_name(name)
+}
+
+fn ps_start_process_non_exec_param_name(name: &str) -> bool {
+    [
+        ("argumentlist", 1),
+        ("credential", 1),
+        ("environment", 1),
+        ("redirectstandarderror", 17),
+        ("redirectstandardinput", 17),
+        ("redirectstandardoutput", 17),
+        ("verb", 1),
+        ("windowstyle", 2),
+        ("workingdirectory", 2),
+    ]
+    .iter()
+    .any(|(canonical, min_len)| name.len() >= *min_len && canonical.starts_with(name))
 }
 
 fn is_url_like_program_token(token: &str) -> bool {
