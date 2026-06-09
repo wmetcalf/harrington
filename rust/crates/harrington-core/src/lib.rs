@@ -4078,10 +4078,12 @@ fn analyze_inner(input: &[u8], cfg: &Config, file_path: Option<std::path::PathBu
         env.traits.push(Trait::LineTruncated {
             original_len: input.len() as u64,
         });
-        if let Some(char_count) = truncated_high_unicode_payload_char_count(input) {
+        if let Some(metadata) = truncated_high_unicode_payload_metadata(input) {
             env.traits.push(Trait::HighUnicodePayload {
-                char_count,
+                char_count: metadata.char_count,
                 truncated: true,
+                byte_carrier_base: metadata.byte_carrier_base,
+                byte_count: metadata.byte_count,
             });
         }
     }
@@ -6044,18 +6046,22 @@ fn summarize_high_unicode_carrier_line(line: &str, env: &mut Environment) -> Opt
     }
 
     let truncated = input_has_truncation_marker(line.as_bytes());
+    let metadata = high_unicode_payload_metadata(line, high_unicode_chars as u64);
     if !env.traits.iter().any(|t| {
         matches!(
             t,
             crate::traits::Trait::HighUnicodePayload {
                 char_count,
                 truncated: existing_truncated,
+                ..
             } if *char_count == high_unicode_chars as u64 && *existing_truncated == truncated
         )
     }) {
         env.traits.push(crate::traits::Trait::HighUnicodePayload {
             char_count: high_unicode_chars as u64,
             truncated,
+            byte_carrier_base: metadata.byte_carrier_base,
+            byte_count: metadata.byte_count,
         });
     }
 
@@ -7397,7 +7403,14 @@ fn input_has_truncation_marker(input: &[u8]) -> bool {
             .any(|window| window.eq_ignore_ascii_case("…[truncated]".as_bytes()))
 }
 
-fn truncated_high_unicode_payload_char_count(input: &[u8]) -> Option<u64> {
+#[derive(Clone, Copy)]
+struct HighUnicodePayloadMetadata {
+    char_count: u64,
+    byte_carrier_base: Option<u32>,
+    byte_count: Option<u64>,
+}
+
+fn truncated_high_unicode_payload_metadata(input: &[u8]) -> Option<HighUnicodePayloadMetadata> {
     let text = String::from_utf8_lossy(input);
     if !input_contains_ascii_case_insensitive(input, b"scriptblock")
         && !input_contains_ascii_case_insensitive(input, b"powershell")
@@ -7409,7 +7422,33 @@ fn truncated_high_unicode_payload_char_count(input: &[u8]) -> Option<u64> {
         .chars()
         .filter(|ch| matches!(*ch as u32, 0x4e00..=0x9fff))
         .count();
-    (count >= 1024).then_some(count as u64)
+    (count >= 1024).then(|| high_unicode_payload_metadata(&text, count as u64))
+}
+
+fn high_unicode_payload_metadata(text: &str, char_count: u64) -> HighUnicodePayloadMetadata {
+    let mut min_codepoint = u32::MAX;
+    let mut max_codepoint = 0u32;
+    for codepoint in text
+        .chars()
+        .map(|ch| ch as u32)
+        .filter(|codepoint| matches!(*codepoint, 0x4e00..=0x9fff))
+    {
+        min_codepoint = min_codepoint.min(codepoint);
+        max_codepoint = max_codepoint.max(codepoint);
+    }
+
+    let (byte_carrier_base, byte_count) =
+        if min_codepoint != u32::MAX && max_codepoint.saturating_sub(min_codepoint) <= 255 {
+            (Some(min_codepoint), Some(char_count))
+        } else {
+            (None, None)
+        };
+
+    HighUnicodePayloadMetadata {
+        char_count,
+        byte_carrier_base,
+        byte_count,
+    }
 }
 
 #[cfg(test)]
@@ -7534,11 +7573,43 @@ mod line_cap_tests {
                     Trait::HighUnicodePayload {
                         char_count,
                         truncated: true,
+                        ..
                     } if *char_count >= 4096
                 )
             }),
             "sandbox-capped high-Unicode carrier should be surfaced: {:?}",
             report.traits
+        );
+    }
+
+    #[test]
+    fn sandbox_truncated_high_unicode_payload_reports_byte_carrier_metadata() {
+        let carrier: String = (0..2048)
+            .map(|idx| char::from_u32(0x4e00 + (idx % 256)).unwrap())
+            .collect();
+        let script = format!(
+            "&([scriptblock]::Create($drop=C:\\Windows\\system32\\rWhatsAppImage2026-05-12at12_37_26.vbs;$payload=({carrier});...[truncated]"
+        );
+
+        let report = analyze(script.as_bytes(), &Config::default());
+        let value = serde_json::to_value(
+            report
+                .traits
+                .iter()
+                .find(|t| matches!(t, Trait::HighUnicodePayload { .. }))
+                .expect("missing high-Unicode payload trait"),
+        )
+        .expect("serialize trait");
+
+        assert_eq!(
+            value.get("byte_carrier_base").and_then(|v| v.as_u64()),
+            Some(0x4e00),
+            "high-Unicode byte carrier base was not reported: {value:?}"
+        );
+        assert_eq!(
+            value.get("byte_count").and_then(|v| v.as_u64()),
+            Some(2048),
+            "high-Unicode byte count was not reported: {value:?}"
         );
     }
 

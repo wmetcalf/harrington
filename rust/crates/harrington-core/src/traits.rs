@@ -192,6 +192,10 @@ pub enum Trait {
     HighUnicodePayload {
         char_count: u64,
         truncated: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        byte_carrier_base: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        byte_count: Option<u64>,
     },
     TraitsCapped {
         capped_kind: String,
