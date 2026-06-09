@@ -5706,7 +5706,7 @@ fn scan_self_elevation(deobfuscated: &str, env: &mut Environment) {
     // to `-Verb runas` so we capture the target+args regardless of order.
     static SELF_ELEV_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r#"(?is)\b(?:Start-Process|saps)\b([^\n;|&]{0,300}?)-Verb\s+["']?runas["']?([^\n;|&]{0,300})"#,
+            r#"(?is)\b(?:Start-Process|saps)\b([^\n;|&]{0,300}?)-Verb(?:\s+|[:=])["']?runas["']?([^\n;|&]{0,300})"#,
         )
         .expect("self-elev regex")
     });

