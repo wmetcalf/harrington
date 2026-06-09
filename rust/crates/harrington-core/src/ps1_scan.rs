@@ -1087,6 +1087,14 @@ static PS_LITERAL_CONST_INDEX_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static PS_LITERAL_CONST_CHARS_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)(?:\breturn\s+)?(?:\(\s*)?\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\)\s*)?\.\s*(?:get_)?Chars\s*\(\s*(\d{1,6})\s*\)"#,
+    )
+    .expect("ps literal const Chars/get_Chars extractor body regex")
+});
+
+#[allow(clippy::expect_used)]
 static PS_LITERAL_CHARS_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)(?:\breturn\s+)?(?:\(\s*)?\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\)\s*)?\.\s*(?:get_)?Chars\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)"#,
@@ -3826,7 +3834,10 @@ fn expand_literal_index_extractor_calls(text: &str) -> String {
             .or_else(|| PS_LITERAL_CHARS_EXTRACTOR_BODY_RE.captures(&body))
             .or_else(|| PS_LITERAL_TOCHARARRAY_INDEX_EXTRACTOR_BODY_RE.captures(&body))
         else {
-            if let Some(caps) = PS_LITERAL_CONST_INDEX_EXTRACTOR_BODY_RE.captures(&body) {
+            if let Some(caps) = PS_LITERAL_CONST_INDEX_EXTRACTOR_BODY_RE
+                .captures(&body)
+                .or_else(|| PS_LITERAL_CONST_CHARS_EXTRACTOR_BODY_RE.captures(&body))
+            {
                 let Some(value_var) = caps.get(1).map(|m| m.as_str()) else {
                     continue;
                 };
