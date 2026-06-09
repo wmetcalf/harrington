@@ -160,6 +160,8 @@ static PS_ENV_REF_RE: Lazy<Regex> = Lazy::new(|| {
 pub fn scan_vbs_payloads(env: &mut Environment) {
     let mut payloads = std::mem::take(&mut env.all_extracted_vbs);
     let mut seen: std::collections::HashSet<(usize, String)> = std::collections::HashSet::new();
+    let mut seen_launches: std::collections::HashSet<(usize, String)> =
+        std::collections::HashSet::new();
     'payloads: for (idx, payload) in payloads.iter().enumerate() {
         if env.check_deadline() {
             break;
@@ -842,6 +844,43 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
                 cmd: format!("(vbs #{idx}) {snippet}"),
                 src: url,
                 dst: dst_hint.clone(),
+            });
+        }
+        for url_expr in extract_vbs_named_first_arg_exprs(&text, &["binarygeturl"]) {
+            if env.check_deadline() {
+                break 'payloads;
+            }
+            let Some(url) = eval_vbs_string_expr(url_expr, &bindings, &array_bindings)
+                .and_then(|value| normalize_vbs_download_url(&value))
+            else {
+                continue;
+            };
+            if !seen.insert((idx, url.clone())) {
+                continue;
+            }
+            let snippet: String = text.chars().take(120).collect();
+            env.traits.push(Trait::Download {
+                cmd: format!("(vbs #{idx}) {snippet}"),
+                src: url,
+                dst: dst_hint.clone(),
+            });
+        }
+        for url_expr in extract_vbs_named_first_arg_exprs(&text, &["followhyperlink", "navigate"]) {
+            if env.check_deadline() {
+                break 'payloads;
+            }
+            let Some(url) = eval_vbs_string_expr(url_expr, &bindings, &array_bindings)
+                .and_then(|value| normalize_vbs_download_url(&value))
+            else {
+                continue;
+            };
+            if !seen_launches.insert((idx, url.clone())) {
+                continue;
+            }
+            let snippet: String = text.chars().take(120).collect();
+            env.traits.push(Trait::UrlLaunch {
+                cmd: format!("(vbs #{idx}) {snippet}"),
+                url,
             });
         }
 
@@ -2209,26 +2248,41 @@ fn extract_urldownloadtofile_arg_exprs(text: &str) -> Vec<(&str, Option<&str>)> 
 }
 
 fn extract_getobject_script_moniker_exprs(text: &str) -> Vec<&str> {
+    extract_vbs_named_first_arg_exprs(text, &["getobject"])
+}
+
+fn extract_vbs_named_first_arg_exprs<'a>(text: &'a str, names: &[&str]) -> Vec<&'a str> {
     let mut out = Vec::new();
     for line in text.lines() {
         for statement in split_vbs_statements(line) {
             let lower = statement.to_ascii_lowercase();
-            let mut cursor = 0usize;
-            while let Some(rel) = lower[cursor..].find("getobject") {
-                let args_start = cursor + rel + "getobject".len();
-                let next = statement[args_start..].chars().next();
-                if !next.is_some_and(|ch| ch.is_ascii_whitespace() || ch == '(') {
+            for name in names {
+                let mut cursor = 0usize;
+                while let Some(rel) = lower[cursor..].find(name) {
+                    let call_start = cursor + rel;
+                    if statement[..call_start]
+                        .chars()
+                        .next_back()
+                        .is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+                    {
+                        cursor = call_start + name.len();
+                        continue;
+                    }
+                    let args_start = call_start + name.len();
+                    let next = statement[args_start..].chars().next();
+                    if !next.is_some_and(|ch| ch.is_ascii_whitespace() || ch == '(') {
+                        cursor = args_start;
+                        continue;
+                    }
+                    let mut args = statement[args_start..].trim_start();
+                    if let Some(rest) = args.strip_prefix('(') {
+                        args = extract_vbs_parenthesized_arg_prefix(rest).unwrap_or(rest);
+                    }
+                    if let Some(expr) = split_vbs_args(args).first() {
+                        out.push(trim_one_trailing_call_paren(expr));
+                    }
                     cursor = args_start;
-                    continue;
                 }
-                let mut args = statement[args_start..].trim_start();
-                if let Some(rest) = args.strip_prefix('(') {
-                    args = extract_vbs_parenthesized_arg_prefix(rest).unwrap_or(rest);
-                }
-                if let Some(expr) = split_vbs_args(args).first() {
-                    out.push(trim_one_trailing_call_paren(expr));
-                }
-                cursor = args_start;
             }
         }
     }

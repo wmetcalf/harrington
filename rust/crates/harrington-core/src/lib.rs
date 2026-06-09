@@ -3783,6 +3783,9 @@ fn pre_scan_standalone_script_input(input: &[u8], env: &mut Environment) -> bool
         b"winmgmts",
         b"win32_process",
         b"script:",
+        b"binarygeturl",
+        b"followhyperlink",
+        b"navigate",
         b"option explicit",
         b"application.startuppath",
         b"executeexcel4macro",
@@ -21471,6 +21474,38 @@ End Sub"#;
             1,
             "standalone VBS script moniker input was not queued as VBS"
         );
+    }
+
+    #[test]
+    fn standalone_vbs_compat_url_helpers_are_structured() {
+        let vbs = br#"Sub ScriptMain()
+BinaryGetURL "https://standalone-vbs-compat.example/a.bin"
+FollowHyperlink "https://standalone-vbs-compat.example/b"
+Call Navigate("http://standalone-vbs-compat.example/c")
+End Sub"#;
+        let report = analyze(vbs, &Config::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://standalone-vbs-compat.example/a.bin"
+                        && dst.is_none()
+            )),
+            "BinaryGetURL did not emit structured Download: {:?}",
+            report.traits
+        );
+        for expected in [
+            "https://standalone-vbs-compat.example/b",
+            "http://standalone-vbs-compat.example/c",
+        ] {
+            assert!(
+                report
+                    .traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::UrlLaunch { url, .. } if url == expected)),
+                "VBS URL helper did not emit UrlLaunch for {expected}: {:?}",
+                report.traits
+            );
+        }
     }
 
     #[test]
