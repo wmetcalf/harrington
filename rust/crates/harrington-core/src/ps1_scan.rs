@@ -1087,6 +1087,14 @@ static PS_LITERAL_CHARS_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static PS_LITERAL_TOCHARARRAY_INDEX_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)(?:\breturn\s+)?(?:\(\s*)?\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\)\s*)?\.\s*ToCharArray\s*\(\s*\)\s*\[\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\]"#,
+    )
+    .expect("ps literal ToCharArray index extractor body regex")
+});
+
+#[allow(clippy::expect_used)]
 static PS_LITERAL_REPLACE_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)(?:\breturn\s+)?(?:\(\s*)?\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\)\s*)?-(?:[ic])?replace\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*,\s*\$([A-Za-z_][A-Za-z0-9_]*)"#,
@@ -3794,7 +3802,10 @@ fn expand_literal_string_case_extractor_calls(text: &str) -> String {
 fn expand_literal_index_extractor_calls(text: &str) -> String {
     let lower = text.to_ascii_lowercase();
     if !has_literal_extractor_def_signal(&lower)
-        || !(text.contains('[') || lower.contains(".chars") || lower.contains(".get_chars"))
+        || !(text.contains('[')
+            || lower.contains(".chars")
+            || lower.contains(".get_chars")
+            || lower.contains(".tochararray"))
         || !text.contains('\'')
     {
         return text.to_string();
@@ -3805,6 +3816,7 @@ fn expand_literal_index_extractor_calls(text: &str) -> String {
         let Some(caps) = PS_LITERAL_INDEX_EXTRACTOR_BODY_RE
             .captures(&body)
             .or_else(|| PS_LITERAL_CHARS_EXTRACTOR_BODY_RE.captures(&body))
+            .or_else(|| PS_LITERAL_TOCHARARRAY_INDEX_EXTRACTOR_BODY_RE.captures(&body))
         else {
             continue;
         };
@@ -7209,7 +7221,10 @@ impl PsObfuscationSignals {
         let string_case_extractor =
             has_function_def && (lower.contains(".tolower") || lower.contains(".toupper"));
         let literal_index_extractor = has_function_def
-            && (lower.contains('[') || lower.contains(".chars") || lower.contains(".get_chars"))
+            && (lower.contains('[')
+                || lower.contains(".chars")
+                || lower.contains(".get_chars")
+                || lower.contains(".tochararray"))
             && text.contains('\'');
         let split_index =
             has_function_def && has_split_index_extractor_signal(&lower) && text.contains('[');
