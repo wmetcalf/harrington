@@ -578,6 +578,7 @@ fn lolbas_non_exec_value_option(token: &str) -> bool {
             | "--output"
             | "--output-document"
             | "--output-dir"
+            | "--directory-prefix"
             | "-output"
             | "/out"
             | "-out"
@@ -655,8 +656,13 @@ fn lolbas_non_exec_value_option(token: &str) -> bool {
 fn lolbas_attached_non_exec_value_option(token: &str) -> bool {
     let lower = token.trim_matches(['"', '\'']).to_ascii_lowercase();
     lower.starts_with("--output=")
+        || lower.starts_with("--output:")
         || lower.starts_with("--output-document=")
+        || lower.starts_with("--output-document:")
         || lower.starts_with("--output-dir=")
+        || lower.starts_with("--output-dir:")
+        || lower.starts_with("--directory-prefix=")
+        || lower.starts_with("--directory-prefix:")
         || lower.starts_with("-output:")
         || lower.starts_with("-output=")
         || lower.starts_with("/out:")
