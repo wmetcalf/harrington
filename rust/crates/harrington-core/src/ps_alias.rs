@@ -168,6 +168,15 @@ pub fn expand_aliases(text: &str) -> String {
         let lead = caps.name("lead").map(|x| x.as_str()).unwrap_or("");
         let tok = caps.name("tok").map(|x| x.as_str()).unwrap_or("");
         let next = bytes.get(m.end()).copied();
+        let quoted_single_token = matches!(lead.as_bytes().last(), Some(b'\'' | b'"' | b'`'))
+            && next == lead.as_bytes().last().copied();
+        let quoted_invocation_or_assignment = quoted_single_token
+            && previous_non_ws_byte(bytes, m.start()).is_some_and(|b| matches!(b, b'&' | b'='));
+        if quoted_single_token && !quoted_invocation_or_assignment {
+            out.push_str(&text[m.start()..m.end()]);
+            last_end = m.end();
+            continue;
+        }
         let is_cmdlet_head = matches!(next, Some(b'-'));
         let key = tok.to_ascii_lowercase();
         if key == "foreach" && is_foreach_language_statement(&text[m.end()..]) {
@@ -193,4 +202,13 @@ pub fn expand_aliases(text: &str) -> String {
 fn is_foreach_language_statement(after_token: &str) -> bool {
     let after = after_token.trim_start();
     after.starts_with('(')
+}
+
+fn previous_non_ws_byte(bytes: &[u8], pos: usize) -> Option<u8> {
+    bytes
+        .get(..pos)?
+        .iter()
+        .rev()
+        .copied()
+        .find(|b| !b.is_ascii_whitespace())
 }
