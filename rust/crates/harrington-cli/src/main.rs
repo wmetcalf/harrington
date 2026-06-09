@@ -1,6 +1,7 @@
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use sha2::{Digest, Sha256};
+use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -2848,7 +2849,7 @@ fn analyze_input_files(
 }
 
 fn run() -> Result<()> {
-    let cli = Cli::parse();
+    let cli = parse_cli();
     match cli.command {
         Command::Summarize {
             file,
@@ -3056,6 +3057,27 @@ fn run() -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn parse_cli() -> Cli {
+    let mut args: Vec<OsString> = std::env::args_os().collect();
+    if should_default_to_analyze(&args) {
+        args.insert(1, OsString::from("analyze"));
+    }
+    Cli::parse_from(args)
+}
+
+fn should_default_to_analyze(args: &[OsString]) -> bool {
+    let Some(first) = args.get(1).and_then(|arg| arg.to_str()) else {
+        return false;
+    };
+    if first.starts_with('-') {
+        return false;
+    }
+    !matches!(
+        first.to_ascii_lowercase().as_str(),
+        "deob" | "analyze" | "summarize" | "report" | "version" | "help"
+    )
 }
 
 fn main() {

