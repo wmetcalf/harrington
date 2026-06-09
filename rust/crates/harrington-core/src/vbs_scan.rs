@@ -326,6 +326,38 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
             );
         }
 
+        for expr in extract_wmi_process_execmethod_command_exprs(&text) {
+            if env.check_deadline() {
+                break 'payloads;
+            }
+            let Some(command) = eval_vbs_string_expr(expr, &bindings, &array_bindings) else {
+                continue;
+            };
+            let command = command.trim();
+            if command.is_empty() || command.len() > 256 * 1024 {
+                continue;
+            }
+            let command = command.to_string();
+            if !env.traits.iter().any(
+                |t| matches!(t, Trait::WmicProcessCreate { inner_cmd } if inner_cmd == &command),
+            ) {
+                env.traits.push(Trait::WmicProcessCreate {
+                    inner_cmd: command.clone(),
+                });
+            }
+            env.exec_cmd.push(command.clone());
+            env.exec_cmd_delayed.push(false);
+            push_downloads_from_vbs_command(
+                env,
+                idx,
+                &text,
+                &command,
+                &dst_hint,
+                &env_bindings,
+                &mut seen,
+            );
+        }
+
         for expr in extract_wmi_scheduledjob_create_command_exprs(&text) {
             if env.check_deadline() {
                 break 'payloads;
@@ -683,6 +715,74 @@ fn extract_wmi_process_create_command_exprs(text: &str) -> Vec<&str> {
         }
     }
     out
+}
+
+fn extract_wmi_process_execmethod_command_exprs(text: &str) -> Vec<&str> {
+    let lower_text = text.to_ascii_lowercase();
+    if !lower_text.contains("win32_process") || !lower_text.contains(".execmethod_") {
+        return Vec::new();
+    }
+
+    let mut command_lines: HashMap<String, &str> = HashMap::new();
+    for line in text.lines() {
+        for statement in split_vbs_statements(line) {
+            let Some(caps) = VBS_PROPERTY_ASSIGN_RE.captures(statement) else {
+                continue;
+            };
+            let (Some(object), Some(property), Some(value_expr)) =
+                (caps.get(1), caps.get(2), caps.get(3))
+            else {
+                continue;
+            };
+            if property.as_str().eq_ignore_ascii_case("commandline") {
+                command_lines.insert(object.as_str().to_ascii_lowercase(), value_expr.as_str());
+            }
+        }
+    }
+    if command_lines.is_empty() {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let lower = line.to_ascii_lowercase();
+        let mut cursor = 0usize;
+        while let Some(rel) = lower[cursor..].find(".execmethod_") {
+            let method_start = cursor + rel;
+            let args_start = method_start + ".execmethod_".len();
+            let next = line[args_start..].chars().next();
+            if !next.is_some_and(|c| c.is_ascii_whitespace() || c == '(') {
+                cursor = args_start;
+                continue;
+            }
+            let mut args = line[args_start..].trim_start();
+            if let Some(rest) = args.strip_prefix('(') {
+                args = rest;
+            }
+            let parts = split_vbs_args(args);
+            let (Some(method_expr), Some(params_expr)) = (parts.first(), parts.get(1)) else {
+                cursor = args_start;
+                continue;
+            };
+            if !vbs_literal_equals(method_expr, "Create") {
+                cursor = args_start;
+                continue;
+            }
+            let params_name = params_expr
+                .trim()
+                .trim_matches(['(', ')'])
+                .to_ascii_lowercase();
+            if let Some(command_expr) = command_lines.get(&params_name) {
+                out.push(*command_expr);
+            }
+            cursor = args_start;
+        }
+    }
+    out
+}
+
+fn vbs_literal_equals(expr: &str, expected: &str) -> bool {
+    parse_vbs_string_literal(expr).is_some_and(|value| value.eq_ignore_ascii_case(expected))
 }
 
 fn extract_task_scheduler_commands(

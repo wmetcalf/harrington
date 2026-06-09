@@ -20238,6 +20238,36 @@ objProcess.Create cmd, Null, Null, iPID"#;
     }
 
     #[test]
+    fn standalone_vbs_wmi_process_execmethod_inparams_extracts_inner_command() {
+        let vbs = br#"Set svc = GetObject("winmgmts:\\.\root\cimv2")
+Set objProcess = svc.Get("Win32_Process")
+Set objMethod = objProcess.Methods_("Create")
+Set objInParams = objMethod.InParameters
+Set inParams = objInParams.SpawnInstance_
+inParams.CommandLine = "cmd.exe /c powershell.exe -NoP -Command Write-Host inparams"
+objProcess.ExecMethod_ "Create", inParams"#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::WmicProcessCreate { inner_cmd }
+                        if inner_cmd == "cmd.exe /c powershell.exe -NoP -Command Write-Host inparams"
+                )
+            }),
+            "no WmicProcessCreate from VBS Win32_Process ExecMethod_ inparams: {:?}",
+            report.traits
+        );
+        assert_eq!(
+            report.extracted_ps1.len(),
+            1,
+            "ExecMethod_ command should be recursively routed through powershell"
+        );
+    }
+
+    #[test]
     fn standalone_vbs_wmi_commandline_consumer_emits_persistence_and_queues_ps() {
         let vbs = br#"Set wmi = GetObject("winmgmts:\\.\root\subscription")
 Set consumer = wmi.Get("CommandLineEventConsumer").SpawnInstance_()
