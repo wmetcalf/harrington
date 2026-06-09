@@ -6027,6 +6027,7 @@ fn cap_line(line: String, env: &mut Environment) -> String {
 
 fn summarize_high_unicode_carrier_line(line: &str, env: &mut Environment) -> Option<String> {
     const MIN_HIGH_UNICODE_CHARS: usize = 1024;
+    const MAX_CONTEXT_BYTES: usize = 512;
 
     let lower = line.to_ascii_lowercase();
     if !lower.contains("scriptblock") && !lower.contains("powershell") {
@@ -6058,9 +6059,51 @@ fn summarize_high_unicode_carrier_line(line: &str, env: &mut Environment) -> Opt
     }
 
     let truncated_label = if truncated { "truncated " } else { "" };
-    Some(format!(
+    let summary = format!(
         "::==== harrington: omitted {high_unicode_chars} high-Unicode chars from {truncated_label}PowerShell carrier ===="
-    ))
+    );
+
+    let mut first_high = None;
+    let mut last_high_end = None;
+    for (idx, ch) in line.char_indices() {
+        if matches!(ch as u32, 0x4e00..=0x9fff) {
+            first_high.get_or_insert(idx);
+            last_high_end = Some(idx + ch.len_utf8());
+        }
+    }
+
+    let Some(first_high) = first_high else {
+        return Some(summary);
+    };
+    let Some(last_high_end) = last_high_end else {
+        return Some(summary);
+    };
+
+    let prefix = truncate_context_prefix(&line[..first_high], MAX_CONTEXT_BYTES);
+    let suffix = truncate_context_suffix(&line[last_high_end..], MAX_CONTEXT_BYTES);
+    Some(format!("{prefix}{summary}{suffix}"))
+}
+
+fn truncate_context_prefix(context: &str, max_bytes: usize) -> &str {
+    if context.len() <= max_bytes {
+        return context;
+    }
+    let mut start = context.len().saturating_sub(max_bytes);
+    while start < context.len() && !context.is_char_boundary(start) {
+        start += 1;
+    }
+    &context[start..]
+}
+
+fn truncate_context_suffix(context: &str, max_bytes: usize) -> &str {
+    if context.len() <= max_bytes {
+        return context;
+    }
+    let mut end = max_bytes.min(context.len());
+    while end > 0 && !context.is_char_boundary(end) {
+        end -= 1;
+    }
+    &context[..end]
 }
 
 fn summarize_high_unicode_carrier_lines(text: &str, env: &mut Environment) -> String {
@@ -7510,6 +7553,26 @@ mod line_cap_tests {
                 .deobfuscated
                 .contains("omitted 4096 high-Unicode chars from truncated PowerShell carrier"),
             "high-Unicode carrier was not summarized: {}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&carrier),
+            "opaque carrier should not be dumped into deobfuscated output"
+        );
+    }
+
+    #[test]
+    fn sandbox_truncated_high_unicode_payload_preserves_ascii_context() {
+        let carrier = "亓亮亊乑乑予之亖丱乵亞以仃仉产乆".repeat(256);
+        let path = r"C:\Windows\system32\rWhatsAppImage2026-05-12at12_37_26.vbs";
+        let script =
+            format!("&([scriptblock]::Create($drop={path};$payload=({carrier});...[truncated]");
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.deobfuscated.contains(path),
+            "surviving script path was lost from high-Unicode summary: {}",
             report.deobfuscated
         );
         assert!(
