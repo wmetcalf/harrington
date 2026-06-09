@@ -20334,6 +20334,44 @@ consumer.Put_()"#;
     }
 
     #[test]
+    fn standalone_vbs_wmi_activescript_consumer_emits_persistence_and_queues_script() {
+        let vbs = br#"Set wmi = GetObject("winmgmts:\\.\root\subscription")
+Set consumer = wmi.Get("ActiveScriptEventConsumer").SpawnInstance_()
+consumer.Name = "ScriptConsumer"
+consumer.ScriptingEngine = "VBScript"
+consumer.ScriptText = "CreateObject(""WScript.Shell"").Run ""powershell.exe -EncodedCommand VwByAGkAdABlAC0ASABvAHMAdAAgAHMAYwByAGkAcAB0AGMAbwBuAHMAdQBtAGUAcgA="", 0, False"
+consumer.Put_()"#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence {
+                    hive,
+                    key,
+                    value_name,
+                    command,
+                } if hive == "WMIEventConsumer"
+                    && key == "ScriptConsumer"
+                    && value_name == "ScriptText"
+                    && command.contains("WScript.Shell")
+            )),
+            "no ActiveScriptEventConsumer Persistence trait: {:?}",
+            report.traits
+        );
+        assert_eq!(
+            report.extracted_ps1.len(),
+            1,
+            "ActiveScriptEventConsumer script should be scanned for powershell"
+        );
+        assert!(
+            report.extracted_vbs.len() >= 2,
+            "ActiveScriptEventConsumer script text should be surfaced as VBS"
+        );
+    }
+
+    #[test]
     fn standalone_vbs_wmi_scheduledjob_create_emits_persistence() {
         let vbs = br#"Set wmi = GetObject("winmgmts:\\.\root\cimv2")
 Set job = wmi.Get("Win32_ScheduledJob")

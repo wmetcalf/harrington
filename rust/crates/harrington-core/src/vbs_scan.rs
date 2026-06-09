@@ -447,6 +447,61 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
             );
         }
 
+        for (consumer_name, engine, script) in
+            extract_wmi_activescript_consumer_scripts(&text, &bindings, &array_bindings)
+        {
+            if env.check_deadline() {
+                break 'payloads;
+            }
+            if script.trim().is_empty() || script.len() > 256 * 1024 {
+                continue;
+            }
+            if !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Persistence {
+                        hive,
+                        key,
+                        value_name,
+                        command,
+                    } if hive == "WMIEventConsumer"
+                        && key == &consumer_name
+                        && value_name == "ScriptText"
+                        && command == &script
+                )
+            }) {
+                env.traits.push(Trait::Persistence {
+                    hive: "WMIEventConsumer".to_string(),
+                    key: consumer_name,
+                    value_name: "ScriptText".to_string(),
+                    command: script.clone(),
+                });
+            }
+
+            if engine.as_deref().is_some_and(|value| {
+                value.eq_ignore_ascii_case("jscript") || value.eq_ignore_ascii_case("javascript")
+            }) {
+                push_unique_payload(&mut env.all_extracted_jscript, script.clone().into_bytes());
+                continue;
+            }
+
+            push_unique_payload(&mut env.all_extracted_vbs, script.clone().into_bytes());
+            for expr in extract_shell_run_command_exprs(&script) {
+                let Some(command) = eval_vbs_string_expr(expr, &bindings, &array_bindings) else {
+                    continue;
+                };
+                push_downloads_from_vbs_command(
+                    env,
+                    idx,
+                    &text,
+                    &command,
+                    &dst_hint,
+                    &env_bindings,
+                    &mut seen,
+                );
+            }
+        }
+
         for (task_name, command) in
             extract_task_scheduler_commands(&text, &bindings, &array_bindings)
         {
@@ -1231,6 +1286,69 @@ fn extract_wmi_commandline_consumer_commands(
             template.to_string()
         };
         out.push((prop.name.unwrap_or(object), command));
+    }
+    out
+}
+
+fn extract_wmi_activescript_consumer_scripts(
+    text: &str,
+    bindings: &VbsStringBindings,
+    array_bindings: &VbsArrayBindings,
+) -> Vec<(String, Option<String>, String)> {
+    if !text
+        .to_ascii_lowercase()
+        .contains("activescripteventconsumer")
+    {
+        return Vec::new();
+    }
+
+    #[derive(Default)]
+    struct ConsumerProps {
+        name: Option<String>,
+        scripting_engine: Option<String>,
+        script_text: Option<String>,
+    }
+
+    let mut props: HashMap<String, ConsumerProps> = HashMap::new();
+    for line in text.lines() {
+        for statement in split_vbs_statements(line) {
+            let Some(caps) = VBS_PROPERTY_ASSIGN_RE.captures(statement) else {
+                continue;
+            };
+            let (Some(object), Some(property), Some(value_expr)) =
+                (caps.get(1), caps.get(2), caps.get(3))
+            else {
+                continue;
+            };
+            let property = property.as_str().to_ascii_lowercase();
+            if !matches!(property.as_str(), "name" | "scriptingengine" | "scripttext") {
+                continue;
+            }
+            let Some(value) = eval_vbs_string_expr(value_expr.as_str(), bindings, array_bindings)
+            else {
+                continue;
+            };
+            let entry = props
+                .entry(object.as_str().to_ascii_lowercase())
+                .or_default();
+            match property.as_str() {
+                "name" => entry.name = Some(value),
+                "scriptingengine" => entry.scripting_engine = Some(value),
+                "scripttext" => entry.script_text = Some(value),
+                _ => {}
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    for (object, prop) in props {
+        let Some(script) = prop.script_text else {
+            continue;
+        };
+        if script.trim().is_empty() {
+            continue;
+        }
+        out.push((prop.name.unwrap_or(object), prop.scripting_engine, script));
     }
     out
 }
