@@ -185,6 +185,14 @@ pub enum Trait {
     LineTruncated {
         original_len: u64,
     },
+    /// Large high-Unicode text carrier, commonly used by PowerShell
+    /// droppers that subtract a base codepoint to recover encrypted bytes.
+    /// If `truncated` is true, recovery may be impossible because the
+    /// carrier was already capped before Harrington received it.
+    HighUnicodePayload {
+        char_count: u64,
+        truncated: bool,
+    },
     TraitsCapped {
         capped_kind: String,
         total: u64,

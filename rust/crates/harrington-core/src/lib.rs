@@ -4060,10 +4060,17 @@ fn analyze_inner(input: &[u8], cfg: &Config, file_path: Option<std::path::PathBu
     }
     let mut env = Environment::new(cfg);
     env.file_path = file_path;
-    if input_has_truncation_marker(input) {
+    let input_truncated = input_has_truncation_marker(input);
+    if input_truncated {
         env.traits.push(Trait::LineTruncated {
             original_len: input.len() as u64,
         });
+        if let Some(char_count) = truncated_high_unicode_payload_char_count(input) {
+            env.traits.push(Trait::HighUnicodePayload {
+                char_count,
+                truncated: true,
+            });
+        }
     }
     if cfg.self_extract {
         env.input_bytes = Some(std::sync::Arc::from(input));
@@ -7247,6 +7254,21 @@ fn input_has_truncation_marker(input: &[u8]) -> bool {
             .any(|window| window.eq_ignore_ascii_case("…[truncated]".as_bytes()))
 }
 
+fn truncated_high_unicode_payload_char_count(input: &[u8]) -> Option<u64> {
+    let text = String::from_utf8_lossy(input);
+    if !input_contains_ascii_case_insensitive(input, b"scriptblock")
+        && !input_contains_ascii_case_insensitive(input, b"powershell")
+    {
+        return None;
+    }
+
+    let count = text
+        .chars()
+        .filter(|ch| matches!(*ch as u32, 0x4e00..=0x9fff))
+        .count();
+    (count >= 1024).then_some(count as u64)
+}
+
 #[cfg(test)]
 mod output_cap_tests {
     use crate::traits::Trait;
@@ -7349,6 +7371,30 @@ mod line_cap_tests {
                 .iter()
                 .any(|t| matches!(t, Trait::LineTruncated { original_len } if *original_len == script.len() as u64)),
             "sandbox-capped input marker should be surfaced as LineTruncated: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn sandbox_truncated_high_unicode_payload_emits_specific_trait() {
+        let script = format!(
+            "&([scriptblock]::Create($payload=({});$i=0;...[truncated]",
+            "亓亮亊乑乑予之亖丱乵亞以仃仉产乆".repeat(256)
+        );
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::HighUnicodePayload {
+                        char_count,
+                        truncated: true,
+                    } if *char_count >= 4096
+                )
+            }),
+            "sandbox-capped high-Unicode carrier should be surfaced: {:?}",
             report.traits
         );
     }

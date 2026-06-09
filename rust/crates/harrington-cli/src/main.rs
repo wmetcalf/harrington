@@ -2190,6 +2190,7 @@ fn build_summary(
             }
             Trait::TraitsCapped { .. }
             | Trait::LineTruncated { .. }
+            | Trait::HighUnicodePayload { .. }
             | Trait::OutputCapped { .. }
             | Trait::DepthCapped { .. }
             | Trait::ChildScriptsCapped
