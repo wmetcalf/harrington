@@ -1534,6 +1534,24 @@ sh.Run("powershell -Command Invoke-WebRequest https://direct-js-const.example/p"
     }
 
     #[test]
+    fn start_process_verb_runas_captures_attached_short_file_and_arguments() {
+        let script =
+            b"@echo off\r\npowershell -Command \"Start-Process -F:powershell.exe -A:calc.exe -Verb RunAs\"\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::SelfElevation {
+                    target,
+                    args: Some(args),
+                } if target == "powershell.exe" && args == "calc.exe"
+            )),
+            "attached short file/argument SelfElevation not detected: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn start_process_verb_runas_captures_attached_verb() {
         let script = b"@echo off\r\npowershell -Command \"Start-Process -FilePath:powershell.exe -ArgumentList:calc.exe -Verb:RunAs\"\r\n";
         let report = analyze(script, &AnalyzeConfig::default());
