@@ -588,6 +588,49 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
             );
         }
 
+        for (hive, key, value_name, command) in
+            extract_stdregprov_setstringvalue_run_key_commands(&text, &bindings, &array_bindings)
+        {
+            if env.check_deadline() {
+                break 'payloads;
+            }
+            if command.trim().is_empty() || command.len() > 256 * 1024 {
+                continue;
+            }
+            if !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Persistence {
+                        hive: existing_hive,
+                        key: existing_key,
+                        value_name: existing_value_name,
+                        command: existing_command,
+                    } if existing_hive == &hive
+                        && existing_key == &key
+                        && existing_value_name == &value_name
+                        && existing_command == &command
+                )
+            }) {
+                env.traits.push(Trait::Persistence {
+                    hive,
+                    key,
+                    value_name,
+                    command: command.clone(),
+                });
+            }
+            env.exec_cmd.push(command.clone());
+            env.exec_cmd_delayed.push(false);
+            push_downloads_from_vbs_command(
+                env,
+                idx,
+                &text,
+                &command,
+                &dst_hint,
+                &env_bindings,
+                &mut seen,
+            );
+        }
+
         for (path, target, arguments, working_directory) in
             extract_shortcut_created(&text, &bindings, &array_bindings)
         {
@@ -1026,6 +1069,95 @@ fn parse_run_key_reg_path(path: &str) -> Option<(String, String, String)> {
         return None;
     }
     Some((hive.to_string(), key, value_name.to_string()))
+}
+
+fn extract_stdregprov_setstringvalue_run_key_commands(
+    text: &str,
+    bindings: &VbsStringBindings,
+    array_bindings: &VbsArrayBindings,
+) -> Vec<(String, String, String, String)> {
+    let lower_text = text.to_ascii_lowercase();
+    if !lower_text.contains(".setstringvalue") || !lower_text.contains("stdregprov") {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    for line in text.lines() {
+        for statement in split_vbs_statements(line) {
+            let lower = statement.to_ascii_lowercase();
+            let mut cursor = 0usize;
+            while let Some(rel) = lower[cursor..].find(".setstringvalue") {
+                let method_start = cursor + rel;
+                let args_start = method_start + ".setstringvalue".len();
+                let next = statement[args_start..].chars().next();
+                if !next.is_some_and(|c| c.is_ascii_whitespace() || c == '(') {
+                    cursor = args_start;
+                    continue;
+                }
+                let mut args = statement[args_start..].trim_start();
+                let parenthesized = args.starts_with('(');
+                if let Some(rest) = args.strip_prefix('(') {
+                    args = rest;
+                }
+                let parts = split_vbs_args(args);
+                let (Some(hive_expr), Some(key_expr), Some(name_expr), Some(command_expr)) =
+                    (parts.first(), parts.get(1), parts.get(2), parts.get(3))
+                else {
+                    cursor = args_start;
+                    continue;
+                };
+                let Some(hive) = eval_stdregprov_hive_expr(hive_expr, bindings) else {
+                    cursor = args_start;
+                    continue;
+                };
+                let Some(key) = eval_vbs_string_expr(key_expr, bindings, array_bindings) else {
+                    cursor = args_start;
+                    continue;
+                };
+                if !is_run_key_path(&key) {
+                    cursor = args_start;
+                    continue;
+                }
+                let Some(value_name) = eval_vbs_string_expr(name_expr, bindings, array_bindings)
+                else {
+                    cursor = args_start;
+                    continue;
+                };
+                let command_expr = if parenthesized {
+                    command_expr.trim_end_matches(')').trim_end()
+                } else {
+                    command_expr
+                };
+                let Some(command) = eval_vbs_string_expr(command_expr, bindings, array_bindings)
+                else {
+                    cursor = args_start;
+                    continue;
+                };
+                out.push((
+                    hive.to_string(),
+                    key,
+                    value_name,
+                    command.trim().to_string(),
+                ));
+                cursor = args_start;
+            }
+        }
+    }
+    out
+}
+
+fn eval_stdregprov_hive_expr(expr: &str, bindings: &VbsStringBindings) -> Option<&'static str> {
+    let value = parse_vbs_integer(expr).or_else(|| {
+        let key = expr.trim().trim_matches(['(', ')']).to_ascii_lowercase();
+        bindings
+            .get(&key)
+            .and_then(|bound| parse_vbs_integer(bound.as_str()))
+    })?;
+    match value {
+        0x8000_0001 => Some("HKCU"),
+        0x8000_0002 => Some("HKLM"),
+        _ => None,
+    }
 }
 
 fn is_run_key_path(key: &str) -> bool {

