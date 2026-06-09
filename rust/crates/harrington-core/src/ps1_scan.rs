@@ -1819,7 +1819,7 @@ fn expand_getstring_wrapper(text: &str) -> String {
 
 #[allow(clippy::expect_used)]
 static REPLACE_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"'([^'\\]*(?:\\.[^'\\]*)*)'\s*-(?:[ic])?replace\s*'([^'\\]*(?:\\.[^'\\]*)*)'\s*,\s*'([^'\\]*(?:\\.[^'\\]*)*)'"#)
+    Regex::new(r#"'([^'\\]*(?:\\.[^'\\]*)*)'\s*-(i|c)?replace\s*'([^'\\]*(?:\\.[^'\\]*)*)'\s*,\s*'([^'\\]*(?:\\.[^'\\]*)*)'"#)
         .expect("replace")
 });
 
@@ -1833,9 +1833,12 @@ fn expand_ps_replace(text: &str) -> String {
             .filter_map(|caps| {
                 let full = caps.get(0)?;
                 let haystack = caps.get(1)?.as_str();
-                let needle = caps.get(2)?.as_str();
-                let repl = caps.get(3)?.as_str();
-                let new_str = haystack.replace(needle, repl);
+                let case_insensitive = caps
+                    .get(2)
+                    .is_some_and(|op| op.as_str().eq_ignore_ascii_case("i"));
+                let needle = caps.get(3)?.as_str();
+                let repl = caps.get(4)?.as_str();
+                let new_str = replace_ps_literal(haystack, needle, repl, case_insensitive);
                 Some((full.start(), full.end(), format!("'{}'", new_str)))
             })
             .collect();
@@ -1875,7 +1878,7 @@ fn find_ps_double_quoted_replace_operator_matches(text: &str) -> Vec<(usize, usi
         };
 
         let mut pos = skip_ascii_ws(bytes, literal_end);
-        let Some(after_operator) = parse_ps_replace_operator(text, pos) else {
+        let Some((after_operator, case_insensitive)) = parse_ps_replace_operator(text, pos) else {
             start = literal_end;
             continue;
         };
@@ -1894,23 +1897,29 @@ fn find_ps_double_quoted_replace_operator_matches(text: &str) -> Vec<(usize, usi
             start = literal_end;
             continue;
         };
-        let replaced = haystack.replace(&needle, &repl).replace('\'', "''");
+        let replaced =
+            replace_ps_literal(&haystack, &needle, &repl, case_insensitive).replace('\'', "''");
         matches.push((literal_start, repl_end, format!("'{replaced}'")));
         start = repl_end;
     }
     matches
 }
 
-fn parse_ps_replace_operator(text: &str, pos: usize) -> Option<usize> {
+fn parse_ps_replace_operator(text: &str, pos: usize) -> Option<(usize, bool)> {
     if text.as_bytes().get(pos) != Some(&b'-') {
         return None;
     }
     let mut pos = pos + 1;
+    let mut case_insensitive = false;
     if text
         .as_bytes()
         .get(pos)
         .is_some_and(|b| b.eq_ignore_ascii_case(&b'i') || b.eq_ignore_ascii_case(&b'c'))
     {
+        case_insensitive = text
+            .as_bytes()
+            .get(pos)
+            .is_some_and(|b| b.eq_ignore_ascii_case(&b'i'));
         pos += 1;
     }
     let end = pos.checked_add("replace".len())?;
@@ -1925,7 +1934,46 @@ fn parse_ps_replace_operator(text: &str, pos: usize) -> Option<usize> {
     {
         return None;
     }
-    Some(end)
+    Some((end, case_insensitive))
+}
+
+fn replace_ps_literal(
+    haystack: &str,
+    needle: &str,
+    replacement: &str,
+    case_insensitive: bool,
+) -> String {
+    if !case_insensitive || needle.is_empty() {
+        return haystack.replace(needle, replacement);
+    }
+    replace_ascii_case_insensitive(haystack, needle, replacement)
+}
+
+fn replace_ascii_case_insensitive(haystack: &str, needle: &str, replacement: &str) -> String {
+    if needle.is_empty() {
+        return haystack.to_string();
+    }
+    let haystack_bytes = haystack.as_bytes();
+    let needle_bytes = needle.as_bytes();
+    let mut out = String::with_capacity(haystack.len());
+    let mut pos = 0;
+    while pos < haystack.len() {
+        if pos + needle.len() <= haystack.len()
+            && haystack.is_char_boundary(pos)
+            && haystack.is_char_boundary(pos + needle.len())
+            && haystack_bytes[pos..pos + needle.len()].eq_ignore_ascii_case(needle_bytes)
+        {
+            out.push_str(replacement);
+            pos += needle.len();
+        } else {
+            let Some(ch) = haystack[pos..].chars().next() else {
+                break;
+            };
+            out.push(ch);
+            pos += ch.len_utf8();
+        }
+    }
+    out
 }
 
 fn expand_ps_dot_replace(text: &str) -> String {
