@@ -3681,6 +3681,7 @@ fn looks_like_vbs_script(lower: &str) -> bool {
         || lower.contains("xmlhttp")
         || lower.contains("winmgmts")
         || lower.contains("commandlineeventconsumer")
+        || looks_like_office_vbs_startup_save(lower)
         || lower.contains("private function")
         || lower.contains("option explicit")
         || lower.contains("\ndim ")
@@ -3747,6 +3748,7 @@ fn starts_like_standalone_vbs(lower: &str) -> bool {
         || first.starts_with("public function ")
         || (first.starts_with("function ") && lower.contains("end function"))
         || (first.starts_with("class ") && lower.contains("end class"))
+        || (first.starts_with("if ") && looks_like_office_vbs_startup_save(lower))
 }
 
 fn pre_scan_standalone_script_input(input: &[u8], env: &mut Environment) -> bool {
@@ -3757,6 +3759,7 @@ fn pre_scan_standalone_script_input(input: &[u8], env: &mut Environment) -> bool
         b"winmgmts",
         b"win32_process",
         b"option explicit",
+        b"application.startuppath",
     ]
     .iter()
     .any(|needle| contains_ascii_case_insensitive_bytes(input, needle));
@@ -3774,6 +3777,12 @@ fn pre_scan_standalone_script_input(input: &[u8], env: &mut Environment) -> bool
         return true;
     }
     false
+}
+
+fn looks_like_office_vbs_startup_save(lower: &str) -> bool {
+    lower.contains("application.startuppath")
+        && lower.contains("workbooks(")
+        && lower.contains(".saveas")
 }
 
 fn pre_scan_standalone_powershell_input(input: &[u8], env: &mut Environment) -> bool {
@@ -20467,6 +20476,29 @@ link.TargetPath = "cmd.exe""#;
                 .any(|t| matches!(t, Trait::ShortcutCreated { .. })),
             "unsaved shortcut should not emit ShortcutCreated: {:?}",
             report.traits
+        );
+    }
+
+    #[test]
+    fn standalone_office_vbs_startuppath_saveas_is_preserved_as_vbs() {
+        let vbs = br#"If ActiveWorkbook.Modules.Count > 0 Then
+  Workbooks("Book1").SaveAs Application.StartupPath & "/PERSONAL.XLS"
+End If"#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert_eq!(
+            report.extracted_vbs.len(),
+            1,
+            "Office VBS source was not queued as VBS: {:?}",
+            report.extracted_vbs
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains(r#"Workbooks("Book1").SaveAs Application.StartupPath & "/PERSONAL.XLS""#),
+            "Office VBS SaveAs line was split as batch: {:?}",
+            report.deobfuscated
         );
     }
 
