@@ -1282,6 +1282,19 @@ fn lolbas_is_reg_value_or_file_operand(tokens: &[LolbasCommandToken<'_>], idx: u
     {
         return true;
     }
+    if matches!(subcommand.as_str(), "query" | "delete") {
+        let lower = tokens[idx]
+            .text
+            .trim_matches(['"', '\''])
+            .to_ascii_lowercase();
+        if lower.starts_with("/v:")
+            || lower.starts_with("-v:")
+            || lower.starts_with("/v=")
+            || lower.starts_with("-v=")
+        {
+            return true;
+        }
+    }
 
     match subcommand.as_str() {
         "copy" => idx == 3,
