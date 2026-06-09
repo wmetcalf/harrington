@@ -307,7 +307,7 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
             if command.is_empty() || command.len() > 256 * 1024 {
                 continue;
             }
-            let command = command.to_string();
+            let command = normalize_vbs_recovered_command(command);
             if !env.traits.iter().any(
                 |t| matches!(t, Trait::WmicProcessCreate { inner_cmd } if inner_cmd == &command),
             ) {
@@ -339,7 +339,7 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
             if command.is_empty() || command.len() > 256 * 1024 {
                 continue;
             }
-            let command = command.to_string();
+            let command = normalize_vbs_recovered_command(command);
             if !env.traits.iter().any(
                 |t| matches!(t, Trait::WmicProcessCreate { inner_cmd } if inner_cmd == &command),
             ) {
@@ -779,6 +779,100 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
 fn normalize_vbs_download_url(value: &str) -> Option<String> {
     crate::deob_scan::normalize_liberal_url_token(value)
         .or_else(|| crate::deob_scan::normalize_schemeless_domain_path_token(value))
+}
+
+fn normalize_vbs_recovered_command(command: &str) -> String {
+    let mixed = decode_mixed_rot13_powershell_command(command);
+    if mixed != command && mixed.to_ascii_lowercase().contains("powershell") {
+        mixed
+    } else {
+        command.to_string()
+    }
+}
+
+fn decode_mixed_rot13_powershell_command(command: &str) -> String {
+    let mut out = String::with_capacity(command.len());
+    let mut cursor = 0usize;
+    while cursor < command.len() {
+        let Some(ch) = command[cursor..].chars().next() else {
+            break;
+        };
+        if !is_rot13_word_char(ch) {
+            out.push(ch);
+            cursor += ch.len_utf8();
+            continue;
+        }
+
+        let start = cursor;
+        cursor += ch.len_utf8();
+        while cursor < command.len() {
+            let Some(next) = command[cursor..].chars().next() else {
+                break;
+            };
+            if !is_rot13_word_char(next) {
+                break;
+            }
+            cursor += next.len_utf8();
+        }
+
+        let token = &command[start..cursor];
+        let decoded = rot13_ascii(token);
+        if should_decode_rot13_command_token(command, start, token, &decoded) {
+            out.push_str(&decoded);
+        } else {
+            out.push_str(token);
+        }
+    }
+    out
+}
+
+fn is_rot13_word_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_'
+}
+
+fn should_decode_rot13_command_token(
+    command: &str,
+    start: usize,
+    token: &str,
+    decoded: &str,
+) -> bool {
+    let decoded_lower = decoded.to_ascii_lowercase();
+    if matches!(
+        decoded_lower.as_str(),
+        "powershell"
+            | "pwsh"
+            | "exe"
+            | "iex"
+            | "invokeexpression"
+            | "invoke_expression"
+            | "executionpolicy"
+            | "bypass"
+            | "noprofile"
+            | "noninteractive"
+            | "windowstyle"
+            | "hidden"
+            | "encodedcommand"
+            | "command"
+    ) {
+        return true;
+    }
+
+    token
+        .chars()
+        .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_')
+        && command[..start].to_ascii_lowercase().ends_with("env:")
+}
+
+fn rot13_ascii(token: &str) -> String {
+    token
+        .bytes()
+        .map(|byte| match byte {
+            b'a'..=b'z' => (((byte - b'a') + 13) % 26) + b'a',
+            b'A'..=b'Z' => (((byte - b'A') + 13) % 26) + b'A',
+            _ => byte,
+        })
+        .map(char::from)
+        .collect()
 }
 
 fn extract_scriptcontrol_vbscript_bodies(

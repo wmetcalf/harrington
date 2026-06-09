@@ -20306,6 +20306,38 @@ objProcess.Create cmd, Null, Null, iPID"#;
     }
 
     #[test]
+    fn standalone_vbs_wmi_process_create_rot13_powershell_is_decoded() {
+        let vbs = br#"On Error Resume Next
+names = Array("VAGREANY_QO_PNPUR", "cbjrefuryy.rkr -RkrphgvbaCbyvpl Olcnff -AbCebsvyr -JvaqbjFglyr Uvqqra -Pbzznaq")
+cmd = names(1) & " ""& ([ScWDripWDtBWDloWDck]::CWDrWDeate(${env:" & names(0) & "}))"""
+cmd = Replace(cmd, "WD", "")
+Set svc = GetObject("winmgmts:root\cimv2")
+svc.Get("Win32_Process").Create cmd, Null, Nothing, pid"#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::WmicProcessCreate { inner_cmd }
+                        if inner_cmd == "powershell.exe -ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -Command \"& ([ScriptBlock]::Create(${env:INTERNAL_DB_CACHE}))\""
+                )
+            }),
+            "ROT13 WMI Process.Create command was not decoded: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .extracted_ps1
+                .iter()
+                .any(|ps| String::from_utf8_lossy(ps).contains("ScriptBlock")),
+            "decoded ROT13 PowerShell command was not extracted as PS: {:?}",
+            report.extracted_ps1
+        );
+    }
+
+    #[test]
     fn standalone_vbs_wmi_process_execmethod_inparams_extracts_inner_command() {
         let vbs = br#"Set svc = GetObject("winmgmts:\\.\root\cimv2")
 Set objProcess = svc.Get("Win32_Process")
