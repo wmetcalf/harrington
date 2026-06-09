@@ -598,6 +598,10 @@ fn lolbas_non_exec_value_option(token: &str) -> bool {
             | "--retry-max-time"
             | "--speed-limit"
             | "--speed-time"
+            | "--cookie"
+            | "--cookie-jar"
+            | "--referer"
+            | "--request"
     ) || lolbas_msi_log_option(token)
 }
 
@@ -658,6 +662,10 @@ fn lolbas_attached_non_exec_value_option(token: &str) -> bool {
         || lower.starts_with("--retry-max-time=")
         || lower.starts_with("--speed-limit=")
         || lower.starts_with("--speed-time=")
+        || lower.starts_with("--cookie=")
+        || lower.starts_with("--cookie-jar=")
+        || lower.starts_with("--referer=")
+        || lower.starts_with("--request=")
         || (lower.len() > 2
             && (lower.starts_with("-o") || lower.starts_with("/o"))
             && lower[2..].contains(['\\', '/']))
