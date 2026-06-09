@@ -5081,6 +5081,16 @@ fn semantic_dedup_key(t: &Trait) -> Option<String> {
             Some(format!("EvidenceCleanup\0{action}\0{target}"))
         }
         Trait::RegistryUrl { value, url, .. } => Some(format!("RegistryUrl\0{value}\0{url}")),
+        Trait::ShortcutCreated {
+            path,
+            target,
+            arguments,
+            working_directory,
+        } => Some(format!(
+            "ShortcutCreated\0{path}\0{target}\0{}\0{}",
+            arguments.as_deref().unwrap_or(""),
+            working_directory.as_deref().unwrap_or("")
+        )),
         Trait::CertutilDownload { url, dst } => Some(format!("CertutilDownload\0{url}\0{dst}")),
         Trait::BitsadminDownload { url, dst } => Some(format!("BitsadminDownload\0{url}\0{dst}")),
         Trait::DownloadInDeobText { src, .. } => Some(format!("DownloadInDeobText\0{src}")),
@@ -20407,6 +20417,56 @@ sh.RegWrite "HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Updater", cmd, "
         assert!(
             !report.extracted_ps1.is_empty(),
             "RegWrite Run value should be routed through powershell"
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_shortcut_creation_emits_shortcut_trait() {
+        let vbs = br#"Set shell = CreateObject("WScript.Shell")
+Set link = shell.CreateShortcut("C:\Users\Public\Desktop\demo.lnk")
+link.TargetPath = "C:\Windows\System32\cmd.exe"
+link.Arguments = "/c calc.exe"
+link.WorkingDirectory = "C:\Users\Public"
+link.Save"#;
+
+        let report = analyze(vbs, &Config::default());
+        let traits = serde_json::to_value(&report.traits).expect("traits serialize");
+        let traits = traits.as_array().expect("traits array");
+
+        assert!(
+            traits.iter().any(|trait_json| {
+                trait_json.get("kind").and_then(|value| value.as_str()) == Some("ShortcutCreated")
+                    && trait_json.get("path").and_then(|value| value.as_str())
+                        == Some(r"C:\Users\Public\Desktop\demo.lnk")
+                    && trait_json.get("target").and_then(|value| value.as_str())
+                        == Some(r"C:\Windows\System32\cmd.exe")
+                    && trait_json.get("arguments").and_then(|value| value.as_str())
+                        == Some("/c calc.exe")
+                    && trait_json
+                        .get("working_directory")
+                        .and_then(|value| value.as_str())
+                        == Some(r"C:\Users\Public")
+            }),
+            "no ShortcutCreated trait from VBS CreateShortcut/Save: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_shortcut_without_save_does_not_emit_shortcut_trait() {
+        let vbs = br#"Set shell = CreateObject("WScript.Shell")
+Set link = shell.CreateShortcut("demo.lnk")
+link.TargetPath = "cmd.exe""#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::ShortcutCreated { .. })),
+            "unsaved shortcut should not emit ShortcutCreated: {:?}",
+            report.traits
         );
     }
 

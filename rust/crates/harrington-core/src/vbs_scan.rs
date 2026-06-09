@@ -501,6 +501,35 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
             );
         }
 
+        for (path, target, arguments, working_directory) in
+            extract_shortcut_created(&text, &bindings, &array_bindings)
+        {
+            if env.check_deadline() {
+                break 'payloads;
+            }
+            if !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ShortcutCreated {
+                        path: existing_path,
+                        target: existing_target,
+                        arguments: existing_arguments,
+                        working_directory: existing_working_directory,
+                    } if existing_path == &path
+                        && existing_target == &target
+                        && existing_arguments == &arguments
+                        && existing_working_directory == &working_directory
+                )
+            }) {
+                env.traits.push(Trait::ShortcutCreated {
+                    path,
+                    target,
+                    arguments,
+                    working_directory,
+                });
+            }
+        }
+
         for (program_expr, args_expr, verb_expr) in extract_shell_execute_command_exprs(&text) {
             if env.check_deadline() {
                 break 'payloads;
@@ -851,6 +880,151 @@ fn is_run_key_path(key: &str) -> bool {
         r"software\microsoft\windows\currentversion\run"
             | r"software\microsoft\windows\currentversion\runonce"
     )
+}
+
+fn extract_shortcut_created(
+    text: &str,
+    bindings: &VbsStringBindings,
+    array_bindings: &VbsArrayBindings,
+) -> Vec<(String, String, Option<String>, Option<String>)> {
+    let lower_text = text.to_ascii_lowercase();
+    if !lower_text.contains(".createshortcut") || !lower_text.contains(".save") {
+        return Vec::new();
+    }
+
+    #[derive(Default)]
+    struct ShortcutProps {
+        path: Option<String>,
+        target: Option<String>,
+        arguments: Option<String>,
+        working_directory: Option<String>,
+        saved: bool,
+    }
+
+    let mut shortcuts: HashMap<String, ShortcutProps> = HashMap::new();
+    for line in text.lines() {
+        for statement in split_vbs_statements(line) {
+            if let Some((object, path)) =
+                parse_create_shortcut_statement(statement, bindings, array_bindings)
+            {
+                shortcuts.entry(object).or_default().path = Some(path);
+                continue;
+            }
+
+            if let Some(caps) = VBS_PROPERTY_ASSIGN_RE.captures(statement) {
+                let (Some(object), Some(property), Some(value_expr)) =
+                    (caps.get(1), caps.get(2), caps.get(3))
+                else {
+                    continue;
+                };
+                let object = object.as_str().to_ascii_lowercase();
+                let Some(props) = shortcuts.get_mut(&object) else {
+                    continue;
+                };
+                let Some(value) =
+                    eval_vbs_string_expr(value_expr.as_str(), bindings, array_bindings)
+                else {
+                    continue;
+                };
+                match property.as_str().to_ascii_lowercase().as_str() {
+                    "targetpath" => props.target = Some(value),
+                    "arguments" => props.arguments = Some(value),
+                    "workingdirectory" => props.working_directory = Some(value),
+                    _ => {}
+                }
+                continue;
+            }
+
+            if let Some(object) = parse_shortcut_save_statement(statement) {
+                if let Some(props) = shortcuts.get_mut(&object) {
+                    props.saved = true;
+                }
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    for props in shortcuts.into_values() {
+        if !props.saved {
+            continue;
+        }
+        let (Some(path), Some(target)) = (props.path, props.target) else {
+            continue;
+        };
+        if !path.trim().to_ascii_lowercase().ends_with(".lnk") || target.trim().is_empty() {
+            continue;
+        }
+        out.push((
+            path.trim().to_string(),
+            target.trim().to_string(),
+            props
+                .arguments
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
+            props
+                .working_directory
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
+        ));
+    }
+    out
+}
+
+fn parse_create_shortcut_statement(
+    statement: &str,
+    bindings: &VbsStringBindings,
+    array_bindings: &VbsArrayBindings,
+) -> Option<(String, String)> {
+    let eq = find_vbs_top_level_equals(statement)?;
+    let mut lhs = statement[..eq].trim();
+    if lhs
+        .get(..3)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("set"))
+        && lhs.as_bytes().get(3).is_some_and(u8::is_ascii_whitespace)
+    {
+        lhs = lhs[3..].trim_start();
+    }
+    if lhs.is_empty()
+        || !lhs
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    {
+        return None;
+    }
+
+    let rhs = statement[eq + 1..].trim();
+    let lower = rhs.to_ascii_lowercase();
+    let method_start = lower.find(".createshortcut")?;
+    let args_start = method_start + ".createshortcut".len();
+    let next = rhs[args_start..].chars().next();
+    if !next.is_some_and(|ch| ch.is_ascii_whitespace() || ch == '(') {
+        return None;
+    }
+    let mut args = rhs[args_start..].trim_start();
+    if let Some(rest) = args.strip_prefix('(') {
+        args = rest.trim_end();
+        if let Some(inner) = args.strip_suffix(')') {
+            args = inner;
+        }
+    }
+    let path_expr = split_vbs_args(args).into_iter().next()?;
+    let path = eval_vbs_string_expr(path_expr, bindings, array_bindings)?;
+    Some((lhs.to_ascii_lowercase(), path))
+}
+
+fn parse_shortcut_save_statement(statement: &str) -> Option<String> {
+    let trimmed = statement.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    let suffix = lower.strip_suffix(".save")?;
+    let object = trimmed[..suffix.len()].trim();
+    if object.is_empty()
+        || !object
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    {
+        return None;
+    }
+    Some(object.to_ascii_lowercase())
 }
 
 fn extract_wmi_scheduledjob_create_command_exprs(text: &str) -> Vec<&str> {

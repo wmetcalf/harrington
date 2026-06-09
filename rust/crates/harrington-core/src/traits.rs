@@ -271,6 +271,17 @@ pub enum Trait {
         value_name: String,
         command: String,
     },
+    /// Windows shortcut materialized by script code, such as
+    /// `WScript.Shell.CreateShortcut(...).Save`. This captures the link
+    /// target without treating it as already executed.
+    ShortcutCreated {
+        path: String,
+        target: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        arguments: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        working_directory: Option<String>,
+    },
     /// Windows Defender / AV evasion behaviour. Examples:
     ///   `Add-MpPreference -ExclusionPath 'X'`
     ///   `Set-MpPreference -DisableRealtimeMonitoring $true`
