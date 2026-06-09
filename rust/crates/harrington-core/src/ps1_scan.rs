@@ -350,7 +350,7 @@ static CURL_OUTPUT_RE: Lazy<Regex> = Lazy::new(|| {
 
 #[allow(clippy::expect_used)]
 static BITS_DESTINATION_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"(?i)-Dest(?:ination)?(?:\s+|:|=)(?:\\?'([^'\r\n;]+)\\?'?|\\?"([^"\r\n;]+)\\?"?|([^"'\s;]+))"#)
+    Regex::new(r#"(?i)-(?:Destination|Dest)(?:\s+|:|=)(?:\\?'([^'\r\n;]+)\\?'?|\\?"([^"\r\n;]+)\\?"?|([^"'\s;]+))"#)
         .expect("bits destination")
 });
 
@@ -382,8 +382,8 @@ fn first_capture_string(caps: regex::Captures<'_>) -> Option<String> {
 fn outfile_hint_from(text: &str) -> Option<String> {
     OUTFILE_RE
         .captures(text)
-        .or_else(|| CURL_OUTPUT_RE.captures(text))
         .or_else(|| BITS_DESTINATION_RE.captures(text))
+        .or_else(|| CURL_OUTPUT_RE.captures(text))
         .or_else(|| CONTENT_REDIRECT_DESTINATION_RE.captures(text))
         .and_then(first_capture_string)
         .map(normalize_destination_hint)
