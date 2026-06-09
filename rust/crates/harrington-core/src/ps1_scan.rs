@@ -1183,6 +1183,14 @@ static PS_LITERAL_CONST_SPLIT_INDEX_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|
 });
 
 #[allow(clippy::expect_used)]
+static PS_LITERAL_CONST_SEP_SPLIT_INDEX_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)(?:\breturn\s+)?(?:\(\s*)?\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\)\s*)?\.\s*Split\s*\(\s*((?:'(?:(?:'')|[^'])*')|(?:"(?:`.|[^"`$])*"))\s*\)\s*\[\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\]"#,
+    )
+    .expect("ps literal const-separator split index extractor body regex")
+});
+
+#[allow(clippy::expect_used)]
 static PS_LITERAL_CONST_SPLIT_OPERATOR_INDEX_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)(?:\breturn\s+)?\(?\s*(?:\(\s*)?\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\)\s*)?-(?:[ic])?split\s+((?:'(?:(?:'')|[^'])*')|(?:"(?:`.|[^"`$])*"))\s*\)?\s*\[\s*(\d{1,6})\s*\]"#,
@@ -4124,6 +4132,43 @@ fn expand_literal_split_index_extractor_calls(text: &str) -> String {
             continue;
         }
 
+        if let Some(caps) = PS_LITERAL_CONST_SEP_SPLIT_INDEX_EXTRACTOR_BODY_RE.captures(&body) {
+            let Some(value_var) = caps.get(1).map(|m| m.as_str()) else {
+                continue;
+            };
+            let Some(sep) = caps
+                .get(2)
+                .and_then(|m| parse_complete_ps_static_quoted_literal(m.as_str()))
+            else {
+                continue;
+            };
+            let Some(index_var) = caps.get(3).map(|m| m.as_str()) else {
+                continue;
+            };
+            if sep.is_empty() || sep.len() > 512 {
+                continue;
+            }
+
+            let param_index = parse_ps_function_param_indices(&params);
+            let Some(value_idx) = param_index.get(&value_var.to_ascii_lowercase()).copied() else {
+                continue;
+            };
+            let Some(index_idx) = param_index.get(&index_var.to_ascii_lowercase()).copied() else {
+                continue;
+            };
+
+            let binding = PsConstSepSplitExtractorParamBinding {
+                value_idx,
+                value_name: value_var,
+                index_idx,
+                index_name: index_var,
+                arg_count: param_index.len(),
+                sep: &sep,
+            };
+            out = inline_ps_literal_const_sep_split_index_calls(&out, &name, binding);
+            continue;
+        }
+
         let Some(caps) = PS_LITERAL_CONST_SPLIT_INDEX_EXTRACTOR_BODY_RE
             .captures(&body)
             .or_else(|| PS_LITERAL_CONST_SPLIT_OPERATOR_INDEX_EXTRACTOR_BODY_RE.captures(&body))
@@ -5882,6 +5927,161 @@ fn ps_literal_split_index_replacement(value: &str, sep: &str, index: usize) -> O
         return None;
     }
     Some(format!("'{}'", part.replace('\'', "''")))
+}
+
+#[derive(Clone, Copy)]
+struct PsConstSepSplitExtractorParamBinding<'a> {
+    value_idx: usize,
+    value_name: &'a str,
+    index_idx: usize,
+    index_name: &'a str,
+    arg_count: usize,
+    sep: &'a str,
+}
+
+fn inline_ps_literal_const_sep_split_index_calls(
+    text: &str,
+    name: &str,
+    binding: PsConstSepSplitExtractorParamBinding<'_>,
+) -> String {
+    let lower = text.to_ascii_lowercase();
+    let needles = ps_literal_extractor_call_needles(text, name);
+    let bytes = text.as_bytes();
+    let mut matches = Vec::new();
+    let mut match_count = 0;
+
+    for needle in needles {
+        let mut search_from = 0;
+        while match_count < 128 {
+            let Some(rel) = lower[search_from..].find(&needle) else {
+                break;
+            };
+            let call_start = search_from + rel;
+            let end_name = call_start + needle.len();
+            let Some((replace_start, mut pos)) =
+                ps_literal_extractor_call_start_and_arg_pos(bytes, call_start, end_name)
+            else {
+                search_from = end_name;
+                continue;
+            };
+            let parenthesized = bytes.get(pos) == Some(&b'(');
+            if parenthesized {
+                pos = skip_ascii_ws(bytes, pos + 1);
+            }
+            if bytes.get(pos) == Some(&b'-') {
+                if let Some((call_end, replacement)) =
+                    inline_ps_named_literal_const_sep_split_index_call(
+                        text,
+                        pos,
+                        parenthesized,
+                        binding.value_name,
+                        binding.index_name,
+                        binding.sep,
+                    )
+                {
+                    matches.push((replace_start, call_end, replacement));
+                    search_from = call_end;
+                    match_count += 1;
+                    continue;
+                }
+            }
+            let Some((call_end, value, index)) =
+                parse_ps_positional_literal_const_sep_split_index_args(
+                    text,
+                    pos,
+                    parenthesized,
+                    binding,
+                )
+            else {
+                search_from = end_name;
+                continue;
+            };
+            let Some(replacement) = ps_literal_split_index_replacement(&value, binding.sep, index)
+            else {
+                search_from = call_end;
+                continue;
+            };
+            matches.push((replace_start, call_end, replacement));
+            search_from = call_end;
+            match_count += 1;
+        }
+    }
+
+    let mut out = text.to_string();
+    for (start, end, replacement) in matches.into_iter().rev() {
+        out.replace_range(start..end, &replacement);
+    }
+    out
+}
+
+fn parse_ps_positional_literal_const_sep_split_index_args(
+    text: &str,
+    mut pos: usize,
+    parenthesized: bool,
+    binding: PsConstSepSplitExtractorParamBinding<'_>,
+) -> Option<(usize, String, usize)> {
+    if binding.arg_count == 0
+        || binding.arg_count > 8
+        || binding.value_idx >= binding.arg_count
+        || binding.index_idx >= binding.arg_count
+    {
+        return None;
+    }
+
+    let bytes = text.as_bytes();
+    let mut value = None;
+    let mut index = None;
+    let mut arg_end = pos;
+    for idx in 0..binding.arg_count {
+        let (next_end, arg) = parse_ps_literal_or_usize_arg(text, pos)?;
+        if idx == binding.value_idx {
+            value = Some(arg.as_str()?.to_string());
+        }
+        if idx == binding.index_idx {
+            index = Some(arg.as_usize()?);
+        }
+        arg_end = next_end;
+        pos = next_end;
+        if idx + 1 < binding.arg_count {
+            pos = skip_ps_arg_separator(bytes, pos, parenthesized);
+        }
+    }
+
+    if parenthesized {
+        let after = skip_ascii_ws(bytes, arg_end);
+        if bytes.get(after) != Some(&b')') {
+            return None;
+        }
+        arg_end = after + 1;
+    }
+
+    Some((arg_end, value?, index?))
+}
+
+fn inline_ps_named_literal_const_sep_split_index_call(
+    text: &str,
+    pos: usize,
+    parenthesized: bool,
+    value_name: &str,
+    index_name: &str,
+    sep: &str,
+) -> Option<(usize, String)> {
+    let (call_end, args) =
+        parse_ps_named_static_literal_or_usize_args(text, pos, parenthesized, 4)?;
+    let value = args
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(value_name))?
+        .1
+        .as_literal()?;
+    let index = args
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(index_name))?
+        .1
+        .as_usize()?;
+    Some((
+        call_end,
+        ps_literal_split_index_replacement(value, sep, index)?,
+    ))
 }
 
 #[derive(Clone, Copy)]
