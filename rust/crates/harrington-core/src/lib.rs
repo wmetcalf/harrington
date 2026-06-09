@@ -20273,6 +20273,27 @@ sh.Run thunk(), 0, False"#;
     }
 
     #[test]
+    fn vbs_direct_zero_arg_function_shell_run_powershell_extracted() {
+        let vbs = br#"Function JoinCmd()
+  JoinCmd = "power" & "shell.exe -EncodedCommand VwByAGkAdABlAC0ASABvAHMAdAAgAGYAcgBvAG0ALQBmAHUAbgBjAA=="
+End Function
+
+Set sh = CreateObject("WScript.Shell")
+sh.Run JoinCmd(), 0, False"#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|ps| ps.contains("Write-Host from-func")),
+            "direct zero-arg VBS function shell command was not extracted: {:?}",
+            report.extracted_ps1_normalized
+        );
+    }
+
+    #[test]
     fn vbs_single_arg_wrapper_shell_run_powershell_extracted() {
         let vbs = br#"Function Launch(ByVal cmd)
   Set sh = CreateObject("WScript.Shell")

@@ -2733,8 +2733,18 @@ fn eval_vbs_shell_command_expr(
     array_bindings: &VbsArrayBindings,
     getref_bindings: &VbsGetRefBindings,
 ) -> Option<String> {
-    eval_vbs_string_expr(expr, bindings, array_bindings)
+    eval_vbs_zero_arg_function_call(expr, bindings)
+        .or_else(|| eval_vbs_string_expr(expr, bindings, array_bindings))
         .or_else(|| eval_vbs_getref_zero_arg_call(expr, bindings, getref_bindings))
+}
+
+fn eval_vbs_zero_arg_function_call(expr: &str, bindings: &VbsStringBindings) -> Option<String> {
+    let trimmed = expr.trim();
+    let callee = trimmed.strip_suffix("()")?.trim();
+    if !is_vbs_identifier(callee) {
+        return None;
+    }
+    bindings.get(&callee.to_ascii_lowercase()).cloned()
 }
 
 fn eval_vbs_getref_zero_arg_call(
