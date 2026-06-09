@@ -2597,6 +2597,69 @@ fn summarize_lolbas_enrichment_ignores_program_names_in_schtasks_remote_auth_fie
 }
 
 #[test]
+fn summarize_lolbas_enrichment_ignores_program_names_in_schtasks_xml_paths() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(
+        &input,
+        "schtasks /create /xml mshta.exe /tn Job\r\n\
+         schtasks /create /xml task.xml /tn Job2 /tr C:\\Temp\\mshta.exe /sc once\r\n",
+    )
+    .expect("write input");
+    let lolbas = dir.path().join("lolbas.json");
+    fs::write(
+        &lolbas,
+        r#"[
+          {
+            "Name": "Mshta.exe",
+            "url": "https://lolbas-project.github.io/lolbas/Binaries/Mshta/",
+            "Commands": [
+              {
+                "Category": "Execute",
+                "MitreID": "T1218.005"
+              }
+            ]
+          }
+        ]"#,
+    )
+    .expect("write lolbas");
+
+    let out = Command::cargo_bin("harrington")
+        .expect("bin")
+        .args([
+            "summarize",
+            input.to_str().expect("input path"),
+            "--lolbas-json",
+            lolbas.to_str().expect("lolbas path"),
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("json");
+    let matches = v
+        .get("lolbas_matches")
+        .and_then(|v| v.as_array())
+        .expect("lolbas_matches array");
+    assert_eq!(matches.len(), 2, "unexpected matches: {matches:?}");
+    assert!(
+        !matches.iter().any(|item| {
+            item.get("command").and_then(|v| v.as_str())
+                == Some("schtasks /create /xml mshta.exe /tn Job")
+        }),
+        "unexpected /xml path match: {matches:?}"
+    );
+    assert!(matches.iter().any(|item| {
+        item.get("command").and_then(|v| v.as_str())
+            == Some("schtasks /create /xml task.xml /tn Job2 /tr C:\\Temp\\mshta.exe /sc once")
+    }));
+    assert!(matches
+        .iter()
+        .any(|item| item.get("command").and_then(|v| v.as_str()) == Some("C:\\Temp\\mshta.exe")));
+}
+
+#[test]
 fn summarize_lolbas_enrichment_ignores_program_names_in_wevtutil_log_names() {
     let dir = TempDir::new().expect("tmp");
     let input = dir.path().join("in.bat");

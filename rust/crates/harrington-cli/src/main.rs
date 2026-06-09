@@ -993,7 +993,7 @@ fn lolbas_is_schtasks_task_name_operand(tokens: &[LolbasCommandToken<'_>], idx: 
             .trim_matches(['"', '\''])
             .to_ascii_lowercase()
             .as_str(),
-        "/tn" | "-tn"
+        "/tn" | "-tn" | "/xml" | "-xml"
     )
 }
 
