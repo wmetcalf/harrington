@@ -5712,16 +5712,23 @@ fn scan_self_elevation(deobfuscated: &str, env: &mut Environment) {
     });
     // rust regex doesn't support backreferences — match each quote style
     // explicitly. -FilePath accepts unquoted, single-, or double-quoted.
-    static FILEPATH_DQ_RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r#"(?i)-FilePath\s+"([^"]+)""#).expect("filepath-dq regex"));
-    static FILEPATH_SQ_RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r#"(?i)-FilePath\s+'([^']+)'"#).expect("filepath-sq regex"));
-    static FILEPATH_BARE_RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r#"(?i)-FilePath\s+([^\s'"]+)"#).expect("filepath-bare regex"));
-    static ARGLIST_DQ_RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r#"(?is)-ArgumentList\s+"(.+?)""#).expect("arglist-dq regex"));
-    static ARGLIST_SQ_RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r#"(?is)-ArgumentList\s+'(.+?)'"#).expect("arglist-sq regex"));
+    static FILEPATH_DQ_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?i)-(?:FilePath|File)\s+"([^"]+)""#).expect("filepath-dq regex")
+    });
+    static FILEPATH_SQ_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?i)-(?:FilePath|File)\s+'([^']+)'"#).expect("filepath-sq regex")
+    });
+    static FILEPATH_BARE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?i)-(?:FilePath|File)\s+([^\s'"]+)"#).expect("filepath-bare regex")
+    });
+    static ARGLIST_DQ_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)-(?:ArgumentList|Arguments|Args|Arg)\s+"(.+?)""#)
+            .expect("arglist-dq regex")
+    });
+    static ARGLIST_SQ_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)-(?:ArgumentList|Arguments|Args|Arg)\s+'(.+?)'"#)
+            .expect("arglist-sq regex")
+    });
     for caps in SELF_ELEV_RE.captures_iter(deobfuscated) {
         let before = caps.get(1).map(|m| m.as_str()).unwrap_or("");
         let after = caps.get(2).map(|m| m.as_str()).unwrap_or("");

