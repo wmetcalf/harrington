@@ -350,6 +350,9 @@ fn command_invokes_program(command: &str, wanted_stem: &str) -> bool {
         if idx > 0 && lolbas_non_exec_value_option(tokens[idx - 1].text) {
             return false;
         }
+        if lolbas_is_downloader_short_value_operand(&tokens, idx) {
+            return false;
+        }
         if idx > 0
             && lolbas_is_destination_separator(command, tokens[idx - 1].end, token.start)
             && is_url_like_program_token(tokens[idx - 1].text)
@@ -545,6 +548,24 @@ fn certutil_file_transform_verb(token: &str) -> bool {
             | "-decodehex"
             | "/decodehex"
     )
+}
+
+fn lolbas_is_downloader_short_value_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    let (Some(first), Some(prev)) = (
+        tokens.first(),
+        idx.checked_sub(1).and_then(|i| tokens.get(i)),
+    ) else {
+        return false;
+    };
+    let prev = prev.text.trim_matches(['"', '\'']);
+    match program_stem(first.text).as_str() {
+        "curl" => matches!(
+            prev,
+            "-d" | "-H" | "-X" | "-A" | "-e" | "-b" | "-c" | "-u" | "-x" | "-m" | "-T" | "-F"
+        ),
+        "get" | "wget" => matches!(prev, "-e" | "-U" | "-i" | "-P"),
+        _ => false,
+    }
 }
 
 fn lolbas_non_exec_value_option(token: &str) -> bool {
