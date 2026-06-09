@@ -12,6 +12,13 @@ type VbsStringBindings = HashMap<String, String>;
 type VbsArrayBindings = HashMap<String, Vec<String>>;
 type VbsGetRefBindings = HashMap<String, String>;
 
+#[derive(Clone)]
+struct VbsSingleArgShellWrapper {
+    name: String,
+    param: String,
+    shells_param: bool,
+}
+
 #[allow(clippy::expect_used)]
 static XMLHTTP_OPEN_RE: Lazy<Regex> = Lazy::new(|| {
     // http.Open "GET", "url", False  /  http.Open "POST", "url", False
@@ -36,6 +43,14 @@ static VBS_GETREF_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
         r#"(?i)^\s*(?:Set\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*GetRef\s*\(\s*"([^"]+)"\s*\)\s*$"#,
     )
     .expect("vbs getref assignment")
+});
+
+#[allow(clippy::expect_used)]
+static VBS_SINGLE_ARG_PROC_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?i)^\s*(?:(?:Public|Private)\s+)?(?:Sub|Function)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*$"#,
+    )
+    .expect("vbs single-arg procedure")
 });
 
 #[allow(clippy::expect_used)]
@@ -329,6 +344,29 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
             }
             let Some(command) = eval_vbs_shell_command_expr(
                 command_expr,
+                &bindings,
+                &array_bindings,
+                &getref_bindings,
+            ) else {
+                continue;
+            };
+            push_downloads_from_vbs_command(
+                env,
+                idx,
+                &text,
+                &command,
+                &dst_hint,
+                &env_bindings,
+                &mut seen,
+            );
+        }
+
+        for command_expr in extract_single_arg_shell_wrapper_command_exprs(&text) {
+            if env.check_deadline() {
+                break 'payloads;
+            }
+            let Some(command) = eval_vbs_shell_command_expr(
+                &command_expr,
                 &bindings,
                 &array_bindings,
                 &getref_bindings,
@@ -1062,6 +1100,154 @@ fn extract_callbyname_shell_command_exprs(text: &str) -> Vec<(&str, &str)> {
 fn is_callbyname_method_call(expr: &str) -> bool {
     let trimmed = expr.trim().trim_matches(['(', ')']);
     trimmed.eq_ignore_ascii_case("vbMethod") || parse_vbs_integer(trimmed) == Some(1)
+}
+
+fn extract_single_arg_shell_wrapper_command_exprs(text: &str) -> Vec<String> {
+    let mut wrappers: HashMap<String, VbsSingleArgShellWrapper> = HashMap::new();
+    let mut current: Option<VbsSingleArgShellWrapper> = None;
+    for line in text.lines() {
+        for statement in split_vbs_statements(line) {
+            let trimmed = statement.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if trimmed.eq_ignore_ascii_case("End Sub")
+                || trimmed.eq_ignore_ascii_case("End Function")
+            {
+                if let Some(wrapper) = current.take() {
+                    if wrapper.shells_param {
+                        wrappers.insert(wrapper.name.to_ascii_lowercase(), wrapper);
+                    }
+                }
+                continue;
+            }
+            if let Some(wrapper) = current.as_mut() {
+                if vbs_statement_shells_param(trimmed, &wrapper.param) {
+                    wrapper.shells_param = true;
+                }
+                continue;
+            }
+            let Some((name, param)) = parse_vbs_single_arg_proc_header(trimmed) else {
+                continue;
+            };
+            current = Some(VbsSingleArgShellWrapper {
+                name,
+                param,
+                shells_param: false,
+            });
+        }
+    }
+
+    if wrappers.is_empty() {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    let mut in_proc = false;
+    for line in text.lines() {
+        for statement in split_vbs_statements(line) {
+            let trimmed = statement.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if parse_vbs_single_arg_proc_header(trimmed).is_some() {
+                in_proc = true;
+                continue;
+            }
+            if trimmed.eq_ignore_ascii_case("End Sub")
+                || trimmed.eq_ignore_ascii_case("End Function")
+            {
+                in_proc = false;
+                continue;
+            }
+            if in_proc {
+                continue;
+            }
+            if let Some(expr) = parse_single_arg_wrapper_invocation(trimmed, &wrappers) {
+                out.push(expr);
+            }
+        }
+    }
+    out
+}
+
+fn parse_vbs_single_arg_proc_header(statement: &str) -> Option<(String, String)> {
+    let caps = VBS_SINGLE_ARG_PROC_RE.captures(statement)?;
+    let name = caps.get(1)?.as_str();
+    let params = caps.get(2)?.as_str();
+    let parts = split_vbs_args(params);
+    let [param] = parts.as_slice() else {
+        return None;
+    };
+    let param = parse_vbs_single_param_name(param)?;
+    Some((name.to_string(), param.to_ascii_lowercase()))
+}
+
+fn parse_vbs_single_param_name(param: &str) -> Option<&str> {
+    let mut parts = param.split_ascii_whitespace();
+    let first = parts.next()?;
+    let candidate = if first.eq_ignore_ascii_case("ByVal") || first.eq_ignore_ascii_case("ByRef") {
+        parts.next()?
+    } else {
+        first
+    };
+    parts
+        .next()
+        .is_none()
+        .then_some(candidate)
+        .and_then(|name| {
+            let name = name.trim();
+            is_vbs_identifier(name).then_some(name)
+        })
+}
+
+fn vbs_statement_shells_param(statement: &str, param_lower: &str) -> bool {
+    extract_shell_run_command_exprs(statement)
+        .into_iter()
+        .any(|expr| vbs_expr_is_identifier(expr, param_lower))
+}
+
+fn vbs_expr_is_identifier(expr: &str, name_lower: &str) -> bool {
+    expr.trim()
+        .trim_matches(['(', ')'])
+        .eq_ignore_ascii_case(name_lower)
+}
+
+fn parse_single_arg_wrapper_invocation(
+    statement: &str,
+    wrappers: &HashMap<String, VbsSingleArgShellWrapper>,
+) -> Option<String> {
+    let mut call = statement.trim();
+    if let Some(rest) = call
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("Call"))
+        .and_then(|_| call.get(4..))
+        .filter(|rest| rest.as_bytes().first().is_some_and(u8::is_ascii_whitespace))
+    {
+        call = rest.trim_start();
+    }
+    let name_end = call
+        .char_indices()
+        .find_map(|(idx, ch)| {
+            (!matches!(ch, '_' | 'A'..='Z' | 'a'..='z' | '0'..='9')).then_some(idx)
+        })
+        .unwrap_or(call.len());
+    let name = call[..name_end].trim();
+    if name.is_empty() || !wrappers.contains_key(&name.to_ascii_lowercase()) {
+        return None;
+    }
+    let mut args = call[name_end..].trim_start();
+    if args.is_empty() {
+        return None;
+    }
+    if let Some(rest) = args.strip_prefix('(') {
+        args = trim_one_trailing_call_paren(rest);
+    }
+    let parts = split_vbs_args(args);
+    let [expr] = parts.as_slice() else {
+        return None;
+    };
+    Some(expr.trim().to_string())
 }
 
 fn trim_one_trailing_call_paren(expr: &str) -> &str {

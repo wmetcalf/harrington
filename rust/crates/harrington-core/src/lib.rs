@@ -20273,6 +20273,27 @@ sh.Run thunk(), 0, False"#;
     }
 
     #[test]
+    fn vbs_single_arg_wrapper_shell_run_powershell_extracted() {
+        let vbs = br#"Function Launch(ByVal cmd)
+  Set sh = CreateObject("WScript.Shell")
+  sh.Run cmd, 0, False
+End Function
+
+Launch "power" & "shell.exe -EncodedCommand VwByAGkAdABlAC0ASABvAHMAdAAgAGYAcgBvAG0ALQB3AHIAYQBwAHAAZQByAA==""#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|ps| ps.contains("Write-Host from-wrapper")),
+            "single-arg VBS wrapper shell command was not extracted: {:?}",
+            report.extracted_ps1_normalized
+        );
+    }
+
+    #[test]
     fn vbs_shell_application_shellexecute_schemeless_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let vbs = br#"Set sh = CreateObject("Shell.Application")
