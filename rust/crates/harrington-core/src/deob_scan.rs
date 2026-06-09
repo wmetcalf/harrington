@@ -5766,7 +5766,10 @@ fn scan_self_elevation(deobfuscated: &str, env: &mut Environment) {
         if env.traits.iter().any(|t| {
             matches!(
                 t,
-                crate::traits::Trait::SelfElevation { target: tg, .. } if tg == &target
+                crate::traits::Trait::SelfElevation {
+                    target: tg,
+                    args: existing_args,
+                } if tg == &target && existing_args.as_deref() == args.as_deref()
             )
         }) {
             continue;
