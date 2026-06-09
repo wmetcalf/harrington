@@ -46,7 +46,25 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
         // emits its trait). The child push happens regardless.
     }
 
+    if raw_invokes_powershell(raw) {
+        crate::handlers::powershell::h_powershell(raw, env);
+        result.consumed = true;
+    }
+
     result
+}
+
+fn raw_invokes_powershell(raw: &str) -> bool {
+    let Some(name) = command_name(raw) else {
+        return false;
+    };
+    let name = name.trim_start_matches(['@', '"', '(']);
+    let basename = name.rsplit(['\\', '/']).next().unwrap_or(name);
+    let lower = basename.trim_matches('"').to_ascii_lowercase();
+    matches!(
+        lower.strip_suffix(".exe").unwrap_or(&lower),
+        "powershell" | "pwsh"
+    )
 }
 
 pub fn interpret_line(line: &str, env: &mut Environment) {
