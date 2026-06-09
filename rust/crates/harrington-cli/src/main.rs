@@ -1363,6 +1363,21 @@ fn lolbas_is_forfiles_non_exec_operand(tokens: &[LolbasCommandToken<'_>], idx: u
     if idx == 0 || program_stem(tokens[0].text) != "forfiles" {
         return false;
     }
+    let current = tokens[idx]
+        .text
+        .trim_matches(['"', '\''])
+        .to_ascii_lowercase();
+    if current.starts_with("/m:")
+        || current.starts_with("-m:")
+        || current.starts_with("/m=")
+        || current.starts_with("-m=")
+        || current.starts_with("/p:")
+        || current.starts_with("-p:")
+        || current.starts_with("/p=")
+        || current.starts_with("-p=")
+    {
+        return true;
+    }
     matches!(
         tokens[idx - 1]
             .text
