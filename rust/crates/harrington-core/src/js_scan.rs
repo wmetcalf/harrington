@@ -2818,6 +2818,11 @@ fn consume_js_filter_boolean_chain(
 fn consume_js_filter_boolean_call(text: &str, idx: usize) -> Option<usize> {
     let open = consume_js_method_open(text, idx, "filter")?;
     let arg_start = skip_ascii_ws(text, open + 1);
+    consume_js_filter_boolean_arg(text, arg_start)
+        .or_else(|| consume_js_filter_identity_function_arg(text, arg_start))
+}
+
+fn consume_js_filter_boolean_arg(text: &str, arg_start: usize) -> Option<usize> {
     let arg_end = arg_start.checked_add("Boolean".len())?;
     if text.get(arg_start..arg_end) != Some("Boolean") {
         return None;
@@ -2826,6 +2831,65 @@ fn consume_js_filter_boolean_call(text: &str, idx: usize) -> Option<usize> {
         return None;
     }
     let close = skip_ascii_ws(text, arg_end);
+    (text.as_bytes().get(close) == Some(&b')')).then_some(close + 1)
+}
+
+fn consume_js_filter_identity_function_arg(text: &str, arg_start: usize) -> Option<usize> {
+    let function_end = arg_start.checked_add("function".len())?;
+    if text.get(arg_start..function_end) != Some("function") {
+        return None;
+    }
+    if text[function_end..]
+        .chars()
+        .next()
+        .is_some_and(is_js_ident_char)
+    {
+        return None;
+    }
+
+    let open = skip_ascii_ws(text, function_end);
+    if text.as_bytes().get(open) != Some(&b'(') {
+        return None;
+    }
+    let ident_start = skip_ascii_ws(text, open + 1);
+    let (ident_end, ident) = parse_js_identifier_at(text, ident_start)?;
+    let close_param = skip_ascii_ws(text, ident_end);
+    if text.as_bytes().get(close_param) != Some(&b')') {
+        return None;
+    }
+
+    let body_open = skip_ascii_ws(text, close_param + 1);
+    if text.as_bytes().get(body_open) != Some(&b'{') {
+        return None;
+    }
+    let return_start = skip_ascii_ws(text, body_open + 1);
+    let return_end = return_start.checked_add("return".len())?;
+    if text.get(return_start..return_end) != Some("return") {
+        return None;
+    }
+    if text[return_end..]
+        .chars()
+        .next()
+        .is_some_and(is_js_ident_char)
+    {
+        return None;
+    }
+
+    let returned_start = skip_ascii_ws(text, return_end);
+    let (returned_end, returned) = parse_js_identifier_at(text, returned_start)?;
+    if returned != ident {
+        return None;
+    }
+
+    let mut after_return = skip_ascii_ws(text, returned_end);
+    if text.as_bytes().get(after_return) == Some(&b';') {
+        after_return = skip_ascii_ws(text, after_return + 1);
+    }
+    if text.as_bytes().get(after_return) != Some(&b'}') {
+        return None;
+    }
+
+    let close = skip_ascii_ws(text, after_return + 1);
     (text.as_bytes().get(close) == Some(&b')')).then_some(close + 1)
 }
 
