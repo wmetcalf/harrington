@@ -54,6 +54,12 @@ static VBS_ARRAY_INDEX_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static VBS_ARRAY_VALUE_INDEX_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?i)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*(\d{1,6})\s*\)\s*$"#)
+        .expect("vbs array value index")
+});
+
+#[allow(clippy::expect_used)]
 static VBS_NODE_TEXT_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?i)^\s*([A-Za-z_][A-Za-z0-9_]*)\.Text\s*=\s*(.+?)\s*$"#).expect("vbs node text")
 });
@@ -106,6 +112,11 @@ static SHELL_RUN_VAR_RE: Lazy<Regex> = Lazy::new(|| {
         .expect("wscript shell run variable")
 });
 
+#[allow(clippy::expect_used)]
+static PS_ENV_REF_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?i)\$env:([A-Za-z0-9_][A-Za-z0-9_.-]{0,127})"#).expect("ps env ref")
+});
+
 pub fn scan_vbs_payloads(env: &mut Environment) {
     let mut payloads = std::mem::take(&mut env.all_extracted_vbs);
     let mut seen: std::collections::HashSet<(usize, String)> = std::collections::HashSet::new();
@@ -156,6 +167,7 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
         recover_vbs_chr_array_loop_bindings(&text, &mut bindings, &array_bindings);
         recover_vbs_nodetypedvalue_array_bindings(&text, &bindings, &mut array_bindings);
         recover_vbs_chr_array_loop_bindings(&text, &mut bindings, &array_bindings);
+        let env_bindings = collect_vbs_environment_bindings(&text, &bindings, &array_bindings);
         let dst_hint: Option<String> = extract_savetofile_dest_exprs(&text)
             .into_iter()
             .find_map(|expr| eval_vbs_string_expr(expr, &bindings, &array_bindings))
@@ -217,7 +229,15 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
             let Some(command) = caps.get(1).map(|m| m.as_str()) else {
                 continue;
             };
-            push_downloads_from_vbs_command(env, idx, &text, command, &dst_hint, &mut seen);
+            push_downloads_from_vbs_command(
+                env,
+                idx,
+                &text,
+                command,
+                &dst_hint,
+                &env_bindings,
+                &mut seen,
+            );
         }
 
         for caps in SHELL_RUN_VAR_RE.captures_iter(&text) {
@@ -230,7 +250,15 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
             let Some(command) = bindings.get(&var_match.as_str().to_ascii_lowercase()) else {
                 continue;
             };
-            push_downloads_from_vbs_command(env, idx, &text, command, &dst_hint, &mut seen);
+            push_downloads_from_vbs_command(
+                env,
+                idx,
+                &text,
+                command,
+                &dst_hint,
+                &env_bindings,
+                &mut seen,
+            );
         }
 
         for expr in extract_shell_run_command_exprs(&text) {
@@ -240,7 +268,15 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
             let Some(command) = eval_vbs_string_expr(expr, &bindings, &array_bindings) else {
                 continue;
             };
-            push_downloads_from_vbs_command(env, idx, &text, &command, &dst_hint, &mut seen);
+            push_downloads_from_vbs_command(
+                env,
+                idx,
+                &text,
+                &command,
+                &dst_hint,
+                &env_bindings,
+                &mut seen,
+            );
         }
 
         for (program_expr, args_expr, verb_expr) in extract_shell_execute_command_exprs(&text) {
@@ -272,7 +308,15 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
                     }
                 }
             }
-            push_downloads_from_vbs_command(env, idx, &text, &command, &dst_hint, &mut seen);
+            push_downloads_from_vbs_command(
+                env,
+                idx,
+                &text,
+                &command,
+                &dst_hint,
+                &env_bindings,
+                &mut seen,
+            );
         }
 
         for expr in extract_xmlhttp_open_url_exprs(&text) {
@@ -480,6 +524,7 @@ fn push_downloads_from_vbs_command(
     text: &str,
     command: &str,
     dst_hint: &Option<String>,
+    env_bindings: &VbsStringBindings,
     seen: &mut std::collections::HashSet<(usize, String)>,
 ) {
     for url_caps in crate::deob_scan::URL_RE.captures_iter(command) {
@@ -527,7 +572,153 @@ fn push_downloads_from_vbs_command(
         for payload in pending_ps1 {
             push_unique_payload(&mut env.all_extracted_ps1, payload);
         }
+        push_vbs_environment_ps_payloads(command, env_bindings, env);
+        if let Some(suffix) = vbs_powershell_command_suffix(command) {
+            if suffix != command {
+                push_vbs_environment_ps_payloads(suffix, env_bindings, env);
+            }
+        }
     }
+}
+
+fn collect_vbs_environment_bindings(
+    text: &str,
+    bindings: &VbsStringBindings,
+    array_bindings: &VbsArrayBindings,
+) -> VbsStringBindings {
+    let mut out = VbsStringBindings::new();
+    for line in text.lines() {
+        for statement in split_vbs_statements(line) {
+            let Some((key_expr, value_expr)) = parse_vbs_indexed_assignment(statement) else {
+                continue;
+            };
+            let Some(name) = eval_vbs_string_expr(key_expr, bindings, array_bindings) else {
+                continue;
+            };
+            let Some(value) = eval_vbs_string_expr(value_expr, bindings, array_bindings) else {
+                continue;
+            };
+            if name.trim().is_empty()
+                || name.len() > 128
+                || value.trim().is_empty()
+                || value.len() > 512 * 1024
+            {
+                continue;
+            }
+            out.insert(name.to_ascii_lowercase(), value);
+        }
+    }
+    for values in array_bindings.values() {
+        let (Some(name), Some(value)) = (values.first(), values.get(1)) else {
+            continue;
+        };
+        if !vbs_env_key_is_plausible(name) || value.trim().is_empty() || value.len() > 512 * 1024 {
+            continue;
+        }
+        out.entry(name.to_ascii_lowercase())
+            .or_insert_with(|| value.clone());
+    }
+    out
+}
+
+fn vbs_env_key_is_plausible(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 128
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+}
+
+fn parse_vbs_indexed_assignment(statement: &str) -> Option<(&str, &str)> {
+    let eq = find_vbs_top_level_equals(statement)?;
+    let lhs = statement[..eq].trim();
+    let rhs = statement[eq + 1..].trim();
+    let open = lhs.find('(')?;
+    if !lhs.ends_with(')') {
+        return None;
+    }
+    let object = lhs[..open].trim();
+    if object.is_empty()
+        || !object
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    {
+        return None;
+    }
+    Some((lhs[open + 1..lhs.len() - 1].trim(), rhs))
+}
+
+fn find_vbs_top_level_equals(statement: &str) -> Option<usize> {
+    let mut in_quote = false;
+    let mut paren_depth = 0usize;
+    let bytes = statement.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => {
+                if in_quote && bytes.get(i + 1) == Some(&b'"') {
+                    i += 2;
+                    continue;
+                }
+                in_quote = !in_quote;
+                i += 1;
+            }
+            b'(' if !in_quote => {
+                paren_depth += 1;
+                i += 1;
+            }
+            b')' if !in_quote => {
+                paren_depth = paren_depth.saturating_sub(1);
+                i += 1;
+            }
+            b'=' if !in_quote && paren_depth == 0 => return Some(i),
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+fn push_vbs_environment_ps_payloads(
+    command: &str,
+    env_bindings: &VbsStringBindings,
+    env: &mut Environment,
+) {
+    let lower = command.to_ascii_lowercase();
+    if env_bindings.is_empty()
+        || !lower.contains("$env:")
+        || !(lower.contains("scriptblock") || lower.contains("iex"))
+    {
+        return;
+    }
+    for caps in PS_ENV_REF_RE.captures_iter(command).take(32) {
+        let Some(name) = caps.get(1) else { continue };
+        let Some(value) = env_bindings.get(&name.as_str().to_ascii_lowercase()) else {
+            continue;
+        };
+        let expanded = expand_ps_env_refs_with_vbs_bindings(value, env_bindings);
+        push_unique_payload(&mut env.all_extracted_ps1, expanded.into_bytes());
+    }
+}
+
+fn expand_ps_env_refs_with_vbs_bindings(text: &str, env_bindings: &VbsStringBindings) -> String {
+    if env_bindings.is_empty() || !text.to_ascii_lowercase().contains("$env:") {
+        return text.to_string();
+    }
+    PS_ENV_REF_RE
+        .replace_all(text, |caps: &regex::Captures<'_>| {
+            let Some(name) = caps.get(1) else {
+                return caps
+                    .get(0)
+                    .map_or_else(String::new, |m| m.as_str().to_string());
+            };
+            let Some(value) = env_bindings.get(&name.as_str().to_ascii_lowercase()) else {
+                return caps
+                    .get(0)
+                    .map_or_else(String::new, |m| m.as_str().to_string());
+            };
+            format!("'{}'", value.replace('\'', "''"))
+        })
+        .into_owned()
 }
 
 fn normalize_vbs_command_token_url(candidate: &str) -> Option<String> {
@@ -834,6 +1025,11 @@ fn eval_vbs_string_expr(
             saw_part = true;
             continue;
         }
+        if let Some(value) = parse_vbs_array_index(part, array_bindings) {
+            out.push_str(&value);
+            saw_part = true;
+            continue;
+        }
         if let Some(value) = parse_vbs_cstr(part, bindings, array_bindings) {
             out.push_str(&value);
             saw_part = true;
@@ -1084,6 +1280,13 @@ fn parse_vbs_split_index(
     let inner = vbs_function_args(call, "split")?;
     let pieces = parse_vbs_split_values(inner, bindings, array_bindings)?;
     pieces.get(index).cloned()
+}
+
+fn parse_vbs_array_index(part: &str, array_bindings: &VbsArrayBindings) -> Option<String> {
+    let caps = VBS_ARRAY_VALUE_INDEX_RE.captures(part.trim())?;
+    let name = caps.get(1)?.as_str().to_ascii_lowercase();
+    let index: usize = caps.get(2)?.as_str().parse().ok()?;
+    array_bindings.get(&name)?.get(index).cloned()
 }
 
 fn parse_vbs_array_values(
