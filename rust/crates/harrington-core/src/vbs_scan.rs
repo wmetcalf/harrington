@@ -36,6 +36,15 @@ static VBS_PROPERTY_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static TASK_XML_COMMAND_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"(?is)<Command>\s*([^<]+?)\s*</Command>"#).expect("task command"));
+
+#[allow(clippy::expect_used)]
+static TASK_XML_ARGUMENTS_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?is)<Arguments>\s*([^<]*?)\s*</Arguments>"#).expect("task arguments")
+});
+
+#[allow(clippy::expect_used)]
 static VBS_FOR_UBOUND_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?i)^\s*For\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*0\s+To\s+UBound\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*$"#,
@@ -406,6 +415,49 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
             );
         }
 
+        for (task_name, command) in
+            extract_task_scheduler_commands(&text, &bindings, &array_bindings)
+        {
+            if env.check_deadline() {
+                break 'payloads;
+            }
+            if command.trim().is_empty() || command.len() > 256 * 1024 {
+                continue;
+            }
+            if !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Persistence {
+                        hive,
+                        key,
+                        value_name,
+                        command: existing,
+                    } if hive == "ScheduledTask"
+                        && key == &task_name
+                        && value_name == "RegisterTaskDefinition"
+                        && existing == &command
+                )
+            }) {
+                env.traits.push(Trait::Persistence {
+                    hive: "ScheduledTask".to_string(),
+                    key: task_name,
+                    value_name: "RegisterTaskDefinition".to_string(),
+                    command: command.clone(),
+                });
+            }
+            env.exec_cmd.push(command.clone());
+            env.exec_cmd_delayed.push(false);
+            push_downloads_from_vbs_command(
+                env,
+                idx,
+                &text,
+                &command,
+                &dst_hint,
+                &env_bindings,
+                &mut seen,
+            );
+        }
+
         for (program_expr, args_expr, verb_expr) in extract_shell_execute_command_exprs(&text) {
             if env.check_deadline() {
                 break 'payloads;
@@ -559,6 +611,115 @@ fn extract_wmi_process_create_command_exprs(text: &str) -> Vec<&str> {
         }
     }
     out
+}
+
+fn extract_task_scheduler_commands(
+    text: &str,
+    bindings: &VbsStringBindings,
+    array_bindings: &VbsArrayBindings,
+) -> Vec<(String, String)> {
+    let lower = text.to_ascii_lowercase();
+    if !lower.contains("schedule.service") || !lower.contains("registertaskdefinition") {
+        return Vec::new();
+    }
+
+    let mut task_defs = Vec::new();
+    for line in text.lines() {
+        let lower_line = line.to_ascii_lowercase();
+        let mut cursor = 0usize;
+        while let Some(rel) = lower_line[cursor..].find(".registertaskdefinition") {
+            let method_start = cursor + rel;
+            let args_start = method_start + ".registertaskdefinition".len();
+            let next = line[args_start..].chars().next();
+            if !next.is_some_and(|c| c.is_ascii_whitespace() || c == '(') {
+                cursor = args_start;
+                continue;
+            }
+            let mut args = line[args_start..].trim_start();
+            if let Some(rest) = args.strip_prefix('(') {
+                args = rest;
+            }
+            let parts = split_vbs_args(args);
+            if let (Some(name_expr), Some(def_expr)) = (parts.first(), parts.get(1)) {
+                let name = eval_vbs_string_expr(name_expr, bindings, array_bindings)
+                    .unwrap_or_else(|| "RegisteredTask".to_string());
+                task_defs.push((name, *def_expr));
+            }
+            cursor = args_start;
+        }
+    }
+    if task_defs.is_empty() {
+        return Vec::new();
+    }
+
+    let mut action_path = None;
+    let mut action_args = None;
+    for line in text.lines() {
+        for statement in split_vbs_statements(line) {
+            let Some(caps) = VBS_PROPERTY_ASSIGN_RE.captures(statement) else {
+                continue;
+            };
+            let (Some(_object), Some(property), Some(value_expr)) =
+                (caps.get(1), caps.get(2), caps.get(3))
+            else {
+                continue;
+            };
+            let Some(value) = eval_vbs_string_expr(value_expr.as_str(), bindings, array_bindings)
+            else {
+                continue;
+            };
+            match property.as_str().to_ascii_lowercase().as_str() {
+                "path" if action_path.is_none() => action_path = Some(value),
+                "arguments" if action_args.is_none() => action_args = Some(value),
+                _ => {}
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    for (name, def_expr) in task_defs {
+        if let Some(xml) = eval_vbs_string_expr(def_expr, bindings, array_bindings) {
+            if let Some(command) = task_xml_exec_command(&xml) {
+                out.push((name, command));
+                continue;
+            }
+        }
+        let Some(path) = action_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+        else {
+            continue;
+        };
+        let command = if let Some(args) = action_args
+            .as_deref()
+            .map(str::trim)
+            .filter(|args| !args.is_empty())
+        {
+            format!("{path} {args}")
+        } else {
+            path.to_string()
+        };
+        out.push((name, command));
+    }
+    out
+}
+
+fn task_xml_exec_command(xml: &str) -> Option<String> {
+    let command = TASK_XML_COMMAND_RE.captures(xml)?.get(1)?.as_str().trim();
+    if command.is_empty() {
+        return None;
+    }
+    let args = TASK_XML_ARGUMENTS_RE
+        .captures(xml)
+        .and_then(|caps| caps.get(1))
+        .map(|m| m.as_str().trim())
+        .unwrap_or("");
+    if args.is_empty() {
+        Some(command.to_string())
+    } else {
+        Some(format!("{command} {args}"))
+    }
 }
 
 fn extract_wmi_scheduledjob_create_command_exprs(text: &str) -> Vec<&str> {
