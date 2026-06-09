@@ -1575,7 +1575,8 @@ fn ps_start_process_exec_param_name(name: &str) -> bool {
 }
 
 fn ps_invoke_item_exec_param_name(name: &str) -> bool {
-    name == "path" || (name.len() >= "literalp".len() && "literalpath".starts_with(name))
+    (!name.is_empty() && "path".starts_with(name))
+        || (name.len() >= "literalp".len() && "literalpath".starts_with(name))
 }
 
 fn lolbas_attached_ps_process_non_exec_operand(
