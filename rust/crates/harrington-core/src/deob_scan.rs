@@ -5729,6 +5729,10 @@ fn scan_self_elevation(deobfuscated: &str, env: &mut Environment) {
         Regex::new(r#"(?is)-(?:ArgumentList|Arguments|Args|Arg)\s+'(.+?)'"#)
             .expect("arglist-sq regex")
     });
+    static ARGLIST_BARE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?i)-(?:ArgumentList|Arguments|Args|Arg)\s+([^\s'"`;|&]+)"#)
+            .expect("arglist-bare regex")
+    });
     for caps in SELF_ELEV_RE.captures_iter(deobfuscated) {
         let before = caps.get(1).map(|m| m.as_str()).unwrap_or("");
         let after = caps.get(2).map(|m| m.as_str()).unwrap_or("");
@@ -5756,6 +5760,7 @@ fn scan_self_elevation(deobfuscated: &str, env: &mut Environment) {
         let args = ARGLIST_DQ_RE
             .captures(&combined)
             .or_else(|| ARGLIST_SQ_RE.captures(&combined))
+            .or_else(|| ARGLIST_BARE_RE.captures(&combined))
             .and_then(|c| c.get(1).map(|m| m.as_str().to_string()));
         // Dedup
         if env.traits.iter().any(|t| {
