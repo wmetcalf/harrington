@@ -3772,6 +3772,7 @@ fn expand_literal_index_extractor_calls(text: &str) -> String {
             value_name: value_var,
             index_idx,
             index_name: index_var,
+            arg_count: param_index.len(),
         };
         out = inline_ps_literal_index_calls(&out, &name, binding);
     }
@@ -5185,45 +5186,16 @@ fn inline_ps_literal_index_calls(
                     continue;
                 }
             }
-            let Some((first_end, first)) = parse_ps_literal_or_usize_arg(text, pos) else {
+            let Some((call_end, value, index)) =
+                parse_ps_positional_literal_index_args(text, pos, parenthesized, binding)
+            else {
                 search_from = end_name;
                 continue;
             };
-            pos = skip_ps_arg_separator(bytes, first_end, parenthesized);
-            let Some((second_end, second)) = parse_ps_literal_or_usize_arg(text, pos) else {
-                search_from = first_end;
-                continue;
-            };
-            let mut call_end = second_end;
-            if parenthesized {
-                let after = skip_ascii_ws(bytes, call_end);
-                if bytes.get(after) != Some(&b')') {
-                    search_from = second_end;
-                    continue;
-                }
-                call_end = after + 1;
-            }
-
-            let args = [first, second];
-            let Some(value) = args
-                .get(binding.value_idx)
-                .and_then(PsLiteralOrUsizeArg::as_str)
-            else {
+            let Some(replacement) = ps_literal_index_replacement(&value, index) else {
                 search_from = call_end;
                 continue;
             };
-            let Some(index) = args
-                .get(binding.index_idx)
-                .and_then(PsLiteralOrUsizeArg::as_usize)
-            else {
-                search_from = call_end;
-                continue;
-            };
-            let Some(ch) = value.chars().nth(index) else {
-                search_from = call_end;
-                continue;
-            };
-            let replacement = format!("'{}'", ch.to_string().replace('\'', "''"));
             matches.push((replace_start, call_end, replacement));
             search_from = call_end;
             match_count += 1;
@@ -5243,6 +5215,51 @@ struct PsIndexExtractorParamBinding<'a> {
     value_name: &'a str,
     index_idx: usize,
     index_name: &'a str,
+    arg_count: usize,
+}
+
+fn parse_ps_positional_literal_index_args(
+    text: &str,
+    mut pos: usize,
+    parenthesized: bool,
+    binding: PsIndexExtractorParamBinding<'_>,
+) -> Option<(usize, String, usize)> {
+    if binding.arg_count == 0
+        || binding.arg_count > 8
+        || binding.value_idx >= binding.arg_count
+        || binding.index_idx >= binding.arg_count
+    {
+        return None;
+    }
+
+    let bytes = text.as_bytes();
+    let mut value = None;
+    let mut index = None;
+    let mut arg_end = pos;
+    for idx in 0..binding.arg_count {
+        let (next_end, arg) = parse_ps_literal_or_usize_arg(text, pos)?;
+        if idx == binding.value_idx {
+            value = Some(arg.as_str()?.to_string());
+        }
+        if idx == binding.index_idx {
+            index = Some(arg.as_usize()?);
+        }
+        arg_end = next_end;
+        pos = next_end;
+        if idx + 1 < binding.arg_count {
+            pos = skip_ps_arg_separator(bytes, pos, parenthesized);
+        }
+    }
+
+    if parenthesized {
+        let after = skip_ascii_ws(bytes, arg_end);
+        if bytes.get(after) != Some(&b')') {
+            return None;
+        }
+        arg_end = after + 1;
+    }
+
+    Some((arg_end, value?, index?))
 }
 
 fn inline_ps_named_literal_index_call(
@@ -5264,11 +5281,12 @@ fn inline_ps_named_literal_index_call(
         .find(|(name, _)| name.eq_ignore_ascii_case(index_name))?
         .1
         .as_usize()?;
+    Some((call_end, ps_literal_index_replacement(value, index)?))
+}
+
+fn ps_literal_index_replacement(value: &str, index: usize) -> Option<String> {
     let ch = value.chars().nth(index)?;
-    Some((
-        call_end,
-        format!("'{}'", ch.to_string().replace('\'', "''")),
-    ))
+    Some(format!("'{}'", ch.to_string().replace('\'', "''")))
 }
 
 fn inline_ps_literal_replace_calls(
@@ -9528,6 +9546,21 @@ Pick 'xI' 1"#;
         assert!(
             out.contains("'I'"),
             "index extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_index_extractor_call_with_dummy_arg_is_rewritten() {
+        let text = r#"function Pick($unused,$value,$index) {
+  return $value[$index]
+}
+Pick 0 'xI' 1"#;
+
+        let out = expand_literal_index_extractor_calls(text);
+
+        assert!(
+            out.contains("'I'"),
+            "index extractor call with dummy arg was not rewritten:\n{out}"
         );
     }
 
