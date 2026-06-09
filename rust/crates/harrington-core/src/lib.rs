@@ -6065,7 +6065,7 @@ fn summarize_high_unicode_carrier_line(line: &str, env: &mut Environment) -> Opt
     const MAX_CONTEXT_BYTES: usize = 512;
 
     let lower = line.to_ascii_lowercase();
-    if !lower.contains("scriptblock") && !lower.contains("powershell") {
+    if !has_high_unicode_carrier_context(&lower) {
         return None;
     }
 
@@ -6121,6 +6121,12 @@ fn summarize_high_unicode_carrier_line(line: &str, env: &mut Environment) -> Opt
     let prefix = truncate_context_prefix(&line[..first_high], MAX_CONTEXT_BYTES);
     let suffix = truncate_context_suffix(&line[last_high_end..], MAX_CONTEXT_BYTES);
     Some(format!("{prefix}{summary}{suffix}"))
+}
+
+fn has_high_unicode_carrier_context(lower: &str) -> bool {
+    lower.contains("scriptblock")
+        || lower.contains("powershell")
+        || (lower.contains("aesmanaged") && lower.contains("[uint16]") && lower.contains("[char]"))
 }
 
 fn truncate_context_prefix(context: &str, max_bytes: usize) -> &str {
@@ -7657,6 +7663,31 @@ mod line_cap_tests {
                 .deobfuscated
                 .contains("omitted 4096 high-Unicode chars from truncated PowerShell carrier"),
             "high-Unicode carrier was not summarized: {}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&carrier),
+            "opaque carrier should not be dumped into deobfuscated output"
+        );
+    }
+
+    #[test]
+    fn normalized_high_unicode_aes_payload_is_summarized_in_deob_text() {
+        let carrier = "亓亮亊乑乑予之亖丱乵亞以仃仉产乆".repeat(256);
+        let script = format!(
+            "$payload=('{carrier}');$bytes=New-Object byte[] $payload.Length;\
+             for($i=0;$i -lt $payload.Length;$i++){{$bytes[$i]=[byte](([uint16][char]$payload[$i])-19968)}};\
+             $aes=New-Object System.Security.Cryptography.AesManaged;\
+             $dec=$aes.CreateDecryptor();$plain=$dec.TransformFinalBlock($bytes,0,$bytes.Length)"
+        );
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("omitted 4096 high-Unicode chars from PowerShell carrier"),
+            "normalized AES high-Unicode carrier was not summarized: {}",
             report.deobfuscated
         );
         assert!(
