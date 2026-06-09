@@ -960,6 +960,14 @@ static PS_LITERAL_REPLACE_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static PS_LITERAL_DOT_REPLACE_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)(?:\breturn\s+)?\$([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Replace\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*,\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)"#,
+    )
+    .expect("ps literal dot replace extractor body regex")
+});
+
+#[allow(clippy::expect_used)]
 static PS_GZIP_FUNCTION_GETSTRING_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\[(?:System\.)?(?:Text\.)?Encoding\]::(?:UTF8|ASCII|Unicode|UTF7|BigEndianUnicode|UTF32)\.GetString\s*\(\s*\(*\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\(*\s*\[(?:System\.)?Convert\]::FromBase64String\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*\)*\s*\)\s*\)*\s*\)\s*(?:\.TrimEnd\s*\([^)]*\))?"#,
@@ -3201,7 +3209,10 @@ fn expand_literal_replace_extractor_calls(text: &str) -> String {
 
     let mut out = text.to_string();
     for (name, params, body) in literal_substring_extractor_defs(text).into_iter().take(32) {
-        let Some(caps) = PS_LITERAL_REPLACE_EXTRACTOR_BODY_RE.captures(&body) else {
+        let Some(caps) = PS_LITERAL_REPLACE_EXTRACTOR_BODY_RE
+            .captures(&body)
+            .or_else(|| PS_LITERAL_DOT_REPLACE_EXTRACTOR_BODY_RE.captures(&body))
+        else {
             continue;
         };
         let Some(value_var) = caps.get(1).map(|m| m.as_str()) else {
