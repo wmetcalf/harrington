@@ -20193,6 +20193,36 @@ consumer.Put_()"#;
     }
 
     #[test]
+    fn standalone_vbs_wmi_scheduledjob_create_emits_persistence() {
+        let vbs = br#"Set wmi = GetObject("winmgmts:\\.\root\cimv2")
+Set job = wmi.Get("Win32_ScheduledJob")
+job.Create "cmd.exe /c powershell.exe -NoP -Command Write-Host scheduled", "********123000.000000-000", True, 1, 0, False, 0"#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence {
+                    hive,
+                    key,
+                    value_name,
+                    command,
+                } if hive == "ScheduledTask"
+                    && key == "Win32_ScheduledJob"
+                    && value_name == "Create"
+                    && command == "cmd.exe /c powershell.exe -NoP -Command Write-Host scheduled"
+            )),
+            "no ScheduledTask Persistence from VBS Win32_ScheduledJob.Create: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.extracted_ps1.is_empty(),
+            "scheduled job command should be recursively routed through powershell"
+        );
+    }
+
+    #[test]
     fn vbs_wscript_shell_run_self_accumulated_chr_command_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let vbs = br#"Dim pdf, GG

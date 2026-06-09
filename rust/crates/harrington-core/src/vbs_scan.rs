@@ -317,6 +317,52 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
             );
         }
 
+        for expr in extract_wmi_scheduledjob_create_command_exprs(&text) {
+            if env.check_deadline() {
+                break 'payloads;
+            }
+            let Some(command) = eval_vbs_string_expr(expr, &bindings, &array_bindings) else {
+                continue;
+            };
+            let command = command.trim();
+            if command.is_empty() || command.len() > 256 * 1024 {
+                continue;
+            }
+            let command = command.to_string();
+            if !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Persistence {
+                        hive,
+                        key,
+                        value_name,
+                        command: existing,
+                    } if hive == "ScheduledTask"
+                        && key == "Win32_ScheduledJob"
+                        && value_name == "Create"
+                        && existing == &command
+                )
+            }) {
+                env.traits.push(Trait::Persistence {
+                    hive: "ScheduledTask".to_string(),
+                    key: "Win32_ScheduledJob".to_string(),
+                    value_name: "Create".to_string(),
+                    command: command.clone(),
+                });
+            }
+            env.exec_cmd.push(command.clone());
+            env.exec_cmd_delayed.push(false);
+            push_downloads_from_vbs_command(
+                env,
+                idx,
+                &text,
+                &command,
+                &dst_hint,
+                &env_bindings,
+                &mut seen,
+            );
+        }
+
         for (consumer_name, command) in
             extract_wmi_commandline_consumer_commands(&text, &bindings, &array_bindings)
         {
@@ -487,6 +533,37 @@ fn extract_shell_run_command_exprs(text: &str) -> Vec<&str> {
 fn extract_wmi_process_create_command_exprs(text: &str) -> Vec<&str> {
     let lower_text = text.to_ascii_lowercase();
     if !lower_text.contains("win32_process") {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let lower = line.to_ascii_lowercase();
+        let mut cursor = 0usize;
+        while let Some(rel) = lower[cursor..].find(".create") {
+            let method_start = cursor + rel;
+            let args_start = method_start + ".create".len();
+            let next = line[args_start..].chars().next();
+            if !next.is_some_and(|c| c.is_ascii_whitespace() || c == '(') {
+                cursor = args_start;
+                continue;
+            }
+            let mut args = line[args_start..].trim_start();
+            if let Some(rest) = args.strip_prefix('(') {
+                args = rest;
+            }
+            let parts = split_vbs_args(args);
+            if let Some(command) = parts.first() {
+                out.push(*command);
+            }
+            cursor = args_start;
+        }
+    }
+    out
+}
+
+fn extract_wmi_scheduledjob_create_command_exprs(text: &str) -> Vec<&str> {
+    let lower_text = text.to_ascii_lowercase();
+    if !lower_text.contains("win32_scheduledjob") {
         return Vec::new();
     }
     let mut out = Vec::new();
