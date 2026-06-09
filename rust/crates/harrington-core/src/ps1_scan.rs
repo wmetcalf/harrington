@@ -304,7 +304,7 @@ static PS_URL_REGEX_SPECS: &[PsUrlRegexSpec] = &[
 #[allow(clippy::expect_used)]
 static DYNAMIC_DOWNLOAD_INVOKE_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)\.\s*\(?\s*["'](?:(?:Download(?:String|File|Data)|OpenRead)(?:(?:Task)?Async)?|Down)["']\s*\)?\s*\.Invoke\s*\(\s*(?:\$([A-Za-z_][A-Za-z0-9_]*)|["']([^"']+)["'])"#,
+        r#"(?is)\.\s*\(?\s*(?:'(?P<single_method>(?:(?:Download(?:String|File|Data)|OpenRead)(?:(?:Task)?Async)?|Down))'|"(?P<double_method>(?:(?:Download(?:String|File|Data)|OpenRead)(?:(?:Task)?Async)?|Down))"|(?P<bare_method>(?:(?:Download(?:String|File|Data)|OpenRead)(?:(?:Task)?Async)?|Down))|\$(?P<method_var>[A-Za-z_][A-Za-z0-9_]*))\s*\)?\s*\.Invoke\s*\(\s*(?P<args>[^)]{0,2048})\)"#,
     )
     .expect("dynamic download invoke")
 });
@@ -1976,7 +1976,100 @@ fn ps_string_bindings(text: &str) -> std::collections::HashMap<String, String> {
         }
     }
     insert_ps_path_combine_bindings(text, &mut bindings);
+    insert_ps_env_concat_bindings(text, &mut bindings);
+    insert_ps_alias_bindings(text, &mut bindings);
     bindings
+}
+
+fn ps_dynamic_download_bindings(text: &str) -> std::collections::HashMap<String, String> {
+    let mut bindings = ps_string_bindings(text);
+    insert_ps_interpolated_double_quote_bindings(text, &mut bindings, true);
+    insert_ps_alias_bindings(text, &mut bindings);
+    bindings
+}
+
+fn insert_ps_interpolated_double_quote_bindings(
+    text: &str,
+    bindings: &mut std::collections::HashMap<String, String>,
+    preserve_env_refs: bool,
+) {
+    for _ in 0..4 {
+        let mut changed = false;
+        for caps in PS_DQ_INTERPOLATED_ASSIGN_RE.captures_iter(text) {
+            let (Some(dst), Some(value)) = (caps.get(1), caps.get(2)) else {
+                continue;
+            };
+            let value = value.as_str();
+            if !value.contains('$') {
+                continue;
+            }
+            let Some(expanded) =
+                interpolate_ps_double_quoted_string(value, bindings, preserve_env_refs)
+            else {
+                continue;
+            };
+            if is_large_literal_carrier(&expanded) {
+                continue;
+            }
+            let key = dst.as_str().to_ascii_lowercase();
+            if bindings.get(&key) != Some(&expanded) {
+                bindings.insert(key, expanded);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+}
+
+fn insert_ps_env_concat_bindings(
+    text: &str,
+    bindings: &mut std::collections::HashMap<String, String>,
+) {
+    for caps in PS_ENV_CONCAT_ASSIGN_RE.captures_iter(text) {
+        let (Some(dst), Some(base)) = (caps.get(1), caps.get(2)) else {
+            continue;
+        };
+        let Some(leaf) = caps
+            .get(3)
+            .map(|m| m.as_str().replace("''", "'"))
+            .or_else(|| caps.get(4).map(|m| m.as_str().to_string()))
+        else {
+            continue;
+        };
+        if leaf.is_empty() || is_large_literal_carrier(&leaf) {
+            continue;
+        }
+        let joined = join_ps_path_components(base.as_str(), &leaf);
+        bindings.insert(dst.as_str().to_ascii_lowercase(), joined);
+    }
+}
+
+fn insert_ps_alias_bindings(text: &str, bindings: &mut std::collections::HashMap<String, String>) {
+    for _ in 0..4 {
+        let mut changed = false;
+        for caps in PS_ALIAS_ASSIGN_RE.captures_iter(text) {
+            let (Some(dst), Some(src)) = (caps.get(1), caps.get(2)) else {
+                continue;
+            };
+            let src_key = src.as_str().to_ascii_lowercase();
+            let Some(value) = bindings.get(&src_key).cloned() else {
+                continue;
+            };
+            if is_large_literal_carrier(&value) {
+                continue;
+            }
+            let dst_key = dst.as_str().to_ascii_lowercase();
+            if bindings.get(&dst_key) != Some(&value) {
+                bindings.insert(dst_key, value);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
 }
 
 fn expand_start_process_argument_list(text: &str) -> String {
@@ -2852,7 +2945,7 @@ static PS_VAR_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     // wrapper $name = $('literal'). Double-quoted values with interpolation or
     // metacharacters are intentionally skipped.
     Regex::new(
-        r#"\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:\$\(\s*)?(?:'((?:''|[^'])*)'|"([^"`$\\]*(?:\\.[^"`$\\]*)*)")(?:\s*\))?"#,
+        r#"\$(?:(?:global|script|local|private):)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:\$\(\s*)?(?:'((?:''|[^'])*)'|"([^"`$\\]*(?:\\.[^"`$\\]*)*)")(?:\s*\))?"#,
     )
     .expect("ps var assign")
 });
@@ -2866,15 +2959,33 @@ static PS_INT_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static PS_PATH_COMBINE_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\[(?:System\.)?IO\.Path\]\s*::\s*Combine\s*\(\s*([^,()]{1,256})\s*,\s*(?:'((?:''|[^'])*)'|"([^"`$\\]*(?:\\.[^"`$\\]*)*)")\s*\)"#,
+        r#"\$(?:(?:global|script|local|private):)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\[(?:System\.)?IO\.Path\]\s*::\s*Combine\s*\(\s*([^,()]{1,256})\s*,\s*(?:'((?:''|[^'])*)'|"([^"`$\\]*(?:\\.[^"`$\\]*)*)")\s*\)"#,
     )
     .expect("ps Path.Combine assign")
 });
 
 #[allow(clippy::expect_used)]
 static PS_DQ_INTERPOLATED_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"([^"]{0,4096})""#)
-        .expect("ps interpolated double-quoted assign")
+    Regex::new(
+        r#"\$(?:(?:global|script|local|private):)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"([^"]{0,4096})""#,
+    )
+    .expect("ps interpolated double-quoted assign")
+});
+
+#[allow(clippy::expect_used)]
+static PS_ENV_CONCAT_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"\$(?:(?:global|script|local|private):)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\$env:[A-Za-z_][A-Za-z0-9_]*)\s*\+\s*(?:'([^']*)'|"([^"`$\\]*(?:\\.[^"`$\\]*)*)")"#,
+    )
+    .expect("ps env concat assign")
+});
+
+#[allow(clippy::expect_used)]
+static PS_ALIAS_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"\$(?:(?:global|script|local|private):)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\$(?:(?:global|script|local|private):)?([A-Za-z_][A-Za-z0-9_]*)\b"#,
+    )
+    .expect("ps alias assign")
 });
 
 #[allow(clippy::expect_used)]
@@ -3115,32 +3226,7 @@ fn expand_ps_variables(text: &str) -> String {
             bindings.insert(dst.as_str().to_ascii_lowercase(), joined);
         }
     }
-    for _ in 0..4 {
-        let mut changed = false;
-        for caps in PS_DQ_INTERPOLATED_ASSIGN_RE.captures_iter(text) {
-            let (Some(dst), Some(value)) = (caps.get(1), caps.get(2)) else {
-                continue;
-            };
-            let value = value.as_str();
-            if !value.contains('$') {
-                continue;
-            }
-            let Some(expanded) = interpolate_ps_double_quoted_string(value, &bindings) else {
-                continue;
-            };
-            if is_large_literal_carrier(&expanded) {
-                continue;
-            }
-            let key = dst.as_str().to_ascii_lowercase();
-            if bindings.get(&key) != Some(&expanded) {
-                bindings.insert(key, expanded);
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
+    insert_ps_interpolated_double_quote_bindings(text, &mut bindings, false);
     if bindings.is_empty() {
         return text.to_string();
     }
@@ -3191,7 +3277,7 @@ fn expand_ps_double_quoted_interpolations(
             if looks_like_quoted_ps_command_wrapper(value.as_str()) {
                 return None;
             }
-            let expanded = interpolate_ps_double_quoted_string(value.as_str(), bindings)?;
+            let expanded = interpolate_ps_double_quoted_string(value.as_str(), bindings, false)?;
             Some((value.start(), value.end(), expanded))
         })
         .collect();
@@ -3212,6 +3298,7 @@ fn looks_like_quoted_ps_command_wrapper(value: &str) -> bool {
 fn interpolate_ps_double_quoted_string(
     value: &str,
     bindings: &std::collections::HashMap<String, String>,
+    preserve_env_refs: bool,
 ) -> Option<String> {
     let bytes = value.as_bytes();
     let mut out = String::with_capacity(value.len());
@@ -3233,6 +3320,26 @@ fn interpolate_ps_double_quoted_string(
             };
             let name_end = name_start + rel_end;
             let name = &value[name_start..name_end];
+            if name
+                .get(..4)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("env:"))
+            {
+                if !preserve_env_refs {
+                    return None;
+                }
+                let env_name = &name[4..];
+                if env_name.is_empty()
+                    || !env_name
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                {
+                    return None;
+                }
+                out.push_str(&value[i..=name_end]);
+                i = name_end + 1;
+                changed = true;
+                continue;
+            }
             if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
                 return None;
             }
@@ -3251,6 +3358,28 @@ fn interpolate_ps_double_quoted_string(
             i += 1;
             continue;
         };
+        if value[name_start..]
+            .get(..4)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("env:"))
+        {
+            if !preserve_env_refs {
+                return None;
+            }
+            let env_name_start = name_start + 4;
+            let mut env_name_end = env_name_start;
+            while bytes
+                .get(env_name_end)
+                .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
+            {
+                env_name_end += 1;
+            }
+            if env_name_end > env_name_start {
+                out.push_str(&value[i..env_name_end]);
+                i = env_name_end;
+                changed = true;
+                continue;
+            }
+        }
         if !(first.is_ascii_alphabetic() || *first == b'_') {
             out.push('$');
             i += 1;
@@ -8663,7 +8792,7 @@ fn is_utf16le(bytes: &[u8]) -> bool {
     odd_zeros * 2 >= pairs // >= 50% of odd bytes are zero
 }
 
-fn dynamic_download_invoke_urls(text: &str) -> Vec<String> {
+fn dynamic_download_invoke_downloads(text: &str) -> Vec<(String, Option<String>)> {
     let mut foreach_urls: std::collections::HashMap<String, Vec<String>> =
         std::collections::HashMap::new();
     let mut array_bindings: std::collections::HashMap<String, Vec<String>> =
@@ -8706,30 +8835,82 @@ fn dynamic_download_invoke_urls(text: &str) -> Vec<String> {
     }
 
     let mut seen = std::collections::HashSet::new();
-    let mut urls = Vec::new();
+    let mut downloads = Vec::new();
+    let bindings = ps_dynamic_download_bindings(text);
     for caps in DYNAMIC_DOWNLOAD_INVOKE_RE.captures_iter(text) {
-        if let Some(literal) = caps.get(2) {
-            let Some(url) = normalize_ps_literal_url(literal.as_str()) else {
-                continue;
-            };
-            if seen.insert(url.clone()) {
-                urls.push(url);
-            }
-            continue;
-        }
-
-        let Some(var) = caps.get(1) else {
+        let method = caps
+            .name("single_method")
+            .or_else(|| caps.name("double_method"))
+            .or_else(|| caps.name("bare_method"))
+            .map(|m| m.as_str().to_string())
+            .or_else(|| {
+                caps.name("method_var")
+                    .and_then(|m| bindings.get(&m.as_str().to_ascii_lowercase()).cloned())
+            });
+        let Some(method) = method.filter(|method| is_dynamic_download_method(method)) else {
             continue;
         };
-        if let Some(values) = foreach_urls.get(&var.as_str().to_ascii_lowercase()) {
+        let Some(args) = caps
+            .name("args")
+            .map(|m| split_ps_top_level_args(m.as_str()))
+        else {
+            continue;
+        };
+        let Some(src_arg) = args.first() else {
+            continue;
+        };
+        let dst = if method.to_ascii_lowercase().starts_with("downloadfile") {
+            args.get(1).and_then(|arg| ps_string_arg(arg, &bindings))
+        } else {
+            None
+        };
+
+        if let Some(url) = ps_literal_url_arg(src_arg).or_else(|| ps_url_arg(src_arg, &bindings)) {
+            if seen.insert((url.clone(), dst.clone())) {
+                downloads.push((url, dst));
+            }
+            continue;
+        };
+
+        let Some(var) = src_arg.trim().strip_prefix('$') else {
+            continue;
+        };
+        if !var.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+            continue;
+        }
+        if let Some(values) = foreach_urls.get(&var.to_ascii_lowercase()) {
             for url in values {
-                if seen.insert(url.clone()) {
-                    urls.push(url.clone());
+                if seen.insert((url.clone(), dst.clone())) {
+                    downloads.push((url.clone(), dst.clone()));
                 }
             }
         }
     }
-    urls
+    downloads
+}
+
+#[cfg(test)]
+fn dynamic_download_invoke_urls(text: &str) -> Vec<String> {
+    dynamic_download_invoke_downloads(text)
+        .into_iter()
+        .map(|(url, _)| url)
+        .collect()
+}
+
+fn is_dynamic_download_method(method: &str) -> bool {
+    let method = method.to_ascii_lowercase();
+    method == "down"
+        || ["downloadstring", "downloadfile", "downloaddata", "openread"]
+            .iter()
+            .any(|prefix| {
+                if method == *prefix {
+                    return true;
+                }
+                let Some(suffix) = method.strip_prefix(prefix) else {
+                    return false;
+                };
+                matches!(suffix, "async" | "taskasync")
+            })
 }
 
 pub(crate) fn ps_downloadfile_calls(text: &str) -> Vec<(String, Option<String>)> {
@@ -9419,6 +9600,21 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
             downloadfile_elapsed += stage_start.elapsed();
 
             let stage_start = std::time::Instant::now();
+            for (url, dst) in dynamic_download_invoke_downloads(text) {
+                if !seen.insert((idx, url.clone())) {
+                    continue;
+                }
+                push_download_and_execution_url_argument(
+                    env,
+                    format!("(ps1 #{idx}) {snippet}"),
+                    url,
+                    dst.or_else(|| outfile_hint_from(primary)),
+                    primary,
+                );
+            }
+            dynamic_elapsed += stage_start.elapsed();
+
+            let stage_start = std::time::Instant::now();
             let regex_atom_profile = PsUrlRegexAtomProfile::new(text);
             for spec in PS_URL_REGEX_SPECS {
                 if !regex_atom_profile.matches(spec.atom_kind) {
@@ -9461,21 +9657,6 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
                 }
             }
             regex_elapsed += stage_start.elapsed();
-
-            let stage_start = std::time::Instant::now();
-            for url in dynamic_download_invoke_urls(text) {
-                if !seen.insert((idx, url.clone())) {
-                    continue;
-                }
-                push_download_and_execution_url_argument(
-                    env,
-                    format!("(ps1 #{idx}) {snippet}"),
-                    url,
-                    outfile_hint_from(primary),
-                    primary,
-                );
-            }
-            dynamic_elapsed += stage_start.elapsed();
 
             let stage_start = std::time::Instant::now();
             for url in ps_literal_urls_in_download_context(text) {

