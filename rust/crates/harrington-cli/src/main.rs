@@ -581,6 +581,10 @@ fn lolbas_non_exec_value_option(token: &str) -> bool {
             | "--data-urlencode"
             | "--form"
             | "--form-string"
+            | "--proxy"
+            | "--preproxy"
+            | "--socks5"
+            | "--socks5-hostname"
     ) || lolbas_msi_log_option(token)
 }
 
@@ -624,6 +628,10 @@ fn lolbas_attached_non_exec_value_option(token: &str) -> bool {
         || lower.starts_with("--data-urlencode=")
         || lower.starts_with("--form=")
         || lower.starts_with("--form-string=")
+        || lower.starts_with("--proxy=")
+        || lower.starts_with("--preproxy=")
+        || lower.starts_with("--socks5=")
+        || lower.starts_with("--socks5-hostname=")
         || (lower.len() > 2
             && (lower.starts_with("-o") || lower.starts_with("/o"))
             && lower[2..].contains(['\\', '/']))
