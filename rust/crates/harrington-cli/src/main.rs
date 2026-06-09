@@ -612,6 +612,13 @@ fn lolbas_non_exec_value_option(token: &str) -> bool {
             | "--tls13-ciphers"
             | "--dns-servers"
             | "--doh-url"
+            | "--post-data"
+            | "--post-file"
+            | "--body-data"
+            | "--body-file"
+            | "--method"
+            | "--load-cookies"
+            | "--save-cookies"
     ) || lolbas_msi_log_option(token)
 }
 
@@ -686,6 +693,13 @@ fn lolbas_attached_non_exec_value_option(token: &str) -> bool {
         || lower.starts_with("--tls13-ciphers=")
         || lower.starts_with("--dns-servers=")
         || lower.starts_with("--doh-url=")
+        || lower.starts_with("--post-data=")
+        || lower.starts_with("--post-file=")
+        || lower.starts_with("--body-data=")
+        || lower.starts_with("--body-file=")
+        || lower.starts_with("--method=")
+        || lower.starts_with("--load-cookies=")
+        || lower.starts_with("--save-cookies=")
         || (lower.len() > 2
             && (lower.starts_with("-o") || lower.starts_with("/o"))
             && lower[2..].contains(['\\', '/']))
