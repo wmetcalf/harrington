@@ -29,6 +29,22 @@ static VBS_STRING_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static VBS_FOR_UBOUND_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?i)^\s*For\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*0\s+To\s+UBound\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*$"#,
+    )
+    .expect("vbs for ubound")
+});
+
+#[allow(clippy::expect_used)]
+static VBS_CHR_ARRAY_APPEND_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?i)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\s*&\s*Chr(?:B|W)?\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*(?:Xor\s*([^)]+?))?\s*\)\s*$"#,
+    )
+    .expect("vbs chr array append")
+});
+
+#[allow(clippy::expect_used)]
 static SAVETOFILE_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"(?i)\.SaveToFile\s*\(?\s*"([^"]+)""#).expect("savetofile"));
 
@@ -96,6 +112,7 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
                 bindings.insert(key, value);
             }
         }
+        recover_vbs_chr_array_loop_bindings(&text, &mut bindings, &array_bindings);
         let dst_hint: Option<String> = extract_savetofile_dest_exprs(&text)
             .into_iter()
             .find_map(|expr| eval_vbs_string_expr(expr, &bindings, &array_bindings))
@@ -525,6 +542,25 @@ fn expand_vbs_static_execute(text: &str) -> String {
 
     let mut bindings: VbsStringBindings = HashMap::new();
     let mut array_bindings: VbsArrayBindings = HashMap::new();
+    for line in text.lines() {
+        for statement in split_vbs_statements(line) {
+            if let Some(caps) = VBS_STRING_ASSIGN_RE.captures(statement) {
+                if let (Some(name), Some(value)) = (caps.get(1), caps.get(2)) {
+                    let key = name.as_str().to_ascii_lowercase();
+                    if let Some(values) =
+                        parse_vbs_array_values(value.as_str(), &bindings, &array_bindings)
+                    {
+                        array_bindings.insert(key, values);
+                    } else if let Some(value) =
+                        eval_vbs_string_expr(value.as_str(), &bindings, &array_bindings)
+                    {
+                        bindings.insert(key, value);
+                    }
+                }
+            }
+        }
+    }
+    recover_vbs_chr_array_loop_bindings(text, &mut bindings, &array_bindings);
     let mut expanded = Vec::new();
     let mut expanded_bytes = 0usize;
     let mut pending: Vec<String> = text.lines().map(str::to_string).collect();
@@ -552,6 +588,7 @@ fn expand_vbs_static_execute(text: &str) -> String {
             let Some(expr) = vbs_execute_expr(statement) else {
                 continue;
             };
+            recover_vbs_chr_array_loop_bindings(text, &mut bindings, &array_bindings);
             let Some(decoded) = eval_vbs_string_expr(expr, &bindings, &array_bindings) else {
                 continue;
             };
@@ -973,10 +1010,86 @@ fn parse_vbs_array_values(
     let inner = vbs_function_args(expr, "array")?;
     let mut values = Vec::new();
     for arg in split_vbs_args(inner) {
-        let value = eval_vbs_string_expr(arg, bindings, array_bindings)?;
-        values.push(value);
+        if let Some(value) = eval_vbs_string_expr(arg, bindings, array_bindings) {
+            values.push(value);
+        } else {
+            values.push(parse_vbs_integer(arg)?.to_string());
+        }
     }
     Some(values)
+}
+
+fn recover_vbs_chr_array_loop_bindings(
+    text: &str,
+    bindings: &mut VbsStringBindings,
+    array_bindings: &VbsArrayBindings,
+) {
+    let lines: Vec<&str> = text.lines().collect();
+    for (line_idx, line) in lines.iter().enumerate() {
+        let Some(for_caps) = VBS_FOR_UBOUND_RE.captures(line) else {
+            continue;
+        };
+        let (Some(index_var), Some(array_var)) = (for_caps.get(1), for_caps.get(2)) else {
+            continue;
+        };
+        let index_var = index_var.as_str();
+        let array_var = array_var.as_str();
+        let Some(values) = array_bindings.get(&array_var.to_ascii_lowercase()) else {
+            continue;
+        };
+        let body_end = lines
+            .iter()
+            .enumerate()
+            .skip(line_idx + 1)
+            .take(32)
+            .find_map(|(idx, candidate)| {
+                candidate.trim().eq_ignore_ascii_case("Next").then_some(idx)
+            })
+            .unwrap_or_else(|| (line_idx + 1).saturating_add(32).min(lines.len()));
+        for body_line in &lines[line_idx + 1..body_end] {
+            let Some(body_caps) = VBS_CHR_ARRAY_APPEND_RE.captures(body_line) else {
+                continue;
+            };
+            let (Some(output_lhs), Some(output_rhs), Some(body_array), Some(body_index)) = (
+                body_caps.get(1),
+                body_caps.get(2),
+                body_caps.get(3),
+                body_caps.get(4),
+            ) else {
+                continue;
+            };
+            if !output_lhs
+                .as_str()
+                .eq_ignore_ascii_case(output_rhs.as_str())
+                || !body_array.as_str().eq_ignore_ascii_case(array_var)
+                || !body_index.as_str().eq_ignore_ascii_case(index_var)
+            {
+                continue;
+            }
+            let xor_key = body_caps
+                .get(5)
+                .and_then(|value| parse_vbs_integer(value.as_str()));
+            let mut decoded = String::new();
+            let mut ok = true;
+            for value in values {
+                let Some(mut codepoint) = parse_vbs_integer(value) else {
+                    ok = false;
+                    break;
+                };
+                if let Some(key) = xor_key {
+                    codepoint ^= key;
+                }
+                let Some(ch) = char::from_u32(codepoint) else {
+                    ok = false;
+                    break;
+                };
+                decoded.push(ch);
+            }
+            if ok {
+                bindings.insert(output_lhs.as_str().to_ascii_lowercase(), decoded);
+            }
+        }
+    }
 }
 
 fn parse_vbs_split_values(
