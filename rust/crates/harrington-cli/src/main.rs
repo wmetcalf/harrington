@@ -1550,17 +1550,9 @@ fn lolbas_attached_ps_process_exec_operand(
         .text
         .trim_matches(['"', '\''])
         .to_ascii_lowercase();
-    let start_process_prefixes = [
-        "-filepath:",
-        "/filepath:",
-        "-filepath=",
-        "/filepath=",
-        "-file:",
-        "/file:",
-    ];
-    for prefix in start_process_prefixes {
-        if let Some(value) = lower.strip_prefix(prefix) {
-            return program_stem(value) == wanted_stem;
+    if matches!(head.as_str(), "start-process" | "saps" | "start") {
+        if let Some((name, value)) = ps_attached_param_value(&lower) {
+            return ps_start_process_exec_param_name(name) && program_stem(value) == wanted_stem;
         }
     }
     if matches!(head.as_str(), "invoke-item" | "ii") {
@@ -1576,6 +1568,10 @@ fn ps_attached_param_value(token: &str) -> Option<(&str, &str)> {
     let split = rest.find([':', '='])?;
     let value_start = split + 1;
     (value_start < rest.len()).then_some((&rest[..split], &rest[value_start..]))
+}
+
+fn ps_start_process_exec_param_name(name: &str) -> bool {
+    name == "file" || (name.len() >= "filep".len() && "filepath".starts_with(name))
 }
 
 fn ps_invoke_item_exec_param_name(name: &str) -> bool {
