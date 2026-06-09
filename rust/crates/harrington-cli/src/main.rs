@@ -456,12 +456,26 @@ fn command_invokes_program(command: &str, wanted_stem: &str) -> bool {
         if lolbas_attached_non_exec_value_option(token.text) {
             return false;
         }
+        if lolbas_is_option_name_token(token.text) {
+            return false;
+        }
         if is_url_like_program_token(token.text) {
             return false;
         }
         let stem = program_stem(token.text);
         !stem.is_empty() && stem == wanted_stem
     })
+}
+
+fn lolbas_is_option_name_token(token: &str) -> bool {
+    let token = token.trim_matches(['"', '\'']);
+    if !token.starts_with(['/', '-']) || token.starts_with(['\\']) {
+        return false;
+    }
+    let Some(rest) = token.get(1..) else {
+        return false;
+    };
+    !rest.is_empty() && !rest.contains(['\\', '/', ':', '=', '.'])
 }
 
 struct LolbasCommandToken<'a> {

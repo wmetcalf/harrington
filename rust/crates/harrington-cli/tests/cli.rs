@@ -3289,6 +3289,66 @@ fn summarize_lolbas_enrichment_ignores_program_names_in_schtasks_schedule_fields
 }
 
 #[test]
+fn summarize_lolbas_enrichment_ignores_schtasks_sc_schedule_option_as_sc_binary() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(
+        &input,
+        "schtasks /create /tn Job /sc minute /tr C:\\Temp\\payload.exe\r\n\
+         schtasks /create /tn Job2 /sc once /tr \"sc.exe stop Spooler\"\r\n",
+    )
+    .expect("write input");
+    let lolbas = dir.path().join("lolbas.json");
+    fs::write(
+        &lolbas,
+        r#"[
+          {
+            "Name": "Sc.exe",
+            "url": "https://lolbas-project.github.io/lolbas/Binaries/Sc/",
+            "Commands": [
+              {
+                "Category": "Services",
+                "MitreID": "T1569.002"
+              }
+            ]
+          }
+        ]"#,
+    )
+    .expect("write lolbas");
+
+    let out = Command::cargo_bin("harrington")
+        .expect("bin")
+        .args([
+            "summarize",
+            input.to_str().expect("input path"),
+            "--lolbas-json",
+            lolbas.to_str().expect("lolbas path"),
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("json");
+    let matches = v
+        .get("lolbas_matches")
+        .and_then(|v| v.as_array())
+        .expect("lolbas_matches array");
+    assert_eq!(matches.len(), 1, "unexpected matches: {matches:?}");
+    assert!(
+        !matches.iter().any(|item| {
+            item.get("command").and_then(|v| v.as_str())
+                == Some("schtasks /create /tn Job /sc minute /tr C:\\Temp\\payload.exe")
+        }),
+        "unexpected /sc schedule option match: {matches:?}"
+    );
+    assert_eq!(
+        matches[0].get("command").and_then(|v| v.as_str()),
+        Some("sc.exe stop Spooler")
+    );
+}
+
+#[test]
 fn summarize_lolbas_enrichment_ignores_program_names_in_schtasks_remote_auth_fields() {
     let dir = TempDir::new().expect("tmp");
     let input = dir.path().join("in.bat");
