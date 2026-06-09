@@ -399,6 +399,9 @@ fn command_invokes_program(command: &str, wanted_stem: &str) -> bool {
         if lolbas_is_sc_description_operand(&tokens, idx) {
             return false;
         }
+        if lolbas_is_sc_config_metadata_operand(&tokens, idx) {
+            return false;
+        }
         if lolbas_is_schtasks_task_name_operand(&tokens, idx) {
             return false;
         }
@@ -930,6 +933,27 @@ fn lolbas_is_sc_description_operand(tokens: &[LolbasCommandToken<'_>], idx: usiz
         .text
         .trim_matches(['"', '\''])
         .eq_ignore_ascii_case("description")
+}
+
+fn lolbas_is_sc_config_metadata_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx < 4 || program_stem(tokens[0].text) != "sc" {
+        return false;
+    }
+    if !tokens[1]
+        .text
+        .trim_matches(['"', '\''])
+        .eq_ignore_ascii_case("config")
+    {
+        return false;
+    }
+    matches!(
+        tokens[idx - 1]
+            .text
+            .trim_matches(['"', '\''])
+            .to_ascii_lowercase()
+            .as_str(),
+        "depend" | "displayname" | "error" | "group" | "start" | "tag" | "type"
+    )
 }
 
 fn lolbas_is_schtasks_task_name_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
