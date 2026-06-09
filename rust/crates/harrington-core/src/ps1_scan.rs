@@ -8612,11 +8612,41 @@ pub fn scan_inline_powershell_text(text: &str, env: &mut Environment) {
         .all_extracted_ps1
         .push(scan_text.as_bytes().to_vec());
     scan_ps1_payloads(&mut payload_env);
-    env.traits
-        .extend(payload_env.traits.into_iter().filter(|t| match t {
-            Trait::Download { src, .. } => !known_downloads.contains(src),
-            _ => true,
-        }));
+    let mut new_traits = Vec::new();
+    let mut decoded_downloads = Vec::new();
+    for t in payload_env.traits {
+        if let Trait::Download { src, .. } = &t {
+            decoded_downloads.push(src.clone());
+            if known_downloads.contains(src) {
+                continue;
+            }
+        }
+        new_traits.push(t);
+    }
+    for t in &new_traits {
+        if let Trait::Download { src, .. } = t {
+            if !decoded_downloads.iter().any(|known| known == src) {
+                decoded_downloads.push(src.clone());
+            }
+        }
+    }
+    if !decoded_downloads.is_empty() {
+        let normalized = normalize_ps1_text(scan_text.as_ref());
+        if decoded_downloads
+            .iter()
+            .any(|src| normalized.contains(src) && !scan_text.as_ref().contains(src))
+        {
+            let normalized_bytes = normalized.into_bytes();
+            if !env
+                .all_extracted_ps1
+                .iter()
+                .any(|payload| payload.as_slice() == normalized_bytes.as_slice())
+            {
+                env.all_extracted_ps1.push(normalized_bytes);
+            }
+        }
+    }
+    env.traits.extend(new_traits);
 }
 
 fn inline_powershell_scan_text(text: &str) -> std::borrow::Cow<'_, str> {

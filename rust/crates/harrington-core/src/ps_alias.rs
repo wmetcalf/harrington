@@ -165,9 +165,19 @@ pub fn expand_aliases(text: &str) -> String {
             None => continue,
         };
         out.push_str(&text[last_end..m.start()]);
+        if alias_match_inside_quoted_literal(text, m.start()) {
+            out.push_str(&text[m.start()..m.end()]);
+            last_end = m.end();
+            continue;
+        }
         let lead = caps.name("lead").map(|x| x.as_str()).unwrap_or("");
         let tok = caps.name("tok").map(|x| x.as_str()).unwrap_or("");
         let next = bytes.get(m.end()).copied();
+        if next == Some(b':') {
+            out.push_str(&text[m.start()..m.end()]);
+            last_end = m.end();
+            continue;
+        }
         let quoted_single_token = matches!(lead.as_bytes().last(), Some(b'\'' | b'"' | b'`'))
             && next == lead.as_bytes().last().copied();
         let quoted_invocation_or_assignment = quoted_single_token
@@ -197,6 +207,73 @@ pub fn expand_aliases(text: &str) -> String {
     }
     out.push_str(&text[last_end..]);
     out
+}
+
+fn alias_match_inside_quoted_literal(text: &str, pos: usize) -> bool {
+    let mut idx = 0usize;
+    let mut in_single = false;
+    let mut in_double = false;
+    while idx < pos {
+        let Some(ch) = text[idx..].chars().next() else {
+            break;
+        };
+        let next_idx = idx + ch.len_utf8();
+        if in_single {
+            if ch == '\'' {
+                if text[next_idx..].starts_with('\'') {
+                    idx = next_idx + 1;
+                    continue;
+                }
+                in_single = false;
+            }
+            idx = next_idx;
+            continue;
+        }
+        if in_double {
+            if ch == '`' {
+                let Some(escaped) = text[next_idx..].chars().next() else {
+                    idx = next_idx;
+                    continue;
+                };
+                idx = next_idx + escaped.len_utf8();
+                continue;
+            }
+            if ch == '"' {
+                in_double = false;
+            }
+            idx = next_idx;
+            continue;
+        }
+        match ch {
+            '\'' => in_single = true,
+            '"' if !double_quote_starts_powershell_command_arg(text, idx) => in_double = true,
+            '`' => {
+                let Some(escaped) = text[next_idx..].chars().next() else {
+                    idx = next_idx;
+                    continue;
+                };
+                idx = next_idx + escaped.len_utf8();
+                continue;
+            }
+            _ => {}
+        }
+        idx = next_idx;
+    }
+    in_single || in_double
+}
+
+fn double_quote_starts_powershell_command_arg(text: &str, quote_pos: usize) -> bool {
+    let before = text[..quote_pos].trim_end();
+    let Some(token) = before
+        .rsplit(|ch: char| ch.is_whitespace() || matches!(ch, ';' | '|' | '&' | '('))
+        .find(|part| !part.is_empty())
+    else {
+        return false;
+    };
+    matches!(
+        token.to_ascii_lowercase().as_str(),
+        "-c" | "-command" | "/c" | "/command"
+    )
 }
 
 fn is_foreach_language_statement(after_token: &str) -> bool {
