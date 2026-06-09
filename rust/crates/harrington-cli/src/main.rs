@@ -617,8 +617,14 @@ fn lolbas_non_exec_value_option(token: &str) -> bool {
             | "--body-data"
             | "--body-file"
             | "--method"
+            | "--execute"
             | "--load-cookies"
             | "--save-cookies"
+            | "--proxy-password"
+            | "--bind-address"
+            | "--ca-certificate"
+            | "--certificate"
+            | "--private-key"
     ) || lolbas_msi_log_option(token)
 }
 
@@ -698,8 +704,14 @@ fn lolbas_attached_non_exec_value_option(token: &str) -> bool {
         || lower.starts_with("--body-data=")
         || lower.starts_with("--body-file=")
         || lower.starts_with("--method=")
+        || lower.starts_with("--execute=")
         || lower.starts_with("--load-cookies=")
         || lower.starts_with("--save-cookies=")
+        || lower.starts_with("--proxy-password=")
+        || lower.starts_with("--bind-address=")
+        || lower.starts_with("--ca-certificate=")
+        || lower.starts_with("--certificate=")
+        || lower.starts_with("--private-key=")
         || (lower.len() > 2
             && (lower.starts_with("-o") || lower.starts_with("/o"))
             && lower[2..].contains(['\\', '/']))
