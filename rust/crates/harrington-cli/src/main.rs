@@ -602,6 +602,14 @@ fn lolbas_non_exec_value_option(token: &str) -> bool {
             | "--cookie-jar"
             | "--referer"
             | "--request"
+            | "--cacert"
+            | "--cert"
+            | "--cert-type"
+            | "--key"
+            | "--key-type"
+            | "--pass"
+            | "--ciphers"
+            | "--tls13-ciphers"
     ) || lolbas_msi_log_option(token)
 }
 
@@ -666,6 +674,14 @@ fn lolbas_attached_non_exec_value_option(token: &str) -> bool {
         || lower.starts_with("--cookie-jar=")
         || lower.starts_with("--referer=")
         || lower.starts_with("--request=")
+        || lower.starts_with("--cacert=")
+        || lower.starts_with("--cert=")
+        || lower.starts_with("--cert-type=")
+        || lower.starts_with("--key=")
+        || lower.starts_with("--key-type=")
+        || lower.starts_with("--pass=")
+        || lower.starts_with("--ciphers=")
+        || lower.starts_with("--tls13-ciphers=")
         || (lower.len() > 2
             && (lower.starts_with("-o") || lower.starts_with("/o"))
             && lower[2..].contains(['\\', '/']))
