@@ -1081,9 +1081,9 @@ static PS_LITERAL_INDEX_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static PS_LITERAL_CHARS_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)(?:\breturn\s+)?(?:\(\s*)?\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\)\s*)?\.\s*Chars\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)"#,
+        r#"(?is)(?:\breturn\s+)?(?:\(\s*)?\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\)\s*)?\.\s*(?:get_)?Chars\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)"#,
     )
-    .expect("ps literal Chars extractor body regex")
+    .expect("ps literal Chars/get_Chars extractor body regex")
 });
 
 #[allow(clippy::expect_used)]
@@ -3794,7 +3794,7 @@ fn expand_literal_string_case_extractor_calls(text: &str) -> String {
 fn expand_literal_index_extractor_calls(text: &str) -> String {
     let lower = text.to_ascii_lowercase();
     if !has_literal_extractor_def_signal(&lower)
-        || !(text.contains('[') || lower.contains(".chars"))
+        || !(text.contains('[') || lower.contains(".chars") || lower.contains(".get_chars"))
         || !text.contains('\'')
     {
         return text.to_string();
@@ -7209,7 +7209,7 @@ impl PsObfuscationSignals {
         let string_case_extractor =
             has_function_def && (lower.contains(".tolower") || lower.contains(".toupper"));
         let literal_index_extractor = has_function_def
-            && (lower.contains('[') || lower.contains(".chars"))
+            && (lower.contains('[') || lower.contains(".chars") || lower.contains(".get_chars"))
             && text.contains('\'');
         let split_index =
             has_function_def && has_split_index_extractor_signal(&lower) && text.contains('[');
