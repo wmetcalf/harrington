@@ -3911,6 +3911,18 @@ fn decode_utf16le_script_blob(input: &[u8]) -> Option<String> {
     }
 }
 
+fn decode_utf16le_extracted_payload(input: &[u8]) -> Option<String> {
+    const MAX_UTF16_DECODE_BYTES: usize = 16 * 1024 * 1024;
+    if input.len() > MAX_UTF16_DECODE_BYTES || !looks_like_utf16le(input) {
+        return None;
+    }
+    let u16s: Vec<u16> = input
+        .chunks_exact(2)
+        .map(|b| u16::from_le_bytes([b[0], b[1]]))
+        .collect();
+    Some(String::from_utf16_lossy(&u16s))
+}
+
 fn looks_like_utf16le(bytes: &[u8]) -> bool {
     if bytes.len() < 4 {
         return false;
@@ -4267,6 +4279,28 @@ fn analyze_inner(input: &[u8], cfg: &Config, file_path: Option<std::path::PathBu
     let extracted_ps1_normalized =
         normalize_extracted_ps1_payloads(&env.all_extracted_ps1, &env.ps1_normalized_cache);
     profile_mark!("normalize_ps1_payloads");
+    let extracted_ps1_for_aes: Vec<String> = env
+        .all_extracted_ps1
+        .iter()
+        .map(|body| {
+            decode_utf16le_extracted_payload(body)
+                .unwrap_or_else(|| String::from_utf8_lossy(body).into_owned())
+        })
+        .collect();
+    for ps in &extracted_ps1_for_aes {
+        if env.check_deadline() {
+            break;
+        }
+        aes_chain::extract_from_chain(input, ps, &mut env);
+    }
+    profile_mark!("extracted_ps1_aes_chain");
+    for ps in &extracted_ps1_normalized {
+        if env.check_deadline() {
+            break;
+        }
+        aes_chain::extract_from_chain(input, ps, &mut env);
+    }
+    profile_mark!("normalized_ps1_aes_chain");
     let final_profile_enabled = std::env::var_os("HARRINGTON_PROFILE_FINAL").is_some();
     let final_profile_start = std::time::Instant::now();
     let mut final_profile_last = final_profile_start;
