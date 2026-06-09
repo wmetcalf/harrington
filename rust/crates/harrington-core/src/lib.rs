@@ -3863,6 +3863,7 @@ fn analyze_inner(input: &[u8], cfg: &Config, file_path: Option<std::path::PathBu
         }
         profile_mark!("js_ps1_scan");
         if !env.check_deadline() {
+            ps1_scan::scan_inline_powershell_text(&raw_text, &mut env);
             ps1_scan::scan_inline_powershell_text(&out, &mut env);
         }
         profile_mark!("inline_ps");

