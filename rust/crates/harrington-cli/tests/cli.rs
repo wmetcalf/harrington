@@ -998,6 +998,37 @@ fn summarize_emits_compact_report() {
 }
 
 #[test]
+fn summarize_omits_console_noise_from_admin_commands() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(
+        &input,
+        "color f0\r\ncls\r\npause harmless text\r\ntitle benign window title\r\nreg query HKCU\\Software\r\n",
+    )
+    .expect("write");
+    let out = Command::cargo_bin("harrington")
+        .expect("bin")
+        .args(["summarize", input.to_str().expect("path")])
+        .output()
+        .expect("run");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let s = String::from_utf8_lossy(&out.stdout);
+    let v: serde_json::Value = serde_json::from_str(&s).expect("valid json");
+    let admin = v["admin_commands"].as_object().expect("admin_commands");
+    assert!(admin.get("reg").is_some(), "reg should remain: {admin:?}");
+    for noisy in ["color", "cls", "pause", "title"] {
+        assert!(
+            !admin.contains_key(noisy),
+            "summary kept noisy admin command {noisy}: {admin:?}"
+        );
+    }
+}
+
+#[test]
 fn summarize_can_enrich_lolbas_matches_from_external_json() {
     let dir = TempDir::new().expect("tmp");
     let input = dir.path().join("in.bat");

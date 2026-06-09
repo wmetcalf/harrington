@@ -2166,6 +2166,9 @@ fn build_summary(
                 lolbas.push(name.clone());
             }
             Trait::AdminCommand { name, .. } => {
+                if summarize_omits_admin_command(name) {
+                    continue;
+                }
                 *admin_commands.entry(name.clone()).or_insert(0) += 1;
             }
             Trait::SelfExtract { .. } => {
@@ -2222,6 +2225,10 @@ fn build_summary(
         }
     }
     summary
+}
+
+fn summarize_omits_admin_command(name: &str) -> bool {
+    matches!(name, "chcp" | "cls" | "color" | "pause" | "title" | "ver")
 }
 
 fn extracted_counts_json(report: &harrington_core::Report) -> serde_json::Value {
