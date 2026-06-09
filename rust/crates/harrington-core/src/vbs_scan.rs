@@ -183,6 +183,8 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
         recover_vbs_nodetypedvalue_array_bindings(&text, &bindings, &mut array_bindings);
         recover_vbs_chr_array_loop_bindings(&text, &mut bindings, &array_bindings);
         let env_bindings = collect_vbs_environment_bindings(&text, &bindings, &array_bindings);
+        let scriptcontrol_bodies =
+            extract_scriptcontrol_vbscript_bodies(&text, &bindings, &array_bindings);
         let dst_hint: Option<String> = extract_savetofile_dest_exprs(&text)
             .into_iter()
             .find_map(|expr| eval_vbs_string_expr(expr, &bindings, &array_bindings))
@@ -745,6 +747,30 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
                 });
             }
         }
+
+        for body in scriptcontrol_bodies {
+            if env.check_deadline() {
+                break 'payloads;
+            }
+            if body.trim().is_empty() || body.len() > 256 * 1024 {
+                continue;
+            }
+            push_unique_payload(&mut env.all_extracted_vbs, body.clone().into_bytes());
+            for expr in extract_shell_run_command_exprs(&body) {
+                let Some(command) = eval_vbs_string_expr(expr, &bindings, &array_bindings) else {
+                    continue;
+                };
+                push_downloads_from_vbs_command(
+                    env,
+                    idx,
+                    &text,
+                    &command,
+                    &dst_hint,
+                    &env_bindings,
+                    &mut seen,
+                );
+            }
+        }
     }
     payloads.append(&mut env.all_extracted_vbs);
     env.all_extracted_vbs = payloads;
@@ -753,6 +779,56 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
 fn normalize_vbs_download_url(value: &str) -> Option<String> {
     crate::deob_scan::normalize_liberal_url_token(value)
         .or_else(|| crate::deob_scan::normalize_schemeless_domain_path_token(value))
+}
+
+fn extract_scriptcontrol_vbscript_bodies(
+    text: &str,
+    bindings: &VbsStringBindings,
+    array_bindings: &VbsArrayBindings,
+) -> Vec<String> {
+    let lower_text = text.to_ascii_lowercase();
+    if !lower_text.contains("scriptcontrol")
+        || !lower_text.contains("vbscript")
+        || (!lower_text.contains(".eval")
+            && !lower_text.contains(".executestatement")
+            && !lower_text.contains(".addcode"))
+    {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    for line in text.lines() {
+        for statement in split_vbs_statements(line) {
+            for method in [".eval", ".executestatement", ".addcode"] {
+                let Some(expr) = extract_vbs_method_first_arg(statement, method) else {
+                    continue;
+                };
+                let Some(body) = eval_vbs_string_expr(expr, bindings, array_bindings) else {
+                    continue;
+                };
+                if body.trim().is_empty() || body.len() > 256 * 1024 {
+                    continue;
+                }
+                out.push(body);
+            }
+        }
+    }
+    out
+}
+
+fn extract_vbs_method_first_arg<'a>(statement: &'a str, method: &str) -> Option<&'a str> {
+    let lower = statement.to_ascii_lowercase();
+    let method_start = lower.find(method)?;
+    let args_start = method_start + method.len();
+    let next = statement[args_start..].chars().next();
+    if !next.is_some_and(|c| c.is_ascii_whitespace() || c == '(') {
+        return None;
+    }
+    let mut args = statement[args_start..].trim_start();
+    if let Some(rest) = args.strip_prefix('(') {
+        args = rest;
+    }
+    split_vbs_args(args).first().copied()
 }
 
 fn extract_shell_run_command_exprs(text: &str) -> Vec<&str> {

