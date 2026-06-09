@@ -20232,6 +20232,25 @@ Set proc = sh.Exec("powershell.exe -EncodedCommand VwByAGkAdABlAC0ASABvAHMAdAAgA
     }
 
     #[test]
+    fn vbs_callbyname_shell_run_powershell_extracted() {
+        let vbs = br#"Set sh = CreateObject("WScript.Shell")
+methodName = "R" & "un"
+cmd = "power" & "shell.exe -EncodedCommand VwByAGkAdABlAC0ASABvAHMAdAAgAGYAcgBvAG0ALQBjAGEAbABsAGIAeQBuAGEAbQBlAA=="
+CallByName sh, methodName, vbMethod, cmd"#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|ps| ps.contains("Write-Host from-callbyname")),
+            "CallByName VBS WScript.Shell.Run PowerShell was not extracted: {:?}",
+            report.extracted_ps1_normalized
+        );
+    }
+
+    #[test]
     fn vbs_shell_application_shellexecute_schemeless_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let vbs = br#"Set sh = CreateObject("Shell.Application")

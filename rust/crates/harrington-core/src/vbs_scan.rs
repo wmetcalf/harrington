@@ -296,6 +296,31 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
             );
         }
 
+        for (method_expr, command_expr) in extract_callbyname_shell_command_exprs(&text) {
+            if env.check_deadline() {
+                break 'payloads;
+            }
+            let Some(method) = eval_vbs_string_expr(method_expr, &bindings, &array_bindings) else {
+                continue;
+            };
+            if !matches!(method.trim().to_ascii_lowercase().as_str(), "run" | "exec") {
+                continue;
+            }
+            let Some(command) = eval_vbs_string_expr(command_expr, &bindings, &array_bindings)
+            else {
+                continue;
+            };
+            push_downloads_from_vbs_command(
+                env,
+                idx,
+                &text,
+                &command,
+                &dst_hint,
+                &env_bindings,
+                &mut seen,
+            );
+        }
+
         for expr in extract_wmi_process_create_command_exprs(&text) {
             if env.check_deadline() {
                 break 'payloads;
@@ -958,6 +983,65 @@ fn extract_shell_run_command_exprs(text: &str) -> Vec<&str> {
         }
     }
     out
+}
+
+fn extract_callbyname_shell_command_exprs(text: &str) -> Vec<(&str, &str)> {
+    let lower_text = text.to_ascii_lowercase();
+    if !lower_text.contains("callbyname") {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    for line in text.lines() {
+        for statement in split_vbs_statements(line) {
+            let lower = statement.to_ascii_lowercase();
+            let mut cursor = 0usize;
+            while let Some(rel) = lower[cursor..].find("callbyname") {
+                let call_start = cursor + rel;
+                let args_start = call_start + "callbyname".len();
+                let next = statement[args_start..].chars().next();
+                if !next.is_some_and(|c| c.is_ascii_whitespace() || c == '(') {
+                    cursor = args_start;
+                    continue;
+                }
+
+                let mut args = statement[args_start..].trim_start();
+                let parenthesized = args.starts_with('(');
+                if let Some(rest) = args.strip_prefix('(') {
+                    args = rest;
+                }
+                let parts = split_vbs_args(args);
+                let (Some(method_expr), Some(call_type_expr), Some(command_expr)) =
+                    (parts.get(1), parts.get(2), parts.get(3))
+                else {
+                    cursor = args_start;
+                    continue;
+                };
+                if !is_callbyname_method_call(call_type_expr) {
+                    cursor = args_start;
+                    continue;
+                }
+                let command_expr = if parenthesized {
+                    trim_one_trailing_call_paren(command_expr)
+                } else {
+                    command_expr
+                };
+                out.push((*method_expr, command_expr));
+                cursor = args_start;
+            }
+        }
+    }
+    out
+}
+
+fn is_callbyname_method_call(expr: &str) -> bool {
+    let trimmed = expr.trim().trim_matches(['(', ')']);
+    trimmed.eq_ignore_ascii_case("vbMethod") || parse_vbs_integer(trimmed) == Some(1)
+}
+
+fn trim_one_trailing_call_paren(expr: &str) -> &str {
+    let expr = expr.trim_end();
+    expr.strip_suffix(')').map(str::trim_end).unwrap_or(expr)
 }
 
 fn extract_wmi_process_create_command_exprs(text: &str) -> Vec<&str> {
