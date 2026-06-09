@@ -2645,7 +2645,7 @@ fn expand_vbs_static_execute(text: &str) -> String {
 fn vbs_execute_expr(statement: &str) -> Option<&str> {
     let trimmed = statement.trim();
     let lower = trimmed.to_ascii_lowercase();
-    for name in ["executeglobal", "execute"] {
+    for name in ["globalexecute", "executeglobal", "execute"] {
         let Some(rest) = lower.strip_prefix(name) else {
             continue;
         };
