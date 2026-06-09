@@ -556,6 +556,7 @@ fn lolbas_non_exec_value_option(token: &str) -> bool {
         "-o" | "/o"
             | "--output"
             | "--output-document"
+            | "--output-dir"
             | "-output"
             | "/out"
             | "-out"
@@ -612,6 +613,8 @@ fn lolbas_non_exec_value_option(token: &str) -> bool {
             | "--tls13-ciphers"
             | "--dns-servers"
             | "--doh-url"
+            | "--url"
+            | "--upload-file"
             | "--post-data"
             | "--post-file"
             | "--body-data"
@@ -632,6 +635,7 @@ fn lolbas_attached_non_exec_value_option(token: &str) -> bool {
     let lower = token.trim_matches(['"', '\'']).to_ascii_lowercase();
     lower.starts_with("--output=")
         || lower.starts_with("--output-document=")
+        || lower.starts_with("--output-dir=")
         || lower.starts_with("-output:")
         || lower.starts_with("-output=")
         || lower.starts_with("/out:")
@@ -699,6 +703,8 @@ fn lolbas_attached_non_exec_value_option(token: &str) -> bool {
         || lower.starts_with("--tls13-ciphers=")
         || lower.starts_with("--dns-servers=")
         || lower.starts_with("--doh-url=")
+        || lower.starts_with("--url=")
+        || lower.starts_with("--upload-file=")
         || lower.starts_with("--post-data=")
         || lower.starts_with("--post-file=")
         || lower.starts_with("--body-data=")
