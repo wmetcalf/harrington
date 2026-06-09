@@ -3751,6 +3751,8 @@ fn pre_scan_standalone_script_input(input: &[u8], env: &mut Environment) -> bool
         b"createobject" as &[u8],
         b"wscript",
         b"xmlhttp",
+        b"winmgmts",
+        b"win32_process",
         b"option explicit",
     ]
     .iter()
@@ -4058,6 +4060,11 @@ fn analyze_inner(input: &[u8], cfg: &Config, file_path: Option<std::path::PathBu
     }
     let mut env = Environment::new(cfg);
     env.file_path = file_path;
+    if input_has_truncation_marker(input) {
+        env.traits.push(Trait::LineTruncated {
+            original_len: input.len() as u64,
+        });
+    }
     if cfg.self_extract {
         env.input_bytes = Some(std::sync::Arc::from(input));
     }
@@ -7231,6 +7238,15 @@ fn input_contains_ascii_case_insensitive(input: &[u8], needle: &[u8]) -> bool {
         })
 }
 
+fn input_has_truncation_marker(input: &[u8]) -> bool {
+    input
+        .windows(b"...[truncated]".len())
+        .any(|window| window.eq_ignore_ascii_case(b"...[truncated]"))
+        || input
+            .windows("…[truncated]".len())
+            .any(|window| window.eq_ignore_ascii_case("…[truncated]".as_bytes()))
+}
+
 #[cfg(test)]
 mod output_cap_tests {
     use crate::traits::Trait;
@@ -7316,6 +7332,25 @@ mod line_cap_tests {
             .iter()
             .any(|t| matches!(t, Trait::LineTruncated { .. }));
         assert!(trunc, "no LineTruncated trait emitted");
+    }
+
+    #[test]
+    fn sandbox_truncated_input_marker_emits_line_truncated() {
+        let script = format!(
+            "&([scriptblock]::Create($x=({}...[truncated]",
+            "亓".repeat(4096)
+        );
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::LineTruncated { original_len } if *original_len == script.len() as u64)),
+            "sandbox-capped input marker should be surfaced as LineTruncated: {:?}",
+            report.traits
+        );
     }
 
     #[test]
@@ -20009,6 +20044,36 @@ sh.Run cmd, 0, False"#;
             has,
             "no Download trait from VBS WScript.Shell.Run variable URL: {:?}",
             env.traits
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_wmi_process_create_extracts_inner_command() {
+        let vbs = br#"Dim objWMI
+Set objWMI = GetObject("winmgmts:\\.\root\cimv2")
+Dim objProcess
+Set objProcess = objWMI.Get("Win32_Process")
+Dim cmd
+cmd = "cmd.exe /c whoami"
+objProcess.Create cmd, Null, Null, iPID"#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::WmicProcessCreate { inner_cmd }
+                        if inner_cmd == "cmd.exe /c whoami"
+                )
+            }),
+            "no WmicProcessCreate from VBS Win32_Process.Create: {:?}",
+            report.traits
+        );
+        assert!(
+            report.deobfuscated.contains("Win32_Process"),
+            "standalone VBS source was not preserved: {}",
+            report.deobfuscated
         );
     }
 
