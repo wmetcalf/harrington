@@ -1564,22 +1564,22 @@ fn lolbas_attached_ps_process_exec_operand(
         }
     }
     if matches!(head.as_str(), "invoke-item" | "ii") {
-        for prefix in [
-            "-path:",
-            "/path:",
-            "-path=",
-            "/path=",
-            "-literalpath:",
-            "/literalpath:",
-            "-literalpath=",
-            "/literalpath=",
-        ] {
-            if let Some(value) = lower.strip_prefix(prefix) {
-                return program_stem(value) == wanted_stem;
-            }
+        if let Some((name, value)) = ps_attached_param_value(&lower) {
+            return ps_invoke_item_exec_param_name(name) && program_stem(value) == wanted_stem;
         }
     }
     false
+}
+
+fn ps_attached_param_value(token: &str) -> Option<(&str, &str)> {
+    let rest = token.strip_prefix(['-', '/'])?;
+    let split = rest.find([':', '='])?;
+    let value_start = split + 1;
+    (value_start < rest.len()).then_some((&rest[..split], &rest[value_start..]))
+}
+
+fn ps_invoke_item_exec_param_name(name: &str) -> bool {
+    name == "path" || (name.len() >= "literalp".len() && "literalpath".starts_with(name))
 }
 
 fn lolbas_attached_ps_process_non_exec_operand(
