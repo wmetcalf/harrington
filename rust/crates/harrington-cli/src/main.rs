@@ -1,7 +1,9 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use sha2::{Digest, Sha256};
+use std::ffi::OsString;
 use std::fs;
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -23,6 +25,12 @@ enum Command {
         json: bool,
         #[arg(long)]
         json_only: bool,
+        /// Replace Harrington-generated files in an existing output directory.
+        #[arg(long)]
+        force: bool,
+        /// Optional path to external LOLBAS JSON for JSON enrichment.
+        #[arg(long = "lolbas-json")]
+        lolbas_json: Option<PathBuf>,
         #[arg(long, default_value_t = 12)]
         max_depth: u32,
         #[arg(long, default_value_t = 65_536)]
@@ -42,7 +50,11 @@ enum Command {
     },
     /// Like `deob --json-only`: JSON report to stdout, no files.
     Analyze {
-        file: String,
+        #[arg(value_name = "FILE", num_args = 0..)]
+        files: Vec<String>,
+        /// Read additional input paths from a newline-delimited file.
+        #[arg(long = "file-list", value_name = "PATH")]
+        file_list: Option<PathBuf>,
         #[arg(long, default_value_t = 12)]
         max_depth: u32,
         #[arg(long, default_value_t = 65_536)]
@@ -61,6 +73,9 @@ enum Command {
         max_traits_per_kind: u32,
         #[arg(long)]
         jsonl: bool,
+        /// Optional path to external LOLBAS JSON for JSON enrichment.
+        #[arg(long = "lolbas-json")]
+        lolbas_json: Option<PathBuf>,
     },
     /// Emit a focused JSON IOC report without raw deobfuscated text.
     Summarize {
@@ -72,6 +87,9 @@ enum Command {
         /// for analyst triage / chat-paste.
         #[arg(long)]
         tldr: bool,
+        /// Optional path to external LOLBAS JSON for JSON enrichment.
+        #[arg(long = "lolbas-json")]
+        lolbas_json: Option<PathBuf>,
     },
     /// Emit a comprehensive JSON report: summary fields + full trait list,
     /// plus optionally the JSON-escaped source and deobfuscated text.
@@ -100,6 +118,9 @@ enum Command {
         max_output_line_bytes: u64,
         #[arg(long, default_value_t = 100)]
         max_traits_per_kind: u32,
+        /// Optional path to external LOLBAS JSON for JSON enrichment.
+        #[arg(long = "lolbas-json")]
+        lolbas_json: Option<PathBuf>,
     },
     /// Print version and exit.
     Version,
@@ -109,23 +130,21 @@ enum Command {
 /// OOM from a multi-gigabyte input. A real batch file is well under a few
 /// MB; this is a generous safety ceiling.
 const MAX_INPUT_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_FILE_LIST_BYTES: u64 = 16 * 1024 * 1024;
 
 fn read_input(path: &str) -> Result<Vec<u8>> {
-    use std::io::Read;
     if path == "-" {
-        let mut buf = Vec::new();
-        let mut limited = std::io::stdin().take(MAX_INPUT_BYTES);
-        limited.read_to_end(&mut buf).context("read stdin")?;
-        if buf.len() as u64 >= MAX_INPUT_BYTES {
-            anyhow::bail!(
-                "stdin input exceeds {} bytes; refusing to read more",
-                MAX_INPUT_BYTES
-            );
-        }
-        Ok(buf)
+        read_all_capped(std::io::stdin(), MAX_INPUT_BYTES, || {
+            "stdin input".to_string()
+        })
     } else {
-        // Cap on-disk reads too — symlinks could point at /dev/zero etc.
-        let meta = fs::metadata(path).with_context(|| format!("stat {:?}", path))?;
+        let file = fs::File::open(path).with_context(|| format!("open {:?}", path))?;
+        let meta = file
+            .metadata()
+            .with_context(|| format!("stat {:?}", path))?;
+        if !meta.file_type().is_file() {
+            anyhow::bail!("{:?}: not a regular file", path);
+        }
         if meta.len() > MAX_INPUT_BYTES {
             anyhow::bail!(
                 "{:?}: {} bytes exceeds the {}-byte input cap",
@@ -134,8 +153,49 @@ fn read_input(path: &str) -> Result<Vec<u8>> {
                 MAX_INPUT_BYTES
             );
         }
-        fs::read(path).with_context(|| format!("read {:?}", path))
+        read_all_capped(file, MAX_INPUT_BYTES, || format!("{:?}", path))
     }
+}
+
+fn read_all_capped<R, F>(reader: R, max_bytes: u64, read_context: F) -> Result<Vec<u8>>
+where
+    R: std::io::Read,
+    F: Fn() -> String,
+{
+    let mut buf = Vec::new();
+    let mut limited = reader.take(max_bytes.saturating_add(1));
+    limited
+        .read_to_end(&mut buf)
+        .with_context(|| format!("read {}", read_context()))?;
+    if buf.len() as u64 > max_bytes {
+        anyhow::bail!(
+            "{} exceeds {max_bytes} bytes; refusing to read more",
+            read_context()
+        );
+    }
+    Ok(buf)
+}
+
+fn read_file_list(path: &Path) -> Result<String> {
+    let file = fs::File::open(path).with_context(|| format!("open file list {:?}", path))?;
+    let meta = file
+        .metadata()
+        .with_context(|| format!("stat file list {:?}", path))?;
+    if !meta.file_type().is_file() {
+        anyhow::bail!("{:?}: file list is not a regular file", path);
+    }
+    if meta.len() > MAX_FILE_LIST_BYTES {
+        anyhow::bail!(
+            "file list {:?}: {} bytes exceeds the {}-byte cap",
+            path,
+            meta.len(),
+            MAX_FILE_LIST_BYTES
+        );
+    }
+    let bytes = read_all_capped(file, MAX_FILE_LIST_BYTES, || {
+        format!("file list {:?}", path)
+    })?;
+    String::from_utf8(bytes).with_context(|| format!("parse file list {:?} as UTF-8", path))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -169,12 +229,1481 @@ fn short_sha(bytes: &[u8]) -> String {
     hex::encode(digest)[..10].to_string()
 }
 
+fn analyze_for_file(
+    file: &str,
+    input: &[u8],
+    cfg: &harrington_core::Config,
+) -> harrington_core::Report {
+    if file == "-" {
+        harrington_core::analyze(input, cfg)
+    } else {
+        harrington_core::analyze_with_path(input, cfg, Path::new(file))
+    }
+}
+
+#[derive(Debug, Clone)]
+struct LolbasEntry {
+    name: String,
+    stem: String,
+    url: Option<String>,
+    categories: Vec<String>,
+    mitre_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct LolbasIndex {
+    entries: Vec<LolbasEntry>,
+}
+
+fn load_lolbas_index(path: &Path) -> Result<LolbasIndex> {
+    const MAX_LOLBAS_JSON_BYTES: u64 = 64 * 1024 * 1024;
+
+    let file = fs::File::open(path).with_context(|| format!("open {:?}", path))?;
+    let meta = file
+        .metadata()
+        .with_context(|| format!("stat {:?}", path))?;
+    if !meta.file_type().is_file() {
+        anyhow::bail!("{:?}: not a regular file", path);
+    }
+    if meta.len() > MAX_LOLBAS_JSON_BYTES {
+        anyhow::bail!(
+            "{:?}: {} bytes exceeds the {}-byte LOLBAS JSON cap",
+            path,
+            meta.len(),
+            MAX_LOLBAS_JSON_BYTES
+        );
+    }
+    let bytes = read_all_capped(file, MAX_LOLBAS_JSON_BYTES, || format!("{:?}", path))?;
+    let value: serde_json::Value =
+        serde_json::from_slice(&bytes).with_context(|| format!("parse {:?}", path))?;
+    let Some(items) = value.as_array() else {
+        anyhow::bail!("{:?}: expected top-level LOLBAS JSON array", path);
+    };
+
+    let mut entries = Vec::new();
+    for item in items {
+        let Some(obj) = item.as_object() else {
+            continue;
+        };
+        let Some(name) = obj.get("Name").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        let stem = program_stem(name);
+        if stem.is_empty() {
+            continue;
+        }
+        let url = obj
+            .get("url")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let mut categories = Vec::new();
+        let mut mitre_ids = Vec::new();
+        if let Some(commands) = obj.get("Commands").and_then(|v| v.as_array()) {
+            for command in commands {
+                if let Some(category) = command.get("Category").and_then(|v| v.as_str()) {
+                    push_unique(&mut categories, category);
+                }
+                if let Some(mitre_id) = command.get("MitreID").and_then(|v| v.as_str()) {
+                    push_unique(&mut mitre_ids, mitre_id);
+                }
+            }
+        }
+        entries.push(LolbasEntry {
+            name: name.to_string(),
+            stem,
+            url,
+            categories,
+            mitre_ids,
+        });
+    }
+
+    Ok(LolbasIndex { entries })
+}
+
+fn push_unique(values: &mut Vec<String>, value: &str) {
+    let value = value.trim();
+    if !value.is_empty() && !values.iter().any(|v| v == value) {
+        values.push(value.to_string());
+    }
+}
+
+fn program_stem(name: &str) -> String {
+    let basename = name
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(name)
+        .trim_matches(['"', '\'']);
+    let lower = basename.to_ascii_lowercase();
+    lower
+        .strip_suffix(".exe")
+        .unwrap_or(lower.as_str())
+        .to_string()
+}
+
+fn command_invokes_program(command: &str, wanted_stem: &str) -> bool {
+    let tokens = lolbas_command_tokens(command);
+    tokens.iter().enumerate().any(|(idx, token)| {
+        if lolbas_is_redirection_operand(command, token.start) {
+            return false;
+        }
+        if idx > 0 && lolbas_non_exec_value_option(tokens[idx - 1].text) {
+            return false;
+        }
+        if lolbas_is_downloader_short_value_operand(&tokens, idx) {
+            return false;
+        }
+        if idx > 0
+            && lolbas_is_destination_separator(command, tokens[idx - 1].end, token.start)
+            && is_url_like_program_token(tokens[idx - 1].text)
+            && is_local_path_like_program_token(token.text)
+        {
+            return false;
+        }
+        if lolbas_is_certutil_file_operand(&tokens, idx) {
+            return false;
+        }
+        if lolbas_is_split_msi_log_operand(&tokens, idx) {
+            return false;
+        }
+        if lolbas_is_msiexec_package_operand(&tokens, idx) {
+            return false;
+        }
+        if lolbas_is_attached_msiexec_package_operand(&tokens, idx) {
+            return false;
+        }
+        if lolbas_is_regsvr32_input_operand(&tokens, idx) {
+            return false;
+        }
+        if lolbas_is_rundll32_load_target_operand(&tokens, idx) {
+            return false;
+        }
+        if lolbas_is_esentutl_copy_operand(&tokens, idx) {
+            return false;
+        }
+        if lolbas_is_extrac32_path_operand(&tokens, idx) {
+            return false;
+        }
+        if lolbas_is_uac_helper_path_operand(&tokens, idx) {
+            return false;
+        }
+        if lolbas_is_file_management_operand(&tokens, idx) {
+            return false;
+        }
+        if lolbas_is_taskkill_image_operand(&tokens, idx) {
+            return false;
+        }
+        if lolbas_is_sc_service_operand(&tokens, idx) {
+            return false;
+        }
+        if lolbas_is_sc_account_operand(&tokens, idx) {
+            return false;
+        }
+        if lolbas_is_sc_description_operand(&tokens, idx) {
+            return false;
+        }
+        if lolbas_is_sc_config_metadata_operand(&tokens, idx) {
+            return false;
+        }
+        if lolbas_is_sc_config_metadata_key(&tokens, idx) {
+            return false;
+        }
+        if lolbas_is_sc_failure_metadata_operand(&tokens, idx) {
+            return false;
+        }
+        if lolbas_is_schtasks_task_name_operand(&tokens, idx) {
+            return false;
+        }
+        if lolbas_is_schtasks_account_operand(&tokens, idx) {
+            return false;
+        }
+        if lolbas_is_schtasks_schedule_operand(&tokens, idx) {
+            return false;
+        }
+        if lolbas_is_attached_schtasks_metadata_operand(&tokens, idx) {
+            return false;
+        }
+        if lolbas_is_wevtutil_log_name_operand(&tokens, idx) {
+            return false;
+        }
+        if lolbas_is_reg_key_operand(&tokens, idx) {
+            return false;
+        }
+        if lolbas_is_reg_subcommand_token(&tokens, idx) {
+            return false;
+        }
+        if lolbas_is_reg_value_or_file_operand(&tokens, idx) {
+            return false;
+        }
+        if lolbas_is_reg_add_operand(&tokens, idx) {
+            return false;
+        }
+        if lolbas_is_net_account_operand(&tokens, idx) {
+            return false;
+        }
+        if lolbas_is_forfiles_command_operand(&tokens, idx) {
+            return false;
+        }
+        if lolbas_is_cmd_echo_text_operand(&tokens, idx) {
+            return false;
+        }
+        if lolbas_is_forfiles_non_exec_operand(&tokens, idx) {
+            return false;
+        }
+        if lolbas_is_ps_process_argument_operand(&tokens, idx) {
+            return false;
+        }
+        if lolbas_attached_ps_process_exec_operand(&tokens, idx, wanted_stem) {
+            return true;
+        }
+        if lolbas_attached_ps_process_non_exec_operand(&tokens, idx) {
+            return false;
+        }
+        if lolbas_attached_non_exec_value_option(token.text) {
+            return false;
+        }
+        if lolbas_is_option_name_token(token.text) {
+            return false;
+        }
+        if is_url_like_program_token(token.text) {
+            return false;
+        }
+        let stem = program_stem(token.text);
+        !stem.is_empty() && stem == wanted_stem
+    })
+}
+
+fn lolbas_is_option_name_token(token: &str) -> bool {
+    let token = token.trim_matches(['"', '\'']);
+    if !token.starts_with(['/', '-']) || token.starts_with(['\\']) {
+        return false;
+    }
+    let Some(rest) = token.get(1..) else {
+        return false;
+    };
+    !rest.is_empty() && !rest.contains(['\\', '/', ':', '=', '.'])
+}
+
+struct LolbasCommandToken<'a> {
+    text: &'a str,
+    start: usize,
+    end: usize,
+}
+
+fn lolbas_command_tokens(command: &str) -> Vec<LolbasCommandToken<'_>> {
+    let mut tokens = Vec::new();
+    let mut chars = command.char_indices().peekable();
+    while let Some((idx, ch)) = chars.next() {
+        if matches!(ch, '"' | '\'') {
+            let quote = ch;
+            let token_start = idx;
+            let mut token_end = idx + ch.len_utf8();
+            for (quoted_idx, quoted_ch) in chars.by_ref() {
+                token_end = quoted_idx + quoted_ch.len_utf8();
+                if quoted_ch == quote {
+                    break;
+                }
+            }
+            tokens.push(LolbasCommandToken {
+                text: &command[token_start..token_end],
+                start: token_start,
+                end: token_end,
+            });
+            continue;
+        }
+        if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | '\\' | '/' | ':') {
+            let token_start = idx;
+            let mut token_end = idx + ch.len_utf8();
+            while let Some(&(next_idx, next_ch)) = chars.peek() {
+                if next_ch.is_ascii_alphanumeric()
+                    || matches!(next_ch, '.' | '_' | '-' | '\\' | '/' | ':' | '"' | '\'')
+                {
+                    chars.next();
+                    token_end = next_idx + next_ch.len_utf8();
+                } else {
+                    break;
+                }
+            }
+            tokens.push(LolbasCommandToken {
+                text: &command[token_start..token_end],
+                start: token_start,
+                end: token_end,
+            });
+        }
+    }
+    tokens
+}
+
+fn lolbas_is_destination_separator(command: &str, prev_end: usize, next_start: usize) -> bool {
+    let between = &command[prev_end..next_start];
+    !between.is_empty()
+        && between
+            .chars()
+            .all(|ch| ch.is_whitespace() || matches!(ch, ','))
+}
+
+fn lolbas_is_redirection_operand(command: &str, token_start: usize) -> bool {
+    let Some(prefix) = command.get(..token_start) else {
+        return false;
+    };
+    prefix
+        .chars()
+        .rev()
+        .find(|ch| !ch.is_whitespace())
+        .is_some_and(|ch| matches!(ch, '<' | '>'))
+}
+
+fn lolbas_is_certutil_file_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    let Some(first) = tokens.first() else {
+        return false;
+    };
+    if program_stem(first.text) != "certutil" || !is_local_path_like_program_token(tokens[idx].text)
+    {
+        return false;
+    }
+    tokens
+        .iter()
+        .take(idx)
+        .any(|token| certutil_file_transform_verb(token.text))
+}
+
+fn certutil_file_transform_verb(token: &str) -> bool {
+    matches!(
+        token
+            .trim_matches(['"', '\''])
+            .to_ascii_lowercase()
+            .as_str(),
+        "-encode"
+            | "/encode"
+            | "-encodehex"
+            | "/encodehex"
+            | "-decode"
+            | "/decode"
+            | "-decodehex"
+            | "/decodehex"
+    )
+}
+
+fn lolbas_is_downloader_short_value_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    let (Some(first), Some(prev)) = (
+        tokens.first(),
+        idx.checked_sub(1).and_then(|i| tokens.get(i)),
+    ) else {
+        return false;
+    };
+    let prev = prev.text.trim_matches(['"', '\'']);
+    match program_stem(first.text).as_str() {
+        "curl" => matches!(
+            prev,
+            "-d" | "-H" | "-X" | "-A" | "-e" | "-b" | "-c" | "-u" | "-x" | "-m" | "-T" | "-F"
+        ),
+        "get" | "wget" => matches!(prev, "-e" | "-U" | "-i" | "-P"),
+        _ => false,
+    }
+}
+
+fn lolbas_non_exec_value_option(token: &str) -> bool {
+    matches!(
+        token
+            .trim_matches(['"', '\''])
+            .to_ascii_lowercase()
+            .as_str(),
+        "-o" | "/o"
+            | "--output"
+            | "--output-document"
+            | "--output-dir"
+            | "--directory-prefix"
+            | "-output"
+            | "/out"
+            | "-out"
+            | "-outfile"
+            | "/outfile"
+            | "-outf"
+            | "/outf"
+            | "-destination"
+            | "/destination"
+            | "-dest"
+            | "/dest"
+            | "-log"
+            | "/log"
+            | "--log"
+            | "--user"
+            | "--proxy-user"
+            | "--user-agent"
+            | "--header"
+            | "--data"
+            | "--data-raw"
+            | "--data-binary"
+            | "--data-ascii"
+            | "--data-urlencode"
+            | "--form"
+            | "--form-string"
+            | "--proxy"
+            | "--preproxy"
+            | "--socks5"
+            | "--socks5-hostname"
+            | "--connect-to"
+            | "--resolve"
+            | "--interface"
+            | "--dns-interface"
+            | "--limit-rate"
+            | "--rate"
+            | "--connect-timeout"
+            | "--max-time"
+            | "--retry"
+            | "--retry-delay"
+            | "--retry-max-time"
+            | "--speed-limit"
+            | "--speed-time"
+            | "--cookie"
+            | "--cookie-jar"
+            | "--referer"
+            | "--request"
+            | "--cacert"
+            | "--cert"
+            | "--cert-type"
+            | "--key"
+            | "--key-type"
+            | "--pass"
+            | "--ciphers"
+            | "--tls13-ciphers"
+            | "--dns-servers"
+            | "--doh-url"
+            | "--url"
+            | "--upload-file"
+            | "--post-data"
+            | "--post-file"
+            | "--body-data"
+            | "--body-file"
+            | "--method"
+            | "--execute"
+            | "--load-cookies"
+            | "--save-cookies"
+            | "--proxy-password"
+            | "--bind-address"
+            | "--ca-certificate"
+            | "--certificate"
+            | "--private-key"
+    ) || lolbas_msi_log_option(token)
+}
+
+fn lolbas_attached_non_exec_value_option(token: &str) -> bool {
+    let lower = token.trim_matches(['"', '\'']).to_ascii_lowercase();
+    lower.starts_with("--output=")
+        || lower.starts_with("--output:")
+        || lower.starts_with("--output-document=")
+        || lower.starts_with("--output-document:")
+        || lower.starts_with("--output-dir=")
+        || lower.starts_with("--output-dir:")
+        || lower.starts_with("--directory-prefix=")
+        || lower.starts_with("--directory-prefix:")
+        || lower.starts_with("-output:")
+        || lower.starts_with("-output=")
+        || lower.starts_with("/out:")
+        || lower.starts_with("/out=")
+        || lower.starts_with("-outfile:")
+        || lower.starts_with("-outfile=")
+        || lower.starts_with("/outfile:")
+        || lower.starts_with("/outfile=")
+        || lower.starts_with("-outf:")
+        || lower.starts_with("-outf=")
+        || lower.starts_with("/outf:")
+        || lower.starts_with("/outf=")
+        || lower.starts_with("-destination:")
+        || lower.starts_with("-destination=")
+        || lower.starts_with("/destination:")
+        || lower.starts_with("/destination=")
+        || lower.starts_with("-dest:")
+        || lower.starts_with("-dest=")
+        || lower.starts_with("/dest:")
+        || lower.starts_with("/dest=")
+        || lower.starts_with("-log:")
+        || lower.starts_with("-log=")
+        || lower.starts_with("/log:")
+        || lower.starts_with("/log=")
+        || lower.starts_with("--log=")
+        || lower.starts_with("--user=")
+        || lower.starts_with("--proxy-user=")
+        || lower.starts_with("--user-agent=")
+        || lower.starts_with("--header=")
+        || lower.starts_with("--data=")
+        || lower.starts_with("--data-raw=")
+        || lower.starts_with("--data-binary=")
+        || lower.starts_with("--data-ascii=")
+        || lower.starts_with("--data-urlencode=")
+        || lower.starts_with("--form=")
+        || lower.starts_with("--form-string=")
+        || lower.starts_with("--proxy=")
+        || lower.starts_with("--preproxy=")
+        || lower.starts_with("--socks5=")
+        || lower.starts_with("--socks5-hostname=")
+        || lower.starts_with("--connect-to=")
+        || lower.starts_with("--resolve=")
+        || lower.starts_with("--interface=")
+        || lower.starts_with("--dns-interface=")
+        || lower.starts_with("--limit-rate=")
+        || lower.starts_with("--rate=")
+        || lower.starts_with("--connect-timeout=")
+        || lower.starts_with("--max-time=")
+        || lower.starts_with("--retry=")
+        || lower.starts_with("--retry-delay=")
+        || lower.starts_with("--retry-max-time=")
+        || lower.starts_with("--speed-limit=")
+        || lower.starts_with("--speed-time=")
+        || lower.starts_with("--cookie=")
+        || lower.starts_with("--cookie-jar=")
+        || lower.starts_with("--referer=")
+        || lower.starts_with("--request=")
+        || lower.starts_with("--cacert=")
+        || lower.starts_with("--cert=")
+        || lower.starts_with("--cert-type=")
+        || lower.starts_with("--key=")
+        || lower.starts_with("--key-type=")
+        || lower.starts_with("--pass=")
+        || lower.starts_with("--ciphers=")
+        || lower.starts_with("--tls13-ciphers=")
+        || lower.starts_with("--dns-servers=")
+        || lower.starts_with("--doh-url=")
+        || lower.starts_with("--url=")
+        || lower.starts_with("--upload-file=")
+        || lower.starts_with("--post-data=")
+        || lower.starts_with("--post-file=")
+        || lower.starts_with("--body-data=")
+        || lower.starts_with("--body-file=")
+        || lower.starts_with("--method=")
+        || lower.starts_with("--execute=")
+        || lower.starts_with("--load-cookies=")
+        || lower.starts_with("--save-cookies=")
+        || lower.starts_with("--proxy-password=")
+        || lower.starts_with("--bind-address=")
+        || lower.starts_with("--ca-certificate=")
+        || lower.starts_with("--certificate=")
+        || lower.starts_with("--private-key=")
+        || (lower.len() > 2
+            && (lower.starts_with("-o") || lower.starts_with("/o"))
+            && lower[2..].contains(['\\', '/']))
+        || lolbas_attached_msi_log_option(&lower)
+}
+
+fn lolbas_msi_log_option(token: &str) -> bool {
+    let lower = token.trim_matches(['"', '\'']).to_ascii_lowercase();
+    let Some(rest) = lower.strip_prefix(['/', '-']) else {
+        return false;
+    };
+    rest.starts_with('l')
+        && rest.len() >= 2
+        && rest[1..].chars().all(|ch| {
+            matches!(
+                ch,
+                '*' | '!'
+                    | 'v'
+                    | 'o'
+                    | 'i'
+                    | 'w'
+                    | 'e'
+                    | 'a'
+                    | 'r'
+                    | 'u'
+                    | 'c'
+                    | 'm'
+                    | 'p'
+                    | 'x'
+                    | '+'
+            )
+        })
+}
+
+fn lolbas_attached_msi_log_option(lower: &str) -> bool {
+    let Some(rest) = lower.strip_prefix(['/', '-']) else {
+        return false;
+    };
+    let Some(path_start) = rest.find([':', '=']) else {
+        return false;
+    };
+    path_start >= 2
+        && rest.starts_with('l')
+        && rest[1..path_start].chars().all(|ch| {
+            matches!(
+                ch,
+                '*' | '!'
+                    | 'v'
+                    | 'o'
+                    | 'i'
+                    | 'w'
+                    | 'e'
+                    | 'a'
+                    | 'r'
+                    | 'u'
+                    | 'c'
+                    | 'm'
+                    | 'p'
+                    | 'x'
+                    | '+'
+            )
+        })
+}
+
+fn lolbas_is_split_msi_log_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx < 2 || !is_local_path_like_program_token(tokens[idx].text) {
+        return false;
+    }
+    let log_prefix = tokens[idx - 2]
+        .text
+        .trim_matches(['"', '\''])
+        .to_ascii_lowercase();
+    if !matches!(log_prefix.as_str(), "/l" | "-l") {
+        return false;
+    }
+    let flags = tokens[idx - 1]
+        .text
+        .trim_matches(['"', '\''])
+        .to_ascii_lowercase();
+    !flags.is_empty()
+        && flags.chars().all(|ch| {
+            matches!(
+                ch,
+                '*' | '!'
+                    | 'v'
+                    | 'o'
+                    | 'i'
+                    | 'w'
+                    | 'e'
+                    | 'a'
+                    | 'r'
+                    | 'u'
+                    | 'c'
+                    | 'm'
+                    | 'p'
+                    | 'x'
+                    | '+'
+            )
+        })
+}
+
+fn lolbas_is_msiexec_package_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx == 0 || program_stem(tokens[0].text) != "msiexec" {
+        return false;
+    }
+    let Some(prev) = tokens.get(idx - 1) else {
+        return false;
+    };
+    let option = prev.text.trim_matches(['"', '\'']).to_ascii_lowercase();
+    if !matches!(
+        option.as_str(),
+        "/i" | "-i"
+            | "/p"
+            | "-p"
+            | "/package"
+            | "-package"
+            | "/x"
+            | "-x"
+            | "/uninstall"
+            | "-uninstall"
+            | "/update"
+            | "-update"
+    ) {
+        return false;
+    }
+    lolbas_msiexec_package_value_operand(tokens[idx].text)
+}
+
+fn lolbas_is_attached_msiexec_package_operand(
+    tokens: &[LolbasCommandToken<'_>],
+    idx: usize,
+) -> bool {
+    if idx == 0 || program_stem(tokens[0].text) != "msiexec" {
+        return false;
+    }
+    let token = tokens[idx].text.trim_matches(['"', '\'']);
+    let lower = token.to_ascii_lowercase();
+    for prefix in ["/i", "-i", "/p", "-p", "/x", "-x"] {
+        if let Some(value) = lower.strip_prefix(prefix) {
+            return !value.is_empty()
+                && lolbas_msiexec_package_value_operand(&token[prefix.len()..]);
+        }
+    }
+    for prefix in [
+        "/package:",
+        "-package:",
+        "/package=",
+        "-package=",
+        "/uninstall:",
+        "-uninstall:",
+        "/uninstall=",
+        "-uninstall=",
+        "/update:",
+        "-update:",
+        "/update=",
+        "-update=",
+    ] {
+        if let Some(value) = lower.strip_prefix(prefix) {
+            return !value.is_empty()
+                && lolbas_msiexec_package_value_operand(&token[prefix.len()..]);
+        }
+    }
+    false
+}
+
+fn lolbas_msiexec_package_value_operand(token: &str) -> bool {
+    let value = token.trim_matches(['"', '\'']);
+    let lower_value = value.to_ascii_lowercase();
+    lolbas_file_management_path_operand(value)
+        || lower_value.ends_with(".msi")
+        || lower_value.ends_with(".msp")
+}
+
+fn lolbas_is_regsvr32_input_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx == 0 || program_stem(tokens[0].text) != "regsvr32" {
+        return false;
+    }
+    lolbas_file_management_path_operand(tokens[idx].text)
+}
+
+fn lolbas_is_rundll32_load_target_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx == 0 || program_stem(tokens[0].text) != "rundll32" {
+        return false;
+    }
+    lolbas_file_management_path_operand(tokens[idx].text)
+}
+
+fn lolbas_is_esentutl_copy_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx == 0 || program_stem(tokens[0].text) != "esentutl" {
+        return false;
+    }
+    if !tokens.iter().take(idx).any(|token| {
+        matches!(
+            token
+                .text
+                .trim_matches(['"', '\''])
+                .to_ascii_lowercase()
+                .as_str(),
+            "/y" | "-y"
+        )
+    }) {
+        return false;
+    }
+    if !lolbas_file_management_path_operand(tokens[idx].text) {
+        return false;
+    }
+    matches!(
+        tokens[idx - 1]
+            .text
+            .trim_matches(['"', '\''])
+            .to_ascii_lowercase()
+            .as_str(),
+        "/y" | "-y" | "/d" | "-d"
+    )
+}
+
+fn lolbas_is_extrac32_path_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    idx > 0
+        && program_stem(tokens[0].text) == "extrac32"
+        && lolbas_file_management_path_operand(tokens[idx].text)
+}
+
+fn lolbas_is_uac_helper_path_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx == 0 || !lolbas_file_management_path_operand(tokens[idx].text) {
+        return false;
+    }
+    matches!(
+        program_stem(tokens[0].text).as_str(),
+        "cmstp" | "msconfig" | "fodhelper" | "eventvwr" | "sdclt" | "computerdefaults" | "wsreset"
+    )
+}
+
+fn lolbas_is_file_management_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx == 0 || !lolbas_file_management_path_operand(tokens[idx].text) {
+        return false;
+    }
+    matches!(
+        tokens
+            .first()
+            .map(|token| program_stem(token.text))
+            .as_deref(),
+        Some(
+            "del"
+                | "erase"
+                | "copy"
+                | "xcopy"
+                | "move"
+                | "ren"
+                | "rename"
+                | "attrib"
+                | "mkdir"
+                | "md"
+                | "rmdir"
+                | "rd"
+        )
+    )
+}
+
+fn lolbas_file_management_path_operand(token: &str) -> bool {
+    let token = token.trim_matches(['"', '\'']);
+    if token.starts_with(['/', '-']) {
+        return false;
+    }
+    if is_local_path_like_program_token(token) {
+        return true;
+    }
+    let lower = token.to_ascii_lowercase();
+    lower.ends_with(".exe")
+        || lower.ends_with(".com")
+        || lower.ends_with(".scr")
+        || lower.ends_with(".hta")
+}
+
+fn lolbas_is_taskkill_image_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx < 2 || program_stem(tokens[0].text) != "taskkill" {
+        return false;
+    }
+    matches!(
+        tokens[idx - 1]
+            .text
+            .trim_matches(['"', '\''])
+            .to_ascii_lowercase()
+            .as_str(),
+        "/im" | "-im"
+    )
+}
+
+fn lolbas_is_sc_service_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx != 2 || program_stem(tokens[0].text) != "sc" {
+        return false;
+    }
+    matches!(
+        tokens[1]
+            .text
+            .trim_matches(['"', '\''])
+            .to_ascii_lowercase()
+            .as_str(),
+        "continue"
+            | "config"
+            | "create"
+            | "delete"
+            | "description"
+            | "failure"
+            | "failureflag"
+            | "pause"
+            | "qc"
+            | "qdescription"
+            | "qfailure"
+            | "qfailureflag"
+            | "query"
+            | "queryex"
+            | "sdshow"
+            | "start"
+            | "stop"
+    )
+}
+
+fn lolbas_is_sc_account_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx == 0 || program_stem(tokens[0].text) != "sc" {
+        return false;
+    }
+    matches!(
+        tokens[idx - 1]
+            .text
+            .trim_matches(['"', '\''])
+            .to_ascii_lowercase()
+            .as_str(),
+        "obj" | "password"
+    )
+}
+
+fn lolbas_is_sc_description_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx < 3 || program_stem(tokens[0].text) != "sc" {
+        return false;
+    }
+    tokens[1]
+        .text
+        .trim_matches(['"', '\''])
+        .eq_ignore_ascii_case("description")
+}
+
+fn lolbas_is_sc_config_metadata_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx < 4 || program_stem(tokens[0].text) != "sc" {
+        return false;
+    }
+    if !tokens[1]
+        .text
+        .trim_matches(['"', '\''])
+        .eq_ignore_ascii_case("config")
+    {
+        return false;
+    }
+    matches!(
+        tokens[idx - 1]
+            .text
+            .trim_matches(['"', '\''])
+            .to_ascii_lowercase()
+            .as_str(),
+        "depend" | "displayname" | "error" | "group" | "start" | "tag" | "type"
+    )
+}
+
+fn lolbas_is_sc_config_metadata_key(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx < 3 || program_stem(tokens[0].text) != "sc" {
+        return false;
+    }
+    if !tokens[1]
+        .text
+        .trim_matches(['"', '\''])
+        .eq_ignore_ascii_case("config")
+    {
+        return false;
+    }
+    matches!(
+        tokens[idx]
+            .text
+            .trim_matches(['"', '\''])
+            .to_ascii_lowercase()
+            .as_str(),
+        "depend" | "displayname" | "error" | "group" | "start" | "tag" | "type"
+    )
+}
+
+fn lolbas_is_sc_failure_metadata_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx < 4 || program_stem(tokens[0].text) != "sc" {
+        return false;
+    }
+    if !tokens[1]
+        .text
+        .trim_matches(['"', '\''])
+        .eq_ignore_ascii_case("failure")
+    {
+        return false;
+    }
+    matches!(
+        tokens[idx - 1]
+            .text
+            .trim_matches(['"', '\''])
+            .to_ascii_lowercase()
+            .as_str(),
+        "actions" | "reboot" | "reset"
+    )
+}
+
+fn lolbas_is_schtasks_task_name_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx == 0 || program_stem(tokens[0].text) != "schtasks" {
+        return false;
+    }
+    matches!(
+        tokens[idx - 1]
+            .text
+            .trim_matches(['"', '\''])
+            .to_ascii_lowercase()
+            .as_str(),
+        "/tn" | "-tn" | "/xml" | "-xml"
+    )
+}
+
+fn lolbas_is_schtasks_account_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx == 0 || program_stem(tokens[0].text) != "schtasks" {
+        return false;
+    }
+    matches!(
+        tokens[idx - 1]
+            .text
+            .trim_matches(['"', '\''])
+            .to_ascii_lowercase()
+            .as_str(),
+        "/p" | "-p" | "/rp" | "-rp" | "/ru" | "-ru" | "/s" | "-s" | "/u" | "-u"
+    )
+}
+
+fn lolbas_is_schtasks_schedule_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx == 0 || program_stem(tokens[0].text) != "schtasks" {
+        return false;
+    }
+    matches!(
+        tokens[idx - 1]
+            .text
+            .trim_matches(['"', '\''])
+            .to_ascii_lowercase()
+            .as_str(),
+        "/d" | "-d"
+            | "/du"
+            | "-du"
+            | "/ed"
+            | "-ed"
+            | "/et"
+            | "-et"
+            | "/i"
+            | "-i"
+            | "/m"
+            | "-m"
+            | "/mo"
+            | "-mo"
+            | "/ri"
+            | "-ri"
+            | "/sc"
+            | "-sc"
+            | "/sd"
+            | "-sd"
+            | "/st"
+            | "-st"
+    )
+}
+
+fn lolbas_is_attached_schtasks_metadata_operand(
+    tokens: &[LolbasCommandToken<'_>],
+    idx: usize,
+) -> bool {
+    if idx == 0 || program_stem(tokens[0].text) != "schtasks" {
+        return false;
+    }
+    let lower = tokens[idx]
+        .text
+        .trim_matches(['"', '\''])
+        .to_ascii_lowercase();
+    [
+        "/tn:", "-tn:", "/tn=", "-tn=", "/xml:", "-xml:", "/xml=", "-xml=", "/p:", "-p:", "/p=",
+        "-p=", "/rp:", "-rp:", "/rp=", "-rp=", "/ru:", "-ru:", "/ru=", "-ru=", "/s:", "-s:", "/s=",
+        "-s=", "/u:", "-u:", "/u=", "-u=", "/d:", "-d:", "/d=", "-d=", "/du:", "-du:", "/du=",
+        "-du=", "/ed:", "-ed:", "/ed=", "-ed=", "/et:", "-et:", "/et=", "-et=", "/i:", "-i:",
+        "/i=", "-i=", "/m:", "-m:", "/m=", "-m=", "/mo:", "-mo:", "/mo=", "-mo=", "/ri:", "-ri:",
+        "/ri=", "-ri=", "/sc:", "-sc:", "/sc=", "-sc=", "/sd:", "-sd:", "/sd=", "-sd=", "/st:",
+        "-st:", "/st=", "-st=",
+    ]
+    .iter()
+    .any(|prefix| lower.starts_with(prefix))
+}
+
+fn lolbas_is_wevtutil_log_name_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx != 2 || program_stem(tokens[0].text) != "wevtutil" {
+        return false;
+    }
+    matches!(
+        tokens[1]
+            .text
+            .trim_matches(['"', '\''])
+            .to_ascii_lowercase()
+            .as_str(),
+        "cl" | "clear-log" | "clearlog" | "epl" | "export-log" | "gli" | "get-loginfo"
+    )
+}
+
+fn lolbas_is_reg_key_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx < 2 || program_stem(tokens[0].text) != "reg" {
+        return false;
+    }
+    let subcommand = tokens[1]
+        .text
+        .trim_matches(['"', '\''])
+        .to_ascii_lowercase();
+    if subcommand == "compare" {
+        return matches!(idx, 2 | 3);
+    }
+    idx == 2
+        && matches!(
+            subcommand.as_str(),
+            "copy"
+                | "delete"
+                | "export"
+                | "flags"
+                | "load"
+                | "query"
+                | "restore"
+                | "save"
+                | "unload"
+        )
+}
+
+fn lolbas_is_reg_subcommand_token(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx != 1 || program_stem(tokens[0].text) != "reg" {
+        return false;
+    }
+    matches!(
+        tokens[idx]
+            .text
+            .trim_matches(['"', '\''])
+            .to_ascii_lowercase()
+            .as_str(),
+        "add"
+            | "compare"
+            | "copy"
+            | "delete"
+            | "export"
+            | "flags"
+            | "import"
+            | "load"
+            | "query"
+            | "restore"
+            | "save"
+            | "unload"
+    )
+}
+
+fn lolbas_is_reg_value_or_file_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx < 2 || program_stem(tokens[0].text) != "reg" {
+        return false;
+    }
+    let Some(subcommand) = tokens
+        .get(1)
+        .map(|token| token.text.trim_matches(['"', '\'']).to_ascii_lowercase())
+    else {
+        return false;
+    };
+
+    if matches!(subcommand.as_str(), "query" | "delete")
+        && tokens
+            .get(idx - 1)
+            .map(|prev| {
+                matches!(
+                    prev.text
+                        .trim_matches(['"', '\''])
+                        .to_ascii_lowercase()
+                        .as_str(),
+                    "/v" | "-v"
+                )
+            })
+            .unwrap_or(false)
+    {
+        return true;
+    }
+    if matches!(subcommand.as_str(), "query" | "delete") {
+        let lower = tokens[idx]
+            .text
+            .trim_matches(['"', '\''])
+            .to_ascii_lowercase();
+        if lower.starts_with("/v:")
+            || lower.starts_with("-v:")
+            || lower.starts_with("/v=")
+            || lower.starts_with("-v=")
+        {
+            return true;
+        }
+    }
+
+    match subcommand.as_str() {
+        "copy" => idx == 3,
+        "export" | "save" | "load" | "restore" => idx == 3,
+        "import" => idx == 2,
+        _ => false,
+    }
+}
+
+fn lolbas_is_reg_add_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx == 0 || program_stem(tokens[0].text) != "reg" {
+        return false;
+    }
+    if tokens.get(1).map(|token| {
+        token
+            .text
+            .trim_matches(['"', '\''])
+            .eq_ignore_ascii_case("add")
+    }) != Some(true)
+    {
+        return false;
+    }
+    if idx == 2 {
+        return true;
+    }
+    let token = tokens[idx].text.trim_matches(['"', '\'']);
+    let lower = token.to_ascii_lowercase();
+    if matches!(
+        lower.as_str(),
+        "/v" | "-v" | "/ve" | "-ve" | "/d" | "-d" | "/t" | "-t" | "/f" | "-f"
+    ) {
+        return true;
+    }
+    if lower.starts_with("/v:")
+        || lower.starts_with("-v:")
+        || lower.starts_with("/v=")
+        || lower.starts_with("-v=")
+        || lower.starts_with("/d:")
+        || lower.starts_with("-d:")
+        || lower.starts_with("/d=")
+        || lower.starts_with("-d=")
+        || lower.starts_with("/t:")
+        || lower.starts_with("-t:")
+        || lower.starts_with("/t=")
+        || lower.starts_with("-t=")
+    {
+        return true;
+    }
+    tokens
+        .get(idx - 1)
+        .map(|prev| {
+            matches!(
+                prev.text
+                    .trim_matches(['"', '\''])
+                    .to_ascii_lowercase()
+                    .as_str(),
+                "/v" | "-v" | "/d" | "-d" | "/t" | "-t"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn lolbas_is_net_account_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if program_stem(tokens[0].text) != "net" || idx < 2 {
+        return false;
+    }
+    let subcommand = tokens[1]
+        .text
+        .trim_matches(['"', '\''])
+        .to_ascii_lowercase();
+    match subcommand.as_str() {
+        "user" | "users" => idx == 2,
+        "group" | "groups" | "localgroup" | "localgroups" => idx == 2 || idx == 3,
+        _ => false,
+    }
+}
+
+fn lolbas_is_forfiles_non_exec_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx == 0 || program_stem(tokens[0].text) != "forfiles" {
+        return false;
+    }
+    let current = tokens[idx]
+        .text
+        .trim_matches(['"', '\''])
+        .to_ascii_lowercase();
+    if current.starts_with("/m:")
+        || current.starts_with("-m:")
+        || current.starts_with("/m=")
+        || current.starts_with("-m=")
+        || current.starts_with("/p:")
+        || current.starts_with("-p:")
+        || current.starts_with("/p=")
+        || current.starts_with("-p=")
+    {
+        return true;
+    }
+    matches!(
+        tokens[idx - 1]
+            .text
+            .trim_matches(['"', '\''])
+            .to_ascii_lowercase()
+            .as_str(),
+        "/m" | "-m" | "/p" | "-p"
+    )
+}
+
+fn lolbas_is_forfiles_command_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx == 0 || program_stem(tokens[0].text) != "forfiles" {
+        return false;
+    }
+    tokens
+        .iter()
+        .enumerate()
+        .skip(1)
+        .take(idx)
+        .any(|(arg_idx, token)| {
+            let lower = token.text.trim_matches(['"', '\'']).to_ascii_lowercase();
+            if matches!(lower.as_str(), "/c" | "-c") {
+                return arg_idx < idx;
+            }
+            matches!(
+                lower.strip_prefix(['/', '-']),
+                Some(rest) if rest.starts_with("c:") || rest.starts_with("c=")
+            )
+        })
+}
+
+fn lolbas_is_cmd_echo_text_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx <= 2 || program_stem(tokens[0].text) != "cmd" {
+        return false;
+    }
+    let Some(command_idx) = tokens.iter().enumerate().skip(1).find_map(|(idx, token)| {
+        let switch = token.text.trim_matches(['"', '\'']).to_ascii_lowercase();
+        matches!(switch.as_str(), "/c" | "/k" | "-c" | "-k").then_some(idx + 1)
+    }) else {
+        return false;
+    };
+    if idx <= command_idx {
+        return false;
+    }
+    let command = tokens
+        .get(command_idx)
+        .map(|token| {
+            token
+                .text
+                .trim_matches(['"', '\''])
+                .trim_start_matches('@')
+                .to_ascii_lowercase()
+        })
+        .unwrap_or_default();
+    matches!(command.as_str(), "echo" | "rem")
+}
+
+fn lolbas_is_ps_process_argument_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx == 0 || !ps_lolbas_process_launch_line(tokens[0].text) {
+        return false;
+    }
+    ps_start_process_non_exec_param(tokens[idx - 1].text)
+}
+
+fn lolbas_attached_ps_process_exec_operand(
+    tokens: &[LolbasCommandToken<'_>],
+    idx: usize,
+    wanted_stem: &str,
+) -> bool {
+    if idx == 0 || !ps_lolbas_process_launch_line(tokens[0].text) {
+        return false;
+    }
+    let lower = tokens[idx]
+        .text
+        .trim_matches(['"', '\''])
+        .to_ascii_lowercase();
+    let head = tokens[0]
+        .text
+        .trim_matches(['"', '\''])
+        .to_ascii_lowercase();
+    if matches!(head.as_str(), "start-process" | "saps" | "start") {
+        if let Some((name, value)) = ps_attached_param_value(&lower) {
+            return ps_start_process_exec_param_name(name) && program_stem(value) == wanted_stem;
+        }
+    }
+    if matches!(head.as_str(), "invoke-item" | "ii") {
+        if let Some((name, value)) = ps_attached_param_value(&lower) {
+            return ps_invoke_item_exec_param_name(name) && program_stem(value) == wanted_stem;
+        }
+    }
+    false
+}
+
+fn ps_attached_param_value(token: &str) -> Option<(&str, &str)> {
+    let rest = token.strip_prefix(['-', '/'])?;
+    let split = rest.find([':', '='])?;
+    let value_start = split + 1;
+    (value_start < rest.len()).then_some((&rest[..split], &rest[value_start..]))
+}
+
+fn ps_start_process_exec_param_name(name: &str) -> bool {
+    !name.is_empty() && ("filepath".starts_with(name) || name == "file")
+}
+
+fn ps_invoke_item_exec_param_name(name: &str) -> bool {
+    !name.is_empty() && ("path".starts_with(name) || "literalpath".starts_with(name))
+}
+
+fn lolbas_attached_ps_process_non_exec_operand(
+    tokens: &[LolbasCommandToken<'_>],
+    idx: usize,
+) -> bool {
+    if idx == 0 || !ps_lolbas_process_launch_line(tokens[0].text) {
+        return false;
+    }
+    let lower = tokens[idx]
+        .text
+        .trim_matches(['"', '\''])
+        .to_ascii_lowercase();
+    [
+        "-argumentlist:",
+        "/argumentlist:",
+        "-argumentlist=",
+        "/argumentlist=",
+        "-args:",
+        "/args:",
+        "-args=",
+        "/args=",
+        "-workingdirectory:",
+        "/workingdirectory:",
+        "-workingdirectory=",
+        "/workingdirectory=",
+        "-wd:",
+        "/wd:",
+        "-wd=",
+        "/wd=",
+        "-redirectstandarderror:",
+        "/redirectstandarderror:",
+        "-redirectstandarderror=",
+        "/redirectstandarderror=",
+        "-redirectstandardinput:",
+        "/redirectstandardinput:",
+        "-redirectstandardinput=",
+        "/redirectstandardinput=",
+        "-redirectstandardoutput:",
+        "/redirectstandardoutput:",
+        "-redirectstandardoutput=",
+        "/redirectstandardoutput=",
+        "-credential:",
+        "/credential:",
+        "-credential=",
+        "/credential=",
+        "-environment:",
+        "/environment:",
+        "-environment=",
+        "/environment=",
+        "-verb:",
+        "/verb:",
+        "-verb=",
+        "/verb=",
+        "-windowstyle:",
+        "/windowstyle:",
+        "-windowstyle=",
+        "/windowstyle=",
+    ]
+    .iter()
+    .any(|prefix| lower.starts_with(prefix))
+}
+
+fn ps_start_process_non_exec_param(token: &str) -> bool {
+    let lower = token.trim_matches(['"', '\'']).to_ascii_lowercase();
+    let Some(name) = lower.strip_prefix(['-', '/']) else {
+        return false;
+    };
+    if matches!(name, "args" | "wd") {
+        return true;
+    }
+    ps_start_process_non_exec_param_name(name)
+}
+
+fn ps_start_process_non_exec_param_name(name: &str) -> bool {
+    [
+        ("argumentlist", 1),
+        ("credential", 1),
+        ("environment", 1),
+        ("redirectstandarderror", 17),
+        ("redirectstandardinput", 17),
+        ("redirectstandardoutput", 17),
+        ("verb", 1),
+        ("windowstyle", 2),
+        ("workingdirectory", 2),
+    ]
+    .iter()
+    .any(|(canonical, min_len)| name.len() >= *min_len && canonical.starts_with(name))
+}
+
+fn is_url_like_program_token(token: &str) -> bool {
+    let token = token.trim_matches(['"', '\'']).to_ascii_lowercase();
+    if token.contains("://")
+        || ["http:", "https:", "hxxp:", "hxxps:", "ftp:", "file:"]
+            .iter()
+            .any(|prefix| token.starts_with(prefix))
+    {
+        return true;
+    }
+    let Some(slash) = token.find(['/', '\\']) else {
+        return false;
+    };
+    let first_segment = &token[..slash];
+    first_segment.contains('.') && !is_drive_path(&token)
+}
+
+fn is_local_path_like_program_token(token: &str) -> bool {
+    let token = token.trim_matches(['"', '\'']);
+    is_drive_path(token) || token.contains(['\\', '/'])
+}
+
+fn is_drive_path(token: &str) -> bool {
+    let bytes = token.as_bytes();
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'/' | b'\\')
+}
+
 /// Safely join `name` onto the canonical `out_dir`, refusing if the result
 /// would escape that directory. All `name`s in this tool are either static
-/// strings ("deobfuscated.bat", "traits.json") or `<sha10>.bat|ps1` — so a
-/// successful escape would require a bug in the SHA encoder. Belt and
-/// braces; the canonicalize step also catches the case where `out_dir`
-/// itself is a symlink to a sensitive location.
+/// strings ("deobfuscated.bat", "traits.json") or sha-prefixed artifact
+/// filenames — so a successful escape would require a bug in the filename
+/// generator. Belt and braces; the canonicalize step also catches the case
+/// where `out_dir` itself is a symlink to a sensitive location.
 fn safe_join(canonical_out: &Path, name: &str) -> Result<PathBuf> {
     // Refuse anything that looks like a path traversal upfront.
     if name.contains('/') || name.contains('\\') || name.contains("..") {
@@ -184,14 +1713,18 @@ fn safe_join(canonical_out: &Path, name: &str) -> Result<PathBuf> {
     Ok(target)
 }
 
-/// Write `bytes` to `path` using O_CREATE+O_EXCL semantics and (on Unix)
-/// O_NOFOLLOW. Refuses to overwrite an existing file or follow a symlink —
-/// closes the TOCTOU window where an attacker could swap the output
-/// directory for a symlink between canonicalize() and the write.
-fn safe_write_new(path: &Path, bytes: &[u8]) -> Result<()> {
+/// Write `bytes` to `path` without following a final-path symlink on Unix.
+/// By default this uses O_CREATE+O_EXCL and refuses stale output. With
+/// `force`, it truncates/replaces regular files but still refuses symlinks.
+fn safe_write(path: &Path, bytes: &[u8], force: bool) -> Result<()> {
     use std::io::Write;
     let mut opts = fs::OpenOptions::new();
-    opts.write(true).create_new(true);
+    opts.write(true);
+    if force {
+        opts.create(true).truncate(true);
+    } else {
+        opts.create_new(true);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -208,7 +1741,7 @@ fn safe_write_new(path: &Path, bytes: &[u8]) -> Result<()> {
             // the analyst use case the output directory is supposed to be
             // fresh, so a collision is suspicious (race / replay).
             anyhow::bail!(
-                "refusing to overwrite existing output path {:?} (race or stale dir)",
+                "refusing to overwrite existing output path {:?}; rerun with --force to replace stale output",
                 path
             )
         }
@@ -216,40 +1749,67 @@ fn safe_write_new(path: &Path, bytes: &[u8]) -> Result<()> {
     }
 }
 
-fn write_report_files(report: &harrington_core::Report, out_dir: &Path) -> Result<()> {
+fn write_report_files(report: &harrington_core::Report, out_dir: &Path, force: bool) -> Result<()> {
     fs::create_dir_all(out_dir).with_context(|| format!("mkdir {:?}", out_dir))?;
     let canonical_out =
         fs::canonicalize(out_dir).with_context(|| format!("canonicalize {:?}", out_dir))?;
+    if force {
+        remove_stale_generated_outputs(&canonical_out)?;
+    }
 
-    safe_write_new(
+    safe_write(
         &safe_join(&canonical_out, "deobfuscated.bat")?,
         report.deobfuscated.as_bytes(),
+        force,
     )?;
 
-    let mut seen = std::collections::HashSet::new();
+    let mut seen_names = std::collections::HashSet::new();
     for child in &report.extracted_cmd {
         let bytes = child.as_bytes();
         let sha = short_sha(bytes);
-        if !seen.insert(sha.clone()) {
+        let name = format!("{sha}.bat");
+        if !seen_names.insert(name.clone()) {
             continue;
         }
-        let name = format!("{sha}.bat");
-        safe_write_new(&safe_join(&canonical_out, &name)?, bytes)?;
+        safe_write(&safe_join(&canonical_out, &name)?, bytes, force)?;
     }
     for (idx, child) in report.extracted_ps1.iter().enumerate() {
         let sha = short_sha(child);
-        if !seen.insert(sha.clone()) {
+        let name = format!("{sha}.ps1");
+        if !seen_names.insert(name.clone()) {
             continue;
         }
-        let name = format!("{sha}.ps1");
-        safe_write_new(&safe_join(&canonical_out, &name)?, child)?;
+        safe_write(&safe_join(&canonical_out, &name)?, child, force)?;
         if let Some(normalized) = report.extracted_ps1_normalized.get(idx) {
             let raw_text = String::from_utf8_lossy(child);
             if normalized != raw_text.as_ref() {
                 let name = format!("{sha}.normalized.ps1");
-                safe_write_new(&safe_join(&canonical_out, &name)?, normalized.as_bytes())?;
+                if !seen_names.insert(name.clone()) {
+                    continue;
+                }
+                safe_write(
+                    &safe_join(&canonical_out, &name)?,
+                    normalized.as_bytes(),
+                    force,
+                )?;
             }
         }
+    }
+    for child in &report.extracted_jscript {
+        let sha = short_sha(child);
+        let name = format!("{sha}.js");
+        if !seen_names.insert(name.clone()) {
+            continue;
+        }
+        safe_write(&safe_join(&canonical_out, &name)?, child, force)?;
+    }
+    for child in &report.extracted_vbs {
+        let sha = short_sha(child);
+        let name = format!("{sha}.vbs");
+        if !seen_names.insert(name.clone()) {
+            continue;
+        }
+        safe_write(&safe_join(&canonical_out, &name)?, child, force)?;
     }
 
     // Dump recovered binary blobs:
@@ -265,12 +1825,12 @@ fn write_report_files(report: &harrington_core::Report, out_dir: &Path) -> Resul
     for (label, blob) in &report.recovered_pe {
         let bytes = blob.as_slice();
         let sha = short_sha(bytes);
-        if !seen.insert(sha.clone()) {
-            continue;
-        }
         let ext = detect_blob_extension(bytes);
         let name = format!("{sha}.{ext}");
-        safe_write_new(&safe_join(&canonical_out, &name)?, bytes)?;
+        if !seen_names.insert(name.clone()) {
+            continue;
+        }
+        safe_write(&safe_join(&canonical_out, &name)?, bytes, force)?;
         // Companion `.meta` text file documents what each blob is so an
         // analyst eyeballing the out-dir doesn't have to guess.
         let meta_name = format!("{sha}.meta");
@@ -278,16 +1838,81 @@ fn write_report_files(report: &harrington_core::Report, out_dir: &Path) -> Resul
             "origin: {label}\nsize: {}\nsha256-prefix: {sha}\n",
             bytes.len()
         );
-        safe_write_new(&safe_join(&canonical_out, &meta_name)?, meta.as_bytes())?;
+        if seen_names.insert(meta_name.clone()) {
+            safe_write(
+                &safe_join(&canonical_out, &meta_name)?,
+                meta.as_bytes(),
+                force,
+            )?;
+        }
     }
 
     let traits_json = serde_json::to_string_pretty(&report.traits)?;
-    safe_write_new(
+    safe_write(
         &safe_join(&canonical_out, "traits.json")?,
         traits_json.as_bytes(),
+        force,
     )?;
 
     Ok(())
+}
+
+fn remove_stale_generated_outputs(canonical_out: &Path) -> Result<()> {
+    for entry in fs::read_dir(canonical_out)
+        .with_context(|| format!("read output dir {:?}", canonical_out))?
+    {
+        let entry = entry.with_context(|| format!("read output dir entry {:?}", canonical_out))?;
+        let file_name = entry.file_name();
+        let name = file_name.to_string_lossy();
+        if !is_generated_output_name(&name) {
+            continue;
+        }
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("stat output path {:?}", path))?;
+        if file_type.is_file() || file_type.is_symlink() {
+            fs::remove_file(&path).with_context(|| format!("remove stale output {:?}", path))?;
+        } else if file_type.is_dir() {
+            anyhow::bail!(
+                "refusing to remove generated output directory {:?}; remove it manually",
+                path
+            );
+        }
+    }
+    Ok(())
+}
+
+fn is_generated_output_name(name: &str) -> bool {
+    if matches!(name, "deobfuscated.bat" | "traits.json") {
+        return true;
+    }
+    let Some((prefix, ext)) = name.split_once('.') else {
+        return false;
+    };
+    prefix.len() == 10
+        && prefix.bytes().all(|b| b.is_ascii_hexdigit())
+        && matches!(
+            ext,
+            "bat"
+                | "ps1"
+                | "normalized.ps1"
+                | "js"
+                | "vbs"
+                | "exe"
+                | "dll"
+                | "cab"
+                | "zip"
+                | "rar"
+                | "7z"
+                | "lnk"
+                | "pdf"
+                | "png"
+                | "gif"
+                | "jpg"
+                | "bin"
+                | "meta"
+        )
 }
 
 /// Pick the right on-disk extension for a recovered blob by sniffing
@@ -368,6 +1993,7 @@ fn build_summary(
     input_path: &str,
     input: &[u8],
     report: &harrington_core::Report,
+    lolbas_index: Option<&LolbasIndex>,
 ) -> serde_json::Value {
     use harrington_core::Trait;
     use std::collections::BTreeMap;
@@ -551,6 +2177,9 @@ fn build_summary(
                 lolbas.push(name.clone());
             }
             Trait::AdminCommand { name, .. } => {
+                if summarize_omits_admin_command(name) {
+                    continue;
+                }
                 *admin_commands.entry(name.clone()).or_insert(0) += 1;
             }
             Trait::SelfExtract { .. } => {
@@ -561,6 +2190,7 @@ fn build_summary(
             }
             Trait::TraitsCapped { .. }
             | Trait::LineTruncated { .. }
+            | Trait::HighUnicodePayload { .. }
             | Trait::OutputCapped { .. }
             | Trait::DepthCapped { .. }
             | Trait::ChildScriptsCapped
@@ -573,13 +2203,19 @@ fn build_summary(
     }
 
     let ps_count = report.extracted_ps1.len();
-    for s in report.extracted_ps1_normalized.iter().take(3) {
-        ps_samples.push(s.chars().take(500).collect());
+    for s in &report.extracted_ps1_normalized {
+        let sample = s.chars().take(500).collect();
+        if !ps_samples.contains(&sample) {
+            ps_samples.push(sample);
+            if ps_samples.len() >= 3 {
+                break;
+            }
+        }
     }
 
     let preview: String = report.deobfuscated.chars().take(1000).collect();
 
-    serde_json::json!({
+    let mut summary = serde_json::json!({
         "input": input_path,
         "input_size": input.len(),
         "deobfuscated_size": report.deobfuscated.len(),
@@ -588,6 +2224,8 @@ fn build_summary(
         "extracted": {
             "cmd": report.extracted_cmd.len(),
             "powershell": ps_count,
+            "jscript": report.extracted_jscript.len(),
+            "vbs": report.extracted_vbs.len(),
             "powershell_samples": ps_samples,
         },
         "lolbas": lolbas,
@@ -595,7 +2233,296 @@ fn build_summary(
         "windows_util_manipulation": windows_util,
         "self_extract": self_extract,
         "traits_capped": traits_capped,
+    });
+    if let Some(index) = lolbas_index {
+        if let serde_json::Value::Object(ref mut obj) = summary {
+            obj.insert(
+                "lolbas_matches".to_string(),
+                serde_json::Value::Array(lolbas_matches(report, index)),
+            );
+        }
+    }
+    summary
+}
+
+fn summarize_omits_admin_command(name: &str) -> bool {
+    matches!(
+        name,
+        "chcp"
+            | "cls"
+            | "color"
+            | "doskey"
+            | "md"
+            | "mkdir"
+            | "move"
+            | "pause"
+            | "timeout"
+            | "title"
+            | "ver"
+    )
+}
+
+fn extracted_counts_json(report: &harrington_core::Report) -> serde_json::Value {
+    serde_json::json!({
+        "cmd": report.extracted_cmd.len(),
+        "powershell": report.extracted_ps1.len(),
+        "jscript": report.extracted_jscript.len(),
+        "vbs": report.extracted_vbs.len(),
     })
+}
+
+fn recovered_counts_json(report: &harrington_core::Report) -> serde_json::Value {
+    serde_json::json!({
+        "pe": report.recovered_pe.len(),
+    })
+}
+
+fn lolbas_matches(report: &harrington_core::Report, index: &LolbasIndex) -> Vec<serde_json::Value> {
+    let mut matches = Vec::new();
+    let commands = command_lines_for_lolbas(report);
+    for command in commands {
+        let command_lower = command.to_ascii_lowercase();
+        for entry in &index.entries {
+            if !command_lower.contains(&entry.stem) {
+                continue;
+            }
+            if !command_invokes_program(command, &entry.stem) {
+                continue;
+            }
+            let command_key = lolbas_match_command_key(command);
+            let duplicate = matches.iter().any(|item: &serde_json::Value| {
+                item.get("name").and_then(|v| v.as_str()) == Some(entry.name.as_str())
+                    && item
+                        .get("command")
+                        .and_then(|v| v.as_str())
+                        .map(lolbas_match_command_key)
+                        .as_deref()
+                        == Some(command_key.as_ref())
+            });
+            if duplicate {
+                continue;
+            }
+            matches.push(serde_json::json!({
+                "name": entry.name,
+                "command": command,
+                "lolbas_url": entry.url,
+                "categories": entry.categories,
+                "mitre_ids": entry.mitre_ids,
+            }));
+        }
+    }
+    matches
+}
+
+fn lolbas_match_command_key(command: &str) -> String {
+    let trimmed = command.trim();
+    let normalized = trimmed.replace("\\\"", "\"").replace("\\'", "'");
+    let command = normalized.trim_start_matches('&').trim_start();
+    let head_end = command.find(char::is_whitespace).unwrap_or(command.len());
+    let head = command[..head_end]
+        .trim_matches(['"', '\''])
+        .to_ascii_lowercase();
+    let canonical_head = match head.as_str() {
+        "start-process" | "saps" | "start" => "start-process",
+        "invoke-item" | "ii" => "invoke-item",
+        _ => return normalized,
+    };
+    let mut rest = &command[head_end..];
+    if rest.matches('"').count() % 2 == 1 {
+        rest = rest.trim_end_matches('\\');
+    }
+    format!("{canonical_head}{rest}").to_ascii_lowercase()
+}
+
+fn optional_lolbas_matches(
+    report: &harrington_core::Report,
+    lolbas_json: Option<&Path>,
+) -> Result<Option<Vec<serde_json::Value>>> {
+    let Some(path) = lolbas_json else {
+        return Ok(None);
+    };
+    let index = load_lolbas_index(path)?;
+    Ok(Some(lolbas_matches(report, &index)))
+}
+
+fn command_lines_for_lolbas(report: &harrington_core::Report) -> Vec<&str> {
+    use harrington_core::Trait;
+
+    let mut out = Vec::new();
+    for t in &report.traits {
+        let command = match t {
+            Trait::Download { cmd, .. }
+            | Trait::UrlLaunch { cmd, .. }
+            | Trait::UrlArgument { cmd, .. }
+            | Trait::UrlVariable { cmd, .. }
+            | Trait::RegistryUrl { cmd, .. }
+            | Trait::Lolbas { cmd, .. }
+            | Trait::CommandGrouping { cmd, .. }
+            | Trait::StartWithVar { cmd, .. }
+            | Trait::VarUsed { cmd, .. }
+            | Trait::Mshta { cmd }
+            | Trait::Rundll32 { cmd, .. }
+            | Trait::WindowsUtilManip { cmd, .. }
+            | Trait::ManipulatedExec { cmd, .. }
+            | Trait::AdminCommand { cmd, .. }
+            | Trait::AccountModification { command: cmd, .. }
+            | Trait::FileConcealment { command: cmd, .. }
+            | Trait::UncWebDavC2 { command: cmd, .. }
+            | Trait::Persistence { command: cmd, .. }
+            | Trait::EvidenceCleanup { command: cmd, .. }
+            | Trait::Enumeration { command: cmd, .. } => Some(cmd.as_str()),
+            Trait::WmicProcessCreate { inner_cmd } => Some(inner_cmd.as_str()),
+            Trait::SelfElevation { target, .. } => Some(target.as_str()),
+            _ => None,
+        };
+        let Some(command) = command else {
+            continue;
+        };
+        push_lolbas_command_line(&mut out, command);
+    }
+    for line in report.deobfuscated.lines() {
+        push_ps_lolbas_process_launch_segments(&mut out, line, true);
+    }
+    for ps in &report.extracted_ps1_normalized {
+        for line in ps.lines() {
+            push_ps_lolbas_process_launch_segments(&mut out, line, false);
+        }
+    }
+    out
+}
+
+fn push_lolbas_command_line<'a>(out: &mut Vec<&'a str>, command: &'a str) {
+    if !command.is_empty() && !out.contains(&command) {
+        out.push(command);
+    }
+}
+
+fn push_ps_lolbas_process_launch_segments<'a>(
+    out: &mut Vec<&'a str>,
+    line: &'a str,
+    require_ps_host: bool,
+) {
+    let line = line.trim();
+    if require_ps_host && !lolbas_line_invokes_powershell_host(line) {
+        return;
+    }
+    if ps_lolbas_process_launch_line(line) {
+        push_lolbas_command_line(out, line);
+    }
+    for command in ps_lolbas_process_launch_segments(line) {
+        push_lolbas_command_line(out, command);
+    }
+}
+
+fn ps_lolbas_process_launch_line(line: &str) -> bool {
+    let line = line.trim_start_matches('&').trim_start();
+    let Some(head) = line.split_whitespace().next() else {
+        return false;
+    };
+    matches!(
+        head.trim_matches(['"', '\'']).to_ascii_lowercase().as_str(),
+        "start-process" | "saps" | "start" | "invoke-item" | "ii"
+    )
+}
+
+fn ps_lolbas_process_launch_segments(line: &str) -> Vec<&str> {
+    let mut commands = Vec::new();
+    for name in ["start-process", "saps", "invoke-item", "ii", "start"] {
+        let mut search_start = 0;
+        while let Some(name_start) = find_ascii_case_insensitive(line, name, search_start) {
+            let name_end = name_start + name.len();
+            search_start = name_end;
+            if !lolbas_callable_name_boundary(line, name_start, name_end) {
+                continue;
+            }
+            if !ps_lolbas_process_launch_start_boundary(line, name_start) {
+                continue;
+            }
+            let command =
+                trim_ps_lolbas_process_launch_segment(ps_command_segment(line, name_start));
+            if ps_lolbas_process_launch_line(command) {
+                commands.push(command);
+            }
+        }
+    }
+    commands
+}
+
+fn lolbas_line_invokes_powershell_host(line: &str) -> bool {
+    let tokens = lolbas_command_tokens(line);
+    for (idx, token) in tokens.iter().enumerate() {
+        match program_stem(token.text).as_str() {
+            "powershell" | "pwsh" => {
+                if idx == 0 {
+                    return true;
+                }
+                if idx >= 2 && program_stem(tokens[idx - 2].text) == "cmd" {
+                    let switch = tokens[idx - 1]
+                        .text
+                        .trim_matches(['"', '\''])
+                        .to_ascii_lowercase();
+                    if matches!(switch.as_str(), "/c" | "/k" | "-c" | "-k") {
+                        return true;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+fn ps_lolbas_process_launch_start_boundary(line: &str, start: usize) -> bool {
+    let before = line[..start].chars().rev().find(|ch| !ch.is_whitespace());
+    before
+        .map(|ch| matches!(ch, '"' | '\'' | ';' | '|' | '&' | '(' | '{' | '}'))
+        .unwrap_or(true)
+}
+
+fn ps_command_segment(line: &str, start: usize) -> &str {
+    let segment = &line[start..];
+    let mut quote = None;
+    for (idx, ch) in segment.char_indices() {
+        if let Some(active) = quote {
+            if ch == active {
+                quote = None;
+            }
+            continue;
+        }
+        if matches!(ch, '"' | '\'') {
+            quote = Some(ch);
+            continue;
+        }
+        if idx > 0 && matches!(ch, ';' | '|' | '&') {
+            return &segment[..idx];
+        }
+    }
+    segment
+}
+
+fn trim_ps_lolbas_process_launch_segment(segment: &str) -> &str {
+    segment.trim().trim_matches(['"', '\'']).trim()
+}
+
+fn lolbas_callable_name_boundary(line: &str, start: usize, end: usize) -> bool {
+    let before = line[..start].chars().next_back();
+    let after = line[end..].chars().next();
+    !before
+        .map(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+        .unwrap_or(false)
+        && !after
+            .map(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+            .unwrap_or(false)
+}
+
+fn find_ascii_case_insensitive(haystack: &str, needle: &str, start: usize) -> Option<usize> {
+    let haystack = haystack.as_bytes();
+    let needle = needle.as_bytes();
+    if needle.is_empty() || start >= haystack.len() || needle.len() > haystack.len() {
+        return None;
+    }
+    (start..=haystack.len() - needle.len())
+        .find(|idx| haystack[*idx..*idx + needle.len()].eq_ignore_ascii_case(needle))
 }
 
 /// Human-readable one-paragraph TLDR for analyst triage.
@@ -842,18 +2769,114 @@ fn build_tldr(file: &str, input: &[u8], report: &harrington_core::Report) -> Str
     out
 }
 
+fn write_all_or_pipe<W: Write>(writer: &mut W, bytes: &[u8]) -> Result<bool> {
+    match writer.write_all(bytes) {
+        Ok(()) => Ok(true),
+        Err(err) if err.kind() == io::ErrorKind::BrokenPipe => Ok(false),
+        Err(err) => Err(err).context("write stdout"),
+    }
+}
+
+fn write_line_to<W: Write>(writer: &mut W, s: &str) -> Result<bool> {
+    if !write_all_or_pipe(writer, s.as_bytes())? {
+        return Ok(false);
+    }
+    write_all_or_pipe(writer, b"\n")
+}
+
+fn write_stdout(s: &str) -> Result<bool> {
+    let mut stdout = io::stdout().lock();
+    write_all_or_pipe(&mut stdout, s.as_bytes())
+}
+
+fn write_stdout_line(s: &str) -> Result<bool> {
+    let mut stdout = io::stdout().lock();
+    write_line_to(&mut stdout, s)
+}
+
+fn write_analyze_jsonl_report(
+    writer: &mut impl Write,
+    file: &str,
+    input: &[u8],
+    report: &harrington_core::Report,
+    lolbas_matches: Option<Vec<serde_json::Value>>,
+) -> Result<bool> {
+    let meta = serde_json::json!({
+        "kind": "meta",
+        "input": file,
+        "input_size": input.len(),
+        "deobfuscated_size": report.deobfuscated.len(),
+        "extracted": extracted_counts_json(report),
+        "recovered": recovered_counts_json(report),
+    });
+    if !write_line_to(writer, &serde_json::to_string(&meta)?)? {
+        return Ok(false);
+    }
+    for t in &report.traits {
+        let line = serde_json::json!({"kind": "trait", "trait": t});
+        if !write_line_to(writer, &serde_json::to_string(&line)?)? {
+            return Ok(false);
+        }
+    }
+    if let Some(matches) = lolbas_matches {
+        for item in matches {
+            let line = serde_json::json!({"kind": "lolbas_match", "match": item});
+            if !write_line_to(writer, &serde_json::to_string(&line)?)? {
+                return Ok(false);
+            }
+        }
+    }
+    let deob_line = serde_json::json!({"kind": "deob", "content": &report.deobfuscated});
+    write_line_to(writer, &serde_json::to_string(&deob_line)?)
+}
+
+fn analyze_input_files(
+    mut files: Vec<String>,
+    file_list: Option<&Path>,
+    jsonl: bool,
+) -> Result<Vec<String>> {
+    if file_list.is_some() && !jsonl {
+        bail!("analyze --file-list requires --jsonl");
+    }
+    if let Some(path) = file_list {
+        let list = read_file_list(path)?;
+        files.extend(
+            list.lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(str::to_string),
+        );
+    }
+    if files.is_empty() {
+        bail!("analyze requires at least one input file or --file-list");
+    }
+    if files.len() > 1 && !jsonl {
+        bail!("multiple analyze inputs require --jsonl");
+    }
+    Ok(files)
+}
+
 fn run() -> Result<()> {
-    let cli = Cli::parse();
+    let cli = parse_cli();
     match cli.command {
-        Command::Summarize { file, tldr } => {
+        Command::Summarize {
+            file,
+            tldr,
+            lolbas_json,
+        } => {
             let input = read_input(&file)?;
             let cfg = harrington_core::Config::default();
-            let report = harrington_core::analyze(&input, &cfg);
+            let report = analyze_for_file(&file, &input, &cfg);
             if tldr {
-                print!("{}", build_tldr(&file, &input, &report));
+                if !write_stdout(&build_tldr(&file, &input, &report))? {
+                    return Ok(());
+                }
             } else {
-                let summary = build_summary(&file, &input, &report);
-                println!("{}", serde_json::to_string_pretty(&summary)?);
+                let lolbas_index = lolbas_json.as_deref().map(load_lolbas_index).transpose()?;
+                let summary = build_summary(&file, &input, &report, lolbas_index.as_ref());
+                if !write_stdout_line(&serde_json::to_string_pretty(&summary)?)? {
+                    return Ok(());
+                }
             }
         }
         Command::Report {
@@ -868,6 +2891,7 @@ fn run() -> Result<()> {
             max_output_bytes,
             max_output_line_bytes,
             max_traits_per_kind,
+            lolbas_json,
         } => {
             let input = read_input(&file)?;
             let cfg = make_config(
@@ -880,11 +2904,12 @@ fn run() -> Result<()> {
                 max_output_line_bytes,
                 max_traits_per_kind,
             );
-            let report = harrington_core::analyze(&input, &cfg);
+            let report = analyze_for_file(&file, &input, &cfg);
 
             // Start from the analyst-friendly summary, then layer the full
             // typed trait list and any opt-in raw text on top.
-            let mut value = build_summary(&file, &input, &report);
+            let lolbas_index = lolbas_json.as_deref().map(load_lolbas_index).transpose()?;
+            let mut value = build_summary(&file, &input, &report, lolbas_index.as_ref());
             if let serde_json::Value::Object(ref mut obj) = value {
                 let input_sha256 = {
                     let mut h = Sha256::new();
@@ -909,13 +2934,18 @@ fn run() -> Result<()> {
                     );
                 }
             }
-            println!("{}", serde_json::to_string_pretty(&value)?);
+            if !write_stdout_line(&serde_json::to_string_pretty(&value)?)? {
+                return Ok(());
+            }
         }
         Command::Version => {
-            println!("Harrington {}", harrington_core::version());
+            if !write_stdout_line(&format!("Harrington {}", harrington_core::version()))? {
+                return Ok(());
+            }
         }
         Command::Analyze {
-            file,
+            files,
+            file_list,
             max_depth,
             max_iterations,
             max_child_scripts,
@@ -925,8 +2955,9 @@ fn run() -> Result<()> {
             max_output_line_bytes,
             max_traits_per_kind,
             jsonl,
+            lolbas_json,
         } => {
-            let input = read_input(&file)?;
+            let files = analyze_input_files(files, file_list.as_deref(), jsonl)?;
             let cfg = make_config(
                 max_depth,
                 max_iterations,
@@ -937,28 +2968,49 @@ fn run() -> Result<()> {
                 max_output_line_bytes,
                 max_traits_per_kind,
             );
-            let report = harrington_core::analyze(&input, &cfg);
+            let lolbas_index = lolbas_json.as_deref().map(load_lolbas_index).transpose()?;
             if jsonl {
-                let meta = serde_json::json!({
-                    "kind": "meta",
-                    "input": file,
-                    "input_size": input.len(),
-                    "deobfuscated_size": report.deobfuscated.len(),
-                });
-                println!("{}", serde_json::to_string(&meta)?);
-                for t in &report.traits {
-                    let line = serde_json::json!({"kind": "trait", "trait": t});
-                    println!("{}", serde_json::to_string(&line)?);
+                let mut stdout = io::stdout().lock();
+                for file in files {
+                    let input = read_input(&file)?;
+                    let report = analyze_for_file(&file, &input, &cfg);
+                    let lolbas_matches = lolbas_index
+                        .as_ref()
+                        .map(|index| lolbas_matches(&report, index));
+                    if !write_analyze_jsonl_report(
+                        &mut stdout,
+                        &file,
+                        &input,
+                        &report,
+                        lolbas_matches,
+                    )? {
+                        return Ok(());
+                    }
                 }
-                let deob_line =
-                    serde_json::json!({"kind": "deob", "content": &report.deobfuscated});
-                println!("{}", serde_json::to_string(&deob_line)?);
             } else {
-                let json = serde_json::json!({
+                let file = &files[0];
+                let input = read_input(file)?;
+                let report = analyze_for_file(file, &input, &cfg);
+                let lolbas_matches = lolbas_index
+                    .as_ref()
+                    .map(|index| lolbas_matches(&report, index));
+                let mut json = serde_json::json!({
                     "deobfuscated": report.deobfuscated,
                     "traits": report.traits,
+                    "extracted": extracted_counts_json(&report),
+                    "recovered": recovered_counts_json(&report),
                 });
-                println!("{}", serde_json::to_string_pretty(&json)?);
+                if let Some(matches) = lolbas_matches {
+                    if let serde_json::Value::Object(ref mut obj) = json {
+                        obj.insert(
+                            "lolbas_matches".to_string(),
+                            serde_json::Value::Array(matches),
+                        );
+                    }
+                }
+                if !write_stdout_line(&serde_json::to_string_pretty(&json)?)? {
+                    return Ok(());
+                }
             }
         }
         Command::Deob {
@@ -966,6 +3018,8 @@ fn run() -> Result<()> {
             out_dir,
             json,
             json_only,
+            force,
+            lolbas_json,
             max_depth,
             max_iterations,
             max_child_scripts,
@@ -986,20 +3040,54 @@ fn run() -> Result<()> {
                 max_output_line_bytes,
                 max_traits_per_kind,
             );
-            let report = harrington_core::analyze(&input, &cfg);
+            let report = analyze_for_file(&file, &input, &cfg);
             if !json_only {
-                write_report_files(&report, &out_dir)?;
+                write_report_files(&report, &out_dir, force)?;
             }
             if json || json_only {
-                let val = serde_json::json!({
+                let lolbas_matches = optional_lolbas_matches(&report, lolbas_json.as_deref())?;
+                let mut val = serde_json::json!({
                     "deobfuscated": report.deobfuscated,
                     "traits": report.traits,
+                    "extracted": extracted_counts_json(&report),
+                    "recovered": recovered_counts_json(&report),
                 });
-                println!("{}", serde_json::to_string_pretty(&val)?);
+                if let Some(matches) = lolbas_matches {
+                    if let serde_json::Value::Object(ref mut obj) = val {
+                        obj.insert(
+                            "lolbas_matches".to_string(),
+                            serde_json::Value::Array(matches),
+                        );
+                    }
+                }
+                if !write_stdout_line(&serde_json::to_string_pretty(&val)?)? {
+                    return Ok(());
+                }
             }
         }
     }
     Ok(())
+}
+
+fn parse_cli() -> Cli {
+    let mut args: Vec<OsString> = std::env::args_os().collect();
+    if should_default_to_analyze(&args) {
+        args.insert(1, OsString::from("analyze"));
+    }
+    Cli::parse_from(args)
+}
+
+fn should_default_to_analyze(args: &[OsString]) -> bool {
+    let Some(first) = args.get(1).and_then(|arg| arg.to_str()) else {
+        return false;
+    };
+    if first.starts_with('-') {
+        return false;
+    }
+    !matches!(
+        first.to_ascii_lowercase().as_str(),
+        "deob" | "analyze" | "summarize" | "report" | "version" | "help"
+    )
 }
 
 fn main() {

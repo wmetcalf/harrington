@@ -12,19 +12,25 @@ pub fn h_echo(raw: &str, env: &mut Environment) {
             redir.stdout = Some(target);
         }
     }
-    // Strip leading `echo` (case-insensitive)
-    let body = cleaned.trim_start();
-    let after_echo = if body.len() >= 4 && body[..4].eq_ignore_ascii_case("echo") {
-        &body[4..]
-    } else {
-        &cleaned
-    };
-    let payload = after_echo.trim_start().to_string();
+    let after_echo = strip_echo_prefix(&cleaned).unwrap_or(&cleaned);
+    let payload = after_echo.trim_start();
 
-    let Some(target) = redir.stdout else { return };
+    let Some(target) = redir.stdout else {
+        update_echo_state(payload, env);
+        return;
+    };
     let path = target.path().to_string();
     let append = target.append();
 
+    let payload = if payload.is_empty() {
+        if env.echo_enabled {
+            "ECHO is on.".to_string()
+        } else {
+            "ECHO is off.".to_string()
+        }
+    } else {
+        payload.to_string()
+    };
     let mut content = payload.into_bytes();
     content.extend_from_slice(b"\r\n");
     let key = path.to_ascii_lowercase();
@@ -63,6 +69,24 @@ pub fn h_echo(raw: &str, env: &mut Environment) {
             append,
         },
     );
+}
+
+fn strip_echo_prefix(raw: &str) -> Option<&str> {
+    let trimmed = raw.trim_start();
+    let trimmed = trimmed.strip_prefix('@').unwrap_or(trimmed).trim_start();
+    if trimmed.len() >= 4 && trimmed[..4].eq_ignore_ascii_case("echo") {
+        return Some(&trimmed[4..]);
+    }
+    None
+}
+
+fn update_echo_state(payload: &str, env: &mut Environment) {
+    let state = payload.trim();
+    if state.eq_ignore_ascii_case("off") {
+        env.echo_enabled = false;
+    } else if state.eq_ignore_ascii_case("on") {
+        env.echo_enabled = true;
+    }
 }
 
 fn extract_inline_echo_stdout_redirect(

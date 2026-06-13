@@ -86,6 +86,7 @@ pub enum Token {
     ForVar(char),
     PercentTilde {
         flags: PercentTildeFlags,
+        path_search: Option<String>,
         arg_index: u8,
     },
     /// Caret-before-sigil marker. CMD's order is: expand `%X%` first,
@@ -369,9 +370,10 @@ pub fn lex(input: &str) -> Vec<Token> {
                 if chars.get(i + 1) == Some(&'~') {
                     let mut j = i + 2;
                     let mut flag_str = String::new();
+                    let mut path_search: Option<String> = None;
                     while j < chars.len() {
                         let cc = chars[j];
-                        if cc.is_ascii_digit() {
+                        if cc.is_ascii_digit() || cc == '$' {
                             break;
                         }
                         if matches!(
@@ -400,10 +402,25 @@ pub fn lex(input: &str) -> Vec<Token> {
                             break;
                         }
                     }
+                    if chars.get(j) == Some(&'$') {
+                        j += 1;
+                        let env_start = j;
+                        while j < chars.len() && chars[j] != ':' {
+                            j += 1;
+                        }
+                        if j < chars.len() && j > env_start && chars[j] == ':' {
+                            path_search = Some(chars[env_start..j].iter().collect());
+                            j += 1;
+                        }
+                    }
                     if j < chars.len() && chars[j].is_ascii_digit() {
                         if let Some(flags) = PercentTildeFlags::parse(&flag_str) {
                             let arg_index = (chars[j] as u32).saturating_sub('0' as u32) as u8;
-                            out.push(Token::PercentTilde { flags, arg_index });
+                            out.push(Token::PercentTilde {
+                                flags,
+                                path_search,
+                                arg_index,
+                            });
                             i = j + 1;
                             continue;
                         }
@@ -1312,6 +1329,7 @@ mod tests {
                     f: true,
                     ..Default::default()
                 },
+                path_search: None,
                 arg_index: 0,
             }]
         );
@@ -1331,6 +1349,7 @@ mod tests {
             toks,
             vec![Token::PercentTilde {
                 flags: expected_flags,
+                path_search: None,
                 arg_index: 0
             }]
         );
@@ -1343,6 +1362,7 @@ mod tests {
             toks,
             vec![Token::PercentTilde {
                 flags: PercentTildeFlags::default(),
+                path_search: None,
                 arg_index: 1
             }]
         );

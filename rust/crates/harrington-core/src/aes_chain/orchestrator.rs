@@ -27,6 +27,23 @@ static STAGE1_RE: Lazy<Regex> = Lazy::new(|| {
         .expect("stage1 re")
 });
 
+#[allow(clippy::expect_used)]
+static PS_ASSIGNMENT_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^;]{16,})\s*;").expect("ps assignment re")
+});
+
+#[allow(clippy::expect_used)]
+static PS_KEY_BYTES_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?is)\.Key\s*=\s*\[\s*byte\s*\[\s*\]\s*\]\s*@?\(\s*([^)]+)\)")
+        .expect("ps key bytes re")
+});
+
+#[allow(clippy::expect_used)]
+static PS_IV_BYTES_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?is)\.IV\s*=\s*\[\s*byte\s*\[\s*\]\s*\]\s*@?\(\s*([^)]+)\)")
+        .expect("ps iv bytes re")
+});
+
 /// Top-level entry. Run after `scan_multistage_encrypted_dropper` so the
 /// gate trait is in place. No-op when the gate trait is absent.
 pub fn extract_from_chain(raw_input: &[u8], deob: &str, env: &mut Environment) {
@@ -35,6 +52,7 @@ pub fn extract_from_chain(raw_input: &[u8], deob: &str, env: &mut Environment) {
     // PS body holds a literal AES key+IV and the bat has a single
     // `:: <b64>\<b64>` ciphertext line. Try the simpler path first.
     try_extract_simple_ps_aes(raw_input, deob, env);
+    try_extract_ps_high_unicode_aes(deob, env);
 
     let has_gate = env
         .traits
@@ -290,6 +308,153 @@ fn split_and_decode_envelope(payload: &[u8]) -> Vec<Vec<u8>> {
                 .ok()
         })
         .collect()
+}
+
+fn try_extract_ps_high_unicode_aes(deob: &str, env: &mut Environment) {
+    if !has_ps_high_unicode_aes_indicators(deob) {
+        return;
+    }
+    let Some(key) = PS_KEY_BYTES_RE
+        .captures(deob)
+        .and_then(|caps| caps.get(1))
+        .and_then(|m| parse_ps_byte_array(m.as_str()))
+    else {
+        return;
+    };
+    if !matches!(key.len(), 16 | 24 | 32) {
+        return;
+    }
+    let Some(iv) = PS_IV_BYTES_RE
+        .captures(deob)
+        .and_then(|caps| caps.get(1))
+        .and_then(|m| parse_ps_byte_array(m.as_str()))
+    else {
+        return;
+    };
+    if iv.len() != 16 {
+        return;
+    }
+
+    for caps in PS_ASSIGNMENT_RE.captures_iter(deob).take(64) {
+        let Some(var) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(expr) = caps.get(2).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(base) = find_high_unicode_subtract_base(deob, var) else {
+            continue;
+        };
+        let Some(ct) = high_unicode_expr_to_bytes(expr, base) else {
+            continue;
+        };
+        let Ok(pt) = aes_cbc_decrypt(&key, &iv, &ct) else {
+            continue;
+        };
+        let Ok(decompressed) = gunzip(&pt, MAX_STAGE_OUTPUT) else {
+            continue;
+        };
+        if !decompressed.starts_with(b"MZ") {
+            continue;
+        }
+        if env
+            .recovered_pe
+            .iter()
+            .any(|(_, existing)| existing == &decompressed)
+        {
+            scan_decrypted_iocs(&decompressed, env);
+            return;
+        }
+        if env.recovered_pe.len() < MAX_URLS_PER_SAMPLE {
+            let label = format!("ps-highunicode-aes-asm{}", env.recovered_pe.len());
+            env.recovered_pe.push((label, decompressed.clone()));
+            scan_decrypted_iocs(&decompressed, env);
+        }
+        return;
+    }
+}
+
+fn has_ps_high_unicode_aes_indicators(deob: &str) -> bool {
+    [
+        "aesmanaged",
+        "transformfinalblock",
+        "gzipstream",
+        "assembly",
+        "[uint16]",
+        "[char]",
+    ]
+    .iter()
+    .all(|needle| ascii_case_insensitive_contains(deob, needle))
+}
+
+fn parse_ps_byte_array(list: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    for part in list.split(',').take(64) {
+        let token = part.trim().trim_matches(|c| c == '\'' || c == '"');
+        if token.is_empty() {
+            continue;
+        }
+        let value = if let Some(hex) = token
+            .strip_prefix("0x")
+            .or_else(|| token.strip_prefix("0X"))
+        {
+            u8::from_str_radix(hex, 16).ok()?
+        } else {
+            token.parse::<u8>().ok()?
+        };
+        out.push(value);
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+fn find_high_unicode_subtract_base(deob: &str, var: &str) -> Option<u32> {
+    let pattern = format!(
+        r"(?is)\[\s*uint16\s*\]\s*\[\s*char\s*\]\s*\${}\s*\[[^\]]+\]\s*\)\s*-\s*(\d{{3,6}})",
+        regex::escape(var)
+    );
+    let re = Regex::new(&pattern).ok()?;
+    re.captures(deob)
+        .and_then(|caps| caps.get(1))
+        .and_then(|m| m.as_str().parse::<u32>().ok())
+}
+
+fn high_unicode_expr_to_bytes(expr: &str, base: u32) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut saw_high_unicode = false;
+    for ch in expr.chars() {
+        let code = ch as u32;
+        if (base..=base.saturating_add(255)).contains(&code) {
+            out.push(u8::try_from(code - base).ok()?);
+            saw_high_unicode = true;
+            continue;
+        }
+        if ch.is_whitespace() || matches!(ch, '\'' | '"' | '(' | ')' | '+') {
+            continue;
+        }
+        if code >= base {
+            return None;
+        }
+        if ch.is_ascii() {
+            return None;
+        }
+        return None;
+    }
+    if saw_high_unicode && out.len() >= 16 && out.len() <= super::crypto::MAX_CIPHERTEXT {
+        Some(out)
+    } else {
+        None
+    }
+}
+
+fn ascii_case_insensitive_contains(haystack: &str, needle: &str) -> bool {
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
 }
 
 /// Simpler AES-decryption path for the dwm.bat / agent_debug /
@@ -741,6 +906,102 @@ fn scan_decrypted_iocs(blob: &[u8], env: &mut Environment) {
 mod tests {
     use super::*;
     use crate::env::Config;
+
+    fn build_high_unicode_aes_fixture() -> (String, Vec<u8>, &'static str) {
+        use aes::cipher::{block_padding::Pkcs7, BlockEncryptMut, KeyIvInit};
+        use std::io::Write as _;
+
+        let key = [
+            0xf9, 0xd1, 0x07, 0x1a, 0x89, 0x7b, 0x3e, 0x22, 0x5d, 0x1c, 0x44, 0x91, 0xab, 0x30,
+            0x6e, 0xc0,
+        ];
+        let iv = [
+            0xc3, 0x5d, 0x14, 0x8a, 0x70, 0x7f, 0xb1, 0x3d, 0x29, 0x92, 0x51, 0x10, 0xaa, 0x6c,
+            0x0d, 0xee,
+        ];
+        let url = "https://unicode-aes.example/payload";
+        let mut pe = vec![0u8; 0x200];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        pe.extend_from_slice(url.as_bytes());
+
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(&pe).unwrap();
+        let gz = gz.finish().unwrap();
+        let ct = cbc::Encryptor::<aes::Aes128>::new_from_slices(&key, &iv)
+            .unwrap()
+            .encrypt_padded_vec_mut::<Pkcs7>(&gz);
+        let carrier: String = ct
+            .iter()
+            .map(|byte| char::from_u32(19_968 + u32::from(*byte)).unwrap())
+            .collect();
+        let key_array = key
+            .iter()
+            .map(|byte| format!("0x{byte:02X}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let iv_array = iv
+            .iter()
+            .map(|byte| format!("0x{byte:02X}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let deob = format!(
+            "$jZmYeT=('{carrier}');\
+             $WJQdiu=New-Object byte[] $jZmYeT.Length;\
+             for($i=0;$i -lt $jZmYeT.Length;$i++){{$WJQdiu[$i]=[byte](([uint16][char]$jZmYeT[$i])-19968)}};\
+             $aes=[type]('Activator')::CreateInstance([type]'System.Security.Cryptography.AesManaged');\
+             $aes.Mode=1;$aes.Padding=2;$aes.Key=[byte[]]@({key_array});$aes.IV=[byte[]]@({iv_array});\
+             $dec=$aes.CreateDecryptor();$stage=$dec.TransformFinalBlock($WJQdiu,0,$WJQdiu.Length);\
+             $gzip=New-Object System.IO.Compression.GZipStream($stage,[IO.Compression.CompressionMode]::Decompress);\
+             [System.Reflection.Assembly]::Load($stage)"
+        );
+        (deob, pe, url)
+    }
+
+    #[test]
+    fn ps_high_unicode_aes_gzip_payload_recovers_pe() {
+        let (deob, pe, url) = build_high_unicode_aes_fixture();
+        let mut env = Environment::new(&Config::default());
+
+        extract_from_chain(b"", &deob, &mut env);
+
+        assert!(
+            env.recovered_pe
+                .iter()
+                .any(|(label, bytes)| label.starts_with("ps-highunicode-aes-asm") && bytes == &pe),
+            "high-unicode AES/GZip PE was not recovered: {:?}",
+            env.recovered_pe
+        );
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
+            "recovered PE URL was not extracted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn normalized_child_ps_high_unicode_aes_gzip_payload_recovers_pe() {
+        use base64::Engine as _;
+
+        let (ps, pe, _url) = build_high_unicode_aes_fixture();
+        let utf16: Vec<u8> = ps.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+        let encoded_ps = base64::engine::general_purpose::STANDARD.encode(utf16);
+        let script = format!("powershell -enc {encoded_ps}");
+
+        let report = crate::analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .recovered_pe
+                .iter()
+                .any(|(label, bytes)| label.starts_with("ps-highunicode-aes-asm") && bytes == &pe),
+            "normalized child PowerShell high-unicode PE was not recovered: {:?}",
+            report.recovered_pe
+        );
+    }
 
     #[test]
     fn no_op_without_gate_trait() {

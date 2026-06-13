@@ -10,7 +10,10 @@ fn strip_keyword_ci<'a>(s: &'a str, kw: &str) -> Option<&'a str> {
     if s.len() < kw.len() {
         return None;
     }
-    if !s[..kw.len()].eq_ignore_ascii_case(kw) {
+    if !s
+        .get(..kw.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(kw))
+    {
         return None;
     }
     let rest = &s[kw.len()..];
@@ -44,7 +47,15 @@ pub fn h_goto(raw: &str, env: &mut Environment) {
         env.pending_action = Some(CursorAction::PopFrame);
         return;
     }
-    if let Some(line_idx) = env.label_index.get(&target).copied() {
+    let target_line = env.label_index.get(&target).copied().or_else(|| {
+        let current = env.current_line.unwrap_or(0);
+        let trailing_colon = format!("{target}:");
+        env.label_index
+            .get(&trailing_colon)
+            .copied()
+            .filter(|line_idx| *line_idx > current)
+    });
+    if let Some(line_idx) = target_line {
         env.pending_action = Some(CursorAction::GotoLine(line_idx));
     } else {
         env.traits.push(Trait::GotoUnresolved {

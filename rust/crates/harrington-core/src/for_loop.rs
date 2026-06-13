@@ -46,6 +46,16 @@ pub fn substitute_loop_var(body: &str, var: char, value: &str) -> String {
     let mut i = 0;
     while i < chars.len() {
         if chars[i] == '%' {
+            // Try `%%~nxX` / `%%~X` script-form modifiers.
+            if chars.get(i + 1) == Some(&'%') && chars.get(i + 2) == Some(&'~') {
+                if let Some((replacement, consumed)) =
+                    expand_tilde_loop_modifier(&chars, i + 3, var, value)
+                {
+                    out.push_str(&replacement);
+                    i = consumed;
+                    continue;
+                }
+            }
             // Try `%%X` first.
             if chars.get(i + 1) == Some(&'%')
                 && chars
@@ -56,6 +66,16 @@ pub fn substitute_loop_var(body: &str, var: char, value: &str) -> String {
                 out.push_str(value);
                 i += 3;
                 continue;
+            }
+            // Try `%~nxX` / `%~X` interactive-form modifiers.
+            if chars.get(i + 1) == Some(&'~') {
+                if let Some((replacement, consumed)) =
+                    expand_tilde_loop_modifier(&chars, i + 2, var, value)
+                {
+                    out.push_str(&replacement);
+                    i = consumed;
+                    continue;
+                }
             }
             // Try `%X`.
             if chars
@@ -72,4 +92,98 @@ pub fn substitute_loop_var(body: &str, var: char, value: &str) -> String {
         i += 1;
     }
     out
+}
+
+fn expand_tilde_loop_modifier(
+    chars: &[char],
+    modifier_start: usize,
+    var: char,
+    value: &str,
+) -> Option<(String, usize)> {
+    let mut modifiers = Vec::new();
+    let mut j = modifier_start;
+    while let Some(c) = chars.get(j) {
+        if c.eq_ignore_ascii_case(&var) {
+            return loop_var_modifier_value(value, &modifiers)
+                .map(|replacement| (replacement, j + 1));
+        }
+        if !is_supported_loop_modifier(*c) || modifiers.len() >= 8 {
+            return None;
+        }
+        modifiers.push(c.to_ascii_lowercase());
+        j += 1;
+    }
+    None
+}
+
+fn is_supported_loop_modifier(c: char) -> bool {
+    matches!(c.to_ascii_lowercase(), 'd' | 'p' | 'n' | 'x' | 'f' | 's')
+}
+
+fn loop_var_modifier_value(value: &str, modifiers: &[char]) -> Option<String> {
+    if modifiers.is_empty()
+        || modifiers.contains(&'f')
+        || modifiers.iter().all(|modifier| *modifier == 's')
+    {
+        return Some(trim_loop_var_quotes(value).to_string());
+    }
+
+    let mut out = String::new();
+    for modifier in modifiers {
+        match modifier {
+            'd' => out.push_str(loop_var_drive(value)),
+            'p' => out.push_str(loop_var_path(value)),
+            'n' => out.push_str(loop_var_name_stem(value)),
+            'x' => out.push_str(loop_var_extension(value)),
+            's' => {}
+            _ => return None,
+        }
+    }
+    Some(out)
+}
+
+fn trim_loop_var_quotes(value: &str) -> &str {
+    value.trim_matches('"')
+}
+
+fn loop_var_drive(value: &str) -> &str {
+    let value = trim_loop_var_quotes(value);
+    if value.as_bytes().get(1) == Some(&b':') {
+        &value[..2]
+    } else {
+        ""
+    }
+}
+
+fn loop_var_path(value: &str) -> &str {
+    let value = trim_loop_var_quotes(value);
+    let without_drive = if value.as_bytes().get(1) == Some(&b':') {
+        &value[2..]
+    } else {
+        value
+    };
+    match without_drive.rfind(['\\', '/']) {
+        Some(idx) => &without_drive[..=idx],
+        None => "",
+    }
+}
+
+fn loop_var_name_stem(value: &str) -> &str {
+    let filename = value
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(value)
+        .trim_matches('"');
+    filename.rsplit_once('.').map_or(filename, |(stem, _)| stem)
+}
+
+fn loop_var_extension(value: &str) -> &str {
+    let filename = value
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(value)
+        .trim_matches('"');
+    filename
+        .rfind('.')
+        .map_or("", |idx| filename.get(idx..).unwrap_or(""))
 }

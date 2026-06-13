@@ -32,6 +32,11 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
         return result;
     }
 
+    if let Some(inner) = crate::handlers::forfiles::extract_forfiles_inner(raw) {
+        result.child_cmd_to_push = Some(inner);
+        result.child_cmd_delayed = false;
+    }
+
     // cmd /c handler: extract child from raw text so var refs aren't expanded
     if let Some(inner) = crate::handlers::cmd::extract_cmd_inner(raw) {
         result.child_cmd_to_push = Some(inner);
@@ -41,10 +46,31 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
         // emits its trait). The child push happens regardless.
     }
 
+    if raw_invokes_powershell(raw) {
+        crate::handlers::powershell::h_powershell(raw, env);
+        result.consumed = true;
+    }
+
     result
 }
 
+fn raw_invokes_powershell(raw: &str) -> bool {
+    let Some(name) = command_name(raw) else {
+        return false;
+    };
+    let name = name.trim_start_matches(['@', '"', '(']);
+    let basename = name.rsplit(['\\', '/']).next().unwrap_or(name);
+    let lower = basename.trim_matches('"').to_ascii_lowercase();
+    matches!(
+        lower.strip_suffix(".exe").unwrap_or(&lower),
+        "powershell" | "pwsh"
+    )
+}
+
 pub fn interpret_line(line: &str, env: &mut Environment) {
+    if let Some(tail) = xcopy_pipeline_tail(line) {
+        crate::handlers::copy::h_xcopy(tail, env);
+    }
     let Some(name) = command_name(line) else {
         return;
     };
@@ -86,6 +112,17 @@ pub fn interpret_line(line: &str, env: &mut Environment) {
         _ => {}
     }
     capture_synthetic_stdout_redirect(line, env);
+}
+
+fn xcopy_pipeline_tail(line: &str) -> Option<&str> {
+    let (_, tail) = line.split_once('|')?;
+    let tail = tail.trim();
+    let name = command_name(tail)?;
+    if name.eq_ignore_ascii_case("xcopy") {
+        Some(tail)
+    } else {
+        None
+    }
 }
 
 fn capture_synthetic_stdout_redirect(line: &str, env: &mut Environment) {
@@ -204,11 +241,21 @@ pub fn command_name(line: &str) -> Option<String> {
         return None;
     }
     let mut name = String::new();
-    for c in s.chars() {
-        if c.is_whitespace() || c == '/' || c == '<' || c == '>' || c == '&' || c == '|' {
-            break;
+    if let Some(quote @ ('"' | '\'')) = s.chars().next() {
+        name.push(quote);
+        for c in s[quote.len_utf8()..].chars() {
+            name.push(c);
+            if c == quote {
+                break;
+            }
         }
-        name.push(c);
+    } else {
+        for c in s.chars() {
+            if c.is_whitespace() || c == '/' || c == '<' || c == '>' || c == '&' || c == '|' {
+                break;
+            }
+            name.push(c);
+        }
     }
     if name.is_empty() {
         return None;

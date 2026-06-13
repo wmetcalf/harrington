@@ -27,10 +27,136 @@ pub fn normalize_to_string(tokens: &[Token], env: &mut Environment) -> String {
     // `^>^>` left intact and arith errors out, breaking the dynamic-
     // goto chain.
     let processed = caret_postprocess(&normalized);
-    if is_base64_fragment_set_assignment(&processed) || has_replace_marker_operation(&processed) {
+    if should_preserve_normalized_text(&processed) {
         processed
     } else {
         strip_marker_noise(&processed)
+    }
+}
+
+pub(crate) fn normalize_literal_command_fast(input: &str) -> Option<String> {
+    if let Some(set) = normalize_quoted_set_assignment_fast(input) {
+        return Some(set);
+    }
+    if let Some(caret_plain) = normalize_caret_plain_command_fast(input) {
+        return Some(caret_plain);
+    }
+    if input.is_empty() || input.starts_with(' ') || input.ends_with(' ') {
+        return None;
+    }
+    let mut prev_space = false;
+    for &b in input.as_bytes() {
+        if b == b' ' {
+            if prev_space {
+                return None;
+            }
+            prev_space = true;
+            continue;
+        }
+        prev_space = false;
+        if matches!(
+            b,
+            b'%' | b'!'
+                | b'^'
+                | b'"'
+                | b'\t'
+                | b'\r'
+                | b'\n'
+                | b','
+                | b';'
+                | b'&'
+                | b'|'
+                | b'<'
+                | b'>'
+                | b'('
+                | b')'
+        ) {
+            return None;
+        }
+    }
+    if marker_noise::has_repeated_sandwich_candidate_shape(input) {
+        return None;
+    }
+    Some(input.to_string())
+}
+
+fn normalize_caret_plain_command_fast(input: &str) -> Option<String> {
+    if !input.contains('^') || input.is_empty() || input.starts_with(' ') || input.ends_with(' ') {
+        return None;
+    }
+    let mut prev_space = false;
+    for &b in input.as_bytes() {
+        if b == b' ' {
+            if prev_space {
+                return None;
+            }
+            prev_space = true;
+            continue;
+        }
+        prev_space = false;
+        if matches!(
+            b,
+            b'%' | b'!'
+                | b'"'
+                | b'\t'
+                | b'\r'
+                | b'\n'
+                | b','
+                | b';'
+                | b'&'
+                | b'|'
+                | b'<'
+                | b'>'
+                | b'('
+                | b')'
+        ) {
+            return None;
+        }
+    }
+    let processed = caret_postprocess(input);
+    if marker_noise::has_repeated_sandwich_candidate_shape(&processed) {
+        return None;
+    }
+    if should_preserve_normalized_text(&processed) {
+        Some(processed)
+    } else {
+        Some(strip_marker_noise(&processed))
+    }
+}
+
+fn normalize_quoted_set_assignment_fast(input: &str) -> Option<String> {
+    if input
+        .bytes()
+        .any(|b| matches!(b, b'%' | b'!' | b'^' | b'\t' | b'\r' | b'\n'))
+    {
+        return None;
+    }
+    let trimmed = input.trim();
+    if !trimmed.get(0..4)?.eq_ignore_ascii_case("set ") {
+        return None;
+    }
+    let quoted = trimmed[4..].strip_prefix('"')?.strip_suffix('"')?;
+    if !quoted.contains('=') {
+        return None;
+    }
+    let mut in_double_quote = true;
+    for &b in &trimmed.as_bytes()[5..trimmed.len() - 1] {
+        if b == b'"' {
+            in_double_quote = !in_double_quote;
+        } else if !in_double_quote
+            && matches!(b, b',' | b';' | b'&' | b'|' | b'<' | b'>' | b'(' | b')')
+        {
+            return None;
+        }
+    }
+    if !in_double_quote {
+        return None;
+    }
+    let processed = input.to_string();
+    if should_preserve_normalized_text(&processed) {
+        Some(processed)
+    } else {
+        Some(strip_marker_noise(&processed))
     }
 }
 
@@ -122,6 +248,12 @@ fn has_replace_marker_operation(text: &str) -> bool {
     lower.contains(".replace(") || lower.contains("::replace(") || lower.contains("-replace")
 }
 
+fn should_preserve_normalized_text(text: &str) -> bool {
+    is_base64_fragment_set_assignment(text)
+        || is_encoded_set_carrier_assignment(text)
+        || has_replace_marker_operation(text)
+}
+
 fn is_base64_fragment_set_assignment(text: &str) -> bool {
     let trimmed = text.trim_start_matches(|c: char| c == '@' || c == '(' || c.is_whitespace());
     let Some(rest) = trimmed
@@ -161,6 +293,59 @@ fn is_base64_fragment_set_assignment(text: &str) -> bool {
             Some(idx) => value[idx..].bytes().all(|b| b == b'='),
             None => true,
         }
+}
+
+fn is_encoded_set_carrier_assignment(text: &str) -> bool {
+    let trimmed = text.trim_start_matches(|c: char| c == '@' || c == '(' || c.is_whitespace());
+    let Some(rest) = trimmed
+        .strip_prefix("set")
+        .or_else(|| trimmed.strip_prefix("SET"))
+    else {
+        return false;
+    };
+    if !rest
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_whitespace() || c == '"')
+    {
+        return false;
+    }
+    let rest = rest.trim_start();
+    if rest
+        .get(..2)
+        .is_some_and(|flag| flag.eq_ignore_ascii_case("/a"))
+    {
+        return false;
+    }
+    let body = if let Some(stripped) = rest.strip_prefix('"') {
+        stripped.strip_suffix('"').unwrap_or(stripped)
+    } else {
+        rest
+    };
+    let Some((_, value)) = body.split_once('=') else {
+        return false;
+    };
+    let value = value.trim().trim_matches('"').trim();
+    if value.len() < 256 {
+        return false;
+    }
+
+    let mut encoded = 0usize;
+    let mut marker = 0usize;
+    let mut other = 0usize;
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '+' | '/' | '=' | '-' | '_') {
+            encoded += 1;
+        } else if !ch.is_ascii() {
+            marker += ch.len_utf8();
+        } else if ch.is_ascii_whitespace() {
+            continue;
+        } else {
+            other += 1;
+        }
+    }
+    let total = encoded + marker + other;
+    marker > 0 && total >= 256 && encoded * 100 >= total * 85 && other * 100 <= total * 5
 }
 
 fn strip_marker_noise_preserving_base64(text: &str) -> String {
@@ -290,8 +475,17 @@ pub(crate) fn normalize_inner(tokens: &[Token], env: &mut Environment, depth: u3
                     out.push_str(&frame.args.join(" "));
                 }
             }
-            Token::PercentTilde { flags, arg_index } => {
-                out.push_str(&render_percent_tilde(env, *flags, *arg_index));
+            Token::PercentTilde {
+                flags,
+                path_search,
+                arg_index,
+            } => {
+                out.push_str(&render_percent_tilde(
+                    env,
+                    *flags,
+                    path_search.as_deref(),
+                    *arg_index,
+                ));
             }
             Token::ForVar(c) => {
                 // Loop variable seen outside an iterating FOR body —
@@ -489,23 +683,23 @@ fn expand_var(
 fn value_likely_has_nested_ref(s: &str) -> bool {
     // Look for `%<name>%` or `!<name>!` patterns. A bare `%%` (with no
     // closing `%`) is the percent-escape literal — don't re-lex that.
-    let chars: Vec<char> = s.chars().collect();
+    let bytes = s.as_bytes();
     let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        if c == '%' || c == '!' {
+    while i < bytes.len() {
+        let sigil = bytes[i];
+        if sigil == b'%' || sigil == b'!' {
             // Need at least one name char after, then a closing same-sigil.
             let mut j = i + 1;
             let mut has_name = false;
-            while j < chars.len() && chars[j] != c {
-                if chars[j].is_ascii_alphanumeric() || chars[j] == '_' {
+            while j < bytes.len() && bytes[j] != sigil {
+                if bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_' {
                     has_name = true;
                     j += 1;
                 } else {
                     break;
                 }
             }
-            if has_name && j < chars.len() && chars[j] == c {
+            if has_name && j < bytes.len() && bytes[j] == sigil {
                 return true;
             }
         }
@@ -579,12 +773,15 @@ fn expand_vars_in_string(s: &str, env: &mut Environment, depth: u32) -> String {
                         continue;
                     }
                 }
-                // If followed by '~' this is a %~flags0 / %~f1 PercentTilde construct —
-                // NOT a %VARNAME% reference.  Emit the '%' literally and continue; the
-                // rest of the modifier (e.g. `~f0`) will be emitted as normal characters
-                // by the `_ =>` arm.  This avoids consuming large swaths of text up to
-                // the next unrelated '%'.
                 if chars.get(i + 1) == Some(&'~') {
+                    if let Some((rendered, next)) = render_percent_tilde_from_chars(&chars, i, env)
+                    {
+                        out.push_str(&rendered);
+                        i = next;
+                        continue;
+                    }
+                    // Invalid tilde form: emit the percent literally to avoid consuming
+                    // unrelated later `%` delimiters as a variable reference.
                     out.push('%');
                     i += 1;
                     continue;
@@ -646,6 +843,72 @@ fn expand_vars_in_string(s: &str, env: &mut Environment, depth: u32) -> String {
         }
     }
     out
+}
+
+fn render_percent_tilde_from_chars(
+    chars: &[char],
+    start: usize,
+    env: &crate::env::Environment,
+) -> Option<(String, usize)> {
+    if chars.get(start) != Some(&'%') || chars.get(start + 1) != Some(&'~') {
+        return None;
+    }
+    let mut j = start + 2;
+    let mut flag_str = String::new();
+    let mut path_search: Option<String> = None;
+    while j < chars.len() {
+        let cc = chars[j];
+        if cc.is_ascii_digit() || cc == '$' {
+            break;
+        }
+        if matches!(
+            cc,
+            'f' | 'd'
+                | 'p'
+                | 'n'
+                | 'x'
+                | 's'
+                | 'a'
+                | 't'
+                | 'z'
+                | 'F'
+                | 'D'
+                | 'P'
+                | 'N'
+                | 'X'
+                | 'S'
+                | 'A'
+                | 'T'
+                | 'Z'
+        ) {
+            flag_str.push(cc.to_ascii_lowercase());
+            j += 1;
+        } else {
+            return None;
+        }
+    }
+    if chars.get(j) == Some(&'$') {
+        j += 1;
+        let env_start = j;
+        while j < chars.len() && chars[j] != ':' {
+            j += 1;
+        }
+        if j >= chars.len() || j == env_start {
+            return None;
+        }
+        path_search = Some(chars[env_start..j].iter().collect());
+        j += 1;
+    }
+    path_search.as_ref()?;
+    if j >= chars.len() || !chars[j].is_ascii_digit() {
+        return None;
+    }
+    let flags = crate::lex::PercentTildeFlags::parse(&flag_str)?;
+    let arg_index = (chars[j] as u32).saturating_sub('0' as u32) as u8;
+    Some((
+        render_percent_tilde(env, flags, path_search.as_deref(), arg_index),
+        j + 1,
+    ))
 }
 
 /// Resolve a single var-ref body (the part between sigils). Handles bare
@@ -714,11 +977,12 @@ fn resolve_var_ref(body: &str, env: &mut Environment, _is_bang: bool, depth: u32
 fn render_percent_tilde(
     env: &crate::env::Environment,
     flags: crate::lex::PercentTildeFlags,
+    path_search: Option<&str>,
     arg_index: u8,
 ) -> String {
     // Mirrors batch_interpreter.py::percent_tilde (line 910).
-    let bare = if arg_index == 0 {
-        "C:\\Users\\al\\Downloads\\script.bat".to_string()
+    let mut bare = if arg_index == 0 {
+        percent_tilde_arg0_path(env)
     } else if let Some(frame) = env.call_stack.last() {
         frame
             .args
@@ -728,6 +992,9 @@ fn render_percent_tilde(
     } else {
         String::new()
     };
+    if let Some(env_name) = path_search {
+        bare = resolve_percent_tilde_path_search(env, env_name, &bare).unwrap_or_default();
+    }
 
     if !flags.f
         && !flags.d
@@ -760,26 +1027,86 @@ fn render_percent_tilde(
         }
     }
 
+    let arg0_parts = percent_tilde_path_parts(&bare);
     if flags.f {
-        out.push_str("C:\\Users\\al\\Downloads\\script.bat");
+        out.push_str(&arg0_parts.full);
     } else {
         if flags.d {
-            out.push_str("C:");
+            out.push_str(&arg0_parts.drive);
         }
         if flags.p {
-            out.push_str("\\Users\\al\\Downloads\\");
+            out.push_str(&arg0_parts.parent);
         }
         if flags.n {
-            out.push_str("script");
+            out.push_str(&arg0_parts.stem);
         }
         if flags.x {
-            out.push_str(".bat");
+            out.push_str(&arg0_parts.extension);
         }
         if flags.s && out.is_empty() {
-            out.push_str("C:\\Users\\al\\Downloads\\script.bat");
+            out.push_str(&arg0_parts.full);
         }
     }
     out.trim().to_string()
+}
+
+fn resolve_percent_tilde_path_search(
+    env: &crate::env::Environment,
+    env_name: &str,
+    candidate: &str,
+) -> Option<String> {
+    if !env_name.eq_ignore_ascii_case("PATH") {
+        return None;
+    }
+    let candidate = candidate.trim_matches('"');
+    let basename = candidate
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(candidate)
+        .to_ascii_lowercase();
+    crate::snapshot::get(env.winver).and_then(|snap| snap.r#where.get(&basename).cloned())
+}
+
+struct PercentTildePathParts {
+    full: String,
+    drive: String,
+    parent: String,
+    stem: String,
+    extension: String,
+}
+
+fn percent_tilde_arg0_path(env: &crate::env::Environment) -> String {
+    env.file_path
+        .as_ref()
+        .map(|p| p.to_string_lossy().into_owned())
+        .filter(|p| !p.is_empty())
+        .unwrap_or_else(|| "C:\\Users\\al\\Downloads\\script.bat".to_string())
+}
+
+fn percent_tilde_path_parts(path: &str) -> PercentTildePathParts {
+    let full = path.trim_matches('"').to_string();
+    let last_sep = full.rfind(['\\', '/']);
+    let (parent, file_name) = match last_sep {
+        Some(idx) => (full[..=idx].to_string(), &full[idx + 1..]),
+        None => ("\\Users\\al\\Downloads\\".to_string(), full.as_str()),
+    };
+    let drive = if full.as_bytes().get(1) == Some(&b':') {
+        full[..2].to_string()
+    } else {
+        "C:".to_string()
+    };
+    let (stem, extension) = match file_name.rfind('.') {
+        Some(idx) if idx > 0 => (file_name[..idx].to_string(), file_name[idx..].to_string()),
+        _ => (file_name.to_string(), String::new()),
+    };
+
+    PercentTildePathParts {
+        full,
+        drive,
+        parent,
+        stem,
+        extension,
+    }
 }
 
 pub(crate) fn apply_substr(s: &str, index: i64, length: Option<i64>) -> String {
@@ -880,6 +1207,15 @@ mod dosfuscation_tests {
         env.set("b", "%a%bar");
         let got = normalize_to_string(&lex("%b%"), &mut env);
         assert_eq!(got, "foobar", "got: {:?}", got);
+    }
+
+    #[test]
+    fn nested_ref_detector_handles_percent_bang_and_literals() {
+        assert!(super::value_likely_has_nested_ref("%A%"));
+        assert!(super::value_likely_has_nested_ref("pre!name_1!post"));
+        assert!(!super::value_likely_has_nested_ref("%%J"));
+        assert!(!super::value_likely_has_nested_ref("%A-"));
+        assert!(!super::value_likely_has_nested_ref("plain text"));
     }
 
     // From batch_deobfuscator/tests/test_FE_DOSfuscation.py::test_variable_manipulation
@@ -993,6 +1329,84 @@ mod dosfuscation_tests {
     #[test]
     fn whitespace_tabs_in_op() {
         assert_eq!(nm("%coMSPec:~\t-7,\t+3%"), "cmd");
+    }
+
+    #[test]
+    fn literal_command_fast_path_accepts_plain_single_spaced_text() {
+        assert_eq!(
+            super::normalize_literal_command_fast("cmd.exe /c dir C:\\Temp"),
+            Some("cmd.exe /c dir C:\\Temp".to_string())
+        );
+    }
+
+    #[test]
+    fn literal_command_fast_path_accepts_quoted_set_assignments_like_full_normalizer() {
+        for input in [
+            r#" set "A=value with spaces" "#,
+            r#"set "A=& star""#,
+            r#"set "B=t "" /""#,
+            r#"set "A=aXYZbXYZ cXYZdXYZ""#,
+        ] {
+            let full = nm(input);
+            assert_eq!(
+                super::normalize_literal_command_fast(input).as_deref(),
+                Some(full.as_str()),
+                "fast path diverged for {input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn literal_command_fast_path_rejects_lexer_sensitive_text() {
+        for input in [
+            "echo %COMSPEC%",
+            "echo !VAR!",
+            "echo ^&",
+            r#"echo "quoted""#,
+            r#"set "A=%COMSPEC%""#,
+            r#"set "A=!VAR!""#,
+            r#"set "A=value"#,
+            r#"set "A""#,
+            "echo one  two",
+            "echo a,b",
+            "echo a;b",
+            "echo a&b",
+            "echo a|b",
+            "echo > out.txt",
+            "(echo hi)",
+        ] {
+            assert!(
+                super::normalize_literal_command_fast(input).is_none(),
+                "fast path unexpectedly accepted {input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn literal_command_fast_path_accepts_caret_plain_text_like_full_normalizer() {
+        let input = "r^e^m payload ABC123+/=";
+        let full = nm(input);
+        assert_eq!(
+            super::normalize_literal_command_fast(input).as_deref(),
+            Some(full.as_str())
+        );
+    }
+
+    #[test]
+    fn literal_command_fast_path_rejects_marker_noise_shape() {
+        let input = "pXYZoXYZwershell eXYZcXYZho";
+        assert!(super::normalize_literal_command_fast(input).is_none());
+    }
+
+    #[test]
+    fn marker_prefixed_encoded_set_carrier_preserves_raw_payload() {
+        let mut payload = String::from("set Carrier= \u{8bef}");
+        for _ in 0..40 {
+            payload.push_str("aXYZbXYZ cXYZdXYZ ");
+        }
+
+        let normalized = nm(&payload);
+        assert_eq!(normalized, payload);
     }
     #[test]
     fn assembled_set_token() {

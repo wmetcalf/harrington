@@ -59,6 +59,18 @@ fn strip_balanced_parens(s: &str) -> String {
 }
 
 pub fn split_commands(line: &str) -> Vec<String> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    if !line
+        .as_bytes()
+        .iter()
+        .any(|b| matches!(b, b'&' | b'|' | b'(' | b')'))
+    {
+        return vec![trimmed.to_string()];
+    }
+
     let chars: Vec<char> = line.chars().collect();
     let mut out = Vec::new();
     let mut start = 0usize;

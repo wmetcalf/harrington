@@ -10,7 +10,10 @@ fn strip_keyword_ci<'a>(s: &'a str, kw: &str) -> Option<&'a str> {
     if s.len() < kw.len() {
         return None;
     }
-    if !s[..kw.len()].eq_ignore_ascii_case(kw) {
+    if !s
+        .get(..kw.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(kw))
+    {
         return None;
     }
     let rest = &s[kw.len()..];

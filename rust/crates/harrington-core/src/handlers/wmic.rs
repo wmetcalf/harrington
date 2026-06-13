@@ -1,24 +1,13 @@
-//! wmic handler — extracts the inner command from `wmic process call create "..."`.
+//! wmic handler — extracts the inner command from `wmic process call create ...`.
 
 use crate::env::Environment;
+use crate::handlers::util::split_words;
 use crate::traits::Trait;
-use once_cell::sync::Lazy;
-use regex::Regex;
-
-#[allow(clippy::expect_used)]
-static WMIC_PROCESS_CREATE_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"(?i)^\s*wmic\s+process\s+call\s+create\s+["'](?P<cmd>.+)["']\s*$"#)
-        .expect("wmic regex")
-});
 
 pub fn h_wmic(raw: &str, env: &mut Environment) {
-    let Some(caps) = WMIC_PROCESS_CREATE_RE.captures(raw) else {
+    let Some(inner) = wmic_process_create_inner(raw) else {
         return;
     };
-    let inner = caps
-        .name("cmd")
-        .map(|m| m.as_str().to_string())
-        .unwrap_or_default();
     if inner.is_empty() {
         return;
     }
@@ -27,4 +16,65 @@ pub fn h_wmic(raw: &str, env: &mut Environment) {
     });
     env.exec_cmd.push(inner);
     env.exec_cmd_delayed.push(false);
+}
+
+fn wmic_process_create_inner(raw: &str) -> Option<String> {
+    let tokens = split_words(raw);
+    let mut process_idx = None;
+    for (idx, token) in tokens.iter().enumerate().skip(1) {
+        if strip_quotes(token).eq_ignore_ascii_case("process") {
+            process_idx = Some(idx);
+            break;
+        }
+    }
+
+    let process_idx = process_idx?;
+    if !tokens
+        .get(process_idx + 1)
+        .map(|token| strip_quotes(token).eq_ignore_ascii_case("call"))
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    if !tokens
+        .get(process_idx + 2)
+        .map(|token| strip_quotes(token).eq_ignore_ascii_case("create"))
+        .unwrap_or(false)
+    {
+        return None;
+    }
+
+    let tail_start = tokens
+        .get(process_idx + 3)
+        .map(|token| raw.find(token))
+        .unwrap_or(None)?;
+    let inner = wmic_create_commandline_argument(raw[tail_start..].trim())?;
+    if inner.is_empty() {
+        None
+    } else {
+        Some(inner)
+    }
+}
+
+fn wmic_create_commandline_argument(tail: &str) -> Option<String> {
+    let mut in_dq = false;
+    let mut in_sq = false;
+    let mut end = tail.len();
+    for (idx, c) in tail.char_indices() {
+        match c {
+            '"' if !in_sq => in_dq = !in_dq,
+            '\'' if !in_dq => in_sq = !in_sq,
+            ',' if !in_dq && !in_sq => {
+                end = idx;
+                break;
+            }
+            _ => {}
+        }
+    }
+    let inner = strip_quotes(tail[..end].trim()).trim().to_string();
+    (!inner.is_empty()).then_some(inner)
+}
+
+fn strip_quotes(text: &str) -> &str {
+    text.trim_matches(|c| c == '"' || c == '\'')
 }

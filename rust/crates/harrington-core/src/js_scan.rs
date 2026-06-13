@@ -27,15 +27,15 @@ static U_ESCAPE_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)String\s*(?:\.\s*fromCharCode|\[\s*['"]fromCharCode['"]\s*\])\s*\(\s*([0-9xa-f+\-\s,]{5,8192})\s*\)"#,
+        r#"(?is)String\s*(?:\.\s*from(?:CharCode|CodePoint)|\[\s*['"]from(?:CharCode|CodePoint)['"]\s*\])\s*\(\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\)"#,
     )
-    .expect("js fromCharCode")
+    .expect("js fromCharCode/fromCodePoint")
 });
 
 #[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_MEMBER_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)String\s*\[\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\]\s*\(\s*([0-9xa-f+\-\s,]{5,8192})\s*\)"#,
+        r#"(?is)String\s*\[\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\]\s*\(\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\)"#,
     )
     .expect("js fromCharCode member variable")
 });
@@ -43,7 +43,7 @@ static JS_FROMCHARCODE_MEMBER_VAR_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_MEMBER_APPLY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)String\s*\[\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\]\s*\.\s*apply\s*\(\s*[^,\r\n]{0,128},\s*\[\s*([0-9xa-f+\-\s,]{5,8192})\s*\]\s*\)"#,
+        r#"(?is)String\s*\[\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\]\s*\.\s*apply\s*\(\s*[^,\r\n]{0,128},\s*\[\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\]\s*\)"#,
     )
     .expect("js fromCharCode member apply")
 });
@@ -51,15 +51,23 @@ static JS_FROMCHARCODE_MEMBER_APPLY_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_MEMBER_CALL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)String\s*\[\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\]\s*\.\s*call\s*\(\s*[^,\r\n]{0,128},\s*([0-9xa-f+\-\s,]{5,8192})\s*\)"#,
+        r#"(?is)String\s*\[\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\]\s*\.\s*call\s*\(\s*[^,\r\n]{0,128},\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\)"#,
     )
     .expect("js fromCharCode member call")
 });
 
 #[allow(clippy::expect_used)]
+static JS_FROMCHARCODE_MEMBER_BIND_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)String\s*\[\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\]\s*\.\s*bind\s*\(\s*[^)\r\n]{0,128}\)\s*\(\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\)"#,
+    )
+    .expect("js fromCharCode member bind")
+});
+
+#[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_MEMBER_SPREAD_ARRAY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)String\s*\[\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\]\s*\(\s*\.\.\.\s*\[\s*([0-9xa-f+\-\s,]{5,8192})\s*\]\s*\)"#,
+        r#"(?is)String\s*\[\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\]\s*\(\s*\.\.\.\s*\[\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\]\s*\)"#,
     )
     .expect("js fromCharCode member spread array")
 });
@@ -67,47 +75,63 @@ static JS_FROMCHARCODE_MEMBER_SPREAD_ARRAY_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_APPLY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)String\s*(?:\.\s*fromCharCode|\[\s*['"]fromCharCode['"]\s*\])\s*\.\s*apply\s*\(\s*[^,\r\n]{0,128},\s*\[\s*([0-9xa-f+\-\s,]{5,8192})\s*\]\s*\)"#,
+        r#"(?is)String\s*(?:\.\s*from(?:CharCode|CodePoint)|\[\s*['"]from(?:CharCode|CodePoint)['"]\s*\])\s*\.\s*apply\s*\(\s*[^,\r\n]{0,128},\s*\[\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\]\s*\)"#,
     )
-    .expect("js fromCharCode apply")
+    .expect("js fromCharCode/fromCodePoint apply")
 });
 
 #[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_APPLY_ARRAY_CTOR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)String\s*(?:\.\s*fromCharCode|\[\s*['"]fromCharCode['"]\s*\])\s*\.\s*apply\s*\(\s*[^,\r\n]{0,128},\s*(?:new\s+)?Array\s*\(\s*([0-9xa-f+\-\s,]{5,8192})\s*\)\s*\)"#,
+        r#"(?is)String\s*(?:\.\s*from(?:CharCode|CodePoint)|\[\s*['"]from(?:CharCode|CodePoint)['"]\s*\])\s*\.\s*apply\s*\(\s*[^,\r\n]{0,128},\s*(?:new\s+)?Array\s*\(\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\)\s*\)"#,
     )
-    .expect("js fromCharCode apply Array constructor")
+    .expect("js fromCharCode/fromCodePoint apply Array constructor")
+});
+
+#[allow(clippy::expect_used)]
+static JS_FROMCHARCODE_APPLY_TYPED_ARRAY_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)String\s*(?:\.\s*from(?:CharCode|CodePoint)|\[\s*['"]from(?:CharCode|CodePoint)['"]\s*\])\s*\.\s*apply\s*\(\s*[^,\r\n]{0,128},\s*(?:new\s+)?(?:Uint8Array|Int8Array|Uint8ClampedArray)\s*\(\s*\[\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\]\s*\)\s*\)"#,
+    )
+    .expect("js fromCharCode/fromCodePoint apply typed array")
 });
 
 #[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_CALL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)String\s*(?:\.\s*fromCharCode|\[\s*['"]fromCharCode['"]\s*\])\s*\.\s*call\s*\(\s*[^,\r\n]{0,128},\s*([0-9xa-f+\-\s,]{5,8192})\s*\)"#,
+        r#"(?is)String\s*(?:\.\s*from(?:CharCode|CodePoint)|\[\s*['"]from(?:CharCode|CodePoint)['"]\s*\])\s*\.\s*call\s*\(\s*[^,\r\n]{0,128},\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\)"#,
     )
-    .expect("js fromCharCode call")
+    .expect("js fromCharCode/fromCodePoint call")
+});
+
+#[allow(clippy::expect_used)]
+static JS_FROMCHARCODE_BIND_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)String\s*(?:\.\s*from(?:CharCode|CodePoint)|\[\s*['"]from(?:CharCode|CodePoint)['"]\s*\])\s*\.\s*bind\s*\(\s*[^)\r\n]{0,128}\)\s*\(\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\)"#,
+    )
+    .expect("js fromCharCode/fromCodePoint bind")
 });
 
 #[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_SPREAD_ARRAY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)String\s*(?:\.\s*fromCharCode|\[\s*['"]fromCharCode['"]\s*\])\s*\(\s*\.\.\.\s*\[\s*([0-9xa-f+\-\s,]{5,8192})\s*\]\s*\)"#,
+        r#"(?is)String\s*(?:\.\s*from(?:CharCode|CodePoint)|\[\s*['"]from(?:CharCode|CodePoint)['"]\s*\])\s*\(\s*\.\.\.\s*\[\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\]\s*\)"#,
     )
-    .expect("js fromCharCode spread array")
+    .expect("js fromCharCode/fromCodePoint spread array")
 });
 
 #[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_SPREAD_ARRAY_CTOR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)String\s*(?:\.\s*fromCharCode|\[\s*['"]fromCharCode['"]\s*\])\s*\(\s*\.\.\.\s*(?:new\s+)?Array\s*\(\s*([0-9xa-f+\-\s,]{5,8192})\s*\)\s*\)"#,
+        r#"(?is)String\s*(?:\.\s*from(?:CharCode|CodePoint)|\[\s*['"]from(?:CharCode|CodePoint)['"]\s*\])\s*\(\s*\.\.\.\s*(?:new\s+)?Array\s*\(\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\)\s*\)"#,
     )
-    .expect("js fromCharCode spread Array constructor")
+    .expect("js fromCharCode/fromCodePoint spread Array constructor")
 });
 
 #[allow(clippy::expect_used)]
 static JS_NUM_ARRAY_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)(?:\b(?:var|let|const)\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*\[\s*([0-9xa-f+\-\s,]{5,8192})\s*\]"#,
+        r#"(?is)(?:\b(?:var|let|const)\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*\[\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\]"#,
     )
     .expect("js numeric array assignment")
 });
@@ -115,7 +139,7 @@ static JS_NUM_ARRAY_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static JS_NUM_ARRAY_CTOR_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)(?:\b(?:var|let|const)\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:new\s+)?Array\s*\(\s*([0-9xa-f+\-\s,]{5,8192})\s*\)"#,
+        r#"(?is)(?:\b(?:var|let|const)\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:new\s+)?Array\s*\(\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\)"#,
     )
     .expect("js numeric array constructor assignment")
 });
@@ -123,7 +147,7 @@ static JS_NUM_ARRAY_CTOR_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static JS_UINT8_ARRAY_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)(?:\b(?:var|let|const)\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:new\s+)?Uint8Array\s*\(\s*\[\s*([0-9xa-f+\-\s,]{5,8192})\s*\]\s*\)"#,
+        r#"(?is)(?:\b(?:var|let|const)\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:new\s+)?(?:Uint8Array|Int8Array|Uint8ClampedArray)\s*\(\s*\[\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\]\s*\)"#,
     )
     .expect("js Uint8Array assignment")
 });
@@ -131,7 +155,7 @@ static JS_UINT8_ARRAY_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static JS_UINT8_ARRAY_OF_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)(?:\b(?:var|let|const)\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*Uint8Array\s*(?:\.\s*of|\[\s*['"]of['"]\s*\])\s*\(\s*([0-9xa-f+\-\s,]{5,8192})\s*\)"#,
+        r#"(?is)(?:\b(?:var|let|const)\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:Uint8Array|Int8Array|Uint8ClampedArray)\s*(?:\.\s*of|\[\s*['"]of['"]\s*\])\s*\(\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\)"#,
     )
     .expect("js Uint8Array.of assignment")
 });
@@ -139,7 +163,7 @@ static JS_UINT8_ARRAY_OF_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static JS_UINT8_ARRAY_FROM_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)(?:\b(?:var|let|const)\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*Uint8Array\s*(?:\.\s*from|\[\s*['"]from['"]\s*\])\s*\(\s*\[\s*([0-9xa-f+\-\s,]{5,8192})\s*\]\s*\)"#,
+        r#"(?is)(?:\b(?:var|let|const)\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:Uint8Array|Int8Array|Uint8ClampedArray)\s*(?:\.\s*from|\[\s*['"]from['"]\s*\])\s*\(\s*\[\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\]\s*\)"#,
     )
     .expect("js Uint8Array.from assignment")
 });
@@ -147,17 +171,17 @@ static JS_UINT8_ARRAY_FROM_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_APPLY_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)String\s*(?:\.\s*fromCharCode|\[\s*['"]fromCharCode['"]\s*\])\s*\.\s*apply\s*\(\s*[^,\r\n]{0,128},\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\)"#,
+        r#"(?is)String\s*(?:\.\s*from(?:CharCode|CodePoint)|\[\s*['"]from(?:CharCode|CodePoint)['"]\s*\])\s*\.\s*apply\s*\(\s*[^,\r\n]{0,128},\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\)"#,
     )
-    .expect("js fromCharCode apply variable")
+    .expect("js fromCharCode/fromCodePoint apply variable")
 });
 
 #[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_SPREAD_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)String\s*(?:\.\s*fromCharCode|\[\s*['"]fromCharCode['"]\s*\])\s*\(\s*\.\.\.\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\)"#,
+        r#"(?is)String\s*(?:\.\s*from(?:CharCode|CodePoint)|\[\s*['"]from(?:CharCode|CodePoint)['"]\s*\])\s*\(\s*\.\.\.\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\)"#,
     )
-    .expect("js fromCharCode spread variable")
+    .expect("js fromCharCode/fromCodePoint spread variable")
 });
 
 #[allow(clippy::expect_used)]
@@ -166,67 +190,122 @@ static JS_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
         .expect("js assignment")
 });
 
+#[allow(clippy::expect_used)]
+static JS_FUNCTION_DECL_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?is)\bfunction\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\("#)
+        .expect("js function declaration")
+});
+
 pub fn scan_js_payloads(env: &mut Environment) {
-    let payloads: Vec<Vec<u8>> = env.all_extracted_jscript.clone();
+    let mut payloads = std::mem::take(&mut env.all_extracted_jscript);
     let mut seen: HashSet<(usize, String)> = HashSet::new();
-    for (idx, payload) in payloads.iter().enumerate() {
+    'payloads: for (idx, payload) in payloads.iter().enumerate() {
         if env.check_deadline() {
             break;
         }
         let raw = String::from_utf8_lossy(payload).into_owned();
         // First pass: decode \uXXXX escapes
-        let decoded = decode_u_escapes(&raw);
+        let decoded = collapse_js_line_continuations(&decode_u_escapes(&raw));
         if env.check_deadline() {
-            break;
+            break 'payloads;
         }
-        let has_js_signal = js_decoder_signal(&decoded);
+        let js_signals = js_decoder_signals(&decoded);
         // Second pass: collapse "a"+"b"+"c" concat when the payload has
         // JavaScript obfuscation vocabulary. This parser is intentionally
         // skipped for misclassified VBScript bodies.
-        let concat_resolved = if has_js_signal {
+        let concat_resolved = if js_signals.any() {
             expand_js_string_concat(&decoded)
         } else {
             decoded
         };
+        let should_run_fromcharcode_decoders =
+            js_should_run_fromcharcode_decoders(&concat_resolved);
         let mut candidates = vec![concat_resolved.clone()];
-        if has_js_signal {
-            candidates.extend(decoded_js_percent_literals(&concat_resolved));
-            if env.check_deadline() {
-                break;
+        if js_signals.any() {
+            if js_signals.percent_decoder {
+                candidates.extend(decoded_js_percent_literals(&concat_resolved));
             }
-            candidates.extend(decoded_js_percent_alias_calls(&concat_resolved));
-            candidates.extend(decoded_js_fromcharcode_literals(&concat_resolved));
             if env.check_deadline() {
-                break;
+                break 'payloads;
             }
-            candidates.extend(decoded_js_fromcharcode_array_bindings(&concat_resolved));
-            candidates.extend(decoded_js_textdecoder_literals(&concat_resolved));
+            if js_signals.percent_decoder {
+                candidates.extend(decoded_js_percent_alias_calls(&concat_resolved));
+            }
+            if should_run_fromcharcode_decoders {
+                candidates.extend(decoded_js_fromcharcode_literals(&concat_resolved));
+            }
             if env.check_deadline() {
-                break;
+                break 'payloads;
             }
-            candidates.extend(decoded_js_atob_literals(&concat_resolved));
-            candidates.extend(decoded_js_buffer_from_base64_literals(&concat_resolved));
-            candidates.extend(decoded_js_atob_alias_calls(&concat_resolved));
+            if should_run_fromcharcode_decoders {
+                candidates.extend(decoded_js_fromcharcode_array_bindings(&concat_resolved));
+            }
+            if js_signals.string_bindings {
+                candidates.extend(decoded_js_custom_base64_decoder_calls(&concat_resolved));
+            }
+            if js_signals.text_decoder {
+                candidates.extend(decoded_js_textdecoder_literals(&concat_resolved));
+            }
             if env.check_deadline() {
-                break;
+                break 'payloads;
             }
-            candidates.extend(decoded_js_bound_decoder_calls(&concat_resolved));
-            candidates.extend(decoded_js_split_reverse_join_literals(&concat_resolved));
-            candidates.extend(decoded_js_array_from_reverse_join_literals(
-                &concat_resolved,
-            ));
-            candidates.extend(decoded_js_array_join_literals(&concat_resolved));
-            candidates.extend(decoded_js_string_bindings(&concat_resolved));
+            if js_signals.atob_decoder || js_signals.string_bindings {
+                candidates.extend(decoded_js_atob_literals(&concat_resolved));
+                candidates.extend(decoded_js_atob_alias_calls(&concat_resolved));
+            }
+            if js_signals.buffer_decoder {
+                candidates.extend(decoded_js_buffer_from_base64_literals(&concat_resolved));
+            }
+            if env.check_deadline() {
+                break 'payloads;
+            }
+            if js_signals.bound_decoder {
+                candidates.extend(decoded_js_bound_decoder_calls(&concat_resolved));
+            }
+            if js_signals.split_reverse_join {
+                candidates.extend(decoded_js_split_reverse_join_literals(&concat_resolved));
+            }
+            if js_signals.array_from_reverse_join {
+                candidates.extend(decoded_js_array_from_reverse_join_literals(
+                    &concat_resolved,
+                ));
+            }
+            if js_signals.array_join {
+                candidates.extend(decoded_js_array_join_literals(&concat_resolved));
+            }
+            if js_signals.string_bindings {
+                candidates.extend(decoded_js_string_bindings(&concat_resolved));
+            }
+        }
+
+        for candidate in candidates.iter().skip(1) {
+            queue_decoded_js_script_candidate(candidate, env);
         }
 
         // Now scan for URLs
         for candidate in candidates {
             if env.check_deadline() {
-                return;
+                break 'payloads;
+            }
+            if has_js_shell_command_call_candidate(&candidate) {
+                let (bindings, _) = collect_js_string_bindings(&candidate);
+                let arrays = collect_js_string_array_bindings(&candidate, &bindings);
+                push_downloads_from_js_shell_command_calls(
+                    env,
+                    idx,
+                    &concat_resolved,
+                    &candidate,
+                    &bindings,
+                    &arrays,
+                    &mut seen,
+                );
+            }
+            if env.check_deadline() {
+                break 'payloads;
             }
             for caps in URL_IN_JS_RE.captures_iter(&candidate) {
                 if env.check_deadline() {
-                    return;
+                    break 'payloads;
                 }
                 let Some(m) = caps.get(1) else { continue };
                 let mut url = m.as_str().to_string();
@@ -263,29 +342,480 @@ pub fn scan_js_payloads(env: &mut Environment) {
             }
         }
     }
+    payloads.append(&mut env.all_extracted_jscript);
+    env.all_extracted_jscript = payloads;
 }
 
+fn has_js_shell_command_call_candidate(text: &str) -> bool {
+    find_ascii_case_insensitive_from(text, b".run", 0).is_some()
+        || find_ascii_case_insensitive_from(text, b".exec", 0).is_some()
+        || find_ascii_case_insensitive_from(text, b".shellexecute", 0).is_some()
+        || find_js_bracket_shell_command_method_from(text, 0).is_some()
+}
+
+fn push_downloads_from_js_shell_command_calls(
+    env: &mut Environment,
+    idx: usize,
+    snippet_source: &str,
+    text: &str,
+    bindings: &HashMap<String, String>,
+    arrays: &HashMap<String, Vec<String>>,
+    seen: &mut HashSet<(usize, String)>,
+) {
+    for (method, requires_shell_context) in
+        [(b".run".as_slice(), false), (b".exec".as_slice(), true)]
+    {
+        let mut cursor = 0usize;
+        while let Some(method_start) = find_ascii_case_insensitive_from(text, method, cursor) {
+            if env.check_deadline() {
+                return;
+            }
+            let method_end = method_start + method.len();
+            if requires_shell_context && !has_nearby_wscript_shell_context(text, method_start) {
+                cursor = method_end;
+                continue;
+            }
+            let Some(open) = consume_js_call_open(text, method_end) else {
+                cursor = method_end;
+                continue;
+            };
+            let arg_start = skip_ascii_ws(text, open + 1);
+            let Some((_arg_end, command)) =
+                parse_js_decoder_string_arg(text, arg_start, bindings, arrays)
+            else {
+                cursor = open + 1;
+                continue;
+            };
+            push_downloads_from_js_command(env, idx, snippet_source, &command, seen);
+            cursor = open + 1;
+        }
+    }
+
+    let mut cursor = 0usize;
+    while let Some(method_start) = find_ascii_case_insensitive_from(text, b".shellexecute", cursor)
+    {
+        if env.check_deadline() {
+            return;
+        }
+        let method_end = method_start + b".shellexecute".len();
+        if !has_nearby_js_shell_execute_context(text, method_start) {
+            cursor = method_end;
+            continue;
+        }
+        let Some(open) = consume_js_call_open(text, method_end) else {
+            cursor = method_end;
+            continue;
+        };
+        let arg_start = skip_ascii_ws(text, open + 1);
+        let Some((program_end, program)) =
+            parse_js_decoder_string_arg(text, arg_start, bindings, arrays)
+        else {
+            cursor = open + 1;
+            continue;
+        };
+        let mut command = program.clone();
+        let mut args_value = None;
+        let comma = skip_ascii_ws(text, program_end);
+        let mut args_end = program_end;
+        if text.as_bytes().get(comma) == Some(&b',') {
+            let args_start = skip_ascii_ws(text, comma + 1);
+            if let Some((parsed_args_end, args)) =
+                parse_js_decoder_string_arg(text, args_start, bindings, arrays)
+            {
+                args_end = parsed_args_end;
+                command.push(' ');
+                command.push_str(&args);
+                args_value = Some(args);
+            }
+        }
+        if let Some(verb) = parse_js_shell_execute_verb_arg(text, args_end, bindings, arrays) {
+            push_js_shell_execute_self_elevation(env, &program, args_value.as_deref(), &verb);
+        }
+        push_downloads_from_js_command(env, idx, snippet_source, &command, seen);
+        cursor = open + 1;
+    }
+
+    let mut cursor = 0usize;
+    while let Some((method_start, method_end, kind)) =
+        find_js_bracket_shell_command_method_from(text, cursor)
+    {
+        if env.check_deadline() {
+            return;
+        }
+        let has_context = match kind {
+            JsShellCommandKind::Command => has_nearby_wscript_shell_context(text, method_start),
+            JsShellCommandKind::ShellExecute => {
+                has_nearby_js_shell_execute_context(text, method_start)
+            }
+        };
+        if !has_context {
+            cursor = method_end;
+            continue;
+        }
+        let Some(open) = consume_js_call_open(text, method_end) else {
+            cursor = method_end;
+            continue;
+        };
+        let arg_start = skip_ascii_ws(text, open + 1);
+        let Some((arg_end, program)) =
+            parse_js_decoder_string_arg(text, arg_start, bindings, arrays)
+        else {
+            cursor = open + 1;
+            continue;
+        };
+        let mut command = program.clone();
+        if matches!(kind, JsShellCommandKind::ShellExecute) {
+            let comma = skip_ascii_ws(text, arg_end);
+            let mut args_end = arg_end;
+            let mut args_value = None;
+            if text.as_bytes().get(comma) == Some(&b',') {
+                let args_start = skip_ascii_ws(text, comma + 1);
+                if let Some((parsed_args_end, args)) =
+                    parse_js_decoder_string_arg(text, args_start, bindings, arrays)
+                {
+                    args_end = parsed_args_end;
+                    command.push(' ');
+                    command.push_str(&args);
+                    args_value = Some(args);
+                }
+            }
+            if let Some(verb) = parse_js_shell_execute_verb_arg(text, args_end, bindings, arrays) {
+                push_js_shell_execute_self_elevation(env, &program, args_value.as_deref(), &verb);
+            }
+        }
+        push_downloads_from_js_command(env, idx, snippet_source, &command, seen);
+        cursor = open + 1;
+    }
+}
+
+fn parse_js_shell_execute_verb_arg(
+    text: &str,
+    args_end: usize,
+    bindings: &HashMap<String, String>,
+    arrays: &HashMap<String, Vec<String>>,
+) -> Option<String> {
+    let comma = skip_ascii_ws(text, args_end);
+    if text.as_bytes().get(comma) != Some(&b',') {
+        return None;
+    }
+    let dir_start = skip_ascii_ws(text, comma + 1);
+    let (dir_end, _) = parse_js_decoder_string_arg(text, dir_start, bindings, arrays)?;
+    let comma = skip_ascii_ws(text, dir_end);
+    if text.as_bytes().get(comma) != Some(&b',') {
+        return None;
+    }
+    let verb_start = skip_ascii_ws(text, comma + 1);
+    parse_js_decoder_string_arg(text, verb_start, bindings, arrays).map(|(_, verb)| verb)
+}
+
+fn push_js_shell_execute_self_elevation(
+    env: &mut Environment,
+    program: &str,
+    args: Option<&str>,
+    verb: &str,
+) {
+    if !verb.trim().eq_ignore_ascii_case("runas") {
+        return;
+    }
+    env.traits.push(Trait::SelfElevation {
+        target: program.to_string(),
+        args: args
+            .map(str::to_string)
+            .filter(|value| !value.trim().is_empty()),
+    });
+}
+
+#[derive(Clone, Copy)]
+enum JsShellCommandKind {
+    Command,
+    ShellExecute,
+}
+
+fn find_js_bracket_shell_command_method_from(
+    text: &str,
+    start: usize,
+) -> Option<(usize, usize, JsShellCommandKind)> {
+    let bytes = text.as_bytes();
+    let mut cursor = start.min(bytes.len());
+    while cursor < bytes.len() {
+        let rel = bytes[cursor..].iter().position(|byte| *byte == b'[')?;
+        let member_start = cursor + rel;
+        let literal_start = skip_ascii_ws(text, member_start + 1);
+        let Some((literal_end, property)) = parse_js_string_literal_at(text, literal_start) else {
+            cursor = member_start + 1;
+            continue;
+        };
+        let close = skip_ascii_ws(text, literal_end);
+        if bytes.get(close) != Some(&b']') {
+            cursor = member_start + 1;
+            continue;
+        }
+        if property.eq_ignore_ascii_case("run") {
+            return Some((member_start, close + 1, JsShellCommandKind::Command));
+        }
+        if property.eq_ignore_ascii_case("exec") {
+            return Some((member_start, close + 1, JsShellCommandKind::Command));
+        }
+        if property.eq_ignore_ascii_case("shellexecute") {
+            return Some((member_start, close + 1, JsShellCommandKind::ShellExecute));
+        }
+        cursor = member_start + 1;
+    }
+    None
+}
+
+fn has_nearby_wscript_shell_context(text: &str, idx: usize) -> bool {
+    let bytes = text.as_bytes();
+    let start = idx.saturating_sub(256);
+    let end = idx.min(bytes.len());
+    range_contains_ascii_case_insensitive(bytes, start, end, b"wscript.shell")
+        || range_contains_ascii_case_insensitive(bytes, start, end, b"activexobject")
+}
+
+fn has_nearby_js_shell_execute_context(text: &str, idx: usize) -> bool {
+    if has_nearby_wscript_shell_context(text, idx) {
+        return true;
+    }
+    let bytes = text.as_bytes();
+    let start = idx.saturating_sub(256);
+    let end = idx.min(bytes.len());
+    range_contains_ascii_case_insensitive(bytes, start, end, b"shell.application")
+}
+
+fn range_contains_ascii_case_insensitive(
+    haystack: &[u8],
+    start: usize,
+    end: usize,
+    needle: &[u8],
+) -> bool {
+    let end = end.min(haystack.len());
+    let Some(width) = end.checked_sub(start) else {
+        return false;
+    };
+    if needle.is_empty() || needle.len() > width {
+        return false;
+    }
+    (start..=end - needle.len())
+        .any(|idx| haystack[idx..idx + needle.len()].eq_ignore_ascii_case(needle))
+}
+
+fn find_ascii_case_insensitive_from(haystack: &str, needle: &[u8], start: usize) -> Option<usize> {
+    let bytes = haystack.as_bytes();
+    if needle.is_empty() || start >= bytes.len() || needle.len() > bytes.len().saturating_sub(start)
+    {
+        return None;
+    }
+    (start..=bytes.len() - needle.len())
+        .find(|&idx| bytes[idx..idx + needle.len()].eq_ignore_ascii_case(needle))
+}
+
+fn push_downloads_from_js_command(
+    env: &mut Environment,
+    idx: usize,
+    snippet_source: &str,
+    command: &str,
+    seen: &mut HashSet<(usize, String)>,
+) {
+    for url_caps in crate::deob_scan::URL_RE.captures_iter(command) {
+        let Some(raw_url) = url_caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(url) = crate::deob_scan::normalize_liberal_url_token(raw_url) else {
+            continue;
+        };
+        if crate::deob_scan::is_noise_url(&url) || !seen.insert((idx, url.clone())) {
+            continue;
+        }
+        let snippet: String = snippet_source.chars().take(120).collect();
+        env.traits.push(Trait::Download {
+            cmd: format!("(js #{idx}) {snippet}"),
+            src: url,
+            dst: None,
+        });
+    }
+
+    for token in command.split_ascii_whitespace() {
+        let candidate = token.trim_matches(['"', '\'', '(', ')', '[', ']', '{', '}', ',', ';']);
+        let Some(url) = crate::deob_scan::normalize_schemeless_domain_path_token(candidate) else {
+            continue;
+        };
+        if crate::deob_scan::is_noise_url(&url) || !seen.insert((idx, url.clone())) {
+            continue;
+        }
+        let snippet: String = snippet_source.chars().take(120).collect();
+        env.traits.push(Trait::Download {
+            cmd: format!("(js #{idx}) {snippet}"),
+            src: url,
+            dst: None,
+        });
+    }
+}
+
+fn collapse_js_line_continuations(text: &str) -> String {
+    if !text.contains('\\') {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.peek().copied() {
+            Some('\r') => {
+                let _ = chars.next();
+                if matches!(chars.peek(), Some('\n')) {
+                    let _ = chars.next();
+                }
+            }
+            Some('\n' | '\u{2028}' | '\u{2029}') => {
+                let _ = chars.next();
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+fn queue_decoded_js_script_candidate(candidate: &str, env: &mut Environment) {
+    let lower = candidate.to_ascii_lowercase();
+    let looks_ps = lower.contains("powershell")
+        || lower.contains("invoke-")
+        || lower.contains("iex ")
+        || lower.contains("iex(")
+        || lower.contains("new-object")
+        || lower.contains("downloadstring")
+        || lower.contains("downloadfile")
+        || lower.contains("[system.")
+        || lower.contains("[reflection.")
+        || lower.contains("start-process");
+    if !looks_ps {
+        return;
+    }
+    let payload = candidate.as_bytes().to_vec();
+    if !env
+        .all_extracted_ps1
+        .iter()
+        .any(|existing| existing == &payload)
+    {
+        env.all_extracted_ps1.push(payload);
+    }
+}
+
+#[cfg(test)]
 fn js_decoder_signal(text: &str) -> bool {
+    js_decoder_signals(text).any()
+}
+
+#[derive(Debug, Default)]
+struct JsDecoderSignals {
+    percent_decoder: bool,
+    charcode_decoder: bool,
+    text_decoder: bool,
+    atob_decoder: bool,
+    buffer_decoder: bool,
+    bound_decoder: bool,
+    split_reverse_join: bool,
+    array_from_reverse_join: bool,
+    array_join: bool,
+    string_bindings: bool,
+    unicode_escape: bool,
+}
+
+impl JsDecoderSignals {
+    fn any(&self) -> bool {
+        self.percent_decoder
+            || self.charcode_decoder
+            || self.text_decoder
+            || self.atob_decoder
+            || self.buffer_decoder
+            || self.bound_decoder
+            || self.split_reverse_join
+            || self.array_from_reverse_join
+            || self.array_join
+            || self.string_bindings
+            || self.unicode_escape
+    }
+}
+
+fn js_decoder_signals(text: &str) -> JsDecoderSignals {
     let lower = text.to_ascii_lowercase();
-    U_ESCAPE_RE.is_match(text)
-        || lower.contains("decodeuri")
-        || lower.contains("unescape")
-        || lower.contains("fromcharcode")
-        || lower.contains("textdecoder")
-        || lower.contains("uint8array")
-        || lower.contains("atob")
-        || lower.contains("buffer.from")
-        || lower.contains("new buffer")
-        || lower.contains(".split")
-        || lower.contains(".reverse")
-        || lower.contains(".join")
-        || lower.contains("array.from")
+    let percent_decoder = lower.contains("decodeuri") || lower.contains("unescape");
+    let charcode_decoder = lower.contains("fromcharcode") || lower.contains("fromcodepoint");
+    let text_decoder = lower.contains("textdecoder");
+    let atob_decoder = lower.contains("atob");
+    let buffer_decoder = lower.contains("buffer.from") || lower.contains("new buffer");
+    let split_reverse_join = lower.contains(".split") && lower.contains(".reverse");
+    let array_from_reverse_join = lower.contains("array.from") && lower.contains(".reverse");
+    let array_join = lower.contains(".join")
         || lower.contains("array(")
-        || lower.contains("\" + \"")
+        || lower.contains("array.of")
+        || lower.contains("array.from");
+    let string_bindings = lower.contains("\" + \"")
         || lower.contains("' + '")
         || lower.contains("var ")
         || lower.contains("let ")
-        || lower.contains("const ")
+        || lower.contains("const ");
+    JsDecoderSignals {
+        percent_decoder,
+        charcode_decoder,
+        text_decoder,
+        atob_decoder,
+        buffer_decoder,
+        bound_decoder: percent_decoder || atob_decoder || string_bindings,
+        split_reverse_join,
+        array_from_reverse_join,
+        array_join,
+        string_bindings,
+        unicode_escape: U_ESCAPE_RE.is_match(text),
+    }
+}
+
+fn js_should_run_fromcharcode_decoders(text: &str) -> bool {
+    if !ascii_case_insensitive_contains(text, b"fromcharcode")
+        && !ascii_case_insensitive_contains(text, b"fromcodepoint")
+    {
+        return false;
+    }
+    if ascii_case_insensitive_contains(text, b"string[") {
+        return true;
+    }
+    has_inline_charcode_call_shape(text, b"fromcharcode")
+        || has_inline_charcode_call_shape(text, b"fromcodepoint")
+}
+
+fn has_inline_charcode_call_shape(text: &str, needle: &[u8]) -> bool {
+    let bytes = text.as_bytes();
+    for start in 0..bytes.len().saturating_sub(needle.len()).saturating_add(1) {
+        if !bytes[start..].starts_with(needle)
+            && !bytes[start..start + needle.len()].eq_ignore_ascii_case(needle)
+        {
+            continue;
+        }
+        let after_name = skip_ascii_ws(text, start + needle.len());
+        if bytes.get(after_name) == Some(&b'(') {
+            return true;
+        }
+        if bytes.get(after_name) != Some(&b'.') {
+            continue;
+        }
+        let method = skip_ascii_ws(text, after_name + 1);
+        if bytes[method..].starts_with(b"apply")
+            || bytes[method..].starts_with(b"call")
+            || bytes[method..].starts_with(b"bind")
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn ascii_case_insensitive_contains(haystack: &str, needle: &[u8]) -> bool {
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle))
 }
 
 fn decoded_js_percent_literals(text: &str) -> Vec<String> {
@@ -364,17 +894,27 @@ fn decoded_js_fromcharcode_literals(text: &str) -> Vec<String> {
         .chain(JS_FROMCHARCODE_APPLY_RE.captures_iter(text))
         .chain(JS_FROMCHARCODE_APPLY_ARRAY_CTOR_RE.captures_iter(text))
         .chain(JS_FROMCHARCODE_CALL_RE.captures_iter(text))
+        .chain(JS_FROMCHARCODE_BIND_RE.captures_iter(text))
         .chain(JS_FROMCHARCODE_SPREAD_ARRAY_RE.captures_iter(text))
         .chain(JS_FROMCHARCODE_SPREAD_ARRAY_CTOR_RE.captures_iter(text))
         .filter_map(|caps| decode_js_fromcharcode_args(caps.get(1)?.as_str()))
         .collect();
+
+    out.extend(
+        JS_FROMCHARCODE_APPLY_TYPED_ARRAY_RE
+            .captures_iter(text)
+            .filter_map(|caps| decode_js_byte_array_args(caps.get(1)?.as_str())),
+    );
 
     let (bindings, _) = collect_js_string_bindings(text);
     for caps in JS_FROMCHARCODE_MEMBER_VAR_RE.captures_iter(text).take(128) {
         let (Some(name), Some(nums)) = (caps.get(1), caps.get(2)) else {
             continue;
         };
-        if bindings.get(name.as_str()).map(String::as_str) != Some("fromCharCode") {
+        if !bindings
+            .get(name.as_str())
+            .is_some_and(|value| is_js_string_code_decoder(value))
+        {
             continue;
         }
         if let Some(decoded) = decode_js_fromcharcode_args(nums.as_str()) {
@@ -388,7 +928,10 @@ fn decoded_js_fromcharcode_literals(text: &str) -> Vec<String> {
         let (Some(name), Some(nums)) = (caps.get(1), caps.get(2)) else {
             continue;
         };
-        if bindings.get(name.as_str()).map(String::as_str) != Some("fromCharCode") {
+        if !bindings
+            .get(name.as_str())
+            .is_some_and(|value| is_js_string_code_decoder(value))
+        {
             continue;
         }
         if let Some(decoded) = decode_js_fromcharcode_args(nums.as_str()) {
@@ -399,7 +942,24 @@ fn decoded_js_fromcharcode_literals(text: &str) -> Vec<String> {
         let (Some(name), Some(nums)) = (caps.get(1), caps.get(2)) else {
             continue;
         };
-        if bindings.get(name.as_str()).map(String::as_str) != Some("fromCharCode") {
+        if !bindings
+            .get(name.as_str())
+            .is_some_and(|value| is_js_string_code_decoder(value))
+        {
+            continue;
+        }
+        if let Some(decoded) = decode_js_fromcharcode_args(nums.as_str()) {
+            out.push(decoded);
+        }
+    }
+    for caps in JS_FROMCHARCODE_MEMBER_BIND_RE.captures_iter(text).take(128) {
+        let (Some(name), Some(nums)) = (caps.get(1), caps.get(2)) else {
+            continue;
+        };
+        if !bindings
+            .get(name.as_str())
+            .is_some_and(|value| is_js_string_code_decoder(value))
+        {
             continue;
         }
         if let Some(decoded) = decode_js_fromcharcode_args(nums.as_str()) {
@@ -413,7 +973,10 @@ fn decoded_js_fromcharcode_literals(text: &str) -> Vec<String> {
         let (Some(name), Some(nums)) = (caps.get(1), caps.get(2)) else {
             continue;
         };
-        if bindings.get(name.as_str()).map(String::as_str) != Some("fromCharCode") {
+        if !bindings
+            .get(name.as_str())
+            .is_some_and(|value| is_js_string_code_decoder(value))
+        {
             continue;
         }
         if let Some(decoded) = decode_js_fromcharcode_args(nums.as_str()) {
@@ -421,6 +984,10 @@ fn decoded_js_fromcharcode_literals(text: &str) -> Vec<String> {
         }
     }
     out
+}
+
+fn is_js_string_code_decoder(name: &str) -> bool {
+    matches!(name, "fromCharCode" | "fromCodePoint")
 }
 
 fn decode_js_fromcharcode_args(nums: &str) -> Option<String> {
@@ -441,6 +1008,9 @@ fn decoded_js_fromcharcode_array_bindings(text: &str) -> Vec<String> {
     for caps in JS_NUM_ARRAY_ASSIGN_RE
         .captures_iter(text)
         .chain(JS_NUM_ARRAY_CTOR_ASSIGN_RE.captures_iter(text))
+        .chain(JS_UINT8_ARRAY_ASSIGN_RE.captures_iter(text))
+        .chain(JS_UINT8_ARRAY_OF_ASSIGN_RE.captures_iter(text))
+        .chain(JS_UINT8_ARRAY_FROM_ASSIGN_RE.captures_iter(text))
         .take(128)
     {
         let (Some(name), Some(nums)) = (caps.get(1), caps.get(2)) else {
@@ -463,6 +1033,8 @@ fn decoded_js_fromcharcode_array_bindings(text: &str) -> Vec<String> {
 
 fn decoded_js_textdecoder_literals(text: &str) -> Vec<String> {
     let mut out = Vec::new();
+    let (bindings, _) = collect_js_string_bindings(text);
+    let decoders = collect_js_textdecoder_bindings(text, &bindings);
     let mut cursor = 0usize;
     while cursor < text.len() && out.len() < 128 {
         let Some((ident_end, _)) = parse_js_identifier_at(text, cursor) else {
@@ -473,7 +1045,16 @@ fn decoded_js_textdecoder_literals(text: &str) -> Vec<String> {
                 .unwrap_or(1);
             continue;
         };
-        if let Some((call_end, decoded)) = parse_js_textdecoder_decode_call_at(text, cursor) {
+        if let Some((call_end, decoded)) =
+            parse_js_textdecoder_decode_call_at(text, cursor, &bindings)
+        {
+            out.push(decoded);
+            cursor = call_end;
+            continue;
+        }
+        if let Some((call_end, decoded)) =
+            parse_js_textdecoder_instance_decode_call_at(text, cursor, &decoders)
+        {
             out.push(decoded);
             cursor = call_end;
             continue;
@@ -483,39 +1064,270 @@ fn decoded_js_textdecoder_literals(text: &str) -> Vec<String> {
     out
 }
 
-fn parse_js_textdecoder_decode_call_at(text: &str, start: usize) -> Option<(usize, String)> {
+fn parse_js_textdecoder_decode_call_at(
+    text: &str,
+    start: usize,
+    bindings: &HashMap<String, String>,
+) -> Option<(usize, String)> {
+    let (new_end, encoding) = parse_js_textdecoder_new_expr_at(text, start, bindings)?;
+    let decode_open = consume_js_method_or_bound_immediate_call_open(text, new_end, "decode")?;
+    parse_js_textdecoder_decode_args_at(text, decode_open, encoding)
+}
+
+fn parse_js_textdecoder_instance_decode_call_at(
+    text: &str,
+    start: usize,
+    decoders: &HashMap<String, JsTextDecoderEncoding>,
+) -> Option<(usize, String)> {
+    let (ident_end, name) = parse_js_identifier_at(text, start)?;
+    let encoding = *decoders.get(name)?;
+    let decode_open = consume_js_method_or_bound_immediate_call_open(text, ident_end, "decode")?;
+    parse_js_textdecoder_decode_args_at(text, decode_open, encoding)
+}
+
+fn parse_js_textdecoder_new_expr_at(
+    text: &str,
+    start: usize,
+    bindings: &HashMap<String, String>,
+) -> Option<(usize, JsTextDecoderEncoding)> {
     let (new_end, new_name) = parse_js_identifier_at(text, start)?;
     if new_name != "new" {
         return None;
     }
     let decoder_start = skip_ascii_ws(text, new_end);
-    let (decoder_end, decoder_name) = parse_js_identifier_at(text, decoder_start)?;
-    if decoder_name != "TextDecoder" {
-        return None;
-    }
+    let decoder_end = parse_js_textdecoder_constructor_name_end(text, decoder_start)?;
     let open = skip_ascii_ws(text, decoder_end);
     if text.as_bytes().get(open) != Some(&b'(') {
         return None;
     }
-    let close = skip_ascii_ws(text, open + 1);
+    let (close, encoding) = parse_js_textdecoder_constructor_close(text, open, bindings)?;
     if text.as_bytes().get(close) != Some(&b')') {
         return None;
     }
-    let decode_open = consume_js_method_open(text, close + 1, "decode")?;
+    Some((close + 1, encoding))
+}
+
+fn parse_js_textdecoder_decode_args_at(
+    text: &str,
+    decode_open: usize,
+    encoding: JsTextDecoderEncoding,
+) -> Option<(usize, String)> {
     let arg_start = skip_ascii_ws(text, decode_open + 1);
-    let arrays = collect_js_byte_array_bindings(text);
-    let (arg_end, decoded) =
-        if let Some((arg_end, decoded)) = parse_js_typed_byte_array_arg(text, arg_start) {
+    let (arg_end, decoded) = match encoding {
+        JsTextDecoderEncoding::Utf8 => {
+            let arrays = collect_js_byte_array_bindings(text);
+            let (bindings, _) = collect_js_string_bindings(text);
+            let raw_buffers = collect_js_buffer_byte_bindings(text, &bindings);
+            if let Some((arg_end, decoded)) = parse_js_typed_byte_array_arg(text, arg_start) {
+                (arg_end, decoded)
+            } else if let Some((arg_end, bytes)) =
+                parse_js_buffer_from_arg_bytes(text, arg_start, &bindings)
+            {
+                (arg_end, String::from_utf8_lossy(&bytes).into_owned())
+            } else {
+                let (ident_end, name) = parse_js_identifier_at(text, arg_start)?;
+                let decoded = if let Some(decoded) = arrays.get(name) {
+                    decoded.clone()
+                } else {
+                    String::from_utf8_lossy(raw_buffers.get(name)?).into_owned()
+                };
+                (ident_end, decoded)
+            }
+        }
+        JsTextDecoderEncoding::Utf16Le | JsTextDecoderEncoding::Utf16Be => {
+            let raw_arrays = collect_js_byte_array_byte_bindings(text);
+            let (bindings, _) = collect_js_string_bindings(text);
+            let raw_buffers = collect_js_buffer_byte_bindings(text, &bindings);
+            let (arg_end, bytes) = if let Some((arg_end, bytes)) =
+                parse_js_typed_byte_array_arg_bytes(text, arg_start)
+            {
+                (arg_end, bytes)
+            } else if let Some((arg_end, bytes)) =
+                parse_js_buffer_from_arg_bytes(text, arg_start, &bindings)
+            {
+                (arg_end, bytes)
+            } else {
+                let (ident_end, name) = parse_js_identifier_at(text, arg_start)?;
+                let bytes = raw_arrays
+                    .get(name)
+                    .or_else(|| raw_buffers.get(name))?
+                    .clone();
+                (ident_end, bytes)
+            };
+            let decoded = decode_js_textdecoder_bytes(&bytes, encoding)?;
             (arg_end, decoded)
-        } else {
-            let (ident_end, name) = parse_js_identifier_at(text, arg_start)?;
-            (ident_end, arrays.get(name)?.clone())
-        };
+        }
+    };
     let decode_close = skip_ascii_ws(text, arg_end);
     if text.as_bytes().get(decode_close) != Some(&b')') {
         return None;
     }
     Some((decode_close + 1, decoded))
+}
+
+fn collect_js_textdecoder_bindings(
+    text: &str,
+    bindings: &HashMap<String, String>,
+) -> HashMap<String, JsTextDecoderEncoding> {
+    let mut decoders = HashMap::new();
+    for caps in JS_ASSIGN_RE.captures_iter(text).take(128) {
+        let (Some(name), Some(op), Some(expr)) = (caps.get(1), caps.get(2), caps.get(0)) else {
+            continue;
+        };
+        if op.as_str() != "=" {
+            continue;
+        }
+        let Some((expr_end, encoding)) =
+            parse_js_textdecoder_new_expr_at(text, expr.end(), bindings)
+        else {
+            continue;
+        };
+        if expr_end.saturating_sub(expr.end()) <= 1024 {
+            decoders.insert(name.as_str().to_string(), encoding);
+        }
+    }
+    decoders
+}
+
+#[derive(Clone, Copy)]
+enum JsTextDecoderEncoding {
+    Utf8,
+    Utf16Le,
+    Utf16Be,
+}
+
+fn parse_js_textdecoder_constructor_name_end(text: &str, start: usize) -> Option<usize> {
+    let (first_end, first_name) = parse_js_identifier_at(text, start)?;
+    if first_name == "TextDecoder" {
+        return Some(first_end);
+    }
+    if !matches!(first_name, "window" | "self" | "globalThis") {
+        return None;
+    }
+    let member = skip_ascii_ws(text, first_end);
+    if text.as_bytes().get(member) == Some(&b'.') {
+        let member_start = skip_ascii_ws(text, member + 1);
+        let (member_end, member_name) = parse_js_identifier_at(text, member_start)?;
+        return (member_name == "TextDecoder").then_some(member_end);
+    }
+    if text.as_bytes().get(member) == Some(&b'[') {
+        let literal_start = skip_ascii_ws(text, member + 1);
+        let (literal_end, member_name) = parse_js_string_literal_at(text, literal_start)?;
+        let close = skip_ascii_ws(text, literal_end);
+        if text.as_bytes().get(close) == Some(&b']') && member_name == "TextDecoder" {
+            return Some(close + 1);
+        }
+    }
+    None
+}
+
+fn parse_js_textdecoder_constructor_close(
+    text: &str,
+    open: usize,
+    bindings: &HashMap<String, String>,
+) -> Option<(usize, JsTextDecoderEncoding)> {
+    let mut cursor = skip_ascii_ws(text, open + 1);
+    if text.as_bytes().get(cursor) == Some(&b')') {
+        return Some((cursor, JsTextDecoderEncoding::Utf8));
+    }
+
+    let (arg_end, encoding) = parse_js_string_or_bound_arg(text, cursor, bindings)?;
+    let encoding = parse_js_textdecoder_label(&encoding)?;
+    cursor = skip_ascii_ws(text, arg_end);
+    if text.as_bytes().get(cursor) == Some(&b')') {
+        return Some((cursor, encoding));
+    }
+
+    if text.as_bytes().get(cursor) != Some(&b',') {
+        return None;
+    }
+    cursor = skip_ascii_ws(text, cursor + 1);
+    let options_end = consume_js_balanced_literal(text, cursor, b'{', b'}')?;
+    let close = skip_ascii_ws(text, options_end);
+    (text.as_bytes().get(close) == Some(&b')')).then_some((close, encoding))
+}
+
+fn parse_js_textdecoder_label(label: &str) -> Option<JsTextDecoderEncoding> {
+    if label.eq_ignore_ascii_case("utf-8")
+        || label.eq_ignore_ascii_case("utf8")
+        || label.eq_ignore_ascii_case("unicode-1-1-utf-8")
+    {
+        return Some(JsTextDecoderEncoding::Utf8);
+    }
+    if label.eq_ignore_ascii_case("utf-16le")
+        || label.eq_ignore_ascii_case("utf-16")
+        || label.eq_ignore_ascii_case("unicode")
+    {
+        return Some(JsTextDecoderEncoding::Utf16Le);
+    }
+    if label.eq_ignore_ascii_case("utf-16be") {
+        return Some(JsTextDecoderEncoding::Utf16Be);
+    }
+    None
+}
+
+fn consume_js_balanced_literal(
+    text: &str,
+    start: usize,
+    open_byte: u8,
+    close_byte: u8,
+) -> Option<usize> {
+    const MAX_BALANCED_LITERAL_LEN: usize = 1024;
+
+    let bytes = text.as_bytes();
+    if bytes.get(start) != Some(&open_byte) {
+        return None;
+    }
+
+    let mut stack = vec![close_byte];
+    let mut cursor = start + 1;
+    while cursor < bytes.len() && cursor.saturating_sub(start) <= MAX_BALANCED_LITERAL_LEN {
+        match bytes[cursor] {
+            b'\'' | b'"' | b'`' => {
+                cursor = consume_js_quoted_bytes(text, cursor)?;
+            }
+            b'{' => {
+                stack.push(b'}');
+                cursor += 1;
+            }
+            b'[' => {
+                stack.push(b']');
+                cursor += 1;
+            }
+            b'(' => {
+                stack.push(b')');
+                cursor += 1;
+            }
+            b'}' | b']' | b')' => {
+                if stack.pop()? != bytes[cursor] {
+                    return None;
+                }
+                cursor += 1;
+                if stack.is_empty() {
+                    return Some(cursor);
+                }
+            }
+            _ => cursor += 1,
+        }
+    }
+    None
+}
+
+fn consume_js_quoted_bytes(text: &str, start: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let quote = *bytes.get(start)?;
+    let mut cursor = start + 1;
+    while cursor < bytes.len() {
+        match bytes[cursor] {
+            b'\\' => {
+                cursor = cursor.saturating_add(2);
+            }
+            b'\r' | b'\n' if quote != b'`' => return None,
+            b if b == quote => return Some(cursor + 1),
+            _ => cursor += 1,
+        }
+    }
+    None
 }
 
 fn decoded_js_atob_literals(text: &str) -> Vec<String> {
@@ -543,7 +1355,78 @@ fn decoded_js_atob_literals(text: &str) -> Vec<String> {
 
 fn decoded_js_atob_alias_calls(text: &str) -> Vec<String> {
     let aliases = collect_js_decoder_aliases(text, "atob");
-    decoded_js_decoder_alias_calls(text, &aliases, decode_js_base64_string)
+    decoded_js_decoder_alias_calls(text, &aliases, decode_js_base64_string_strict)
+}
+
+fn decoded_js_custom_base64_decoder_calls(text: &str) -> Vec<String> {
+    let decoders = collect_js_custom_base64_decoders(text);
+    if decoders.is_empty() {
+        return Vec::new();
+    }
+    let (bindings, _) = collect_js_string_bindings(text);
+    let arrays = collect_js_string_array_bindings(text, &bindings);
+    let mut out = Vec::new();
+    let mut cursor = 0usize;
+    while cursor < text.len() && out.len() < 128 {
+        let Some((ident_end, ident)) = parse_js_identifier_at(text, cursor) else {
+            cursor += text[cursor..]
+                .chars()
+                .next()
+                .map(char::len_utf8)
+                .unwrap_or(1);
+            continue;
+        };
+        if !decoders.contains(ident) {
+            cursor = ident_end;
+            continue;
+        }
+        let Some(open) = consume_js_call_open(text, ident_end) else {
+            cursor = ident_end;
+            continue;
+        };
+        let arg_start = skip_ascii_ws(text, open + 1);
+        let Some((arg_end, encoded)) =
+            parse_js_decoder_string_arg(text, arg_start, &bindings, &arrays)
+        else {
+            cursor = ident_end;
+            continue;
+        };
+        let close = skip_ascii_ws(text, arg_end);
+        if text.as_bytes().get(close) != Some(&b')') {
+            cursor = arg_end;
+            continue;
+        }
+        if let Some(decoded) = decode_js_base64_string(&encoded) {
+            out.push(decoded);
+        }
+        cursor = close + 1;
+    }
+    out
+}
+
+fn collect_js_custom_base64_decoders(text: &str) -> HashSet<String> {
+    let mut decoders = HashSet::new();
+    for caps in JS_FUNCTION_DECL_RE.captures_iter(text).take(32) {
+        let Some(name) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(start) = caps.get(0).map(|m| m.end()) else {
+            continue;
+        };
+        let end = text.len().min(start + 4096);
+        let body = text[start..end].to_ascii_lowercase();
+        if body.contains("string.fromcharcode")
+            && body.contains(".charat")
+            && body.contains("<<")
+            && body.contains(">>>")
+            && (body.contains("[[65,91]")
+                || body.contains("[65, 91]")
+                || (body.contains("[97,123]") && body.contains("[48,58]")))
+        {
+            decoders.insert(name.to_string());
+        }
+    }
+    decoders
 }
 
 fn decoded_js_buffer_from_base64_literals(text: &str) -> Vec<String> {
@@ -605,11 +1488,10 @@ where
         {
             (arg_end, encoded)
         } else {
-            let open = skip_ascii_ws(text, ident_end);
-            if text.as_bytes().get(open) != Some(&b'(') {
+            let Some(open) = consume_js_call_open(text, ident_end) else {
                 cursor = ident_end;
                 continue;
-            }
+            };
             let arg_start = skip_ascii_ws(text, open + 1);
             match parse_js_decoder_string_arg(text, arg_start, &bindings, &arrays) {
                 Some(parsed) => parsed,
@@ -795,6 +1677,8 @@ fn decoded_js_array_from_reverse_join_literals(text: &str) -> Vec<String> {
 
 fn decoded_js_array_join_literals(text: &str) -> Vec<String> {
     let mut out = Vec::new();
+    let empty_bindings = HashMap::new();
+    let empty_arrays = HashMap::new();
     let mut cursor = 0usize;
     while cursor < text.len() {
         let Some((array_end, parts)) = parse_js_string_array_at(text, cursor) else {
@@ -805,34 +1689,14 @@ fn decoded_js_array_join_literals(text: &str) -> Vec<String> {
                 .unwrap_or(1);
             continue;
         };
-        if let Some((join_end, sep)) = consume_js_string_arg_method(text, array_end, "join") {
-            if parts.len() <= 128 && sep.len() <= 64 {
-                let joined = parts.join(&sep);
-                if joined.len() <= 8192 {
-                    out.push(joined);
-                }
-            }
+        if let Some((join_end, joined)) =
+            consume_js_array_join_chain(text, array_end, parts, &empty_bindings, &empty_arrays)
+        {
+            out.push(joined);
             cursor = join_end;
             continue;
         }
-        let Some(after_reverse) = consume_js_no_arg_method(text, array_end, "reverse") else {
-            cursor = array_end;
-            continue;
-        };
-        let Some((join_end, sep)) = consume_js_string_arg_method(text, after_reverse, "join")
-        else {
-            cursor = after_reverse;
-            continue;
-        };
-        if parts.len() <= 128 && sep.len() <= 64 {
-            let mut reversed = parts;
-            reversed.reverse();
-            let joined = reversed.join(&sep);
-            if joined.len() <= 8192 {
-                out.push(joined);
-            }
-        }
-        cursor = join_end;
+        cursor = array_end;
     }
 
     let mut arrays = HashMap::new();
@@ -867,34 +1731,14 @@ fn decoded_js_array_join_literals(text: &str) -> Vec<String> {
             cursor = ident_end;
             continue;
         };
-        if let Some((join_end, sep)) = consume_js_string_arg_method(text, ident_end, "join") {
-            if sep.len() <= 64 {
-                let joined = parts.join(&sep);
-                if joined.len() <= 8192 {
-                    out.push(joined);
-                }
-            }
+        if let Some((join_end, joined)) =
+            consume_js_array_join_chain(text, ident_end, parts.clone(), &empty_bindings, &arrays)
+        {
+            out.push(joined);
             cursor = join_end;
             continue;
         }
-        let Some(after_reverse) = consume_js_no_arg_method(text, ident_end, "reverse") else {
-            cursor = ident_end;
-            continue;
-        };
-        let Some((join_end, sep)) = consume_js_string_arg_method(text, after_reverse, "join")
-        else {
-            cursor = after_reverse;
-            continue;
-        };
-        if sep.len() <= 64 {
-            let mut reversed = parts.clone();
-            reversed.reverse();
-            let joined = reversed.join(&sep);
-            if joined.len() <= 8192 {
-                out.push(joined);
-            }
-        }
-        cursor = join_end;
+        cursor = ident_end;
     }
     out
 }
@@ -966,7 +1810,20 @@ fn parse_js_string_array_arg_at(
     let (open, close_byte) = if text.as_bytes().get(start) == Some(&b'[') {
         (start, b']')
     } else {
-        (parse_js_array_constructor_open(text, start)?, b')')
+        let (open, kind) = parse_js_array_constructor_open(text, start)?;
+        if kind == JsArrayConstructorKind::From {
+            let arg_start = skip_ascii_ws(text, open + 1);
+            if text.as_bytes().get(arg_start) != Some(&b'[') {
+                return None;
+            }
+            let (array_end, parts) = parse_js_string_array_arg_at(text, arg_start, bindings)?;
+            let close = skip_ascii_ws(text, array_end);
+            if text.as_bytes().get(close) != Some(&b')') {
+                return None;
+            }
+            return Some((close + 1, parts));
+        }
+        (open, b')')
     };
 
     let mut parts = Vec::new();
@@ -990,6 +1847,13 @@ fn parse_js_string_array_arg_at(
             _ => return None,
         }
     }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum JsArrayConstructorKind {
+    Plain,
+    Of,
+    From,
 }
 
 fn collect_js_string_array_bindings(
@@ -1017,7 +1881,10 @@ fn collect_js_string_array_bindings(
     arrays
 }
 
-fn parse_js_array_constructor_open(text: &str, start: usize) -> Option<usize> {
+fn parse_js_array_constructor_open(
+    text: &str,
+    start: usize,
+) -> Option<(usize, JsArrayConstructorKind)> {
     let mut cursor = start;
     if js_word_at(text, cursor, "new") {
         cursor = skip_ascii_ws(text, cursor + "new".len());
@@ -1025,11 +1892,25 @@ fn parse_js_array_constructor_open(text: &str, start: usize) -> Option<usize> {
     if !js_word_at(text, cursor, "Array") {
         return None;
     }
-    let open = skip_ascii_ws(text, cursor + "Array".len());
+    cursor = skip_ascii_ws(text, cursor + "Array".len());
+    let mut kind = JsArrayConstructorKind::Plain;
+    if text.as_bytes().get(cursor) == Some(&b'.') {
+        let method_start = skip_ascii_ws(text, cursor + 1);
+        if js_word_at(text, method_start, "of") {
+            kind = JsArrayConstructorKind::Of;
+            cursor = skip_ascii_ws(text, method_start + "of".len());
+        } else if js_word_at(text, method_start, "from") {
+            kind = JsArrayConstructorKind::From;
+            cursor = skip_ascii_ws(text, method_start + "from".len());
+        } else {
+            return None;
+        }
+    }
+    let open = cursor;
     if text.as_bytes().get(open) != Some(&b'(') {
         return None;
     }
-    Some(open)
+    Some((open, kind))
 }
 
 fn js_word_at(text: &str, start: usize, word: &str) -> bool {
@@ -1118,10 +1999,9 @@ fn parse_js_percent_call_at(
         {
             (arg_end, encoded)
         } else {
-            let open = skip_ascii_ws(text, name_end);
-            if text.as_bytes().get(open) != Some(&b'(') {
+            let Some(open) = consume_js_call_open(text, name_end) else {
                 continue;
-            }
+            };
             let arg_start = skip_ascii_ws(text, open + 1);
             parse_js_decoder_string_arg(text, arg_start, bindings, &arrays)?
         };
@@ -1147,10 +2027,7 @@ fn parse_js_atob_call_at(
     {
         (arg_end, encoded)
     } else {
-        let open = skip_ascii_ws(text, name_end);
-        if text.as_bytes().get(open) != Some(&b'(') {
-            return None;
-        }
+        let open = consume_js_call_open(text, name_end)?;
         let arg_start = skip_ascii_ws(text, open + 1);
         parse_js_decoder_string_arg(text, arg_start, bindings, &arrays)?
     };
@@ -1158,7 +2035,7 @@ fn parse_js_atob_call_at(
     if text.as_bytes().get(close) != Some(&b')') {
         return None;
     }
-    decode_js_base64_string(&encoded).map(|decoded| (close + 1, decoded))
+    decode_js_base64_string_strict(&encoded).map(|decoded| (close + 1, decoded))
 }
 
 fn parse_js_buffer_from_base64_call_at(
@@ -1170,17 +2047,36 @@ fn parse_js_buffer_from_base64_call_at(
     if name != "Buffer" {
         return None;
     }
-    let open = consume_js_method_open(text, buffer_end, "from")?;
+    let open = consume_js_method_or_bound_immediate_call_open(text, buffer_end, "from")?;
+    if let Some((buffer_end, bytes)) =
+        parse_js_buffer_byte_array_arg_bytes(text, open, &collect_js_byte_array_byte_bindings(text))
+    {
+        let (tostring_end, encoding) =
+            consume_js_to_string_optional_encoding(text, buffer_end, bindings)?;
+        let decoded = decode_js_buffer_string_bytes(&bytes, encoding)?;
+        return Some(consume_js_string_transform_chain(
+            text,
+            tostring_end,
+            decoded,
+            bindings,
+        ));
+    }
     let (buffer_end, decoded) = if let Some((buffer_end, decoded)) =
         parse_js_buffer_byte_array_arg(text, open, &collect_js_byte_array_bindings(text))
     {
         (buffer_end, decoded)
     } else {
         let (buffer_end, encoded, encoding) = parse_js_buffer_base64_args(text, open, bindings)?;
-        (
-            buffer_end,
-            decode_js_buffer_base64_string(&encoded, encoding)?,
-        )
+        let bytes = decode_js_buffer_bytes(&encoded, encoding)?;
+        let (tostring_end, string_encoding) =
+            consume_js_to_string_optional_encoding(text, buffer_end, bindings)?;
+        let decoded = decode_js_buffer_string_bytes(&bytes, string_encoding)?;
+        return Some(consume_js_string_transform_chain(
+            text,
+            tostring_end,
+            decoded,
+            bindings,
+        ));
     };
     let tostring_end = consume_js_to_string_optional_arg(text, buffer_end, bindings)?;
     Some(consume_js_string_transform_chain(
@@ -1225,6 +2121,56 @@ fn parse_js_buffer_byte_array_arg(
     Some((close + 1, decoded))
 }
 
+fn parse_js_buffer_byte_array_arg_bytes(
+    text: &str,
+    open: usize,
+    arrays: &HashMap<String, Vec<u8>>,
+) -> Option<(usize, Vec<u8>)> {
+    let arg_start = skip_ascii_ws(text, open + 1);
+    if let Some((array_end, bytes)) = parse_js_typed_byte_array_arg_bytes(text, arg_start) {
+        let close = skip_ascii_ws(text, array_end);
+        if text.as_bytes().get(close) != Some(&b')') {
+            return None;
+        }
+        return Some((close + 1, bytes));
+    }
+
+    if let Some((ident_end, name)) = parse_js_identifier_at(text, arg_start) {
+        let close = skip_ascii_ws(text, ident_end);
+        if text.as_bytes().get(close) != Some(&b')') {
+            return None;
+        }
+        return arrays.get(name).cloned().map(|bytes| (close + 1, bytes));
+    }
+
+    let array_open = arg_start;
+    let (array_close, bytes) = parse_js_byte_array_literal_bytes_at(text, array_open)?;
+    let close = skip_ascii_ws(text, array_close);
+    if text.as_bytes().get(close) != Some(&b')') {
+        return None;
+    }
+    Some((close + 1, bytes))
+}
+
+fn parse_js_buffer_from_arg_bytes(
+    text: &str,
+    start: usize,
+    bindings: &HashMap<String, String>,
+) -> Option<(usize, Vec<u8>)> {
+    let (buffer_end, name) = parse_js_identifier_at(text, start)?;
+    if name != "Buffer" {
+        return None;
+    }
+    let open = consume_js_method_or_bound_immediate_call_open(text, buffer_end, "from")?;
+    if let Some((buffer_end, bytes)) =
+        parse_js_buffer_byte_array_arg_bytes(text, open, &collect_js_byte_array_byte_bindings(text))
+    {
+        return Some((buffer_end, bytes));
+    }
+    let (buffer_end, encoded, encoding) = parse_js_buffer_base64_args(text, open, bindings)?;
+    decode_js_buffer_bytes(&encoded, encoding).map(|bytes| (buffer_end, bytes))
+}
+
 fn parse_js_typed_byte_array_arg(text: &str, start: usize) -> Option<(usize, String)> {
     let (mut cursor, first_name) = parse_js_identifier_at(text, start)?;
     let ctor_name = if first_name == "new" {
@@ -1235,18 +2181,13 @@ fn parse_js_typed_byte_array_arg(text: &str, start: usize) -> Option<(usize, Str
     } else {
         first_name
     };
-    if ctor_name != "Uint8Array" {
+    if !is_js_byte_array_ctor(ctor_name) {
         return None;
     }
     if let Some(open) = consume_js_method_open(text, cursor, "of") {
         let close = text[open + 1..].find(')')? + open + 1;
         let nums = &text[open + 1..close];
-        if nums.len() > 8192
-            || !nums.chars().all(|ch| {
-                ch.is_ascii_hexdigit()
-                    || matches!(ch, 'x' | 'X' | '+' | '-' | ',' | ' ' | '\t' | '\r' | '\n')
-            })
-        {
+        if !is_js_byte_array_nums(nums) {
             return None;
         }
         return decode_js_byte_array_args(nums).map(|decoded| (close + 1, decoded));
@@ -1265,21 +2206,78 @@ fn parse_js_typed_byte_array_arg(text: &str, start: usize) -> Option<(usize, Str
     Some((close + 1, decoded))
 }
 
+fn parse_js_typed_byte_array_arg_bytes(text: &str, start: usize) -> Option<(usize, Vec<u8>)> {
+    let (mut cursor, first_name) = parse_js_identifier_at(text, start)?;
+    let ctor_name = if first_name == "new" {
+        cursor = skip_ascii_ws(text, cursor);
+        let (ctor_end, ctor_name) = parse_js_identifier_at(text, cursor)?;
+        cursor = ctor_end;
+        ctor_name
+    } else {
+        first_name
+    };
+    if !is_js_byte_array_ctor(ctor_name) {
+        return None;
+    }
+    if let Some(open) = consume_js_method_open(text, cursor, "of") {
+        let close = text[open + 1..].find(')')? + open + 1;
+        let nums = &text[open + 1..close];
+        if !is_js_byte_array_nums(nums) {
+            return None;
+        }
+        return decode_js_byte_array_bytes(nums).map(|bytes| (close + 1, bytes));
+    }
+    let open =
+        consume_js_method_open(text, cursor, "from").unwrap_or_else(|| skip_ascii_ws(text, cursor));
+    if text.as_bytes().get(open) != Some(&b'(') {
+        return None;
+    }
+    let array_open = skip_ascii_ws(text, open + 1);
+    let (array_close, bytes) = parse_js_byte_array_literal_bytes_at(text, array_open)?;
+    let close = skip_ascii_ws(text, array_close);
+    if text.as_bytes().get(close) != Some(&b')') {
+        return None;
+    }
+    Some((close + 1, bytes))
+}
+
+fn is_js_byte_array_ctor(name: &str) -> bool {
+    matches!(name, "Uint8Array" | "Int8Array" | "Uint8ClampedArray")
+}
+
 fn parse_js_byte_array_literal_at(text: &str, array_open: usize) -> Option<(usize, String)> {
     if text.as_bytes().get(array_open) != Some(&b'[') {
         return None;
     }
     let array_close = text[array_open + 1..].find(']')? + array_open + 1;
     let nums = &text[array_open + 1..array_close];
-    if nums.len() > 8192
-        || !nums.chars().all(|ch| {
-            ch.is_ascii_hexdigit()
-                || matches!(ch, 'x' | 'X' | '+' | '-' | ',' | ' ' | '\t' | '\r' | '\n')
-        })
-    {
+    if !is_js_byte_array_nums(nums) {
         return None;
     }
     decode_js_byte_array_args(nums).map(|decoded| (array_close + 1, decoded))
+}
+
+fn parse_js_byte_array_literal_bytes_at(text: &str, array_open: usize) -> Option<(usize, Vec<u8>)> {
+    if text.as_bytes().get(array_open) != Some(&b'[') {
+        return None;
+    }
+    let array_close = text[array_open + 1..].find(']')? + array_open + 1;
+    let nums = &text[array_open + 1..array_close];
+    if !is_js_byte_array_nums(nums) {
+        return None;
+    }
+    decode_js_byte_array_bytes(nums).map(|bytes| (array_close + 1, bytes))
+}
+
+fn is_js_byte_array_nums(nums: &str) -> bool {
+    nums.len() <= 8192
+        && nums.chars().all(|ch| {
+            ch.is_ascii_hexdigit()
+                || matches!(
+                    ch,
+                    'x' | 'X' | '+' | '-' | '^' | ',' | ' ' | '\t' | '\r' | '\n'
+                )
+        })
 }
 
 fn collect_js_byte_array_bindings(text: &str) -> HashMap<String, String> {
@@ -1302,7 +2300,60 @@ fn collect_js_byte_array_bindings(text: &str) -> HashMap<String, String> {
     arrays
 }
 
+fn collect_js_byte_array_byte_bindings(text: &str) -> HashMap<String, Vec<u8>> {
+    let mut arrays = HashMap::new();
+    for caps in JS_NUM_ARRAY_ASSIGN_RE
+        .captures_iter(text)
+        .chain(JS_NUM_ARRAY_CTOR_ASSIGN_RE.captures_iter(text))
+        .chain(JS_UINT8_ARRAY_ASSIGN_RE.captures_iter(text))
+        .chain(JS_UINT8_ARRAY_OF_ASSIGN_RE.captures_iter(text))
+        .chain(JS_UINT8_ARRAY_FROM_ASSIGN_RE.captures_iter(text))
+        .take(128)
+    {
+        let (Some(name), Some(nums)) = (caps.get(1), caps.get(2)) else {
+            continue;
+        };
+        if let Some(decoded) = decode_js_byte_array_bytes(nums.as_str()) {
+            arrays.insert(name.as_str().to_string(), decoded);
+        }
+    }
+    arrays
+}
+
+fn collect_js_buffer_byte_bindings(
+    text: &str,
+    bindings: &HashMap<String, String>,
+) -> HashMap<String, Vec<u8>> {
+    let mut buffers = HashMap::new();
+    for caps in JS_ASSIGN_RE.captures_iter(text).take(128) {
+        let Some(name) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(op) = caps.get(2).map(|m| m.as_str()) else {
+            continue;
+        };
+        if op != "=" {
+            continue;
+        }
+        let Some(expr_start) = caps.get(0).map(|m| m.end()) else {
+            continue;
+        };
+        let Some((expr_end, bytes)) = parse_js_buffer_from_arg_bytes(text, expr_start, bindings)
+        else {
+            continue;
+        };
+        if expr_end.saturating_sub(expr_start) <= 8192 && bytes.len() <= 8192 {
+            buffers.insert(name.to_string(), bytes);
+        }
+    }
+    buffers
+}
+
 fn decode_js_byte_array_args(nums: &str) -> Option<String> {
+    decode_js_byte_array_bytes(nums).map(|decoded| String::from_utf8_lossy(&decoded).into_owned())
+}
+
+fn decode_js_byte_array_bytes(nums: &str) -> Option<Vec<u8>> {
     let mut decoded = Vec::new();
     for part in nums.split(',') {
         let part = part.trim();
@@ -1318,7 +2369,32 @@ fn decode_js_byte_array_args(nums: &str) -> Option<String> {
             return None;
         }
     }
-    (!decoded.is_empty()).then(|| String::from_utf8_lossy(&decoded).into_owned())
+    (!decoded.is_empty()).then_some(decoded)
+}
+
+fn decode_js_textdecoder_bytes(bytes: &[u8], encoding: JsTextDecoderEncoding) -> Option<String> {
+    match encoding {
+        JsTextDecoderEncoding::Utf8 => Some(String::from_utf8_lossy(bytes).into_owned()),
+        JsTextDecoderEncoding::Utf16Le => decode_js_utf16_bytes(bytes, u16::from_le_bytes),
+        JsTextDecoderEncoding::Utf16Be => decode_js_utf16_bytes(bytes, u16::from_be_bytes),
+    }
+}
+
+fn decode_js_utf16_bytes(bytes: &[u8], read_u16: fn([u8; 2]) -> u16) -> Option<String> {
+    if bytes.is_empty() || bytes.len() % 2 != 0 {
+        return None;
+    }
+    let units = bytes
+        .chunks_exact(2)
+        .map(|chunk| read_u16([chunk[0], chunk[1]]))
+        .collect::<Vec<_>>();
+    let decoded = String::from_utf16_lossy(&units);
+    Some(
+        decoded
+            .strip_prefix('\u{feff}')
+            .unwrap_or(&decoded)
+            .to_string(),
+    )
 }
 
 fn parse_js_new_buffer_base64_call_at(
@@ -1339,16 +2415,35 @@ fn parse_js_new_buffer_base64_call_at(
     if text.as_bytes().get(open) != Some(&b'(') {
         return None;
     }
+    if let Some((buffer_end, bytes)) =
+        parse_js_buffer_byte_array_arg_bytes(text, open, &collect_js_byte_array_byte_bindings(text))
+    {
+        let (tostring_end, encoding) =
+            consume_js_to_string_optional_encoding(text, buffer_end, bindings)?;
+        let decoded = decode_js_buffer_string_bytes(&bytes, encoding)?;
+        return Some(consume_js_string_transform_chain(
+            text,
+            tostring_end,
+            decoded,
+            bindings,
+        ));
+    }
     let (buffer_end, decoded) = if let Some((buffer_end, decoded)) =
         parse_js_buffer_byte_array_arg(text, open, &collect_js_byte_array_bindings(text))
     {
         (buffer_end, decoded)
     } else {
         let (buffer_end, encoded, encoding) = parse_js_buffer_base64_args(text, open, bindings)?;
-        (
-            buffer_end,
-            decode_js_buffer_base64_string(&encoded, encoding)?,
-        )
+        let bytes = decode_js_buffer_bytes(&encoded, encoding)?;
+        let (tostring_end, string_encoding) =
+            consume_js_to_string_optional_encoding(text, buffer_end, bindings)?;
+        let decoded = decode_js_buffer_string_bytes(&bytes, string_encoding)?;
+        return Some(consume_js_string_transform_chain(
+            text,
+            tostring_end,
+            decoded,
+            bindings,
+        ));
     };
     let tostring_end = consume_js_to_string_optional_arg(text, buffer_end, bindings)?;
     Some(consume_js_string_transform_chain(
@@ -1402,15 +2497,39 @@ impl JsBufferEncoding {
     }
 }
 
-fn decode_js_buffer_base64_string(encoded: &str, encoding: JsBufferEncoding) -> Option<String> {
+fn decode_js_buffer_bytes(encoded: &str, encoding: JsBufferEncoding) -> Option<Vec<u8>> {
     match encoding {
-        JsBufferEncoding::Base64 => decode_js_base64_string(encoded),
-        JsBufferEncoding::Base64Url => decode_js_base64url_string(encoded),
-        JsBufferEncoding::Hex => decode_js_hex_string(encoded),
+        JsBufferEncoding::Base64 => decode_js_base64_bytes(encoded),
+        JsBufferEncoding::Base64Url => decode_js_base64url_bytes(encoded),
+        JsBufferEncoding::Hex => decode_js_hex_bytes(encoded),
     }
 }
 
-fn decode_js_base64url_string(encoded: &str) -> Option<String> {
+#[derive(Clone, Copy)]
+enum JsBufferStringEncoding {
+    Utf8Like,
+    Utf16Le,
+}
+
+impl JsBufferStringEncoding {
+    fn parse(value: &str) -> Option<Self> {
+        let lower = value.to_ascii_lowercase();
+        match lower.as_str() {
+            "utf8" | "utf-8" | "ascii" | "latin1" | "binary" => Some(Self::Utf8Like),
+            "utf16le" | "utf-16le" | "ucs2" | "ucs-2" => Some(Self::Utf16Le),
+            _ => None,
+        }
+    }
+}
+
+fn decode_js_buffer_string_bytes(bytes: &[u8], encoding: JsBufferStringEncoding) -> Option<String> {
+    match encoding {
+        JsBufferStringEncoding::Utf8Like => Some(String::from_utf8_lossy(bytes).into_owned()),
+        JsBufferStringEncoding::Utf16Le => decode_js_utf16_bytes(bytes, u16::from_le_bytes),
+    }
+}
+
+fn decode_js_base64url_bytes(encoded: &str) -> Option<Vec<u8>> {
     if encoded.len() > 16384 {
         return None;
     }
@@ -1424,10 +2543,10 @@ fn decode_js_base64url_string(encoded: &str) -> Option<String> {
         })
         .collect();
     let decoded = decode_base64_maybe_unpadded(&cleaned)?;
-    (decoded.len() <= 8192).then(|| String::from_utf8_lossy(&decoded).into_owned())
+    (decoded.len() <= 8192).then_some(decoded)
 }
 
-fn decode_js_hex_string(encoded: &str) -> Option<String> {
+fn decode_js_hex_bytes(encoded: &str) -> Option<Vec<u8>> {
     if encoded.len() > 16384 {
         return None;
     }
@@ -1445,7 +2564,7 @@ fn decode_js_hex_string(encoded: &str) -> Option<String> {
         let lo = lo.to_digit(16)?;
         decoded.push(((hi << 4) | lo) as u8);
     }
-    (decoded.len() <= 8192).then(|| String::from_utf8_lossy(&decoded).into_owned())
+    (decoded.len() <= 8192).then_some(decoded)
 }
 
 fn consume_js_to_string_optional_arg(
@@ -1453,23 +2572,26 @@ fn consume_js_to_string_optional_arg(
     idx: usize,
     bindings: &HashMap<String, String>,
 ) -> Option<usize> {
+    consume_js_to_string_optional_encoding(text, idx, bindings).map(|(end, _)| end)
+}
+
+fn consume_js_to_string_optional_encoding(
+    text: &str,
+    idx: usize,
+    bindings: &HashMap<String, String>,
+) -> Option<(usize, JsBufferStringEncoding)> {
     let open = consume_js_method_open(text, idx, "toString")?;
     let mut cursor = skip_ascii_ws(text, open + 1);
     if text.as_bytes().get(cursor) == Some(&b')') {
-        return Some(cursor + 1);
+        return Some((cursor + 1, JsBufferStringEncoding::Utf8Like));
     }
     let (arg_end, encoding) = parse_js_string_or_bound_arg(text, cursor, bindings)?;
-    if !matches!(
-        encoding.to_ascii_lowercase().as_str(),
-        "utf8" | "utf-8" | "ascii" | "latin1" | "binary"
-    ) {
-        return None;
-    }
+    let encoding = JsBufferStringEncoding::parse(&encoding)?;
     cursor = skip_ascii_ws(text, arg_end);
     if text.as_bytes().get(cursor) != Some(&b')') {
         return None;
     }
-    Some(cursor + 1)
+    Some((cursor + 1, encoding))
 }
 
 fn parse_js_string_decoder_call_method_arg(
@@ -1477,6 +2599,12 @@ fn parse_js_string_decoder_call_method_arg(
     callee_end: usize,
     bindings: &HashMap<String, String>,
 ) -> Option<(usize, String)> {
+    if let Some(open) = consume_js_bound_immediate_call_open(text, callee_end) {
+        let arg_start = skip_ascii_ws(text, open + 1);
+        let arrays = collect_js_string_array_bindings(text, bindings);
+        return parse_js_decoder_string_arg(text, arg_start, bindings, &arrays);
+    }
+
     if let Some(open) = consume_js_method_open(text, callee_end, "call") {
         let comma = find_js_call_comma(text, skip_ascii_ws(text, open + 1))?;
         let arg_start = skip_ascii_ws(text, comma + 1);
@@ -1508,6 +2636,24 @@ fn parse_js_string_decoder_call_method_arg(
         parts = sliced;
     }
     (parts.len() == 1).then(|| (end, parts[0].clone()))
+}
+
+fn consume_js_bound_immediate_call_open(text: &str, callee_end: usize) -> Option<usize> {
+    let bind_open = consume_js_method_open(text, callee_end, "bind")?;
+    let bind_close = find_js_call_close(text, bind_open)?;
+    consume_js_call_open(text, bind_close + 1)
+}
+
+fn consume_js_method_or_bound_immediate_call_open(
+    text: &str,
+    idx: usize,
+    name: &str,
+) -> Option<usize> {
+    if let Some(open) = consume_js_method_open(text, idx, name) {
+        return Some(open);
+    }
+    let member_end = parse_js_method_member_end(text, idx, name)?;
+    consume_js_bound_immediate_call_open(text, member_end)
 }
 
 fn parse_js_string_or_bound_arg(
@@ -1593,35 +2739,237 @@ fn parse_js_array_join_arg(
 ) -> Option<(usize, String)> {
     let start = skip_ascii_ws(text, start);
     if let Some((array_end, parts)) = parse_js_string_array_arg_at(text, start, bindings) {
-        return consume_js_array_join_chain(text, array_end, parts);
+        return consume_js_array_join_chain(text, array_end, parts, bindings, arrays);
     }
 
     let (ident_end, name) = parse_js_identifier_at(text, start)?;
-    consume_js_array_join_chain(text, ident_end, arrays.get(name)?.clone())
+    consume_js_array_join_chain(text, ident_end, arrays.get(name)?.clone(), bindings, arrays)
 }
 
 fn consume_js_array_join_chain(
     text: &str,
     mut idx: usize,
     mut parts: Vec<String>,
+    bindings: &HashMap<String, String>,
+    arrays: &HashMap<String, Vec<String>>,
 ) -> Option<(usize, String)> {
+    let (concat_end, concat_parts) = consume_js_concat_chain(text, idx, parts, bindings, arrays)?;
+    idx = concat_end;
+    parts = concat_parts;
+
+    let (filter_end, filtered_parts) = consume_js_filter_boolean_chain(text, idx, parts);
+    idx = filter_end;
+    parts = filtered_parts;
+
     if let Some((slice_end, sliced)) = consume_js_slice_call(text, idx, &parts) {
         idx = slice_end;
         parts = sliced;
     }
 
+    let (filter_end, filtered_parts) = consume_js_filter_boolean_chain(text, idx, parts);
+    idx = filter_end;
+    parts = filtered_parts;
+
     if let Some((join_end, sep)) = consume_js_string_arg_method(text, idx, "join") {
-        return join_js_string_parts(parts, &sep).map(|joined| (join_end, joined));
+        let joined = join_js_string_parts(parts, &sep)?;
+        return Some(consume_js_string_transform_chain(
+            text, join_end, joined, bindings,
+        ));
     }
 
     let mut after_reverse = consume_js_no_arg_method(text, idx, "reverse")?;
     parts.reverse();
+    let (concat_end, concat_parts) =
+        consume_js_concat_chain(text, after_reverse, parts, bindings, arrays)?;
+    after_reverse = concat_end;
+    parts = concat_parts;
+    let (filter_end, filtered_parts) = consume_js_filter_boolean_chain(text, after_reverse, parts);
+    after_reverse = filter_end;
+    parts = filtered_parts;
     if let Some((slice_end, sliced)) = consume_js_slice_call(text, after_reverse, &parts) {
         after_reverse = slice_end;
         parts = sliced;
     }
+    let (filter_end, filtered_parts) = consume_js_filter_boolean_chain(text, after_reverse, parts);
+    after_reverse = filter_end;
+    parts = filtered_parts;
     let (join_end, sep) = consume_js_string_arg_method(text, after_reverse, "join")?;
-    join_js_string_parts(parts, &sep).map(|joined| (join_end, joined))
+    let joined = join_js_string_parts(parts, &sep)?;
+    Some(consume_js_string_transform_chain(
+        text, join_end, joined, bindings,
+    ))
+}
+
+fn consume_js_filter_boolean_chain(
+    text: &str,
+    mut idx: usize,
+    mut parts: Vec<String>,
+) -> (usize, Vec<String>) {
+    for _ in 0..8 {
+        let Some(filter_end) = consume_js_filter_boolean_call(text, idx) else {
+            break;
+        };
+        parts.retain(|part| !part.is_empty());
+        idx = filter_end;
+    }
+    (idx, parts)
+}
+
+fn consume_js_filter_boolean_call(text: &str, idx: usize) -> Option<usize> {
+    let open = consume_js_method_open(text, idx, "filter")?;
+    let arg_start = skip_ascii_ws(text, open + 1);
+    consume_js_filter_boolean_arg(text, arg_start)
+        .or_else(|| consume_js_filter_identity_function_arg(text, arg_start))
+        .or_else(|| consume_js_filter_identity_arrow_arg(text, arg_start))
+}
+
+fn consume_js_filter_boolean_arg(text: &str, arg_start: usize) -> Option<usize> {
+    let arg_end = arg_start.checked_add("Boolean".len())?;
+    if text.get(arg_start..arg_end) != Some("Boolean") {
+        return None;
+    }
+    if text[arg_end..].chars().next().is_some_and(is_js_ident_char) {
+        return None;
+    }
+    let close = skip_ascii_ws(text, arg_end);
+    (text.as_bytes().get(close) == Some(&b')')).then_some(close + 1)
+}
+
+fn consume_js_filter_identity_function_arg(text: &str, arg_start: usize) -> Option<usize> {
+    let function_end = arg_start.checked_add("function".len())?;
+    if text.get(arg_start..function_end) != Some("function") {
+        return None;
+    }
+    if text[function_end..]
+        .chars()
+        .next()
+        .is_some_and(is_js_ident_char)
+    {
+        return None;
+    }
+
+    let open = skip_ascii_ws(text, function_end);
+    if text.as_bytes().get(open) != Some(&b'(') {
+        return None;
+    }
+    let ident_start = skip_ascii_ws(text, open + 1);
+    let (ident_end, ident) = parse_js_identifier_at(text, ident_start)?;
+    let close_param = skip_ascii_ws(text, ident_end);
+    if text.as_bytes().get(close_param) != Some(&b')') {
+        return None;
+    }
+
+    let body_open = skip_ascii_ws(text, close_param + 1);
+    if text.as_bytes().get(body_open) != Some(&b'{') {
+        return None;
+    }
+    let return_start = skip_ascii_ws(text, body_open + 1);
+    let return_end = return_start.checked_add("return".len())?;
+    if text.get(return_start..return_end) != Some("return") {
+        return None;
+    }
+    if text[return_end..]
+        .chars()
+        .next()
+        .is_some_and(is_js_ident_char)
+    {
+        return None;
+    }
+
+    let returned_start = skip_ascii_ws(text, return_end);
+    let (returned_end, returned) = parse_js_identifier_at(text, returned_start)?;
+    if returned != ident {
+        return None;
+    }
+
+    let mut after_return = skip_ascii_ws(text, returned_end);
+    if text.as_bytes().get(after_return) == Some(&b';') {
+        after_return = skip_ascii_ws(text, after_return + 1);
+    }
+    if text.as_bytes().get(after_return) != Some(&b'}') {
+        return None;
+    }
+
+    let close = skip_ascii_ws(text, after_return + 1);
+    (text.as_bytes().get(close) == Some(&b')')).then_some(close + 1)
+}
+
+fn consume_js_filter_identity_arrow_arg(text: &str, arg_start: usize) -> Option<usize> {
+    let (after_param, ident) = if text.as_bytes().get(arg_start) == Some(&b'(') {
+        let ident_start = skip_ascii_ws(text, arg_start + 1);
+        let (ident_end, ident) = parse_js_identifier_at(text, ident_start)?;
+        let close_param = skip_ascii_ws(text, ident_end);
+        if text.as_bytes().get(close_param) != Some(&b')') {
+            return None;
+        }
+        (close_param + 1, ident)
+    } else {
+        parse_js_identifier_at(text, arg_start)?
+    };
+
+    let arrow_start = skip_ascii_ws(text, after_param);
+    if text.get(arrow_start..arrow_start.checked_add(2)?) != Some("=>") {
+        return None;
+    }
+
+    let returned_start = skip_ascii_ws(text, arrow_start + 2);
+    let (returned_end, returned) = parse_js_identifier_at(text, returned_start)?;
+    if returned != ident {
+        return None;
+    }
+
+    let close = skip_ascii_ws(text, returned_end);
+    (text.as_bytes().get(close) == Some(&b')')).then_some(close + 1)
+}
+
+fn consume_js_concat_chain(
+    text: &str,
+    mut idx: usize,
+    mut parts: Vec<String>,
+    bindings: &HashMap<String, String>,
+    arrays: &HashMap<String, Vec<String>>,
+) -> Option<(usize, Vec<String>)> {
+    while let Some(open) = consume_js_method_open(text, idx, "concat") {
+        let mut cursor = skip_ascii_ws(text, open + 1);
+        if text.as_bytes().get(cursor) == Some(&b')') {
+            idx = cursor + 1;
+            continue;
+        }
+
+        loop {
+            if let Some((arg_end, mut arg_parts)) =
+                parse_js_string_array_arg_at(text, cursor, bindings)
+            {
+                parts.append(&mut arg_parts);
+                cursor = skip_ascii_ws(text, arg_end);
+            } else if let Some((arg_end, value)) =
+                parse_js_string_or_bound_arg(text, cursor, bindings)
+            {
+                parts.push(value);
+                cursor = skip_ascii_ws(text, arg_end);
+            } else {
+                let (arg_end, name) = parse_js_identifier_at(text, cursor)?;
+                parts.extend(arrays.get(name)?.iter().cloned());
+                cursor = skip_ascii_ws(text, arg_end);
+            }
+
+            if parts.len() > 128 {
+                return None;
+            }
+
+            match text.as_bytes().get(cursor) {
+                Some(b',') => {
+                    cursor = skip_ascii_ws(text, cursor + 1);
+                }
+                Some(b')') => {
+                    idx = cursor + 1;
+                    break;
+                }
+                _ => return None,
+            }
+        }
+    }
+    Some((idx, parts))
 }
 
 fn consume_js_slice_call(text: &str, idx: usize, parts: &[String]) -> Option<(usize, Vec<String>)> {
@@ -1951,6 +3299,39 @@ fn find_js_call_comma(text: &str, mut cursor: usize) -> Option<usize> {
     None
 }
 
+fn find_js_call_close(text: &str, open: usize) -> Option<usize> {
+    if text.as_bytes().get(open) != Some(&b'(') {
+        return None;
+    }
+    let mut cursor = open + 1;
+    let limit = cursor.saturating_add(512).min(text.len());
+    let mut depth = 1usize;
+    while cursor < limit {
+        if let Some((literal_end, _)) = parse_js_string_literal_at(text, cursor) {
+            cursor = literal_end;
+            continue;
+        }
+        match text.as_bytes().get(cursor) {
+            Some(b'(') => {
+                depth += 1;
+                cursor += 1;
+            }
+            Some(b')') => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(cursor);
+                }
+                cursor += 1;
+            }
+            Some(_) => {
+                cursor += text[cursor..].chars().next().map(char::len_utf8)?;
+            }
+            None => return None,
+        }
+    }
+    None
+}
+
 fn parse_js_named_callee_end(text: &str, start: usize, name: &str) -> Option<usize> {
     if js_word_at(text, start, name) {
         return Some(start + name.len());
@@ -1996,16 +3377,50 @@ fn parse_js_bound_member_callee_end(
     (text.as_bytes().get(close) == Some(&b']')).then_some(close + 1)
 }
 
-fn decode_js_base64_string(encoded: &str) -> Option<String> {
+fn clean_js_base64(encoded: &str) -> Option<String> {
     if encoded.len() > 16384 {
         return None;
     }
-    let cleaned: String = encoded
-        .chars()
-        .filter(|c| !c.is_ascii_whitespace())
-        .collect();
+    Some(
+        encoded
+            .chars()
+            .filter(|c| !c.is_ascii_whitespace())
+            .collect(),
+    )
+}
+
+fn decode_js_base64_string_strict(encoded: &str) -> Option<String> {
+    decode_js_base64_bytes_strict(encoded)
+        .map(|decoded| String::from_utf8_lossy(&decoded).into_owned())
+}
+
+fn decode_js_base64_string(encoded: &str) -> Option<String> {
+    decode_js_base64_bytes(encoded).map(|decoded| String::from_utf8_lossy(&decoded).into_owned())
+}
+
+fn decode_js_base64_bytes_strict(encoded: &str) -> Option<Vec<u8>> {
+    let cleaned = clean_js_base64(encoded)?;
     let decoded = decode_base64_maybe_unpadded(&cleaned)?;
-    (decoded.len() <= 8192).then(|| String::from_utf8_lossy(&decoded).into_owned())
+    (decoded.len() <= 8192).then_some(decoded)
+}
+
+fn decode_js_base64_bytes(encoded: &str) -> Option<Vec<u8>> {
+    let cleaned = clean_js_base64(encoded)?;
+    let decoded = decode_base64_maybe_unpadded(&cleaned).or_else(|| {
+        if !cleaned.as_bytes().iter().any(|b| matches!(b, b'-' | b'_')) {
+            return None;
+        }
+        let urlsafe = cleaned
+            .chars()
+            .map(|ch| match ch {
+                '-' => '+',
+                '_' => '/',
+                _ => ch,
+            })
+            .collect::<String>();
+        decode_base64_maybe_unpadded(&urlsafe)
+    })?;
+    (decoded.len() <= 8192).then_some(decoded)
 }
 
 fn decode_base64_maybe_unpadded(cleaned: &str) -> Option<Vec<u8>> {
@@ -2060,10 +3475,10 @@ fn consume_js_replace_chain(
     bindings: &HashMap<String, String>,
 ) -> (usize, String) {
     let mut replacements = 0usize;
-    while let Some((next_idx, needle, replacement, global)) =
+    while let Some((next_idx, needle, replacement, options)) =
         consume_js_replace_call(text, idx, bindings)
     {
-        value = apply_js_replacement(value, needle, &replacement, global);
+        value = apply_js_replacement(value, needle, &replacement, options);
         idx = next_idx;
         replacements += 1;
         if replacements > 16 || value.len() > 8192 {
@@ -2079,24 +3494,64 @@ enum JsReplaceNeedle {
     Whitespace,
 }
 
+#[derive(Clone, Copy)]
+struct JsReplaceOptions {
+    global: bool,
+    case_insensitive: bool,
+}
+
 fn apply_js_replacement(
     value: String,
     needle: JsReplaceNeedle,
     replacement: &str,
-    global: bool,
+    options: JsReplaceOptions,
 ) -> String {
     match needle {
         JsReplaceNeedle::Literal(needle) if !needle.is_empty() => {
-            if global {
+            if options.case_insensitive && needle.is_ascii() {
+                replace_js_literal_ascii_case_insensitive(
+                    value,
+                    &needle,
+                    replacement,
+                    options.global,
+                )
+            } else if options.global {
                 value.replace(&needle, replacement)
             } else {
                 value.replacen(&needle, replacement, 1)
             }
         }
         JsReplaceNeedle::Literal(_) => value,
-        JsReplaceNeedle::CharSet(chars) => replace_js_chars(value, &chars, replacement, global),
-        JsReplaceNeedle::Whitespace => replace_js_whitespace(value, replacement, global),
+        JsReplaceNeedle::CharSet(chars) => {
+            replace_js_chars(value, &chars, replacement, options.global)
+        }
+        JsReplaceNeedle::Whitespace => replace_js_whitespace(value, replacement, options.global),
     }
+}
+
+fn replace_js_literal_ascii_case_insensitive(
+    value: String,
+    needle: &str,
+    replacement: &str,
+    global: bool,
+) -> String {
+    let value_lower = value.to_ascii_lowercase();
+    let needle_lower = needle.to_ascii_lowercase();
+    let mut out = String::with_capacity(value.len());
+    let mut cursor = 0usize;
+    let mut replaced = false;
+    while let Some(rel) = value_lower[cursor..].find(&needle_lower) {
+        if replaced && !global {
+            break;
+        }
+        let start = cursor + rel;
+        out.push_str(&value[cursor..start]);
+        out.push_str(replacement);
+        cursor = start + needle.len();
+        replaced = true;
+    }
+    out.push_str(&value[cursor..]);
+    out
 }
 
 fn replace_js_chars(value: String, chars: &[char], replacement: &str, global: bool) -> String {
@@ -2131,7 +3586,7 @@ fn consume_js_replace_call(
     text: &str,
     idx: usize,
     bindings: &HashMap<String, String>,
-) -> Option<(usize, JsReplaceNeedle, String, bool)> {
+) -> Option<(usize, JsReplaceNeedle, String, JsReplaceOptions)> {
     let (open, force_global) =
         if let Some(open) = consume_js_bound_method_open(text, idx, "replaceAll", bindings) {
             (open, true)
@@ -2142,16 +3597,26 @@ fn consume_js_replace_call(
             )
         };
     let first_start = skip_ascii_ws(text, open + 1);
-    let (first_end, needle, global) = if let Some((first_end, first)) =
+    let (first_end, needle, options) = if let Some((first_end, first)) =
         parse_js_string_or_bound_arg(text, first_start, bindings)
     {
-        (first_end, JsReplaceNeedle::Literal(first), false)
+        (
+            first_end,
+            JsReplaceNeedle::Literal(first),
+            JsReplaceOptions {
+                global: false,
+                case_insensitive: false,
+            },
+        )
     } else {
         let (first_end, pattern, flags) = parse_js_regex_literal_at(text, first_start)?;
         (
             first_end,
             regex_literal_pattern_to_replace_needle(&pattern)?,
-            flags.contains('g'),
+            JsReplaceOptions {
+                global: flags.contains('g'),
+                case_insensitive: flags.contains('i'),
+            },
         )
     };
     let comma = skip_ascii_ws(text, first_end);
@@ -2164,7 +3629,15 @@ fn consume_js_replace_call(
     if text.as_bytes().get(close) != Some(&b')') {
         return None;
     }
-    Some((close + 1, needle, second, force_global || global))
+    Some((
+        close + 1,
+        needle,
+        second,
+        JsReplaceOptions {
+            global: force_global || options.global,
+            ..options
+        },
+    ))
 }
 
 fn consume_js_bound_method_open(
@@ -2343,9 +3816,28 @@ fn consume_js_no_arg_method(text: &str, idx: usize, name: &str) -> Option<usize>
     Some(close + 1)
 }
 
+fn consume_js_call_open(text: &str, idx: usize) -> Option<usize> {
+    let open = skip_ascii_ws(text, idx);
+    if text.as_bytes().get(open) == Some(&b'(') {
+        return Some(open);
+    }
+    if text.as_bytes().get(open) == Some(&b'?') && text.as_bytes().get(open + 1) == Some(&b'.') {
+        let optional_open = skip_ascii_ws(text, open + 2);
+        if text.as_bytes().get(optional_open) == Some(&b'(') {
+            return Some(optional_open);
+        }
+    }
+    None
+}
+
 fn consume_js_method_open(text: &str, idx: usize, name: &str) -> Option<usize> {
+    let member_end = parse_js_method_member_end(text, idx, name)?;
+    consume_js_call_open(text, member_end)
+}
+
+fn parse_js_method_member_end(text: &str, idx: usize, name: &str) -> Option<usize> {
     let member_start = skip_ascii_ws(text, idx);
-    let member_end = if text.as_bytes().get(member_start) == Some(&b'.') {
+    if text.as_bytes().get(member_start) == Some(&b'.') {
         let name_start = skip_ascii_ws(text, member_start + 1);
         let name_end = name_start.checked_add(name.len())?;
         if text.get(name_start..name_end) != Some(name) {
@@ -2358,7 +3850,7 @@ fn consume_js_method_open(text: &str, idx: usize, name: &str) -> Option<usize> {
         {
             return None;
         }
-        name_end
+        Some(name_end)
     } else if text.as_bytes().get(member_start) == Some(&b'[') {
         let literal_start = skip_ascii_ws(text, member_start + 1);
         let (literal_end, property) = parse_js_string_literal_at(text, literal_start)?;
@@ -2369,15 +3861,40 @@ fn consume_js_method_open(text: &str, idx: usize, name: &str) -> Option<usize> {
         if text.as_bytes().get(close) != Some(&b']') {
             return None;
         }
-        close + 1
+        Some(close + 1)
+    } else if text.as_bytes().get(member_start) == Some(&b'?')
+        && text.as_bytes().get(member_start + 1) == Some(&b'.')
+    {
+        let member_start = skip_ascii_ws(text, member_start + 2);
+        if text.as_bytes().get(member_start) == Some(&b'[') {
+            let literal_start = skip_ascii_ws(text, member_start + 1);
+            let (literal_end, property) = parse_js_string_literal_at(text, literal_start)?;
+            if property != name {
+                return None;
+            }
+            let close = skip_ascii_ws(text, literal_end);
+            if text.as_bytes().get(close) != Some(&b']') {
+                return None;
+            }
+            Some(close + 1)
+        } else {
+            let name_start = member_start;
+            let name_end = name_start.checked_add(name.len())?;
+            if text.get(name_start..name_end) != Some(name) {
+                return None;
+            }
+            if text[name_end..]
+                .chars()
+                .next()
+                .is_some_and(is_js_ident_char)
+            {
+                return None;
+            }
+            Some(name_end)
+        }
     } else {
-        return None;
-    };
-    let open = skip_ascii_ws(text, member_end);
-    if text.as_bytes().get(open) != Some(&b'(') {
-        return None;
+        None
     }
-    Some(open)
 }
 
 fn is_js_ident_char(c: char) -> bool {
@@ -2387,42 +3904,61 @@ fn is_js_ident_char(c: char) -> bool {
 fn eval_js_numeric_expr(expr: &str) -> Option<u32> {
     let bytes = expr.as_bytes();
     let mut i = 0usize;
-    let mut total: i64 = 0;
-    let mut saw_term = false;
-    let mut sign: i64 = 1;
+    let mut total = eval_js_additive_numeric_expr(bytes, expr, &mut i)?;
 
-    while i < bytes.len() {
+    loop {
         while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
             i += 1;
         }
         if i >= bytes.len() {
+            return Some(total);
+        }
+        if bytes.get(i) != Some(&b'^') {
+            return None;
+        }
+        i += 1;
+        let rhs = eval_js_additive_numeric_expr(bytes, expr, &mut i)?;
+        total ^= rhs;
+    }
+}
+
+fn eval_js_additive_numeric_expr(bytes: &[u8], expr: &str, i: &mut usize) -> Option<u32> {
+    let mut total: i64 = 0;
+    let mut saw_term = false;
+    let mut sign: i64 = 1;
+
+    while *i < bytes.len() {
+        while bytes.get(*i).is_some_and(u8::is_ascii_whitespace) {
+            *i += 1;
+        }
+        if *i >= bytes.len() || bytes.get(*i) == Some(&b'^') {
             break;
         }
-        match bytes[i] {
+        match bytes[*i] {
             b'+' => {
                 sign = 1;
-                i += 1;
+                *i += 1;
                 continue;
             }
             b'-' => {
                 sign = -1;
-                i += 1;
+                *i += 1;
                 continue;
             }
             _ => {}
         }
 
-        let start = i;
-        while i < bytes.len()
-            && (bytes[i].is_ascii_hexdigit()
-                || bytes.get(i).is_some_and(|b| *b == b'x' || *b == b'X'))
+        let start = *i;
+        while *i < bytes.len()
+            && (bytes[*i].is_ascii_hexdigit()
+                || bytes.get(*i).is_some_and(|b| *b == b'x' || *b == b'X'))
         {
-            i += 1;
+            *i += 1;
         }
-        if i == start {
+        if *i == start {
             return None;
         }
-        let term = &expr[start..i];
+        let term = &expr[start..*i];
         let value = if let Some(hex) = term.strip_prefix("0x").or_else(|| term.strip_prefix("0X")) {
             i64::from(u32::from_str_radix(hex, 16).ok()?)
         } else {
@@ -2521,10 +4057,11 @@ fn find_js_string_concat_matches(text: &str) -> Vec<(usize, usize, String)> {
 
 fn parse_js_string_literal_at(text: &str, start: usize) -> Option<(usize, String)> {
     let quote_byte = *text.as_bytes().get(start)?;
-    if quote_byte != b'\'' && quote_byte != b'"' {
+    if quote_byte != b'\'' && quote_byte != b'"' && quote_byte != b'`' {
         return None;
     }
     let quote_char = quote_byte as char;
+    let is_template = quote_byte == b'`';
 
     let mut value = String::new();
     let inner = &text[start + 1..];
@@ -2535,6 +4072,9 @@ fn parse_js_string_literal_at(text: &str, start: usize) -> Option<(usize, String
         // string prematurely.
         if c == quote_char {
             return Some((start + 1 + rel + c.len_utf8(), value));
+        }
+        if is_template && c == '$' && matches!(chars.peek(), Some(&(_, '{'))) {
+            return None;
         }
         if c != '\\' {
             value.push(c);
@@ -2550,6 +4090,17 @@ fn parse_js_string_literal_at(text: &str, start: usize) -> Option<(usize, String
             break;
         };
         match next {
+            '\r' => {
+                let _ = chars.next();
+                if matches!(chars.peek(), Some(&(_, '\n'))) {
+                    let _ = chars.next();
+                }
+                continue;
+            }
+            '\n' | '\u{2028}' | '\u{2029}' => {
+                let _ = chars.next();
+                continue;
+            }
             'n' => value.push('\n'),
             't' => value.push('\t'),
             'r' => value.push('\r'),
@@ -2698,6 +4249,11 @@ mod tests {
             "deadline-expired scan still emitted Download: {:?}",
             env.traits
         );
+        assert_eq!(
+            env.all_extracted_jscript.len(),
+            1,
+            "deadline path dropped extracted JS payloads"
+        );
     }
 
     #[test]
@@ -2736,6 +4292,7 @@ mod tests {
             r#"eval("\u0068\u0074\u0074\u0070")"#,
             r#"eval(unescape("%68%74%74%70%3a%2f%2fexample"))"#,
             r#"eval(String.fromCharCode(104,116,116,112))"#,
+            r#"eval(String.fromCodePoint(104,116,116,112))"#,
             r#"eval(new TextDecoder().decode(new Uint8Array([104,116,116,112])))"#,
             r#"eval(atob("aHR0cA=="))"#,
             r#"eval(Buffer.from("aHR0cA==", "base64").toString())"#,
@@ -2746,5 +4303,30 @@ mod tests {
         ] {
             assert!(js_decoder_signal(sample), "missed signal: {sample}");
         }
+    }
+
+    #[test]
+    fn js_charcode_decoder_gate_uses_concat_resolved_vocabulary() {
+        assert!(
+            !js_should_run_fromcharcode_decoders(r#"var u = "http://already-visible.example/p";"#),
+            "ordinary JS bindings should not trigger the fromCharCode decoder suite"
+        );
+        assert!(
+            !js_should_run_fromcharcode_decoders(
+                r#"var w = String.fromCharCode; function d(x) { return w(x); }"#
+            ),
+            "assignment-only fromCharCode aliases are handled by custom decoder logic, not this regex suite"
+        );
+        assert!(
+            js_should_run_fromcharcode_decoders(r#"String.fromCharCode(104,116,116,112)"#),
+            "direct fromCharCode calls should still run"
+        );
+        let concat_resolved = expand_js_string_concat(r#"var m = "from" + "CharCode";"#);
+        assert!(
+            js_should_run_fromcharcode_decoders(&format!(
+                r#"{concat_resolved}; String[m](104,116,116,112)"#
+            )),
+            "split fromCharCode aliases should still trigger after concat resolution: {concat_resolved}"
+        );
     }
 }

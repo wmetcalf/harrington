@@ -191,8 +191,23 @@ fn extract_tokens(line: &str, opts: &FOpts) -> Option<Vec<String>> {
     None
 }
 
-fn resolve_f_source(src: &str, env: &mut crate::env::Environment) -> Vec<String> {
+fn resolve_f_source(src: &str, env: &mut crate::env::Environment, usebackq: bool) -> Vec<String> {
     let s = src.trim();
+    if usebackq {
+        // With usebackq, double quotes denote a filename and single quotes are
+        // literal data. Backticks remain command substitution.
+        if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
+            let inner = &s[1..s.len() - 1];
+            if inner.contains(['%', '!']) {
+                return vec![inner.to_string()];
+            }
+            return resolve_f_file_source(&format!("\"{}\"", inner), s, env);
+        }
+        if s.starts_with('\'') && s.ends_with('\'') && s.len() >= 2 {
+            let inner = &s[1..s.len() - 1];
+            return vec![inner.to_string()];
+        }
+    }
     // Double-quoted string: literal data (one line).
     if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
         let inner = &s[1..s.len() - 1];
@@ -201,21 +216,75 @@ fn resolve_f_source(src: &str, env: &mut crate::env::Environment) -> Vec<String>
     // Single-quoted: `for /F ... in ('command')` — run as pipeline command.
     if s.starts_with('\'') && s.ends_with('\'') && s.len() >= 2 {
         let pipeline = &s[1..s.len() - 1];
-        return crate::synth::run_pipeline(pipeline, env);
+        let pipeline = normalize_f_pipeline(pipeline, env);
+        return crate::synth::run_pipeline(&pipeline, env);
     }
     // Backtick-quoted: run as pipeline (usebackq style).
     if s.starts_with('`') && s.ends_with('`') {
         let pipeline = &s[1..s.len() - 1];
-        return crate::synth::run_pipeline(pipeline, env);
+        let pipeline = normalize_f_pipeline(pipeline, env);
+        return crate::synth::run_pipeline(&pipeline, env);
     }
-    let file_lines = crate::synth::run_pipeline(&format!("type {}", s), env);
+
+    let source = resolve_pure_percent_var_source(s, env);
+    let source = source.as_deref().unwrap_or(s);
+    resolve_f_file_source(source, s, env)
+}
+
+fn resolve_f_file_source(
+    source: &str,
+    original: &str,
+    env: &mut crate::env::Environment,
+) -> Vec<String> {
+    let file_lines = crate::synth::run_pipeline(&format!("type {}", source), env);
     if !file_lines.is_empty() {
         return file_lines;
     }
     env.traits.push(crate::traits::Trait::ForUnresolvedSource {
-        pipeline: s.to_string(),
+        pipeline: original.to_string(),
     });
     Vec::new()
+}
+
+fn resolve_pure_percent_var_source(s: &str, env: &crate::env::Environment) -> Option<String> {
+    let inner = s.strip_prefix('%')?.strip_suffix('%')?;
+    if inner.is_empty() || inner.contains(['%', ':', '!', '^', '&', '|', '<', '>', '"']) {
+        return None;
+    }
+    env.get(inner)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn normalize_f_pipeline(pipeline: &str, env: &mut crate::env::Environment) -> String {
+    let trimmed = pipeline.trim_start();
+    let leading_ws = pipeline.len().saturating_sub(trimmed.len());
+    let Some(after_percent) = trimmed.strip_prefix('%') else {
+        return pipeline.to_string();
+    };
+    let Some(close_rel) = after_percent.find('%') else {
+        return pipeline.to_string();
+    };
+    let var_name = &after_percent[..close_rel];
+    if var_name.is_empty() || var_name.contains([':', '!', '^', '&', '|', '<', '>', '"']) {
+        return pipeline.to_string();
+    }
+    let token_end = leading_ws + close_rel + 2;
+    if pipeline[token_end..]
+        .chars()
+        .next()
+        .is_some_and(|c| !c.is_whitespace())
+    {
+        return pipeline.to_string();
+    }
+    let Some(value) = env.get(var_name) else {
+        return pipeline.to_string();
+    };
+    let mut out = String::with_capacity(pipeline.len() + value.len());
+    out.push_str(&pipeline[..leading_ws]);
+    out.push_str(&value);
+    out.push_str(&pipeline[token_end..]);
+    out
 }
 
 // ── public entry point ───────────────────────────────────────────────────────
@@ -424,6 +493,10 @@ fn strip_for_header_noise(raw: &str, env: &Environment) -> String {
 /// Called by `drive()` on the **raw** (pre-normalization) command string.
 /// Returns true if this was a FOR command that was handled.
 pub fn run_for_from_raw(raw: &str, env: &mut Environment) -> bool {
+    if !raw_might_start_with_for(raw) {
+        preserve_for_probe_random_lookups(raw, env);
+        return false;
+    }
     // Trim leading `@` and whitespace (echo-suppression prefix).
     // Build a noise-stripped copy so the keyword regex can match even when
     // the FOR header is shrouded in caret escapes + non-ASCII-named empty
@@ -455,7 +528,7 @@ pub fn run_for_from_raw(raw: &str, env: &mut Environment) -> bool {
             .unwrap_or_default();
 
         let parsed = parse_f_opts_full(&opts);
-        let lines = resolve_f_source(&src, env);
+        let lines = resolve_f_source(&src, env, parsed.usebackq);
         let values: Vec<Vec<String>> = lines
             .into_iter()
             .skip(parsed.skip)
@@ -541,6 +614,93 @@ pub fn run_for_from_raw(raw: &str, env: &mut Environment) -> bool {
             .collect();
         run_iter_body(&body, var, values.into_iter(), env);
         return true;
+    }
+
+    false
+}
+
+fn preserve_for_probe_random_lookups(raw: &str, env: &Environment) {
+    if !ascii_case_insensitive_contains(raw.as_bytes(), b"random") {
+        return;
+    }
+
+    let chars: Vec<(usize, char)> = raw.char_indices().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i].1 != '%' {
+            i += 1;
+            continue;
+        }
+        if i + 1 < chars.len() && chars[i + 1].1 == '%' {
+            i += 2;
+            continue;
+        }
+        let mut j = i + 1;
+        while j < chars.len() && chars[j].1 != '%' && chars[j].1 != '\n' {
+            j += 1;
+        }
+        if j < chars.len() && chars[j].1 == '%' && j > i + 1 {
+            let name = &raw[chars[i + 1].0..chars[j].0];
+            if !name.starts_with('~')
+                && !name
+                    .chars()
+                    .any(|c| c.is_whitespace() || c == '"' || c == '\'')
+            {
+                let name_clean: String = name.chars().filter(|c| *c != '^').collect();
+                let base = name_clean.split(':').next().unwrap_or(&name_clean);
+                if base.eq_ignore_ascii_case("random") {
+                    let _ = env.get(base);
+                }
+            }
+            i = j + 1;
+        } else {
+            i += 1;
+        }
+    }
+}
+
+fn ascii_case_insensitive_contains(haystack: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty()
+        && haystack.windows(needle.len()).any(|window| {
+            window
+                .iter()
+                .zip(needle)
+                .all(|(byte, needle_byte)| byte.eq_ignore_ascii_case(needle_byte))
+        })
+}
+
+fn raw_might_start_with_for(raw: &str) -> bool {
+    let mut token = [0u8; 3];
+    let mut token_len = 0usize;
+    let mut chars = raw.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '^' {
+            continue;
+        }
+        if c == '%' {
+            if chars.peek() == Some(&'%') {
+                break;
+            }
+            for next in chars.by_ref() {
+                if next == '%' || next == '\n' || next == '\r' {
+                    break;
+                }
+            }
+            continue;
+        }
+        if token_len == 0 && (c.is_whitespace() || matches!(c, '@' | '(' | ',' | ';')) {
+            continue;
+        }
+        if c.is_ascii_alphabetic() {
+            token[token_len] = c.to_ascii_lowercase() as u8;
+            token_len += 1;
+            if token_len == token.len() {
+                return token == *b"for";
+            }
+            continue;
+        }
+        break;
     }
 
     false

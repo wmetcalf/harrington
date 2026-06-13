@@ -8,7 +8,7 @@
 #![allow(clippy::expect_used)]
 
 use super::util::split_words;
-use crate::env::Environment;
+use crate::env::{Environment, FsEntry};
 use base64::Engine;
 
 // (canonical_camel, takes_value). Listed in PowerShell.exe's canonical
@@ -60,7 +60,7 @@ const SHORTCUT_OVERRIDES: &[(&str, &str)] = &[
 /// flag name (e.g. `EncodedCommand`). Returns `None` for non-flag tokens,
 /// unknown flags, and ambiguous abbreviations not covered by an explicit
 /// PS-precedence override.
-fn canonical_ps_flag(token: &str) -> Option<&'static str> {
+pub(crate) fn canonical_ps_flag(token: &str) -> Option<&'static str> {
     let lower = token.to_ascii_lowercase();
     let stripped = lower
         .strip_prefix('/')
@@ -111,6 +111,19 @@ fn canonical_ps_flag(token: &str) -> Option<&'static str> {
     None
 }
 
+fn attached_ps_flag_value(token: &str) -> Option<(&'static str, &str)> {
+    let stripped = token
+        .strip_prefix('/')
+        .or_else(|| token.strip_prefix('-'))?;
+    let delimiter = stripped.find([':', '='])?;
+    let flag = canonical_ps_flag(&token[..token.len() - stripped.len() + delimiter])?;
+    let value = &stripped[delimiter + 1..];
+    if value.is_empty() || !flag_takes_value(flag) {
+        return None;
+    }
+    Some((flag, value))
+}
+
 fn flag_takes_value(flag: &str) -> bool {
     PS_FLAGS
         .iter()
@@ -129,6 +142,84 @@ fn is_file_flag(flag: &str) -> bool {
     flag == "File"
 }
 
+fn has_non_redirection_body(body: &str) -> bool {
+    let (cleaned, _) = crate::redirect::extract_redirections(body);
+    !cleaned.trim().is_empty()
+}
+
+fn command_body_payload(body: &str) -> String {
+    let body = strip_trailing_nul_redirections(body.trim());
+    let body = body.trim().trim_matches('"').trim_matches('\'');
+    trim_nul_padding_body(body).to_string()
+}
+
+fn strip_trailing_nul_redirections(mut body: &str) -> &str {
+    loop {
+        let trimmed_end = body.trim_end();
+        if trimmed_end.is_empty() {
+            return trimmed_end;
+        }
+        let Some((target_start, target)) = trailing_token(trimmed_end) else {
+            return trimmed_end;
+        };
+        if let Some(mut op_offset) = target.rfind('>') {
+            let target_value = &target[op_offset + 1..];
+            if !strip_quotes(target_value).eq_ignore_ascii_case("nul") {
+                return trimmed_end;
+            }
+            if op_offset > 0 && target.as_bytes().get(op_offset - 1) == Some(&b'>') {
+                op_offset -= 1;
+            }
+            if op_offset > 0
+                && matches!(
+                    target.as_bytes().get(op_offset - 1),
+                    Some(b'1') | Some(b'2')
+                )
+            {
+                op_offset -= 1;
+            }
+            body = trimmed_end[..target_start + op_offset].trim_end();
+            continue;
+        }
+        if !strip_quotes(target).eq_ignore_ascii_case("nul") {
+            return trimmed_end;
+        }
+        let before_target = trimmed_end[..target_start].trim_end();
+        let Some(mut op_start) = before_target.rfind('>') else {
+            return trimmed_end;
+        };
+        if before_target[..op_start].ends_with('>') {
+            op_start -= 1;
+        }
+        if op_start > 0 {
+            let fd_start = op_start - 1;
+            if matches!(
+                before_target.as_bytes().get(fd_start),
+                Some(b'1') | Some(b'2')
+            ) {
+                op_start = fd_start;
+            }
+        }
+        body = before_target[..op_start].trim_end();
+    }
+}
+
+fn trailing_token(s: &str) -> Option<(usize, &str)> {
+    let end = s.len();
+    let last = s.as_bytes().get(end.checked_sub(1)?)?;
+    if matches!(last, b'"' | b'\'') {
+        let quote = *last;
+        let start = s.as_bytes()[..end - 1].iter().rposition(|&b| b == quote)?;
+        return Some((start, &s[start..end]));
+    }
+    let start = s
+        .char_indices()
+        .rev()
+        .find_map(|(idx, c)| c.is_whitespace().then_some(idx + c.len_utf8()))
+        .unwrap_or(0);
+    Some((start, &s[start..end]))
+}
+
 pub fn h_powershell(raw: &str, env: &mut Environment) {
     let tokens = split_words(raw);
     if tokens.is_empty() {
@@ -137,6 +228,31 @@ pub fn h_powershell(raw: &str, env: &mut Environment) {
     let mut i = 1usize;
     while i < tokens.len() {
         let t = &tokens[i];
+        if let Some((flag, value)) = attached_ps_flag_value(t) {
+            if is_encoded_flag(flag) {
+                let s = collect_encoded_argument_with_prefix(value, &tokens[i + 1..]);
+                if !s.is_empty() {
+                    if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(s) {
+                        env.exec_ps1.push(decoded);
+                    }
+                }
+                return;
+            }
+            if is_command_flag(flag) {
+                let body = command_body_from_attached_value(value, &tokens[i + 1..]);
+                let body = command_body_payload(&body);
+                if !body.is_empty() && has_non_redirection_body(&body) {
+                    record_downloadfile_side_effects(&body, env);
+                    env.exec_ps1.push(body.into_bytes());
+                }
+                return;
+            }
+            if is_file_flag(flag) {
+                return;
+            }
+            i += 1;
+            continue;
+        }
         match canonical_ps_flag(t) {
             Some(flag) if is_encoded_flag(flag) => {
                 let s = collect_encoded_argument(&tokens[i + 1..]);
@@ -149,11 +265,10 @@ pub fn h_powershell(raw: &str, env: &mut Environment) {
             }
             Some(flag) if is_command_flag(flag) => {
                 let body = tokens[i + 1..].join(" ");
-                let body = body.trim();
-                let body = body.trim_matches('"').trim_matches('\'');
-                let body = trim_nul_padding_body(body);
-                if !body.is_empty() {
-                    env.exec_ps1.push(body.as_bytes().to_vec());
+                let body = command_body_payload(&body);
+                if !body.is_empty() && has_non_redirection_body(&body) {
+                    record_downloadfile_side_effects(&body, env);
+                    env.exec_ps1.push(body.into_bytes());
                 }
                 return;
             }
@@ -170,10 +285,28 @@ pub fn h_powershell(raw: &str, env: &mut Environment) {
     // is in the positional arguments. Skip PS-meta flags (and their values
     // when they take one) and push the remainder as the script body.
     let body = skip_ps_meta_flags(&tokens[1..]);
-    let body = trim_nul_padding_body(&body);
-    if !body.is_empty() {
-        env.exec_ps1.push(body.as_bytes().to_vec());
+    let body = command_body_payload(&body);
+    if !body.is_empty() && has_non_redirection_body(&body) {
+        record_downloadfile_side_effects(&body, env);
+        env.exec_ps1.push(body.into_bytes());
     }
+}
+
+fn record_downloadfile_side_effects(body: &str, env: &mut Environment) {
+    for (src, dst) in crate::ps1_scan::ps_downloadfile_calls(body) {
+        let Some(dst) = dst else {
+            continue;
+        };
+        if !downloadfile_side_effect_content_supported(&src) {
+            continue;
+        }
+        env.modified_filesystem
+            .insert(dst.to_ascii_lowercase(), FsEntry::Download { src });
+    }
+}
+
+fn downloadfile_side_effect_content_supported(src: &str) -> bool {
+    src.to_ascii_lowercase().contains("ip-api.com/csv")
 }
 
 fn trim_nul_padding_body(body: &str) -> &str {
@@ -196,6 +329,10 @@ fn skip_ps_meta_flags(tokens: &[String]) -> String {
     let mut i = 0;
     while i < tokens.len() {
         let t = &tokens[i];
+        if attached_ps_flag_value(t).is_some() {
+            i += 1;
+            continue;
+        }
         if let Some(flag) = canonical_ps_flag(t) {
             i += if flag_takes_value(flag) { 2 } else { 1 };
             continue;
@@ -204,6 +341,32 @@ fn skip_ps_meta_flags(tokens: &[String]) -> String {
         i += 1;
     }
     out.join(" ")
+}
+
+fn command_body_from_attached_value(value: &str, rest: &[String]) -> String {
+    let first = strip_quotes(value);
+    if rest.is_empty() {
+        first.to_string()
+    } else {
+        let mut body = String::from(first);
+        body.push(' ');
+        body.push_str(&rest.join(" "));
+        body.trim().trim_matches('"').trim_matches('\'').to_string()
+    }
+}
+
+fn collect_encoded_argument_with_prefix(first: &str, rest: &[String]) -> String {
+    let mut out = String::new();
+    let first = strip_quotes(first);
+    if first.is_empty() || !first.chars().all(is_base64_char) {
+        return out;
+    }
+    out.push_str(first);
+    if first.ends_with('=') {
+        return out;
+    }
+    out.push_str(&collect_encoded_argument(rest));
+    out
 }
 
 fn collect_encoded_argument(tokens: &[String]) -> String {
@@ -233,6 +396,7 @@ fn is_base64_char(c: char) -> bool {
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::env::{Config, Environment};
 
     #[test]
     fn canonical_resolves_prefix_shorthand() {
@@ -302,5 +466,51 @@ mod tests {
         // to Command without needing the override.
         assert_eq!(canonical_ps_flag("-com"), Some("Command"));
         assert_eq!(canonical_ps_flag("-Command"), Some("Command"));
+    }
+
+    #[test]
+    fn command_with_only_redirections_is_not_extracted() {
+        let mut env = Environment::new(&Config::default());
+
+        h_powershell(
+            "powershell -WindowStyle Hidden -Command 2>nul >nul",
+            &mut env,
+        );
+
+        assert!(
+            env.exec_ps1.is_empty(),
+            "redirection-only -Command should not be a payload: {:?}",
+            env.exec_ps1
+        );
+    }
+
+    #[test]
+    fn command_with_real_body_and_redirection_is_extracted() {
+        let mut env = Environment::new(&Config::default());
+
+        h_powershell(
+            "powershell -Command \"Invoke-WebRequest https://example.test/a\" >nul 2>nul",
+            &mut env,
+        );
+
+        assert_eq!(
+            env.exec_ps1,
+            vec![b"Invoke-WebRequest https://example.test/a".to_vec()]
+        );
+    }
+
+    #[test]
+    fn command_with_powershell_file_redirection_is_preserved() {
+        let mut env = Environment::new(&Config::default());
+
+        h_powershell(
+            "powershell -Command \"Write-Output hi > C:\\Users\\Public\\out.txt\"",
+            &mut env,
+        );
+
+        assert_eq!(
+            env.exec_ps1,
+            vec![b"Write-Output hi > C:\\Users\\Public\\out.txt".to_vec()]
+        );
     }
 }

@@ -3,8 +3,12 @@
 //! `findstr "%~f0"` style gadgets can resolve without an actual shell.
 
 use crate::env::Environment;
+use crate::handlers::util::split_words;
 
 pub fn run_pipeline(pipeline: &str, env: &mut Environment) -> Vec<String> {
+    if is_cmd_prompt_escape_probe(pipeline) {
+        return vec!["[ESC]".to_string()];
+    }
     // Split on top-level `|` (not inside quotes) and run each stage in order
     let stages = split_pipeline(pipeline);
     let mut buf: Vec<String> = Vec::new();
@@ -19,12 +23,25 @@ pub fn run_pipeline(pipeline: &str, env: &mut Environment) -> Vec<String> {
     buf
 }
 
+fn is_cmd_prompt_escape_probe(pipeline: &str) -> bool {
+    let stages = split_pipeline(pipeline);
+    if stages.len() != 2 {
+        return false;
+    }
+    let first = stages[0].trim();
+    let second = stages[1].trim();
+    first.eq_ignore_ascii_case("echo prompt $E") && second.eq_ignore_ascii_case("cmd")
+}
+
 pub fn can_run_pipeline(pipeline: &str) -> bool {
+    if is_cmd_prompt_escape_probe(pipeline) {
+        return true;
+    }
     let stages = split_pipeline(pipeline);
     !stages.is_empty()
         && stages
             .iter()
-            .all(|stage| stage_command(stage).is_some_and(is_supported_command))
+            .all(|stage| stage_command(stage).is_some_and(|cmd| is_supported_command(&cmd)))
 }
 
 fn split_pipeline(p: &str) -> Vec<String> {
@@ -63,12 +80,12 @@ fn split_pipeline(p: &str) -> Vec<String> {
 fn run_stage(stage: &str, input: Vec<String>, env: &mut Environment) -> Vec<String> {
     // First token is the command
     let stage = normalize_stage_prefix(stage);
-    let Some(cmd) = stage_command(stage) else {
+    let Some((cmd_token, rest)) = split_stage_command(stage) else {
         return Vec::new();
     };
-    let mut parts = stage.split_whitespace();
-    let _ = parts.next();
-    let rest_args: Vec<&str> = parts.collect();
+    let cmd = synth_command_key_with_env(cmd_token, env);
+    let parts = split_words(rest);
+    let rest_args: Vec<&str> = parts.iter().map(String::as_str).collect();
     match cmd.as_str() {
         "set" => {
             let prefix = rest_args
@@ -141,6 +158,13 @@ fn run_stage(stage: &str, input: Vec<String>, env: &mut Environment) -> Vec<Stri
         "whoami" => synth_whoami(env),
         "chcp" => synth_chcp(&rest_args),
         "query" => synth_query(&rest_args),
+        "vol" => synth_vol(&rest_args),
+        "tzutil" => synth_tzutil(&rest_args),
+        "sc" => synth_sc(&rest_args),
+        "netsh" => synth_netsh(&rest_args),
+        "net" => synth_net(&rest_args),
+        "schtasks" => synth_schtasks(&rest_args),
+        "wevtutil" => synth_wevtutil(&rest_args),
         "ver" => synth_ver(),
         "ipconfig" => synth_ipconfig(),
         "systeminfo" => synth_systeminfo(env),
@@ -149,6 +173,17 @@ fn run_stage(stage: &str, input: Vec<String>, env: &mut Environment) -> Vec<Stri
         "powershell" | "powershell.exe" => synth_powershell(&rest_args, env),
         "tasklist" => synth_tasklist(&rest_args),
         "where" => synth_where(&rest_args, env),
+        "wmic" => synth_wmic(&rest_args),
+        "ping" => synth_ping(&rest_args),
+        "curl" | "curl.exe" => {
+            let out = synth_curl(&rest_args);
+            if out.is_empty() {
+                env.traits.push(crate::traits::Trait::ForUnresolvedSource {
+                    pipeline: stage.to_string(),
+                });
+            }
+            out
+        }
         _ => {
             env.traits.push(crate::traits::Trait::ForUnresolvedSource {
                 pipeline: stage.to_string(),
@@ -159,19 +194,163 @@ fn run_stage(stage: &str, input: Vec<String>, env: &mut Environment) -> Vec<Stri
 }
 
 fn normalize_stage_prefix(stage: &str) -> &str {
-    stage.trim_start_matches(|c: char| c == '@' || c == ';' || c.is_whitespace())
+    let mut s = stage.trim_start_matches(|c: char| {
+        c == '@' || c == '(' || c == ';' || c == ',' || c.is_whitespace()
+    });
+    loop {
+        let Some(rest) = strip_leading_redirection(s) else {
+            return s;
+        };
+        s = rest.trim_start_matches(|c: char| {
+            c == '@' || c == '(' || c == ';' || c == ',' || c.is_whitespace()
+        });
+    }
+}
+
+fn strip_leading_redirection(s: &str) -> Option<&str> {
+    let mut chars = s.char_indices().peekable();
+    while matches!(chars.peek(), Some((_, c)) if c.is_ascii_digit()) {
+        chars.next();
+    }
+    let op_start = chars.peek().map(|(idx, _)| *idx).unwrap_or(s.len());
+    let op = s[op_start..].chars().next()?;
+    if op != '>' && op != '<' {
+        return None;
+    }
+    let mut after_op = op_start + op.len_utf8();
+    if op == '>' && s[after_op..].starts_with('>') {
+        after_op += 1;
+    }
+    let mut rest = s[after_op..].trim_start();
+    if rest.starts_with('&') {
+        rest = rest[1..].trim_start();
+    }
+    if let Some(quoted) = rest.strip_prefix('"') {
+        for (idx, c) in quoted.char_indices() {
+            if c == '"' {
+                return Some(&rest[idx + 2..]);
+            }
+        }
+        return Some("");
+    }
+    for (idx, c) in rest.char_indices() {
+        if c.is_whitespace() || c == '<' || c == '>' || c == '&' || c == '|' {
+            return Some(&rest[idx..]);
+        }
+    }
+    Some("")
 }
 
 fn stage_command(stage: &str) -> Option<String> {
-    normalize_stage_prefix(stage)
-        .split_whitespace()
-        .next()
-        .map(str::to_ascii_lowercase)
+    split_stage_command(normalize_stage_prefix(stage)).map(|(part, _)| synth_command_key(part))
 }
 
-fn is_supported_command(cmd: String) -> bool {
+fn split_stage_command(stage: &str) -> Option<(&str, &str)> {
+    let mut in_dq = false;
+    let mut in_sq = false;
+    let mut in_percent = false;
+    for (idx, c) in stage.char_indices() {
+        if c == '"' && !in_sq && !in_percent {
+            in_dq = !in_dq;
+            continue;
+        }
+        if c == '\'' && !in_dq && !in_percent {
+            in_sq = !in_sq;
+            continue;
+        }
+        if c == '%' && !in_dq && !in_sq {
+            in_percent = !in_percent;
+            continue;
+        }
+        if c.is_whitespace() && !in_dq && !in_sq && !in_percent {
+            let cmd = &stage[..idx];
+            let rest = stage[idx..].trim_start();
+            return (!cmd.is_empty()).then_some((cmd, rest));
+        }
+    }
+    (!stage.is_empty()).then_some((stage, ""))
+}
+
+fn synth_command_key(token: &str) -> String {
+    synth_command_key_inner(token, None)
+}
+
+fn synth_command_key_with_env(token: &str, env: &Environment) -> String {
+    synth_command_key_inner(token, Some(env))
+}
+
+fn synth_command_key_inner(token: &str, env: Option<&Environment>) -> String {
+    let token = token.trim_matches('"');
+    let key = token
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(token)
+        .to_ascii_lowercase();
+    if is_supported_command(&key) {
+        return key;
+    }
+    if let Some(env) = env {
+        if let Some(expanded) = expand_percent_vars_for_command_key(&key, env) {
+            if is_supported_command(&expanded) {
+                return expanded;
+            }
+        }
+    }
+    let skeleton: String = key
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '.')
+        .collect();
+    if !skeleton.is_empty() && is_supported_command(&skeleton) {
+        return skeleton;
+    }
+    if is_type_with_one_missing_char(&skeleton) {
+        return "type".to_string();
+    }
+    if !key.contains('%') && key.is_ascii() {
+        return key;
+    }
+    key
+}
+
+fn is_type_with_one_missing_char(s: &str) -> bool {
+    matches!(s, "typ" | "tye" | "tpe" | "ype" | "te")
+}
+
+fn expand_percent_vars_for_command_key(key: &str, env: &Environment) -> Option<String> {
+    if !key.contains('%') {
+        return None;
+    }
+    let chars: Vec<char> = key.chars().collect();
+    let mut out = String::with_capacity(key.len());
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i] != '%' {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        let mut end = i + 1;
+        while end < chars.len() && chars[end] != '%' {
+            end += 1;
+        }
+        if end >= chars.len() || end == i + 1 {
+            return None;
+        }
+        let name: String = chars[i + 1..end].iter().collect();
+        if name.contains(['%', ':', '!', '^', '&', '|', '<', '>', '"', '\'']) {
+            return None;
+        }
+        if let Some(value) = env.get(&name) {
+            out.push_str(&value.to_ascii_lowercase());
+        }
+        i = end + 1;
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+fn is_supported_command(cmd: &str) -> bool {
     matches!(
-        cmd.as_str(),
+        cmd,
         "set"
             | "findstr"
             | "find"
@@ -183,6 +362,13 @@ fn is_supported_command(cmd: String) -> bool {
             | "whoami"
             | "chcp"
             | "query"
+            | "vol"
+            | "tzutil"
+            | "sc"
+            | "netsh"
+            | "net"
+            | "schtasks"
+            | "wevtutil"
             | "ver"
             | "ipconfig"
             | "systeminfo"
@@ -192,6 +378,10 @@ fn is_supported_command(cmd: String) -> bool {
             | "powershell.exe"
             | "tasklist"
             | "where"
+            | "wmic"
+            | "ping"
+            | "curl"
+            | "curl.exe"
     )
 }
 
@@ -424,6 +614,8 @@ fn filter_find(args: &[&str], input: Vec<String>) -> Vec<String> {
 fn type_file(path: &str, env: &mut Environment) -> Vec<String> {
     use crate::env::FsEntry;
 
+    let path = path.trim_matches('"');
+
     // %~f0 / explicit input path → read input bytes
     let is_self = path.contains("script.bat")
         || env
@@ -455,8 +647,20 @@ fn type_file(path: &str, env: &mut Environment) -> Vec<String> {
                 .map(|l| l.trim_end_matches(['\r', '\n']).to_string())
                 .collect()
         }
+        Some(FsEntry::Download { src }) => synth_downloaded_file_lines(src),
         _ => Vec::new(),
     }
+}
+
+fn synth_downloaded_file_lines(src: &str) -> Vec<String> {
+    let lower = src.to_ascii_lowercase();
+    if lower.contains("ip-api.com/csv") {
+        return vec![
+            "success,Exampleland,EX,CA,ExampleState,Metropolis,00000,0,0,UTC,ExampleISP,ExampleOrg,AS64500,203.0.113.10"
+                .to_string(),
+        ];
+    }
+    Vec::new()
 }
 
 fn synth_assoc(args: &[&str], env: &Environment) -> Vec<String> {
@@ -636,6 +840,108 @@ fn synth_query(args: &[&str]) -> Vec<String> {
     }
 }
 
+fn non_redirect_args<'a>(args: &'a [&'a str]) -> impl Iterator<Item = &'a str> + 'a {
+    args.iter()
+        .copied()
+        .filter(|arg| !arg.contains('>') && !arg.contains('<'))
+}
+
+fn synth_vol(args: &[&str]) -> Vec<String> {
+    let drive = non_redirect_args(args)
+        .next()
+        .unwrap_or("C:")
+        .trim_matches('"');
+    vec![
+        format!(" Volume in drive {drive} is Windows"),
+        " Volume Serial Number is 1234-ABCD".to_string(),
+    ]
+}
+
+fn synth_tzutil(args: &[&str]) -> Vec<String> {
+    if non_redirect_args(args).any(|arg| arg.eq_ignore_ascii_case("/g")) {
+        return vec!["Central Standard Time".to_string()];
+    }
+    Vec::new()
+}
+
+fn synth_sc(args: &[&str]) -> Vec<String> {
+    let mut iter = non_redirect_args(args);
+    let Some(action) = iter.next() else {
+        return Vec::new();
+    };
+    if !action.eq_ignore_ascii_case("query") {
+        return Vec::new();
+    }
+    let service = iter.next().unwrap_or("WinDefend").trim_matches('"');
+    vec![
+        format!("SERVICE_NAME: {service}"),
+        "        TYPE               : 10  WIN32_OWN_PROCESS".to_string(),
+        "        STATE              : 4  RUNNING".to_string(),
+    ]
+}
+
+fn synth_netsh(args: &[&str]) -> Vec<String> {
+    let args: Vec<String> = non_redirect_args(args)
+        .map(str::to_ascii_lowercase)
+        .collect();
+    if args.len() >= 4 && args[0] == "advfirewall" && args[1] == "show" && args[3] == "state" {
+        return vec!["State                                 ON".to_string()];
+    }
+    Vec::new()
+}
+
+fn synth_net(args: &[&str]) -> Vec<String> {
+    let args: Vec<&str> = non_redirect_args(args).collect();
+    if args.len() >= 2 && args[0].eq_ignore_ascii_case("localgroup") {
+        let group = args[1].trim_matches('"');
+        return vec![
+            format!("Alias name     {group}"),
+            "Comment        Administrators have complete and unrestricted access".to_string(),
+            String::new(),
+            "Members".to_string(),
+            "-------------------------------------------------------------------------------"
+                .to_string(),
+            "Administrator".to_string(),
+            "The command completed successfully.".to_string(),
+        ];
+    }
+    Vec::new()
+}
+
+fn synth_schtasks(args: &[&str]) -> Vec<String> {
+    let args: Vec<&str> = non_redirect_args(args).collect();
+    if !args.iter().any(|arg| arg.eq_ignore_ascii_case("/query")) {
+        return Vec::new();
+    }
+    let mut task_name = "\\Updater".to_string();
+    for pair in args.windows(2) {
+        if pair[0].eq_ignore_ascii_case("/tn") {
+            task_name = format!(r"\{}", pair[1].trim_matches('"').trim_start_matches('\\'));
+            break;
+        }
+    }
+    vec![
+        format!("TaskName: {task_name}"),
+        "Status: Ready".to_string(),
+    ]
+}
+
+fn synth_wevtutil(args: &[&str]) -> Vec<String> {
+    let mut iter = non_redirect_args(args);
+    let Some(action) = iter.next() else {
+        return Vec::new();
+    };
+    if !action.eq_ignore_ascii_case("qe") {
+        return Vec::new();
+    }
+    let log = iter.next().unwrap_or("System").trim_matches('"');
+    vec![
+        "Event[0]:".to_string(),
+        format!("  Log Name: {log}"),
+        "  Level: Error".to_string(),
+    ]
+}
+
 fn synth_ver() -> Vec<String> {
     vec!["Microsoft Windows [Version 10.0.19045.4046]".to_string()]
 }
@@ -686,6 +992,9 @@ fn synth_powershell(args: &[&str], env: &Environment) -> Vec<String> {
             .get("COMPUTERNAME")
             .unwrap_or_else(|| "DESKTOP-EXAMPLE".to_string())];
     }
+    if lower.contains("get-date") && lower.contains("uformat") {
+        return vec!["120000".to_string()];
+    }
     if lower.contains("get-ciminstance")
         && lower.contains("securitycenter")
         && lower.contains("antivirusproduct")
@@ -728,6 +1037,105 @@ fn synth_where(args: &[&str], env: &Environment) -> Vec<String> {
                 return vec![path.clone()];
             }
         }
+    }
+    Vec::new()
+}
+
+fn synth_wmic(args: &[&str]) -> Vec<String> {
+    let filtered: Vec<String> = non_redirect_args(args)
+        .map(|arg| arg.trim_matches('"').to_ascii_lowercase())
+        .collect();
+    let joined = filtered.join(" ");
+    if filtered
+        .first()
+        .is_some_and(|arg| arg.eq_ignore_ascii_case("logicaldisk"))
+        && joined.contains("get size")
+    {
+        return vec!["Size".to_string(), "250954240000".to_string()];
+    }
+    if filtered
+        .first()
+        .is_some_and(|arg| arg.eq_ignore_ascii_case("computersystem"))
+        && joined.contains("manufacturer")
+    {
+        if joined.contains("/value") {
+            return vec!["Manufacturer=Microsoft Corporation".to_string()];
+        }
+        return vec![
+            "Manufacturer".to_string(),
+            "Microsoft Corporation".to_string(),
+        ];
+    }
+    if filtered
+        .first()
+        .is_some_and(|arg| arg.eq_ignore_ascii_case("group"))
+        && joined.contains("get name")
+    {
+        if joined.contains("/value") {
+            return vec!["Name=Administrators".to_string()];
+        }
+        return vec!["Name".to_string(), "Administrators".to_string()];
+    }
+    Vec::new()
+}
+
+fn synth_ping(args: &[&str]) -> Vec<String> {
+    let mut target = None;
+    let mut skip_next = false;
+    for arg in args {
+        let arg = arg.trim_matches('"');
+        if arg.is_empty() {
+            continue;
+        }
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if arg.starts_with(['-', '/']) {
+            let option = arg
+                .trim_start_matches(['-', '/'])
+                .chars()
+                .next()
+                .map(|c| c.to_ascii_lowercase());
+            if matches!(
+                option,
+                Some('n' | 'l' | 'w' | 'i' | 'v' | 'r' | 's' | 'j' | 'k' | '4' | '6')
+            ) {
+                skip_next = !matches!(option, Some('4' | '6'));
+            }
+            continue;
+        }
+        target = Some(arg);
+    }
+    let Some(target) = target else {
+        return Vec::new();
+    };
+    vec![format!(
+        "Pinging {target} [{target}] with 32 bytes of data:"
+    )]
+}
+
+fn synth_curl(args: &[&str]) -> Vec<String> {
+    let Some(url) = args
+        .iter()
+        .rev()
+        .map(|arg| arg.trim_matches(['"', '\'']))
+        .find(|arg| arg.starts_with("http://") || arg.starts_with("https://"))
+    else {
+        return Vec::new();
+    };
+    let lower = url.to_ascii_lowercase();
+    if lower == "https://api.ipify.org"
+        || lower == "http://api.ipify.org"
+        || lower.starts_with("https://api.ipify.org?")
+        || lower.starts_with("http://api.ipify.org?")
+    {
+        return vec!["203.0.113.10".to_string()];
+    }
+    if lower == "http://www.geoplugin.net/php.gp?ip"
+        || lower == "https://www.geoplugin.net/php.gp?ip"
+    {
+        return vec!["geoplugin_request:203.0.113.10".to_string()];
     }
     Vec::new()
 }

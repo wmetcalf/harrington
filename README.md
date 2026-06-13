@@ -53,12 +53,28 @@ Five subcommands. Run `harrington <subcommand> --help` for full options.
 
 ### `summarize` — analyst's TL;DR
 
-Compact JSON report: downloads, lolbas, admin commands, extracted PS
-samples, deob preview. No files written. **Use this first for triage.**
+Compact JSON report: downloads, lolbas, admin commands, extracted script
+counts, PowerShell samples, deob preview. No files written. **Use this first
+for triage.**
 
 ```bash
 harrington summarize sample.bat
 ```
+
+Optional external LOLBAS enrichment can annotate recognized command lines
+without bundling GPL-licensed LOLBAS data:
+
+```bash
+harrington summarize sample.bat --lolbas-json /path/to/lolbas.json
+harrington analyze sample.bat --lolbas-json /path/to/lolbas.json
+harrington report sample.bat --lolbas-json /path/to/lolbas.json
+harrington deob sample.bat --json-only --lolbas-json /path/to/lolbas.json
+```
+
+When supplied, JSON output includes `lolbas_matches[]` entries with the
+matched binary name, observed command line, LOLBAS URL, categories, and
+MITRE IDs from that user-provided file. For `analyze --jsonl`, matches
+are emitted as `{"kind":"lolbas_match", ...}` events.
 
 ### `analyze` — full structured JSON
 
@@ -102,6 +118,9 @@ Produces:
 | `traits.json` | All IOCs as a JSON array |
 | `<sha10>.bat` | Each extracted CMD child |
 | `<sha10>.ps1` | Each extracted PowerShell payload |
+| `<sha10>.normalized.ps1` | Normalized PowerShell payload when readability improves |
+| `<sha10>.js` | Each extracted JScript payload |
+| `<sha10>.vbs` | Each extracted VBScript payload |
 
 ### `version`
 
@@ -174,7 +193,9 @@ for trait_event in &report.traits {
     }
 }
 
-// All extracted children are in report.extracted_cmd / extracted_ps1.
+// Extracted children are in report.extracted_cmd, extracted_ps1,
+// extracted_jscript, and extracted_vbs. PowerShell payloads also have
+// report.extracted_ps1_normalized.
 // The deobfuscated text is report.deobfuscated.
 ```
 

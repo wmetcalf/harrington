@@ -2,26 +2,39 @@
 
 use crate::env::Environment;
 
+pub mod auto_elevate;
 pub mod bitsadmin;
 pub mod call;
+pub mod certoc;
+pub mod certreq;
 pub mod certutil;
 pub mod cmd;
+pub mod cmstp;
 pub mod copy;
 pub mod cscript;
 pub mod curl;
+pub mod desktopimgdownldr;
 pub mod echo;
+pub mod esentutl;
 pub mod extrac32;
 pub mod for_cmd;
+pub mod forfiles;
 pub mod goto;
+pub mod hh;
 pub mod if_cmd;
+pub mod msconfig;
 pub mod mshta;
+pub mod msiexec;
 pub mod net;
 pub mod passthrough;
 pub mod powershell;
+pub mod regsvr32;
 pub mod rundll32;
 pub mod set;
 pub mod setlocal;
+pub mod url_launch;
 pub(crate) mod util;
+pub mod wget;
 pub mod wmic;
 
 pub type Handler = fn(raw: &str, env: &mut Environment);
@@ -36,12 +49,29 @@ pub fn lookup(name: &str) -> Option<Handler> {
     // understand it.
     let base = basename_no_ext(&lower);
     match base {
+        "computerdefaults" | "eventvwr" | "fodhelper" | "sdclt" | "wsreset" => {
+            return Some(auto_elevate::h_auto_elevate);
+        }
         "cmd" => return Some(cmd::h_cmd),
         "powershell" | "pwsh" => return Some(powershell::h_powershell),
         "curl" => return Some(curl::h_curl),
+        "wget" | "get" => return Some(wget::h_wget),
+        "msiexec" => return Some(msiexec::h_msiexec),
         "mshta" => return Some(mshta::h_mshta),
+        "regsvr32" => return Some(regsvr32::h_regsvr32),
         "rundll32" => return Some(rundll32::h_rundll32),
+        "certoc" => return Some(certoc::h_certoc),
+        "certreq" => return Some(certreq::h_certreq),
         "certutil" => return Some(certutil::h_certutil),
+        "cmstp" => return Some(cmstp::h_cmstp),
+        "desktopimgdownldr" => return Some(desktopimgdownldr::h_desktopimgdownldr),
+        "esentutl" => return Some(esentutl::h_esentutl),
+        "forfiles" => return Some(forfiles::h_forfiles),
+        "hh" => return Some(hh::h_hh),
+        "msconfig" => return Some(msconfig::h_msconfig),
+        "brave" | "chrome" | "explorer" | "firefox" | "iexplore" | "msedge" | "opera" => {
+            return Some(url_launch::h_url_launch);
+        }
         _ => {}
     }
     match lower.as_str() {
@@ -69,7 +99,8 @@ pub fn lookup(name: &str) -> Option<Handler> {
         "attrib" => Some(passthrough::h_attrib),
         "mkdir" => Some(passthrough::h_mkdir),
         "md" => Some(passthrough::h_md),
-        "move" => Some(passthrough::h_move),
+        "move" => Some(copy::h_move),
+        "ren" | "rename" => Some(copy::h_ren),
         "rmdir" => Some(passthrough::h_rmdir),
         "rd" => Some(passthrough::h_rd),
         "taskkill" => Some(passthrough::h_taskkill),
@@ -77,7 +108,7 @@ pub fn lookup(name: &str) -> Option<Handler> {
         "schtasks" => Some(passthrough::h_schtasks),
         "sc" => Some(passthrough::h_sc),
         "ping" => Some(passthrough::h_ping),
-        "xcopy" => Some(passthrough::h_xcopy),
+        "xcopy" => Some(copy::h_xcopy),
         "title" => Some(passthrough::h_title),
         "pause" => Some(passthrough::h_pause),
         "color" => Some(passthrough::h_color),
