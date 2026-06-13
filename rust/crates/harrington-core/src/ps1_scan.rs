@@ -9578,10 +9578,9 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
         };
         candidate_texts += candidates.len();
 
-        // Use the first candidate for OutFile / snippet display.
+        // Use the first candidate for OutFile hints and forensic command context.
         let primary = &candidates[0];
-
-        let snippet: String = primary.chars().take(120).collect();
+        let command_context = format!("(ps1 #{idx}) {primary}");
 
         for text in &candidates {
             let stage_start = std::time::Instant::now();
@@ -9591,7 +9590,7 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
                 }
                 push_download_and_execution_url_argument(
                     env,
-                    format!("(ps1 #{idx}) {snippet}"),
+                    command_context.clone(),
                     url,
                     dst,
                     text,
@@ -9606,7 +9605,7 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
                 }
                 push_download_and_execution_url_argument(
                     env,
-                    format!("(ps1 #{idx}) {snippet}"),
+                    command_context.clone(),
                     url,
                     dst.or_else(|| outfile_hint_from(primary)),
                     primary,
@@ -9649,7 +9648,7 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
                     let dst_hint = outfile_hint_from(statement);
                     push_download_and_execution_url_argument(
                         env,
-                        format!("(ps1 #{idx}) {snippet}"),
+                        command_context.clone(),
                         url,
                         dst_hint,
                         text,
@@ -9665,7 +9664,7 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
                 }
                 push_download_and_execution_url_argument(
                     env,
-                    format!("(ps1 #{idx}) {snippet}"),
+                    command_context.clone(),
                     url,
                     outfile_hint_from(primary),
                     primary,

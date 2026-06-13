@@ -244,9 +244,8 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
             }
             let dst =
                 dst_expr.and_then(|expr| eval_vbs_string_expr(expr, &bindings, &array_bindings));
-            let snippet: String = text.chars().take(120).collect();
             env.traits.push(Trait::Download {
-                cmd: format!("(vbs #{idx}) {snippet}"),
+                cmd: format!("(vbs #{idx}) {text}"),
                 src: url,
                 dst: dst.or_else(|| dst_hint.clone()),
             });
@@ -265,9 +264,8 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
             if !seen.insert((idx, url.clone())) {
                 continue;
             }
-            let snippet: String = text.chars().take(120).collect();
             env.traits.push(Trait::Download {
-                cmd: format!("(vbs #{idx}) {snippet}"),
+                cmd: format!("(vbs #{idx}) {text}"),
                 src: url,
                 dst,
             });
@@ -284,9 +282,8 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
             if !seen.insert((idx, url.clone())) {
                 continue;
             }
-            let snippet: String = text.chars().take(120).collect();
             env.traits.push(Trait::Download {
-                cmd: format!("(vbs #{idx}) {snippet}"),
+                cmd: format!("(vbs #{idx}) {text}"),
                 src: url,
                 dst: dst_hint.clone(),
             });
@@ -307,9 +304,8 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
                 if !seen.insert((idx, url.clone())) {
                     continue;
                 }
-                let snippet: String = text.chars().take(120).collect();
                 env.traits.push(Trait::Download {
-                    cmd: format!("(vbs #{idx}) {snippet}"),
+                    cmd: format!("(vbs #{idx}) {text}"),
                     src: url,
                     dst: dst_hint.clone(),
                 });
@@ -839,9 +835,8 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
             if !seen.insert((idx, url.clone())) {
                 continue;
             }
-            let snippet: String = text.chars().take(120).collect();
             env.traits.push(Trait::Download {
-                cmd: format!("(vbs #{idx}) {snippet}"),
+                cmd: format!("(vbs #{idx}) {text}"),
                 src: url,
                 dst: dst_hint.clone(),
             });
@@ -858,9 +853,8 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
             if !seen.insert((idx, url.clone())) {
                 continue;
             }
-            let snippet: String = text.chars().take(120).collect();
             env.traits.push(Trait::Download {
-                cmd: format!("(vbs #{idx}) {snippet}"),
+                cmd: format!("(vbs #{idx}) {text}"),
                 src: url,
                 dst: dst_hint.clone(),
             });
@@ -880,9 +874,8 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
             if !seen_launches.insert((idx, url.clone())) {
                 continue;
             }
-            let snippet: String = text.chars().take(120).collect();
             env.traits.push(Trait::UrlLaunch {
-                cmd: format!("(vbs #{idx}) {snippet}"),
+                cmd: format!("(vbs #{idx}) {text}"),
                 url,
             });
         }
@@ -904,9 +897,8 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
                 if !seen.insert((idx, url.clone())) {
                     continue;
                 }
-                let snippet: String = text.chars().take(120).collect();
                 env.traits.push(Trait::Download {
-                    cmd: format!("(vbs #{idx}) {snippet}"),
+                    cmd: format!("(vbs #{idx}) {text}"),
                     src: url,
                     dst: dst_hint.clone(),
                 });
@@ -2382,9 +2374,8 @@ fn push_downloads_from_vbs_command(
         if crate::deob_scan::is_noise_url(&url) || !seen.insert((idx, url.clone())) {
             continue;
         }
-        let snippet: String = text.chars().take(120).collect();
         env.traits.push(Trait::Download {
-            cmd: format!("(vbs #{idx}) {snippet}"),
+            cmd: format!("(vbs #{idx}) {text}"),
             src: url,
             dst: dst_hint.clone(),
         });
@@ -2398,9 +2389,8 @@ fn push_downloads_from_vbs_command(
         if crate::deob_scan::is_noise_url(&url) || !seen.insert((idx, url.clone())) {
             continue;
         }
-        let snippet: String = text.chars().take(120).collect();
         env.traits.push(Trait::Download {
-            cmd: format!("(vbs #{idx}) {snippet}"),
+            cmd: format!("(vbs #{idx}) {text}"),
             src: url,
             dst: dst_hint.clone(),
         });

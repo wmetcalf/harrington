@@ -12,7 +12,7 @@ use crate::handlers::util::{flag_url_value_after, split_words};
 use crate::traits::Trait;
 use once_cell::sync::Lazy;
 use regex::Regex;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[allow(clippy::expect_used)]
 // Case-insensitive AND tolerant of Windows' liberal slash normalization:
@@ -8548,7 +8548,7 @@ fn scan_resolved_deob_var_fragment_urls(deobfuscated: &str, env: &mut Environmen
         return;
     }
 
-    let known = env.known_extracted_urls();
+    let mut known = env.known_extracted_urls();
     let mut scratch = env.clone();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut candidates = 0usize;
@@ -8573,6 +8573,15 @@ fn scan_resolved_deob_var_fragment_urls(deobfuscated: &str, env: &mut Environmen
         collect_resolved_var_fragment_url_inputs(line, &mut scratch, &mut expanded_inputs);
 
         for expanded in expanded_inputs {
+            if has_powershell_download_atom(&expanded) {
+                let before_len = env.traits.len();
+                if has_embedded_powershell_invocation_atom(&expanded) {
+                    scan_embedded_powershell_downloads_in_deob_text(&expanded, env);
+                } else {
+                    scan_powershell_download_body_in_deob_text(&expanded, env);
+                }
+                remember_trait_urls(&mut known, &env.traits[before_len..]);
+            }
             for caps in URL_RE.captures_iter(&expanded) {
                 let Some(m) = caps.get(1) else { continue };
                 let mut url = m.as_str().to_string();
@@ -9035,14 +9044,52 @@ fn scan_embedded_powershell_downloads_in_deob_text(text: &str, env: &mut Environ
     crate::ps1_scan::scan_ps1_payloads(&mut payload_env);
 
     let mut known = env.known_extracted_urls();
-    for t in payload_env.traits {
-        if let Some(url) = trait_url(&t) {
-            if known.contains(url) {
+    append_new_url_traits(env, &mut known, payload_env.traits);
+}
+
+fn scan_powershell_download_body_in_deob_text(text: &str, env: &mut Environment) {
+    if !has_powershell_download_atom(text) {
+        return;
+    }
+    let mut payload_env = Environment::new(&Config {
+        max_depth: env.limits.max_depth,
+        max_iterations: env.limits.max_iterations,
+        max_child_scripts: env.limits.max_child_scripts,
+        timeout_secs: 0,
+        self_extract: false,
+        winver: env.winver,
+        max_output_bytes: env.limits.max_output_bytes,
+        max_output_line_bytes: env.limits.max_output_line_bytes,
+        max_traits_per_kind: 100,
+    });
+    payload_env.ps1_scan_cache_normalized = false;
+    payload_env.all_extracted_ps1.push(text.as_bytes().to_vec());
+    crate::ps1_scan::scan_ps1_payloads(&mut payload_env);
+
+    let mut known = env.known_extracted_urls();
+    append_new_url_traits(env, &mut known, payload_env.traits);
+}
+
+fn append_new_url_traits(
+    env: &mut Environment,
+    known: &mut HashSet<String>,
+    traits: impl IntoIterator<Item = Trait>,
+) {
+    for trait_ in traits {
+        if let Some(url) = trait_url(&trait_) {
+            if !known.insert(url.to_string()) {
                 continue;
             }
+        }
+        env.traits.push(trait_);
+    }
+}
+
+fn remember_trait_urls(known: &mut HashSet<String>, traits: &[Trait]) {
+    for trait_ in traits {
+        if let Some(url) = trait_url(trait_) {
             known.insert(url.to_string());
         }
-        env.traits.push(t);
     }
 }
 
