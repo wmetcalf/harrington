@@ -333,9 +333,8 @@ pub fn scan_js_payloads(env: &mut Environment) {
                 if !seen.insert((idx, url.clone())) {
                     continue;
                 }
-                let snippet: String = concat_resolved.chars().take(120).collect();
                 env.traits.push(Trait::Download {
-                    cmd: format!("(js #{idx}) {snippet}"),
+                    cmd: format!("(js #{idx}) {concat_resolved}"),
                     src: url,
                     dst: None,
                 });
@@ -626,9 +625,8 @@ fn push_downloads_from_js_command(
         if crate::deob_scan::is_noise_url(&url) || !seen.insert((idx, url.clone())) {
             continue;
         }
-        let snippet: String = snippet_source.chars().take(120).collect();
         env.traits.push(Trait::Download {
-            cmd: format!("(js #{idx}) {snippet}"),
+            cmd: format!("(js #{idx}) {snippet_source}"),
             src: url,
             dst: None,
         });
@@ -642,9 +640,8 @@ fn push_downloads_from_js_command(
         if crate::deob_scan::is_noise_url(&url) || !seen.insert((idx, url.clone())) {
             continue;
         }
-        let snippet: String = snippet_source.chars().take(120).collect();
         env.traits.push(Trait::Download {
-            cmd: format!("(js #{idx}) {snippet}"),
+            cmd: format!("(js #{idx}) {snippet_source}"),
             src: url,
             dst: None,
         });

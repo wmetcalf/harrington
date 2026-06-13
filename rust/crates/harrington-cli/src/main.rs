@@ -2378,6 +2378,9 @@ fn command_lines_for_lolbas(report: &harrington_core::Report) -> Vec<&str> {
         let Some(command) = command else {
             continue;
         };
+        if lolbas_embedded_script_context(command) {
+            continue;
+        }
         push_lolbas_command_line(&mut out, command);
     }
     for line in report.deobfuscated.lines() {
@@ -2389,6 +2392,11 @@ fn command_lines_for_lolbas(report: &harrington_core::Report) -> Vec<&str> {
         }
     }
     out
+}
+
+fn lolbas_embedded_script_context(command: &str) -> bool {
+    let command = command.trim_start();
+    command.starts_with("(ps1 #") || command.starts_with("(js #") || command.starts_with("(vbs #")
 }
 
 fn push_lolbas_command_line<'a>(out: &mut Vec<&'a str>, command: &'a str) {
