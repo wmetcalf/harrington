@@ -41,6 +41,12 @@ enum Command {
         timeout: u64,
         #[arg(long)]
         no_self_extract: bool,
+        /// Seed an analysis environment variable (`NAME=VALUE`). Repeatable.
+        #[arg(long = "env", value_name = "NAME=VALUE")]
+        env: Vec<String>,
+        /// Read analysis environment variables from a `NAME=VALUE` file.
+        #[arg(long = "env-file", value_name = "PATH")]
+        env_file: Vec<PathBuf>,
         #[arg(long, default_value_t = 10 * 1024 * 1024)]
         max_output_bytes: u64,
         #[arg(long, default_value_t = 64 * 1024)]
@@ -65,6 +71,12 @@ enum Command {
         timeout: u64,
         #[arg(long)]
         no_self_extract: bool,
+        /// Seed an analysis environment variable (`NAME=VALUE`). Repeatable.
+        #[arg(long = "env", value_name = "NAME=VALUE")]
+        env: Vec<String>,
+        /// Read analysis environment variables from a `NAME=VALUE` file.
+        #[arg(long = "env-file", value_name = "PATH")]
+        env_file: Vec<PathBuf>,
         #[arg(long, default_value_t = 10 * 1024 * 1024)]
         max_output_bytes: u64,
         #[arg(long, default_value_t = 64 * 1024)]
@@ -87,6 +99,12 @@ enum Command {
         /// for analyst triage / chat-paste.
         #[arg(long)]
         tldr: bool,
+        /// Seed an analysis environment variable (`NAME=VALUE`). Repeatable.
+        #[arg(long = "env", value_name = "NAME=VALUE")]
+        env: Vec<String>,
+        /// Read analysis environment variables from a `NAME=VALUE` file.
+        #[arg(long = "env-file", value_name = "PATH")]
+        env_file: Vec<PathBuf>,
         /// Optional path to external LOLBAS JSON for JSON enrichment.
         #[arg(long = "lolbas-json")]
         lolbas_json: Option<PathBuf>,
@@ -112,6 +130,12 @@ enum Command {
         timeout: u64,
         #[arg(long)]
         no_self_extract: bool,
+        /// Seed an analysis environment variable (`NAME=VALUE`). Repeatable.
+        #[arg(long = "env", value_name = "NAME=VALUE")]
+        env: Vec<String>,
+        /// Read analysis environment variables from a `NAME=VALUE` file.
+        #[arg(long = "env-file", value_name = "PATH")]
+        env_file: Vec<PathBuf>,
         #[arg(long, default_value_t = 10 * 1024 * 1024)]
         max_output_bytes: u64,
         #[arg(long, default_value_t = 64 * 1024)]
@@ -131,6 +155,7 @@ enum Command {
 /// MB; this is a generous safety ceiling.
 const MAX_INPUT_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_FILE_LIST_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_ENV_FILE_BYTES: u64 = 16 * 1024 * 1024;
 
 fn read_input(path: &str) -> Result<Vec<u8>> {
     if path == "-" {
@@ -198,6 +223,72 @@ fn read_file_list(path: &Path) -> Result<String> {
     String::from_utf8(bytes).with_context(|| format!("parse file list {:?} as UTF-8", path))
 }
 
+fn read_env_file(path: &Path) -> Result<String> {
+    let file = fs::File::open(path).with_context(|| format!("open env file {:?}", path))?;
+    let meta = file
+        .metadata()
+        .with_context(|| format!("stat env file {:?}", path))?;
+    if !meta.file_type().is_file() {
+        anyhow::bail!("{:?}: env file is not a regular file", path);
+    }
+    if meta.len() > MAX_ENV_FILE_BYTES {
+        anyhow::bail!(
+            "env file {:?}: {} bytes exceeds the {}-byte cap",
+            path,
+            meta.len(),
+            MAX_ENV_FILE_BYTES
+        );
+    }
+    let bytes = read_all_capped(file, MAX_ENV_FILE_BYTES, || format!("env file {:?}", path))?;
+    String::from_utf8(bytes).with_context(|| format!("parse env file {:?} as UTF-8", path))
+}
+
+fn parse_env_assignment(raw: &str, source: &str) -> Result<(String, String)> {
+    let Some((name, value)) = raw.split_once('=') else {
+        bail!("{source}: expected NAME=VALUE");
+    };
+    let name = name.trim();
+    if name.is_empty() {
+        bail!("{source}: env variable name is empty");
+    }
+    if name.len() > 128 {
+        bail!("{source}: env variable name exceeds 128 bytes");
+    }
+    if !name
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+    {
+        bail!("{source}: unsupported env variable name {:?}", name);
+    }
+    Ok((name.to_string(), value.to_string()))
+}
+
+fn make_analysis_options(
+    env_args: &[String],
+    env_files: &[PathBuf],
+) -> Result<harrington_core::AnalysisOptions> {
+    let mut environment = Vec::new();
+    for path in env_files {
+        let contents = read_env_file(path)?;
+        for (idx, line) in contents.lines().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with(';') {
+                continue;
+            }
+            environment.push(parse_env_assignment(
+                trimmed,
+                &format!("{:?}:{}", path, idx + 1),
+            )?);
+        }
+    }
+    for raw in env_args {
+        environment.push(parse_env_assignment(raw, "--env")?);
+    }
+    Ok(harrington_core::AnalysisOptions::with_environment(
+        environment,
+    ))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn make_config(
     max_depth: u32,
@@ -233,11 +324,12 @@ fn analyze_for_file(
     file: &str,
     input: &[u8],
     cfg: &harrington_core::Config,
+    options: &harrington_core::AnalysisOptions,
 ) -> harrington_core::Report {
     if file == "-" {
-        harrington_core::analyze(input, cfg)
+        harrington_core::analyze_with_options(input, cfg, options)
     } else {
-        harrington_core::analyze_with_path(input, cfg, Path::new(file))
+        harrington_core::analyze_with_path_and_options(input, cfg, Path::new(file), options)
     }
 }
 
@@ -2870,11 +2962,14 @@ fn run() -> Result<()> {
         Command::Summarize {
             file,
             tldr,
+            env,
+            env_file,
             lolbas_json,
         } => {
             let input = read_input(&file)?;
             let cfg = harrington_core::Config::default();
-            let report = analyze_for_file(&file, &input, &cfg);
+            let options = make_analysis_options(&env, &env_file)?;
+            let report = analyze_for_file(&file, &input, &cfg, &options);
             if tldr {
                 if !write_stdout(&build_tldr(&file, &input, &report))? {
                     return Ok(());
@@ -2899,6 +2994,8 @@ fn run() -> Result<()> {
             max_output_bytes,
             max_output_line_bytes,
             max_traits_per_kind,
+            env,
+            env_file,
             lolbas_json,
         } => {
             let input = read_input(&file)?;
@@ -2912,7 +3009,8 @@ fn run() -> Result<()> {
                 max_output_line_bytes,
                 max_traits_per_kind,
             );
-            let report = analyze_for_file(&file, &input, &cfg);
+            let options = make_analysis_options(&env, &env_file)?;
+            let report = analyze_for_file(&file, &input, &cfg, &options);
 
             // Start from the analyst-friendly summary, then layer the full
             // typed trait list and any opt-in raw text on top.
@@ -2963,6 +3061,8 @@ fn run() -> Result<()> {
             max_output_line_bytes,
             max_traits_per_kind,
             jsonl,
+            env,
+            env_file,
             lolbas_json,
         } => {
             let files = analyze_input_files(files, file_list.as_deref(), jsonl)?;
@@ -2976,12 +3076,13 @@ fn run() -> Result<()> {
                 max_output_line_bytes,
                 max_traits_per_kind,
             );
+            let options = make_analysis_options(&env, &env_file)?;
             let lolbas_index = lolbas_json.as_deref().map(load_lolbas_index).transpose()?;
             if jsonl {
                 let mut stdout = io::stdout().lock();
                 for file in files {
                     let input = read_input(&file)?;
-                    let report = analyze_for_file(&file, &input, &cfg);
+                    let report = analyze_for_file(&file, &input, &cfg, &options);
                     let lolbas_matches = lolbas_index
                         .as_ref()
                         .map(|index| lolbas_matches(&report, index));
@@ -2998,7 +3099,7 @@ fn run() -> Result<()> {
             } else {
                 let file = &files[0];
                 let input = read_input(file)?;
-                let report = analyze_for_file(file, &input, &cfg);
+                let report = analyze_for_file(file, &input, &cfg, &options);
                 let lolbas_matches = lolbas_index
                     .as_ref()
                     .map(|index| lolbas_matches(&report, index));
@@ -3036,6 +3137,8 @@ fn run() -> Result<()> {
             max_output_bytes,
             max_output_line_bytes,
             max_traits_per_kind,
+            env,
+            env_file,
         } => {
             let input = read_input(&file)?;
             let cfg = make_config(
@@ -3048,7 +3151,8 @@ fn run() -> Result<()> {
                 max_output_line_bytes,
                 max_traits_per_kind,
             );
-            let report = analyze_for_file(&file, &input, &cfg);
+            let options = make_analysis_options(&env, &env_file)?;
+            let report = analyze_for_file(&file, &input, &cfg, &options);
             if !json_only {
                 write_report_files(&report, &out_dir, force)?;
             }

@@ -1,7 +1,7 @@
 //! Execution environment — variables, file-system tracking, limits, traits.
 
 use crate::traits::Trait;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -120,6 +120,8 @@ pub struct Environment {
     // ===== Variable + filesystem state =====
     /// Variable map (lowercase keys, case-insensitive lookup).
     pub(crate) vars: HashMap<String, String>,
+    /// Variables explicitly seeded by the caller for this analysis.
+    pub(crate) seeded_vars: HashSet<String>,
     /// Files created, downloaded, decoded, or copied during execution.
     pub modified_filesystem: HashMap<String, FsEntry>,
     /// Stack of variable snapshots from nested `setlocal` calls.
@@ -233,6 +235,7 @@ impl Default for Environment {
     fn default() -> Self {
         Self {
             vars: HashMap::new(),
+            seeded_vars: HashSet::new(),
             modified_filesystem: HashMap::new(),
             setlocal_stack: Vec::new(),
             delayed_expansion: false,
@@ -386,6 +389,22 @@ impl Environment {
         } else {
             self.vars.insert(k, value.to_string());
         }
+    }
+
+    /// Seed a variable from analyst-supplied analysis context. Unlike CMD's
+    /// `set NAME=`, an explicit empty value is preserved.
+    pub fn seed(&mut self, name: &str, value: &str) {
+        let key = name.to_ascii_lowercase();
+        self.seeded_vars.insert(key.clone());
+        self.vars.insert(key, value.to_string());
+    }
+
+    pub fn get_seeded(&self, name: &str) -> Option<String> {
+        let key = name.to_ascii_lowercase();
+        self.seeded_vars
+            .contains(&key)
+            .then(|| self.vars.get(&key).cloned())
+            .flatten()
     }
 
     pub fn contains_var(&self, name: &str) -> bool {

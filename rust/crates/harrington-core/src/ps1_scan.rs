@@ -33,6 +33,10 @@ static IRM_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static PS_ENV_REF_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"(?i)\$env:([A-Za-z_][A-Za-z0-9_.-]*)"#).expect("ps env ref"));
+
+#[allow(clippy::expect_used)]
 static PS_SCHEMELESS_IP_CMDLET_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?i)(?:Invoke-WebRequest|Invoke-RestMethod|iwr|irm|wget|curl)\b(?:[^\n|;]*?-(?:Uri|Ur)(?:\s+|:|=)|(?:\s+-[A-Za-z][\w-]*)*\s+)(?:['"])?((?:\d{1,3}\.){3}\d{1,3}(?::\d+)?(?:/[^\s"'\);]*)?)(?:['"])?"#,
@@ -3261,6 +3265,27 @@ fn expand_ps_variables(text: &str) -> String {
         out.replace_range(start..end, &replacement);
     }
     out
+}
+
+fn expand_ps_environment_references(text: &str, env: &Environment) -> String {
+    if !text.to_ascii_lowercase().contains("$env:") {
+        return text.to_string();
+    }
+    PS_ENV_REF_RE
+        .replace_all(text, |caps: &regex::Captures<'_>| {
+            let Some(name) = caps.get(1) else {
+                return caps
+                    .get(0)
+                    .map_or_else(String::new, |m| m.as_str().to_string());
+            };
+            let Some(value) = env.get_seeded(name.as_str()) else {
+                return caps
+                    .get(0)
+                    .map_or_else(String::new, |m| m.as_str().to_string());
+            };
+            format!("'{}'", value.replace('\'', "''"))
+        })
+        .into_owned()
 }
 
 fn expand_ps_double_quoted_interpolations(
@@ -9546,8 +9571,12 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
         decode_elapsed += stage_start.elapsed();
         decoded_payloads += 1;
 
+        let env_stage_start = std::time::Instant::now();
+        let text_env_expanded = expand_ps_environment_references(&raw_owned, env);
+        expand_elapsed += env_stage_start.elapsed();
+
         let stage_start = std::time::Instant::now();
-        if !ps1_payload_has_download_signal(&raw_owned) {
+        if !ps1_payload_has_download_signal(&text_env_expanded) {
             signal_elapsed += stage_start.elapsed();
             skipped_payloads += 1;
             continue;
@@ -9556,7 +9585,7 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
         scanned_payloads += 1;
 
         let stage_start = std::time::Instant::now();
-        let text_expanded = expand_obfuscation(&raw_owned);
+        let text_expanded = expand_obfuscation(&text_env_expanded);
         expand_elapsed += stage_start.elapsed();
         if env.ps1_scan_cache_normalized {
             let stage_start = std::time::Instant::now();
