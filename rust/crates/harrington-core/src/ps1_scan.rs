@@ -3273,19 +3273,72 @@ fn expand_ps_environment_references(text: &str, env: &Environment) -> String {
     }
     PS_ENV_REF_RE
         .replace_all(text, |caps: &regex::Captures<'_>| {
+            let Some(full) = caps.get(0) else {
+                return String::new();
+            };
             let Some(name) = caps.get(1) else {
-                return caps
-                    .get(0)
-                    .map_or_else(String::new, |m| m.as_str().to_string());
+                return full.as_str().to_string();
             };
-            let Some(value) = env.get_seeded(name.as_str()) else {
-                return caps
-                    .get(0)
-                    .map_or_else(String::new, |m| m.as_str().to_string());
+            let Some(value) = env.get(name.as_str()) else {
+                return full.as_str().to_string();
             };
-            format!("'{}'", value.replace('\'', "''"))
+            match ps_env_ref_quote_context(text, full.start()) {
+                PsEnvRefQuoteContext::SingleQuoted => full.as_str().to_string(),
+                PsEnvRefQuoteContext::DoubleQuoted => value.replace('`', "``").replace('"', "`\""),
+                PsEnvRefQuoteContext::Expression
+                    if ps_env_ref_has_unquoted_path_suffix(text, full.end()) =>
+                {
+                    value
+                }
+                PsEnvRefQuoteContext::Expression => format!("'{}'", value.replace('\'', "''")),
+            }
         })
         .into_owned()
+}
+
+fn ps_env_ref_has_unquoted_path_suffix(text: &str, pos: usize) -> bool {
+    text[pos..]
+        .chars()
+        .next()
+        .is_some_and(|ch| matches!(ch, '\\' | '/'))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PsEnvRefQuoteContext {
+    Expression,
+    SingleQuoted,
+    DoubleQuoted,
+}
+
+fn ps_env_ref_quote_context(text: &str, pos: usize) -> PsEnvRefQuoteContext {
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut chars = text[..pos].chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\'' if !in_double => {
+                if in_single && chars.peek() == Some(&'\'') {
+                    chars.next();
+                } else {
+                    in_single = !in_single;
+                }
+            }
+            '"' if !in_single => {
+                in_double = !in_double;
+            }
+            '`' if in_double => {
+                chars.next();
+            }
+            _ => {}
+        }
+    }
+    if in_single {
+        PsEnvRefQuoteContext::SingleQuoted
+    } else if in_double {
+        PsEnvRefQuoteContext::DoubleQuoted
+    } else {
+        PsEnvRefQuoteContext::Expression
+    }
 }
 
 fn expand_ps_double_quoted_interpolations(
@@ -9334,7 +9387,8 @@ mod herestring_iex_tests {
                     t,
                     crate::traits::Trait::Download { src, dst, .. }
                         if src == "https://redirect-content.example/stage.ps1"
-                            && dst.as_deref() == Some("$env:APPDATA\\stage.ps1")
+                            && dst.as_deref()
+                                == Some("C:\\Users\\puncher\\AppData\\Roaming\\stage.ps1")
                 )
             }),
             "redirected content download destination was not extracted: {:?}",

