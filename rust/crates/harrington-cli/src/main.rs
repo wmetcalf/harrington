@@ -248,6 +248,11 @@ fn parse_env_assignment(raw: &str, source: &str) -> Result<(String, String)> {
         bail!("{source}: expected NAME=VALUE");
     };
     let name = name.trim();
+    validate_env_name(name, source)?;
+    Ok((name.to_string(), value.to_string()))
+}
+
+fn validate_env_name(name: &str, source: &str) -> Result<()> {
     if name.is_empty() {
         bail!("{source}: env variable name is empty");
     }
@@ -260,7 +265,41 @@ fn parse_env_assignment(raw: &str, source: &str) -> Result<(String, String)> {
     {
         bail!("{source}: unsupported env variable name {:?}", name);
     }
-    Ok((name.to_string(), value.to_string()))
+    Ok(())
+}
+
+fn parse_env_file_assignments(contents: &str, path: &Path) -> Result<Vec<(String, String)>> {
+    let mut environment: Vec<(String, String)> = Vec::new();
+    for (idx, line) in contents.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with(';') {
+            continue;
+        }
+        if let Some((candidate_name, _)) = line.split_once('=') {
+            let candidate_name = candidate_name.trim();
+            if !candidate_name.is_empty()
+                && validate_env_name(candidate_name, &format!("{:?}:{}", path, idx + 1)).is_ok()
+            {
+                environment.push(parse_env_assignment(
+                    line,
+                    &format!("{:?}:{}", path, idx + 1),
+                )?);
+                continue;
+            }
+        }
+        if let Some((_, value)) = environment.last_mut() {
+            value.push('\n');
+            value.push_str(line);
+        } else if line.contains('=') {
+            environment.push(parse_env_assignment(
+                line,
+                &format!("{:?}:{}", path, idx + 1),
+            )?);
+        } else {
+            bail!("{:?}:{}: expected NAME=VALUE", path, idx + 1);
+        }
+    }
+    Ok(environment)
 }
 
 fn make_analysis_options(
@@ -270,16 +309,7 @@ fn make_analysis_options(
     let mut environment = Vec::new();
     for path in env_files {
         let contents = read_env_file(path)?;
-        for (idx, line) in contents.lines().enumerate() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with(';') {
-                continue;
-            }
-            environment.push(parse_env_assignment(
-                trimmed,
-                &format!("{:?}:{}", path, idx + 1),
-            )?);
-        }
+        environment.extend(parse_env_file_assignments(&contents, path)?);
     }
     for raw in env_args {
         environment.push(parse_env_assignment(raw, "--env")?);

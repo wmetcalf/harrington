@@ -34,7 +34,7 @@ static IRM_RE: Lazy<Regex> = Lazy::new(|| {
 
 #[allow(clippy::expect_used)]
 static PS_ENV_REF_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r#"(?i)\$env:([A-Za-z_][A-Za-z0-9_.-]*)"#).expect("ps env ref"));
+    Lazy::new(|| Regex::new(r#"(?i)\$env:([A-Za-z0-9_.-]+)"#).expect("ps env ref"));
 
 #[allow(clippy::expect_used)]
 static PS_SCHEMELESS_IP_CMDLET_RE: Lazy<Regex> = Lazy::new(|| {

