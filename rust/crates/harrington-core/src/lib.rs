@@ -4716,6 +4716,17 @@ fn scan_recovered_artifact_strings(env: &mut Environment) {
         if !behavior_text.is_empty() {
             deob_scan::scan_recovered_artifact_behavior_text(&behavior_text, env);
         }
+        if let Ok(nested_pes) = aes_chain::dotnet::recover_stride_rc4_pes(blob) {
+            for pe in nested_pes {
+                if push_recovered_pe_artifact(env, "dotnet-static-rc4-pe", pe.clone()) {
+                    scan_binary_input_urls(&pe, env);
+                    let behavior_text = recovered_artifact_behavior_text(&pe);
+                    if !behavior_text.is_empty() {
+                        deob_scan::scan_recovered_artifact_behavior_text(&behavior_text, env);
+                    }
+                }
+            }
+        }
     }
     artifacts.append(&mut env.recovered_pe);
     env.recovered_pe = artifacts;
