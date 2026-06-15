@@ -1,8 +1,8 @@
 //! `set` command handler. Mirrors batch_interpreter.py:interpret_set.
 
-use crate::arith;
-use crate::env::Environment;
+use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
+use crate::{arith, redirect};
 
 pub fn h_set(raw: &str, env: &mut Environment) {
     let rest = match strip_set_prefix(raw) {
@@ -21,6 +21,10 @@ pub fn h_set(raw: &str, env: &mut Environment) {
         // Skip past "/a" (2 chars) and any leading whitespace
         let after = trimmed[2..].trim_start();
         do_set_a(after, env);
+        return;
+    }
+    if lower.starts_with("/p") {
+        do_set_p(raw, env);
         return;
     }
 
@@ -62,6 +66,74 @@ pub fn h_set(raw: &str, env: &mut Environment) {
     if let Some((name, value)) = split_eq(body) {
         env.set(name, value);
     }
+}
+
+fn do_set_p(raw: &str, env: &mut Environment) {
+    let (cleaned, redirections) = redirect::extract_redirections(raw);
+    let Some(raw_rest) = strip_set_prefix(raw) else {
+        return;
+    };
+    let raw_after_flag = raw_rest.trim_start();
+    if !raw_after_flag.to_ascii_lowercase().starts_with("/p") {
+        return;
+    }
+    let raw_body = raw_after_flag[2..].trim_start();
+    let stdin = redirections
+        .stdin
+        .or_else(|| set_p_attached_stdin(raw_body));
+    let Some(stdin) = stdin else {
+        return;
+    };
+    let body = strip_set_prefix(&cleaned)
+        .and_then(|rest| {
+            let after_flag = rest.trim_start();
+            after_flag
+                .to_ascii_lowercase()
+                .starts_with("/p")
+                .then(|| after_flag[2..].trim_start())
+        })
+        .unwrap_or(raw_body);
+    let Some(name) = set_p_name(body) else {
+        return;
+    };
+    let Some(value) = first_line_from_tracked_file(&stdin, env) else {
+        return;
+    };
+    env.set(name, &value);
+}
+
+fn set_p_attached_stdin(body: &str) -> Option<String> {
+    let (_, value) = body.split_once('=')?;
+    let target = value.trim_start().strip_prefix('<')?.trim_start();
+    if target.is_empty() {
+        return None;
+    }
+    if let Some(rest) = target.strip_prefix('"') {
+        let end = rest.find('"')?;
+        return Some(rest[..end].to_string());
+    }
+    let end = target
+        .find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '&' | '|'))
+        .unwrap_or(target.len());
+    (end > 0).then(|| target[..end].to_string())
+}
+
+fn set_p_name(body: &str) -> Option<&str> {
+    let name = body.split_once('=').map_or(body, |(name, _)| name).trim();
+    (!name.is_empty()).then_some(name)
+}
+
+fn first_line_from_tracked_file(path: &str, env: &Environment) -> Option<String> {
+    let entry = crate::handlers::util::filesystem_entry_for_path(env, path)?;
+    let content = match entry {
+        FsEntry::Content { content, .. } | FsEntry::Decoded { content, .. } => content,
+        FsEntry::Download { .. } | FsEntry::Copy { .. } | FsEntry::Directory => return None,
+    };
+    let end = content
+        .iter()
+        .position(|byte| matches!(byte, b'\r' | b'\n'))
+        .unwrap_or(content.len());
+    Some(String::from_utf8_lossy(&content[..end]).into_owned())
 }
 
 fn do_set_a(body: &str, env: &mut Environment) {
