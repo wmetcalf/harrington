@@ -19,7 +19,13 @@ pub fn h_robocopy(raw: &str, env: &mut Environment) {
         }
         let src = join_windows_path(&src_dir, &file);
         let dst = join_windows_path(&dst_dir, &file);
-        let entry = copied_entry(&src, &file, env).unwrap_or(FsEntry::Copy { src });
+        let entry = copied_entry(
+            &src,
+            &file,
+            source_dir_allows_basename_fallback(&src_dir),
+            env,
+        )
+        .unwrap_or(FsEntry::Copy { src });
         env.modified_filesystem
             .insert(dst.to_ascii_lowercase(), entry);
     }
@@ -57,10 +63,18 @@ fn robocopy_option_value_count(option: &str) -> usize {
     }
 }
 
-fn copied_entry(src: &str, filename: &str, env: &Environment) -> Option<FsEntry> {
+fn copied_entry(
+    src: &str,
+    filename: &str,
+    allow_basename_fallback: bool,
+    env: &Environment,
+) -> Option<FsEntry> {
     let key = src.to_ascii_lowercase();
     if let Some(entry) = env.modified_filesystem.get(&key) {
         return Some(entry.clone());
+    }
+    if !allow_basename_fallback {
+        return None;
     }
     env.modified_filesystem
         .iter()
@@ -69,6 +83,13 @@ fn copied_entry(src: &str, filename: &str, env: &Environment) -> Option<FsEntry>
                 .is_some_and(|tracked| tracked.eq_ignore_ascii_case(filename))
                 .then(|| entry.clone())
         })
+}
+
+fn source_dir_allows_basename_fallback(src_dir: &str) -> bool {
+    let trimmed = src_dir
+        .trim_matches(['"', '\''])
+        .trim_end_matches(['\\', '/']);
+    matches!(trimmed, "." | ".\\." | "./.")
 }
 
 fn join_windows_path(dir: &str, file: &str) -> String {

