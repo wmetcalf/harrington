@@ -347,17 +347,20 @@ fn synth_find(args: &[&str], input: Vec<String>, env: &mut Environment) -> Vec<S
         .copied()
         .filter(|arg| !arg.starts_with('/'))
         .collect::<Vec<_>>();
-    let Some(path) = non_flags.get(1).copied() else {
+    let Some(paths) = non_flags.get(1..) else {
         return filter_find(args, input);
     };
-    let lines = type_file(path, env);
+    let mut lines = Vec::new();
+    for path in paths {
+        lines.extend(type_file(path, env));
+    }
     if lines.is_empty() {
         return Vec::new();
     }
     let filter_args = args
         .iter()
         .copied()
-        .filter(|arg| *arg != path)
+        .filter(|arg| !paths.contains(arg))
         .collect::<Vec<_>>();
     filter_find(&filter_args, lines)
 }

