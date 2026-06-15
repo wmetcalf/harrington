@@ -243,18 +243,34 @@ fn synth_more(
     input: Vec<String>,
     env: &mut Environment,
 ) -> Vec<String> {
+    let skip = args
+        .iter()
+        .find_map(|arg| more_plus_start_line(arg))
+        .map(|line| line.saturating_sub(1))
+        .unwrap_or(0);
+    let apply_skip = |lines: Vec<String>| lines.into_iter().skip(skip).collect();
     if !input.is_empty() {
-        return input;
+        return apply_skip(input);
     }
     let (_, redirs) = crate::redirect::extract_redirections(stage);
     if let Some(path) = redirs.stdin {
-        return type_file(&path, env);
+        return apply_skip(type_file(&path, env));
     }
-    args.iter()
+    let lines = args
+        .iter()
         .copied()
-        .find(|arg| !arg.starts_with(['/', '-']) && *arg != "<")
+        .find(|arg| !is_more_option(arg))
         .map(|path| type_file(path, env))
-        .unwrap_or_default()
+        .unwrap_or_default();
+    apply_skip(lines)
+}
+
+fn is_more_option(arg: &str) -> bool {
+    arg.starts_with(['/', '-', '+']) || arg == "<"
+}
+
+fn more_plus_start_line(arg: &str) -> Option<usize> {
+    arg.strip_prefix('+')?.parse::<usize>().ok()
 }
 
 fn synth_sort(
