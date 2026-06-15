@@ -74,7 +74,7 @@ pub fn lookup(name: &str) -> Option<Handler> {
         }
         _ => {}
     }
-    match lower.as_str() {
+    match base {
         "call" => Some(call::h_call),
         "set" => Some(set::h_set),
         "echo" => Some(echo::h_echo),

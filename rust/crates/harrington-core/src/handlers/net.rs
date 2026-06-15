@@ -3,12 +3,17 @@ use crate::handlers::util::split_words;
 use crate::traits::{NetUseInfo, Trait};
 
 pub fn h_net(raw: &str, env: &mut Environment) {
-    let lower = raw.to_ascii_lowercase();
-    if !lower.starts_with("net use") || lower.starts_with("net user") {
+    let tokens: Vec<String> = split_words(raw);
+    let Some(command) = tokens.first() else {
+        return;
+    };
+    if command_basename_no_ext(command) != "net" {
         return;
     }
-    let tokens: Vec<String> = split_words(raw);
     if tokens.len() <= 2 {
+        return;
+    }
+    if !tokens[1].eq_ignore_ascii_case("use") {
         return;
     }
     let mut info = NetUseInfo::default();
@@ -99,4 +104,11 @@ pub fn h_net(raw: &str, env: &mut Environment) {
         cmd: raw.to_string(),
         info,
     });
+}
+
+fn command_basename_no_ext(token: &str) -> String {
+    let trimmed = token.trim_matches(['"', '\'']).to_ascii_lowercase();
+    let last_sep = trimmed.rfind(['\\', '/']).map(|idx| idx + 1).unwrap_or(0);
+    let base = &trimmed[last_sep..];
+    base.strip_suffix(".exe").unwrap_or(base).to_string()
 }
