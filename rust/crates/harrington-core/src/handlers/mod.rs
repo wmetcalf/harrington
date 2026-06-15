@@ -92,6 +92,7 @@ pub fn lookup(name: &str) -> Option<Handler> {
         "extrac32" => Some(extrac32::h_extrac32),
         "wscript" => Some(cscript::h_wscript),
         "wmic" => Some(wmic::h_wmic),
+        "psexec" => Some(passthrough::h_psexec),
         "runas" => Some(passthrough::h_runas),
         "del" => Some(passthrough::h_del),
         "cls" => Some(passthrough::h_cls),

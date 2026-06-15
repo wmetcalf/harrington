@@ -146,6 +146,18 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
         return result;
     }
 
+    if let Some((_host, command)) = crate::handlers::passthrough::psexec_child_command(raw) {
+        if command.contains('!')
+            && (crate::handlers::cmd::extract_cmd_inner(&command).is_some()
+                || crate::handlers::cmd::start_child_command(&command).is_some()
+                || crate::handlers::call::call_body(&command).is_some())
+        {
+            crate::handlers::passthrough::h_psexec(raw, env);
+            result.consumed = true;
+            return result;
+        }
+    }
+
     if raw_invokes_powershell(raw) {
         crate::handlers::powershell::h_powershell(raw, env);
         result.consumed = true;

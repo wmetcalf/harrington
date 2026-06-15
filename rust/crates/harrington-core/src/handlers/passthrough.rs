@@ -205,6 +205,13 @@ pub fn h_runas(raw: &str, env: &mut Environment) {
     queue_child_command(command, env);
 }
 
+pub fn h_psexec(raw: &str, env: &mut Environment) {
+    let Some((_host, command)) = psexec_child_command(raw) else {
+        return;
+    };
+    queue_child_command(command, env);
+}
+
 pub(crate) fn runas_child_command(raw: &str) -> Option<String> {
     let spans = split_word_spans(raw);
     let first = spans.first()?;
@@ -250,6 +257,101 @@ pub(crate) fn runas_child_command(raw: &str) -> Option<String> {
     let command_start = spans.get(idx)?.start;
     let command = strip_outer_quotes(raw[command_start..].trim()).trim();
     (!command.is_empty()).then(|| command.to_string())
+}
+
+pub(crate) fn psexec_child_command(raw: &str) -> Option<(String, String)> {
+    let spans = split_word_spans(raw);
+    let first = spans.first()?;
+    let command_name = raw[first.clone()]
+        .trim_start_matches(['@', '"', '('])
+        .trim_matches(['"', '\''])
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(&raw[first.clone()])
+        .to_ascii_lowercase();
+    if command_name.strip_suffix(".exe").unwrap_or(&command_name) != "psexec" {
+        return None;
+    }
+
+    let mut idx = 1usize;
+    let mut host = None;
+    while let Some(span) = spans.get(idx) {
+        let token = raw[span.clone()].trim_matches(['"', '\'']);
+        if token.starts_with("\\\\") {
+            host = Some(token.trim_start_matches('\\').to_string());
+            idx += 1;
+            break;
+        }
+        idx += psexec_option_span_width(token, true)?;
+    }
+    let host = host?;
+
+    while let Some(span) = spans.get(idx) {
+        let token = raw[span.clone()].trim_matches(['"', '\'']);
+        if token.starts_with("\\\\") {
+            idx += 1;
+            continue;
+        }
+        let Some(width) = psexec_option_span_width(token, false) else {
+            break;
+        };
+        idx += width;
+    }
+
+    let command_start = spans.get(idx)?.start;
+    let command = strip_outer_quotes(raw[command_start..].trim()).trim();
+    (!command.is_empty()).then(|| (host, command.to_string()))
+}
+
+fn psexec_option_span_width(token: &str, before_host: bool) -> Option<usize> {
+    let lower = token.to_ascii_lowercase();
+    if lower.is_empty() {
+        return Some(1);
+    }
+    let option = lower.strip_prefix('-')?;
+    if option.is_empty() {
+        return None;
+    }
+    if matches!(
+        option,
+        "u" | "p" | "n" | "i" | "w" | "r" | "a" | "g" | "priority"
+    ) {
+        return Some(2);
+    }
+    if option.starts_with('u')
+        || option.starts_with('p')
+        || option.starts_with('n')
+        || option.starts_with('i')
+        || option.starts_with('w')
+        || option.starts_with('r')
+        || option.starts_with('a')
+        || option.starts_with('g')
+    {
+        return Some(1);
+    }
+    if matches!(
+        option,
+        "accepteula"
+            | "nobanner"
+            | "s"
+            | "h"
+            | "d"
+            | "c"
+            | "f"
+            | "v"
+            | "e"
+            | "l"
+            | "x"
+            | "realtime"
+            | "high"
+            | "abovenormal"
+            | "belownormal"
+            | "low"
+            | "background"
+    ) {
+        return Some(1);
+    }
+    before_host.then_some(1)
 }
 
 fn command_target_and_args(command: &str) -> Option<(String, Option<String>)> {
@@ -648,8 +750,9 @@ make_handler!(h_whoami, "whoami");
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::{
-        at_scheduled_command, h_reg, h_schtasks, persisted_command_child, reg_data_value,
-        runas_child_command, sc_failure_command, sc_service_binpath, schtasks_task_run,
+        at_scheduled_command, h_reg, h_schtasks, persisted_command_child, psexec_child_command,
+        reg_data_value, runas_child_command, sc_failure_command, sc_service_binpath,
+        schtasks_task_run,
     };
     use crate::env::{Config, Environment};
     use crate::traits::Trait;
@@ -812,6 +915,27 @@ mod tests {
                 .expect("runas spaced user child command should parse");
 
         assert_eq!(command, "powershell.exe -nop -w hidden");
+    }
+
+    #[test]
+    fn psexec_child_command_skips_host_auth_and_flags() {
+        let (host, command) = psexec_child_command(
+            r#"psexec \\target.example -accepteula -u admin -p pass -s cmd.exe /c echo remote"#,
+        )
+        .expect("psexec child command should parse");
+
+        assert_eq!(host, "target.example");
+        assert_eq!(command, "cmd.exe /c echo remote");
+    }
+
+    #[test]
+    fn psexec_child_command_accepts_options_before_host() {
+        let (host, command) =
+            psexec_child_command(r#"psexec -accepteula \\target.example powershell.exe -nop"#)
+                .expect("psexec child command should parse");
+
+        assert_eq!(host, "target.example");
+        assert_eq!(command, "powershell.exe -nop");
     }
 
     #[test]
