@@ -52,7 +52,10 @@ pub fn h_forfiles(raw: &str, env: &mut Environment) {
 }
 
 fn command_basename_no_ext(token: &str) -> String {
-    let trimmed = token.trim_matches(['"', '\'']).to_ascii_lowercase();
+    let trimmed = token
+        .trim_start_matches(['@', '('])
+        .trim_matches(['"', '\''])
+        .to_ascii_lowercase();
     let last_sep = trimmed.rfind(['\\', '/']).map(|idx| idx + 1).unwrap_or(0);
     let base = &trimmed[last_sep..];
     base.strip_suffix(".exe").unwrap_or(base).to_string()
@@ -94,6 +97,14 @@ mod tests {
     fn extracts_quoted_c_command() {
         assert_eq!(
             extract_forfiles_inner(r#"forfiles /p C:\ /c "cmd /c echo hi""#).as_deref(),
+            Some("cmd /c echo hi")
+        );
+    }
+
+    #[test]
+    fn extracts_echo_suppressed_forfiles_command() {
+        assert_eq!(
+            extract_forfiles_inner(r#"@forfiles /p C:\ /c "cmd /c echo hi""#).as_deref(),
             Some("cmd /c echo hi")
         );
     }
