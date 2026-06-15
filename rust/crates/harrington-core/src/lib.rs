@@ -11706,6 +11706,25 @@ rundll32 c:\programdata\COIm.jpg,init"#,
     }
 
     #[test]
+    fn net_use_equals_bound_user_value_preserves_user_and_password() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(r#"net use Z: \\evil\share /user=DOMAIN\adm pass"#, &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::NetUse { info, .. }
+                    if info.devicename.as_deref() == Some("Z:")
+                        && info.server.as_deref() == Some(r#"\\evil\share"#)
+                        && info.user.as_deref() == Some(r#"DOMAIN\adm"#)
+                        && info.password.as_deref() == Some("pass")
+            )),
+            "equals-bound /user value was not preserved: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn net_exe_use_dispatches_to_net_handler() {
         let mut env = Environment::new(&Config::default());
         interpret_line(r#"net.exe use Z: \\evil\share"#, &mut env);

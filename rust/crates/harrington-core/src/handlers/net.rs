@@ -62,7 +62,7 @@ pub fn h_net(raw: &str, env: &mut Environment) {
             continue;
         }
         if pl.starts_with("/u") {
-            if let Some(v) = p.split(':').nth(1) {
+            if let Some((_flag, v)) = p.split_once([':', '=']) {
                 info.user = Some(v.to_string());
             }
             idx += 1;
