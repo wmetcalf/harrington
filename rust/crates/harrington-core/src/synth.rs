@@ -1322,8 +1322,12 @@ fn synth_curl(args: &[&str]) -> Vec<String> {
         || lower == "http://ifconfig.me/ip"
         || lower == "https://icanhazip.com"
         || lower == "http://icanhazip.com"
+        || lower == "https://ipv4.icanhazip.com"
+        || lower == "http://ipv4.icanhazip.com"
         || lower == "https://checkip.amazonaws.com"
         || lower == "http://checkip.amazonaws.com"
+        || lower == "https://ipinfo.io/ip"
+        || lower == "http://ipinfo.io/ip"
     {
         return vec!["203.0.113.10".to_string()];
     }
