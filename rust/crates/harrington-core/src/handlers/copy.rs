@@ -167,8 +167,7 @@ fn track_rename_like(
 }
 
 fn copied_entry(src: &str, env: &Environment) -> Option<FsEntry> {
-    let key = src.to_ascii_lowercase();
-    if let Some(entry) = env.modified_filesystem.get(&key) {
+    if let Some(entry) = crate::handlers::util::filesystem_entry_for_path(env, src) {
         return Some(entry.clone());
     }
     if let Some(name) = current_dir_basename(src) {
