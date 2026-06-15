@@ -85,6 +85,12 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
     }
 
     if let Some((time, command)) = crate::handlers::passthrough::at_scheduled_command(raw) {
+        if let Some(target_host) = crate::handlers::passthrough::at_remote_host(raw) {
+            env.traits.push(crate::traits::Trait::LateralMovement {
+                tool: "at".to_string(),
+                target_host,
+            });
+        }
         env.traits.push(crate::traits::Trait::Persistence {
             hive: "AtJob".to_string(),
             key: time,

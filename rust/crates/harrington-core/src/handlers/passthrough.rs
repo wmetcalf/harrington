@@ -976,6 +976,20 @@ pub(crate) fn at_scheduled_command(raw: &str) -> Option<(String, String)> {
     Some((time.to_string(), command.to_string()))
 }
 
+pub(crate) fn at_remote_host(raw: &str) -> Option<String> {
+    let spans = split_word_spans(raw);
+    let first = spans.first()?;
+    let command_name = command_token_basename(&raw[first.clone()]);
+    if command_name.strip_suffix(".exe").unwrap_or(&command_name) != "at" {
+        return None;
+    }
+    let host = raw[spans.get(1)?.clone()].trim_matches(['"', '\'']);
+    host.strip_prefix("\\\\")
+        .map(str::trim)
+        .filter(|host| !host.is_empty())
+        .map(str::to_string)
+}
+
 fn at_token_looks_like_time(token: &str) -> bool {
     let lower = token.to_ascii_lowercase();
     lower == "now" || lower.contains(':')
