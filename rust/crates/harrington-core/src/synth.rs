@@ -111,6 +111,7 @@ fn run_stage(stage: &str, input: Vec<String>, env: &mut Environment) -> Vec<Stri
                 .map(|(k, v)| format!("{}={}", canonical_env_name(&k), v))
                 .collect()
         }
+        "cmd" | "cmd.exe" => synth_cmd(rest, input, env),
         "findstr" => synth_findstr(&rest_args, input, env),
         "find" => synth_find(&rest_args, input, env),
         "more" => synth_more(stage, &rest_args, input, env),
@@ -394,6 +395,57 @@ fn is_type_with_one_missing_char(s: &str) -> bool {
     matches!(s, "typ" | "tye" | "tpe" | "ype" | "te")
 }
 
+fn synth_cmd(rest: &str, input: Vec<String>, env: &mut Environment) -> Vec<String> {
+    let Some(child) = cmd_child_after_switch(rest) else {
+        return input;
+    };
+    run_pipeline(child, env)
+}
+
+fn cmd_child_after_switch(rest: &str) -> Option<&str> {
+    for (start, end) in command_token_spans(rest) {
+        let token = rest[start..end].trim_matches('"');
+        let lower = token.to_ascii_lowercase();
+        if matches!(lower.as_str(), "/c" | "/k" | "/r") {
+            return Some(strip_wrapping_quotes(rest[end..].trim()));
+        }
+    }
+    None
+}
+
+fn command_token_spans(s: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut token_start = None;
+    let mut in_dq = false;
+    for (idx, c) in s.char_indices() {
+        if token_start.is_none() && !c.is_whitespace() {
+            token_start = Some(idx);
+        }
+        if c == '"' {
+            in_dq = !in_dq;
+        }
+        if c.is_whitespace() && !in_dq {
+            if let Some(start) = token_start.take() {
+                if start < idx {
+                    spans.push((start, idx));
+                }
+            }
+        }
+    }
+    if let Some(start) = token_start {
+        if start < s.len() {
+            spans.push((start, s.len()));
+        }
+    }
+    spans
+}
+
+fn strip_wrapping_quotes(s: &str) -> &str {
+    s.strip_prefix('"')
+        .and_then(|inner| inner.strip_suffix('"'))
+        .unwrap_or(s)
+}
+
 fn expand_percent_vars_for_command_key(key: &str, env: &Environment) -> Option<String> {
     if !key.contains('%') {
         return None;
@@ -431,6 +483,8 @@ fn is_supported_command(cmd: &str) -> bool {
         cmd,
         "set"
             | "findstr"
+            | "cmd"
+            | "cmd.exe"
             | "find"
             | "more"
             | "sort"
