@@ -1,7 +1,7 @@
 //! extrac32 handler — CAB extraction LOLBAS. Tracks self-extraction patterns.
 
 use crate::env::{Environment, FsEntry};
-use crate::handlers::util::split_words;
+use crate::handlers::util::{join_windows_path_preserving_separator, split_words};
 use crate::traits::Trait;
 
 pub fn h_extrac32(raw: &str, env: &mut Environment) {
@@ -174,7 +174,7 @@ fn parse_expand_paths(tokens: &[String]) -> Option<(String, String)> {
     let mut dst = positional.get(1)?.clone();
     if let Some(member) = selected_member {
         if !windows_basename(&dst).is_some_and(|name| name.eq_ignore_ascii_case(&member)) {
-            dst = join_windows_path(&dst, &member);
+            dst = join_windows_path_preserving_separator(&dst, &member);
         }
     }
     (!dst.is_empty()).then_some((src, dst))
@@ -208,14 +208,6 @@ fn collapse_slashes(s: &str) -> String {
         prev = c;
     }
     out
-}
-
-fn join_windows_path(prefix: &str, name: &str) -> String {
-    if prefix.ends_with(['\\', '/']) {
-        collapse_slashes(&format!("{prefix}{name}"))
-    } else {
-        collapse_slashes(&format!("{prefix}\\{name}"))
-    }
 }
 
 fn strip_quotes(s: &str) -> &str {
