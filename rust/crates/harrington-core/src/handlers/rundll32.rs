@@ -182,6 +182,14 @@ fn downloaded_src_for_candidate(candidate: &str, env: &Environment) -> Option<St
     if let Some(FsEntry::Download { src }) = filesystem_entry_for_path(env, candidate) {
         return Some(src.clone());
     }
+    if let Some(stripped) = strip_current_dir_prefix(candidate) {
+        if stripped.contains(['\\', '/']) {
+            return match filesystem_entry_for_path(env, stripped) {
+                Some(FsEntry::Download { src }) => Some(src.clone()),
+                _ => None,
+            };
+        }
+    }
     if let Some(name) = current_dir_basename(candidate) {
         return downloaded_src_for_basename(name, env);
     }
@@ -206,9 +214,11 @@ fn downloaded_src_for_basename(candidate: &str, env: &Environment) -> Option<Str
 }
 
 fn current_dir_basename(path: &str) -> Option<&str> {
-    path.strip_prefix(r".\")
-        .or_else(|| path.strip_prefix("./"))
-        .and_then(windows_basename)
+    strip_current_dir_prefix(path).and_then(windows_basename)
+}
+
+fn strip_current_dir_prefix(path: &str) -> Option<&str> {
+    path.strip_prefix(r".\").or_else(|| path.strip_prefix("./"))
 }
 
 fn webdav_url_for_candidate(candidate: &str) -> Option<String> {
