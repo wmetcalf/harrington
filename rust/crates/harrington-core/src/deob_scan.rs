@@ -3861,7 +3861,7 @@ fn regsvr32_scriptlet_url_after(tokens: &[String], start: usize) -> Option<Strin
     for i in start..limit {
         let token = strip_quotes(&tokens[i]);
         let lower = token.to_ascii_lowercase();
-        let candidate = if lower.starts_with("/i:") || lower.starts_with("-i:") {
+        let candidate = if regsvr32_attached_i_arg(&lower) {
             token.get(3..)
         } else if lower == "/i" || lower == "-i" {
             tokens.get(i + 1).map(|next| strip_quotes(next))
@@ -3890,7 +3890,7 @@ fn regsvr32_prior_download_url_after(
     for i in start..limit {
         let token = strip_quotes(&tokens[i]).trim();
         let lower = token.to_ascii_lowercase();
-        let candidate = if lower.starts_with("/i:") || lower.starts_with("-i:") {
+        let candidate = if regsvr32_attached_i_arg(&lower) {
             token.get(3..)
         } else if lower == "/i" || lower == "-i" {
             tokens.get(i + 1).map(|next| strip_quotes(next).trim())
@@ -3925,6 +3925,13 @@ fn regsvr32_loadable_target(token: &str) -> bool {
     [".dll", ".sct", ".ocx", ".cpl"]
         .iter()
         .any(|suffix| trimmed.ends_with(suffix))
+}
+
+fn regsvr32_attached_i_arg(lower: &str) -> bool {
+    lower.starts_with("/i:")
+        || lower.starts_with("-i:")
+        || lower.starts_with("/i=")
+        || lower.starts_with("-i=")
 }
 
 fn msiexec_prior_download_url_after(

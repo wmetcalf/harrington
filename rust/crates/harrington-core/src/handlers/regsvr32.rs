@@ -28,7 +28,7 @@ fn regsvr32_scriptlet_url_after(tokens: &[String], start: usize) -> Option<Strin
     for i in start..limit {
         let token = strip_quotes(&tokens[i]);
         let lower = token.to_ascii_lowercase();
-        let candidate = if lower.starts_with("/i:") || lower.starts_with("-i:") {
+        let candidate = if regsvr32_attached_i_arg(&lower) {
             token.get(3..)
         } else if lower == "/i" || lower == "-i" {
             tokens.get(i + 1).map(|next| strip_quotes(next))
@@ -89,7 +89,7 @@ fn regsvr32_prior_download_url(tokens: &[String], env: &Environment) -> Option<S
     for i in 1..limit {
         let token = strip_quotes(&tokens[i]).trim();
         let lower = token.to_ascii_lowercase();
-        let candidate = if lower.starts_with("/i:") || lower.starts_with("-i:") {
+        let candidate = if regsvr32_attached_i_arg(&lower) {
             token.get(3..)
         } else if lower == "/i" || lower == "-i" {
             tokens.get(i + 1).map(|next| strip_quotes(next).trim())
@@ -223,4 +223,11 @@ fn strip_quotes(s: &str) -> &str {
 
 fn trim_url_suffix(url: &str) -> &str {
     url.trim_end_matches(['"', '\'', ')', ']', '}', ';', ','])
+}
+
+fn regsvr32_attached_i_arg(lower: &str) -> bool {
+    lower.starts_with("/i:")
+        || lower.starts_with("-i:")
+        || lower.starts_with("/i=")
+        || lower.starts_with("-i=")
 }

