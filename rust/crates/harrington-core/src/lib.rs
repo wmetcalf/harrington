@@ -9439,6 +9439,22 @@ echo %MARK%
     }
 
     #[test]
+    fn erase_removes_tracked_file_for_later_if_not_exist() {
+        let script = br#"echo marker>gate.txt
+erase gate.txt
+if not exist gate.txt set MARK=deleted
+echo %MARK%
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo deleted"),
+            "erase did not update tracked file state for if not exist:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+    }
+
+    #[test]
     fn if_not_exist_empty_quoted_operand_resolves_true() {
         let script = br#"if not exist "" echo empty-missing
 "#;

@@ -104,6 +104,7 @@ pub fn lookup(name: &str) -> Option<Handler> {
         "winrs" => Some(passthrough::h_winrs),
         "runas" => Some(passthrough::h_runas),
         "del" => Some(passthrough::h_del),
+        "erase" => Some(passthrough::h_erase),
         "cls" => Some(passthrough::h_cls),
         "timeout" => Some(passthrough::h_timeout),
         "reg" => Some(passthrough::h_reg),
