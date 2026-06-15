@@ -12,7 +12,7 @@ pub fn h_copy(raw: &str, env: &mut Environment) {
         if general_opts.contains(&lt.as_str()) || file_opts.contains(&lt.as_str()) {
             continue;
         }
-        args.push(strip_quotes(t).to_string());
+        push_copy_arg_parts(&mut args, t);
     }
 
     // Multi-source form: A + B + C dst  (args contain "+" separators)
@@ -200,6 +200,47 @@ fn strip_quotes(s: &str) -> &str {
         return &s[1..s.len() - 1];
     }
     s
+}
+
+fn push_copy_arg_parts(args: &mut Vec<String>, token: &str) {
+    let mut current = String::new();
+    let mut parts = Vec::new();
+    let mut in_dq = false;
+    let mut in_sq = false;
+    let mut saw_separator = false;
+
+    for ch in token.chars() {
+        if ch == '"' && !in_sq {
+            in_dq = !in_dq;
+            current.push(ch);
+            continue;
+        }
+        if ch == '\'' && !in_dq {
+            in_sq = !in_sq;
+            current.push(ch);
+            continue;
+        }
+        if ch == '+' && !in_dq && !in_sq {
+            if !current.is_empty() {
+                parts.push(strip_quotes(&current).to_string());
+                current.clear();
+            }
+            parts.push("+".to_string());
+            saw_separator = true;
+            continue;
+        }
+        current.push(ch);
+    }
+
+    if !current.is_empty() {
+        parts.push(strip_quotes(&current).to_string());
+    }
+
+    if saw_separator {
+        args.extend(parts);
+    } else {
+        args.push(strip_quotes(token).to_string());
+    }
 }
 
 fn collapse_slashes(s: &str) -> String {

