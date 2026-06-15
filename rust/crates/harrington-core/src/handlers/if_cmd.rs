@@ -74,6 +74,8 @@ pub fn h_if(raw: &str, env: &mut Environment) {
     if let Some(body) = inline_body {
         if let Some((then_body, _)) = split_parenthesized_else_branches(&body) {
             dispatch_if_branch(then_body, env);
+        } else if let Some(then_body) = parenthesized_branch_body(&body) {
+            dispatch_if_branch(then_body, env);
         } else {
             let body = body.trim().to_string();
             if !body.is_empty() && !body.starts_with('(') {
@@ -91,6 +93,17 @@ pub(crate) fn inline_body_needs_raw_dispatch(raw: &str) -> bool {
     let Some(body) = extract_inline_body(rest) else {
         return false;
     };
+    let body = body.trim();
+    if let Some((then_body, else_body)) = split_parenthesized_else_branches(body) {
+        return if_body_needs_raw_dispatch(then_body) || if_body_needs_raw_dispatch(else_body);
+    }
+    if let Some(then_body) = parenthesized_branch_body(body) {
+        return if_body_needs_raw_dispatch(then_body);
+    }
+    if_body_needs_raw_dispatch(body)
+}
+
+fn if_body_needs_raw_dispatch(body: &str) -> bool {
     let body = body.trim();
     body.contains('!')
         && (crate::handlers::cmd::extract_cmd_inner(body).is_some()
@@ -492,6 +505,13 @@ fn split_parenthesized_else_branches(body: &str) -> Option<(&str, &str)> {
         return Some((then_body, &else_inner[..else_close]));
     }
     Some((then_body, else_rest))
+}
+
+fn parenthesized_branch_body(body: &str) -> Option<&str> {
+    let body = body.trim();
+    let inner = body.strip_prefix('(')?;
+    let close = matching_close_paren(inner)?;
+    inner.get(..close)
 }
 
 fn matching_close_paren(s: &str) -> Option<usize> {
