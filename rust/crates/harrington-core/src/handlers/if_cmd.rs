@@ -164,7 +164,7 @@ fn evaluate(
     } else {
         (false, trimmed)
     };
-    if let Some(eq_pos) = body.find("==") {
+    if let Some(eq_pos) = find_unquoted_ascii(body, "==") {
         let lhs_raw = body[..eq_pos].trim().trim_matches('"');
         let rhs_full = body[eq_pos + 2..].trim_start();
         let rhs_raw = unquote_condition_token(first_condition_token_raw(rhs_full)?).trim();
@@ -188,7 +188,7 @@ fn evaluate(
         (" GTR ", "gt"),
         (" GEQ ", "ge"),
     ] {
-        if let Some(pos) = upper.find(op_str) {
+        if let Some(pos) = find_unquoted_ascii(&upper, op_str) {
             let lhs_raw = body[..pos].trim().trim_matches('"');
             let rhs_start = pos + op_str.len();
             let rhs_full = body[rhs_start..].trim_start();
@@ -497,7 +497,7 @@ fn extract_inline_body(rest: &str) -> Option<String> {
     };
 
     // "lhs" == "rhs" body
-    if let Some(eq_pos) = rest2.find("==") {
+    if let Some(eq_pos) = find_unquoted_ascii(rest2, "==") {
         let after = rest2[eq_pos + 2..].trim_start();
         return Some(skip_one_token(after).to_string());
     }
@@ -505,7 +505,7 @@ fn extract_inline_body(rest: &str) -> Option<String> {
     // EQU / NEQ / LSS / LEQ / GTR / GEQ body
     let upper = rest2.to_ascii_uppercase();
     for op in [" EQU ", " NEQ ", " LSS ", " LEQ ", " GTR ", " GEQ "] {
-        if let Some(pos) = upper.find(op) {
+        if let Some(pos) = find_unquoted_ascii(&upper, op) {
             let after = rest2[pos + op.len()..].trim_start();
             return Some(skip_one_token(after).to_string());
         }
@@ -550,6 +550,43 @@ fn first_condition_token_raw(s: &str) -> Option<&str> {
     }
     let end = s.find(char::is_whitespace).unwrap_or(s.len());
     Some(&s[..end])
+}
+
+fn find_unquoted_ascii(s: &str, needle: &str) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+    let s_bytes = s.as_bytes();
+    let needle_bytes = needle.as_bytes();
+    let mut in_dq = false;
+    let mut in_sq = false;
+    let mut escaped = false;
+    for (idx, c) in s.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if c == '^' {
+            escaped = true;
+            continue;
+        }
+        if c == '"' && !in_sq {
+            in_dq = !in_dq;
+            continue;
+        }
+        if c == '\'' && !in_dq {
+            in_sq = !in_sq;
+            continue;
+        }
+        if !in_dq
+            && !in_sq
+            && idx + needle_bytes.len() <= s_bytes.len()
+            && s_bytes[idx..idx + needle_bytes.len()].eq_ignore_ascii_case(needle_bytes)
+        {
+            return Some(idx);
+        }
+    }
+    None
 }
 
 fn unquote_condition_token(s: &str) -> &str {

