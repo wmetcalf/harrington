@@ -9609,6 +9609,21 @@ echo %MARK%
     }
 
     #[test]
+    fn mkdir_marks_parent_directories_existing_for_later_if_exist() {
+        let script = br#"mkdir C:\Temp\stage
+if exist C:\Temp set MARK=parent
+echo %MARK%
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo parent"),
+            "mkdir did not update parent directory state for if exist:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+    }
+
+    #[test]
     fn if_not_exist_empty_quoted_operand_resolves_true() {
         let script = br#"if not exist "" echo empty-missing
 "#;
