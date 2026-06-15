@@ -67,7 +67,8 @@ pub fn read_logical_lines(input: &[u8]) -> Vec<String> {
         let line = raw.strip_suffix('\n').unwrap_or(raw);
         let line = line.strip_suffix('\r').unwrap_or(line);
         let continuation_end = line.trim_end_matches([' ', '\t']);
-        if let Some(prefix) = continuation_end.strip_suffix('^') {
+        if trailing_caret_count(continuation_end) % 2 == 1 {
+            let prefix = &continuation_end[..continuation_end.len() - 1];
             accum.push_str(prefix);
         } else {
             accum.push_str(line);
@@ -78,4 +79,12 @@ pub fn read_logical_lines(input: &[u8]) -> Vec<String> {
         out.push(accum);
     }
     out
+}
+
+fn trailing_caret_count(s: &str) -> usize {
+    s.as_bytes()
+        .iter()
+        .rev()
+        .take_while(|byte| **byte == b'^')
+        .count()
 }

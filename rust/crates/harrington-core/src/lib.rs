@@ -121,6 +121,24 @@ mod line_reader_tests {
     }
 
     #[test]
+    fn escaped_trailing_caret_does_not_continue_line() {
+        let input = b"echo literal^^\necho next\n";
+        assert_eq!(
+            read_logical_lines(input),
+            vec!["echo literal^^".to_string(), "echo next".to_string()]
+        );
+    }
+
+    #[test]
+    fn odd_trailing_caret_run_continues_line() {
+        let input = b"echo literal^^^\necho next\n";
+        assert_eq!(
+            read_logical_lines(input),
+            vec!["echo literal^^echo next".to_string()]
+        );
+    }
+
+    #[test]
     fn no_caret_at_eof() {
         let input = b"echo no newline";
         assert_eq!(
