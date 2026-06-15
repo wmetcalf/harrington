@@ -416,6 +416,8 @@ fn start_option_remainder<'a>(arg: &str, after_arg: &'a str) -> Option<&'a str> 
             | "b"
             | "i"
             | "w"
+            | "separate"
+            | "shared"
     )
     .then_some(after_arg)
 }
@@ -694,6 +696,13 @@ mod start_child_tests {
     #[test]
     fn start_accepts_echo_suppressed_prefix() {
         let child = start_child_command(r#"@start "" /min cmd.exe /c echo child"#).unwrap();
+        assert_eq!(child, "cmd.exe /c echo child");
+    }
+
+    #[test]
+    fn start_skips_separate_and_shared_flags() {
+        let child = start_child_command(r#"start /separate /shared cmd.exe /c echo child"#)
+            .expect("start child should parse");
         assert_eq!(child, "cmd.exe /c echo child");
     }
 }
