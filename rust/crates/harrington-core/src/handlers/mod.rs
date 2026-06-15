@@ -107,6 +107,7 @@ pub fn lookup(name: &str) -> Option<Handler> {
         "tasklist" => Some(passthrough::h_tasklist),
         "schtasks" => Some(passthrough::h_schtasks),
         "sc" => Some(passthrough::h_sc),
+        "at" => Some(passthrough::h_at),
         "ping" => Some(passthrough::h_ping),
         "xcopy" => Some(copy::h_xcopy),
         "title" => Some(passthrough::h_title),

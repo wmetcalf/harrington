@@ -2492,7 +2492,9 @@ fn command_lines_for_lolbas(report: &harrington_core::Report) -> Vec<&str> {
             | Trait::UncWebDavC2 { command: cmd, .. }
             | Trait::EvidenceCleanup { command: cmd, .. }
             | Trait::Enumeration { command: cmd, .. } => Some(cmd.as_str()),
-            Trait::Persistence { hive, command, .. } if hive != "ServiceFailureCommand" => {
+            Trait::Persistence { hive, command, .. }
+                if !matches!(hive.as_str(), "ServiceFailureCommand" | "AtJob") =>
+            {
                 Some(command.as_str())
             }
             Trait::WmicProcessCreate { inner_cmd } => Some(inner_cmd.as_str()),

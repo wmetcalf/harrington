@@ -372,7 +372,89 @@ fn sc_subcommand_and_service(raw: &str) -> Option<(String, String)> {
     Some((subcommand, service_name))
 }
 
+pub(crate) fn at_scheduled_command(raw: &str) -> Option<(String, String)> {
+    let spans = split_word_spans(raw);
+    let first = spans.first()?;
+    let command_name = raw[first.clone()]
+        .trim_start_matches(['@', '"', '('])
+        .trim_matches(['"', '\''])
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(&raw[first.clone()])
+        .to_ascii_lowercase();
+    if command_name.strip_suffix(".exe").unwrap_or(&command_name) != "at" {
+        return None;
+    }
+
+    let mut idx = 1usize;
+    if spans
+        .get(idx)
+        .is_some_and(|span| raw[span.clone()].starts_with("\\\\"))
+    {
+        idx += 1;
+    }
+    let time_span = spans.get(idx)?;
+    let time = raw[time_span.clone()].trim_matches(['"', '\'']);
+    if !at_token_looks_like_time(time) {
+        return None;
+    }
+    idx += 1;
+    while let Some(span) = spans.get(idx) {
+        let token = raw[span.clone()]
+            .trim_matches(['"', '\''])
+            .to_ascii_lowercase();
+        if token == "/interactive" || token.starts_with("/every:") || token.starts_with("/next:") {
+            idx += 1;
+            continue;
+        }
+        break;
+    }
+    let command_start = spans.get(idx)?.start;
+    let command = raw[command_start..].trim();
+    if command.is_empty() {
+        return None;
+    }
+    Some((time.to_string(), command.to_string()))
+}
+
+fn at_token_looks_like_time(token: &str) -> bool {
+    let lower = token.to_ascii_lowercase();
+    lower == "now" || lower.contains(':')
+}
+
+fn split_word_spans(raw: &str) -> Vec<std::ops::Range<usize>> {
+    let mut out = Vec::new();
+    let mut start = None;
+    let mut quote = None;
+    for (idx, ch) in raw.char_indices() {
+        if start.is_none() {
+            if ch.is_whitespace() {
+                continue;
+            }
+            start = Some(idx);
+        }
+        if matches!(ch, '"' | '\'') {
+            if quote == Some(ch) {
+                quote = None;
+            } else if quote.is_none() {
+                quote = Some(ch);
+            }
+            continue;
+        }
+        if ch.is_whitespace() && quote.is_none() {
+            if let Some(start_idx) = start.take() {
+                out.push(start_idx..idx);
+            }
+        }
+    }
+    if let Some(start_idx) = start {
+        out.push(start_idx..raw.len());
+    }
+    out
+}
+
 make_handler!(h_sc, "sc");
+make_handler!(h_at, "at");
 make_handler!(h_ping, "ping");
 make_handler!(h_xcopy, "xcopy");
 make_handler!(h_title, "title");
@@ -387,7 +469,8 @@ make_handler!(h_whoami, "whoami");
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::{
-        h_reg, h_schtasks, persisted_command_child, sc_failure_command, sc_service_binpath,
+        at_scheduled_command, h_reg, h_schtasks, persisted_command_child, sc_failure_command,
+        sc_service_binpath,
     };
     use crate::env::{Config, Environment};
     use crate::traits::Trait;
@@ -489,5 +572,24 @@ mod tests {
 
         assert_eq!(child, "echo !USERPROFILE!");
         assert!(delayed);
+    }
+
+    #[test]
+    fn at_scheduled_command_accepts_plain_time_command() {
+        let (time, command) =
+            at_scheduled_command(r#"at 23:59 cmd.exe /c echo hi"#).expect("at should parse");
+
+        assert_eq!(time, "23:59");
+        assert_eq!(command, "cmd.exe /c echo hi");
+    }
+
+    #[test]
+    fn at_scheduled_command_skips_remote_host_and_schedule_flags() {
+        let (time, command) =
+            at_scheduled_command(r#"at \\host 1:30pm /every:M,T "cmd.exe /c echo hi""#)
+                .expect("remote at should parse");
+
+        assert_eq!(time, "1:30pm");
+        assert_eq!(command, r#""cmd.exe /c echo hi""#);
     }
 }
