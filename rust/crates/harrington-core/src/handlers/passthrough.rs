@@ -92,6 +92,55 @@ fn windows_basename(path: &str) -> Option<&str> {
         .filter(|name| !name.is_empty())
 }
 
+pub fn h_rmdir(raw: &str, env: &mut Environment) {
+    h_rmdir_like(raw, env, "rmdir");
+}
+
+pub fn h_rd(raw: &str, env: &mut Environment) {
+    h_rmdir_like(raw, env, "rd");
+}
+
+fn h_rmdir_like(raw: &str, env: &mut Environment, name: &str) {
+    env.traits.push(Trait::AdminCommand {
+        name: name.to_string(),
+        cmd: raw.to_string(),
+    });
+    for candidate in directory_delete_targets(raw) {
+        remove_tracked_directory(env, &candidate);
+    }
+}
+
+fn directory_delete_targets(raw: &str) -> Vec<String> {
+    let tokens = split_words(raw);
+    tokens
+        .iter()
+        .skip(1)
+        .map(|token| strip_outer_quotes(token).trim().to_string())
+        .filter(|token| !token.is_empty())
+        .filter(|token| !is_rmdir_option(token))
+        .filter(|token| !token.contains(['*', '?']))
+        .collect()
+}
+
+fn is_rmdir_option(token: &str) -> bool {
+    matches!(
+        token.to_ascii_lowercase().as_str(),
+        "/s" | "/q" | "-s" | "-q"
+    )
+}
+
+fn remove_tracked_directory(env: &mut Environment, candidate: &str) {
+    let mut prefix = candidate.trim_end_matches(['\\', '/']).to_ascii_lowercase();
+    if prefix.is_empty() {
+        return;
+    }
+    env.modified_filesystem.remove(&prefix);
+    prefix.push('\\');
+    env.modified_filesystem.retain(|path, _| {
+        !path.eq_ignore_ascii_case(&prefix[..prefix.len() - 1]) && !path.starts_with(&prefix)
+    });
+}
+
 /// `reg add` handler. Pushes the existing AdminCommand trait for backward
 /// compat, and additionally emits a Persistence trait when the target key
 /// is a well-known Windows autorun hive (Run / RunOnce / RunServices /
@@ -236,8 +285,6 @@ make_handler!(h_attrib, "attrib");
 make_handler!(h_mkdir, "mkdir");
 make_handler!(h_md, "md");
 make_handler!(h_move, "move");
-make_handler!(h_rmdir, "rmdir");
-make_handler!(h_rd, "rd");
 make_handler!(h_taskkill, "taskkill");
 make_handler!(h_tasklist, "tasklist");
 /// `schtasks` handler. Pushes AdminCommand; if the invocation creates or
