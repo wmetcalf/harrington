@@ -252,6 +252,13 @@ fn wildcard_path_exists(pattern: &str, env: &Environment) -> bool {
     if !pattern.contains(['*', '?']) {
         return false;
     }
+    if let Some(basename_pattern) = current_dir_basename(pattern) {
+        let basename_pattern = basename_pattern.to_ascii_lowercase();
+        return env.modified_filesystem.keys().any(|path| {
+            windows_basename(path)
+                .is_some_and(|name| wildcard_match(&basename_pattern, &name.to_ascii_lowercase()))
+        });
+    }
     let normalized_pattern = normalize_fs_match_path(pattern);
     env.modified_filesystem
         .keys()
