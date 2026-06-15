@@ -9719,6 +9719,21 @@ echo %MARK%
     }
 
     #[test]
+    fn if_exist_current_dir_nested_wildcard_does_not_match_unrelated_bare_basename() {
+        let script = br#"curl -o D:\Other\gate.txt https://if-current-dir-nested-wildcard-wrong-basename.example/gate.txt
+if exist .\Temp\*.txt set MARK=found
+echo %MARK%
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            !report.deobfuscated.contains("echo found"),
+            "if exist nested current-dir wildcard matched unrelated basename:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+    }
+
+    #[test]
     fn if_exist_current_dir_wildcard_resolves_tracked_file() {
         let script = br#"echo marker>gate.txt
 if exist .\*.txt set MARK=found

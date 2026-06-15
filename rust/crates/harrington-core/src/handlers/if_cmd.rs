@@ -271,6 +271,15 @@ fn wildcard_path_exists(pattern: &str, env: &Environment) -> bool {
     if !pattern.contains(['*', '?']) {
         return false;
     }
+    if let Some(stripped) = strip_current_dir_prefix(pattern) {
+        if stripped.contains(['\\', '/']) {
+            let normalized_pattern = normalize_wildcard_path(stripped);
+            return env
+                .modified_filesystem
+                .keys()
+                .any(|path| wildcard_match(&normalized_pattern, &normalize_wildcard_path(path)));
+        }
+    }
     if let Some(basename_pattern) = current_dir_basename(pattern) {
         let basename_pattern = normalize_wildcard_path(basename_pattern);
         return env.modified_filesystem.keys().any(|path| {
