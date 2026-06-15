@@ -1,4 +1,4 @@
-use super::util::split_words;
+use super::util::{filesystem_entry_for_path, split_words};
 use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
 
@@ -103,8 +103,7 @@ fn prior_download_url(tokens: &[String], env: &Environment) -> Option<String> {
         if !is_hta_target(candidate) {
             continue;
         }
-        let key = candidate.to_ascii_lowercase();
-        if let Some(FsEntry::Download { src }) = env.modified_filesystem.get(&key) {
+        if let Some(FsEntry::Download { src }) = filesystem_entry_for_path(env, candidate) {
             return Some(src.clone());
         }
         if let Some(name) = current_dir_basename(candidate) {
@@ -151,8 +150,7 @@ fn queue_local_hta_script_blocks(tokens: &[String], env: &mut Environment) {
 }
 
 fn tracked_hta_content(candidate: &str, env: &Environment) -> Option<Vec<u8>> {
-    let key = candidate.to_ascii_lowercase();
-    if let Some(content) = content_from_entry(env.modified_filesystem.get(&key)) {
+    if let Some(content) = content_from_entry(filesystem_entry_for_path(env, candidate)) {
         return Some(content);
     }
     if let Some(name) = current_dir_basename(candidate) {

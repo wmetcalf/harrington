@@ -1,7 +1,7 @@
 //! cscript / wscript handlers — extract VBScript/JScript payloads.
 
 use crate::env::{Environment, FsEntry};
-use crate::handlers::util::split_words;
+use crate::handlers::util::{filesystem_entry_for_path, split_words};
 use crate::traits::Trait;
 
 pub fn h_cscript(raw: &str, env: &mut Environment) {
@@ -101,8 +101,7 @@ fn push_unique_payload(payloads: &mut Vec<Vec<u8>>, payload: Vec<u8>) {
 }
 
 fn tracked_script_content(path: &str, env: &Environment) -> Option<Vec<u8>> {
-    let key = path.to_ascii_lowercase();
-    if let Some(content) = content_from_entry(env.modified_filesystem.get(&key)) {
+    if let Some(content) = content_from_entry(filesystem_entry_for_path(env, path)) {
         return Some(content);
     }
     if let Some(name) = current_dir_basename(path) {
@@ -137,8 +136,7 @@ fn content_from_entry(entry: Option<&FsEntry>) -> Option<Vec<u8>> {
 }
 
 fn prior_download_url(path: &str, env: &Environment) -> Option<String> {
-    let key = path.to_ascii_lowercase();
-    if let Some(FsEntry::Download { src }) = env.modified_filesystem.get(&key) {
+    if let Some(FsEntry::Download { src }) = filesystem_entry_for_path(env, path) {
         return Some(src.clone());
     }
     if let Some(name) = current_dir_basename(path) {

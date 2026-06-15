@@ -1,5 +1,7 @@
 //! Shared helpers for command-handler implementations.
 
+use crate::env::{Environment, FsEntry};
+
 /// Split a whitespace-separated command line into tokens, keeping
 /// double-quoted and single-quoted spans as single tokens. Quote
 /// characters are retained in the output tokens (callers strip as needed).
@@ -120,6 +122,26 @@ pub(crate) fn normalize_wildcard_path(path: &str) -> String {
     path.to_ascii_lowercase()
         .replace('/', "\\")
         .replace("*.*", "*")
+}
+
+pub(crate) fn filesystem_entry_for_path<'a>(
+    env: &'a Environment,
+    path: &str,
+) -> Option<&'a FsEntry> {
+    let key = path.to_ascii_lowercase();
+    if let Some(entry) = env.modified_filesystem.get(&key) {
+        return Some(entry);
+    }
+    let normalized = normalize_windows_path(path);
+    env.modified_filesystem
+        .iter()
+        .find_map(|(tracked_path, entry)| {
+            (normalize_windows_path(tracked_path) == normalized).then_some(entry)
+        })
+}
+
+fn normalize_windows_path(path: &str) -> String {
+    path.to_ascii_lowercase().replace('/', "\\")
 }
 
 pub(crate) fn join_windows_path_preserving_separator(dir: &str, file: &str) -> String {

