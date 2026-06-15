@@ -248,6 +248,7 @@ pub fn h_powershell(raw: &str, env: &mut Environment) {
                 return;
             }
             if is_file_flag(flag) {
+                queue_file_payload(value, env);
                 return;
             }
             i += 1;
@@ -272,7 +273,12 @@ pub fn h_powershell(raw: &str, env: &mut Environment) {
                 }
                 return;
             }
-            Some(flag) if is_file_flag(flag) => return,
+            Some(flag) if is_file_flag(flag) => {
+                if let Some(path) = tokens.get(i + 1) {
+                    queue_file_payload(path, env);
+                }
+                return;
+            }
             Some(flag) => {
                 i += if flag_takes_value(flag) { 2 } else { 1 };
                 continue;
@@ -289,6 +295,62 @@ pub fn h_powershell(raw: &str, env: &mut Environment) {
     if !body.is_empty() && has_non_redirection_body(&body) {
         record_downloadfile_side_effects(&body, env);
         env.exec_ps1.push(body.into_bytes());
+    }
+}
+
+fn queue_file_payload(path: &str, env: &mut Environment) {
+    let Some(content) = tracked_script_content(strip_quotes(path), env) else {
+        return;
+    };
+    if !env.exec_ps1.iter().any(|existing| existing == &content) {
+        env.exec_ps1.push(content);
+    }
+}
+
+fn tracked_script_content(path: &str, env: &Environment) -> Option<Vec<u8>> {
+    let key = path.to_ascii_lowercase();
+    if let Some(content) = content_from_entry(env.modified_filesystem.get(&key)) {
+        return Some(content);
+    }
+    if let Some(name) = current_dir_basename(path) {
+        return tracked_script_content_by_basename(name, env);
+    }
+    if path.contains(['\\', '/']) {
+        return None;
+    }
+    tracked_script_content_by_basename(path, env)
+}
+
+fn tracked_script_content_by_basename(path: &str, env: &Environment) -> Option<Vec<u8>> {
+    for (tracked_path, entry) in &env.modified_filesystem {
+        let Some(name) = windows_basename(tracked_path) else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case(path) {
+            return content_from_entry(Some(entry));
+        }
+    }
+    None
+}
+
+fn current_dir_basename(path: &str) -> Option<&str> {
+    path.strip_prefix(r".\")
+        .or_else(|| path.strip_prefix("./"))
+        .and_then(windows_basename)
+}
+
+fn windows_basename(path: &str) -> Option<&str> {
+    path.rsplit(['\\', '/'])
+        .next()
+        .filter(|name| !name.is_empty())
+}
+
+fn content_from_entry(entry: Option<&FsEntry>) -> Option<Vec<u8>> {
+    match entry {
+        Some(FsEntry::Content { content, .. }) | Some(FsEntry::Decoded { content, .. }) => {
+            Some(content.clone())
+        }
+        _ => None,
     }
 }
 
