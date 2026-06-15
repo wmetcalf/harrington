@@ -3863,6 +3863,18 @@ for /f "tokens=* delims=" %%U in ('type first.txt second.txt ^| find "https://"'
     }
 
     #[test]
+    fn for_f_reads_powershell_get_process_name_output() {
+        let script = "for /f \"tokens=*\" %%P in ('powershell -Command \"Get-Process explorer | Select-Object -ExpandProperty ProcessName\"') do echo proc=%%P\r\n";
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo proc=explorer"),
+            "powershell Get-Process output did not feed FOR body: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn for_f_reads_fsutil_dirty_query_output() {
         let script = b"for /f \"tokens=*\" %%d in ('fsutil dirty query C:') do echo dirty=%%d\r\n";
         let report = analyze(script, &Config::default());

@@ -1200,6 +1200,10 @@ fn synth_powershell(args: &[&str], env: &Environment) -> Vec<String> {
     {
         return vec!["Microsoft Defender Antivirus".to_string()];
     }
+    if lower.contains("get-process") && lower.contains("explorer") && lower.contains("processname")
+    {
+        return vec!["explorer".to_string()];
+    }
     Vec::new()
 }
 
