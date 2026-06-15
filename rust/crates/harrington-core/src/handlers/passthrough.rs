@@ -164,8 +164,8 @@ make_handler!(h_rmdir, "rmdir");
 make_handler!(h_rd, "rd");
 make_handler!(h_taskkill, "taskkill");
 make_handler!(h_tasklist, "tasklist");
-/// `schtasks` handler. Pushes AdminCommand; if the invocation creates a
-/// scheduled task (`schtasks /create /tn X /tr Y`), also emits a
+/// `schtasks` handler. Pushes AdminCommand; if the invocation creates or
+/// changes a scheduled task action (`schtasks /create|/change /tn X /tr Y`), also emits a
 /// Persistence trait — scheduled tasks are a primary autorun mechanism.
 pub fn h_schtasks(raw: &str, env: &mut Environment) {
     env.traits.push(Trait::AdminCommand {
@@ -173,13 +173,25 @@ pub fn h_schtasks(raw: &str, env: &mut Environment) {
         cmd: raw.to_string(),
     });
     let lower = raw.to_ascii_lowercase();
-    if !lower.contains("/create") {
+    let is_create = lower.contains("/create");
+    let is_change = lower.contains("/change");
+    if !is_create && !is_change {
         return;
     }
     let task_name = flag_value(raw, "/tn").unwrap_or_default();
-    let task_run = schtasks_task_run(raw)
-        .or_else(|| flag_value_separated(raw, "/xml").map(|path| format!("xml:{path}")))
-        .unwrap_or_default();
+    let task_run = schtasks_task_run(raw).or_else(|| {
+        is_create
+            .then(|| flag_value_separated(raw, "/xml").map(|path| format!("xml:{path}")))
+            .flatten()
+    });
+    let task_run = if is_change {
+        let Some(task_run) = task_run else {
+            return;
+        };
+        task_run
+    } else {
+        task_run.unwrap_or_default()
+    };
     env.traits.push(Trait::Persistence {
         hive: "ScheduledTask".to_string(),
         key: task_name,
