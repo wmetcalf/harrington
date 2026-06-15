@@ -256,12 +256,10 @@ fn synth_more(
     if let Some(path) = redirs.stdin {
         return apply_skip(type_file(&path, env));
     }
-    let lines = args
-        .iter()
-        .copied()
-        .find(|arg| !is_more_option(arg))
-        .map(|path| type_file(path, env))
-        .unwrap_or_default();
+    let mut lines = Vec::new();
+    for path in args.iter().copied().filter(|arg| !is_more_option(arg)) {
+        lines.extend(type_file(path, env));
+    }
     apply_skip(lines)
 }
 
