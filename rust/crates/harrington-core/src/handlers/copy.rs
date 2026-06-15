@@ -173,6 +173,11 @@ fn copied_entry(src: &str, env: &Environment) -> Option<FsEntry> {
     if let Some(entry) = crate::handlers::util::filesystem_entry_for_path(env, src) {
         return Some(entry.clone());
     }
+    if let Some(stripped) = strip_current_dir_prefix(src) {
+        if stripped.contains(['\\', '/']) {
+            return crate::handlers::util::filesystem_entry_for_path(env, stripped).cloned();
+        }
+    }
     if let Some(name) = current_dir_basename(src) {
         return copied_entry_by_basename(name, env);
     }
@@ -199,9 +204,11 @@ fn copied_entry_by_basename(src: &str, env: &Environment) -> Option<FsEntry> {
 }
 
 fn current_dir_basename(path: &str) -> Option<&str> {
-    path.strip_prefix(r".\")
-        .or_else(|| path.strip_prefix("./"))
-        .and_then(windows_basename)
+    strip_current_dir_prefix(path).and_then(windows_basename)
+}
+
+fn strip_current_dir_prefix(path: &str) -> Option<&str> {
+    path.strip_prefix(r".\").or_else(|| path.strip_prefix("./"))
 }
 
 fn remove_renamed_source(env: &mut Environment, src: &str, dst: &str) {
