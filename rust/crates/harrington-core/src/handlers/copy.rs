@@ -108,14 +108,19 @@ pub fn h_move(raw: &str, env: &mut Environment) {
         name: "move".to_string(),
         cmd: raw.to_string(),
     });
-    track_rename_like(raw, env, &["/y", "/-y"]);
+    track_rename_like(raw, env, &["/y", "/-y"], true);
 }
 
 pub fn h_ren(raw: &str, env: &mut Environment) {
-    track_rename_like(raw, env, &[]);
+    track_rename_like(raw, env, &[], false);
 }
 
-fn track_rename_like(raw: &str, env: &mut Environment, options: &[&str]) {
+fn track_rename_like(
+    raw: &str,
+    env: &mut Environment,
+    options: &[&str],
+    allow_directory_dst: bool,
+) {
     let tokens: Vec<String> = split_words(raw);
     let mut args: Vec<String> = Vec::new();
     for t in tokens.iter().skip(1) {
@@ -138,9 +143,13 @@ fn track_rename_like(raw: &str, env: &mut Environment, options: &[&str]) {
             dst: dst.clone(),
         });
     }
-    let entry = copied_entry(&src, env).unwrap_or(FsEntry::Copy { src });
-    env.modified_filesystem
-        .insert(dst.to_ascii_lowercase(), entry);
+    let entry = copied_entry(&src, env).unwrap_or(FsEntry::Copy { src: src.clone() });
+    if allow_directory_dst {
+        insert_copied_entry(env, &src, &dst, entry);
+    } else {
+        env.modified_filesystem
+            .insert(dst.to_ascii_lowercase(), entry);
+    }
 }
 
 fn copied_entry(src: &str, env: &Environment) -> Option<FsEntry> {
