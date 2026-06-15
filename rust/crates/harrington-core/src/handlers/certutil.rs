@@ -146,6 +146,13 @@ fn resolve_tracked_source(src: &str, env: &Environment) -> Option<Vec<u8>> {
     {
         return Some(content);
     }
+    if let Some(stripped) = strip_current_dir_prefix(src) {
+        if stripped.contains(['\\', '/']) {
+            return content_from_entry(crate::handlers::util::filesystem_entry_for_path(
+                env, stripped,
+            ));
+        }
+    }
     if let Some(name) = current_dir_basename(src) {
         return resolve_tracked_source_by_basename(name, env);
     }
@@ -170,9 +177,11 @@ fn resolve_tracked_source_by_basename(src: &str, env: &Environment) -> Option<Ve
 }
 
 fn current_dir_basename(path: &str) -> Option<&str> {
-    path.strip_prefix(r".\")
-        .or_else(|| path.strip_prefix("./"))
-        .and_then(windows_basename)
+    strip_current_dir_prefix(path).and_then(windows_basename)
+}
+
+fn strip_current_dir_prefix(path: &str) -> Option<&str> {
+    path.strip_prefix(r".\").or_else(|| path.strip_prefix("./"))
 }
 
 fn content_from_entry(entry: Option<&FsEntry>) -> Option<Vec<u8>> {
