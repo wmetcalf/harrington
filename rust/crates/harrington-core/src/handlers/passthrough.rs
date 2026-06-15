@@ -18,9 +18,18 @@ macro_rules! make_handler {
     };
 }
 
-make_handler!(h_del, "del");
 make_handler!(h_cls, "cls");
 make_handler!(h_timeout, "timeout");
+
+pub fn h_del(raw: &str, env: &mut Environment) {
+    env.traits.push(Trait::AdminCommand {
+        name: "del".to_string(),
+        cmd: raw.to_string(),
+    });
+    for candidate in delete_targets(raw) {
+        remove_tracked_file(env, &candidate);
+    }
+}
 
 fn command_token_basename(token: &str) -> String {
     token
@@ -32,6 +41,47 @@ fn command_token_basename(token: &str) -> String {
         .next()
         .unwrap_or(token)
         .to_ascii_lowercase()
+}
+
+fn delete_targets(raw: &str) -> Vec<String> {
+    let tokens = split_words(raw);
+    tokens
+        .iter()
+        .skip(1)
+        .map(|token| strip_outer_quotes(token).trim().to_string())
+        .filter(|token| !token.is_empty())
+        .filter(|token| !is_delete_option(token))
+        .filter(|token| !token.contains(['*', '?']))
+        .collect()
+}
+
+fn is_delete_option(token: &str) -> bool {
+    let lower = token.to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "/f" | "/q" | "/s" | "/p" | "/a" | "-f" | "-q" | "-s" | "-p" | "-a"
+    ) || lower.starts_with("/a:")
+        || lower.starts_with("-a:")
+}
+
+fn remove_tracked_file(env: &mut Environment, candidate: &str) {
+    let key = candidate.to_ascii_lowercase();
+    env.modified_filesystem.remove(&key);
+    if let Some(name) = current_dir_basename(candidate) {
+        env.modified_filesystem.remove(&name.to_ascii_lowercase());
+    }
+}
+
+fn current_dir_basename(path: &str) -> Option<&str> {
+    path.strip_prefix(r".\")
+        .or_else(|| path.strip_prefix("./"))
+        .and_then(windows_basename)
+}
+
+fn windows_basename(path: &str) -> Option<&str> {
+    path.rsplit(['\\', '/'])
+        .next()
+        .filter(|name| !name.is_empty())
 }
 
 /// `reg add` handler. Pushes the existing AdminCommand trait for backward
