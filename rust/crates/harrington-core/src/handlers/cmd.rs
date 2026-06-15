@@ -103,13 +103,13 @@ fn split_cmd_body(raw: &str) -> Option<&str> {
             if ch == '/' || ch == '-' {
                 if sub_idx > sub_start {
                     let sub = &lower[sub_start..sub_idx];
-                    if matches!(sub, "c" | "k" | "r") {
-                        // Body starts after the rest of this token plus
-                        // any trailing whitespace.
-                        let trigger_abs_end = token_start + sub_idx;
+                    if let Some(trigger) = cmd_body_trigger_prefix_len(sub) {
+                        // Body starts immediately after `/c`, `/k`, or `/r`.
+                        // CMD accepts attached forms such as `/c"echo hi"` and
+                        // `/cecho hi`; preserve everything after the trigger as
+                        // the body instead of requiring whitespace.
+                        let trigger_abs_end = token_start + sub_start + trigger;
                         if trigger_abs_end < token_start + token.len() {
-                            // Something after the trigger inside the SAME
-                            // token (e.g. `/c/q`). CMD treats that as body.
                             let after = &raw[trigger_abs_end..];
                             return Some(after.trim_start());
                         }
@@ -124,6 +124,11 @@ fn split_cmd_body(raw: &str) -> Option<&str> {
             }
         }
     }
+}
+
+fn cmd_body_trigger_prefix_len(sub: &str) -> Option<usize> {
+    let first = sub.as_bytes().first()?;
+    matches!(first.to_ascii_lowercase(), b'c' | b'k' | b'r').then_some(1)
 }
 
 /// Detect whether `/V:ON` (or `/V` without qualifier) is present in a cmd invocation.
@@ -200,11 +205,11 @@ fn cmd_flags_section(raw: &str) -> Option<&str> {
             if ch == '/' || ch == '-' {
                 if sub_idx > sub_start {
                     let sub = &lower[sub_start..sub_idx];
-                    if matches!(sub, "c" | "k" | "r") {
+                    if let Some(trigger) = cmd_body_trigger_prefix_len(sub) {
                         // Trigger found — flags span ends at the token start
                         // PLUS any pre-trigger sub-flags. Include those as
                         // flags so `cmd /V/D/c …` exposes the `/V`.
-                        return Some(&raw[flags_begin..flag_start + sub_idx]);
+                        return Some(&raw[flags_begin..flag_start + sub_start + trigger]);
                     }
                 }
                 sub_start = sub_idx + 1;
@@ -379,7 +384,17 @@ fn split_start_arg(s: &str) -> (&str, &str) {
 fn start_option_remainder<'a>(arg: &str, after_arg: &'a str) -> Option<&'a str> {
     let option = arg.trim_matches('"').to_ascii_lowercase();
     let option = option.strip_prefix(['/', '-'])?;
-    if matches!(option, "d" | "node" | "affinity" | "machine") {
+    if option == "d" {
+        let (_value, after_value) = split_start_arg(after_arg);
+        return Some(after_value);
+    }
+    if option
+        .strip_prefix('d')
+        .is_some_and(|value| !value.is_empty())
+    {
+        return Some(after_arg);
+    }
+    if matches!(option, "node" | "affinity" | "machine") {
         let (_value, after_value) = split_start_arg(after_arg);
         return Some(after_value);
     }
@@ -549,6 +564,11 @@ mod has_v_on_tests {
     fn no_v_flag_is_off() {
         assert!(!has_v_on_raw("cmd /c echo hi"));
     }
+
+    #[test]
+    fn attached_body_does_not_count_as_flag_section() {
+        assert!(!has_v_on_raw("cmd /v:off /c/v:on echo hi"));
+    }
 }
 
 #[cfg(test)]
@@ -568,5 +588,24 @@ mod extract_cmd_inner_tests {
         // body bounds. CMD's documented rule: strip first and last `"`.
         let r = extract_cmd_inner("cmd /c \"SET \"x=val\" & echo !x!\"").unwrap();
         assert_eq!(r, "SET \"x=val\" & echo !x!");
+    }
+
+    #[test]
+    fn slash_c_attached_quoted_body() {
+        let r = extract_cmd_inner("cmd.exe /d /c\"echo attached-body\"").unwrap();
+        assert_eq!(r, "echo attached-body");
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod start_child_tests {
+    use super::start_child_command;
+
+    #[test]
+    fn start_attached_d_option_skips_working_directory() {
+        let child =
+            start_child_command(r#"start /D"C:\Users\Public" /min cmd.exe /c echo child"#).unwrap();
+        assert_eq!(child, "cmd.exe /c echo child");
     }
 }

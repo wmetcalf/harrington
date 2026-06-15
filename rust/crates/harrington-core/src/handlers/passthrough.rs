@@ -129,8 +129,12 @@ pub fn h_schtasks(raw: &str, env: &mut Environment) {
         return;
     }
     let task_name = flag_value(raw, "/tn").unwrap_or_default();
-    let task_run = flag_value(raw, "/tr")
-        .or_else(|| flag_value(raw, "/xml").map(|path| format!("xml:{path}")))
+    let task_run = flag_value_separated(raw, "/tr")
+        .or_else(|| {
+            flag_value_attached(raw, "/tr")
+                .filter(|command| persisted_command_looks_dispatchable(command))
+        })
+        .or_else(|| flag_value_separated(raw, "/xml").map(|path| format!("xml:{path}")))
         .unwrap_or_default();
     env.traits.push(Trait::Persistence {
         hive: "ScheduledTask".to_string(),
@@ -138,7 +142,7 @@ pub fn h_schtasks(raw: &str, env: &mut Environment) {
         value_name: String::new(),
         command: task_run.clone(),
     });
-    queue_child_command(task_run, env);
+    queue_registry_persisted_command(task_run, env);
 }
 
 fn flag_value(raw: &str, flag: &str) -> Option<String> {
@@ -151,19 +155,98 @@ fn flag_value(raw: &str, flag: &str) -> Option<String> {
         if i >= raw.len() {
             break;
         }
-        let token_start = i;
-        while i < raw.len() && !bytes[i].is_ascii_whitespace() {
+        if raw[i..]
+            .get(..flag.len())
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(flag))
+        {
+            let value_start = i + flag.len();
+            match bytes.get(value_start) {
+                Some(b':') | Some(b'=') => return parse_flag_value(raw, value_start + 1),
+                Some(b) if b.is_ascii_whitespace() => {
+                    i = value_start;
+                    while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
+                        i += 1;
+                    }
+                    return parse_flag_value(raw, i);
+                }
+                None => return None,
+                _ => {}
+            }
+        }
+        i = next_arg_start(raw, i);
+    }
+    None
+}
+
+fn flag_value_separated(raw: &str, flag: &str) -> Option<String> {
+    let mut i = 0usize;
+    let bytes = raw.as_bytes();
+    while i < raw.len() {
+        while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
             i += 1;
         }
-        let token = &raw[token_start..i];
-        if token.eq_ignore_ascii_case(flag) {
+        if i >= raw.len() {
+            break;
+        }
+        if raw[i..]
+            .get(..flag.len())
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(flag))
+            && bytes
+                .get(i + flag.len())
+                .is_some_and(u8::is_ascii_whitespace)
+        {
+            i += flag.len();
             while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
                 i += 1;
             }
             return parse_flag_value(raw, i);
         }
+        i = next_arg_start(raw, i);
     }
     None
+}
+
+fn flag_value_attached(raw: &str, flag: &str) -> Option<String> {
+    let mut i = 0usize;
+    let bytes = raw.as_bytes();
+    while i < raw.len() {
+        while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
+            i += 1;
+        }
+        if i >= raw.len() {
+            break;
+        }
+        if raw[i..]
+            .get(..flag.len())
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(flag))
+        {
+            let value_start = i + flag.len();
+            if matches!(bytes.get(value_start), Some(b':') | Some(b'=')) {
+                return parse_flag_value(raw, value_start + 1);
+            }
+        }
+        i = next_arg_start(raw, i);
+    }
+    None
+}
+
+fn next_arg_start(raw: &str, mut i: usize) -> usize {
+    let bytes = raw.as_bytes();
+    let quote = bytes.get(i).copied().filter(|b| *b == b'"' || *b == b'\'');
+    if let Some(quote) = quote {
+        i += 1;
+        while i < raw.len() {
+            if bytes[i] == quote {
+                return i + 1;
+            }
+            i += 1;
+        }
+        return raw.len();
+    }
+    while i < raw.len() && !bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    i
 }
 
 fn parse_flag_value(raw: &str, start: usize) -> Option<String> {
@@ -249,3 +332,61 @@ make_handler!(h_doskey, "doskey");
 make_handler!(h_chcp, "chcp");
 make_handler!(h_ver, "ver");
 make_handler!(h_whoami, "whoami");
+
+#[cfg(test)]
+#[allow(clippy::panic)]
+mod tests {
+    use super::{h_reg, h_schtasks};
+    use crate::env::{Config, Environment};
+    use crate::traits::Trait;
+
+    #[test]
+    fn schtasks_colon_bound_task_run_is_persisted_and_queued() {
+        let mut env = Environment::new(&Config::default());
+        h_schtasks(
+            r#"schtasks /create /tn:Updater /tr:"cmd.exe /c echo colon-task" /sc once"#,
+            &mut env,
+        );
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { hive, key, command, .. }
+                    if hive == "ScheduledTask"
+                        && key == "Updater"
+                        && command == "cmd.exe /c echo colon-task"
+            )),
+            "colon-bound /tr was not persisted: {:?}",
+            env.traits
+        );
+        assert!(
+            env.exec_cmd.iter().any(|cmd| cmd == "echo colon-task"),
+            "colon-bound /tr child was not queued: {:?}",
+            env.exec_cmd
+        );
+    }
+
+    #[test]
+    fn reg_add_equals_bound_data_is_persisted_and_queued() {
+        let mut env = Environment::new(&Config::default());
+        h_reg(
+            r#"reg add HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v Updater /d="cmd.exe /c echo reg-equals" /f"#,
+            &mut env,
+        );
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { hive, command, .. }
+                    if hive == "HKCU" && command == "cmd.exe /c echo reg-equals"
+            )),
+            "equals-bound /d was not persisted: {:?}",
+            env.traits
+        );
+        assert!(
+            env.exec_cmd.iter().any(|cmd| cmd == "echo reg-equals"),
+            "equals-bound /d child was not queued: {:?}",
+            env.exec_cmd
+        );
+    }
+}
