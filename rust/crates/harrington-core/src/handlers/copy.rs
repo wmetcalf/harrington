@@ -336,7 +336,13 @@ fn wildcard_source_matches(pattern: &str, tracked_path: &str) -> bool {
     let normalized_pattern = normalize_wildcard_path(&normalize_filesystem_storage_path(pattern));
     let normalized_path = normalize_wildcard_path(tracked_path);
     if pattern.contains(['\\', '/', ':']) {
-        return wildcard_match(&normalized_pattern, &normalized_path);
+        let Some((pattern_dir, pattern_name)) = normalized_pattern.rsplit_once('\\') else {
+            return wildcard_match(&normalized_pattern, &normalized_path);
+        };
+        let Some((tracked_dir, tracked_name)) = normalized_path.rsplit_once('\\') else {
+            return false;
+        };
+        return pattern_dir == tracked_dir && wildcard_match(pattern_name, tracked_name);
     }
     windows_basename(tracked_path).is_some_and(|name| {
         !tracked_path.contains(['\\', '/', ':'])
