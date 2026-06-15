@@ -46,6 +46,7 @@ struct FOpts {
     tokens_star: bool,
     delims: String,
     skip: usize,
+    eol: Option<char>,
     // Parsed for spec completeness; behavior not yet implemented.
     #[allow(dead_code)]
     usebackq: bool,
@@ -57,6 +58,7 @@ fn parse_f_opts(opts: &str) -> FOpts {
         tokens_star: false,
         delims: " \t".to_string(),
         skip: 0,
+        eol: Some(';'),
         usebackq: false,
     };
     for kv in opts.split_whitespace() {
@@ -87,6 +89,9 @@ fn parse_f_opts(opts: &str) -> FOpts {
                 "delims" => o.delims = val.to_string(),
                 "skip" => {
                     o.skip = val.parse().unwrap_or(0);
+                }
+                "eol" => {
+                    o.eol = val.chars().next();
                 }
                 _ => {}
             }
@@ -130,7 +135,7 @@ fn parse_f_opts_full(opts: &str) -> FOpts {
         let after = &opts[pos + "delims=".len()..];
         // The delimiter set ends at EOF or at the start of another keyword
         // ("tokens=", "skip=", "usebackq") preceded by whitespace.
-        let keywords = ["tokens=", "skip=", "usebackq"];
+        let keywords = ["tokens=", "skip=", "eol=", "usebackq"];
         let lower_after = after.to_ascii_lowercase();
         let end = keywords
             .iter()
@@ -196,6 +201,11 @@ fn extract_tokens(line: &str, opts: &FOpts) -> Option<Vec<String>> {
         return Some(values);
     }
     None
+}
+
+fn for_f_line_is_active(line: &str, opts: &FOpts) -> bool {
+    let trimmed = line.trim_start_matches([' ', '\t']);
+    !trimmed.is_empty() && !opts.eol.is_some_and(|eol| trimmed.starts_with(eol))
 }
 
 fn token_spans(line: &str, delims: &str) -> Vec<(usize, usize)> {
@@ -568,6 +578,7 @@ pub fn run_for_from_raw(raw: &str, env: &mut Environment) -> bool {
         let lines = resolve_f_source(&src, env, parsed.usebackq);
         let values: Vec<Vec<String>> = lines
             .into_iter()
+            .filter(|line| for_f_line_is_active(line, &parsed))
             .skip(parsed.skip)
             .filter_map(|line| extract_tokens(&line, &parsed))
             .collect();
