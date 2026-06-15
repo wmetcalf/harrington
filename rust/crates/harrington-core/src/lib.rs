@@ -11437,7 +11437,7 @@ mod desktopimgdownldr_tests {
 
 #[cfg(test)]
 mod regsvr32_tests {
-    use crate::env::{Config, Environment};
+    use crate::env::{Config, Environment, FsEntry};
     use crate::interp::interpret_line;
     use crate::traits::Trait;
 
@@ -11599,6 +11599,31 @@ regsvr32 /s /n /u /i:payload.sct scrobj.dll"#,
             has,
             "regsvr32 local scriptlet did not resolve prior download source: {:?}",
             report.traits
+        );
+    }
+
+    #[test]
+    fn regsvr32_current_dir_scriptlet_resolves_tracked_download_source() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "payload.sct".to_string(),
+            FsEntry::Download {
+                src: "https://regsvr32-current-dir.example/payload.sct".to_string(),
+            },
+        );
+        interpret_line(r"regsvr32 /s /n /u /i:.\payload.sct scrobj.dll", &mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == r"regsvr32 /s /n /u /i:.\payload.sct scrobj.dll"
+                        && url == "https://regsvr32-current-dir.example/payload.sct"
+            )
+        });
+        assert!(
+            has,
+            "regsvr32 current-dir scriptlet did not resolve tracked download source: {:?}",
+            env.traits
         );
     }
 
