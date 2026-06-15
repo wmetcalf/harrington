@@ -107,16 +107,24 @@ fn prior_download_url(tokens: &[String], env: &Environment) -> Option<String> {
         if let Some(FsEntry::Download { src }) = env.modified_filesystem.get(&key) {
             return Some(src.clone());
         }
+        if let Some(name) = current_dir_basename(candidate) {
+            return prior_download_url_by_basename(name, env);
+        }
         if !candidate.contains(['\\', '/']) {
-            for (path, entry) in &env.modified_filesystem {
-                let Some(name) = windows_basename(path) else {
-                    continue;
-                };
-                if name.eq_ignore_ascii_case(candidate) {
-                    if let FsEntry::Download { src } = entry {
-                        return Some(src.clone());
-                    }
-                }
+            return prior_download_url_by_basename(candidate, env);
+        }
+    }
+    None
+}
+
+fn prior_download_url_by_basename(candidate: &str, env: &Environment) -> Option<String> {
+    for (path, entry) in &env.modified_filesystem {
+        let Some(name) = windows_basename(path) else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case(candidate) {
+            if let FsEntry::Download { src } = entry {
+                return Some(src.clone());
             }
         }
     }
@@ -147,9 +155,16 @@ fn tracked_hta_content(candidate: &str, env: &Environment) -> Option<Vec<u8>> {
     if let Some(content) = content_from_entry(env.modified_filesystem.get(&key)) {
         return Some(content);
     }
+    if let Some(name) = current_dir_basename(candidate) {
+        return tracked_hta_content_by_basename(name, env);
+    }
     if candidate.contains(['\\', '/']) {
         return None;
     }
+    tracked_hta_content_by_basename(candidate, env)
+}
+
+fn tracked_hta_content_by_basename(candidate: &str, env: &Environment) -> Option<Vec<u8>> {
     for (path, entry) in &env.modified_filesystem {
         let Some(name) = windows_basename(path) else {
             continue;
@@ -161,6 +176,12 @@ fn tracked_hta_content(candidate: &str, env: &Environment) -> Option<Vec<u8>> {
         }
     }
     None
+}
+
+fn current_dir_basename(path: &str) -> Option<&str> {
+    path.strip_prefix(r".\")
+        .or_else(|| path.strip_prefix("./"))
+        .and_then(windows_basename)
 }
 
 fn content_from_entry(entry: Option<&FsEntry>) -> Option<Vec<u8>> {
