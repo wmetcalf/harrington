@@ -1,7 +1,9 @@
 //! robocopy handler — tracks simple file copies between directories.
 
 use crate::env::{Environment, FsEntry};
-use crate::handlers::util::{join_windows_path_preserving_separator, split_words};
+use crate::handlers::util::{
+    filesystem_storage_key, join_windows_path_preserving_separator, split_words,
+};
 use crate::traits::Trait;
 
 pub fn h_robocopy(raw: &str, env: &mut Environment) {
@@ -27,7 +29,7 @@ pub fn h_robocopy(raw: &str, env: &mut Environment) {
         )
         .unwrap_or(FsEntry::Copy { src });
         env.modified_filesystem
-            .insert(dst.to_ascii_lowercase(), entry);
+            .insert(filesystem_storage_key(&dst), entry);
     }
 }
 

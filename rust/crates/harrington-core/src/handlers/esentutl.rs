@@ -1,7 +1,9 @@
 //! esentutl.exe handler — tracks `/y SRC /d DST` copy-style LOLBAS use.
 
 use crate::env::{Environment, FsEntry};
-use crate::handlers::util::{attached_flag_value, split_words, strip_outer_quotes};
+use crate::handlers::util::{
+    attached_flag_value, filesystem_storage_key, split_words, strip_outer_quotes,
+};
 use crate::traits::Trait;
 
 pub fn h_esentutl(raw: &str, env: &mut Environment) {
@@ -104,10 +106,10 @@ fn current_dir_basename(path: &str) -> Option<&str> {
 
 fn insert_copied_entry(env: &mut Environment, src: &str, dst: &str, entry: FsEntry) {
     env.modified_filesystem
-        .insert(dst.to_ascii_lowercase(), entry.clone());
+        .insert(filesystem_storage_key(dst), entry.clone());
     if let Some(joined) = copy_directory_destination_path(src, dst) {
         env.modified_filesystem
-            .insert(joined.to_ascii_lowercase(), entry);
+            .insert(filesystem_storage_key(&joined), entry);
     }
 }
 

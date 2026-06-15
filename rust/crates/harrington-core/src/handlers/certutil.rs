@@ -1,7 +1,7 @@
 //! certutil handler — handles -decode, -decodehex, -urlcache for LOLBAS use.
 
 use crate::env::{DecodeKind, Environment, FsEntry};
-use crate::handlers::util::split_words;
+use crate::handlers::util::{filesystem_storage_key, split_words};
 use crate::traits::Trait;
 use base64::Engine;
 
@@ -28,7 +28,7 @@ pub fn h_certutil(raw: &str, env: &mut Environment) {
             });
             if let Some(d) = dst {
                 env.modified_filesystem
-                    .insert(d.to_ascii_lowercase(), FsEntry::Download { src: url });
+                    .insert(filesystem_storage_key(&d), FsEntry::Download { src: url });
             }
         }
         return;
@@ -95,7 +95,7 @@ pub fn h_certutil(raw: &str, env: &mut Environment) {
                 }
             }
             env.modified_filesystem.insert(
-                dst.to_ascii_lowercase(),
+                filesystem_storage_key(&dst),
                 FsEntry::Decoded {
                     content: d,
                     src,

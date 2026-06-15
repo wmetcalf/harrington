@@ -363,8 +363,10 @@ fn record_downloadfile_side_effects(body: &str, env: &mut Environment) {
         if !downloadfile_side_effect_content_supported(&src) {
             continue;
         }
-        env.modified_filesystem
-            .insert(dst.to_ascii_lowercase(), FsEntry::Download { src });
+        env.modified_filesystem.insert(
+            crate::handlers::util::filesystem_storage_key(&dst),
+            FsEntry::Download { src },
+        );
     }
 }
 

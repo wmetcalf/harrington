@@ -1,7 +1,9 @@
 //! extrac32 handler — CAB extraction LOLBAS. Tracks self-extraction patterns.
 
 use crate::env::{Environment, FsEntry};
-use crate::handlers::util::{join_windows_path_preserving_separator, split_words};
+use crate::handlers::util::{
+    filesystem_storage_key, join_windows_path_preserving_separator, split_words,
+};
 use crate::traits::Trait;
 
 pub fn h_extrac32(raw: &str, env: &mut Environment) {
@@ -30,7 +32,7 @@ pub fn h_extrac32(raw: &str, env: &mut Environment) {
         None => FsEntry::Copy { src },
     };
     env.modified_filesystem
-        .insert(dst.to_ascii_lowercase(), entry);
+        .insert(filesystem_storage_key(&dst), entry);
 }
 
 pub fn h_expand(raw: &str, env: &mut Environment) {
@@ -45,7 +47,7 @@ pub fn h_expand(raw: &str, env: &mut Environment) {
         None => FsEntry::Copy { src },
     };
     env.modified_filesystem
-        .insert(dst.to_ascii_lowercase(), entry);
+        .insert(filesystem_storage_key(&dst), entry);
 }
 
 fn downloaded_src_for_candidate(candidate: &str, env: &Environment) -> Option<String> {

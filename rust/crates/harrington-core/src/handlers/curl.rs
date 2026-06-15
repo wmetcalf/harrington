@@ -1,6 +1,6 @@
 //! curl handler — extracts URL + output target. Mirrors interpret_curl.
 
-use super::util::{join_windows_path_preserving_separator, split_words};
+use super::util::{filesystem_storage_key, join_windows_path_preserving_separator, split_words};
 use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
 
@@ -155,7 +155,7 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
     });
     if let Some(d) = dst {
         env.modified_filesystem
-            .insert(d.to_ascii_lowercase(), FsEntry::Download { src: url });
+            .insert(filesystem_storage_key(&d), FsEntry::Download { src: url });
     }
 }
 
