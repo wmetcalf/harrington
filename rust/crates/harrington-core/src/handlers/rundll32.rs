@@ -14,6 +14,9 @@ pub fn h_rundll32(raw: &str, env: &mut Environment) {
             url,
         });
         matched_lolbas = true;
+    } else if let Some(url) = url_launch_export_prior_download_argument(&parts, env) {
+        push_url_argument(raw, url, env);
+        matched_lolbas = true;
     }
     if let Some(url) = download_export_argument(&parts) {
         env.traits.push(Trait::Download {
@@ -123,6 +126,25 @@ fn download_export_argument(parts: &[String]) -> Option<String> {
     first_url_after(parts, export_idx + 1)
 }
 
+fn url_launch_export_prior_download_argument(
+    parts: &[String],
+    env: &Environment,
+) -> Option<String> {
+    let export_idx = parts
+        .iter()
+        .enumerate()
+        .skip(1)
+        .take(4)
+        .find_map(|(idx, part)| {
+            if rundll32_url_launch_export(strip_quotes(part)) {
+                Some(idx)
+            } else {
+                None
+            }
+        })?;
+    prior_download_after_export(parts, export_idx, env)
+}
+
 fn download_export_prior_download_argument(parts: &[String], env: &Environment) -> Option<String> {
     let export_idx = parts
         .iter()
@@ -136,6 +158,14 @@ fn download_export_prior_download_argument(parts: &[String], env: &Environment) 
                 None
             }
         })?;
+    prior_download_after_export(parts, export_idx, env)
+}
+
+fn prior_download_after_export(
+    parts: &[String],
+    export_idx: usize,
+    env: &Environment,
+) -> Option<String> {
     for token in parts.iter().skip(export_idx + 1).take(4) {
         let candidate = trim_arg_suffix(strip_quotes(token)).trim();
         if candidate.is_empty() || candidate.starts_with(['/', '-']) {
