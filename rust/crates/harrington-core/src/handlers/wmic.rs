@@ -18,7 +18,7 @@ pub fn h_wmic(raw: &str, env: &mut Environment) {
     env.exec_cmd_delayed.push(false);
 }
 
-fn wmic_process_create_inner(raw: &str) -> Option<String> {
+pub(crate) fn wmic_process_create_inner(raw: &str) -> Option<String> {
     let tokens = split_words(raw);
     let mut process_idx = None;
     for (idx, token) in tokens.iter().enumerate().skip(1) {
