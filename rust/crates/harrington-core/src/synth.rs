@@ -440,8 +440,19 @@ fn cmd_child_after_switch(rest: &str) -> Option<&str> {
             let child_start = start + 2;
             return Some(strip_wrapping_quotes(rest[child_start..].trim()));
         }
+        if let Some(switch_idx) = cmd_exec_switch_index(&lower) {
+            let child_start = start + switch_idx + 2;
+            return Some(strip_wrapping_quotes(rest[child_start..].trim()));
+        }
     }
     None
+}
+
+fn cmd_exec_switch_index(token: &str) -> Option<usize> {
+    let bytes = token.as_bytes();
+    bytes.windows(2).enumerate().find_map(|(idx, pair)| {
+        (pair[0] == b'/' && matches!(pair[1], b'c' | b'k' | b'r')).then_some(idx)
+    })
 }
 
 fn command_token_spans(s: &str) -> Vec<(usize, usize)> {
