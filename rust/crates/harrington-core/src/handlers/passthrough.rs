@@ -194,14 +194,17 @@ fn is_rmdir_option(token: &str) -> bool {
 }
 
 fn remove_tracked_directory(env: &mut Environment, candidate: &str) {
-    let mut prefix = candidate.trim_end_matches(['\\', '/']).to_ascii_lowercase();
+    let mut prefix = normalize_wildcard_path(candidate.trim_end_matches(['\\', '/']));
     if prefix.is_empty() {
         return;
     }
-    env.modified_filesystem.remove(&prefix);
+    env.modified_filesystem
+        .retain(|path, _| normalize_wildcard_path(path) != prefix);
     prefix.push('\\');
     env.modified_filesystem.retain(|path, _| {
-        !path.eq_ignore_ascii_case(&prefix[..prefix.len() - 1]) && !path.starts_with(&prefix)
+        let normalized_path = normalize_wildcard_path(path);
+        !normalized_path.eq_ignore_ascii_case(&prefix[..prefix.len() - 1])
+            && !normalized_path.starts_with(&prefix)
     });
 }
 
