@@ -4014,6 +4014,29 @@ for /f "tokens=* delims=" %%U in ('type first.txt second.txt ^| find "https://"'
     }
 
     #[test]
+    fn for_f_where_recursive_powershell_feeds_later_command() {
+        let script = concat!(
+            "for /f \"tokens=* delims=\" %%P in ('where /r %windir% powershell.exe') do set \"POSH=%%P\"\r\n",
+            "for /f \"tokens=*\" %%D in ('%POSH% -Command \"Get-Date -UFormat '%%H%%M%%S'\"') do echo time=%%D\r\n",
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo time=120000"),
+            "recursive where result did not feed later powershell command: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::ForUnresolvedSource { pipeline } if pipeline.contains("where /r"))),
+            "recursive where powershell lookup should resolve: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn for_f_pipeline_allows_echo_suppression_prefix() {
         let script = b"for /f \"tokens=*\" %%f in ('@find 2^>^&1') do echo %%f\r\n";
         let report = analyze(script, &Config::default());

@@ -1225,8 +1225,8 @@ fn synth_tasklist(_args: &[&str]) -> Vec<String> {
 }
 
 fn synth_where(args: &[&str], env: &Environment) -> Vec<String> {
-    let bin = match args.first() {
-        Some(b) => b.trim_matches('"').to_ascii_lowercase(),
+    let bin = match where_pattern_arg(args) {
+        Some(b) => b.to_ascii_lowercase(),
         None => return Vec::new(),
     };
     if let Some(snap) = crate::snapshot::get(env.winver) {
@@ -1237,6 +1237,27 @@ fn synth_where(args: &[&str], env: &Environment) -> Vec<String> {
         }
     }
     Vec::new()
+}
+
+fn where_pattern_arg(args: &[&str]) -> Option<String> {
+    let mut pattern = None;
+    let mut skip_next = false;
+    for arg in non_redirect_args(args) {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        let arg = arg.trim_matches('"');
+        if arg.eq_ignore_ascii_case("/r") {
+            skip_next = true;
+            continue;
+        }
+        if arg.starts_with('/') {
+            continue;
+        }
+        pattern = Some(arg.to_string());
+    }
+    pattern
 }
 
 fn synth_wmic(args: &[&str]) -> Vec<String> {
