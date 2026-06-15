@@ -163,6 +163,7 @@ fn track_rename_like(
                 .insert(joined.to_ascii_lowercase(), entry);
         }
     }
+    remove_renamed_source(env, &src, &dst);
 }
 
 fn copied_entry(src: &str, env: &Environment) -> Option<FsEntry> {
@@ -199,6 +200,16 @@ fn current_dir_basename(path: &str) -> Option<&str> {
     path.strip_prefix(r".\")
         .or_else(|| path.strip_prefix("./"))
         .and_then(windows_basename)
+}
+
+fn remove_renamed_source(env: &mut Environment, src: &str, dst: &str) {
+    if src.eq_ignore_ascii_case(dst) {
+        return;
+    }
+    env.modified_filesystem.remove(&src.to_ascii_lowercase());
+    if let Some(name) = current_dir_basename(src) {
+        env.modified_filesystem.remove(&name.to_ascii_lowercase());
+    }
 }
 
 fn insert_copied_entry(env: &mut Environment, src: &str, dst: &str, entry: FsEntry) {

