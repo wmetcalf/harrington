@@ -26,7 +26,13 @@ fn has_au_flag(tokens: &[String]) -> bool {
         .iter()
         .skip(1)
         .map(|token| strip_outer_quotes(token))
-        .any(|token| token.eq_ignore_ascii_case("/au") || token.eq_ignore_ascii_case("-au"))
+        .any(cmstp_token_has_au_flag)
+}
+
+fn cmstp_token_has_au_flag(token: &str) -> bool {
+    token
+        .split(['/', '-'])
+        .any(|part| part.eq_ignore_ascii_case("au"))
 }
 
 fn push_lolbas(env: &mut Environment, raw: &str) {

