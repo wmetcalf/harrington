@@ -53,7 +53,9 @@ pub fn h_forfiles(raw: &str, env: &mut Environment) {
 
 fn command_basename_no_ext(token: &str) -> String {
     let trimmed = token
-        .trim_start_matches(['@', '('])
+        .trim_start_matches(|ch: char| {
+            ch.is_ascii_whitespace() || matches!(ch, '@' | '"' | '\'' | '(' | ';' | ',')
+        })
         .trim_matches(['"', '\''])
         .to_ascii_lowercase();
     let last_sep = trimmed.rfind(['\\', '/']).map(|idx| idx + 1).unwrap_or(0);
@@ -105,6 +107,14 @@ mod tests {
     fn extracts_echo_suppressed_forfiles_command() {
         assert_eq!(
             extract_forfiles_inner(r#"@forfiles /p C:\ /c "cmd /c echo hi""#).as_deref(),
+            Some("cmd /c echo hi")
+        );
+    }
+
+    #[test]
+    fn extracts_delimiter_prefixed_forfiles_command() {
+        assert_eq!(
+            extract_forfiles_inner(r#"@;forfiles /p C:\ /c "cmd /c echo hi""#).as_deref(),
             Some("cmd /c echo hi")
         );
     }

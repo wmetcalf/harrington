@@ -108,7 +108,9 @@ pub fn h_net(raw: &str, env: &mut Environment) {
 
 fn command_basename_no_ext(token: &str) -> String {
     let trimmed = token
-        .trim_start_matches(['@', '('])
+        .trim_start_matches(|ch: char| {
+            ch.is_ascii_whitespace() || matches!(ch, '@' | '"' | '\'' | '(' | ';' | ',')
+        })
         .trim_matches(['"', '\''])
         .to_ascii_lowercase();
     let last_sep = trimmed.rfind(['\\', '/']).map(|idx| idx + 1).unwrap_or(0);
