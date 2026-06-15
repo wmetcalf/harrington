@@ -571,20 +571,26 @@ fn schtasks_task_run(raw: &str) -> Option<String> {
             let value_end = schtasks_unquoted_value_end(raw, &spans[idx + 1..]);
             return Some(raw[value_start..value_end].trim_end().to_string());
         }
-        if let Some(rest) = raw_token
-            .strip_prefix("/tr:")
-            .or_else(|| raw_token.strip_prefix("/tr="))
-            .or_else(|| raw_token.strip_prefix("/TR:"))
-            .or_else(|| raw_token.strip_prefix("/TR="))
-        {
-            if rest.is_empty() {
-                continue;
-            }
-            return parse_flag_value(raw, span.end - rest.len())
+        if let Some(value_start) = attached_flag_value_start(raw_token, "/tr") {
+            return parse_flag_value(raw, span.start + value_start)
                 .filter(|command| persisted_command_looks_dispatchable(command));
         }
     }
     None
+}
+
+fn attached_flag_value_start(token: &str, flag: &str) -> Option<usize> {
+    let marker_len = flag.len();
+    if token.len() <= marker_len {
+        return None;
+    }
+    let marker = token.get(..marker_len)?;
+    let delimiter = token.as_bytes().get(marker_len).copied()?;
+    if marker.eq_ignore_ascii_case(flag) && matches!(delimiter, b':' | b'=') {
+        Some(marker_len + 1)
+    } else {
+        None
+    }
 }
 
 fn schtasks_unquoted_value_end(raw: &str, value_spans: &[std::ops::Range<usize>]) -> usize {
@@ -972,6 +978,32 @@ mod tests {
         assert!(
             env.exec_cmd.iter().any(|cmd| cmd == "echo colon-task"),
             "colon-bound /tr child was not queued: {:?}",
+            env.exec_cmd
+        );
+    }
+
+    #[test]
+    fn schtasks_attached_flags_are_case_insensitive() {
+        let mut env = Environment::new(&Config::default());
+        h_schtasks(
+            r#"schtasks /Create /Tn:Updater /Tr:"cmd.exe /c echo mixed-case-task" /Sc once"#,
+            &mut env,
+        );
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { hive, key, command, .. }
+                    if hive == "ScheduledTask"
+                        && key == "Updater"
+                        && command == "cmd.exe /c echo mixed-case-task"
+            )),
+            "mixed-case attached schtasks flags were not persisted: {:?}",
+            env.traits
+        );
+        assert!(
+            env.exec_cmd.iter().any(|cmd| cmd == "echo mixed-case-task"),
+            "mixed-case attached /Tr child was not queued: {:?}",
             env.exec_cmd
         );
     }
