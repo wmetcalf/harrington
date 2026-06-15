@@ -147,6 +147,7 @@ fn run_stage(stage: &str, input: Vec<String>, env: &mut Environment) -> Vec<Stri
         }
         "find" => synth_find(&rest_args, input, env),
         "more" => synth_more(stage, &rest_args, input, env),
+        "sort" => synth_sort(stage, &rest_args, input, env),
         "type" => {
             // type FILE — pull from modified_filesystem or input_bytes
             let path = rest_args.first().copied().unwrap_or("");
@@ -292,6 +293,30 @@ fn synth_more(
         .unwrap_or_default()
 }
 
+fn synth_sort(
+    stage: &str,
+    args: &[&str],
+    input: Vec<String>,
+    env: &mut Environment,
+) -> Vec<String> {
+    let mut lines = if !input.is_empty() {
+        input
+    } else {
+        let (_, redirs) = crate::redirect::extract_redirections(stage);
+        if let Some(path) = redirs.stdin {
+            type_file(&path, env)
+        } else {
+            args.iter()
+                .copied()
+                .find(|arg| !arg.starts_with(['/', '-']) && *arg != "<")
+                .map(|path| type_file(path, env))
+                .unwrap_or_default()
+        }
+    };
+    lines.sort();
+    lines
+}
+
 fn synth_find(args: &[&str], input: Vec<String>, env: &mut Environment) -> Vec<String> {
     if !input.is_empty() {
         return filter_find(args, input);
@@ -400,6 +425,7 @@ fn is_supported_command(cmd: &str) -> bool {
             | "findstr"
             | "find"
             | "more"
+            | "sort"
             | "type"
             | "assoc"
             | "ftype"
