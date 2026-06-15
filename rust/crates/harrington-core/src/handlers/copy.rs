@@ -157,7 +157,11 @@ fn track_rename_like(
         insert_copied_entry(env, &src, &dst, entry);
     } else {
         env.modified_filesystem
-            .insert(dst.to_ascii_lowercase(), entry);
+            .insert(dst.to_ascii_lowercase(), entry.clone());
+        if let Some(joined) = rename_destination_in_source_directory(&src, &dst) {
+            env.modified_filesystem
+                .insert(joined.to_ascii_lowercase(), entry);
+        }
     }
 }
 
@@ -208,6 +212,17 @@ fn copy_directory_destination_path(src: &str, dst: &str) -> Option<String> {
     let mut out = dst.to_string();
     out.push_str(basename);
     Some(collapse_slashes(&out))
+}
+
+fn rename_destination_in_source_directory(src: &str, dst: &str) -> Option<String> {
+    if dst.contains(['\\', '/', ':']) {
+        return None;
+    }
+    let (dir, _) = src.rsplit_once(['\\', '/'])?;
+    if dir.is_empty() || dst.is_empty() {
+        return None;
+    }
+    Some(collapse_slashes(&format!("{dir}\\{dst}")))
 }
 
 fn windows_basename(path: &str) -> Option<&str> {
