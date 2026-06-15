@@ -111,40 +111,7 @@ fn run_stage(stage: &str, input: Vec<String>, env: &mut Environment) -> Vec<Stri
                 .map(|(k, v)| format!("{}={}", canonical_env_name(&k), v))
                 .collect()
         }
-        "findstr" => {
-            // If input is empty and the last arg is a file path (e.g. "%~f0" or a .bat path),
-            // read that file as the input source before filtering.
-            let mut effective_input = input;
-            if effective_input.is_empty() {
-                // Expand %~f0 → synthetic path, check if last arg is a file source.
-                let expanded_args: Vec<String> = rest_args
-                    .iter()
-                    .map(|a| {
-                        let trimmed = a.trim_matches('"');
-                        if trimmed.eq_ignore_ascii_case("%~f0")
-                            || trimmed.eq_ignore_ascii_case("%0")
-                        {
-                            "C:\\Users\\al\\Downloads\\script.bat".to_string()
-                        } else {
-                            (*a).to_string()
-                        }
-                    })
-                    .collect();
-                if let Some(last) = expanded_args.last() {
-                    let candidate = last.trim_matches('"');
-                    if candidate.contains(".bat")
-                        || candidate.contains(".cmd")
-                        || candidate.contains('\\')
-                        || candidate.contains('/')
-                    {
-                        effective_input = type_file(candidate, env);
-                    }
-                }
-                let expanded_refs: Vec<&str> = expanded_args.iter().map(String::as_str).collect();
-                return filter_findstr(&expanded_refs, effective_input);
-            }
-            filter_findstr(&rest_args, effective_input)
-        }
+        "findstr" => synth_findstr(&rest_args, input, env),
         "find" => synth_find(&rest_args, input, env),
         "more" => synth_more(stage, &rest_args, input, env),
         "sort" => synth_sort(stage, &rest_args, input, env),
@@ -315,6 +282,47 @@ fn synth_sort(
     };
     lines.sort();
     lines
+}
+
+fn synth_findstr(args: &[&str], input: Vec<String>, env: &mut Environment) -> Vec<String> {
+    if !input.is_empty() {
+        return filter_findstr(args, input);
+    }
+    let expanded_args: Vec<String> = args
+        .iter()
+        .map(|arg| {
+            let trimmed = arg.trim_matches('"');
+            if trimmed.eq_ignore_ascii_case("%~f0") || trimmed.eq_ignore_ascii_case("%0") {
+                "C:\\Users\\al\\Downloads\\script.bat".to_string()
+            } else {
+                (*arg).to_string()
+            }
+        })
+        .collect();
+    let Some((file_idx, lines)) = findstr_file_input_arg(&expanded_args, env) else {
+        let refs: Vec<&str> = expanded_args.iter().map(String::as_str).collect();
+        return filter_findstr(&refs, Vec::new());
+    };
+    let filter_args: Vec<&str> = expanded_args
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, arg)| (idx != file_idx).then_some(arg.as_str()))
+        .collect();
+    filter_findstr(&filter_args, lines)
+}
+
+fn findstr_file_input_arg(args: &[String], env: &mut Environment) -> Option<(usize, Vec<String>)> {
+    for (idx, arg) in args.iter().enumerate().rev() {
+        let candidate = arg.trim_matches('"');
+        if candidate.is_empty() || candidate.starts_with('/') {
+            continue;
+        }
+        let lines = type_file(candidate, env);
+        if !lines.is_empty() {
+            return Some((idx, lines));
+        }
+    }
+    None
 }
 
 fn synth_find(args: &[&str], input: Vec<String>, env: &mut Environment) -> Vec<String> {
@@ -511,24 +519,7 @@ fn filter_findstr(args: &[&str], input: Vec<String>) -> Vec<String> {
     let mut invert = false;
     let mut regex_mode = false;
     let mut i = 0;
-    // If the last arg looks like a file path (was consumed as the file source in run_stage),
-    // exclude it from pattern/flag parsing.
-    let skip_last = args
-        .last()
-        .map(|a| {
-            let trimmed = a.trim_matches('"');
-            let lc = trimmed.to_ascii_lowercase();
-            trimmed.contains('\\')
-                || trimmed.contains('/')
-                || lc.ends_with(".bat")
-                || lc.ends_with(".cmd")
-        })
-        .unwrap_or(false);
-    let limit = if skip_last {
-        args.len().saturating_sub(1)
-    } else {
-        args.len()
-    };
+    let limit = args.len();
     while i < limit {
         let a = args[i];
         if let Some(flags_and_maybe_literal) = a.strip_prefix('/') {
