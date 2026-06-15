@@ -133,6 +133,7 @@ fn run_stage(stage: &str, input: Vec<String>, env: &mut Environment) -> Vec<Stri
         "wevtutil" => synth_wevtutil(&rest_args),
         "ver" => synth_ver(),
         "ipconfig" => synth_ipconfig(),
+        "hostname" => synth_hostname(env),
         "systeminfo" => synth_systeminfo(env),
         "getmac" => synth_getmac(),
         "fsutil" => synth_fsutil(&rest_args),
@@ -547,6 +548,7 @@ fn is_supported_command(cmd: &str) -> bool {
             | "wevtutil"
             | "ver"
             | "ipconfig"
+            | "hostname"
             | "systeminfo"
             | "getmac"
             | "fsutil"
@@ -1165,6 +1167,12 @@ fn synth_ipconfig() -> Vec<String> {
         "   Subnet Mask . . . . . . . . . . . : 255.255.255.0".to_string(),
         "   Default Gateway . . . . . . . . . : 192.0.2.1".to_string(),
     ]
+}
+
+fn synth_hostname(env: &Environment) -> Vec<String> {
+    vec![env
+        .get("COMPUTERNAME")
+        .unwrap_or_else(|| "MISCREANTTEARS".to_string())]
 }
 
 fn synth_systeminfo(env: &Environment) -> Vec<String> {

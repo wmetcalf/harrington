@@ -3834,6 +3834,25 @@ for /f "tokens=* delims=" %%U in ('type first.txt second.txt ^| find "https://"'
     }
 
     #[test]
+    fn for_f_reads_hostname_output() {
+        let script = b"for /f \"tokens=*\" %%H in ('hostname') do echo host=%%H\r\n";
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo host=MISCREANTTEARS"),
+            "hostname output did not feed FOR body: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(
+                |t| matches!(t, Trait::ForUnresolvedSource { pipeline } if pipeline == "hostname")
+            ),
+            "hostname should resolve synthetically: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn for_f_reads_whoami_user_sid_output() {
         let script = b"for /f \"skip=1 tokens=2\" %%S in ('whoami /user') do echo sid=%%S\r\n";
         let report = analyze(script, &Config::default());
