@@ -195,6 +195,7 @@ fn is_rmdir_option(token: &str) -> bool {
 }
 
 fn remove_tracked_directory(env: &mut Environment, candidate: &str) {
+    let candidate = strip_current_dir_prefix(candidate);
     let mut prefix = normalize_wildcard_path(candidate.trim_end_matches(['\\', '/']));
     if prefix.is_empty() {
         return;
@@ -207,6 +208,12 @@ fn remove_tracked_directory(env: &mut Environment, candidate: &str) {
         !normalized_path.eq_ignore_ascii_case(&prefix[..prefix.len() - 1])
             && !normalized_path.starts_with(&prefix)
     });
+}
+
+fn strip_current_dir_prefix(path: &str) -> &str {
+    path.strip_prefix(r".\")
+        .or_else(|| path.strip_prefix("./"))
+        .unwrap_or(path)
 }
 
 pub fn h_mkdir(raw: &str, env: &mut Environment) {
