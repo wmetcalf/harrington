@@ -4835,6 +4835,14 @@ fn join_windows_path(prefix: &str, name: &str) -> String {
     }
 }
 
+fn is_windows_rooted_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    path.starts_with(['\\', '/'])
+        || bytes
+            .get(0..2)
+            .is_some_and(|head| head[0].is_ascii_alphabetic() && head[1] == b':')
+}
+
 fn clean_command_url_token(token: &str) -> &str {
     let token = token.trim_matches(['"', '\'']);
     token
@@ -5012,16 +5020,24 @@ fn parse_curl_like_download(tokens: &[String]) -> Option<(String, Option<String>
         i += 1;
     }
     url.map(|u| {
-        let dst = dst.or_else(|| {
-            remote_name.then(|| {
-                url_basename(&u).map(|name| {
-                    output_dir
-                        .as_deref()
-                        .map(|dir| join_windows_path(dir, &name))
-                        .unwrap_or(name)
-                })
-            })?
-        });
+        let dst = dst
+            .map(|path| {
+                output_dir
+                    .as_deref()
+                    .filter(|_| !is_windows_rooted_path(&path))
+                    .map(|dir| join_windows_path(dir, &path))
+                    .unwrap_or(path)
+            })
+            .or_else(|| {
+                remote_name.then(|| {
+                    url_basename(&u).map(|name| {
+                        output_dir
+                            .as_deref()
+                            .map(|dir| join_windows_path(dir, &name))
+                            .unwrap_or(name)
+                    })
+                })?
+            });
         (u, dst)
     })
 }
