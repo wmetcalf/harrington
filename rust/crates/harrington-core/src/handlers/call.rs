@@ -26,9 +26,7 @@ fn strip_keyword_ci<'a>(s: &'a str, kw: &str) -> Option<&'a str> {
 }
 
 pub fn h_call(raw: &str, env: &mut Environment) {
-    let rest = raw.trim_start();
-    let after = strip_keyword_ci(rest, "call").unwrap_or("");
-    let body = after.trim_start();
+    let body = call_body(raw).unwrap_or("");
 
     if let Some(after_colon) = body.strip_prefix(':') {
         let parts: Vec<&str> = after_colon.split_whitespace().collect();
@@ -58,4 +56,10 @@ pub fn h_call(raw: &str, env: &mut Environment) {
     if !body.is_empty() {
         crate::interp::interpret_line(body, env);
     }
+}
+
+pub(crate) fn call_body(raw: &str) -> Option<&str> {
+    let rest = raw.trim_start();
+    let after = strip_keyword_ci(rest, "call")?;
+    Some(after.trim_start())
 }
