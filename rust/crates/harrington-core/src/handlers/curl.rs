@@ -1,6 +1,6 @@
 //! curl handler — extracts URL + output target. Mirrors interpret_curl.
 
-use super::util::split_words;
+use super::util::{join_windows_path_preserving_separator, split_words};
 use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
 
@@ -134,14 +134,14 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
             output_dir
                 .as_deref()
                 .filter(|_| !is_windows_rooted_path(&o))
-                .map(|dir| join_windows_path(dir, &o))
+                .map(|dir| join_windows_path_preserving_separator(dir, &o))
                 .unwrap_or(o),
         )
     } else if remote_name {
         url_basename(&url).map(|name| {
             output_dir
                 .as_deref()
-                .map(|dir| join_windows_path(dir, &name))
+                .map(|dir| join_windows_path_preserving_separator(dir, &name))
                 .unwrap_or(name)
         })
     } else {
@@ -255,14 +255,6 @@ fn url_basename(url: &str) -> Option<String> {
         None
     } else {
         Some(last.to_string())
-    }
-}
-
-fn join_windows_path(prefix: &str, name: &str) -> String {
-    if prefix.ends_with(['\\', '/']) {
-        format!("{prefix}{name}")
-    } else {
-        format!("{prefix}\\{name}")
     }
 }
 

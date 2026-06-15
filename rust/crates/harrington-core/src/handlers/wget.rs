@@ -1,6 +1,6 @@
 //! wget handler — extracts URL + output target for native wget/get.exe calls.
 
-use super::util::split_words;
+use super::util::{join_windows_path_preserving_separator, split_words};
 use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
 
@@ -27,7 +27,7 @@ pub fn h_wget(raw: &str, env: &mut Environment) {
     }
     if let Some(WgetDestination::DirectoryPrefix(prefix)) = dst {
         if let Some(name) = url_basename(&url) {
-            let path = join_windows_path(&prefix, &name);
+            let path = join_windows_path_preserving_separator(&prefix, &name);
             env.modified_filesystem
                 .insert(path.to_ascii_lowercase(), FsEntry::Download { src: url });
         }
@@ -220,14 +220,6 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<WgetDes
 fn normalize_wget_url_token(token: &str) -> Option<String> {
     crate::deob_scan::normalize_liberal_url_token(token)
         .or_else(|| crate::deob_scan::normalize_schemeless_domain_path_token(token))
-}
-
-fn join_windows_path(prefix: &str, name: &str) -> String {
-    if prefix.ends_with(['\\', '/']) {
-        format!("{prefix}{name}")
-    } else {
-        format!("{prefix}\\{name}")
-    }
 }
 
 fn url_basename(url: &str) -> Option<String> {
