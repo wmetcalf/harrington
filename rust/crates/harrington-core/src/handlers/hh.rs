@@ -1,6 +1,6 @@
 //! hh.exe handler - surfaces HTML Help URL launches.
 
-use super::util::{normalize_url_like_token, split_words};
+use super::util::{filesystem_entry_for_path, normalize_url_like_token, split_words};
 use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
 
@@ -44,8 +44,7 @@ fn html_help_target(tokens: &[String]) -> Option<String> {
 
 fn prior_download_url(path: &str, env: &Environment) -> Option<String> {
     let path = chm_container_path(path);
-    let key = path.to_ascii_lowercase();
-    if let Some(FsEntry::Download { src }) = env.modified_filesystem.get(&key) {
+    if let Some(FsEntry::Download { src }) = filesystem_entry_for_path(env, path) {
         return Some(src.clone());
     }
     if let Some(name) = current_dir_basename(path) {

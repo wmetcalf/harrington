@@ -1,4 +1,4 @@
-use super::util::split_words;
+use super::util::{filesystem_entry_for_path, split_words};
 use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
 
@@ -179,8 +179,7 @@ fn prior_download_after_export(
 }
 
 fn downloaded_src_for_candidate(candidate: &str, env: &Environment) -> Option<String> {
-    let key = candidate.to_ascii_lowercase();
-    if let Some(FsEntry::Download { src }) = env.modified_filesystem.get(&key) {
+    if let Some(FsEntry::Download { src }) = filesystem_entry_for_path(env, candidate) {
         return Some(src.clone());
     }
     if let Some(name) = current_dir_basename(candidate) {
