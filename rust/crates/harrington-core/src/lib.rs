@@ -10983,6 +10983,30 @@ ftp.exe -s:f.scr"#,
             report.traits
         );
     }
+
+    #[test]
+    fn ftp_script_open_without_download_emits_remote_connect() {
+        let report = analyze(
+            br#"echo open ftp-control.example.org>ftp-only.txt
+echo user anonymous pass@example.org>>ftp-only.txt
+echo dir>>ftp-only.txt
+ftp -s:ftp-only.txt"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::RemoteConnect { cmd, host, port }
+                        if cmd == "ftp -s:ftp-only.txt"
+                            && host == "ftp-control.example.org"
+                            && *port == 21
+                )
+            }),
+            "ftp script open without download did not emit RemoteConnect: {:?}",
+            report.traits
+        );
+    }
 }
 
 #[cfg(test)]

@@ -117,7 +117,7 @@ fn parse_ftp_script(script: &str) -> Option<FtpScript> {
     }
 
     let host = host?;
-    (!downloads.is_empty()).then_some(FtpScript {
+    Some(FtpScript {
         host,
         port,
         downloads,
