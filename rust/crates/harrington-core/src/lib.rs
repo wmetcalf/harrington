@@ -9658,6 +9658,21 @@ echo %MARK%
     }
 
     #[test]
+    fn if_exist_current_dir_nested_path_does_not_match_unrelated_bare_basename() {
+        let script = br#"echo marker>gate.txt
+if exist .\Temp\gate.txt set MARK=found
+echo %MARK%
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            !report.deobfuscated.contains("echo found"),
+            "if exist nested current-dir path matched unrelated bare basename:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+    }
+
+    #[test]
     fn if_exist_slash_equivalent_path_resolves_tracked_file() {
         let script = br#"echo marker>C:\Temp\gate.txt
 if exist C:/Temp/gate.txt set MARK=found

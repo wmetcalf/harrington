@@ -246,21 +246,22 @@ fn evaluate(
 fn tracked_path_exists(path: &str, key: &str, env: &Environment) -> bool {
     env.modified_filesystem.contains_key(key)
         || filesystem_entry_for_path(env, path).is_some()
-        || current_dir_nested_path_exists(path, env)
-        || current_dir_path_exists(path, env)
-        || wildcard_path_exists(path, env)
+        || match current_dir_nested_path_exists(path, env) {
+            Some(exists) => exists,
+            None => current_dir_path_exists(path, env) || wildcard_path_exists(path, env),
+        }
 }
 
-fn current_dir_nested_path_exists(path: &str, env: &Environment) -> bool {
-    let Some(stripped) = strip_current_dir_prefix(path) else {
-        return false;
-    };
+fn current_dir_nested_path_exists(path: &str, env: &Environment) -> Option<bool> {
+    let stripped = strip_current_dir_prefix(path)?;
     if !stripped.contains(['\\', '/']) {
-        return false;
+        return None;
     }
-    env.modified_filesystem
-        .contains_key(&stripped.to_ascii_lowercase())
-        || filesystem_entry_for_path(env, stripped).is_some()
+    Some(
+        env.modified_filesystem
+            .contains_key(&stripped.to_ascii_lowercase())
+            || filesystem_entry_for_path(env, stripped).is_some(),
+    )
 }
 
 fn wildcard_path_exists(pattern: &str, env: &Environment) -> bool {
