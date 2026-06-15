@@ -99,6 +99,12 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
         }
     }
 
+    if crate::handlers::if_cmd::inline_body_needs_raw_dispatch(raw) {
+        crate::handlers::if_cmd::h_if(raw, env);
+        result.consumed = true;
+        return result;
+    }
+
     if crate::handlers::cmd::start_child_command(raw).is_some() {
         crate::handlers::cmd::h_start(raw, env);
         result.consumed = true;

