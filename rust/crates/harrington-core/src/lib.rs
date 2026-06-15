@@ -24301,6 +24301,26 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
     }
 
     #[test]
+    fn python_download_preserves_full_command_context() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        let padding = "A".repeat(260);
+        let line = format!(
+            r#"python -c "import requests; pad='{padding}'; requests.get('https://py.example/full-context').text""#
+        );
+        crate::deob_scan::scan_deob_text(&line, &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, cmd, dst: None }
+                    if src == "https://py.example/full-context" && cmd == &line
+            )),
+            "Python Download command context was not preserved: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn python_httpx_get_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(

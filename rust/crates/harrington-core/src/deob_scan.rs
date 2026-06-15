@@ -1899,7 +1899,7 @@ fn emit_python_download_with_dst(
     let line_hint = deobfuscated
         .lines()
         .find(|line| line.contains(&url))
-        .map(|line| line.chars().take(200).collect::<String>())
+        .map(str::to_string)
         .unwrap_or_default();
     env.traits.push(Trait::Download {
         cmd: line_hint,
