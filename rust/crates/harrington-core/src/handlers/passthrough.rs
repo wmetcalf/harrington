@@ -89,8 +89,9 @@ fn remove_tracked_file(env: &mut Environment, candidate: &str, recursive: bool) 
     if candidate.contains(['*', '?']) {
         return;
     }
-    let key = candidate.to_ascii_lowercase();
-    env.modified_filesystem.remove(&key);
+    let key = normalize_wildcard_path(candidate);
+    env.modified_filesystem
+        .retain(|path, _| normalize_wildcard_path(path) != key);
     if let Some(name) = current_dir_basename(candidate) {
         env.modified_filesystem.remove(&name.to_ascii_lowercase());
     }

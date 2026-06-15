@@ -9664,6 +9664,22 @@ echo %MARK%
     }
 
     #[test]
+    fn del_slash_equivalent_file_removes_tracked_file_for_later_if_not_exist() {
+        let script = br#"echo marker>C:\Temp\gate.txt
+del C:/Temp/gate.txt
+if not exist C:\Temp\gate.txt set MARK=deleted
+echo %MARK%
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo deleted"),
+            "del slash-equivalent file did not update tracked file state for if not exist:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+    }
+
+    #[test]
     fn erase_removes_tracked_file_for_later_if_not_exist() {
         let script = br#"echo marker>gate.txt
 erase gate.txt
