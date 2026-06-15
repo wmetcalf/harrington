@@ -14226,6 +14226,31 @@ echo archive=W_%USERNAME%_!publicIP!.zip
     }
 
     #[test]
+    fn for_f_curl_ifconfig_me_ip_feeds_later_variable() {
+        use crate::traits::Trait;
+        let script = br#"setlocal EnableDelayedExpansion
+for /F "tokens=* delims=" %%I in ('curl -s https://ifconfig.me/ip') do set "publicIP=%%I"
+echo archive=W_%USERNAME%_!publicIP!.zip
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report
+                .deobfuscated
+                .contains("echo archive=W_puncher_203.0.113.10.zip"),
+            "got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ForUnresolvedSource { pipeline } if pipeline.contains("ifconfig.me")
+            )),
+            "ifconfig.me curl endpoint should synthesize a stable response: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn for_f_reads_ip_api_csv_downloaded_by_powershell() {
         use crate::traits::Trait;
         let script = br#"powershell -Command "(New-Object Net.WebClient).DownloadFile('http://ip-api.com/csv', 'GEO.csv')"
@@ -14421,6 +14446,14 @@ mod synth_tests {
     #[test]
     fn synth_can_run_pipeline_accepts_ping_handler() {
         assert!(crate::synth::can_run_pipeline("ping -n 1 example.com"));
+    }
+
+    #[test]
+    fn synth_curl_ifconfig_me_ip_returns_stable_public_ip() {
+        let mut env = Environment::new(&Config::default());
+        let lines = run_pipeline("curl -s https://ifconfig.me/ip", &mut env);
+
+        assert_eq!(lines, vec!["203.0.113.10".to_string()]);
     }
 
     #[test]

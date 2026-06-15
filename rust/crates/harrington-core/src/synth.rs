@@ -1316,6 +1316,10 @@ fn synth_curl(args: &[&str]) -> Vec<String> {
         || lower == "http://api.ipify.org"
         || lower.starts_with("https://api.ipify.org?")
         || lower.starts_with("http://api.ipify.org?")
+        || lower == "https://ifconfig.me"
+        || lower == "http://ifconfig.me"
+        || lower == "https://ifconfig.me/ip"
+        || lower == "http://ifconfig.me/ip"
     {
         return vec!["203.0.113.10".to_string()];
     }
