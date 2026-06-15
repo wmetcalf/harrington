@@ -10433,6 +10433,17 @@ mod call_label_tests {
     }
 
     #[test]
+    fn call_label_preserves_quoted_positional_arg_with_spaces() {
+        let script = b"call :sub \"hi there\"\r\ngoto :eof\r\n:sub\r\necho %~1\r\ngoto :eof\r\n";
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo hi there"),
+            "quoted call-label arg was not preserved:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn call_label_returns_after_eof() {
         let script =
             b"call :sub\r\necho after-return\r\ngoto :eof\r\n:sub\r\necho in-sub\r\ngoto :eof\r\n";

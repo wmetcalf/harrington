@@ -1,6 +1,7 @@
 //! call — either `call :label args…` (subroutine) or `call <cmd>` (re-feed).
 
 use crate::env::{CursorAction, Environment, Frame};
+use crate::handlers::util::split_words;
 use crate::traits::Trait;
 
 /// Strip a case-insensitive keyword prefix followed by either end-of-input or
@@ -29,12 +30,12 @@ pub fn h_call(raw: &str, env: &mut Environment) {
     let body = call_body(raw).unwrap_or("");
 
     if let Some(after_colon) = body.strip_prefix(':') {
-        let parts: Vec<&str> = after_colon.split_whitespace().collect();
+        let parts = split_words(after_colon);
         if parts.is_empty() {
             return;
         }
         let label = parts[0].to_ascii_lowercase();
-        let args: Vec<String> = parts[1..].iter().map(|s| s.to_string()).collect();
+        let args: Vec<String> = parts[1..].to_vec();
         if let Some(line_idx) = env.label_index.get(&label).copied() {
             let return_line = env.current_line.map(|l| l + 1).unwrap_or(0);
             env.call_stack.push(Frame {
