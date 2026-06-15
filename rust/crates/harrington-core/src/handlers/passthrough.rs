@@ -574,7 +574,7 @@ pub(crate) fn psexec_child_command(raw: &str) -> Option<(String, String)> {
             idx += 1;
             break;
         }
-        idx += psexec_option_span_width(token, true)?;
+        idx += psexec_option_span_width_at(raw, &spans, idx, true)?;
     }
     let host = host?;
 
@@ -584,7 +584,7 @@ pub(crate) fn psexec_child_command(raw: &str) -> Option<(String, String)> {
             idx += 1;
             continue;
         }
-        let Some(width) = psexec_option_span_width(token, false) else {
+        let Some(width) = psexec_option_span_width_at(raw, &spans, idx, false) else {
             break;
         };
         idx += width;
@@ -807,6 +807,26 @@ fn psexec_option_span_width(token: &str, before_host: bool) -> Option<usize> {
         return Some(1);
     }
     before_host.then_some(1)
+}
+
+fn psexec_option_span_width_at(
+    raw: &str,
+    spans: &[std::ops::Range<usize>],
+    idx: usize,
+    before_host: bool,
+) -> Option<usize> {
+    let token = raw[spans.get(idx)?.clone()].trim_matches(['"', '\'']);
+    let lower = token.to_ascii_lowercase();
+    if lower == "-i" || lower == "/i" {
+        return Some(
+            spans
+                .get(idx + 1)
+                .map(|span| raw[span.clone()].trim_matches(['"', '\'']))
+                .filter(|next| next.chars().all(|c| c.is_ascii_digit()))
+                .map_or(1, |_| 2),
+        );
+    }
+    psexec_option_span_width(token, before_host)
 }
 
 fn command_target_and_args(command: &str) -> Option<(String, Option<String>)> {
@@ -1596,6 +1616,26 @@ mod tests {
             r#"psexec \\target.example /accepteula /u admin /p pass /s cmd.exe /c echo remote"#,
         )
         .expect("psexec slash-option child command should parse");
+
+        assert_eq!(host, "target.example");
+        assert_eq!(command, "cmd.exe /c echo remote");
+    }
+
+    #[test]
+    fn psexec_child_command_accepts_interactive_without_session() {
+        let (host, command) =
+            psexec_child_command(r#"psexec \\target.example -i cmd.exe /c echo remote"#)
+                .expect("psexec interactive child command should parse");
+
+        assert_eq!(host, "target.example");
+        assert_eq!(command, "cmd.exe /c echo remote");
+    }
+
+    #[test]
+    fn psexec_child_command_accepts_interactive_with_session() {
+        let (host, command) =
+            psexec_child_command(r#"psexec \\target.example -i 2 cmd.exe /c echo remote"#)
+                .expect("psexec interactive session child command should parse");
 
         assert_eq!(host, "target.example");
         assert_eq!(command, "cmd.exe /c echo remote");
