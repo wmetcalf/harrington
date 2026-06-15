@@ -1,7 +1,7 @@
 //! cmd / cmd.exe / *cmd.exe handler — extracts the /c or /r body.
 #![allow(clippy::expect_used)]
 
-use crate::env::Environment;
+use crate::env::{Environment, FsEntry};
 use crate::handlers::util::split_words;
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -308,6 +308,8 @@ pub fn h_start(raw: &str, env: &mut Environment) {
             cmd: format!("start {}", inner_raw),
             url,
         });
+    } else if let Some(url) = start_prior_download_url(inner_raw, env) {
+        push_start_url_argument(inner_raw, url, env);
     }
     // The regex consumes the optional title. If the real command is a
     // quoted executable, remove only that executable's quotes before dispatch.
@@ -456,6 +458,60 @@ fn start_url_launch(inner_raw: &str) -> Option<String> {
         .skip(1)
         .filter_map(|token| normalize_start_url_token(strip_quotes(token.trim())))
         .next()
+}
+
+fn start_prior_download_url(inner_raw: &str, env: &Environment) -> Option<String> {
+    let tokens = split_words(inner_raw);
+    let first = tokens.first().map(|token| {
+        strip_quotes(token.trim())
+            .trim_end_matches(['"', '\'', ')', ']', '}', ';', ','])
+            .to_string()
+    })?;
+    if first.is_empty() || first.starts_with(['/', '-']) {
+        return None;
+    }
+    downloaded_src_for_candidate(&first, env)
+}
+
+fn downloaded_src_for_candidate(candidate: &str, env: &Environment) -> Option<String> {
+    let key = candidate.to_ascii_lowercase();
+    if let Some(FsEntry::Download { src }) = env.modified_filesystem.get(&key) {
+        return Some(src.clone());
+    }
+    if candidate.contains(['\\', '/']) {
+        return None;
+    }
+    env.modified_filesystem
+        .iter()
+        .find_map(|(tracked_path, entry)| {
+            windows_basename(tracked_path)
+                .is_some_and(|name| name.eq_ignore_ascii_case(candidate))
+                .then_some(entry)
+        })
+        .and_then(|entry| match entry {
+            FsEntry::Download { src } => Some(src.clone()),
+            _ => None,
+        })
+}
+
+fn windows_basename(path: &str) -> Option<&str> {
+    path.rsplit(['\\', '/'])
+        .next()
+        .filter(|name| !name.is_empty())
+}
+
+fn push_start_url_argument(inner_raw: &str, url: String, env: &mut Environment) {
+    let cmd = format!("start {inner_raw}");
+    if !env.traits.iter().any(|t| {
+        matches!(
+            t,
+            crate::traits::Trait::UrlArgument { cmd: existing_cmd, url: existing_url }
+                if existing_cmd == &cmd && existing_url == &url
+        )
+    }) {
+        env.traits
+            .push(crate::traits::Trait::UrlArgument { cmd, url });
+    }
 }
 
 fn normalize_start_url_token(token: &str) -> Option<String> {
