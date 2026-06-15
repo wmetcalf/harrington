@@ -1,4 +1,4 @@
-use super::util::split_words;
+use super::util::{normalize_wildcard_path, split_words};
 use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
 
@@ -249,12 +249,19 @@ fn copy_tracked_directory_destination_path(
     src: &str,
     dst: &str,
 ) -> Option<String> {
-    let key = dst.trim_end_matches(['\\', '/']).to_ascii_lowercase();
-    if !matches!(env.modified_filesystem.get(&key), Some(FsEntry::Directory)) {
+    let key = normalize_wildcard_path(dst.trim_end_matches(['\\', '/']));
+    if !env.modified_filesystem.iter().any(|(path, entry)| {
+        matches!(entry, FsEntry::Directory) && normalize_wildcard_path(path) == key
+    }) {
         return None;
     }
     let basename = windows_basename(src)?;
-    Some(collapse_slashes(&format!("{dst}\\{basename}")))
+    let separator = if dst.contains('/') && !dst.contains('\\') {
+        '/'
+    } else {
+        '\\'
+    };
+    Some(collapse_slashes(&format!("{dst}{separator}{basename}")))
 }
 
 fn rename_destination_in_source_directory(src: &str, dst: &str) -> Option<String> {

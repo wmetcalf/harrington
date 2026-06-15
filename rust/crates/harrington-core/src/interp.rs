@@ -526,7 +526,13 @@ pub fn command_name(line: &str) -> Option<String> {
         }
     } else {
         for c in s.chars() {
-            if c.is_whitespace() || c == '/' || c == '<' || c == '>' || c == '&' || c == '|' {
+            if c.is_whitespace()
+                || (c == '/' && !name.ends_with(':') && !name.contains(":/"))
+                || c == '<'
+                || c == '>'
+                || c == '&'
+                || c == '|'
+            {
                 break;
             }
             name.push(c);
