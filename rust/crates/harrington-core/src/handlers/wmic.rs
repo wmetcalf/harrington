@@ -11,6 +11,12 @@ pub fn h_wmic(raw: &str, env: &mut Environment) {
     if inner.is_empty() {
         return;
     }
+    if let Some(target_host) = wmic_node_target(raw) {
+        env.traits.push(Trait::LateralMovement {
+            tool: "wmic".to_string(),
+            target_host,
+        });
+    }
     env.traits.push(Trait::WmicProcessCreate {
         inner_cmd: inner.clone(),
     });
@@ -79,6 +85,45 @@ fn wmic_create_commandline_argument(tail: &str) -> Option<String> {
     (!inner.is_empty()).then_some(inner)
 }
 
+fn wmic_node_target(raw: &str) -> Option<String> {
+    let tokens = split_words(raw);
+    let mut i = 1usize;
+    while i < tokens.len() {
+        let token = strip_quotes(&tokens[i]);
+        let lower = token.to_ascii_lowercase();
+        let value = if lower == "/node" || lower == "-node" {
+            tokens.get(i + 1).map(|next| strip_quotes(next))
+        } else {
+            attached_node_value(token)
+        };
+        if let Some(host) = value
+            .map(normalize_node_target)
+            .filter(|host| !host.is_empty())
+        {
+            return Some(host);
+        }
+        i += 1;
+    }
+    None
+}
+
+fn attached_node_value(token: &str) -> Option<&str> {
+    let lower = token.to_ascii_lowercase();
+    for prefix in ["/node:", "/node=", "-node:", "-node="] {
+        if lower.starts_with(prefix) {
+            return token.get(prefix.len()..);
+        }
+    }
+    None
+}
+
+fn normalize_node_target(value: &str) -> String {
+    strip_quotes(value)
+        .trim()
+        .trim_start_matches('\\')
+        .to_string()
+}
+
 fn wmic_commandline_value_start(tail: &str) -> Option<usize> {
     let bytes = tail.as_bytes();
     let mut i = 0usize;
@@ -110,7 +155,7 @@ fn strip_quotes(text: &str) -> &str {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::wmic_create_commandline_argument;
+    use super::{wmic_create_commandline_argument, wmic_node_target};
 
     #[test]
     fn create_argument_extracts_named_commandline() {
@@ -126,6 +171,18 @@ mod tests {
             wmic_create_commandline_argument(r#"CommandLine = "cmd /c echo named", "C:\Temp""#)
                 .as_deref(),
             Some("cmd /c echo named")
+        );
+    }
+
+    #[test]
+    fn node_target_accepts_attached_and_spaced_values() {
+        assert_eq!(
+            wmic_node_target(r#"wmic /node:"target.example" process call create "cmd""#).as_deref(),
+            Some("target.example")
+        );
+        assert_eq!(
+            wmic_node_target(r#"wmic -node \\target2 process call create "cmd""#).as_deref(),
+            Some("target2")
         );
     }
 }

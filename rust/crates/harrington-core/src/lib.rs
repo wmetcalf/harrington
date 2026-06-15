@@ -13694,6 +13694,17 @@ mod wmic_tests {
             "no recursive remote cmd: {:?}",
             env.exec_cmd
         );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::LateralMovement { tool, target_host }
+                        if tool == "wmic" && target_host == "target.example"
+                )
+            }),
+            "no wmic lateral movement trait for /node target: {:?}",
+            env.traits
+        );
     }
 
     #[test]
