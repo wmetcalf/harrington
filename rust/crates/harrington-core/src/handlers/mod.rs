@@ -93,6 +93,7 @@ pub fn lookup(name: &str) -> Option<Handler> {
         "wscript" => Some(cscript::h_wscript),
         "wmic" => Some(wmic::h_wmic),
         "psexec" => Some(passthrough::h_psexec),
+        "winrs" => Some(passthrough::h_winrs),
         "runas" => Some(passthrough::h_runas),
         "del" => Some(passthrough::h_del),
         "cls" => Some(passthrough::h_cls),
