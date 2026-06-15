@@ -235,6 +235,7 @@ pub fn interpret_line(line: &str, env: &mut Environment) {
         .any(|t| matches!(t, crate::traits::Trait::Lolbas { name: n, .. } if n == "mshta"));
     match ext {
         "js" | "jse" | "wsf" | "wsh" | "vbs" | "vbe" if !has_wscript_exec => {
+            queue_implicit_script_content(&name, ext, env);
             env.traits
                 .push(crate::traits::Trait::WscriptExec { src: name.clone() });
         }
@@ -248,6 +249,62 @@ pub fn interpret_line(line: &str, env: &mut Environment) {
         _ => {}
     }
     capture_synthetic_stdout_redirect(line, env);
+}
+
+fn queue_implicit_script_content(path: &str, ext: &str, env: &mut Environment) {
+    let Some(content) = tracked_script_content(path, env) else {
+        return;
+    };
+    match ext {
+        "js" | "jse" => {
+            push_unique_payload(&mut env.all_extracted_jscript, content.clone());
+            push_unique_payload(&mut env.exec_jscript, content);
+        }
+        "vbs" | "vbe" => {
+            push_unique_payload(&mut env.all_extracted_vbs, content.clone());
+            push_unique_payload(&mut env.exec_vbs, content);
+        }
+        _ => {}
+    }
+}
+
+fn tracked_script_content(path: &str, env: &Environment) -> Option<Vec<u8>> {
+    let key = path.to_ascii_lowercase();
+    if let Some(content) = content_from_entry(env.modified_filesystem.get(&key)) {
+        return Some(content);
+    }
+    if path.contains(['\\', '/']) {
+        return None;
+    }
+    for (tracked_path, entry) in &env.modified_filesystem {
+        let Some(name) = windows_basename(tracked_path) else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case(path) {
+            return content_from_entry(Some(entry));
+        }
+    }
+    None
+}
+
+fn content_from_entry(entry: Option<&crate::env::FsEntry>) -> Option<Vec<u8>> {
+    match entry {
+        Some(crate::env::FsEntry::Content { content, .. })
+        | Some(crate::env::FsEntry::Decoded { content, .. }) => Some(content.clone()),
+        _ => None,
+    }
+}
+
+fn windows_basename(path: &str) -> Option<&str> {
+    path.rsplit(['\\', '/'])
+        .next()
+        .filter(|name| !name.is_empty())
+}
+
+fn push_unique_payload(payloads: &mut Vec<Vec<u8>>, payload: Vec<u8>) {
+    if !payloads.iter().any(|existing| existing == &payload) {
+        payloads.push(payload);
+    }
 }
 
 fn xcopy_pipeline_tail(line: &str) -> Option<&str> {

