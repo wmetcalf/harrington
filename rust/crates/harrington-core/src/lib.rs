@@ -9703,6 +9703,22 @@ echo %MARK%
     }
 
     #[test]
+    fn if_exist_current_dir_nested_wildcard_resolves_tracked_file() {
+        let script =
+            br#"curl -o .\Temp\gate.txt https://if-current-dir-nested-wildcard.example/gate.txt
+if exist .\Temp\*.txt set MARK=found
+echo %MARK%
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo found"),
+            "if exist current-dir nested wildcard suppressed reachable branch:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+    }
+
+    #[test]
     fn if_exist_current_dir_wildcard_resolves_tracked_file() {
         let script = br#"echo marker>gate.txt
 if exist .\*.txt set MARK=found
