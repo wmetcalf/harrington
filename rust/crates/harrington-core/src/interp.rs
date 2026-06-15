@@ -46,6 +46,29 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
         // emits its trait). The child push happens regardless.
     }
 
+    if let Some((service_name, bin_path)) = crate::handlers::passthrough::sc_create_binpath(raw) {
+        if !env.traits.iter().any(|t| {
+            matches!(
+                t,
+                crate::traits::Trait::ServiceInstall {
+                    service_name: existing,
+                    ..
+                } if existing == &service_name
+            )
+        }) {
+            env.traits.push(crate::traits::Trait::ServiceInstall {
+                service_name,
+                bin_path: bin_path.clone(),
+            });
+        }
+        if let Some((child, delayed)) =
+            crate::handlers::passthrough::persisted_command_child(&bin_path)
+        {
+            result.child_cmd_to_push = Some(child);
+            result.child_cmd_delayed = delayed;
+        }
+    }
+
     if raw_invokes_powershell(raw) {
         crate::handlers::powershell::h_powershell(raw, env);
         result.consumed = true;

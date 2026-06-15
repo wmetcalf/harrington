@@ -4,6 +4,7 @@
 #![allow(clippy::expect_used)]
 
 use crate::env::Environment;
+use crate::handlers::util::{split_words, strip_outer_quotes};
 use crate::traits::Trait;
 
 macro_rules! make_handler {
@@ -251,6 +252,10 @@ fn next_arg_start(raw: &str, mut i: usize) -> usize {
 
 fn parse_flag_value(raw: &str, start: usize) -> Option<String> {
     let bytes = raw.as_bytes();
+    let mut start = start;
+    while bytes.get(start).is_some_and(u8::is_ascii_whitespace) {
+        start += 1;
+    }
     let quote = *bytes.get(start)?;
     if quote == b'"' || quote == b'\'' {
         let quote_char = quote as char;
@@ -304,13 +309,9 @@ fn queue_child_command(command: String, env: &mut Environment) {
     if command.is_empty() {
         return;
     }
-    if let Some(inner) = super::cmd::extract_cmd_inner(&command) {
-        env.exec_cmd.push(inner);
-        env.exec_cmd_delayed
-            .push(super::cmd::has_v_on_raw(&command));
-    } else {
-        env.exec_cmd.push(command);
-        env.exec_cmd_delayed.push(false);
+    if let Some((child, delayed)) = persisted_command_child(&command) {
+        env.exec_cmd.push(child);
+        env.exec_cmd_delayed.push(delayed);
     }
 }
 
@@ -320,6 +321,43 @@ fn persisted_command_looks_dispatchable(command: &str) -> bool {
         return false;
     }
     trimmed.bytes().any(|b| b.is_ascii_whitespace())
+}
+
+pub(crate) fn persisted_command_child(command: &str) -> Option<(String, bool)> {
+    if let Some(inner) = super::cmd::extract_cmd_inner(command) {
+        return Some((inner, super::cmd::has_v_on_raw(command)));
+    }
+    if persisted_command_looks_dispatchable(command) {
+        return Some((command.to_string(), false));
+    }
+    None
+}
+
+pub(crate) fn sc_create_binpath(raw: &str) -> Option<(String, String)> {
+    let tokens = split_words(raw);
+    let command = tokens.first()?;
+    let name = command
+        .trim_start_matches(['@', '"', '('])
+        .trim_matches('"')
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(command)
+        .to_ascii_lowercase();
+    if name.strip_suffix(".exe").unwrap_or(&name) != "sc" {
+        return None;
+    }
+    if !tokens
+        .get(1)
+        .is_some_and(|token| token.eq_ignore_ascii_case("create"))
+    {
+        return None;
+    }
+    let service_name = tokens
+        .get(2)
+        .map(|token| strip_outer_quotes(token).to_string())
+        .filter(|token| !token.is_empty())?;
+    let bin_path = flag_value(raw, "binPath")?;
+    Some((service_name, bin_path))
 }
 
 make_handler!(h_sc, "sc");
@@ -334,9 +372,9 @@ make_handler!(h_ver, "ver");
 make_handler!(h_whoami, "whoami");
 
 #[cfg(test)]
-#[allow(clippy::panic)]
+#[allow(clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::{h_reg, h_schtasks};
+    use super::{h_reg, h_schtasks, persisted_command_child, sc_create_binpath};
     use crate::env::{Config, Environment};
     use crate::traits::Trait;
 
@@ -388,5 +426,34 @@ mod tests {
             "equals-bound /d child was not queued: {:?}",
             env.exec_cmd
         );
+    }
+
+    #[test]
+    fn sc_create_binpath_accepts_spaced_equals_value() {
+        let (service_name, bin_path) =
+            sc_create_binpath(r#"sc create UpdateSvc binPath= "cmd.exe /c echo hi""#)
+                .expect("sc create binPath should parse");
+
+        assert_eq!(service_name, "UpdateSvc");
+        assert_eq!(bin_path, "cmd.exe /c echo hi");
+    }
+
+    #[test]
+    fn sc_create_binpath_accepts_attached_equals_value() {
+        let (service_name, bin_path) =
+            sc_create_binpath(r#"sc.exe create "Update Svc" binPath="cmd.exe /c echo hi""#)
+                .expect("attached sc create binPath should parse");
+
+        assert_eq!(service_name, "Update Svc");
+        assert_eq!(bin_path, "cmd.exe /c echo hi");
+    }
+
+    #[test]
+    fn persisted_command_child_extracts_cmd_body_and_delayed_flag() {
+        let (child, delayed) = persisted_command_child(r#"cmd.exe /V:ON /c echo !USERPROFILE!"#)
+            .expect("cmd child should parse");
+
+        assert_eq!(child, "echo !USERPROFILE!");
+        assert!(delayed);
     }
 }

