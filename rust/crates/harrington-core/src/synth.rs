@@ -636,8 +636,9 @@ fn type_file(path: &str, env: &mut Environment) -> Vec<String> {
         }
     }
 
-    let key = path.to_ascii_lowercase();
-    if let Some(lines) = type_lines_from_entry(env.modified_filesystem.get(&key)) {
+    if let Some(lines) =
+        type_lines_from_entry(crate::handlers::util::filesystem_entry_for_path(env, path))
+    {
         return lines;
     }
     if let Some(name) = current_dir_basename(path) {
