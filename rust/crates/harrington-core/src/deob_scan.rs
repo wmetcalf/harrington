@@ -551,7 +551,9 @@ fn scan_bitsadmin_deob_text(deobfuscated: &str, env: &mut Environment) {
 
     for line in deobfuscated.lines() {
         let lower = line.to_ascii_lowercase();
-        if !(lower.contains("/transfer") || lower.contains("/addfile"))
+        if !(lower.contains("/transfer")
+            || lower.contains("/addfile")
+            || lower.contains("/setnotifycmdline"))
             || !lower.contains("bitsadmin")
         {
             continue;
@@ -562,6 +564,13 @@ fn scan_bitsadmin_deob_text(deobfuscated: &str, env: &mut Environment) {
             let segment = first_unquoted_ampersand_segment(tail);
             let tokens = split_words(segment);
             let lower_tokens: Vec<String> = tokens.iter().map(|s| s.to_ascii_lowercase()).collect();
+            if lower_tokens
+                .iter()
+                .any(|t| bitsadmin_deob_flag_matches(t, "/setnotifycmdline"))
+            {
+                crate::handlers::bitsadmin::h_bitsadmin(segment, env);
+                continue;
+            }
             if !lower_tokens.iter().any(|t| {
                 bitsadmin_deob_flag_matches(t, "/transfer")
                     || bitsadmin_deob_flag_matches(t, "/addfile")

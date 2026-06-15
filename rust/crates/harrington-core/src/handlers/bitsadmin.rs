@@ -9,12 +9,7 @@ pub fn h_bitsadmin(raw: &str, env: &mut Environment) {
     let lower: Vec<String> = tokens.iter().map(|s| s.to_ascii_lowercase()).collect();
     if let Some((job, command)) = bitsadmin_notify_command(&tokens) {
         push_lolbas(env, raw);
-        env.traits.push(Trait::Persistence {
-            hive: "BITS".to_string(),
-            key: job,
-            value_name: "SetNotifyCmdLine".to_string(),
-            command: command.clone(),
-        });
+        push_notify_persistence(env, job, command.clone());
         if let Some((child, delayed)) =
             crate::handlers::passthrough::persisted_command_child(&command)
         {
@@ -160,6 +155,31 @@ fn strip_notify_attached_value(token: &str) -> Option<&str> {
         }
     }
     None
+}
+
+fn push_notify_persistence(env: &mut Environment, job: String, command: String) {
+    if env.traits.iter().any(|t| {
+        matches!(
+            t,
+            Trait::Persistence {
+                hive,
+                key,
+                value_name,
+                command: existing,
+            } if hive == "BITS"
+                && key == &job
+                && value_name == "SetNotifyCmdLine"
+                && existing == &command
+        )
+    }) {
+        return;
+    }
+    env.traits.push(Trait::Persistence {
+        hive: "BITS".to_string(),
+        key: job,
+        value_name: "SetNotifyCmdLine".to_string(),
+        command,
+    });
 }
 
 fn strip_quotes(s: &str) -> &str {
