@@ -116,11 +116,7 @@ fn run_stage(stage: &str, input: Vec<String>, env: &mut Environment) -> Vec<Stri
         "find" => synth_find(&rest_args, input, env),
         "more" => synth_more(stage, &rest_args, input, env),
         "sort" => synth_sort(stage, &rest_args, input, env),
-        "type" => {
-            // type FILE — pull from modified_filesystem or input_bytes
-            let path = rest_args.first().copied().unwrap_or("");
-            type_file(path, env)
-        }
+        "type" => synth_type(&rest_args, env),
         "assoc" => synth_assoc(&rest_args, env),
         "ftype" => synth_ftype(&rest_args, env),
         "reg" => synth_reg(&rest_args, env),
@@ -348,6 +344,14 @@ fn synth_find(args: &[&str], input: Vec<String>, env: &mut Environment) -> Vec<S
         .filter(|arg| *arg != path)
         .collect::<Vec<_>>();
     filter_find(&filter_args, lines)
+}
+
+fn synth_type(args: &[&str], env: &mut Environment) -> Vec<String> {
+    let mut out = Vec::new();
+    for path in non_redirect_args(args) {
+        out.extend(type_file(path, env));
+    }
+    out
 }
 
 fn synth_command_key(token: &str) -> String {

