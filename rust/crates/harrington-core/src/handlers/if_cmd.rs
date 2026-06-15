@@ -138,11 +138,8 @@ fn evaluate(
         let unquoted_key = unquoted_path.to_ascii_lowercase();
         let is_simple_quoted_space =
             is_simple_quoted_token(raw_path) && unquoted_path.contains(char::is_whitespace);
-        let exists = env.modified_filesystem.contains_key(&raw_key)
-            || current_dir_path_exists(raw_path, env)
-            || (is_simple_quoted_space
-                && (env.modified_filesystem.contains_key(&unquoted_key)
-                    || current_dir_path_exists(unquoted_path, env)));
+        let exists = tracked_path_exists(raw_path, &raw_key, env)
+            || (is_simple_quoted_space && tracked_path_exists(unquoted_path, &unquoted_key, env));
         if !exists && is_simple_quoted_space && unresolved_unknown_quoted_space_exist {
             return None;
         }
@@ -243,6 +240,54 @@ fn evaluate(
     }
 
     None
+}
+
+fn tracked_path_exists(path: &str, key: &str, env: &Environment) -> bool {
+    env.modified_filesystem.contains_key(key)
+        || current_dir_path_exists(path, env)
+        || wildcard_path_exists(path, env)
+}
+
+fn wildcard_path_exists(pattern: &str, env: &Environment) -> bool {
+    if !pattern.contains(['*', '?']) {
+        return false;
+    }
+    let normalized_pattern = normalize_fs_match_path(pattern);
+    env.modified_filesystem
+        .keys()
+        .any(|path| wildcard_match(&normalized_pattern, &normalize_fs_match_path(path)))
+}
+
+fn normalize_fs_match_path(path: &str) -> String {
+    path.to_ascii_lowercase().replace('/', "\\")
+}
+
+fn wildcard_match(pattern: &str, text: &str) -> bool {
+    let pattern: Vec<char> = pattern.chars().collect();
+    let text: Vec<char> = text.chars().collect();
+    let (mut pi, mut ti) = (0usize, 0usize);
+    let mut star: Option<usize> = None;
+    let mut star_text = 0usize;
+    while ti < text.len() {
+        if pi < pattern.len() && (pattern[pi] == '?' || pattern[pi] == text[ti]) {
+            pi += 1;
+            ti += 1;
+        } else if pi < pattern.len() && pattern[pi] == '*' {
+            star = Some(pi);
+            pi += 1;
+            star_text = ti;
+        } else if let Some(star_index) = star {
+            pi = star_index + 1;
+            star_text += 1;
+            ti = star_text;
+        } else {
+            return false;
+        }
+    }
+    while pi < pattern.len() && pattern[pi] == '*' {
+        pi += 1;
+    }
+    pi == pattern.len()
 }
 
 fn current_dir_path_exists(path: &str, env: &Environment) -> bool {
