@@ -14060,6 +14060,22 @@ mod synth_tests {
     }
 
     #[test]
+    fn synth_redirect_current_dir_nested_target_is_visible_to_later_if_exist() {
+        let script = br#"echo marker>source.txt
+type source.txt > .\Temp\copied.txt
+if exist Temp\copied.txt set MARK=written
+echo %MARK%
+"#;
+        let report = crate::analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo written"),
+            "synthetic stdout redirect current-dir nested target was not tracked:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+    }
+
+    #[test]
     fn synth_type_current_dir_nested_does_not_read_unrelated_basename_content() {
         let mut env = Environment::new(&Config::default());
         env.modified_filesystem.insert(
