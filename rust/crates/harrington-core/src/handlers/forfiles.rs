@@ -12,7 +12,8 @@ pub fn extract_forfiles_inner(raw: &str) -> Option<String> {
     for (idx, token) in tokens.iter().enumerate().skip(1) {
         let lower = token.to_ascii_lowercase();
         if lower == "/c" || lower == "-c" {
-            return tokens.get(idx + 1).map(|s| s.trim().to_string());
+            let inner = tokens[idx + 1..].join(" ");
+            return (!inner.trim().is_empty()).then(|| inner.trim().to_string());
         }
         if let Some(rest) = lower
             .strip_prefix("/c:")
@@ -23,7 +24,13 @@ pub fn extract_forfiles_inner(raw: &str) -> Option<String> {
             let offset = token.len() - rest.len();
             let inner = token[offset..].trim();
             if !inner.is_empty() {
-                return Some(inner.to_string());
+                let mut command = inner.to_string();
+                let tail = tokens[idx + 1..].join(" ");
+                if !tail.is_empty() {
+                    command.push(' ');
+                    command.push_str(&tail);
+                }
+                return Some(command);
             }
         }
     }
@@ -92,9 +99,25 @@ mod tests {
     }
 
     #[test]
+    fn extracts_unquoted_c_command() {
+        assert_eq!(
+            extract_forfiles_inner(r#"forfiles /p C:\ /c cmd /c echo hi"#).as_deref(),
+            Some("cmd /c echo hi")
+        );
+    }
+
+    #[test]
     fn extracts_colon_attached_c_command() {
         assert_eq!(
             extract_forfiles_inner(r#"forfiles.exe /c:"cmd /c echo hi""#).as_deref(),
+            Some("cmd /c echo hi")
+        );
+    }
+
+    #[test]
+    fn extracts_attached_unquoted_c_command() {
+        assert_eq!(
+            extract_forfiles_inner(r#"forfiles /p C:\ /c=cmd /c echo hi"#).as_deref(),
             Some("cmd /c echo hi")
         );
     }

