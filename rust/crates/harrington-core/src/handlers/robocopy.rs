@@ -3,7 +3,7 @@
 use crate::env::{Environment, FsEntry};
 use crate::handlers::util::{
     filesystem_storage_key, join_windows_path_preserving_separator, normalize_wildcard_path,
-    split_words,
+    split_words, wildcard_match,
 };
 use crate::traits::Trait;
 
@@ -22,6 +22,7 @@ pub fn h_robocopy(raw: &str, env: &mut Environment) {
     }
     for file in files {
         if file_contains_wildcard(&file) {
+            copy_wildcard_file_set(&src_dir, &dst_dir, &file, env);
             continue;
         }
         let src = join_windows_path_preserving_separator(&src_dir, &file);
@@ -102,6 +103,34 @@ fn copy_default_file_set(src_dir: &str, dst_dir: &str, env: &mut Environment) {
             let comparable = normalize_wildcard_path(tracked_path);
             let relative = comparable.strip_prefix(&src_prefix)?;
             if relative.is_empty() || relative.contains('\\') {
+                return None;
+            }
+            let filename = windows_basename(tracked_path)?;
+            let dst = join_windows_path_preserving_separator(dst_dir, filename);
+            Some((filesystem_storage_key(&dst), entry.clone()))
+        })
+        .collect::<Vec<_>>();
+    for (dst, entry) in copied {
+        env.modified_filesystem.insert(dst, entry);
+    }
+}
+
+fn copy_wildcard_file_set(src_dir: &str, dst_dir: &str, pattern: &str, env: &mut Environment) {
+    let Some(src_prefix) = normalized_dir_prefix(src_dir) else {
+        return;
+    };
+    let pattern = normalize_wildcard_path(pattern);
+    let copied = env
+        .modified_filesystem
+        .iter()
+        .filter_map(|(tracked_path, entry)| {
+            if matches!(entry, FsEntry::Directory) {
+                return None;
+            }
+            let comparable = normalize_wildcard_path(tracked_path);
+            let relative = comparable.strip_prefix(&src_prefix)?;
+            if relative.is_empty() || relative.contains('\\') || !wildcard_match(&pattern, relative)
+            {
                 return None;
             }
             let filename = windows_basename(tracked_path)?;
