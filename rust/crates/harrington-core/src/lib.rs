@@ -13913,6 +13913,26 @@ mod synth_tests {
     }
 
     #[test]
+    fn synth_type_current_dir_nested_does_not_read_unrelated_basename_content() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "stage.txt".to_string(),
+            FsEntry::Content {
+                content: b"wrong\r\n".to_vec(),
+                append: false,
+            },
+        );
+
+        let lines = run_pipeline(r"type .\Temp\stage.txt", &mut env);
+
+        assert!(
+            lines.is_empty(),
+            "type .\\Temp\\stage.txt read unrelated basename content: {:?}",
+            lines
+        );
+    }
+
+    #[test]
     fn synth_find_filters() {
         let mut env = Environment::new(&Config::default());
         env.set("PATHX", "value1");
