@@ -294,6 +294,14 @@ fn prior_download_url(path: &str, env: &Environment) -> Option<String> {
     {
         return Some(src.clone());
     }
+    if let Some(stripped) = strip_current_dir_prefix(path) {
+        if stripped.contains(['\\', '/']) {
+            return match crate::handlers::util::filesystem_entry_for_path(env, stripped) {
+                Some(crate::env::FsEntry::Download { src }) => Some(src.clone()),
+                _ => None,
+            };
+        }
+    }
     if let Some(name) = current_dir_basename(path) {
         return prior_download_url_by_basename(name, env);
     }
@@ -318,9 +326,11 @@ fn prior_download_url_by_basename(path: &str, env: &Environment) -> Option<Strin
 }
 
 fn current_dir_basename(path: &str) -> Option<&str> {
-    path.strip_prefix(r".\")
-        .or_else(|| path.strip_prefix("./"))
-        .and_then(windows_basename)
+    strip_current_dir_prefix(path).and_then(windows_basename)
+}
+
+fn strip_current_dir_prefix(path: &str) -> Option<&str> {
+    path.strip_prefix(r".\").or_else(|| path.strip_prefix("./"))
 }
 
 fn queue_implicit_script_content(path: &str, ext: &str, env: &mut Environment) {
@@ -345,6 +355,13 @@ fn tracked_script_content(path: &str, env: &Environment) -> Option<Vec<u8>> {
         content_from_entry(crate::handlers::util::filesystem_entry_for_path(env, path))
     {
         return Some(content);
+    }
+    if let Some(stripped) = strip_current_dir_prefix(path) {
+        if stripped.contains(['\\', '/']) {
+            return content_from_entry(crate::handlers::util::filesystem_entry_for_path(
+                env, stripped,
+            ));
+        }
     }
     if let Some(name) = current_dir_basename(path) {
         return tracked_script_content_by_basename(name, env);
