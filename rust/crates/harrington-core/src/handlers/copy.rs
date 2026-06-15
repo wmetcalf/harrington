@@ -80,8 +80,13 @@ pub fn h_copy(raw: &str, env: &mut Environment) {
 pub fn h_xcopy(raw: &str, env: &mut Environment) {
     let tokens: Vec<String> = split_words(raw);
     let mut args: Vec<String> = Vec::new();
+    let mut assume_directory_dst = false;
     for t in tokens.iter().skip(1) {
         let stripped = strip_quotes(t);
+        if stripped.eq_ignore_ascii_case("/i") || stripped.eq_ignore_ascii_case("-i") {
+            assume_directory_dst = true;
+            continue;
+        }
         if stripped.starts_with('/') || stripped.starts_with('-') {
             continue;
         }
@@ -101,6 +106,10 @@ pub fn h_xcopy(raw: &str, env: &mut Environment) {
     }
     let entry = copied_entry(&src, env).unwrap_or(FsEntry::Copy { src: src.clone() });
     insert_copied_entry(env, &src, &dst, entry);
+    if assume_directory_dst && xcopy_dst_looks_like_directory(&dst) {
+        let entry = copied_entry(&src, env).unwrap_or(FsEntry::Copy { src: src.clone() });
+        insert_copied_directory_entry(env, &src, &dst, entry);
+    }
 }
 
 pub fn h_move(raw: &str, env: &mut Environment) {
@@ -184,6 +193,13 @@ fn insert_copied_entry(env: &mut Environment, src: &str, dst: &str, entry: FsEnt
     }
 }
 
+fn insert_copied_directory_entry(env: &mut Environment, src: &str, dst_dir: &str, entry: FsEntry) {
+    if let Some(joined) = copy_directory_destination_path(src, &format!("{dst_dir}\\")) {
+        env.modified_filesystem
+            .insert(joined.to_ascii_lowercase(), entry);
+    }
+}
+
 fn copy_directory_destination_path(src: &str, dst: &str) -> Option<String> {
     if !dst.ends_with(['\\', '/']) {
         return None;
@@ -200,6 +216,13 @@ fn windows_basename(path: &str) -> Option<&str> {
         .rsplit(['\\', '/'])
         .next()
         .filter(|name| !name.is_empty())
+}
+
+fn xcopy_dst_looks_like_directory(dst: &str) -> bool {
+    if dst.ends_with(['\\', '/']) {
+        return true;
+    }
+    windows_basename(dst).is_some_and(|name| !name.contains('.'))
 }
 
 fn is_windows_util_copy(src: &str, dst: &str) -> bool {
