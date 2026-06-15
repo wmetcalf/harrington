@@ -7,22 +7,23 @@ use crate::traits::Trait;
 pub fn h_bitsadmin(raw: &str, env: &mut Environment) {
     let tokens = split_words(raw);
     let lower: Vec<String> = tokens.iter().map(|s| s.to_ascii_lowercase()).collect();
-    if !lower.iter().any(|t| t == "/transfer" || t == "/addfile") {
+    if !lower
+        .iter()
+        .any(|t| bitsadmin_flag_matches(t, "/transfer") || bitsadmin_flag_matches(t, "/addfile"))
+    {
         return;
     }
 
     // Skip past /transfer and known flags to find URL + DST pairs.
     let mut downloads: Vec<(String, String)> = Vec::new();
     let mut pending_url: Option<String> = None;
-    let skip_flags = ["/transfer", "/addfile", "/download", "/upload", "/priority"];
-    let skip_values = ["/priority"]; // flags whose VALUE we also skip
 
     let mut i = 1; // skip "bitsadmin"
     while i < tokens.len() {
         let t = &tokens[i];
         let tl = t.to_ascii_lowercase();
-        if skip_flags.contains(&tl.as_str()) {
-            if skip_values.contains(&tl.as_str()) {
+        if bitsadmin_skip_flag(&tl) {
+            if bitsadmin_flag_matches(&tl, "/priority") {
                 i += 2;
             } else {
                 i += 1;
@@ -79,6 +80,20 @@ pub fn h_bitsadmin(raw: &str, env: &mut Environment) {
                 .insert(d.to_ascii_lowercase(), FsEntry::Download { src: u });
         }
     }
+}
+
+fn bitsadmin_skip_flag(token: &str) -> bool {
+    ["/transfer", "/addfile", "/download", "/upload", "/priority"]
+        .iter()
+        .any(|flag| bitsadmin_flag_matches(token, flag))
+}
+
+fn bitsadmin_flag_matches(token: &str, flag: &str) -> bool {
+    token == flag
+        || token
+            .strip_prefix(flag)
+            .and_then(|rest| rest.as_bytes().first())
+            .is_some_and(|byte| matches!(*byte, b':' | b'='))
 }
 
 fn strip_quotes(s: &str) -> &str {

