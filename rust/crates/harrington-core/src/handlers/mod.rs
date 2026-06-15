@@ -96,6 +96,7 @@ pub fn lookup(name: &str) -> Option<Handler> {
         "bitsadmin" => Some(bitsadmin::h_bitsadmin),
         "cscript" => Some(cscript::h_cscript),
         "extrac32" => Some(extrac32::h_extrac32),
+        "expand" => Some(extrac32::h_expand),
         "wscript" => Some(cscript::h_wscript),
         "wmic" => Some(wmic::h_wmic),
         "psexec" => Some(passthrough::h_psexec),
