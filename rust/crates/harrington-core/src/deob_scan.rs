@@ -11182,7 +11182,7 @@ pub fn scan_unc_webdav(deobfuscated: &str, env: &mut Environment) {
         let command = deobfuscated
             .lines()
             .find(|l| l.contains(full_match))
-            .map(|l| l.chars().take(240).collect::<String>())
+            .map(str::to_string)
             .unwrap_or_default();
 
         let http_url = unc_webdav_to_http_url(&host, &port, full_match);
@@ -11208,7 +11208,7 @@ pub fn scan_unc_webdav(deobfuscated: &str, env: &mut Environment) {
         let command = deobfuscated
             .lines()
             .find(|l| l.contains(full_match))
-            .map(|l| l.chars().take(240).collect::<String>())
+            .map(str::to_string)
             .unwrap_or_default();
         if !contains_ascii_case_insensitive_atom(&command, b"rundll32") {
             continue;
@@ -11235,7 +11235,7 @@ fn regsvr32_webdav_target_after(
             continue;
         }
         let url = webdav_unc_to_http_url(candidate)?;
-        return Some((line.chars().take(240).collect::<String>(), url));
+        return Some((line.to_string(), url));
     }
     None
 }
@@ -11260,7 +11260,7 @@ fn rundll32_webdav_target_after(
             continue;
         }
         let url = webdav_unc_to_http_url(candidate)?;
-        return Some((line.chars().take(240).collect::<String>(), url));
+        return Some((line.to_string(), url));
     }
     None
 }
