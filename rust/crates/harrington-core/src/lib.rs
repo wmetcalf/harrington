@@ -13864,6 +13864,20 @@ mod wmic_tests {
     }
 
     #[test]
+    fn wmic_path_win32_process_call_create_extracts_inner() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"wmic path Win32_Process call create "cmd /c echo class""#,
+            &mut env,
+        );
+        assert!(
+            env.exec_cmd.iter().any(|cmd| cmd == "cmd /c echo class"),
+            "wmic path Win32_Process child not extracted: {:?}",
+            env.exec_cmd
+        );
+    }
+
+    #[test]
     fn wmic_process_call_create_ignores_current_directory_argument() {
         let mut env = Environment::new(&Config::default());
         interpret_line(

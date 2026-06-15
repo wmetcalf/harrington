@@ -28,7 +28,7 @@ pub(crate) fn wmic_process_create_inner(raw: &str) -> Option<String> {
     let tokens = split_words(raw);
     let mut process_idx = None;
     for (idx, token) in tokens.iter().enumerate().skip(1) {
-        if strip_quotes(token).eq_ignore_ascii_case("process") {
+        if is_process_create_selector(strip_quotes(token)) {
             process_idx = Some(idx);
             break;
         }
@@ -60,6 +60,10 @@ pub(crate) fn wmic_process_create_inner(raw: &str) -> Option<String> {
     } else {
         Some(inner)
     }
+}
+
+fn is_process_create_selector(token: &str) -> bool {
+    token.eq_ignore_ascii_case("process") || token.eq_ignore_ascii_case("win32_process")
 }
 
 fn wmic_create_commandline_argument(tail: &str) -> Option<String> {
