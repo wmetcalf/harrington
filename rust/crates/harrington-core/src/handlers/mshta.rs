@@ -106,6 +106,14 @@ fn prior_download_url(tokens: &[String], env: &Environment) -> Option<String> {
         if let Some(FsEntry::Download { src }) = filesystem_entry_for_path(env, candidate) {
             return Some(src.clone());
         }
+        if let Some(stripped) = strip_current_dir_prefix(candidate) {
+            if stripped.contains(['\\', '/']) {
+                return match filesystem_entry_for_path(env, stripped) {
+                    Some(FsEntry::Download { src }) => Some(src.clone()),
+                    _ => None,
+                };
+            }
+        }
         if let Some(name) = current_dir_basename(candidate) {
             return prior_download_url_by_basename(name, env);
         }
@@ -153,6 +161,11 @@ fn tracked_hta_content(candidate: &str, env: &Environment) -> Option<Vec<u8>> {
     if let Some(content) = content_from_entry(filesystem_entry_for_path(env, candidate)) {
         return Some(content);
     }
+    if let Some(stripped) = strip_current_dir_prefix(candidate) {
+        if stripped.contains(['\\', '/']) {
+            return content_from_entry(filesystem_entry_for_path(env, stripped));
+        }
+    }
     if let Some(name) = current_dir_basename(candidate) {
         return tracked_hta_content_by_basename(name, env);
     }
@@ -177,9 +190,11 @@ fn tracked_hta_content_by_basename(candidate: &str, env: &Environment) -> Option
 }
 
 fn current_dir_basename(path: &str) -> Option<&str> {
-    path.strip_prefix(r".\")
-        .or_else(|| path.strip_prefix("./"))
-        .and_then(windows_basename)
+    strip_current_dir_prefix(path).and_then(windows_basename)
+}
+
+fn strip_current_dir_prefix(path: &str) -> Option<&str> {
+    path.strip_prefix(r".\").or_else(|| path.strip_prefix("./"))
 }
 
 fn content_from_entry(entry: Option<&FsEntry>) -> Option<Vec<u8>> {
