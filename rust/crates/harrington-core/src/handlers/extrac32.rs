@@ -56,6 +56,14 @@ fn downloaded_src_for_candidate(candidate: &str, env: &Environment) -> Option<St
     {
         return Some(src.clone());
     }
+    if let Some(stripped) = strip_current_dir_prefix(candidate) {
+        if stripped.contains(['\\', '/']) {
+            return match crate::handlers::util::filesystem_entry_for_path(env, stripped) {
+                Some(FsEntry::Download { src }) => Some(src.clone()),
+                _ => None,
+            };
+        }
+    }
     if let Some(name) = current_dir_basename(candidate) {
         return downloaded_src_by_basename(name, env);
     }
@@ -80,9 +88,11 @@ fn downloaded_src_by_basename(candidate: &str, env: &Environment) -> Option<Stri
 }
 
 fn current_dir_basename(path: &str) -> Option<&str> {
-    path.strip_prefix(r".\")
-        .or_else(|| path.strip_prefix("./"))
-        .and_then(windows_basename)
+    strip_current_dir_prefix(path).and_then(windows_basename)
+}
+
+fn strip_current_dir_prefix(path: &str) -> Option<&str> {
+    path.strip_prefix(r".\").or_else(|| path.strip_prefix("./"))
 }
 
 fn windows_basename(path: &str) -> Option<&str> {

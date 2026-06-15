@@ -3272,10 +3272,13 @@ fn url_for_download_destination(
     downloads: &std::collections::HashMap<String, String>,
 ) -> Option<String> {
     let key = normalized_path_key(dll);
-    downloads
-        .get(&key)
-        .cloned()
-        .or_else(|| downloads.get(&normalized_path_basename(dll)).cloned())
+    if let Some(url) = downloads.get(&key) {
+        return Some(url.clone());
+    }
+    if key.contains('\\') {
+        return None;
+    }
+    downloads.get(&normalized_path_basename(dll)).cloned()
 }
 
 fn normalized_path_key(path: &str) -> String {
