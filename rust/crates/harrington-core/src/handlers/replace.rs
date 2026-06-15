@@ -1,7 +1,7 @@
 //! replace.exe handler — tracks source files copied into a destination directory.
 
 use crate::env::{Environment, FsEntry};
-use crate::handlers::util::split_words;
+use crate::handlers::util::{join_windows_path_preserving_separator, split_words};
 use crate::traits::Trait;
 
 pub fn h_replace(raw: &str, env: &mut Environment) {
@@ -65,10 +65,7 @@ fn current_dir_basename(path: &str) -> Option<&str> {
 
 fn destination_path(src: &str, dst_dir: &str) -> Option<String> {
     let basename = windows_basename(src)?;
-    let mut out = dst_dir.trim_end_matches(['\\', '/']).to_string();
-    out.push('\\');
-    out.push_str(basename);
-    Some(collapse_slashes(&out))
+    Some(join_windows_path_preserving_separator(dst_dir, basename))
 }
 
 fn windows_basename(path: &str) -> Option<&str> {

@@ -122,6 +122,31 @@ pub(crate) fn normalize_wildcard_path(path: &str) -> String {
         .replace("*.*", "*")
 }
 
+pub(crate) fn join_windows_path_preserving_separator(dir: &str, file: &str) -> String {
+    let separator = if dir.contains('/') && !dir.contains('\\') {
+        '/'
+    } else {
+        '\\'
+    };
+    let mut out = dir.trim_end_matches(['\\', '/']).to_string();
+    out.push(separator);
+    out.push_str(file.trim_start_matches(['\\', '/']));
+    collapse_repeated_separator(&out, separator)
+}
+
+fn collapse_repeated_separator(s: &str, separator: char) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut prev = '\0';
+    for c in s.chars() {
+        if c == separator && prev == separator {
+            continue;
+        }
+        out.push(c);
+        prev = c;
+    }
+    out
+}
+
 pub(crate) fn wildcard_match(pattern: &str, text: &str) -> bool {
     let pattern: Vec<char> = pattern.chars().collect();
     let text: Vec<char> = text.chars().collect();
