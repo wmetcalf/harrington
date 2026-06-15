@@ -341,7 +341,9 @@ pub(crate) fn start_child_command(raw: &str) -> Option<&str> {
 }
 
 fn strip_start_command(raw: &str) -> Option<&str> {
-    let raw = raw.trim_start();
+    let raw = raw.trim_start_matches(|c: char| {
+        c == '@' || c == '(' || c == ';' || c == ',' || c.is_whitespace()
+    });
     let lower = raw.to_ascii_lowercase();
     for prefix in ["start.exe", "start"] {
         let Some(rest) = lower.strip_prefix(prefix) else {
@@ -606,6 +608,12 @@ mod start_child_tests {
     fn start_attached_d_option_skips_working_directory() {
         let child =
             start_child_command(r#"start /D"C:\Users\Public" /min cmd.exe /c echo child"#).unwrap();
+        assert_eq!(child, "cmd.exe /c echo child");
+    }
+
+    #[test]
+    fn start_accepts_echo_suppressed_prefix() {
+        let child = start_child_command(r#"@start "" /min cmd.exe /c echo child"#).unwrap();
         assert_eq!(child, "cmd.exe /c echo child");
     }
 }
