@@ -319,7 +319,7 @@ pub fn h_start(raw: &str, env: &mut Environment) {
     crate::interp::interpret_line(inner.as_ref(), env);
 }
 
-fn start_child_command(raw: &str) -> Option<&str> {
+pub(crate) fn start_child_command(raw: &str) -> Option<&str> {
     let mut rest = strip_start_command(raw)?.trim_start();
     let mut title_consumed = false;
     loop {

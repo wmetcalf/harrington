@@ -99,6 +99,12 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
         }
     }
 
+    if crate::handlers::cmd::start_child_command(raw).is_some() {
+        crate::handlers::cmd::h_start(raw, env);
+        result.consumed = true;
+        return result;
+    }
+
     if let Some(command) = crate::handlers::passthrough::runas_child_command(raw) {
         crate::handlers::passthrough::h_runas(raw, env);
         if let Some((child, delayed)) =
