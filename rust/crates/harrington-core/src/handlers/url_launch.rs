@@ -47,8 +47,9 @@ fn launcher_target(tokens: &[String]) -> Option<String> {
 }
 
 fn prior_download_url(path: &str, env: &Environment) -> Option<String> {
-    let key = path.to_ascii_lowercase();
-    if let Some(FsEntry::Download { src }) = env.modified_filesystem.get(&key) {
+    if let Some(FsEntry::Download { src }) =
+        crate::handlers::util::filesystem_entry_for_path(env, path)
+    {
         return Some(src.clone());
     }
     if let Some(name) = current_dir_basename(path) {

