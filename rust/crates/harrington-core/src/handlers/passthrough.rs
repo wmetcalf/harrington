@@ -99,16 +99,31 @@ fn remove_tracked_directory_wildcard(
     candidate: &str,
     recursive: bool,
 ) -> bool {
+    if let Some(pattern) = current_dir_basename(candidate).filter(|name| name.contains(['*', '?']))
+    {
+        let pattern = normalize_wildcard_path(pattern);
+        env.modified_filesystem.retain(|path, entry| {
+            if matches!(entry, FsEntry::Directory) {
+                return true;
+            }
+            if path.contains(['\\', '/', ':']) {
+                return true;
+            }
+            !windows_basename(path)
+                .is_some_and(|name| wildcard_match(&pattern, &normalize_wildcard_path(name)))
+        });
+        return true;
+    }
     let Some(dir) = directory_wildcard_prefix(candidate) else {
         return false;
     };
-    let mut prefix = dir.to_ascii_lowercase().replace('/', "\\");
+    let mut prefix = normalize_wildcard_path(&dir);
     if prefix.is_empty() {
         return true;
     }
     prefix.push('\\');
     env.modified_filesystem.retain(|path, entry| {
-        let comparable = path.to_ascii_lowercase().replace('/', "\\");
+        let comparable = normalize_wildcard_path(path);
         if matches!(entry, FsEntry::Directory) || !comparable.starts_with(&prefix) {
             return true;
         }
@@ -125,6 +140,40 @@ fn directory_wildcard_prefix(candidate: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn normalize_wildcard_path(path: &str) -> String {
+    path.to_ascii_lowercase()
+        .replace('/', "\\")
+        .replace("*.*", "*")
+}
+
+fn wildcard_match(pattern: &str, text: &str) -> bool {
+    let pattern: Vec<char> = pattern.chars().collect();
+    let text: Vec<char> = text.chars().collect();
+    let (mut pi, mut ti) = (0usize, 0usize);
+    let mut star: Option<usize> = None;
+    let mut star_text = 0usize;
+    while ti < text.len() {
+        if pi < pattern.len() && (pattern[pi] == '?' || pattern[pi] == text[ti]) {
+            pi += 1;
+            ti += 1;
+        } else if pi < pattern.len() && pattern[pi] == '*' {
+            star = Some(pi);
+            pi += 1;
+            star_text = ti;
+        } else if let Some(star_index) = star {
+            pi = star_index + 1;
+            star_text += 1;
+            ti = star_text;
+        } else {
+            return false;
+        }
+    }
+    while pi < pattern.len() && pattern[pi] == '*' {
+        pi += 1;
+    }
+    pi == pattern.len()
 }
 
 fn current_dir_basename(path: &str) -> Option<&str> {
