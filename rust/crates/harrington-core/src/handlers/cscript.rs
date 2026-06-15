@@ -105,9 +105,16 @@ fn tracked_script_content(path: &str, env: &Environment) -> Option<Vec<u8>> {
     if let Some(content) = content_from_entry(env.modified_filesystem.get(&key)) {
         return Some(content);
     }
+    if let Some(name) = current_dir_basename(path) {
+        return tracked_script_content_by_basename(name, env);
+    }
     if path.contains(['\\', '/']) {
         return None;
     }
+    tracked_script_content_by_basename(path, env)
+}
+
+fn tracked_script_content_by_basename(path: &str, env: &Environment) -> Option<Vec<u8>> {
     for (tracked_path, entry) in &env.modified_filesystem {
         let Some(name) = windows_basename(tracked_path) else {
             continue;
@@ -134,9 +141,16 @@ fn prior_download_url(path: &str, env: &Environment) -> Option<String> {
     if let Some(FsEntry::Download { src }) = env.modified_filesystem.get(&key) {
         return Some(src.clone());
     }
+    if let Some(name) = current_dir_basename(path) {
+        return prior_download_url_by_basename(name, env);
+    }
     if path.contains(['\\', '/']) {
         return None;
     }
+    prior_download_url_by_basename(path, env)
+}
+
+fn prior_download_url_by_basename(path: &str, env: &Environment) -> Option<String> {
     for (tracked_path, entry) in &env.modified_filesystem {
         let Some(name) = windows_basename(tracked_path) else {
             continue;
@@ -148,6 +162,12 @@ fn prior_download_url(path: &str, env: &Environment) -> Option<String> {
         }
     }
     None
+}
+
+fn current_dir_basename(path: &str) -> Option<&str> {
+    path.strip_prefix(r".\")
+        .or_else(|| path.strip_prefix("./"))
+        .and_then(windows_basename)
 }
 
 fn windows_basename(path: &str) -> Option<&str> {

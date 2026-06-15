@@ -14244,6 +14244,25 @@ mod cscript_tests {
     }
 
     #[test]
+    fn wscript_current_dir_js_content_extracts_payload() {
+        let mut env = Environment::new(&Config::default());
+        let js_content = b"WScript.Echo('dot')\r\n".to_vec();
+        env.modified_filesystem.insert(
+            "drop.js".to_string(),
+            FsEntry::Content {
+                content: js_content.clone(),
+                append: false,
+            },
+        );
+        interpret_line(r#"wscript .\drop.js"#, &mut env);
+        assert!(
+            env.exec_jscript.iter().any(|c| c == &js_content),
+            "current-directory JS was not extracted: {:?}",
+            env.exec_jscript
+        );
+    }
+
+    #[test]
     fn cscript_repeated_vbs_content_is_queued_once() {
         let mut env = Environment::new(&Config::default());
         let vbs_content = b"WScript.Echo \"dedupe\"\r\n".to_vec();
