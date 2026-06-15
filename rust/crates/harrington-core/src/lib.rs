@@ -9576,6 +9576,21 @@ echo %MARK%
     }
 
     #[test]
+    fn if_exist_star_dot_star_matches_extensionless_tracked_file() {
+        let script = br#"echo marker>C:\Temp\gate
+if exist C:\Temp\*.* set MARK=found
+echo %MARK%
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo found"),
+            "if exist *.* did not resolve extensionless tracked file:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+    }
+
+    #[test]
     fn del_removes_tracked_file_for_later_if_not_exist() {
         let script = br#"echo marker>gate.txt
 del gate.txt
