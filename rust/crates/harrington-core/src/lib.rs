@@ -9828,6 +9828,22 @@ echo %MARK%
     }
 
     #[test]
+    fn del_directory_file_wildcard_removes_tracked_file_for_later_if_not_exist() {
+        let script = br#"echo marker>C:\Temp\gate.txt
+del /f /q C:\Temp\*.txt
+if not exist C:\Temp\gate.txt set MARK=deleted
+echo %MARK%
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo deleted"),
+            "del directory file wildcard did not update tracked file state for if not exist:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+    }
+
+    #[test]
     fn del_slash_directory_wildcard_removes_tracked_file_for_later_if_not_exist() {
         let script = br#"echo marker>C:/Temp/gate.txt
 del /f /q C:/Temp/*.*
@@ -9854,6 +9870,22 @@ echo %MARK%
         assert!(
             report.deobfuscated.contains("echo deleted"),
             "del current-dir wildcard did not update tracked file state for if exist:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+    }
+
+    #[test]
+    fn del_bare_file_wildcard_removes_tracked_file_for_later_if_not_exist() {
+        let script = br#"echo marker>gate.txt
+del *.txt
+if not exist gate.txt set MARK=deleted
+echo %MARK%
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo deleted"),
+            "del bare file wildcard did not update tracked file state for if not exist:\n{}\ntraits={:?}",
             report.deobfuscated,
             report.traits
         );
