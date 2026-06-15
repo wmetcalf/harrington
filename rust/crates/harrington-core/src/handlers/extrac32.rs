@@ -53,9 +53,16 @@ fn downloaded_src_for_candidate(candidate: &str, env: &Environment) -> Option<St
     if let Some(FsEntry::Download { src }) = env.modified_filesystem.get(&key) {
         return Some(src.clone());
     }
+    if let Some(name) = current_dir_basename(candidate) {
+        return downloaded_src_by_basename(name, env);
+    }
     if candidate.contains(['\\', '/']) {
         return None;
     }
+    downloaded_src_by_basename(candidate, env)
+}
+
+fn downloaded_src_by_basename(candidate: &str, env: &Environment) -> Option<String> {
     for (path, entry) in &env.modified_filesystem {
         let Some(name) = windows_basename(path) else {
             continue;
@@ -67,6 +74,12 @@ fn downloaded_src_for_candidate(candidate: &str, env: &Environment) -> Option<St
         }
     }
     None
+}
+
+fn current_dir_basename(path: &str) -> Option<&str> {
+    path.strip_prefix(r".\")
+        .or_else(|| path.strip_prefix("./"))
+        .and_then(windows_basename)
 }
 
 fn windows_basename(path: &str) -> Option<&str> {
