@@ -14251,6 +14251,31 @@ echo archive=W_%USERNAME%_!publicIP!.zip
     }
 
     #[test]
+    fn for_f_curl_icanhazip_feeds_later_variable() {
+        use crate::traits::Trait;
+        let script = br#"setlocal EnableDelayedExpansion
+for /F "tokens=* delims=" %%I in ('curl -s https://icanhazip.com') do set "publicIP=%%I"
+echo archive=W_%USERNAME%_!publicIP!.zip
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report
+                .deobfuscated
+                .contains("echo archive=W_puncher_203.0.113.10.zip"),
+            "got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ForUnresolvedSource { pipeline } if pipeline.contains("icanhazip.com")
+            )),
+            "icanhazip curl endpoint should synthesize a stable response: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn for_f_reads_ip_api_csv_downloaded_by_powershell() {
         use crate::traits::Trait;
         let script = br#"powershell -Command "(New-Object Net.WebClient).DownloadFile('http://ip-api.com/csv', 'GEO.csv')"
