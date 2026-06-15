@@ -7,6 +7,22 @@ use crate::traits::Trait;
 pub fn h_bitsadmin(raw: &str, env: &mut Environment) {
     let tokens = split_words(raw);
     let lower: Vec<String> = tokens.iter().map(|s| s.to_ascii_lowercase()).collect();
+    if let Some((job, command)) = bitsadmin_notify_command(&tokens) {
+        push_lolbas(env, raw);
+        env.traits.push(Trait::Persistence {
+            hive: "BITS".to_string(),
+            key: job,
+            value_name: "SetNotifyCmdLine".to_string(),
+            command: command.clone(),
+        });
+        if let Some((child, delayed)) =
+            crate::handlers::passthrough::persisted_command_child(&command)
+        {
+            env.exec_cmd.push(child);
+            env.exec_cmd_delayed.push(delayed);
+        }
+        return;
+    }
     if !lower
         .iter()
         .any(|t| bitsadmin_flag_matches(t, "/transfer") || bitsadmin_flag_matches(t, "/addfile"))
@@ -94,6 +110,56 @@ fn bitsadmin_flag_matches(token: &str, flag: &str) -> bool {
             .strip_prefix(flag)
             .and_then(|rest| rest.as_bytes().first())
             .is_some_and(|byte| matches!(*byte, b':' | b'='))
+}
+
+fn bitsadmin_notify_command(tokens: &[String]) -> Option<(String, String)> {
+    let mut i = 1usize;
+    while i < tokens.len() {
+        let token = strip_quotes(&tokens[i]);
+        let lower = token.to_ascii_lowercase();
+        let (job, program_idx) = if lower == "/setnotifycmdline" || lower == "-setnotifycmdline" {
+            (strip_quotes(tokens.get(i + 1)?).to_string(), i + 2)
+        } else if let Some(rest) = strip_notify_attached_value(token) {
+            (strip_quotes(rest).to_string(), i + 1)
+        } else {
+            i += 1;
+            continue;
+        };
+        let program = strip_quotes(tokens.get(program_idx)?).trim();
+        if job.is_empty() || program.is_empty() || program.eq_ignore_ascii_case("none") {
+            return None;
+        }
+        let params = tokens
+            .get(program_idx + 1..)
+            .unwrap_or_default()
+            .iter()
+            .map(|part| strip_quotes(part))
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let command = if params.is_empty() {
+            program.to_string()
+        } else {
+            format!("{program} {params}")
+        };
+        return Some((job, command));
+    }
+    None
+}
+
+fn strip_notify_attached_value(token: &str) -> Option<&str> {
+    let lower = token.to_ascii_lowercase();
+    for prefix in [
+        "/setnotifycmdline:",
+        "/setnotifycmdline=",
+        "-setnotifycmdline:",
+        "-setnotifycmdline=",
+    ] {
+        if lower.starts_with(prefix) {
+            return Some(&token[prefix.len()..]);
+        }
+    }
+    None
 }
 
 fn strip_quotes(s: &str) -> &str {
