@@ -3399,6 +3399,29 @@ mod for_f_misc_tests {
     }
 
     #[test]
+    fn for_f_reads_current_dir_generated_file_source() {
+        let script = br#"echo found>geo.txt
+for /f "tokens=*" %%a in (.\geo.txt) do set MARK=%%a
+echo %MARK%
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo found"),
+            "for /f current-dir file source did not resolve:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::ForUnresolvedSource { .. })),
+            "current-dir for /f file source should not stay unresolved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn for_f_reads_common_inventory_command_output() {
         let script = b"for /f \"tokens=1\" %%i in ('ipconfig') do echo %%i\r\nfor /f \"tokens=1\" %%i in ('systeminfo') do echo %%i\r\nfor /f \"tokens=1\" %%i in ('getmac') do echo %%i\r\n";
         let report = analyze(script, &Config::default());

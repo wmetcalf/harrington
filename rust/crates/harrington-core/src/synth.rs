@@ -612,8 +612,6 @@ fn filter_find(args: &[&str], input: Vec<String>) -> Vec<String> {
 }
 
 fn type_file(path: &str, env: &mut Environment) -> Vec<String> {
-    use crate::env::FsEntry;
-
     let path = path.trim_matches('"');
 
     // %~f0 / explicit input path → read input bytes
@@ -639,17 +637,47 @@ fn type_file(path: &str, env: &mut Environment) -> Vec<String> {
     }
 
     let key = path.to_ascii_lowercase();
-    match env.modified_filesystem.get(&key) {
-        Some(FsEntry::Content { content, .. }) | Some(FsEntry::Decoded { content, .. }) => {
-            let content = content.clone();
-            String::from_utf8_lossy(&content)
-                .split_inclusive('\n')
-                .map(|l| l.trim_end_matches(['\r', '\n']).to_string())
-                .collect()
-        }
-        Some(FsEntry::Download { src }) => synth_downloaded_file_lines(src),
-        _ => Vec::new(),
+    if let Some(lines) = type_lines_from_entry(env.modified_filesystem.get(&key)) {
+        return lines;
     }
+    if let Some(name) = current_dir_basename(path) {
+        let key = name.to_ascii_lowercase();
+        if let Some(lines) = type_lines_from_entry(env.modified_filesystem.get(&key)) {
+            return lines;
+        }
+    }
+    Vec::new()
+}
+
+fn type_lines_from_entry(entry: Option<&crate::env::FsEntry>) -> Option<Vec<String>> {
+    use crate::env::FsEntry;
+
+    match entry {
+        Some(FsEntry::Content { content, .. }) | Some(FsEntry::Decoded { content, .. }) => {
+            Some(bytes_to_type_lines(content))
+        }
+        Some(FsEntry::Download { src }) => Some(synth_downloaded_file_lines(src)),
+        _ => None,
+    }
+}
+
+fn bytes_to_type_lines(content: &[u8]) -> Vec<String> {
+    String::from_utf8_lossy(content)
+        .split_inclusive('\n')
+        .map(|l| l.trim_end_matches(['\r', '\n']).to_string())
+        .collect()
+}
+
+fn current_dir_basename(path: &str) -> Option<&str> {
+    path.strip_prefix(r".\")
+        .or_else(|| path.strip_prefix("./"))
+        .and_then(windows_basename)
+}
+
+fn windows_basename(path: &str) -> Option<&str> {
+    path.rsplit(['\\', '/'])
+        .next()
+        .filter(|name| !name.is_empty())
 }
 
 fn synth_downloaded_file_lines(src: &str) -> Vec<String> {
