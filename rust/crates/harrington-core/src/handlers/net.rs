@@ -13,15 +13,18 @@ pub fn h_net(raw: &str, env: &mut Environment) {
     }
     let mut info = NetUseInfo::default();
     let mut extras: Vec<String> = Vec::new();
-    for p in tokens.iter().skip(2) {
+    let mut idx = 2usize;
+    while let Some(p) = tokens.get(idx) {
         let pl = p.to_ascii_lowercase();
         let p_unquoted = p.trim_matches('"').trim_matches('\'').to_string();
         if pl.starts_with("/sa") {
             info.options.push("savecred".into());
+            idx += 1;
             continue;
         }
         if pl.starts_with("/sm") {
             info.options.push("smartcard".into());
+            idx += 1;
             continue;
         }
         if pl.starts_with("/d") {
@@ -31,6 +34,7 @@ pub fn h_net(raw: &str, env: &mut Environment) {
                 "delete"
             };
             info.options.push(v.into());
+            idx += 1;
             continue;
         }
         if pl.starts_with("/p") {
@@ -40,23 +44,37 @@ pub fn h_net(raw: &str, env: &mut Environment) {
                 "persistent"
             };
             info.options.push(v.into());
+            idx += 1;
+            continue;
+        }
+        if pl == "/u" || pl == "/user" {
+            if let Some(v) = tokens.get(idx + 1) {
+                info.user = Some(v.trim_matches('"').trim_matches('\'').to_string());
+                idx += 2;
+            } else {
+                idx += 1;
+            }
             continue;
         }
         if pl.starts_with("/u") {
             if let Some(v) = p.split(':').nth(1) {
                 info.user = Some(v.to_string());
             }
+            idx += 1;
             continue;
         }
         if pl.starts_with("/y") {
             info.options.push("auto-accept".into());
+            idx += 1;
             continue;
         }
         if pl.starts_with("/n") {
             info.options.push("auto-decline".into());
+            idx += 1;
             continue;
         }
         extras.push(p_unquoted);
+        idx += 1;
     }
     if extras.is_empty() {
         return;
