@@ -1,4 +1,5 @@
 use crate::env::Environment;
+use crate::handlers::util::split_words;
 use crate::traits::{NetUseInfo, Trait};
 
 pub fn h_net(raw: &str, env: &mut Environment) {
@@ -6,7 +7,7 @@ pub fn h_net(raw: &str, env: &mut Environment) {
     if !lower.starts_with("net use") || lower.starts_with("net user") {
         return;
     }
-    let tokens: Vec<String> = raw.split_whitespace().map(|s| s.to_string()).collect();
+    let tokens: Vec<String> = split_words(raw);
     if tokens.len() <= 2 {
         return;
     }

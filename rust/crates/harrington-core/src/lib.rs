@@ -11663,6 +11663,28 @@ rundll32 c:\programdata\COIm.jpg,init"#,
         interpret_line(r#"net use Z: \\evil\share /user:adm pass"#, &mut env);
         assert!(env.traits.iter().any(|t| matches!(t, Trait::NetUse { .. })));
     }
+
+    #[test]
+    fn net_use_quoted_share_preserves_server_and_password() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"net use Z: "\\evil\shared folder" "pass word" /user:DOMAIN\adm"#,
+            &mut env,
+        );
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::NetUse { info, .. }
+                    if info.devicename.as_deref() == Some("Z:")
+                        && info.server.as_deref() == Some(r#"\\evil\shared folder"#)
+                        && info.password.as_deref() == Some("pass word")
+                        && info.user.as_deref() == Some(r#"DOMAIN\adm"#)
+            )),
+            "quoted net use fields were not preserved: {:?}",
+            env.traits
+        );
+    }
 }
 
 #[cfg(test)]
