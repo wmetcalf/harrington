@@ -9759,6 +9759,39 @@ echo %MARK%
     }
 
     #[test]
+    fn del_current_dir_nested_file_removes_tracked_file_for_later_if_not_exist() {
+        let script = br#"curl -o .\Temp\gate.txt https://nested-current-dir-del.example/gate.txt
+del .\Temp\gate.txt
+if not exist Temp\gate.txt set MARK=deleted
+echo %MARK%
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo deleted"),
+            "del current-dir nested path did not update tracked file state for if exist:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+    }
+
+    #[test]
+    fn del_current_dir_nested_wildcard_removes_tracked_file_for_later_if_not_exist() {
+        let script =
+            br#"curl -o .\Temp\gate.txt https://nested-current-dir-wildcard.example/gate.txt
+del .\Temp\*
+if not exist Temp\gate.txt set MARK=deleted
+echo %MARK%
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo deleted"),
+            "del current-dir nested wildcard did not update tracked file state for if exist:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+    }
+
+    #[test]
     fn rmdir_removes_tracked_directory_contents_for_later_if_not_exist() {
         let script = br#"echo marker>C:\Temp\gate.txt
 rmdir /s /q C:\Temp

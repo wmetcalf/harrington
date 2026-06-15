@@ -89,7 +89,7 @@ fn remove_tracked_file(env: &mut Environment, candidate: &str, recursive: bool) 
     if candidate.contains(['*', '?']) {
         return;
     }
-    let key = normalize_wildcard_path(candidate);
+    let key = normalize_wildcard_path(strip_current_dir_prefix(candidate));
     env.modified_filesystem
         .retain(|path, _| normalize_wildcard_path(path) != key);
     if let Some(name) = current_dir_basename(candidate) {
@@ -102,20 +102,24 @@ fn remove_tracked_directory_wildcard(
     candidate: &str,
     recursive: bool,
 ) -> bool {
-    if let Some(pattern) = current_dir_basename(candidate).filter(|name| name.contains(['*', '?']))
-    {
-        let pattern = normalize_wildcard_path(pattern);
-        env.modified_filesystem.retain(|path, entry| {
-            if matches!(entry, FsEntry::Directory) {
-                return true;
-            }
-            if path.contains(['\\', '/', ':']) {
-                return true;
-            }
-            !windows_basename(path)
-                .is_some_and(|name| wildcard_match(&pattern, &normalize_wildcard_path(name)))
-        });
-        return true;
+    let stripped_candidate = strip_current_dir_prefix(candidate);
+    if !stripped_candidate.contains(['\\', '/']) {
+        if let Some(pattern) =
+            current_dir_basename(candidate).filter(|name| name.contains(['*', '?']))
+        {
+            let pattern = normalize_wildcard_path(pattern);
+            env.modified_filesystem.retain(|path, entry| {
+                if matches!(entry, FsEntry::Directory) {
+                    return true;
+                }
+                if path.contains(['\\', '/', ':']) {
+                    return true;
+                }
+                !windows_basename(path)
+                    .is_some_and(|name| wildcard_match(&pattern, &normalize_wildcard_path(name)))
+            });
+            return true;
+        }
     }
     let Some(dir) = directory_wildcard_prefix(candidate) else {
         return false;
@@ -136,7 +140,7 @@ fn remove_tracked_directory_wildcard(
 }
 
 fn directory_wildcard_prefix(candidate: &str) -> Option<String> {
-    let trimmed = candidate.trim_end();
+    let trimmed = strip_current_dir_prefix(candidate.trim_end());
     for suffix in [r"\*.*", r"\*", "/*.*", "/*"] {
         if let Some(dir) = trimmed.strip_suffix(suffix) {
             return Some(dir.trim_end_matches(['\\', '/']).to_string());
