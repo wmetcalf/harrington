@@ -312,30 +312,36 @@ fn synth_findstr(args: &[&str], input: Vec<String>, env: &mut Environment) -> Ve
             }
         })
         .collect();
-    let Some((file_idx, lines)) = findstr_file_input_arg(&expanded_args, env) else {
+    let Some((file_idxs, lines)) = findstr_file_input_args(&expanded_args, env) else {
         let refs: Vec<&str> = expanded_args.iter().map(String::as_str).collect();
         return filter_findstr(&refs, Vec::new());
     };
     let filter_args: Vec<&str> = expanded_args
         .iter()
         .enumerate()
-        .filter_map(|(idx, arg)| (idx != file_idx).then_some(arg.as_str()))
+        .filter_map(|(idx, arg)| (!file_idxs.contains(&idx)).then_some(arg.as_str()))
         .collect();
     filter_findstr(&filter_args, lines)
 }
 
-fn findstr_file_input_arg(args: &[String], env: &mut Environment) -> Option<(usize, Vec<String>)> {
-    for (idx, arg) in args.iter().enumerate().rev() {
+fn findstr_file_input_args(
+    args: &[String],
+    env: &mut Environment,
+) -> Option<(Vec<usize>, Vec<String>)> {
+    let mut file_idxs = Vec::new();
+    let mut input = Vec::new();
+    for (idx, arg) in args.iter().enumerate() {
         let candidate = arg.trim_matches('"');
         if candidate.is_empty() || candidate.starts_with('/') {
             continue;
         }
         let lines = type_file(candidate, env);
         if !lines.is_empty() {
-            return Some((idx, lines));
+            file_idxs.push(idx);
+            input.extend(lines);
         }
     }
-    None
+    (!file_idxs.is_empty()).then_some((file_idxs, input))
 }
 
 fn synth_find(args: &[&str], input: Vec<String>, env: &mut Environment) -> Vec<String> {
