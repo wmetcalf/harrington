@@ -139,7 +139,10 @@ fn evaluate(
         let is_simple_quoted_space =
             is_simple_quoted_token(raw_path) && unquoted_path.contains(char::is_whitespace);
         let exists = env.modified_filesystem.contains_key(&raw_key)
-            || (is_simple_quoted_space && env.modified_filesystem.contains_key(&unquoted_key));
+            || current_dir_path_exists(raw_path, env)
+            || (is_simple_quoted_space
+                && (env.modified_filesystem.contains_key(&unquoted_key)
+                    || current_dir_path_exists(unquoted_path, env)));
         if !exists && is_simple_quoted_space && unresolved_unknown_quoted_space_exist {
             return None;
         }
@@ -240,6 +243,26 @@ fn evaluate(
     }
 
     None
+}
+
+fn current_dir_path_exists(path: &str, env: &Environment) -> bool {
+    let Some(name) = current_dir_basename(path) else {
+        return false;
+    };
+    env.modified_filesystem
+        .contains_key(&name.to_ascii_lowercase())
+}
+
+fn current_dir_basename(path: &str) -> Option<&str> {
+    path.strip_prefix(r".\")
+        .or_else(|| path.strip_prefix("./"))
+        .and_then(windows_basename)
+}
+
+fn windows_basename(path: &str) -> Option<&str> {
+    path.rsplit(['\\', '/'])
+        .next()
+        .filter(|name| !name.is_empty())
 }
 
 fn looks_like_vbs_if_then(rest: &str) -> bool {
