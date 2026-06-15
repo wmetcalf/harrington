@@ -19,6 +19,7 @@ pub mod esentutl;
 pub mod extrac32;
 pub mod for_cmd;
 pub mod forfiles;
+pub mod ftp;
 pub mod goto;
 pub mod hh;
 pub mod if_cmd;
@@ -67,6 +68,7 @@ pub fn lookup(name: &str) -> Option<Handler> {
         "desktopimgdownldr" => return Some(desktopimgdownldr::h_desktopimgdownldr),
         "esentutl" => return Some(esentutl::h_esentutl),
         "forfiles" => return Some(forfiles::h_forfiles),
+        "ftp" => return Some(ftp::h_ftp),
         "hh" => return Some(hh::h_hh),
         "msconfig" => return Some(msconfig::h_msconfig),
         "brave" | "chrome" | "explorer" | "firefox" | "iexplore" | "msedge" | "opera" => {
