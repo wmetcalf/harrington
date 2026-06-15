@@ -32,7 +32,10 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
             i += 2;
             continue;
         }
-        if t == "-O" || t.eq_ignore_ascii_case("--remote-name") {
+        if t == "-O"
+            || t.eq_ignore_ascii_case("--remote-name")
+            || t.eq_ignore_ascii_case("--remote-name-all")
+        {
             remote_name = true;
             i += 1;
             continue;

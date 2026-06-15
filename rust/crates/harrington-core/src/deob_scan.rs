@@ -4953,7 +4953,7 @@ fn parse_curl_like_download(tokens: &[String]) -> Option<(String, Option<String>
             i += 1;
             continue;
         }
-        if raw_token == "-O" || lower == "--remote-name" {
+        if raw_token == "-O" || lower == "--remote-name" || lower == "--remote-name-all" {
             remote_name = true;
             i += 1;
             continue;
