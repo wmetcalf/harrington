@@ -51,9 +51,16 @@ fn prior_download_url(path: &str, env: &Environment) -> Option<String> {
     if let Some(FsEntry::Download { src }) = env.modified_filesystem.get(&key) {
         return Some(src.clone());
     }
+    if let Some(name) = current_dir_basename(path) {
+        return prior_download_url_by_basename(name, env);
+    }
     if path.contains(['\\', '/']) {
         return None;
     }
+    prior_download_url_by_basename(path, env)
+}
+
+fn prior_download_url_by_basename(path: &str, env: &Environment) -> Option<String> {
     env.modified_filesystem
         .iter()
         .find_map(|(tracked_path, entry)| {
@@ -65,6 +72,12 @@ fn prior_download_url(path: &str, env: &Environment) -> Option<String> {
             FsEntry::Download { src } => Some(src.clone()),
             _ => None,
         })
+}
+
+fn current_dir_basename(path: &str) -> Option<&str> {
+    path.strip_prefix(r".\")
+        .or_else(|| path.strip_prefix("./"))
+        .and_then(windows_basename)
 }
 
 fn windows_basename(path: &str) -> Option<&str> {
