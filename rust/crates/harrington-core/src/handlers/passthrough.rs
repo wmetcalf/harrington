@@ -838,7 +838,7 @@ pub(crate) fn sc_service_binpath(raw: &str) -> Option<(String, String)> {
     if !matches!(subcommand.as_str(), "create" | "config") {
         return None;
     }
-    let bin_path = flag_value(raw, "binPath")?;
+    let bin_path = sc_flag_value(raw, "binPath")?;
     Some((service_name, bin_path))
 }
 
@@ -847,8 +847,86 @@ pub(crate) fn sc_failure_command(raw: &str) -> Option<(String, String)> {
     if subcommand != "failure" {
         return None;
     }
-    let command = flag_value(raw, "command")?;
+    let command = sc_flag_value(raw, "command")?;
     Some((service_name, command))
+}
+
+fn sc_flag_value(raw: &str, flag: &str) -> Option<String> {
+    let spans = split_word_spans(raw);
+    for (idx, span) in spans.iter().enumerate() {
+        let raw_token = &raw[span.clone()];
+        let normalized_token = raw_token.trim_matches(['"', '\'']);
+        if normalized_token.eq_ignore_ascii_case(flag) {
+            let value_span = spans.get(idx + 1)?;
+            return sc_value_from_start(raw, value_span.start, &spans[idx + 1..]);
+        }
+        let Some(value_start) = sc_attached_value_start(raw_token, flag) else {
+            continue;
+        };
+        let value_start = span.start + value_start;
+        let value_spans = if value_start >= span.end {
+            &spans[idx + 1..]
+        } else {
+            &spans[idx..]
+        };
+        return sc_value_from_start(raw, value_start, value_spans);
+    }
+    None
+}
+
+fn sc_attached_value_start(token: &str, flag: &str) -> Option<usize> {
+    let marker = token.get(..flag.len())?;
+    if !marker.eq_ignore_ascii_case(flag) {
+        return None;
+    }
+    let delimiter = token.as_bytes().get(flag.len()).copied()?;
+    matches!(delimiter, b'=' | b':').then_some(flag.len() + 1)
+}
+
+fn sc_value_from_start(
+    raw: &str,
+    value_start: usize,
+    value_spans: &[std::ops::Range<usize>],
+) -> Option<String> {
+    let value = raw[value_start..].trim_start();
+    if value.starts_with(['"', '\'']) {
+        return parse_flag_value(raw, value_start);
+    }
+    let value_end = sc_unquoted_value_end(raw, value_spans);
+    Some(raw[value_start..value_end].trim_end().to_string()).filter(|value| !value.is_empty())
+}
+
+fn sc_unquoted_value_end(raw: &str, value_spans: &[std::ops::Range<usize>]) -> usize {
+    for span in value_spans.iter().skip(1) {
+        let token = raw[span.clone()].trim_matches(['"', '\'']);
+        if sc_option_token(token) {
+            return span.start;
+        }
+    }
+    value_spans.last().map_or(raw.len(), |span| span.end)
+}
+
+fn sc_option_token(token: &str) -> bool {
+    let Some((name, _)) = token.split_once(['=', ':']) else {
+        return false;
+    };
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "type"
+            | "start"
+            | "error"
+            | "binpath"
+            | "group"
+            | "tag"
+            | "depend"
+            | "obj"
+            | "displayname"
+            | "password"
+            | "reset"
+            | "reboot"
+            | "command"
+            | "actions"
+    )
 }
 
 fn sc_subcommand_and_service(raw: &str) -> Option<(String, String)> {
@@ -1104,6 +1182,16 @@ mod tests {
                 .expect("attached sc create binPath should parse");
 
         assert_eq!(service_name, "Update Svc");
+        assert_eq!(bin_path, "cmd.exe /c echo hi");
+    }
+
+    #[test]
+    fn sc_create_binpath_accepts_attached_unquoted_value() {
+        let (service_name, bin_path) =
+            sc_service_binpath(r#"sc create UpdateSvc binPath=cmd.exe /c echo hi"#)
+                .expect("attached unquoted sc create binPath should parse");
+
+        assert_eq!(service_name, "UpdateSvc");
         assert_eq!(bin_path, "cmd.exe /c echo hi");
     }
 
