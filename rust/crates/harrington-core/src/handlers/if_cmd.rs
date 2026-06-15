@@ -167,10 +167,7 @@ fn evaluate(
     if let Some(eq_pos) = body.find("==") {
         let lhs_raw = body[..eq_pos].trim().trim_matches('"');
         let rhs_full = body[eq_pos + 2..].trim_start();
-        let rhs_end = rhs_full
-            .find(|c: char| c.is_whitespace() || c == ')')
-            .unwrap_or(rhs_full.len());
-        let rhs_raw = rhs_full[..rhs_end].trim().trim_matches('"');
+        let rhs_raw = unquote_condition_token(first_condition_token_raw(rhs_full)?).trim();
         let lhs = normalize_comparison_operand(lhs_raw, env)?;
         let rhs = normalize_comparison_operand(rhs_raw, env)?;
         let eq = if case_insensitive {
@@ -195,10 +192,7 @@ fn evaluate(
             let lhs_raw = body[..pos].trim().trim_matches('"');
             let rhs_start = pos + op_str.len();
             let rhs_full = body[rhs_start..].trim_start();
-            let rhs_end = rhs_full
-                .find(|c: char| c.is_whitespace() || c == ')')
-                .unwrap_or(rhs_full.len());
-            let rhs_raw = rhs_full[..rhs_end].trim().trim_matches('"');
+            let rhs_raw = unquote_condition_token(first_condition_token_raw(rhs_full)?).trim();
             if allow_errorlevel_invariants {
                 if let Some(result) =
                     evaluate_errorlevel_nonnegative_invariant(lhs_raw, op_kind, rhs_raw)

