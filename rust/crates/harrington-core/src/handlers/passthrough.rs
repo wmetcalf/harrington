@@ -34,8 +34,9 @@ fn h_delete_like(raw: &str, env: &mut Environment, name: &str) {
         name: name.to_string(),
         cmd: raw.to_string(),
     });
+    let recursive = delete_is_recursive(raw);
     for candidate in delete_targets(raw) {
-        remove_tracked_file(env, &candidate);
+        remove_tracked_file(env, &candidate, recursive);
     }
 }
 
@@ -59,7 +60,6 @@ fn delete_targets(raw: &str) -> Vec<String> {
         .map(|token| strip_outer_quotes(token).trim().to_string())
         .filter(|token| !token.is_empty())
         .filter(|token| !is_delete_option(token))
-        .filter(|token| !token.contains(['*', '?']))
         .collect()
 }
 
@@ -72,12 +72,58 @@ fn is_delete_option(token: &str) -> bool {
         || lower.starts_with("-a:")
 }
 
-fn remove_tracked_file(env: &mut Environment, candidate: &str) {
+fn delete_is_recursive(raw: &str) -> bool {
+    split_words(raw)
+        .iter()
+        .skip(1)
+        .map(|token| strip_outer_quotes(token).to_ascii_lowercase())
+        .any(|token| token == "/s" || token == "-s")
+}
+
+fn remove_tracked_file(env: &mut Environment, candidate: &str, recursive: bool) {
+    if remove_tracked_directory_wildcard(env, candidate, recursive) {
+        return;
+    }
+    if candidate.contains(['*', '?']) {
+        return;
+    }
     let key = candidate.to_ascii_lowercase();
     env.modified_filesystem.remove(&key);
     if let Some(name) = current_dir_basename(candidate) {
         env.modified_filesystem.remove(&name.to_ascii_lowercase());
     }
+}
+
+fn remove_tracked_directory_wildcard(
+    env: &mut Environment,
+    candidate: &str,
+    recursive: bool,
+) -> bool {
+    let Some(dir) = directory_wildcard_prefix(candidate) else {
+        return false;
+    };
+    let mut prefix = dir.to_ascii_lowercase();
+    if prefix.is_empty() {
+        return true;
+    }
+    prefix.push('\\');
+    env.modified_filesystem.retain(|path, entry| {
+        if matches!(entry, FsEntry::Directory) || !path.starts_with(&prefix) {
+            return true;
+        }
+        !recursive && path[prefix.len()..].contains(['\\', '/'])
+    });
+    true
+}
+
+fn directory_wildcard_prefix(candidate: &str) -> Option<String> {
+    let trimmed = candidate.trim_end();
+    for suffix in [r"\*.*", r"\*", "/*.*", "/*"] {
+        if let Some(dir) = trimmed.strip_suffix(suffix) {
+            return Some(dir.trim_end_matches(['\\', '/']).to_string());
+        }
+    }
+    None
 }
 
 fn current_dir_basename(path: &str) -> Option<&str> {
