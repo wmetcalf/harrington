@@ -189,6 +189,83 @@ pub fn h_schtasks(raw: &str, env: &mut Environment) {
     queue_registry_persisted_command(task_run, env);
 }
 
+/// `runas` launches a command under another account or elevation context.
+/// Treat the launched program as self-elevation and replay the child command
+/// so nested `cmd /c`, PowerShell, or LOLBin payloads are still analyzed.
+pub fn h_runas(raw: &str, env: &mut Environment) {
+    let Some(command) = runas_child_command(raw) else {
+        return;
+    };
+    if let Some((target, args)) = command_target_and_args(&command) {
+        env.traits.push(Trait::SelfElevation {
+            target,
+            args: args.filter(|value| !value.is_empty()),
+        });
+    }
+    queue_child_command(command, env);
+}
+
+pub(crate) fn runas_child_command(raw: &str) -> Option<String> {
+    let spans = split_word_spans(raw);
+    let first = spans.first()?;
+    let command_name = raw[first.clone()]
+        .trim_start_matches(['@', '"', '('])
+        .trim_matches(['"', '\''])
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(&raw[first.clone()])
+        .to_ascii_lowercase();
+    if command_name.strip_suffix(".exe").unwrap_or(&command_name) != "runas" {
+        return None;
+    }
+
+    let mut idx = 1usize;
+    while let Some(span) = spans.get(idx) {
+        let token = raw[span.clone()].trim_matches(['"', '\'']);
+        let lower = token.to_ascii_lowercase();
+        if lower == "/user" || lower == "/trustlevel" {
+            idx += 2;
+            continue;
+        }
+        if lower.starts_with("/user:") || lower.starts_with("/trustlevel:") {
+            idx += 1;
+            continue;
+        }
+        if matches!(
+            lower.as_str(),
+            "/profile"
+                | "/noprofile"
+                | "/env"
+                | "/netonly"
+                | "/savecred"
+                | "/smartcard"
+                | "/showtrustlevels"
+        ) {
+            idx += 1;
+            continue;
+        }
+        break;
+    }
+
+    let command_start = spans.get(idx)?.start;
+    let command = strip_outer_quotes(raw[command_start..].trim()).trim();
+    (!command.is_empty()).then(|| command.to_string())
+}
+
+fn command_target_and_args(command: &str) -> Option<(String, Option<String>)> {
+    let spans = split_word_spans(command);
+    let target_span = spans.first()?;
+    let target = strip_outer_quotes(&command[target_span.clone()]).to_string();
+    if target.is_empty() {
+        return None;
+    }
+    let args = command[target_span.end..].trim();
+    Some((
+        target,
+        (!args.is_empty()).then(|| strip_outer_quotes(args).to_string()),
+    ))
+}
+
 fn schtasks_task_run(raw: &str) -> Option<String> {
     let spans = split_word_spans(raw);
     for (idx, span) in spans.iter().enumerate() {
@@ -572,7 +649,7 @@ make_handler!(h_whoami, "whoami");
 mod tests {
     use super::{
         at_scheduled_command, h_reg, h_schtasks, persisted_command_child, reg_data_value,
-        sc_failure_command, sc_service_binpath, schtasks_task_run,
+        runas_child_command, sc_failure_command, sc_service_binpath, schtasks_task_run,
     };
     use crate::env::{Config, Environment};
     use crate::traits::Trait;
@@ -716,6 +793,25 @@ mod tests {
                 .expect("quoted task action should parse");
 
         assert_eq!(command, "cmd.exe /c echo hi");
+    }
+
+    #[test]
+    fn runas_child_command_skips_account_and_flags() {
+        let command = runas_child_command(
+            r#"runas /noprofile /user:Administrator "cmd.exe /c echo elevated""#,
+        )
+        .expect("runas child command should parse");
+
+        assert_eq!(command, "cmd.exe /c echo elevated");
+    }
+
+    #[test]
+    fn runas_child_command_accepts_spaced_user_value() {
+        let command =
+            runas_child_command(r#"runas /user Administrator powershell.exe -nop -w hidden"#)
+                .expect("runas spaced user child command should parse");
+
+        assert_eq!(command, "powershell.exe -nop -w hidden");
     }
 
     #[test]

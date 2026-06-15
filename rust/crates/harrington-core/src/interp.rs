@@ -99,6 +99,18 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
         }
     }
 
+    if let Some(command) = crate::handlers::passthrough::runas_child_command(raw) {
+        crate::handlers::passthrough::h_runas(raw, env);
+        if let Some((child, delayed)) =
+            crate::handlers::passthrough::persisted_command_child(&command)
+        {
+            result.child_cmd_to_push = Some(child);
+            result.child_cmd_delayed = delayed;
+        }
+        result.consumed = true;
+        return result;
+    }
+
     if raw_invokes_powershell(raw) {
         crate::handlers::powershell::h_powershell(raw, env);
         result.consumed = true;
