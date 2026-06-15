@@ -2490,9 +2490,11 @@ fn command_lines_for_lolbas(report: &harrington_core::Report) -> Vec<&str> {
             | Trait::AccountModification { command: cmd, .. }
             | Trait::FileConcealment { command: cmd, .. }
             | Trait::UncWebDavC2 { command: cmd, .. }
-            | Trait::Persistence { command: cmd, .. }
             | Trait::EvidenceCleanup { command: cmd, .. }
             | Trait::Enumeration { command: cmd, .. } => Some(cmd.as_str()),
+            Trait::Persistence { hive, command, .. } if hive != "ServiceFailureCommand" => {
+                Some(command.as_str())
+            }
             Trait::WmicProcessCreate { inner_cmd } => Some(inner_cmd.as_str()),
             Trait::SelfElevation { target, .. } => Some(target.as_str()),
             _ => None,

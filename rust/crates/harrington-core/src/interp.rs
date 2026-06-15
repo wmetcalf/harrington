@@ -69,6 +69,21 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
         }
     }
 
+    if let Some((service_name, command)) = crate::handlers::passthrough::sc_failure_command(raw) {
+        env.traits.push(crate::traits::Trait::Persistence {
+            hive: "ServiceFailureCommand".to_string(),
+            key: service_name,
+            value_name: "command".to_string(),
+            command: command.clone(),
+        });
+        if let Some((child, delayed)) =
+            crate::handlers::passthrough::persisted_command_child(&command)
+        {
+            result.child_cmd_to_push = Some(child);
+            result.child_cmd_delayed = delayed;
+        }
+    }
+
     if raw_invokes_powershell(raw) {
         crate::handlers::powershell::h_powershell(raw, env);
         result.consumed = true;

@@ -334,6 +334,24 @@ pub(crate) fn persisted_command_child(command: &str) -> Option<(String, bool)> {
 }
 
 pub(crate) fn sc_service_binpath(raw: &str) -> Option<(String, String)> {
+    let (subcommand, service_name) = sc_subcommand_and_service(raw)?;
+    if !matches!(subcommand.as_str(), "create" | "config") {
+        return None;
+    }
+    let bin_path = flag_value(raw, "binPath")?;
+    Some((service_name, bin_path))
+}
+
+pub(crate) fn sc_failure_command(raw: &str) -> Option<(String, String)> {
+    let (subcommand, service_name) = sc_subcommand_and_service(raw)?;
+    if subcommand != "failure" {
+        return None;
+    }
+    let command = flag_value(raw, "command")?;
+    Some((service_name, command))
+}
+
+fn sc_subcommand_and_service(raw: &str) -> Option<(String, String)> {
     let tokens = split_words(raw);
     let command = tokens.first()?;
     let name = command
@@ -346,18 +364,12 @@ pub(crate) fn sc_service_binpath(raw: &str) -> Option<(String, String)> {
     if name.strip_suffix(".exe").unwrap_or(&name) != "sc" {
         return None;
     }
-    let is_service_binpath_subcommand = tokens
-        .get(1)
-        .is_some_and(|token| matches!(token.to_ascii_lowercase().as_str(), "create" | "config"));
-    if !is_service_binpath_subcommand {
-        return None;
-    }
+    let subcommand = tokens.get(1)?.to_ascii_lowercase();
     let service_name = tokens
         .get(2)
         .map(|token| strip_outer_quotes(token).to_string())
         .filter(|token| !token.is_empty())?;
-    let bin_path = flag_value(raw, "binPath")?;
-    Some((service_name, bin_path))
+    Some((subcommand, service_name))
 }
 
 make_handler!(h_sc, "sc");
@@ -374,7 +386,9 @@ make_handler!(h_whoami, "whoami");
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::{h_reg, h_schtasks, persisted_command_child, sc_service_binpath};
+    use super::{
+        h_reg, h_schtasks, persisted_command_child, sc_failure_command, sc_service_binpath,
+    };
     use crate::env::{Config, Environment};
     use crate::traits::Trait;
 
@@ -456,6 +470,16 @@ mod tests {
 
         assert_eq!(service_name, "UpdateSvc");
         assert_eq!(bin_path, "cmd.exe /c echo hi");
+    }
+
+    #[test]
+    fn sc_failure_command_accepts_spaced_equals_value() {
+        let (service_name, command) =
+            sc_failure_command(r#"sc failure UpdateSvc command= "cmd.exe /c echo hi""#)
+                .expect("sc failure command should parse");
+
+        assert_eq!(service_name, "UpdateSvc");
+        assert_eq!(command, "cmd.exe /c echo hi");
     }
 
     #[test]
