@@ -18,9 +18,8 @@ pub fn h_esentutl(raw: &str, env: &mut Environment) {
             dst: dst.clone(),
         });
     }
-    let entry = copied_entry(&src, env).unwrap_or(FsEntry::Copy { src });
-    env.modified_filesystem
-        .insert(dst.to_ascii_lowercase(), entry);
+    let entry = copied_entry(&src, env).unwrap_or(FsEntry::Copy { src: src.clone() });
+    insert_copied_entry(env, &src, &dst, entry);
 }
 
 fn parse_esentutl_copy(tokens: &[String]) -> Option<(String, String)> {
@@ -86,6 +85,25 @@ fn copied_entry(src: &str, env: &Environment) -> Option<FsEntry> {
                 None
             }
         })
+}
+
+fn insert_copied_entry(env: &mut Environment, src: &str, dst: &str, entry: FsEntry) {
+    env.modified_filesystem
+        .insert(dst.to_ascii_lowercase(), entry.clone());
+    if let Some(joined) = copy_directory_destination_path(src, dst) {
+        env.modified_filesystem
+            .insert(joined.to_ascii_lowercase(), entry);
+    }
+}
+
+fn copy_directory_destination_path(src: &str, dst: &str) -> Option<String> {
+    if !dst.ends_with(['\\', '/']) {
+        return None;
+    }
+    let basename = windows_basename(src)?;
+    let mut out = dst.to_string();
+    out.push_str(basename);
+    Some(collapse_slashes(&out))
 }
 
 fn windows_basename(path: &str) -> Option<&str> {
