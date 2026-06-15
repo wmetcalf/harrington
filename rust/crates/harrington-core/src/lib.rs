@@ -16428,6 +16428,34 @@ call C:\Temp\renamed.js"#,
     }
 
     #[test]
+    fn esentutl_current_dir_nested_source_does_not_use_unrelated_basename_content() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            r#"c:\other\original.js"#.to_string(),
+            FsEntry::Content {
+                content: b"document.location='https://esentutl-current-dir-wrong-basename.example/payload'"
+                    .to_vec(),
+                append: false,
+            },
+        );
+        interpret_line(
+            r"esentutl /y .\Temp\original.js /d C:\Temp\renamed.js /o",
+            &mut env,
+        );
+        let entry = env
+            .modified_filesystem
+            .get(r"c:\temp\renamed.js")
+            .expect("renamed.js missing");
+        assert!(
+            !matches!(entry, FsEntry::Content { content, .. }
+                if content.windows(b"esentutl-current-dir-wrong-basename.example".len())
+                    .any(|window| window == b"esentutl-current-dir-wrong-basename.example")),
+            "nested current-dir esentutl source reused unrelated basename content: {:?}",
+            entry
+        );
+    }
+
+    #[test]
     fn esentutl_directory_destination_preserves_generated_script_content() {
         let report = analyze(
             br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8vZXNlbnR1dGwtZGlyLWpzLmV4YW1wbGUvcGF5bG9hZCc=")) > original.js
@@ -16609,6 +16637,31 @@ call C:/Temp/original.js"#,
                 if content.windows(b"replace-slash-source.example".len())
                     .any(|window| window == b"replace-slash-source.example")),
             "slash-equivalent replace source did not preserve tracked content: {:?}",
+            entry
+        );
+    }
+
+    #[test]
+    fn replace_current_dir_nested_source_does_not_use_unrelated_basename_content() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            r#"c:\other\original.js"#.to_string(),
+            FsEntry::Content {
+                content: b"document.location='https://replace-current-dir-wrong-basename.example/payload'"
+                    .to_vec(),
+                append: false,
+            },
+        );
+        interpret_line(r"replace .\Temp\original.js C:\Temp", &mut env);
+        let entry = env
+            .modified_filesystem
+            .get(r"c:\temp\original.js")
+            .expect("C:\\Temp\\original.js missing");
+        assert!(
+            !matches!(entry, FsEntry::Content { content, .. }
+                if content.windows(b"replace-current-dir-wrong-basename.example".len())
+                    .any(|window| window == b"replace-current-dir-wrong-basename.example")),
+            "nested current-dir replace source reused unrelated basename content: {:?}",
             entry
         );
     }
