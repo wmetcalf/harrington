@@ -213,9 +213,15 @@ fn remove_renamed_source(env: &mut Environment, src: &str, dst: &str) {
 }
 
 fn insert_copied_entry(env: &mut Environment, src: &str, dst: &str, entry: FsEntry) {
-    env.modified_filesystem
-        .insert(dst.to_ascii_lowercase(), entry.clone());
+    let tracked_dir_dst = copy_tracked_directory_destination_path(env, src, dst);
+    if tracked_dir_dst.is_none() {
+        env.modified_filesystem
+            .insert(dst.to_ascii_lowercase(), entry.clone());
+    }
     if let Some(joined) = copy_directory_destination_path(src, dst) {
+        env.modified_filesystem
+            .insert(joined.to_ascii_lowercase(), entry);
+    } else if let Some(joined) = tracked_dir_dst {
         env.modified_filesystem
             .insert(joined.to_ascii_lowercase(), entry);
     }
@@ -236,6 +242,19 @@ fn copy_directory_destination_path(src: &str, dst: &str) -> Option<String> {
     let mut out = dst.to_string();
     out.push_str(basename);
     Some(collapse_slashes(&out))
+}
+
+fn copy_tracked_directory_destination_path(
+    env: &Environment,
+    src: &str,
+    dst: &str,
+) -> Option<String> {
+    let key = dst.trim_end_matches(['\\', '/']).to_ascii_lowercase();
+    if !matches!(env.modified_filesystem.get(&key), Some(FsEntry::Directory)) {
+        return None;
+    }
+    let basename = windows_basename(src)?;
+    Some(collapse_slashes(&format!("{dst}\\{basename}")))
 }
 
 fn rename_destination_in_source_directory(src: &str, dst: &str) -> Option<String> {

