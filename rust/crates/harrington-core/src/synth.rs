@@ -409,6 +409,10 @@ fn cmd_child_after_switch(rest: &str) -> Option<&str> {
         if matches!(lower.as_str(), "/c" | "/k" | "/r") {
             return Some(strip_wrapping_quotes(rest[end..].trim()));
         }
+        if lower.starts_with("/c") || lower.starts_with("/k") || lower.starts_with("/r") {
+            let child_start = start + 2;
+            return Some(strip_wrapping_quotes(rest[child_start..].trim()));
+        }
     }
     None
 }

@@ -14451,6 +14451,25 @@ mod synth_tests {
     }
 
     #[test]
+    fn synth_cmd_attached_c_runs_child_pipeline() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "url.txt".to_string(),
+            FsEntry::Content {
+                content: b"https://cmd-attached-c.example/payload.exe\r\n".to_vec(),
+                append: false,
+            },
+        );
+
+        let lines = run_pipeline(r#"cmd /c"type url.txt""#, &mut env);
+
+        assert_eq!(
+            lines,
+            vec!["https://cmd-attached-c.example/payload.exe".to_string()]
+        );
+    }
+
+    #[test]
     fn synth_type_slash_equivalent_reads_tracked_content() {
         let mut env = Environment::new(&Config::default());
         env.modified_filesystem.insert(
