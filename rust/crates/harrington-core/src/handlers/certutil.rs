@@ -21,7 +21,7 @@ pub fn h_certutil(raw: &str, env: &mut Environment) {
         )
     }) {
         if let Some(url) = find_first_url(&tokens) {
-            let dst = find_dst_after_url(&tokens, &url);
+            let dst = find_dst_after_url(&tokens, &url).or_else(|| url_basename(&url));
             env.traits.push(Trait::CertutilDownload {
                 url: url.clone(),
                 dst: dst.clone().unwrap_or_default(),
@@ -374,4 +374,14 @@ fn normalize_certutil_url(token: &str) -> Option<String> {
     let token = strip_quotes(token);
     crate::deob_scan::normalize_liberal_url_token(token)
         .or_else(|| crate::deob_scan::normalize_schemeless_domain_path_token(token))
+}
+
+fn url_basename(url: &str) -> Option<String> {
+    let path_part = url.split(['?', '#']).next()?;
+    let last = path_part.rsplit('/').next()?;
+    if last.is_empty() {
+        None
+    } else {
+        Some(last.to_string())
+    }
 }

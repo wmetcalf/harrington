@@ -5732,6 +5732,7 @@ fn scan_certutil_urlcache_deob_text(deobfuscated: &str, env: &mut Environment) {
             .skip(url_idx + 1)
             .find(|token| !token.starts_with('-') && !token.starts_with('/'))
             .map(|token| token.trim_matches(['"', '\'', ')']).to_string())
+            .or_else(|| url_basename(&url))
             .unwrap_or_default();
         env.traits.push(Trait::CertutilDownload { url, dst });
     }
