@@ -121,7 +121,7 @@ fn run_stage(stage: &str, input: Vec<String>, env: &mut Environment) -> Vec<Stri
         "ftype" => synth_ftype(&rest_args, env),
         "reg" => synth_reg(&rest_args, env),
         "dir" => synth_dir(&rest_args, env),
-        "whoami" => synth_whoami(env),
+        "whoami" => synth_whoami(&rest_args, env),
         "chcp" => synth_chcp(&rest_args),
         "query" => synth_query(&rest_args),
         "vol" => synth_vol(&rest_args),
@@ -1003,11 +1003,21 @@ fn synth_ftype(args: &[&str], env: &Environment) -> Vec<String> {
         .collect()
 }
 
-fn synth_whoami(env: &Environment) -> Vec<String> {
+fn synth_whoami(args: &[&str], env: &Environment) -> Vec<String> {
     let domain = env
         .get("userdomain")
         .unwrap_or_else(|| "miscreanttears".to_string());
     let user = env.get("username").unwrap_or_else(|| "puncher".to_string());
+    if args.iter().any(|arg| arg.eq_ignore_ascii_case("/user")) {
+        return vec![
+            "User Name SID".to_string(),
+            format!(
+                "{}\\{} S-1-5-21-1000-1000-1000-1001",
+                domain.to_ascii_lowercase(),
+                user.to_ascii_lowercase()
+            ),
+        ];
+    }
     vec![format!(
         "{}\\{}",
         domain.to_ascii_lowercase(),

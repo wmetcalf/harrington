@@ -3834,6 +3834,20 @@ for /f "tokens=* delims=" %%U in ('type first.txt second.txt ^| find "https://"'
     }
 
     #[test]
+    fn for_f_reads_whoami_user_sid_output() {
+        let script = b"for /f \"skip=1 tokens=2\" %%S in ('whoami /user') do echo sid=%%S\r\n";
+        let report = analyze(script, &Config::default());
+        assert!(
+            report
+                .deobfuscated
+                .contains("echo sid=S-1-5-21-1000-1000-1000-1001"),
+            "whoami /user SID did not feed FOR body: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn for_f_reads_version_and_powershell_inventory_output() {
         let script = concat!(
             "for /f \"tokens=4-5 delims=. \" %%i in ('ver') do set VERSION=%%i.%%j\r\n",
