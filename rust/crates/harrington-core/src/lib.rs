@@ -25590,6 +25590,40 @@ echo %MARK%"#,
     }
 
     #[test]
+    fn move_current_dir_nested_source_removes_tracked_source_for_later_if_not_exist() {
+        let report = crate::analyze(
+            br#"curl -o .\Temp\original.txt https://move-current-dir-source.example/original.txt
+move /y .\Temp\original.txt renamed.txt
+if not exist Temp\original.txt set MARK=moved
+echo %MARK%"#,
+            &Config::default(),
+        );
+        assert!(
+            report.deobfuscated.contains("echo moved"),
+            "current-dir nested move did not remove source file state for if not exist:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ren_current_dir_nested_source_removes_tracked_source_for_later_if_not_exist() {
+        let report = crate::analyze(
+            br#"curl -o .\Temp\original.txt https://ren-current-dir-source.example/original.txt
+ren .\Temp\original.txt renamed.txt
+if not exist Temp\original.txt set MARK=renamed
+echo %MARK%"#,
+            &Config::default(),
+        );
+        assert!(
+            report.deobfuscated.contains("echo renamed"),
+            "current-dir nested ren did not remove source file state for if not exist:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+    }
+
+    #[test]
     fn current_dir_file_op_destinations_exist_for_later_if_exist() {
         for command in [
             r"copy original.txt .\renamed.txt",

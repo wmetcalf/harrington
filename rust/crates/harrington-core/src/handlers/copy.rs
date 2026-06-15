@@ -1,6 +1,6 @@
 use super::util::{
-    filesystem_storage_key, join_windows_path_preserving_separator, normalize_wildcard_path,
-    split_words,
+    filesystem_storage_key, join_windows_path_preserving_separator,
+    normalize_filesystem_storage_path, normalize_wildcard_path, split_words,
 };
 use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
@@ -208,7 +208,7 @@ fn remove_renamed_source(env: &mut Environment, src: &str, dst: &str) {
     if src.eq_ignore_ascii_case(dst) {
         return;
     }
-    let key = normalize_wildcard_path(src);
+    let key = normalize_wildcard_path(&normalize_filesystem_storage_path(src));
     env.modified_filesystem
         .retain(|path, _| normalize_wildcard_path(path) != key);
     if let Some(name) = current_dir_basename(src) {
