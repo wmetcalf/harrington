@@ -127,7 +127,13 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
     let Some(url) = url else { return };
 
     let dst = if let Some(o) = output {
-        Some(o)
+        Some(
+            output_dir
+                .as_deref()
+                .filter(|_| !is_windows_rooted_path(&o))
+                .map(|dir| join_windows_path(dir, &o))
+                .unwrap_or(o),
+        )
     } else if remote_name {
         url_basename(&url).map(|name| {
             output_dir
@@ -255,4 +261,12 @@ fn join_windows_path(prefix: &str, name: &str) -> String {
     } else {
         format!("{prefix}\\{name}")
     }
+}
+
+fn is_windows_rooted_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    path.starts_with(['\\', '/'])
+        || bytes
+            .get(0..2)
+            .is_some_and(|head| head[0].is_ascii_alphabetic() && head[1] == b':')
 }
