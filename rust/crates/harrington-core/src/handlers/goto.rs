@@ -26,7 +26,9 @@ fn strip_keyword_ci<'a>(s: &'a str, kw: &str) -> Option<&'a str> {
 }
 
 pub fn h_goto(raw: &str, env: &mut Environment) {
-    let rest = raw.trim_start();
+    let rest = raw.trim_start_matches(|c: char| {
+        c == '@' || c == '(' || c == ';' || c == ',' || c.is_whitespace()
+    });
     let after = strip_keyword_ci(rest, "goto").unwrap_or("");
     // Real CMD treats `;`, `,` (and whitespace/`:`) as ignorable label
     // prefix AND as token delimiters within the label. xeno-class goto-
@@ -71,5 +73,21 @@ pub fn h_exit(raw: &str, env: &mut Environment) {
         env.pending_action = Some(CursorAction::PopFrame);
     } else {
         env.pending_action = Some(CursorAction::Halt);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::h_goto;
+    use crate::env::{CursorAction, Environment};
+
+    #[test]
+    fn goto_accepts_echo_suppressed_prefix() {
+        let mut env = Environment::default();
+        env.label_index.insert("target".to_string(), 7);
+
+        h_goto("@goto target", &mut env);
+
+        assert_eq!(env.pending_action, Some(CursorAction::GotoLine(7)));
     }
 }

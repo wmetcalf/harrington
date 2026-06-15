@@ -59,7 +59,19 @@ pub fn h_call(raw: &str, env: &mut Environment) {
 }
 
 pub(crate) fn call_body(raw: &str) -> Option<&str> {
-    let rest = raw.trim_start();
+    let rest = raw.trim_start_matches(|c: char| {
+        c == '@' || c == '(' || c == ';' || c == ',' || c.is_whitespace()
+    });
     let after = strip_keyword_ci(rest, "call")?;
     Some(after.trim_start())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::call_body;
+
+    #[test]
+    fn call_body_accepts_echo_suppressed_prefix() {
+        assert_eq!(call_body("@call payload.cmd"), Some("payload.cmd"));
+    }
 }
