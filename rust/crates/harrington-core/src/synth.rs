@@ -145,7 +145,7 @@ fn run_stage(stage: &str, input: Vec<String>, env: &mut Environment) -> Vec<Stri
             }
             filter_findstr(&rest_args, effective_input)
         }
-        "find" => filter_find(&rest_args, input),
+        "find" => synth_find(&rest_args, input, env),
         "more" => synth_more(stage, &rest_args, input, env),
         "type" => {
             // type FILE — pull from modified_filesystem or input_bytes
@@ -290,6 +290,30 @@ fn synth_more(
         .find(|arg| !arg.starts_with(['/', '-']) && *arg != "<")
         .map(|path| type_file(path, env))
         .unwrap_or_default()
+}
+
+fn synth_find(args: &[&str], input: Vec<String>, env: &mut Environment) -> Vec<String> {
+    if !input.is_empty() {
+        return filter_find(args, input);
+    }
+    let non_flags = args
+        .iter()
+        .copied()
+        .filter(|arg| !arg.starts_with('/'))
+        .collect::<Vec<_>>();
+    let Some(path) = non_flags.get(1).copied() else {
+        return filter_find(args, input);
+    };
+    let lines = type_file(path, env);
+    if lines.is_empty() {
+        return Vec::new();
+    }
+    let filter_args = args
+        .iter()
+        .copied()
+        .filter(|arg| *arg != path)
+        .collect::<Vec<_>>();
+    filter_find(&filter_args, lines)
 }
 
 fn synth_command_key(token: &str) -> String {

