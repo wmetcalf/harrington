@@ -562,10 +562,10 @@ fn scan_bitsadmin_deob_text(deobfuscated: &str, env: &mut Environment) {
             let segment = first_unquoted_ampersand_segment(tail);
             let tokens = split_words(segment);
             let lower_tokens: Vec<String> = tokens.iter().map(|s| s.to_ascii_lowercase()).collect();
-            if !lower_tokens
-                .iter()
-                .any(|t| t == "/transfer" || t == "/addfile")
-            {
+            if !lower_tokens.iter().any(|t| {
+                bitsadmin_deob_flag_matches(t, "/transfer")
+                    || bitsadmin_deob_flag_matches(t, "/addfile")
+            }) {
                 continue;
             }
 
@@ -577,7 +577,7 @@ fn scan_bitsadmin_deob_text(deobfuscated: &str, env: &mut Environment) {
                     i += 2;
                     continue;
                 }
-                if token_lower.starts_with('/') || token_lower == "foreground" {
+                if bitsadmin_deob_skip_flag(&token_lower) || token_lower == "foreground" {
                     i += 1;
                     continue;
                 }
@@ -599,6 +599,21 @@ fn scan_bitsadmin_deob_text(deobfuscated: &str, env: &mut Environment) {
             }
         }
     }
+}
+
+fn bitsadmin_deob_skip_flag(token: &str) -> bool {
+    ["/transfer", "/addfile", "/download", "/upload", "/priority"]
+        .iter()
+        .any(|flag| bitsadmin_deob_flag_matches(token, flag))
+        || token.starts_with('/')
+}
+
+fn bitsadmin_deob_flag_matches(token: &str, flag: &str) -> bool {
+    token == flag
+        || token
+            .strip_prefix(flag)
+            .and_then(|rest| rest.as_bytes().first())
+            .is_some_and(|byte| matches!(*byte, b':' | b'='))
 }
 
 fn first_unquoted_ampersand_segment(text: &str) -> &str {

