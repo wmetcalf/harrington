@@ -145,9 +145,16 @@ fn resolve_tracked_source(src: &str, env: &Environment) -> Option<Vec<u8>> {
     if let Some(content) = content_from_entry(env.modified_filesystem.get(&key)) {
         return Some(content);
     }
+    if let Some(name) = current_dir_basename(src) {
+        return resolve_tracked_source_by_basename(name, env);
+    }
     if src.contains(['\\', '/']) {
         return None;
     }
+    resolve_tracked_source_by_basename(src, env)
+}
+
+fn resolve_tracked_source_by_basename(src: &str, env: &Environment) -> Option<Vec<u8>> {
     for (path, entry) in &env.modified_filesystem {
         let Some(name) = windows_basename(path) else {
             continue;
@@ -159,6 +166,12 @@ fn resolve_tracked_source(src: &str, env: &Environment) -> Option<Vec<u8>> {
         }
     }
     None
+}
+
+fn current_dir_basename(path: &str) -> Option<&str> {
+    path.strip_prefix(r".\")
+        .or_else(|| path.strip_prefix("./"))
+        .and_then(windows_basename)
 }
 
 fn content_from_entry(entry: Option<&FsEntry>) -> Option<Vec<u8>> {
