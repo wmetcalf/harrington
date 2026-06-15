@@ -63,6 +63,7 @@ pub enum WinVer {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum FsEntry {
+    Directory,
     Content {
         content: Vec<u8>,
         append: bool,

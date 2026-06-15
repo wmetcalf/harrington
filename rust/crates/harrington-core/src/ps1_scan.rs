@@ -8793,7 +8793,7 @@ fn fs_entry_content(entry: &FsEntry) -> Option<Vec<u8>> {
         FsEntry::Content { content, .. } | FsEntry::Decoded { content, .. } => {
             Some(content.clone())
         }
-        FsEntry::Download { .. } | FsEntry::Copy { .. } => None,
+        FsEntry::Directory | FsEntry::Download { .. } | FsEntry::Copy { .. } => None,
     }
 }
 
