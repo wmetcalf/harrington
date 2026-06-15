@@ -239,6 +239,10 @@ pub fn interpret_line(line: &str, env: &mut Environment) {
         .traits
         .iter()
         .any(|t| matches!(t, crate::traits::Trait::Lolbas { name: n, .. } if n == "mshta"));
+    let has_hh_lolbas = env
+        .traits
+        .iter()
+        .any(|t| matches!(t, crate::traits::Trait::Lolbas { name: n, .. } if n == "hh"));
     match ext {
         "js" | "jse" | "wsf" | "wsh" | "vbs" | "vbe" if !has_wscript_exec => {
             push_implicit_download_source_url(&name, env);
@@ -251,6 +255,13 @@ pub fn interpret_line(line: &str, env: &mut Environment) {
             // Mshta trait exists but takes different fields — use a Lolbas.
             env.traits.push(crate::traits::Trait::Lolbas {
                 name: "mshta".to_string(),
+                cmd: name.clone(),
+            });
+        }
+        "chm" if !has_hh_lolbas => {
+            push_implicit_download_source_url(&name, env);
+            env.traits.push(crate::traits::Trait::Lolbas {
+                name: "hh".to_string(),
                 cmd: name.clone(),
             });
         }

