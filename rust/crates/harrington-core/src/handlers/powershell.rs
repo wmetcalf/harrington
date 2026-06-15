@@ -308,8 +308,9 @@ fn queue_file_payload(path: &str, env: &mut Environment) {
 }
 
 fn tracked_script_content(path: &str, env: &Environment) -> Option<Vec<u8>> {
-    let key = path.to_ascii_lowercase();
-    if let Some(content) = content_from_entry(env.modified_filesystem.get(&key)) {
+    if let Some(content) =
+        content_from_entry(crate::handlers::util::filesystem_entry_for_path(env, path))
+    {
         return Some(content);
     }
     if let Some(name) = current_dir_basename(path) {

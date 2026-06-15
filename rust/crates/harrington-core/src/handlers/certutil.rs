@@ -141,8 +141,9 @@ fn push_lolbas(raw: &str, env: &mut Environment) {
 }
 
 fn resolve_tracked_source(src: &str, env: &Environment) -> Option<Vec<u8>> {
-    let key = src.to_ascii_lowercase();
-    if let Some(content) = content_from_entry(env.modified_filesystem.get(&key)) {
+    if let Some(content) =
+        content_from_entry(crate::handlers::util::filesystem_entry_for_path(env, src))
+    {
         return Some(content);
     }
     if let Some(name) = current_dir_basename(src) {
