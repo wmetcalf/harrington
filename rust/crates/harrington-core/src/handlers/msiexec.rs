@@ -1,6 +1,6 @@
 //! msiexec handler — surfaces URL package arguments.
 
-use super::util::split_words;
+use super::util::{filesystem_entry_for_path, split_words};
 use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
 
@@ -110,8 +110,7 @@ fn msiexec_has_package_argument(tokens: &[String]) -> bool {
 fn msiexec_prior_download_url(tokens: &[String], env: &Environment) -> Option<String> {
     for (idx, token) in tokens.iter().enumerate().skip(1) {
         if let Some(candidate) = msiexec_package_candidate(token, tokens.get(idx + 1)) {
-            let key = candidate.to_ascii_lowercase();
-            if let Some(FsEntry::Download { src }) = env.modified_filesystem.get(&key) {
+            if let Some(FsEntry::Download { src }) = filesystem_entry_for_path(env, &candidate) {
                 return Some(src.clone());
             }
             if let Some(name) = current_dir_basename(&candidate) {
