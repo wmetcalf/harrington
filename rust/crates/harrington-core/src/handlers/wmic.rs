@@ -57,6 +57,10 @@ fn wmic_process_create_inner(raw: &str) -> Option<String> {
 }
 
 fn wmic_create_commandline_argument(tail: &str) -> Option<String> {
+    let tail = tail.trim();
+    if let Some(value_start) = wmic_commandline_value_start(tail) {
+        return wmic_create_commandline_argument(&tail[value_start..]);
+    }
     let mut in_dq = false;
     let mut in_sq = false;
     let mut end = tail.len();
@@ -75,6 +79,53 @@ fn wmic_create_commandline_argument(tail: &str) -> Option<String> {
     (!inner.is_empty()).then_some(inner)
 }
 
+fn wmic_commandline_value_start(tail: &str) -> Option<usize> {
+    let bytes = tail.as_bytes();
+    let mut i = 0usize;
+    while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
+        i += 1;
+    }
+    let name = tail.get(i..i + "commandline".len())?;
+    if !name.eq_ignore_ascii_case("commandline") {
+        return None;
+    }
+    i += "commandline".len();
+    while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
+        i += 1;
+    }
+    if bytes.get(i) != Some(&b'=') {
+        return None;
+    }
+    i += 1;
+    while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
+        i += 1;
+    }
+    (i < tail.len()).then_some(i)
+}
+
 fn strip_quotes(text: &str) -> &str {
     text.trim_matches(|c| c == '"' || c == '\'')
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::wmic_create_commandline_argument;
+
+    #[test]
+    fn create_argument_extracts_named_commandline() {
+        assert_eq!(
+            wmic_create_commandline_argument(r#"CommandLine="cmd /c echo named""#).as_deref(),
+            Some("cmd /c echo named")
+        );
+    }
+
+    #[test]
+    fn create_argument_extracts_named_commandline_with_spaces() {
+        assert_eq!(
+            wmic_create_commandline_argument(r#"CommandLine = "cmd /c echo named", "C:\Temp""#)
+                .as_deref(),
+            Some("cmd /c echo named")
+        );
+    }
 }

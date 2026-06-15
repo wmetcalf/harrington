@@ -12888,6 +12888,30 @@ mod wmic_tests {
     }
 
     #[test]
+    fn wmic_process_call_create_named_commandline_extracts_inner() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"wmic process call create CommandLine="cmd /c echo named""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::WmicProcessCreate { inner_cmd } if inner_cmd == "cmd /c echo named"
+            )
+        });
+        assert!(
+            has,
+            "named CommandLine argument did not emit WmicProcessCreate: {:?}",
+            env.traits
+        );
+        assert!(
+            env.exec_cmd.iter().any(|c| c == "cmd /c echo named"),
+            "named CommandLine argument did not recurse: {:?}",
+            env.exec_cmd
+        );
+    }
+
+    #[test]
     fn wmic_process_call_create_tolerates_spacing_and_case() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
