@@ -254,7 +254,11 @@ fn xcopy_pipeline_tail(line: &str) -> Option<&str> {
     let (_, tail) = line.split_once('|')?;
     let tail = tail.trim();
     let name = command_name(tail)?;
-    if name.eq_ignore_ascii_case("xcopy") {
+    let lower = name.to_ascii_lowercase();
+    let stripped = lower.trim_matches(['"', '\'']);
+    let file_name = stripped.rsplit(['\\', '/']).next().unwrap_or(stripped);
+    let base = file_name.strip_suffix(".exe").unwrap_or(file_name);
+    if base == "xcopy" {
         Some(tail)
     } else {
         None

