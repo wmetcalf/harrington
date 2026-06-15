@@ -1,6 +1,7 @@
 //! `if` handler — evaluates the condition and signals body suppression via env.suppress_until_eol.
 
 use crate::env::Environment;
+use crate::handlers::util::{normalize_wildcard_path, wildcard_match};
 use crate::lex::lex;
 use crate::normalize::normalize_to_string;
 use once_cell::sync::Lazy;
@@ -253,51 +254,17 @@ fn wildcard_path_exists(pattern: &str, env: &Environment) -> bool {
         return false;
     }
     if let Some(basename_pattern) = current_dir_basename(pattern) {
-        let basename_pattern = normalize_fs_match_path(basename_pattern);
+        let basename_pattern = normalize_wildcard_path(basename_pattern);
         return env.modified_filesystem.keys().any(|path| {
             windows_basename(path).is_some_and(|name| {
-                wildcard_match(&basename_pattern, &normalize_fs_match_path(name))
+                wildcard_match(&basename_pattern, &normalize_wildcard_path(name))
             })
         });
     }
-    let normalized_pattern = normalize_fs_match_path(pattern);
+    let normalized_pattern = normalize_wildcard_path(pattern);
     env.modified_filesystem
         .keys()
-        .any(|path| wildcard_match(&normalized_pattern, &normalize_fs_match_path(path)))
-}
-
-fn normalize_fs_match_path(path: &str) -> String {
-    path.to_ascii_lowercase()
-        .replace('/', "\\")
-        .replace("*.*", "*")
-}
-
-fn wildcard_match(pattern: &str, text: &str) -> bool {
-    let pattern: Vec<char> = pattern.chars().collect();
-    let text: Vec<char> = text.chars().collect();
-    let (mut pi, mut ti) = (0usize, 0usize);
-    let mut star: Option<usize> = None;
-    let mut star_text = 0usize;
-    while ti < text.len() {
-        if pi < pattern.len() && (pattern[pi] == '?' || pattern[pi] == text[ti]) {
-            pi += 1;
-            ti += 1;
-        } else if pi < pattern.len() && pattern[pi] == '*' {
-            star = Some(pi);
-            pi += 1;
-            star_text = ti;
-        } else if let Some(star_index) = star {
-            pi = star_index + 1;
-            star_text += 1;
-            ti = star_text;
-        } else {
-            return false;
-        }
-    }
-    while pi < pattern.len() && pattern[pi] == '*' {
-        pi += 1;
-    }
-    pi == pattern.len()
+        .any(|path| wildcard_match(&normalized_pattern, &normalize_wildcard_path(path)))
 }
 
 fn current_dir_path_exists(path: &str, env: &Environment) -> bool {
