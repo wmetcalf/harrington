@@ -11762,6 +11762,23 @@ rundll32 c:\programdata\COIm.jpg,init"#,
             env.traits
         );
     }
+
+    #[test]
+    fn echo_suppressed_net_exe_use_dispatches_to_net_handler() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(r#"@net.exe use Z: \\evil\share"#, &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::NetUse { info, .. }
+                    if info.devicename.as_deref() == Some("Z:")
+                        && info.server.as_deref() == Some(r#"\\evil\share"#)
+            )),
+            "@net.exe use was not dispatched to net handler: {:?}",
+            env.traits
+        );
+    }
 }
 
 #[cfg(test)]
