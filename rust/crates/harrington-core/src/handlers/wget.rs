@@ -19,7 +19,7 @@ pub fn h_wget(raw: &str, env: &mut Environment) {
         src: url.clone(),
         dst: dst_path.clone(),
     });
-    if let Some(d) = dst_path {
+    if let Some(d) = dst_path.as_ref() {
         env.modified_filesystem.insert(
             d.to_ascii_lowercase(),
             FsEntry::Download { src: url.clone() },
@@ -30,6 +30,11 @@ pub fn h_wget(raw: &str, env: &mut Environment) {
             let path = join_windows_path(&prefix, &name);
             env.modified_filesystem
                 .insert(path.to_ascii_lowercase(), FsEntry::Download { src: url });
+        }
+    } else if dst_path.is_none() {
+        if let Some(name) = url_basename(&url) {
+            env.modified_filesystem
+                .insert(name.to_ascii_lowercase(), FsEntry::Download { src: url });
         }
     }
 }

