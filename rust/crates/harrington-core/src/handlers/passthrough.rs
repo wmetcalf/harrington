@@ -333,7 +333,7 @@ pub(crate) fn persisted_command_child(command: &str) -> Option<(String, bool)> {
     None
 }
 
-pub(crate) fn sc_create_binpath(raw: &str) -> Option<(String, String)> {
+pub(crate) fn sc_service_binpath(raw: &str) -> Option<(String, String)> {
     let tokens = split_words(raw);
     let command = tokens.first()?;
     let name = command
@@ -346,10 +346,10 @@ pub(crate) fn sc_create_binpath(raw: &str) -> Option<(String, String)> {
     if name.strip_suffix(".exe").unwrap_or(&name) != "sc" {
         return None;
     }
-    if !tokens
+    let is_service_binpath_subcommand = tokens
         .get(1)
-        .is_some_and(|token| token.eq_ignore_ascii_case("create"))
-    {
+        .is_some_and(|token| matches!(token.to_ascii_lowercase().as_str(), "create" | "config"));
+    if !is_service_binpath_subcommand {
         return None;
     }
     let service_name = tokens
@@ -374,7 +374,7 @@ make_handler!(h_whoami, "whoami");
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::{h_reg, h_schtasks, persisted_command_child, sc_create_binpath};
+    use super::{h_reg, h_schtasks, persisted_command_child, sc_service_binpath};
     use crate::env::{Config, Environment};
     use crate::traits::Trait;
 
@@ -431,7 +431,7 @@ mod tests {
     #[test]
     fn sc_create_binpath_accepts_spaced_equals_value() {
         let (service_name, bin_path) =
-            sc_create_binpath(r#"sc create UpdateSvc binPath= "cmd.exe /c echo hi""#)
+            sc_service_binpath(r#"sc create UpdateSvc binPath= "cmd.exe /c echo hi""#)
                 .expect("sc create binPath should parse");
 
         assert_eq!(service_name, "UpdateSvc");
@@ -441,10 +441,20 @@ mod tests {
     #[test]
     fn sc_create_binpath_accepts_attached_equals_value() {
         let (service_name, bin_path) =
-            sc_create_binpath(r#"sc.exe create "Update Svc" binPath="cmd.exe /c echo hi""#)
+            sc_service_binpath(r#"sc.exe create "Update Svc" binPath="cmd.exe /c echo hi""#)
                 .expect("attached sc create binPath should parse");
 
         assert_eq!(service_name, "Update Svc");
+        assert_eq!(bin_path, "cmd.exe /c echo hi");
+    }
+
+    #[test]
+    fn sc_config_binpath_accepts_spaced_equals_value() {
+        let (service_name, bin_path) =
+            sc_service_binpath(r#"sc config UpdateSvc binPath= "cmd.exe /c echo hi""#)
+                .expect("sc config binPath should parse");
+
+        assert_eq!(service_name, "UpdateSvc");
         assert_eq!(bin_path, "cmd.exe /c echo hi");
     }
 

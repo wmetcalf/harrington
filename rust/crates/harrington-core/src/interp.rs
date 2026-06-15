@@ -46,7 +46,7 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
         // emits its trait). The child push happens regardless.
     }
 
-    if let Some((service_name, bin_path)) = crate::handlers::passthrough::sc_create_binpath(raw) {
+    if let Some((service_name, bin_path)) = crate::handlers::passthrough::sc_service_binpath(raw) {
         if !env.traits.iter().any(|t| {
             matches!(
                 t,
