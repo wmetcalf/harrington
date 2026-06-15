@@ -72,10 +72,17 @@ fn copied_entry(src: &str, env: &Environment) -> Option<FsEntry> {
     if let Some(entry) = env.modified_filesystem.get(&key) {
         return Some(entry.clone());
     }
+    if let Some(name) = current_dir_basename(src) {
+        return copied_entry_by_basename(name, env);
+    }
     if src.contains(['\\', '/', ':']) {
         return None;
     }
 
+    copied_entry_by_basename(src, env)
+}
+
+fn copied_entry_by_basename(src: &str, env: &Environment) -> Option<FsEntry> {
     let basename = windows_basename(src)?.to_ascii_lowercase();
     env.modified_filesystem
         .iter()
@@ -88,6 +95,12 @@ fn copied_entry(src: &str, env: &Environment) -> Option<FsEntry> {
                 None
             }
         })
+}
+
+fn current_dir_basename(path: &str) -> Option<&str> {
+    path.strip_prefix(r".\")
+        .or_else(|| path.strip_prefix("./"))
+        .and_then(windows_basename)
 }
 
 fn insert_copied_entry(env: &mut Environment, src: &str, dst: &str, entry: FsEntry) {
