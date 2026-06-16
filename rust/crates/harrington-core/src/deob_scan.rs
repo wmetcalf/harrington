@@ -7931,17 +7931,13 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
                     // values like `$false` to avoid false positives in remediation
                     // scripts that turn protections back on.
                     let val_lc = val.to_ascii_lowercase();
-                    let disabling = matches!(
-                        (opt.as_str(), val_lc.as_str()),
-                        ("disablerealtimemonitoring", "$true" | "1" | "true")
-                            | ("disablebehaviormonitoring", "$true" | "1" | "true")
-                            | ("disableioavprotection", "$true" | "1" | "true")
-                            | ("disableblockatfirstseen", "$true" | "1" | "true")
-                            | ("disableprivacymode", "$true" | "1" | "true")
-                            | ("disablescriptscanning", "$true" | "1" | "true")
-                            | ("mapsreporting", "disabled" | "0")
-                    ) || (opt == "submitsamplesconsent"
-                        && (val_lc == "2" || val_lc == "never"));
+                    let trueish = matches!(val_lc.as_str(), "$true" | "1" | "true");
+                    let disabling = (opt.starts_with("disable") && trueish)
+                        || matches!(
+                            (opt.as_str(), val_lc.as_str()),
+                            ("mapsreporting", "disabled" | "0")
+                        )
+                        || (opt == "submitsamplesconsent" && (val_lc == "2" || val_lc == "never"));
                     if disabling {
                         push(&format!("setmp-{opt}"), val);
                     }

