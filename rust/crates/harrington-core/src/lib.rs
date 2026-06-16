@@ -5389,6 +5389,23 @@ C:\Users\Public\rg.tmp delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Ex
     }
 
     #[test]
+    fn powershell_shadowcopy_delete_emits_anti_recovery_trait() {
+        let script = br#"powershell -Command "Get-WmiObject Win32_ShadowCopy | ForEach-Object { $_.Delete() }"
+powershell -Command "Get-CimInstance Win32_ShadowCopy | Remove-CimInstance"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AntiRecovery { action } if action == "powershell-shadowcopy-delete"
+            )),
+            "PowerShell shadow copy deletion was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn generic_delete_does_not_emit_evidence_cleanup_trait() {
         let script = b"@echo off\r\n\
             del /f /q C:\\Temp\\installer.log\r\n\

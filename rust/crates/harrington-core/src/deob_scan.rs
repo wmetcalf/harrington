@@ -8574,6 +8574,13 @@ fn scan_anti_recovery(deobfuscated: &str, env: &mut Environment) {
                 "wmic-shadowcopy-delete",
             ),
             (
+                Regex::new(
+                    r"(?i)\b(?:Get-WmiObject|Get-CimInstance)\b[^\r\n]*\bWin32_ShadowCopy\b[^\r\n]*(?:\.Delete\s*\(|Remove-CimInstance\b)",
+                )
+                .unwrap(),
+                "powershell-shadowcopy-delete",
+            ),
+            (
                 Regex::new(r"(?i)\bbcdedit(?:\.exe)?[^\r\n]*?(?:/set\s+)?recoveryenabled\s+no")
                     .unwrap(),
                 "bcdedit-recoveryenabled-no",
