@@ -8101,10 +8101,9 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
                 let positional = powershell_positional_arguments(command, "Set-NetFirewallProfile");
                 let enabled = powershell_named_argument(command, "-Enabled")
                     .map(|value| {
-                        matches!(
-                            value.to_ascii_lowercase().as_str(),
-                            "false" | "$false" | "0"
-                        )
+                        let value = value.to_ascii_lowercase();
+                        is_registry_dword_zero(&value)
+                            || matches!(value.as_str(), "false" | "$false")
                     })
                     .unwrap_or(false);
                 if !enabled {

