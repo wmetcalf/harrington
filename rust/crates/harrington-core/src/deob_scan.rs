@@ -9267,6 +9267,26 @@ fn scan_enumeration(deobfuscated: &str, env: &mut Environment) {
                 false,
             ),
             (
+                Regex::new(r"(?i)\bGet-ComputerInfo\b[^\r\n]*").unwrap(),
+                "ps-computerinfo",
+                false,
+            ),
+            (
+                Regex::new(r"(?i)\bGet-HotFix\b[^\r\n]*").unwrap(),
+                "ps-hotfix",
+                false,
+            ),
+            (
+                Regex::new(r"(?i)\bGet-LocalGroupMember\b[^\r\n]*").unwrap(),
+                "ps-localgroupmember",
+                false,
+            ),
+            (
+                Regex::new(r"(?i)\bGet-NetIPConfiguration\b[^\r\n]*").unwrap(),
+                "ps-netipconfiguration",
+                false,
+            ),
+            (
                 Regex::new(r"(?i)\bsysteminfo(?:\.exe)?\b").unwrap(),
                 "systeminfo",
                 false,
@@ -9534,6 +9554,10 @@ fn has_enumeration_atom(text: &str) -> bool {
         "get-process",
         "get-service",
         "antivirusproduct",
+        "get-computerinfo",
+        "get-hotfix",
+        "get-localgroupmember",
+        "get-netipconfiguration",
         "systeminfo",
         "tasklist",
         "ipconfig",
