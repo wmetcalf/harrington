@@ -7777,12 +7777,6 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
         Regex::new(r#"(?i)sc(?:\.exe)?\s+(stop|config|delete)\s+(WinDefend|MsMpSvc|wuauserv|MpsSvc|WdNisSvc)"#)
             .expect("sc-defender")
     });
-    static PS_STOP_SERVICE_SECURITY_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(
-            r#"(?im)^[^\r\n]*?\bStop-Service\b[^\r\n]*(?:-Name\s+|-DisplayName\s+)?["']?(WinDefend|MsMpSvc|wuauserv|MpsSvc|WdNisSvc|SecurityHealthService|Sense)["']?\b[^\r\n]*"#,
-        )
-        .expect("powershell stop-service security regex")
-    });
     static PS_SET_SERVICE_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?im)^[^\r\n]*?\bSet-Service\b[^\r\n]*"#)
             .expect("powershell set-service regex")
@@ -7958,12 +7952,27 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
                     .unwrap_or_default();
                 push(&format!("sc-{verb}"), svc);
             }
-            for caps in PS_STOP_SERVICE_SECURITY_RE.captures_iter(deobfuscated) {
-                let service = caps
-                    .get(1)
-                    .map(|m| m.as_str().to_string())
-                    .unwrap_or_default();
-                push("powershell-stop-service", service);
+            for line in deobfuscated.lines() {
+                if !line.to_ascii_lowercase().contains("stop-service") {
+                    continue;
+                }
+                let mut services = powershell_named_argument_list(line, "-Name");
+                if services.is_empty() {
+                    if let Some(display_name) = powershell_named_argument(line, "-DisplayName") {
+                        services.push(display_name);
+                    }
+                }
+                if services.is_empty() {
+                    let positional = powershell_positional_arguments(line, "Stop-Service");
+                    if let Some(service) = positional.into_iter().next() {
+                        services.extend(split_powershell_list_argument(&service));
+                    }
+                }
+                for service in services {
+                    if is_security_service_name(&service) {
+                        push("powershell-stop-service", service);
+                    }
+                }
             }
             for m in PS_SET_SERVICE_RE.find_iter(deobfuscated) {
                 let command = m.as_str().trim();
