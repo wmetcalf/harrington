@@ -470,20 +470,31 @@ fn record_get_content_set_content_side_effects(body: &str, env: &mut Environment
 fn record_set_content_value_side_effects(body: &str, env: &mut Environment) {
     let tokens = split_words(body);
     for i in 0..tokens.len() {
-        if !is_direct_content_write_token(&tokens[i]) {
+        let Some(append) = direct_content_write_append_mode(&tokens[i]) else {
             continue;
-        }
+        };
         let Some((dst, content)) = powershell_set_content_paths_and_value(&tokens, i + 1) else {
             continue;
         };
-        env.modified_filesystem.insert(
-            filesystem_storage_key(&dst),
-            FsEntry::Content {
-                content: content.into_bytes(),
-                append: false,
-            },
-        );
+        write_powershell_content(env, &dst, content.into_bytes(), append);
     }
+}
+
+fn write_powershell_content(env: &mut Environment, dst: &str, content: Vec<u8>, append: bool) {
+    let key = filesystem_storage_key(dst);
+    if append {
+        if let Some(FsEntry::Content {
+            content: prior,
+            append: prior_append,
+        }) = env.modified_filesystem.get_mut(&key)
+        {
+            prior.extend_from_slice(&content);
+            *prior_append = true;
+            return;
+        }
+    }
+    env.modified_filesystem
+        .insert(key, FsEntry::Content { content, append });
 }
 
 fn record_file_transfer_side_effects(body: &str, env: &mut Environment) {
@@ -651,11 +662,12 @@ fn is_content_write_token(token: &str) -> bool {
     )
 }
 
-fn is_direct_content_write_token(token: &str) -> bool {
-    matches!(
-        strip_quotes(token).to_ascii_lowercase().as_str(),
-        "set-content" | "sc" | "add-content" | "ac"
-    )
+fn direct_content_write_append_mode(token: &str) -> Option<bool> {
+    match strip_quotes(token).to_ascii_lowercase().as_str() {
+        "set-content" | "sc" => Some(false),
+        "add-content" | "ac" => Some(true),
+        _ => None,
+    }
 }
 
 fn powershell_stdout_redirect_destination(tokens: &[String], start: usize) -> Option<String> {
