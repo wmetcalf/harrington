@@ -8164,6 +8164,8 @@ fn is_security_service_name(service: &str) -> bool {
             | "wdnissvc"
             | "securityhealthservice"
             | "sense"
+            | "windows defender antivirus service"
+            | "microsoft defender antivirus service"
     )
 }
 

