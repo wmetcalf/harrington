@@ -40493,6 +40493,12 @@ mod ps_alias_tests {
     }
 
     #[test]
+    fn si_expanded_in_function_def() {
+        let out = expand_aliases("(si function:\\Decoder -Value { param($x) $x })");
+        assert!(out.contains("Set-Item"), "got: {}", out);
+    }
+
+    #[test]
     fn non_alias_preserved() {
         let out = expand_aliases("MyCustomFunction $x");
         assert_eq!(out, "MyCustomFunction $x");
@@ -40580,6 +40586,13 @@ mod ps_alias_tests {
             "got: {}",
             out
         );
+    }
+
+    #[test]
+    fn gate_allows_set_item_function_alias_only_payload() {
+        use crate::ps_alias::expand_aliases_if_ps;
+        let out = expand_aliases_if_ps("(si function:\\Decoder -Value { param($x) $x })");
+        assert!(out.contains("Set-Item"), "got: {}", out);
     }
 
     #[test]
