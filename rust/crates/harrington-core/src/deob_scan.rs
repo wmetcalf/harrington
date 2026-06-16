@@ -9287,6 +9287,31 @@ fn scan_enumeration(deobfuscated: &str, env: &mut Environment) {
                 false,
             ),
             (
+                Regex::new(r"(?i)\bGet-NetTCPConnection\b[^\r\n]*").unwrap(),
+                "ps-nettcpconnection",
+                false,
+            ),
+            (
+                Regex::new(r"(?i)\bGet-NetAdapter\b[^\r\n]*").unwrap(),
+                "ps-netadapter",
+                false,
+            ),
+            (
+                Regex::new(r"(?i)\bGet-NetIPAddress\b[^\r\n]*").unwrap(),
+                "ps-netipaddress",
+                false,
+            ),
+            (
+                Regex::new(r"(?i)\bGet-ADUser\b[^\r\n]*").unwrap(),
+                "ps-aduser",
+                false,
+            ),
+            (
+                Regex::new(r"(?i)\bGet-ADComputer\b[^\r\n]*").unwrap(),
+                "ps-adcomputer",
+                false,
+            ),
+            (
                 Regex::new(r"(?i)\bsysteminfo(?:\.exe)?\b").unwrap(),
                 "systeminfo",
                 false,
@@ -9558,6 +9583,11 @@ fn has_enumeration_atom(text: &str) -> bool {
         "get-hotfix",
         "get-localgroupmember",
         "get-netipconfiguration",
+        "get-nettcpconnection",
+        "get-netadapter",
+        "get-netipaddress",
+        "get-aduser",
+        "get-adcomputer",
         "systeminfo",
         "tasklist",
         "ipconfig",
