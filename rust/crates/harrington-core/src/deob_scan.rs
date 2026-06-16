@@ -10505,6 +10505,9 @@ fn scan_credential_access(deobfuscated: &str, env: &mut Environment) {
             // Browser credential paths
             (Regex::new(r#"(?i)\\Google\\Chrome\\User Data\\\S*Login Data|\\Mozilla\\Firefox\\Profiles\\\S*\\(?:key[34]\.db|logins\.json|cookies\.sqlite)|\\BraveSoftware\\\S*Login Data"#).unwrap(),
              "browser-cred-path", |m| m.to_string()),
+            // Windows Credential Manager files and DPAPI protect material.
+            (Regex::new(r#"(?i)(?:%APPDATA%|%LOCALAPPDATA%|\\AppData\\(?:Roaming|Local))\\Microsoft\\(?:Credentials|Protect)(?:\\[^\s"']*)?"#).unwrap(),
+             "windows-credential-path", |m| m.to_string()),
             // Nirsoft tooling
             (Regex::new(r#"(?i)\b(?:nirsoft|webbrowserpassview|mailpassview|chromepass)\b"#).unwrap(),
              "nirsoft", |m| m.to_string()),
@@ -10589,6 +10592,12 @@ fn has_credential_access_atom(text: &str) -> bool {
         "logins.json",
         "cookies.sqlite",
         "\\bravesoftware\\",
+        "\\microsoft\\credentials\\",
+        "\\microsoft\\protect\\",
+        "%appdata%\\microsoft\\credentials",
+        "%appdata%\\microsoft\\protect",
+        "%localappdata%\\microsoft\\credentials",
+        "%localappdata%\\microsoft\\protect",
         "nirsoft",
         "webbrowserpassview",
         "mailpassview",

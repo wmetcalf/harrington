@@ -4139,6 +4139,25 @@ vaultcmd /listcreds:"Windows Credentials"
     }
 
     #[test]
+    fn windows_credential_paths_emit_credential_access_trait() {
+        let script = br#"dir "%APPDATA%\Microsoft\Credentials"
+copy "%APPDATA%\Microsoft\Protect\SID\BK-MACHINE" C:\Users\Public\bk.bin
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::CredentialAccess { technique, target }
+                    if technique == "windows-credential-path"
+                        && target.contains(r"Microsoft\Credentials")
+            )),
+            "Windows credential file path was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_dotnet_clipboard_access_emits_input_capture_trait() {
         let script = br#"powershell -Command "[System.Windows.Forms.Clipboard]::GetText()"
 powershell -Command "[Windows.Forms.Clipboard]::SetText('copied')"
