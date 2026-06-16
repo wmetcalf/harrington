@@ -10939,7 +10939,7 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
             let line_hint = deobfuscated
                 .lines()
                 .find(|l| l.contains(&url))
-                .map(|l| l.chars().take(200).collect::<String>())
+                .map(str::to_string)
                 .unwrap_or_default();
             if is_noise_url_context(&line_hint, &url) {
                 continue;
