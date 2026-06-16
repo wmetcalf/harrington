@@ -4011,6 +4011,29 @@ powershell -Command "[Windows.Forms.Clipboard]::SetText('copied')"
     }
 
     #[test]
+    fn rdp_session_relaxation_padded_dwords_emit_remote_access_traits() {
+        let script = br#"reg add "HKLM\software\Microsoft\Windows NT\CurrentVersion\Winlogon" /v "AllowMultipleTSSessions" /t REG_DWORD /d 0x00000001 /f
+reg add "HKLM\system\CurrentControlSet\Control\Terminal Server" /v "fSingleSessionPerUser" /t REG_DWORD /d 0x00000000 /f
+reg add "HKLM\system\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" /v "MaxIdleTime" /t REG_DWORD /d 00000000 /f"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        for technique in [
+            "rdp-multiple-sessions",
+            "rdp-single-session-disabled",
+            "rdp-timeout-disabled",
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::RemoteAccess { technique: tk, .. } if tk == technique
+                )),
+                "padded DWORD RemoteAccess {technique} missing: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn powershell_terminal_server_registry_writes_emit_remote_access_traits() {
         let script = br#"powershell -Command "Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0"
 powershell -Command "New-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name AllowTSConnections -PropertyType DWord -Value 1 -Force"

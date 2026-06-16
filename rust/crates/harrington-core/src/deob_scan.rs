@@ -10969,19 +10969,19 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
     });
     static RDP_MULTIPLE_SESSIONS_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r#"(?im)^[^\r\n]*\breg(?:\.exe)?\s+add\s+["']?[^"'\r\n]*Winlogon["']?[^\r\n]*/v\s+["']?AllowMultipleTSSessions["']?[^\r\n]*/d\s+(?:0x1|1)\b[^\r\n]*"#,
+            r#"(?im)^[^\r\n]*\breg(?:\.exe)?\s+add\s+["']?[^"'\r\n]*Winlogon["']?[^\r\n]*/v\s+["']?AllowMultipleTSSessions["']?[^\r\n]*/d\s+(?:0x0*1|0*1)\b[^\r\n]*"#,
         )
         .expect("rdp multiple sessions regex")
     });
     static RDP_SINGLE_SESSION_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r#"(?im)^[^\r\n]*\breg(?:\.exe)?\s+add\s+["']?[^"'\r\n]*Terminal Server[^"'\r\n]*["']?[^\r\n]*/v\s+["']?fSingleSessionPerUser["']?[^\r\n]*/d\s+(?:0x0|0)\b[^\r\n]*"#,
+            r#"(?im)^[^\r\n]*\breg(?:\.exe)?\s+add\s+["']?[^"'\r\n]*Terminal Server[^"'\r\n]*["']?[^\r\n]*/v\s+["']?fSingleSessionPerUser["']?[^\r\n]*/d\s+(?:0x0+|0+)\b[^\r\n]*"#,
         )
         .expect("rdp single session regex")
     });
     static RDP_TIMEOUT_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r#"(?im)^[^\r\n]*\breg(?:\.exe)?\s+add\s+["']?[^"'\r\n]*Terminal Server\\WinStations\\RDP-Tcp["']?[^\r\n]*/v\s+["']?(MaxIdleTime|MaxConnectionTime)["']?[^\r\n]*/d\s+(?:0x0|0)\b[^\r\n]*"#,
+            r#"(?im)^[^\r\n]*\breg(?:\.exe)?\s+add\s+["']?[^"'\r\n]*Terminal Server\\WinStations\\RDP-Tcp["']?[^\r\n]*/v\s+["']?(MaxIdleTime|MaxConnectionTime)["']?[^\r\n]*/d\s+(?:0x0+|0+)\b[^\r\n]*"#,
         )
         .expect("rdp timeout regex")
     });
