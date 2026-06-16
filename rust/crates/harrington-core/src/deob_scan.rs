@@ -12100,7 +12100,7 @@ fn scan_service_install(deobfuscated: &str, env: &mut Environment) {
             .expect("sc create re")
     });
     static PS_NEW_SERVICE_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?im)^[^\r\n]*?\bNew-Service\b[^\r\n]*"#)
+        Regex::new(r#"(?im)(?:^|[;|&])\s*[^\r\n;|&]*?\bNew-Service\b[^\r\n;|&]*"#)
             .expect("powershell new-service regex")
     });
     let mut push = |name: String, path: String| {
