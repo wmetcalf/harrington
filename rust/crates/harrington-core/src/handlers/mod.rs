@@ -75,9 +75,8 @@ pub fn lookup(name: &str) -> Option<Handler> {
         "ftp" => return Some(ftp::h_ftp),
         "hh" => return Some(hh::h_hh),
         "msconfig" => return Some(msconfig::h_msconfig),
-        "brave" | "chrome" | "explorer" | "firefox" | "iexplore" | "msedge" | "opera" => {
-            return Some(url_launch::h_url_launch);
-        }
+        "brave" | "chrome" | "edge" | "explorer" | "firefox" | "iexplore" | "msedge" | "opera"
+        | "vivaldi" => return Some(url_launch::h_url_launch),
         _ => {}
     }
     match base {
