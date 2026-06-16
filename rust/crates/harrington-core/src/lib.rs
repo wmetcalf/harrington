@@ -8092,6 +8092,24 @@ powershell -Command "Clear-RecycleBin -Force"
     }
 
     #[test]
+    fn powershell_chained_clear_recyclebin_preserves_statement_command() {
+        let script = br#"powershell -Command "Write-Output keep; Clear-RecycleBin -Force""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::EvidenceCleanup { action, target, command }
+                    if action == "recycle-bin-clear"
+                        && target == "RecycleBin"
+                        && command == "Clear-RecycleBin -Force"
+            )),
+            "chained Clear-RecycleBin command context was not preserved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn deob_text_ri_alias_prefetch_delete_emits_evidence_cleanup_trait() {
         let mut env = Environment::new(&AnalyzeConfig::default());
         crate::deob_scan::scan_deob_text(r#"ri -Force C:\Windows\Prefetch\*"#, &mut env);
