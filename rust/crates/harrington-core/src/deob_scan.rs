@@ -5471,6 +5471,53 @@ fn scan_copied_enumeration_alias_deob_text(deobfuscated: &str, env: &mut Environ
     }
 }
 
+fn scan_copied_network_probe_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    let mut aliases: std::collections::HashMap<String, &'static str> =
+        std::collections::HashMap::new();
+    for t in &env.traits {
+        let Trait::WindowsUtilManip { src, dst, .. } = t else {
+            continue;
+        };
+        let src_base = basename_lower(src);
+        let replay_command = match src_base.as_str() {
+            "nslookup.exe" | "nslookup" => "nslookup.exe",
+            _ => continue,
+        };
+        insert_alias_command_names(&mut aliases, dst, replay_command);
+    }
+    if aliases.is_empty() {
+        return;
+    }
+
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        let Some(cmd) = tokens.first() else {
+            continue;
+        };
+        let replay_command = aliases
+            .get(&basename_lower(cmd))
+            .or_else(|| aliases.get(&cmd.trim_matches(['"', '\'']).to_ascii_lowercase()));
+        let Some(replay_command) = replay_command else {
+            continue;
+        };
+        if tokens.len() < 2 {
+            continue;
+        }
+
+        push_manipulated_exec_once(env, line, cmd);
+        let rest = line
+            .get(cmd.len()..)
+            .map(str::trim_start)
+            .unwrap_or_default();
+        let replay = if rest.is_empty() {
+            (*replay_command).to_string()
+        } else {
+            format!("{replay_command} {rest}")
+        };
+        scan_network_probe(&replay, env);
+    }
+}
+
 fn insert_alias_command_names(
     aliases: &mut std::collections::HashMap<String, &'static str>,
     dst: &str,
@@ -8667,18 +8714,32 @@ mod evidence_cleanup_prefilter_tests {
 fn scan_network_probe(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
-    static NSLOOKUP_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?i)\bnslookup(?:\.exe)?\s+([A-Za-z0-9.\-]+)"#).expect("nslookup re")
-    });
     static RESOLVE_DNS_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
             r#"(?i)\bResolve-DnsName\s+(?:-Name\s+)?(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9.\-]+))"#,
         )
         .expect("resolve-dns re")
     });
-    for c in NSLOOKUP_RE.captures_iter(deobfuscated) {
-        if let Some(m) = c.get(1) {
-            push_network_probe(env, "dns-lookup", m.as_str().to_string());
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        let Some(command) = tokens.first() else {
+            continue;
+        };
+        if !matches!(
+            command_basename(command).as_str(),
+            "nslookup" | "nslookup.exe"
+        ) {
+            continue;
+        }
+        if let Some(target) = tokens.iter().skip(1).find(|token| {
+            let token = token.trim_matches(['"', '\'']);
+            !token.starts_with('-') && !token.starts_with('/') && !token.is_empty()
+        }) {
+            push_network_probe(
+                env,
+                "dns-lookup",
+                target.trim_matches(['"', '\'']).to_string(),
+            );
         }
     }
     for c in RESOLVE_DNS_RE.captures_iter(deobfuscated) {
@@ -10275,6 +10336,9 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     });
     scan_step!("copied_enumeration_alias_deob_text", {
         scan_copied_enumeration_alias_deob_text(deobfuscated, env);
+    });
+    scan_step!("copied_network_probe_alias_deob_text", {
+        scan_copied_network_probe_alias_deob_text(deobfuscated, env);
     });
     scan_step!("copied_psexec_alias_deob_text", {
         scan_copied_psexec_alias_deob_text(deobfuscated, env);
