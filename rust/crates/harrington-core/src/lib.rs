@@ -4179,6 +4179,27 @@ net start TermService
     }
 
     #[test]
+    fn powershell_rdp_firewall_rule_name_list_emits_each_remote_access_trait() {
+        let script = br#"powershell -Command "Enable-NetFirewallRule -Name RemoteDesktop-UserMode-In-TCP, RemoteDesktop-UserMode-In-UDP""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        for rule_name in [
+            "RemoteDesktop-UserMode-In-TCP",
+            "RemoteDesktop-UserMode-In-UDP",
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::RemoteAccess { technique, target, .. }
+                        if technique == "rdp-firewall-open" && target == rule_name
+                )),
+                "RDP firewall rule-name list member missing {rule_name}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn powershell_boolean_rdp_registry_values_emit_remote_access_trait() {
         let script = br#"powershell -Command "Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value $false""#;
         let report = analyze(script, &AnalyzeConfig::default());
