@@ -9611,6 +9611,11 @@ fn scan_enumeration(deobfuscated: &str, env: &mut Environment) {
                 false,
             ),
             (
+                Regex::new(r"(?i)\bGet-PSDrive\b[^\r\n]*").unwrap(),
+                "ps-psdrive",
+                false,
+            ),
+            (
                 Regex::new(r"(?i)\b(?:Get-ChildItem|gci|dir|ls)\s+Env:[^\r\n]*").unwrap(),
                 "ps-env",
                 false,
@@ -9899,6 +9904,7 @@ fn has_enumeration_atom(text: &str) -> bool {
         "get-smbshare",
         "get-netfirewallprofile",
         "get-scheduledtask",
+        "get-psdrive",
         "get-childitem env:",
         "gci env:",
         "dir env:",
