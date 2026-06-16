@@ -5480,6 +5480,7 @@ fn scan_copied_enumeration_alias_deob_text(deobfuscated: &str, env: &mut Environ
         let replay_command = match src_base.as_str() {
             "net.exe" | "net" | "net1.exe" | "net1" => "net.exe",
             "whoami.exe" | "whoami" => "whoami.exe",
+            "hostname.exe" | "hostname" => "hostname.exe",
             "quser.exe" | "quser" => "quser.exe",
             "systeminfo.exe" | "systeminfo" => "systeminfo.exe",
             "tasklist.exe" | "tasklist" => "tasklist.exe",
@@ -9293,6 +9294,12 @@ fn scan_enumeration(deobfuscated: &str, env: &mut Environment) {
 
 fn network_utility_enumeration_kind(tokens: &[String], command: &str) -> Option<&'static str> {
     match command_basename(command).as_str() {
+        "whoami" | "whoami.exe" => tokens
+            .iter()
+            .skip(1)
+            .any(|token| token.eq_ignore_ascii_case("/user"))
+            .then_some("whoami-user"),
+        "hostname" | "hostname.exe" => Some("hostname"),
         "ipconfig" | "ipconfig.exe" => Some("ipconfig"),
         "getmac" | "getmac.exe" => Some("getmac"),
         "netstat" | "netstat.exe" => Some("netstat"),
@@ -9376,6 +9383,7 @@ fn has_enumeration_atom(text: &str) -> bool {
     [
         "net",
         "whoami",
+        "hostname",
         "query session",
         "quser",
         "get-localuser",
@@ -9422,6 +9430,8 @@ mod enumeration_prefilter_tests {
             "net user",
             "net view /domain",
             "whoami /priv",
+            "whoami /user",
+            "hostname",
             "query session",
             "quser",
             "Get-LocalUser",
