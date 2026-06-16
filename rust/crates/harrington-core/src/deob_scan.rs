@@ -11171,11 +11171,11 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
         )
         .expect("wmic rdtoggle enable regex")
     });
-    static RDP_FIREWALL_RE: Lazy<Regex> = Lazy::new(|| {
+    static RDP_FIREWALL_ADD_RULE_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r#"(?im)^[^\r\n]*\bnetsh(?:\.exe)?\s+advfirewall\s+firewall\s+add\s+rule[^\r\n]*(?:Remote Desktop|localport\s*=\s*3389)[^\r\n]*action\s*=\s*allow[^\r\n]*"#,
+            r#"(?im)^[^\r\n]*\bnetsh(?:\.exe)?\s+advfirewall\s+firewall\s+add\s+rule\b[^\r\n]*"#,
         )
-        .expect("rdp firewall regex")
+        .expect("rdp firewall add rule regex")
     });
     static RDP_FIREWALL_GROUP_ENABLE_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
@@ -11329,12 +11329,25 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
             m.as_str().trim().to_string(),
         );
     }
-    for m in RDP_FIREWALL_RE.find_iter(deobfuscated) {
-        push(
-            "rdp-firewall-open",
-            "3389".to_string(),
-            m.as_str().trim().to_string(),
-        );
+    for m in RDP_FIREWALL_ADD_RULE_RE.find_iter(deobfuscated) {
+        let command = m.as_str().trim();
+        let lower = command.to_ascii_lowercase();
+        if !lower.contains("action=allow")
+            && !lower.contains("action = allow")
+            && !lower.contains("action =allow")
+            && !lower.contains("action= allow")
+        {
+            continue;
+        }
+        if !lower.contains("remote desktop")
+            && !lower.contains("localport=3389")
+            && !lower.contains("localport = 3389")
+            && !lower.contains("localport =3389")
+            && !lower.contains("localport= 3389")
+        {
+            continue;
+        }
+        push("rdp-firewall-open", "3389".to_string(), command.to_string());
     }
     for m in RDP_FIREWALL_GROUP_ENABLE_RE.find_iter(deobfuscated) {
         push(

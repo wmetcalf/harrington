@@ -4671,6 +4671,23 @@ C:\Users\Public\nt.tmp localgroup Administrators backdoor /ADD
     }
 
     #[test]
+    fn netsh_rdp_firewall_allow_any_argument_order_emits_remote_access_trait() {
+        let script =
+            br#"netsh advfirewall firewall add rule name=rdp action=allow protocol=TCP localport=3389 dir=in"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-firewall-open" && target == "3389"
+            )),
+            "netsh RDP firewall allow with reordered args was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_remote_desktop_firewall_group_enable_emits_remote_access_trait() {
         let script =
             br#"powershell -Command "Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'"
