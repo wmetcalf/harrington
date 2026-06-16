@@ -8846,6 +8846,19 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
             command,
         });
     };
+    fn push_event_log_targets(
+        push: &mut impl FnMut(&str, String, String),
+        target: String,
+        command: String,
+    ) {
+        for target in target
+            .split(',')
+            .map(clean_token)
+            .filter(|target| !target.is_empty())
+        {
+            push("event-log-clear", target, command.clone());
+        }
+    }
 
     for caps in EVENT_LOG_RE.captures_iter(deobfuscated) {
         let target = caps
@@ -8856,7 +8869,7 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
             .get(0)
             .map(|m| m.as_str().trim().to_string())
             .unwrap_or_default();
-        push("event-log-clear", target, command);
+        push_event_log_targets(&mut push, target, command);
     }
 
     for caps in USN_RE.captures_iter(deobfuscated) {
@@ -8927,7 +8940,7 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
             .get(0)
             .map(|m| m.as_str().trim().to_string())
             .unwrap_or_default();
-        push("event-log-clear", target, command);
+        push_event_log_targets(&mut push, target, command);
     }
     for m in PS_CLEAR_EVENT_LOG_LINE_RE.find_iter(deobfuscated) {
         let command = m.as_str().trim();
@@ -8940,7 +8953,7 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
         else {
             continue;
         };
-        push("event-log-clear", clean_token(&target), command.to_string());
+        push_event_log_targets(&mut push, clean_token(&target), command.to_string());
     }
 
     for m in PS_CLEAR_RECYCLE_BIN_RE.find_iter(deobfuscated) {
