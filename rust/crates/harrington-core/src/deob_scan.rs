@@ -5718,23 +5718,28 @@ fn scan_wget_deob_text(deobfuscated: &str, env: &mut Environment) {
 
     for line in deobfuscated.lines() {
         let lower = line.to_ascii_lowercase();
-        if !lower.contains("wget") && !lower.contains("get.exe") {
-            continue;
-        }
-        let wget_pos = lower
-            .find("wget")
-            .or_else(|| lower.find("get.exe"))
-            .unwrap_or(0);
-        let command_start = lower[..wget_pos]
-            .rfind([' ', '\t', '&', '(', ')'])
-            .map_or(wget_pos, |idx| idx + 1);
-        let wget_text = &line[command_start..];
+        let (wget_text, allow_renamed) = if lower.contains("wget") || lower.contains("get.exe") {
+            let wget_pos = lower
+                .find("wget")
+                .or_else(|| lower.find("get.exe"))
+                .unwrap_or(0);
+            let command_start = lower[..wget_pos]
+                .rfind([' ', '\t', '&', '(', ')'])
+                .map_or(wget_pos, |idx| idx + 1);
+            (&line[command_start..], false)
+        } else {
+            let tokens = split_words(line);
+            if !looks_like_renamed_wget_download(&lower, &tokens) {
+                continue;
+            }
+            (line.trim_start(), true)
+        };
         let tokens = split_words(wget_text);
         let Some(cmd) = tokens.first() else {
             continue;
         };
         let cmd_base = basename_lower(cmd);
-        if cmd_base != "wget" && cmd_base != "wget.exe" && cmd_base != "get.exe" {
+        if !allow_renamed && cmd_base != "wget" && cmd_base != "wget.exe" && cmd_base != "get.exe" {
             continue;
         }
         let Some((url, dst)) = parse_wget_like_download(&tokens) else {
@@ -5749,6 +5754,47 @@ fn scan_wget_deob_text(deobfuscated: &str, env: &mut Environment) {
             dst,
         });
     }
+}
+
+fn looks_like_renamed_wget_download(lower: &str, tokens: &[String]) -> bool {
+    if !(lower.contains("http://") || lower.contains("https://") || lower.contains("ftp://")) {
+        return false;
+    }
+    let Some(cmd) = tokens.first() else {
+        return false;
+    };
+    let cmd_base = basename_lower(cmd);
+    if matches!(
+        cmd_base.as_str(),
+        "curl" | "curl.exe" | "powershell" | "powershell.exe" | "pwsh" | "pwsh.exe"
+    ) {
+        return false;
+    }
+
+    let mut has_wget_identity_flag = false;
+    let mut has_wget_output_flag = false;
+    for token in tokens.iter().skip(1) {
+        let token = token.trim_matches(['"', '\'', ')']);
+        let lower = token.to_ascii_lowercase();
+        if lower == "--no-check-certificate" || lower == "-nc" {
+            has_wget_identity_flag = true;
+        }
+        if token == "-O"
+            || token.starts_with("-O")
+            || token == "-P"
+            || token.starts_with("-P")
+            || lower == "--output-document"
+            || lower.starts_with("--output-document=")
+            || lower.starts_with("--output-document:")
+            || lower == "--directory-prefix"
+            || lower.starts_with("--directory-prefix=")
+            || lower.starts_with("--directory-prefix:")
+        {
+            has_wget_output_flag = true;
+        }
+    }
+
+    has_wget_identity_flag && has_wget_output_flag
 }
 
 fn scan_certutil_urlcache_deob_text(deobfuscated: &str, env: &mut Environment) {

