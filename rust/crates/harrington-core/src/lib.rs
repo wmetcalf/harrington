@@ -6444,6 +6444,24 @@ powershell -Command "Clear-RecycleBin -Force"
     }
 
     #[test]
+    fn powershell_clear_eventlog_positional_list_emits_each_log_cleanup_trait() {
+        let script = br#"powershell -Command "Clear-EventLog Security, System""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        for log_name in ["Security", "System"] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::EvidenceCleanup { action, target, .. }
+                        if action == "event-log-clear" && target == log_name
+                )),
+                "PowerShell positional Clear-EventLog list target missing {log_name}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn powershell_clear_eventlog_logname_list_emits_each_log_cleanup_trait() {
         let script = br#"powershell -Command "Clear-EventLog -LogName Security,System""#;
         let report = analyze(script, &AnalyzeConfig::default());

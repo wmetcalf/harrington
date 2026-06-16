@@ -8942,13 +8942,16 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
         if command.to_ascii_lowercase().contains("-logname") {
             continue;
         }
-        let Some(target) = powershell_positional_arguments(command, "Clear-EventLog")
+        let targets: Vec<String> = powershell_positional_arguments(command, "Clear-EventLog")
             .into_iter()
-            .next()
-        else {
+            .flat_map(|target| split_powershell_list_argument(&target).collect::<Vec<_>>())
+            .collect();
+        if targets.is_empty() {
             continue;
-        };
-        push_event_log_targets(&mut push, clean_token(&target), command.to_string());
+        }
+        for target in targets {
+            push_event_log_targets(&mut push, clean_token(&target), command.to_string());
+        }
     }
 
     for m in PS_CLEAR_RECYCLE_BIN_RE.find_iter(deobfuscated) {
