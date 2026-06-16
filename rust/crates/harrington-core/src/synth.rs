@@ -791,6 +791,9 @@ fn filter_findstr(args: &[&str], input: Vec<String>) -> Vec<String> {
     let mut case_insensitive = false;
     let mut invert = false;
     let mut regex_mode = false;
+    let mut match_begin = false;
+    let mut match_end = false;
+    let mut match_exact = false;
     let mut i = 0;
     let limit = args.len();
     while i < limit {
@@ -824,9 +827,12 @@ fn filter_findstr(args: &[&str], input: Vec<String>) -> Vec<String> {
             } else {
                 for f in flags_and_maybe_literal.chars() {
                     match f.to_ascii_lowercase() {
+                        'b' => match_begin = true,
+                        'e' => match_end = true,
                         'i' => case_insensitive = true,
                         'v' => invert = true,
                         'r' => regex_mode = true,
+                        'x' => match_exact = true,
                         _ => {}
                     }
                 }
@@ -850,10 +856,19 @@ fn filter_findstr(args: &[&str], input: Vec<String>) -> Vec<String> {
         let compiled: Vec<regex::Regex> = patterns
             .iter()
             .filter_map(|p| {
-                let pat = if case_insensitive {
-                    format!("(?i){p}")
+                let anchored = if match_exact || (match_begin && match_end) {
+                    format!("^(?:{p})$")
+                } else if match_begin {
+                    format!("^(?:{p})")
+                } else if match_end {
+                    format!("(?:{p})$")
                 } else {
                     p.clone()
+                };
+                let pat = if case_insensitive {
+                    format!("(?i){anchored}")
+                } else {
+                    anchored
                 };
                 regex::Regex::new(&pat).ok()
             })
@@ -891,7 +906,15 @@ fn filter_findstr(args: &[&str], input: Vec<String>) -> Vec<String> {
                     } else {
                         p.clone()
                     };
-                    l.contains(pat.as_str())
+                    if match_exact || (match_begin && match_end) {
+                        l == pat
+                    } else if match_begin {
+                        l.starts_with(pat.as_str())
+                    } else if match_end {
+                        l.ends_with(pat.as_str())
+                    } else {
+                        l.contains(pat.as_str())
+                    }
                 })
             };
             if invert {

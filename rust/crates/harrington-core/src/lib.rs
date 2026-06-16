@@ -15122,6 +15122,28 @@ mod synth_tests {
     }
 
     #[test]
+    fn synth_findstr_exact_match_does_not_overmatch_substrings() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "web.txt".to_string(),
+            FsEntry::Content {
+                content: b"prefix https://exact-findstr.example/payload.exe\r\nhttps://exact-findstr.example/payload.exe\r\n".to_vec(),
+                append: false,
+            },
+        );
+
+        let lines = run_pipeline(
+            r#"findstr /x /c:"https://exact-findstr.example/payload.exe" web.txt"#,
+            &mut env,
+        );
+
+        assert_eq!(
+            lines,
+            vec!["https://exact-findstr.example/payload.exe".to_string()]
+        );
+    }
+
+    #[test]
     fn synth_findstr_reads_tracked_file_argument() {
         let mut env = Environment::new(&Config::default());
         env.modified_filesystem.insert(
