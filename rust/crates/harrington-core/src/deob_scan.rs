@@ -3657,7 +3657,7 @@ fn emit_url_variable(
 }
 
 fn trim_url_suffix(url: &str) -> &str {
-    url.trim_end_matches(['"', '\'', ')', ']', '}', ';', ',', '&'])
+    trim_liberal_url_suffix(url)
 }
 
 fn scan_process_url_arguments(deobfuscated: &str, env: &mut Environment) {

