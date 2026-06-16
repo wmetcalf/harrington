@@ -11526,8 +11526,10 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
         .expect("legacy rdp portopening regex")
     });
     static PS_RDP_FIREWALL_GROUP_ENABLE_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?im)^[^\r\n]*?\b(?:Enable|Set|New)-NetFirewallRule\b[^\r\n]*"#)
-            .expect("powershell rdp firewall group enable regex")
+        Regex::new(
+            r#"(?im)(?:^|[;|&])\s*[^\r\n;|&]*?\b(?:Enable|Set|New)-NetFirewallRule\b[^\r\n;|&]*"#,
+        )
+        .expect("powershell rdp firewall group enable regex")
     });
     let mut push = |technique: &str, target: String, command: String| {
         if env.traits.iter().any(|t| {

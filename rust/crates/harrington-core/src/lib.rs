@@ -5381,6 +5381,22 @@ C:\Users\Public\nt.tmp localgroup Administrators backdoor /ADD
     }
 
     #[test]
+    fn powershell_chained_remote_desktop_firewall_set_enabled_emits_remote_access_trait() {
+        let script = br#"powershell -Command "Set-NetFirewallRule -DisplayGroup 'File and Printer Sharing' -Enabled False; Set-NetFirewallRule -DisplayGroup 'Remote Desktop' -Enabled True""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-firewall-open" && target == "Remote Desktop"
+            )),
+            "chained PowerShell Remote Desktop firewall set-enabled was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_remote_desktop_firewall_padded_enabled_emits_remote_access_trait() {
         let script = br#"powershell -Command "Set-NetFirewallRule -DisplayGroup 'Remote Desktop' -Enabled 0x00000001"
 "#;
