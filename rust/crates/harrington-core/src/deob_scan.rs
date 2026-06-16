@@ -8000,6 +8000,9 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
     if lower.contains("add-mppreference") || lower.contains("set-mppreference") {
         profile_defender_group!("mp_preference", {
             for line in deobfuscated.lines() {
+                if command_starts_with_echo(line) {
+                    continue;
+                }
                 let lower_line = line.to_ascii_lowercase();
                 if !lower_line.contains("add-mppreference")
                     && !lower_line.contains("set-mppreference")
@@ -8027,6 +8030,9 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
             }
 
             for line in deobfuscated.lines() {
+                if command_starts_with_echo(line) {
+                    continue;
+                }
                 if !line.to_ascii_lowercase().contains("set-mppreference") {
                     continue;
                 }
@@ -8232,6 +8238,9 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
     if has_defender_scheduled_registry_firewall_atom_lower(&lower) {
         profile_defender_group!("scheduled_registry_firewall", {
             for line in deobfuscated.lines() {
+                if command_starts_with_echo(line) {
+                    continue;
+                }
                 let lower = line.to_ascii_lowercase();
                 if !lower.contains("schtasks")
                     || !lower.contains("/change")
@@ -8280,16 +8289,28 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
                 }
             }
             for caps in FIREWALL_OFF_RE.captures_iter(deobfuscated) {
+                if caps
+                    .get(0)
+                    .is_some_and(|m| containing_line_starts_with_echo(deobfuscated, m.start()))
+                {
+                    continue;
+                }
                 let prof = caps
                     .get(1)
                     .map(|m| m.as_str().to_string())
                     .unwrap_or_default();
                 push("netsh-fw-off", prof);
             }
-            for _ in LEGACY_FIREWALL_OFF_RE.find_iter(deobfuscated) {
+            for m in LEGACY_FIREWALL_OFF_RE.find_iter(deobfuscated) {
+                if containing_line_starts_with_echo(deobfuscated, m.start()) {
+                    continue;
+                }
                 push("netsh-fw-off", "legacy-firewall".to_string());
             }
             for m in PS_FIREWALL_PROFILE_RE.find_iter(deobfuscated) {
+                if containing_line_starts_with_echo(deobfuscated, m.start()) {
+                    continue;
+                }
                 let command = m.as_str().trim();
                 let positional = powershell_positional_arguments(command, "Set-NetFirewallProfile");
                 let enabled = powershell_named_argument(command, "-Enabled")
@@ -9392,6 +9413,9 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
     }
 
     for m in PS_CLEAR_EVENT_LOG_LINE_RE.find_iter(deobfuscated) {
+        if containing_line_starts_with_echo(deobfuscated, m.start()) {
+            continue;
+        }
         let command = m.as_str().trim();
         let mut targets = powershell_named_argument_list(command, "-LogName");
         if targets.is_empty() {
@@ -9409,6 +9433,9 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
     }
 
     for m in PS_CLEAR_RECYCLE_BIN_RE.find_iter(deobfuscated) {
+        if containing_line_starts_with_echo(deobfuscated, m.start()) {
+            continue;
+        }
         for command in powershell_statement_segments(m.as_str()) {
             let command = command.trim();
             if !contains_ascii_keyword(command, "Clear-RecycleBin") {
@@ -12580,6 +12607,9 @@ fn scan_powershell_registry_persistence(deobfuscated: &str, env: &mut Environmen
     ];
 
     for m in PS_ITEM_PROPERTY_RE.find_iter(deobfuscated) {
+        if command_starts_with_echo(m.as_str()) {
+            continue;
+        }
         for line in powershell_statement_segments(m.as_str()) {
             let line = line.trim();
             if !powershell_itemproperty_segment_has_command(line) {
