@@ -6048,6 +6048,44 @@ net start TermService
     }
 
     #[test]
+    fn escaped_ampersand_lateral_movement_text_does_not_emit_lateral_movement() {
+        for (script, expected_tool) in [
+            (
+                br#"echo keep ^& wmic /node:"target.example" process call create "cmd""# as &[u8],
+                "wmic",
+            ),
+            (
+                br#"echo keep ^& schtasks /create /s target.example /tn x /tr calc /sc once /st 23:59"#,
+                "schtasks",
+            ),
+            (
+                br#"echo keep ^& sc \\target.example create x binPath= calc"#,
+                "sc",
+            ),
+            (
+                br#"echo keep ^& net use \\target.example\C$ /user:DOMAIN\adm pass"#,
+                "net-use",
+            ),
+            (
+                br#"echo keep ^& powershell -Command "Invoke-Command -ComputerName target.example -ScriptBlock { hostname }""#,
+                "Invoke-Command",
+            ),
+        ] {
+            let report = analyze(script, &AnalyzeConfig::default());
+
+            assert!(
+                !report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::LateralMovement { tool, target_host }
+                        if tool == expected_tool && target_host == "target.example"
+                )),
+                "escaped ampersand echo text was misread as {expected_tool} lateral movement: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn powershell_remoting_lateral_movement_forms_emit_traits() {
         let script =
             br#"powershell -Command "icm -ComputerName:target.example -ScriptBlock { hostname }"
@@ -6198,6 +6236,24 @@ powershell -Command "Set-WmiInstance -ComputerName='adminbox.example' -Class Win
                     if tool == "winrs" && target_host == "target.example"
             )),
             "escaped ampersand echo text was misread as winrs remote exec: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn escaped_ampersand_powershell_wmi_text_does_not_emit_remote_exec() {
+        let report = analyze(
+            br#"echo keep ^& powershell -Command "Invoke-WmiMethod -ComputerName target.example -Class Win32_Process -Name Create -ArgumentList 'cmd /c hostname'""#,
+            &AnalyzeConfig::default(),
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteExec { tool, target_host }
+                    if tool == "Invoke-WmiMethod" && target_host == "target.example"
+            )),
+            "escaped ampersand echo text was misread as PowerShell WMI remote exec: {:?}",
             report.traits
         );
     }

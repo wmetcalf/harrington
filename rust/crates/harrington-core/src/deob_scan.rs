@@ -8932,6 +8932,11 @@ fn scan_lateral_movement(deobfuscated: &str, env: &mut Environment) {
         }
     }
     for c in WMIC_NODE_RE.captures_iter(deobfuscated) {
+        if c.get(0)
+            .is_some_and(|m| containing_line_starts_with_echo(deobfuscated, m.start()))
+        {
+            continue;
+        }
         let host = c
             .get(1)
             .or_else(|| c.get(2))
@@ -8940,6 +8945,11 @@ fn scan_lateral_movement(deobfuscated: &str, env: &mut Environment) {
         push("wmic", host);
     }
     for c in PS_REMOTING_RE.captures_iter(deobfuscated) {
+        if c.get(0)
+            .is_some_and(|m| containing_line_starts_with_echo(deobfuscated, m.start()))
+        {
+            continue;
+        }
         let tool = match c
             .get(1)
             .map(|m| m.as_str().to_ascii_lowercase())
@@ -8960,6 +8970,9 @@ fn scan_lateral_movement(deobfuscated: &str, env: &mut Environment) {
         push(tool, host);
     }
     for line in deobfuscated.lines() {
+        if command_starts_with_echo(line) {
+            continue;
+        }
         for (keyword, tool) in [
             ("Invoke-Command", "Invoke-Command"),
             ("icm", "Invoke-Command"),
@@ -8991,6 +9004,11 @@ fn scan_lateral_movement(deobfuscated: &str, env: &mut Environment) {
         }
     }
     for c in NET_USE_ADMIN_SHARE_RE.captures_iter(deobfuscated) {
+        if c.get(0)
+            .is_some_and(|m| containing_line_starts_with_echo(deobfuscated, m.start()))
+        {
+            continue;
+        }
         let host = c
             .get(1)
             .or_else(|| c.get(2))
@@ -8999,6 +9017,11 @@ fn scan_lateral_movement(deobfuscated: &str, env: &mut Environment) {
         push("net-use", host);
     }
     for c in SCHTASKS_S_RE.captures_iter(deobfuscated) {
+        if c.get(0)
+            .is_some_and(|m| containing_line_starts_with_echo(deobfuscated, m.start()))
+        {
+            continue;
+        }
         let host = c
             .get(1)
             .or_else(|| c.get(2))
@@ -9007,6 +9030,11 @@ fn scan_lateral_movement(deobfuscated: &str, env: &mut Environment) {
         push("schtasks", host);
     }
     for c in SC_HOST_RE.captures_iter(deobfuscated) {
+        if c.get(0)
+            .is_some_and(|m| containing_line_starts_with_echo(deobfuscated, m.start()))
+        {
+            continue;
+        }
         if let Some(m) = c.get(1) {
             push("sc", m.as_str().to_string());
         }
@@ -11573,11 +11601,10 @@ fn scan_remote_exec(deobfuscated: &str, env: &mut Environment) {
         });
     };
     for caps in WINRM_RE.captures_iter(deobfuscated) {
-        if caps
-            .get(0)
-            .is_some_and(|m| containing_line_starts_with_echo(deobfuscated, m.start()))
-        {
-            continue;
+        if let Some(m) = caps.get(0) {
+            if containing_line_starts_with_echo(deobfuscated, m.start()) {
+                continue;
+            }
         }
         let host = caps
             .get(1)
@@ -11627,6 +11654,9 @@ fn scan_remote_exec(deobfuscated: &str, env: &mut Environment) {
         push(tool, host);
     }
     for line in deobfuscated.lines() {
+        if command_starts_with_echo(line) {
+            continue;
+        }
         for (keyword, tool) in [
             ("Invoke-WmiMethod", "Invoke-WmiMethod"),
             ("Set-WmiInstance", "Set-WmiInstance"),
