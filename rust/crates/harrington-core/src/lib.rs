@@ -4748,6 +4748,25 @@ C:\Users\Public\rd.tmp C:\Windows\System32\comsvcs.dll, MiniDump 1234 C:\Users\P
     }
 
     #[test]
+    fn escaped_ampersand_lsass_dump_text_does_not_emit_credential_access() {
+        for script in [
+            br#"echo keep ^& procdump.exe -ma lsass.exe C:\Users\Public\lsass.dmp"#.as_slice(),
+            br#"echo keep ^& rundll32.exe C:\Windows\System32\comsvcs.dll, MiniDump 500 C:\Users\Public\lsass.dmp full"#.as_slice(),
+        ] {
+            let report = analyze(script, &AnalyzeConfig::default());
+
+            assert!(
+                !report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::CredentialAccess { technique, .. } if technique == "lsass-dump"
+                )),
+                "escaped echo LSASS dump text emitted CredentialAccess: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn registry_hive_saves_emit_credential_access_trait() {
         let script = br#"reg save HKLM\SAM C:\Users\Public\sam.save /y
 reg save HKLM\SYSTEM C:\Users\Public\system.save /y
@@ -4921,6 +4940,50 @@ powershell -Command "[Windows.Forms.Clipboard]::SetText('copied')"
             "GetKeyState keylogging marker was not surfaced: {:?}",
             report.traits
         );
+    }
+
+    #[test]
+    fn escaped_ampersand_clipboard_text_does_not_emit_input_capture() {
+        for script in [
+            br#"echo keep ^& powershell Get-Clipboard"#.as_slice(),
+            br#"echo keep ^& powershell Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Clipboard]::GetText()"#.as_slice(),
+        ] {
+            let report = analyze(script, &AnalyzeConfig::default());
+
+            assert!(
+                !report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::InputCapture { capture_kind } if capture_kind == "clipboard"
+                )),
+                "escaped echo clipboard text emitted InputCapture: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn escaped_ampersand_shellcode_text_does_not_emit_shellcode_marker() {
+        for (script, unexpected_evidence) in [
+            (
+                br#"echo keep ^& powershell $shellcode = @(0xfc,0x48,0x83,0xe4,0xf0)"#.as_slice(),
+                "$shellcode =",
+            ),
+            (
+                br#"echo keep ^& powershell [Byte[]] $buf = 0xfc,0x48,0x83,0xe4,0xf0"#.as_slice(),
+                "msf-x64-prologue",
+            ),
+        ] {
+            let report = analyze(script, &AnalyzeConfig::default());
+
+            assert!(
+                !report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::ShellcodeMarker { evidence } if evidence == unexpected_evidence
+                )),
+                "escaped echo shellcode text emitted ShellcodeMarker: {:?}",
+                report.traits
+            );
+        }
     }
 
     #[test]

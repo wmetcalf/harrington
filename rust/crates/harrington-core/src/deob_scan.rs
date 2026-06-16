@@ -11229,7 +11229,10 @@ fn scan_credential_access(deobfuscated: &str, env: &mut Environment) {
             .expect("registry hive save regex")
     });
     for (re, tech, fmt) in PATTERNS.iter() {
-        if let Some(m) = re.find(deobfuscated) {
+        if let Some(m) = re
+            .find_iter(deobfuscated)
+            .find(|m| !containing_line_starts_with_echo(deobfuscated, m.start()))
+        {
             let target = fmt(m.as_str());
             if env.traits.iter().any(|t| {
                 matches!(
@@ -11589,7 +11592,10 @@ fn scan_input_capture(deobfuscated: &str, env: &mut Environment) {
         ]
     });
     for (re, kind) in PATTERNS.iter() {
-        if re.is_match(deobfuscated) {
+        if re
+            .find_iter(deobfuscated)
+            .any(|m| !containing_line_starts_with_echo(deobfuscated, m.start()))
+        {
             if env.traits.iter().any(|t| {
                 matches!(
                     t, crate::traits::Trait::InputCapture { capture_kind: c } if c == kind
@@ -12869,7 +12875,10 @@ fn scan_shellcode_marker(deobfuscated: &str, env: &mut Environment) {
         Regex::new(r#"(?i)\[\s*Byte\s*\[\s*\]\s*\]\s*\$\w+\s*=\s*0xfc\s*,\s*0xe8"#)
             .expect("msf x86 prologue")
     });
-    if let Some(m) = SHELLCODE_VAR_RE.find(deobfuscated) {
+    if let Some(m) = SHELLCODE_VAR_RE
+        .find_iter(deobfuscated)
+        .find(|m| !containing_line_starts_with_echo(deobfuscated, m.start()))
+    {
         let evidence = m.as_str().to_string();
         if !env.traits.iter().any(|t| {
             matches!(
@@ -12880,7 +12889,9 @@ fn scan_shellcode_marker(deobfuscated: &str, env: &mut Environment) {
                 .push(crate::traits::Trait::ShellcodeMarker { evidence });
         }
     }
-    if NOP_SLED_RE.find(deobfuscated).is_some()
+    if NOP_SLED_RE
+        .find_iter(deobfuscated)
+        .any(|m| !containing_line_starts_with_echo(deobfuscated, m.start()))
         && !env.traits.iter().any(|t| matches!(t, crate::traits::Trait::ShellcodeMarker { evidence } if evidence == "nop-sled"))
     {
         env.traits.push(crate::traits::Trait::ShellcodeMarker {
@@ -12891,7 +12902,9 @@ fn scan_shellcode_marker(deobfuscated: &str, env: &mut Environment) {
         (&*MSF_X64_PROLOGUE_RE, "msf-x64-prologue"),
         (&*MSF_X86_PROLOGUE_RE, "msf-x86-prologue"),
     ] {
-        if re.find(deobfuscated).is_some()
+        if re
+            .find_iter(deobfuscated)
+            .any(|m| !containing_line_starts_with_echo(deobfuscated, m.start()))
             && !env.traits.iter().any(|t| {
                 matches!(
                     t, crate::traits::Trait::ShellcodeMarker { evidence } if evidence == label
