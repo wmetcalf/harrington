@@ -7717,6 +7717,50 @@ fn scan_wget_deob_text(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
+fn scan_aria2_deob_text(deobfuscated: &str, env: &mut Environment) {
+    let mut known: std::collections::HashSet<String> = env
+        .traits
+        .iter()
+        .filter_map(|t| match t {
+            Trait::Download { src, .. } => Some(src.clone()),
+            _ => None,
+        })
+        .collect();
+
+    for line in deobfuscated.lines() {
+        if command_starts_with_echo(line) {
+            continue;
+        }
+        let lower = line.to_ascii_lowercase();
+        if !lower.contains("aria2c") {
+            continue;
+        }
+        let aria_pos = lower.find("aria2c").unwrap_or(0);
+        let command_start = lower[..aria_pos]
+            .rfind([' ', '\t', '&', '(', ')'])
+            .map_or(aria_pos, |idx| idx + 1);
+        let aria_text = &line[command_start..];
+        let tokens = split_words(aria_text);
+        let Some(cmd) = tokens.first() else {
+            continue;
+        };
+        if !matches!(basename_lower(cmd).as_str(), "aria2c" | "aria2c.exe") {
+            continue;
+        }
+        let Some((url, dst)) = crate::handlers::aria2::parse_aria2c_download(&tokens, env) else {
+            continue;
+        };
+        if !known.insert(url.clone()) {
+            continue;
+        }
+        env.traits.push(Trait::Download {
+            cmd: line.to_string(),
+            src: url,
+            dst,
+        });
+    }
+}
+
 fn looks_like_renamed_wget_download(lower: &str, tokens: &[String]) -> bool {
     if !(lower.contains("http://") || lower.contains("https://") || lower.contains("ftp://")) {
         return false;
@@ -13438,6 +13482,9 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     });
     scan_step!("curl_deob_text", {
         scan_curl_deob_text(deobfuscated, env);
+    });
+    scan_step!("aria2_deob_text", {
+        scan_aria2_deob_text(deobfuscated, env);
     });
     scan_step!("wget_deob_text", {
         scan_wget_deob_text(deobfuscated, env);

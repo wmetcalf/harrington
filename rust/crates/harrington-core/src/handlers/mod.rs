@@ -2,6 +2,7 @@
 
 use crate::env::Environment;
 
+pub mod aria2;
 pub mod auto_elevate;
 pub mod bitsadmin;
 pub mod call;
@@ -59,6 +60,7 @@ pub fn lookup(name: &str) -> Option<Handler> {
         "powershell" | "pwsh" => return Some(powershell::h_powershell),
         "curl" => return Some(curl::h_curl),
         "wget" | "get" => return Some(wget::h_wget),
+        "aria2c" => return Some(aria2::h_aria2c),
         "msiexec" => return Some(msiexec::h_msiexec),
         "mshta" => return Some(mshta::h_mshta),
         "regsvr32" => return Some(regsvr32::h_regsvr32),
