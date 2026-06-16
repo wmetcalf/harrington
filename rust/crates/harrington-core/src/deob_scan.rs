@@ -8670,10 +8670,8 @@ fn scan_lateral_movement(deobfuscated: &str, env: &mut Environment) {
             if contains_ascii_keyword(line, keyword)
                 && line.to_ascii_lowercase().contains("-computername")
             {
-                if let Some(hosts) = powershell_named_argument(line, "-ComputerName") {
-                    for host in hosts.split(',') {
-                        push(tool, host.to_string());
-                    }
+                for host in powershell_named_argument_list(line, "-ComputerName") {
+                    push(tool, host);
                 }
             }
             if !contains_ascii_keyword(line, keyword)
@@ -9645,6 +9643,39 @@ fn powershell_named_argument(command: &str, name: &str) -> Option<String> {
         .or_else(|| caps.get(3))
         .map(|m| m.as_str().trim_matches(['"', '\'']).to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn powershell_named_argument_list(command: &str, name: &str) -> Vec<String> {
+    let pattern = format!(
+        r#"(?i){}\s*(?::|=|\s)\s*(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^\r\n;|&}}]+))"#,
+        regex::escape(name)
+    );
+    let Ok(re) = regex::Regex::new(&pattern) else {
+        return Vec::new();
+    };
+    let Some(caps) = re.captures(command) else {
+        return Vec::new();
+    };
+    let Some(value) = caps.get(1).or_else(|| caps.get(2)).or_else(|| caps.get(3)) else {
+        return Vec::new();
+    };
+    let mut value = value.as_str().trim();
+    if caps.get(3).is_some() {
+        if let Some(next_switch) = regex::Regex::new(r#"\s+-[A-Za-z][A-Za-z0-9-]*\b"#)
+            .ok()
+            .and_then(|re| re.find(value))
+        {
+            value = &value[..next_switch.start()];
+        }
+    }
+    split_powershell_list_argument(value).collect()
+}
+
+fn split_powershell_list_argument(value: &str) -> impl Iterator<Item = String> + '_ {
+    value
+        .split(',')
+        .map(|item| item.trim().trim_matches(['"', '\'']).to_string())
+        .filter(|item| !item.is_empty())
 }
 
 fn powershell_positional_arguments(command: &str, keyword: &str) -> Vec<String> {
@@ -10824,11 +10855,8 @@ fn scan_remote_exec(deobfuscated: &str, env: &mut Environment) {
             {
                 continue;
             }
-            let Some(hosts) = powershell_named_argument(line, "-ComputerName") else {
-                continue;
-            };
-            for host in hosts.split(',') {
-                push(tool, host.to_string());
+            for host in powershell_named_argument_list(line, "-ComputerName") {
+                push(tool, host);
             }
         }
     }

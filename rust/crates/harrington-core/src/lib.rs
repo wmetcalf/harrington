@@ -4416,6 +4416,25 @@ powershell -Command "New-PSSession -ComputerName 'filesrv.example'"
     }
 
     #[test]
+    fn powershell_remoting_spaced_computername_list_emits_each_host() {
+        let script =
+            br#"powershell -Command "icm -ComputerName host1.example, host2.example -ScriptBlock { hostname }""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        for host in ["host1.example", "host2.example"] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::LateralMovement { tool, target_host }
+                        if tool == "Invoke-Command" && target_host == host
+                )),
+                "PowerShell remoting spaced host list target missing {host}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn net_use_admin_share_emits_lateral_movement_trait() {
         let script = br#"net use \\target.example\C$ /user:DOMAIN\adm pass
 "#;
@@ -4486,6 +4505,25 @@ powershell -Command "Set-WmiInstance -ComputerName='adminbox.example' -Class Win
                         if tool == "Invoke-WmiMethod" && target_host == host
                 )),
                 "PowerShell WMI remote exec host list target missing {host}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn powershell_wmi_spaced_computername_list_emits_each_remote_exec_host() {
+        let script = br#"powershell -Command "Invoke-WmiMethod -ComputerName host1.example, host2.example -Class Win32_Process -Name Create -ArgumentList 'cmd /c hostname'"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        for host in ["host1.example", "host2.example"] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::RemoteExec { tool, target_host }
+                        if tool == "Invoke-WmiMethod" && target_host == host
+                )),
+                "PowerShell WMI spaced host list target missing {host}: {:?}",
                 report.traits
             );
         }
