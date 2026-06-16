@@ -4204,6 +4204,24 @@ powershell -Command "Test-Connection files.example -Count 1"
     }
 
     #[test]
+    fn powershell_tnc_alias_emits_network_probe() {
+        let report = analyze(
+            br#"powershell -Command "tnc -ComputerName c2-alias.example -Port 443""#,
+            &AnalyzeConfig::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::NetworkProbe { probe_kind, target }
+                    if probe_kind == "tcp-connect" && target == "c2-alias.example"
+            )),
+            "PowerShell tnc alias network probe missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn copied_ping_alias_emits_network_probe() {
         let script = br#"copy C:\Windows\System32\ping.exe C:\Users\Public\pg.tmp
 C:\Users\Public\pg.tmp -n 1 c2.example

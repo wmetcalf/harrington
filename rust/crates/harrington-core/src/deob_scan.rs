@@ -8966,6 +8966,8 @@ fn powershell_connection_test_probe(line: &str) -> Option<(&'static str, String)
     let lower = line.to_ascii_lowercase();
     let (keyword, kind) = if lower.contains("test-netconnection") {
         ("Test-NetConnection", "tcp-connect")
+    } else if contains_ascii_keyword(line, "tnc") {
+        ("tnc", "tcp-connect")
     } else if lower.contains("test-connection") {
         ("Test-Connection", "icmp-ping")
     } else {
@@ -8977,6 +8979,26 @@ fn powershell_connection_test_probe(line: &str) -> Option<(&'static str, String)
             .next()
     })?;
     normalize_probe_target(&target).map(|target| (kind, target))
+}
+
+fn contains_ascii_keyword(text: &str, keyword: &str) -> bool {
+    let mut cursor = 0;
+    while let Some(start) = find_ascii_case_insensitive(text, keyword, cursor) {
+        let end = start + keyword.len();
+        let before = text.as_bytes().get(start.wrapping_sub(1)).copied();
+        let after = text.as_bytes().get(end).copied();
+        let left_ok = before.map(|b| !is_ascii_keyword_byte(b)).unwrap_or(true);
+        let right_ok = after.map(|b| !is_ascii_keyword_byte(b)).unwrap_or(true);
+        if left_ok && right_ok {
+            return true;
+        }
+        cursor = end;
+    }
+    false
+}
+
+fn is_ascii_keyword_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')
 }
 
 fn resolve_dns_name_target(line: &str) -> Option<String> {
