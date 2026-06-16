@@ -1897,6 +1897,27 @@ start payload.chm"#;
     }
 
     #[test]
+    fn deob_text_start_alias_verb_runas_emits_self_elevation_trait() {
+        let mut env = Environment::new(&AnalyzeConfig::default());
+        crate::deob_scan::scan_deob_text(
+            r#"start -FilePath powershell.exe -ArgumentList calc.exe -Verb RunAs"#,
+            &mut env,
+        );
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::SelfElevation {
+                    target,
+                    args: Some(args),
+                } if target == "powershell.exe" && args == "calc.exe"
+            )),
+            "deob-text start alias SelfElevation missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn start_process_verb_runas_preserves_distinct_args_for_same_target() {
         let script = b"@echo off\r\npowershell -Command \"Start-Process -FilePath powershell.exe -ArgumentList calc.exe -Verb RunAs; Start-Process -FilePath powershell.exe -ArgumentList notepad.exe -Verb RunAs\"\r\n";
         let report = analyze(script, &AnalyzeConfig::default());

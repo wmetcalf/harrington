@@ -7673,11 +7673,11 @@ fn scan_self_elevation(deobfuscated: &str, env: &mut Environment) {
         return;
     }
 
-    // Anchor on `Start-Process` (or `saps` alias). Lazy match the body up
+    // Anchor on `Start-Process` (or PS aliases). Lazy match the body up
     // to `-Verb runas` so we capture the target+args regardless of order.
     static SELF_ELEV_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r#"(?is)\b(?:Start-Process|saps)\b([^\n;|&]{0,300}?)-Verb(?:\s+|[:=])["']?runas["']?([^\n;|&]{0,300})"#,
+            r#"(?is)\b(?:Start-Process|saps|start)\b([^\n;|&]{0,300}?)-Verb(?:\s+|[:=])["']?runas["']?([^\n;|&]{0,300})"#,
         )
         .expect("self-elev regex")
     });
@@ -7762,7 +7762,8 @@ fn scan_self_elevation(deobfuscated: &str, env: &mut Environment) {
 fn has_self_elevation_atom(text: &str) -> bool {
     contains_ascii_case_insensitive_atom(text, b"runas")
         && (contains_ascii_case_insensitive_atom(text, b"start-process")
-            || contains_ascii_case_insensitive_atom(text, b"saps"))
+            || contains_ascii_case_insensitive_atom(text, b"saps")
+            || contains_ascii_case_insensitive_atom(text, b"start"))
 }
 
 #[cfg(test)]
@@ -7775,6 +7776,7 @@ mod self_elevation_prefilter_tests {
             "Start-Process powershell.exe -Verb RunAs"
         ));
         assert!(has_self_elevation_atom("saps cmd.exe -Verb runas"));
+        assert!(has_self_elevation_atom("start cmd.exe -Verb runas"));
     }
 
     #[test]
