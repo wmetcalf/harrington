@@ -40734,6 +40734,54 @@ mod unc_webdav_tests {
             report.traits
         );
     }
+
+    #[test]
+    fn escaped_ampersand_rundll32_webdav_text_does_not_emit_rundll32_trait() {
+        let script = br#"echo keep ^& rundll32 \\45.9.74.36@8888\davwwwroot\x.dll,Entry"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Rundll32 { url: Some(url), .. }
+                    if url == "http://45.9.74.36:8888/x.dll"
+            )),
+            "escaped ampersand echo text was misread as rundll32 WebDAV execution: {:?}",
+            report.traits
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::UncWebDavC2 { host, .. } if host == "45.9.74.36")),
+            "escaped ampersand echo text was misread as WebDAV C2: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn escaped_ampersand_bare_webdav_text_does_not_emit_rundll32_trait() {
+        let script = br#"echo keep ^& rundll32 \\104.156.149.6\webdav\host.dll,XSSCheckStart"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Rundll32 { url: Some(url), .. }
+                    if url == "http://104.156.149.6/webdav/host.dll"
+            )),
+            "escaped ampersand echo text was misread as bare WebDAV rundll32 execution: {:?}",
+            report.traits
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::UncWebDavC2 { host, .. } if host == "104.156.149.6")),
+            "escaped ampersand echo text was misread as bare WebDAV C2: {:?}",
+            report.traits
+        );
+    }
 }
 
 #[cfg(test)]

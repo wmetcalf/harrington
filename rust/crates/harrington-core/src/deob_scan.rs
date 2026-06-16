@@ -15774,6 +15774,9 @@ pub fn unc_webdav_to_http_url(host: &str, port: &str, share_path: &str) -> Strin
 
 pub fn scan_unc_webdav(deobfuscated: &str, env: &mut Environment) {
     for line in deobfuscated.lines() {
+        if command_starts_with_echo(line) {
+            continue;
+        }
         let tokens = split_words(line);
         for (i, token) in tokens.iter().enumerate() {
             let cmd = command_name(strip_quotes(token));
@@ -15821,6 +15824,9 @@ pub fn scan_unc_webdav(deobfuscated: &str, env: &mut Environment) {
             .find(|l| l.contains(full_match))
             .map(str::to_string)
             .unwrap_or_default();
+        if command_starts_with_echo(&command) {
+            continue;
+        }
 
         let http_url = unc_webdav_to_http_url(&host, &port, full_match);
         env.traits.push(Trait::UncWebDavC2 {
@@ -15847,6 +15853,9 @@ pub fn scan_unc_webdav(deobfuscated: &str, env: &mut Environment) {
             .find(|l| l.contains(full_match))
             .map(str::to_string)
             .unwrap_or_default();
+        if command_starts_with_echo(&command) {
+            continue;
+        }
         if !contains_ascii_case_insensitive_atom(&command, b"rundll32") {
             continue;
         }
