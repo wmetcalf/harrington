@@ -1,6 +1,6 @@
 //! Direct URL launcher handlers for browsers and Explorer.
 
-use super::util::{normalize_url_like_token, split_words};
+use super::util::{flag_url_value_after, normalize_url_like_token, split_words};
 use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
 
@@ -26,6 +26,13 @@ pub fn h_url_launch(raw: &str, env: &mut Environment) {
 }
 
 fn url_argument(tokens: &[String]) -> Option<String> {
+    if let Some(url) = flag_url_value_after(
+        tokens,
+        1,
+        &["--app", "--url", "-url", "/url", "-kiosk", "--kiosk"],
+    ) {
+        return Some(url);
+    }
     tokens
         .iter()
         .skip(1)

