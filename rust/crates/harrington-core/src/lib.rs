@@ -3742,6 +3742,22 @@ powershell -Command "New-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Cont
     }
 
     #[test]
+    fn powershell_set_localuser_password_emits_account_modification_trait() {
+        let script = br#"powershell -Command "Set-LocalUser -Name support -Password $p""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, .. }
+                    if action == "local-user-password-set" && account == "support"
+            )),
+            "PowerShell Set-LocalUser password change missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_local_user_and_group_member_emit_account_modification_traits() {
         let script = br#"powershell -Command "New-LocalUser -Name backdoor -Password $p"
 powershell -Command "Add-LocalGroupMember -Group Administrators -Member backdoor"

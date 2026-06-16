@@ -9390,6 +9390,10 @@ fn scan_account_modification(deobfuscated: &str, env: &mut Environment) {
         Regex::new(r#"(?im)^[^\r\n]*?\bEnable-LocalUser\b[^\r\n]*"#)
             .expect("powershell enable-localuser regex")
     });
+    static PS_SET_LOCAL_USER_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?im)^[^\r\n]*?\bSet-LocalUser\b[^\r\n]*"#)
+            .expect("powershell set-localuser regex")
+    });
     static PS_ADD_LOCALGROUP_MEMBER_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?im)^[^\r\n]*?\bAdd-LocalGroupMember\b[^\r\n]*"#)
             .expect("powershell add-localgroupmember regex")
@@ -9516,6 +9520,24 @@ fn scan_account_modification(deobfuscated: &str, env: &mut Environment) {
         };
         push("local-user-enable", account, None, command);
     }
+    for caps in PS_SET_LOCAL_USER_RE.captures_iter(deobfuscated) {
+        let command = caps
+            .get(0)
+            .map(|m| m.as_str().trim().to_string())
+            .unwrap_or_default();
+        if powershell_named_argument(&command, "-Password").is_none() {
+            continue;
+        }
+        let account = powershell_named_argument(&command, "-Name").or_else(|| {
+            powershell_positional_arguments(&command, "Set-LocalUser")
+                .into_iter()
+                .next()
+        });
+        let Some(account) = account else {
+            continue;
+        };
+        push("local-user-password-set", account, None, command);
+    }
     for caps in PS_ADD_LOCALGROUP_MEMBER_RE.captures_iter(deobfuscated) {
         let command = caps
             .get(0)
@@ -9548,6 +9570,7 @@ fn has_account_modification_atom(text: &str) -> bool {
         || has_net_user_password_set_atom(text)
         || lower.contains("new-localuser")
         || lower.contains("enable-localuser")
+        || lower.contains("set-localuser")
         || lower.contains("add-localgroupmember")
 }
 
@@ -9633,6 +9656,7 @@ mod account_modification_prefilter_tests {
             r#"net user defaultuserx /active:yes"#,
             r#"net user support P@ssw0rd123!"#,
             r#"Enable-LocalUser -Name defaultuserx"#,
+            r#"Set-LocalUser -Name support -Password $p"#,
         ] {
             assert!(has_account_modification_atom(sample), "blocked: {sample}");
         }
