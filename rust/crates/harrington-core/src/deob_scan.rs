@@ -10398,6 +10398,16 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
         )
         .expect("rdp timeout regex")
     });
+    static TERMSERVICE_ENABLE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?im)^[^\r\n]*\bsc(?:\.exe)?\s+config\s+TermService\b[^\r\n]*\bstart\s*=\s*(?:auto|demand)\b[^\r\n]*"#,
+        )
+        .expect("termservice enable regex")
+    });
+    static TERMSERVICE_START_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?im)^[^\r\n]*\bnet(?:\.exe)?\s+start\s+TermService\b[^\r\n]*"#)
+            .expect("termservice start regex")
+    });
     static RDP_FIREWALL_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
             r#"(?im)^[^\r\n]*\bnetsh(?:\.exe)?\s+advfirewall\s+firewall\s+add\s+rule[^\r\n]*(?:Remote Desktop|localport\s*=\s*3389)[^\r\n]*action\s*=\s*allow[^\r\n]*"#,
@@ -10522,6 +10532,20 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
             .unwrap_or_default();
         push("rdp-timeout-disabled", target, command);
     }
+    for m in TERMSERVICE_ENABLE_RE.find_iter(deobfuscated) {
+        push(
+            "rdp-service-enable",
+            "TermService".to_string(),
+            m.as_str().trim().to_string(),
+        );
+    }
+    for m in TERMSERVICE_START_RE.find_iter(deobfuscated) {
+        push(
+            "rdp-service-enable",
+            "TermService".to_string(),
+            m.as_str().trim().to_string(),
+        );
+    }
     for m in RDP_FIREWALL_RE.find_iter(deobfuscated) {
         push(
             "rdp-firewall-open",
@@ -10568,6 +10592,7 @@ fn has_remote_access_atom(text: &str) -> bool {
         "allowmultipletssessions",
         "fsinglesessionperuser",
         "rdp-tcp",
+        "termservice",
         "remote desktop",
         "3389",
     ];

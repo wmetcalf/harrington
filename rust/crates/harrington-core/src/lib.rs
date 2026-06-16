@@ -3665,6 +3665,24 @@ C:\Users\Public\nt.tmp localgroup Administrators backdoor /ADD
     }
 
     #[test]
+    fn terminal_services_enablement_emits_remote_access_trait() {
+        let script = br#"sc config TermService start= auto
+net start TermService
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-service-enable" && target == "TermService"
+            )),
+            "missing TermService remote access enablement: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn file_concealment_preserves_full_command_context() {
         let path = format!(r#"C:\Users\Public\{}\payload.vbs"#, "A".repeat(240));
         let script = format!("attrib +h +s \"{path}\"\r\n");
