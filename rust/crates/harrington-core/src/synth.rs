@@ -347,12 +347,13 @@ fn findstr_file_input_args(
 ) -> Option<(Vec<usize>, Vec<SynthFileInput>)> {
     let mut file_idxs = Vec::new();
     let mut input = Vec::new();
+    let recursive = findstr_searches_recursively(args);
     for (idx, arg) in args.iter().enumerate() {
         let candidate = arg.trim_matches('"');
         if candidate.is_empty() || candidate.starts_with('/') {
             continue;
         }
-        let files = findstr_file_inputs_for_arg(candidate, env);
+        let files = findstr_file_inputs_for_arg(candidate, env, recursive);
         if !files.is_empty() {
             file_idxs.push(idx);
             input.extend(files);
@@ -361,14 +362,24 @@ fn findstr_file_input_args(
     (!file_idxs.is_empty()).then_some((file_idxs, input))
 }
 
-fn findstr_file_inputs_for_arg(candidate: &str, env: &mut Environment) -> Vec<SynthFileInput> {
+fn findstr_file_inputs_for_arg(
+    candidate: &str,
+    env: &mut Environment,
+    recursive: bool,
+) -> Vec<SynthFileInput> {
     if candidate.contains(['*', '?']) {
         let normalized_pattern =
             normalize_wildcard_path(&normalize_filesystem_storage_path(candidate));
         let tracked = env
             .modified_filesystem
             .keys()
-            .filter(|path| dir_wildcard_matches(candidate, &normalized_pattern, path))
+            .filter(|path| {
+                if recursive {
+                    findstr_recursive_wildcard_matches(candidate, &normalized_pattern, path)
+                } else {
+                    dir_wildcard_matches(candidate, &normalized_pattern, path)
+                }
+            })
             .cloned()
             .collect::<Vec<_>>();
         return tracked
@@ -395,6 +406,35 @@ fn findstr_file_output_name(pattern: &str, tracked_path: &str) -> String {
             .unwrap_or(tracked_path)
             .to_string()
     }
+}
+
+fn findstr_recursive_wildcard_matches(
+    pattern: &str,
+    normalized_pattern: &str,
+    tracked_path: &str,
+) -> bool {
+    let normalized_path = normalize_wildcard_path(tracked_path);
+    if pattern.contains(['\\', '/', ':']) {
+        let Some((pattern_dir, pattern_name)) = normalized_pattern.rsplit_once('\\') else {
+            return wildcard_match(normalized_pattern, &normalized_path);
+        };
+        return path_is_under_root(&normalized_path, pattern_dir)
+            && windows_basename(&normalized_path)
+                .is_some_and(|name| wildcard_match(pattern_name, &normalize_wildcard_path(name)));
+    }
+    windows_basename(&normalized_path)
+        .is_some_and(|name| wildcard_match(normalized_pattern, &normalize_wildcard_path(name)))
+}
+
+fn findstr_searches_recursively(args: &[String]) -> bool {
+    args.iter().any(|arg| {
+        let flags = arg.strip_prefix('/').unwrap_or_default();
+        !flags
+            .chars()
+            .next()
+            .is_some_and(|c| c.eq_ignore_ascii_case(&'c'))
+            && flags.chars().any(|c| c.eq_ignore_ascii_case(&'s'))
+    })
 }
 
 fn findstr_outputs_matching_file_names(args: &[String]) -> bool {
@@ -1434,13 +1474,10 @@ fn where_recursive_matches(root: &str, pattern: &str, tracked_path: &str) -> boo
     let root = normalize_wildcard_path(&normalize_filesystem_storage_path(root));
     let root = root.trim_end_matches('\\');
     let path = normalize_wildcard_path(tracked_path);
-    if !path.starts_with(root) {
+    if !path_is_under_root(&path, root) {
         return false;
     }
     let suffix = &path[root.len()..];
-    if !suffix.starts_with('\\') {
-        return false;
-    }
     let rest = suffix.trim_start_matches('\\');
     !rest.is_empty()
         && windows_basename(&path).is_some_and(|name| {
@@ -1449,6 +1486,10 @@ fn where_recursive_matches(root: &str, pattern: &str, tracked_path: &str) -> boo
                 &normalize_wildcard_path(name),
             )
         })
+}
+
+fn path_is_under_root(path: &str, root: &str) -> bool {
+    path.starts_with(root) && path[root.len()..].starts_with('\\')
 }
 
 fn where_pattern_arg(args: &[&str]) -> Option<String> {
