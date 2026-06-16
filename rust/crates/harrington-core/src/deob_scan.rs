@@ -4793,6 +4793,84 @@ fn scan_copied_hh_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
+fn scan_copied_uac_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    scan_copied_handler_alias_deob_text(
+        deobfuscated,
+        env,
+        &["cmstp.exe", "cmstp"],
+        "cmstp.exe",
+        crate::handlers::cmstp::h_cmstp,
+    );
+    scan_copied_handler_alias_deob_text(
+        deobfuscated,
+        env,
+        &["msconfig.exe", "msconfig"],
+        "msconfig.exe",
+        crate::handlers::msconfig::h_msconfig,
+    );
+}
+
+fn scan_copied_handler_alias_deob_text(
+    deobfuscated: &str,
+    env: &mut Environment,
+    source_bases: &[&str],
+    replay_command: &str,
+    handler: fn(&str, &mut Environment),
+) {
+    let mut aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for t in &env.traits {
+        let Trait::WindowsUtilManip { src, dst, .. } = t else {
+            continue;
+        };
+        let src_base = basename_lower(src);
+        if !source_bases.iter().any(|base| src_base == *base) {
+            continue;
+        }
+        insert_alias_names(&mut aliases, dst);
+    }
+    if aliases.is_empty() {
+        return;
+    }
+
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        let Some(cmd) = tokens.first() else {
+            continue;
+        };
+        if !aliases.contains(&basename_lower(cmd))
+            && !aliases.contains(&cmd.trim_matches(['"', '\'']).to_ascii_lowercase())
+        {
+            continue;
+        }
+        if tokens.len() < 2 {
+            continue;
+        }
+        if env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::ManipulatedExec {
+                    cmd: existing_cmd,
+                    target
+                } if existing_cmd == line && target.eq_ignore_ascii_case(cmd.trim_matches(['"', '\'']))
+            )
+        }) {
+            continue;
+        }
+
+        push_manipulated_exec_once(env, line, cmd);
+        let rest = line
+            .get(cmd.len()..)
+            .map(str::trim_start)
+            .unwrap_or_default();
+        let replay = if rest.is_empty() {
+            replay_command.to_string()
+        } else {
+            format!("{replay_command} {rest}")
+        };
+        handler(&replay, env);
+    }
+}
+
 fn scan_copied_certutil_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
     let mut aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
     for t in &env.traits {
@@ -8890,6 +8968,9 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     });
     scan_step!("copied_hh_alias_deob_text", {
         scan_copied_hh_alias_deob_text(deobfuscated, env);
+    });
+    scan_step!("copied_uac_alias_deob_text", {
+        scan_copied_uac_alias_deob_text(deobfuscated, env);
     });
     scan_step!("copied_certutil_alias_deob_text", {
         scan_copied_certutil_alias_deob_text(deobfuscated, env);

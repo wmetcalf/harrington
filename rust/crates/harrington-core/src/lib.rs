@@ -2059,6 +2059,67 @@ echo UAC.ShellExecute "cmd.exe", "/c ""%~s0""", "", "runas", 1 >> "%temp%\getadm
     }
 
     #[test]
+    fn copied_cmstp_alias_in_deob_text_emits_uac_bypass_trait() {
+        let mut env = crate::env::Environment::new(&AnalyzeConfig::default());
+        env.traits.push(Trait::WindowsUtilManip {
+            cmd: r#"copy C:\Windows\System32\cmstp.exe C:\Users\Public\cm.tmp"#.to_string(),
+            src: r#"C:\Windows\System32\cmstp.exe"#.to_string(),
+            dst: r#"C:\Users\Public\cm.tmp"#.to_string(),
+        });
+        crate::deob_scan::scan_deob_text(
+            r#"C:\Users\Public\cm.tmp /s /au C:\Users\Public\stage.inf"#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ManipulatedExec { target, .. }
+                        if target == r#"C:\Users\Public\cm.tmp"#
+                )
+            }),
+            "copied cmstp alias did not emit manipulated execution: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::UacBypass { technique } if technique == "cmstp-au")),
+            "copied cmstp /au was not surfaced as UAC bypass: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn copied_msconfig_alias_in_deob_text_emits_uac_bypass_trait() {
+        let mut env = crate::env::Environment::new(&AnalyzeConfig::default());
+        env.traits.push(Trait::WindowsUtilManip {
+            cmd: r#"copy C:\Windows\System32\msconfig.exe C:\Users\Public\mc.tmp"#.to_string(),
+            src: r#"C:\Windows\System32\msconfig.exe"#.to_string(),
+            dst: r#"C:\Users\Public\mc.tmp"#.to_string(),
+        });
+        crate::deob_scan::scan_deob_text(r#"C:\Users\Public\mc.tmp /4"#, &mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ManipulatedExec { target, .. }
+                        if target == r#"C:\Users\Public\mc.tmp"#
+                )
+            }),
+            "copied msconfig alias did not emit manipulated execution: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::UacBypass { technique } if technique == "msconfig-4")),
+            "copied msconfig /4 was not surfaced as UAC bypass: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn reg_add_run_key_emits_persistence_trait() {
         // `reg add HKCU\…\Run /v X /d "C:\dropper.exe" /f` is the
         // classic registry-Run persistence. Surface as Persistence
