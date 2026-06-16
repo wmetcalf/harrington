@@ -5493,6 +5493,23 @@ powershell -Command "Set-WmiInstance -ComputerName='adminbox.example' -Class Win
     }
 
     #[test]
+    fn powershell_wmi_short_computername_emits_remote_exec() {
+        let script = br#"powershell -Command "Invoke-WmiMethod -Com target.example -Class Win32_Process -Name Create -ArgumentList 'cmd /c hostname'"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteExec { tool, target_host }
+                    if tool == "Invoke-WmiMethod" && target_host == "target.example"
+            )),
+            "PowerShell WMI short ComputerName parameter missed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn copied_anti_recovery_aliases_emit_traits() {
         let script = br#"copy C:\Windows\System32\vssadmin.exe C:\Users\Public\vs.tmp
 C:\Users\Public\vs.tmp delete shadows /all /quiet

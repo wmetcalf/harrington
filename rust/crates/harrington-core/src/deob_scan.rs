@@ -11334,9 +11334,7 @@ fn scan_remote_exec(deobfuscated: &str, env: &mut Environment) {
             ("Set-WmiInstance", "Set-WmiInstance"),
             ("Invoke-CimMethod", "Invoke-CimMethod"),
         ] {
-            if !contains_ascii_keyword(line, keyword)
-                || !line.to_ascii_lowercase().contains("-computername")
-            {
+            if !contains_ascii_keyword(line, keyword) {
                 continue;
             }
             for host in powershell_named_argument_list(line, "-ComputerName") {
