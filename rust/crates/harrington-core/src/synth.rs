@@ -375,7 +375,7 @@ fn findstr_file_inputs_for_arg(
             .keys()
             .filter(|path| {
                 if recursive {
-                    findstr_recursive_wildcard_matches(candidate, &normalized_pattern, path)
+                    recursive_wildcard_matches(candidate, &normalized_pattern, path)
                 } else {
                     dir_wildcard_matches(candidate, &normalized_pattern, path)
                 }
@@ -408,11 +408,7 @@ fn findstr_file_output_name(pattern: &str, tracked_path: &str) -> String {
     }
 }
 
-fn findstr_recursive_wildcard_matches(
-    pattern: &str,
-    normalized_pattern: &str,
-    tracked_path: &str,
-) -> bool {
+fn recursive_wildcard_matches(pattern: &str, normalized_pattern: &str, tracked_path: &str) -> bool {
     let normalized_path = normalize_wildcard_path(tracked_path);
     if pattern.contains(['\\', '/', ':']) {
         let Some((pattern_dir, pattern_name)) = normalized_pattern.rsplit_once('\\') else {
@@ -1082,7 +1078,13 @@ fn dir_tracked_file_names(path: &str, env: &Environment, recursive: bool) -> Vec
         let mut names = env
             .modified_filesystem
             .keys()
-            .filter(|tracked| dir_wildcard_matches(path, &normalized_pattern, tracked))
+            .filter(|tracked| {
+                if recursive {
+                    recursive_wildcard_matches(path, &normalized_pattern, tracked)
+                } else {
+                    dir_wildcard_matches(path, &normalized_pattern, tracked)
+                }
+            })
             .map(|tracked| dir_listing_name(tracked, recursive))
             .collect::<Vec<_>>();
         names.sort();

