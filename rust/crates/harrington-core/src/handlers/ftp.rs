@@ -1,7 +1,9 @@
 //! ftp.exe handler - scans tracked `-s:script` command files.
 
 use crate::env::{Environment, FsEntry};
-use crate::handlers::util::{split_words, strip_outer_quotes};
+use crate::handlers::util::{
+    filesystem_storage_key, join_windows_path_preserving_separator, split_words, strip_outer_quotes,
+};
 use crate::traits::Trait;
 
 pub fn h_ftp(raw: &str, env: &mut Environment) {
@@ -19,11 +21,16 @@ pub fn h_ftp(raw: &str, env: &mut Environment) {
 
     push_remote_connect(raw, &parsed.host, parsed.port, env);
     for transfer in parsed.downloads {
+        let src = ftp_url(&parsed.host, parsed.port, &transfer.remote);
         env.traits.push(Trait::Download {
             cmd: raw.to_string(),
-            src: ftp_url(&parsed.host, parsed.port, &transfer.remote),
-            dst: Some(transfer.local),
+            src: src.clone(),
+            dst: Some(transfer.local.clone()),
         });
+        env.modified_filesystem.insert(
+            filesystem_storage_key(&transfer.local),
+            FsEntry::Download { src },
+        );
     }
 }
 
@@ -66,6 +73,7 @@ fn parse_ftp_script(script: &str) -> Option<FtpScript> {
     let mut host: Option<String> = None;
     let mut port: u16 = 21;
     let mut cwd = String::new();
+    let mut lcd = String::new();
     let mut downloads = Vec::new();
 
     for line in script.lines() {
@@ -96,6 +104,11 @@ fn parse_ftp_script(script: &str) -> Option<FtpScript> {
                     cwd = normalize_remote_path(value);
                 }
             }
+            "lcd" => {
+                if let Some(value) = tokens.get(1).map(|value| strip_outer_quotes(value).trim()) {
+                    lcd = normalize_local_path(value);
+                }
+            }
             "get" | "recv" => {
                 let Some(remote) = tokens.get(1).map(|value| strip_outer_quotes(value).trim())
                 else {
@@ -110,6 +123,7 @@ fn parse_ftp_script(script: &str) -> Option<FtpScript> {
                     .map(|value| strip_outer_quotes(value).trim().to_string())
                     .filter(|value| !value.is_empty())
                     .unwrap_or_else(|| remote_basename(&remote).unwrap_or_else(|| remote.clone()));
+                let local = join_local_path(&lcd, &local);
                 downloads.push(FtpDownload { remote, local });
             }
             _ => {}
@@ -185,6 +199,29 @@ fn normalize_remote_path(path: &str) -> String {
     path.trim_matches(['"', '\''])
         .trim_matches('/')
         .replace('\\', "/")
+}
+
+fn normalize_local_path(path: &str) -> String {
+    path.trim_matches(['"', '\''])
+        .trim_end_matches(['\\', '/'])
+        .to_string()
+}
+
+fn join_local_path(lcd: &str, local: &str) -> String {
+    let local = local.trim_matches(['"', '\'']);
+    if lcd.is_empty() || is_windows_rooted_path(local) {
+        local.to_string()
+    } else {
+        join_windows_path_preserving_separator(lcd, local)
+    }
+}
+
+fn is_windows_rooted_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    path.starts_with(['\\', '/'])
+        || bytes
+            .get(0..2)
+            .is_some_and(|head| head[0].is_ascii_alphabetic() && head[1] == b':')
 }
 
 fn join_remote_path(cwd: &str, remote: &str) -> String {
