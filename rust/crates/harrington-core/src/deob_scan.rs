@@ -8078,6 +8078,7 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
             }
             for m in PS_FIREWALL_PROFILE_RE.find_iter(deobfuscated) {
                 let command = m.as_str().trim();
+                let positional = powershell_positional_arguments(command, "Set-NetFirewallProfile");
                 let enabled = powershell_named_argument(command, "-Enabled")
                     .map(|value| {
                         matches!(
@@ -8090,6 +8091,7 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
                     continue;
                 }
                 let target = powershell_named_argument(command, "-Profile")
+                    .or_else(|| positional.first().cloned())
                     .unwrap_or_else(|| "profile".to_string());
                 push("firewall-profile-disabled", target);
             }

