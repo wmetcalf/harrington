@@ -5941,6 +5941,21 @@ powershell -Command "Get-CimInstance Win32_ShadowCopy | Remove-CimInstance"
     }
 
     #[test]
+    fn powershell_remove_wmiobject_shadowcopy_emits_anti_recovery_trait() {
+        let script = br#"powershell -Command "Get-WmiObject Win32_ShadowCopy | Remove-WmiObject""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AntiRecovery { action } if action == "powershell-shadowcopy-delete"
+            )),
+            "PowerShell Remove-WmiObject shadowcopy deletion was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn wmic_filtered_shadowcopy_delete_emits_anti_recovery_trait() {
         let script = br#"wmic shadowcopy where "ClientAccessible='TRUE'" delete
 "#;
