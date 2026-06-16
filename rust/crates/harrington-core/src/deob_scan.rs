@@ -9291,6 +9291,16 @@ fn scan_enumeration(deobfuscated: &str, env: &mut Environment) {
 
 fn network_utility_enumeration_kind(tokens: &[String], command: &str) -> Option<&'static str> {
     match command_basename(command).as_str() {
+        "net" | "net.exe" | "net1" | "net1.exe" => {
+            tokens
+                .get(1)
+                .and_then(|token| match token.to_ascii_lowercase().as_str() {
+                    "accounts" => Some("net-accounts"),
+                    "config" => Some("net-config"),
+                    "share" => Some("net-share"),
+                    _ => None,
+                })
+        }
         "whoami" | "whoami.exe" => tokens
             .iter()
             .skip(1)
@@ -9391,6 +9401,9 @@ fn has_enumeration_atom(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
     [
         "net",
+        "net accounts",
+        "net config",
+        "net share",
         "whoami",
         "hostname",
         "query session",
@@ -9442,6 +9455,9 @@ mod enumeration_prefilter_tests {
         for sample in [
             "net user",
             "net view /domain",
+            "net accounts",
+            "net config workstation",
+            "net share",
             "whoami /priv",
             "whoami /user",
             "hostname",
