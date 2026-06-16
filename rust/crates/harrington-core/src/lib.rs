@@ -3279,6 +3279,35 @@ C:\Users\Public\rd.tmp C:\Windows\System32\comsvcs.dll, MiniDump 1234 C:\Users\P
     }
 
     #[test]
+    fn lsass_dump_credential_access_target_is_not_truncated() {
+        let long_marker = "tail-marker-preserved-for-long-lsass-dump-command";
+        let script = format!(
+            r#"procdump64.exe -accepteula -ma -r -o -nobanner -wer -64 lsass.exe C:\Users\Public\{}\lsass-memory-dump-output-file.dmp"#,
+            [
+                "alpha0001",
+                "bravo0002",
+                "charlie0003",
+                "delta0004",
+                "echo0005",
+                "foxtrot0006",
+                long_marker,
+            ]
+            .join(r#"\nested\"#)
+        );
+        let report = analyze(script.as_bytes(), &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::CredentialAccess { technique, target }
+                    if technique == "lsass-dump" && target.contains(long_marker)
+            )),
+            "long LSASS credential-access target was truncated: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn wmic_for_f_inventory_command_is_trimmed() {
         let script = br#"for /f "tokens=3" %%a in ('wmic logicaldisk where "Size=250954240000" get Size | find "Size"') do echo %%a"#;
         let report = analyze(script, &AnalyzeConfig::default());

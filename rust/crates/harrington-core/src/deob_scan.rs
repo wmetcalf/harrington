@@ -9706,14 +9706,14 @@ fn scan_credential_access(deobfuscated: &str, env: &mut Environment) {
     static PATTERNS: Lazy<Vec<(Regex, &str, fn(&str) -> String)>> = Lazy::new(|| {
         vec![
             // lsass dump via comsvcs.dll / procdump / rundll32 minidumpwritedump
-            (Regex::new(r#"(?i)\b(?:rundll32(?:\.exe)?\s+\S*comsvcs\.dll[^\r\n]*?MiniDump|procdump(?:64)?(?:\.exe)?[^\r\n]*?lsass|sqldumper[^\r\n]*?lsass)"#).unwrap(),
-             "lsass-dump", |m: &str| m.chars().take(120).collect()),
+            (Regex::new(r#"(?i)\b(?:rundll32(?:\.exe)?\s+\S*comsvcs\.dll[^\r\n]*?MiniDump[^\r\n]*|procdump(?:64)?(?:\.exe)?[^\r\n]*?lsass[^\r\n]*|sqldumper[^\r\n]*?lsass[^\r\n]*)"#).unwrap(),
+             "lsass-dump", |m: &str| m.to_string()),
             // Mimikatz invocations
             (Regex::new(r#"(?i)\b(?:Invoke-Mimikatz|mimikatz(?:\.exe)?\b|sekurlsa::|kerberos::|crypto::|lsadump::)"#).unwrap(),
              "mimikatz", |m| m.to_string()),
             // Browser credential paths
             (Regex::new(r#"(?i)\\Google\\Chrome\\User Data\\\S*Login Data|\\Mozilla\\Firefox\\Profiles\\\S*\\(?:key[34]\.db|logins\.json|cookies\.sqlite)|\\BraveSoftware\\\S*Login Data"#).unwrap(),
-             "browser-cred-path", |m| m.chars().take(120).collect()),
+             "browser-cred-path", |m| m.to_string()),
             // Nirsoft tooling
             (Regex::new(r#"(?i)\b(?:nirsoft|webbrowserpassview|mailpassview|chromepass)\b"#).unwrap(),
              "nirsoft", |m| m.to_string()),
