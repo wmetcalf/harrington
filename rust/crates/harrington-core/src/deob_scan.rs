@@ -8892,6 +8892,9 @@ fn scan_network_probe(deobfuscated: &str, env: &mut Environment) {
         if let Some(target) = resolve_dns_name_target(line) {
             push_network_probe(env, "dns-lookup", target);
         }
+        if let Some((kind, target)) = powershell_connection_test_probe(line) {
+            push_network_probe(env, kind, target);
+        }
         let tokens = split_words(line);
         let Some(command) = tokens.first() else {
             continue;
@@ -8933,6 +8936,23 @@ fn scan_network_probe(deobfuscated: &str, env: &mut Environment) {
             push_network_probe(env, "ip-discovery", (*host).to_string());
         }
     }
+}
+
+fn powershell_connection_test_probe(line: &str) -> Option<(&'static str, String)> {
+    let lower = line.to_ascii_lowercase();
+    let (keyword, kind) = if lower.contains("test-netconnection") {
+        ("Test-NetConnection", "tcp-connect")
+    } else if lower.contains("test-connection") {
+        ("Test-Connection", "icmp-ping")
+    } else {
+        return None;
+    };
+    let target = powershell_named_argument(line, "-ComputerName").or_else(|| {
+        powershell_positional_arguments(line, keyword)
+            .into_iter()
+            .next()
+    })?;
+    normalize_probe_target(&target).map(|target| (kind, target))
 }
 
 fn resolve_dns_name_target(line: &str) -> Option<String> {

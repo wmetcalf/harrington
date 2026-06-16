@@ -4062,6 +4062,32 @@ ping 127.0.0.1
     }
 
     #[test]
+    fn powershell_connection_tests_emit_network_probe() {
+        let script =
+            br#"powershell -Command "Test-NetConnection -ComputerName c2.example -Port 443"
+powershell -Command "Test-Connection files.example -Count 1"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        for (probe_kind, target) in [
+            ("tcp-connect", "c2.example"),
+            ("icmp-ping", "files.example"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::NetworkProbe {
+                        probe_kind: kind,
+                        target: existing_target,
+                    } if kind == probe_kind && existing_target == target
+                )),
+                "missing PowerShell network probe {probe_kind} {target}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn copied_ping_alias_emits_network_probe() {
         let script = br#"copy C:\Windows\System32\ping.exe C:\Users\Public\pg.tmp
 C:\Users\Public\pg.tmp -n 1 c2.example
