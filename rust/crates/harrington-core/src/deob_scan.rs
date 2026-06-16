@@ -9958,6 +9958,9 @@ fn scan_account_modification(deobfuscated: &str, env: &mut Environment) {
             .get(0)
             .map(|m| m.as_str().trim().to_string())
             .unwrap_or_default();
+        if command_starts_with_echo(&command) {
+            continue;
+        }
         push("local-user-add", account, None, command);
     }
     for caps in NET_USER_ACTIVE_RE.captures_iter(deobfuscated) {
@@ -9969,6 +9972,9 @@ fn scan_account_modification(deobfuscated: &str, env: &mut Environment) {
             .get(0)
             .map(|m| m.as_str().trim().to_string())
             .unwrap_or_default();
+        if command_starts_with_echo(&command) {
+            continue;
+        }
         push("local-user-enable", account, None, command);
     }
     for caps in NET_USER_PASSWORD_RE.captures_iter(deobfuscated) {
@@ -9976,6 +9982,9 @@ fn scan_account_modification(deobfuscated: &str, env: &mut Environment) {
             .get(0)
             .map(|m| m.as_str().trim().to_string())
             .unwrap_or_default();
+        if command_starts_with_echo(&command) {
+            continue;
+        }
         let lower_command = command.to_ascii_lowercase();
         if lower_command.contains("/add") || lower_command.contains("/active") {
             continue;
@@ -10006,6 +10015,9 @@ fn scan_account_modification(deobfuscated: &str, env: &mut Environment) {
             .get(0)
             .map(|m| m.as_str().trim().to_string())
             .unwrap_or_default();
+        if command_starts_with_echo(&command) {
+            continue;
+        }
         push("localgroup-add", account, Some(group), command);
     }
     for caps in PS_NEW_LOCAL_USER_RE.captures_iter(deobfuscated) {
@@ -10814,6 +10826,9 @@ fn push_enumeration_once(
     command: String,
     command_specific: bool,
 ) {
+    if command_starts_with_echo(&command) {
+        return;
+    }
     if env.traits.iter().any(|t| {
         matches!(
             t,

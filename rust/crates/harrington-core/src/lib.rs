@@ -5134,6 +5134,38 @@ powershell -Command "New-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Cont
     }
 
     #[test]
+    fn escaped_ampersand_net_user_text_does_not_emit_account_modification() {
+        let script = br#"echo keep ^& net user backdoor P@ssw0rd /add"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, .. }
+                    if action == "local-user-add" && account == "backdoor"
+            )),
+            "escaped ampersand echo text was misread as local-user-add: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn escaped_ampersand_net_user_text_does_not_emit_enumeration() {
+        let script = br#"echo keep ^& net user backdoor P@ssw0rd /add"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "net-user" && command.contains("backdoor")
+            )),
+            "escaped ampersand echo text was misread as net user enumeration: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn remote_desktop_users_group_add_emits_remote_access_trait() {
         let script = br#"net localgroup "Remote Desktop Users" support /add"#;
         let report = analyze(script, &AnalyzeConfig::default());
