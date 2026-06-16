@@ -9015,11 +9015,9 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
         Regex::new(r#"(?im)^[^\r\n]*?\b(?:Clear-History|clhy)\b[^\r\n]*"#)
             .expect("powershell clear-history regex")
     });
-    static PS_HISTORY_DISABLE_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(
-            r#"(?im)^[^\r\n]*?\bSet-PSReadLineOption\b[^\r\n]*?-HistorySaveStyle(?:\s*[:=]\s*|\s+)SaveNothing\b[^\r\n]*"#,
-        )
-        .expect("powershell history disable regex")
+    static PS_HISTORY_DISABLE_LINE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?im)^[^\r\n]*?\bSet-PSReadLineOption\b[^\r\n]*"#)
+            .expect("powershell history disable line regex")
     });
 
     fn clean_token(token: &str) -> String {
@@ -9239,12 +9237,18 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
         );
     }
 
-    for m in PS_HISTORY_DISABLE_RE.find_iter(deobfuscated) {
-        let command = m.as_str().trim().to_string();
+    for m in PS_HISTORY_DISABLE_LINE_RE.find_iter(deobfuscated) {
+        let command = m.as_str().trim();
+        if !powershell_named_argument(command, "-HistorySaveStyle")
+            .map(|value| value.eq_ignore_ascii_case("SaveNothing"))
+            .unwrap_or(false)
+        {
+            continue;
+        }
         push(
             "powershell-history-disable",
             "PowerShellHistory".to_string(),
-            command,
+            command.to_string(),
         );
     }
 
