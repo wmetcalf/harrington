@@ -7964,6 +7964,24 @@ for /f "tokens=1 delims=:" %%A in ('curl -# -k "http://www.geoplugin.net/php.gp?
     }
 
     #[test]
+    fn powershell_chained_clear_history_preserves_statement_command() {
+        let script = br#"powershell -Command "Write-Output keep; Clear-History""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::EvidenceCleanup { action, target, command }
+                    if action == "powershell-history-delete"
+                        && target == "PowerShellHistory"
+                        && command == "Clear-History"
+            )),
+            "chained Clear-History command context was not preserved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_psreadline_history_path_delete_emits_evidence_cleanup_trait() {
         let script =
             br#"powershell -Command "Remove-Item (Get-PSReadLineOption).HistorySavePath -Force""#;

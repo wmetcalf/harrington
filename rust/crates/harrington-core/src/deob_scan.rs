@@ -9290,12 +9290,19 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
     }
 
     for m in PS_CLEAR_HISTORY_RE.find_iter(deobfuscated) {
-        let command = m.as_str().trim().to_string();
-        push(
-            "powershell-history-delete",
-            "PowerShellHistory".to_string(),
-            command,
-        );
+        for command in powershell_statement_segments(m.as_str()) {
+            let command = command.trim();
+            if !contains_ascii_keyword(command, "Clear-History")
+                && !contains_ascii_keyword(command, "clhy")
+            {
+                continue;
+            }
+            push(
+                "powershell-history-delete",
+                "PowerShellHistory".to_string(),
+                command.to_string(),
+            );
+        }
     }
 
     for m in PS_HISTORY_DISABLE_LINE_RE.find_iter(deobfuscated) {
