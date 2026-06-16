@@ -11227,10 +11227,15 @@ fn scan_service_install(deobfuscated: &str, env: &mut Environment) {
     }
     for m in PS_NEW_SERVICE_RE.find_iter(deobfuscated) {
         let command = m.as_str().trim();
-        let Some(name) = powershell_named_argument(command, "-Name") else {
+        let positional = powershell_positional_arguments(command, "New-Service");
+        let Some(name) =
+            powershell_named_argument(command, "-Name").or_else(|| positional.first().cloned())
+        else {
             continue;
         };
-        let path = powershell_named_argument(command, "-BinaryPathName").unwrap_or_default();
+        let path = powershell_named_argument(command, "-BinaryPathName")
+            .or_else(|| positional.get(1).cloned())
+            .unwrap_or_default();
         push(name, path);
     }
 }
