@@ -5074,6 +5074,102 @@ fn scan_copied_schtasks_alias_deob_text(deobfuscated: &str, env: &mut Environmen
     }
 }
 
+fn scan_copied_sc_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    let mut aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for t in &env.traits {
+        let Trait::WindowsUtilManip { src, dst, .. } = t else {
+            continue;
+        };
+        let src_base = basename_lower(src);
+        if src_base != "sc.exe" && src_base != "sc" {
+            continue;
+        }
+        insert_alias_names(&mut aliases, dst);
+    }
+    if aliases.is_empty() {
+        return;
+    }
+
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        let Some(cmd) = tokens.first() else {
+            continue;
+        };
+        if !aliases.contains(&basename_lower(cmd))
+            && !aliases.contains(&cmd.trim_matches(['"', '\'']).to_ascii_lowercase())
+        {
+            continue;
+        }
+        if tokens.len() < 2 {
+            continue;
+        }
+        if env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::ManipulatedExec {
+                    cmd: existing_cmd,
+                    target
+                } if existing_cmd == line && target.eq_ignore_ascii_case(cmd.trim_matches(['"', '\'']))
+            )
+        }) {
+            continue;
+        }
+
+        push_manipulated_exec_once(env, line, cmd);
+        let rest = line
+            .get(cmd.len()..)
+            .map(str::trim_start)
+            .unwrap_or_default();
+        let replay = if rest.is_empty() {
+            "sc.exe".to_string()
+        } else {
+            format!("sc.exe {rest}")
+        };
+        crate::handlers::passthrough::h_sc(&replay, env);
+        if let Some((service_name, bin_path)) =
+            crate::handlers::passthrough::sc_service_binpath(&replay)
+        {
+            if !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ServiceInstall {
+                        service_name: existing,
+                        ..
+                    } if existing == &service_name
+                )
+            }) {
+                env.traits.push(Trait::ServiceInstall {
+                    service_name,
+                    bin_path: bin_path.clone(),
+                });
+            }
+            replay_persisted_child_command(&bin_path, env);
+        }
+        if let Some((service_name, command)) =
+            crate::handlers::passthrough::sc_failure_command(&replay)
+        {
+            env.traits.push(Trait::Persistence {
+                hive: "ServiceFailureCommand".to_string(),
+                key: service_name,
+                value_name: "command".to_string(),
+                command: command.clone(),
+            });
+            replay_persisted_child_command(&command, env);
+        }
+    }
+}
+
+fn replay_persisted_child_command(command: &str, env: &mut Environment) {
+    if let Some((child, _delayed)) = crate::handlers::passthrough::persisted_command_child(command)
+    {
+        if let Some(cmd_inner) = crate::handlers::cmd::extract_cmd_inner(&child) {
+            crate::interp::interpret_line(&cmd_inner, env);
+        } else {
+            crate::interp::interpret_line(&child, env);
+        }
+    }
+}
+
 fn scan_copied_handler_alias_deob_text(
     deobfuscated: &str,
     env: &mut Environment,
@@ -9250,6 +9346,9 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     });
     scan_step!("copied_schtasks_alias_deob_text", {
         scan_copied_schtasks_alias_deob_text(deobfuscated, env);
+    });
+    scan_step!("copied_sc_alias_deob_text", {
+        scan_copied_sc_alias_deob_text(deobfuscated, env);
     });
     scan_step!("copied_certutil_alias_deob_text", {
         scan_copied_certutil_alias_deob_text(deobfuscated, env);

