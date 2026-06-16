@@ -3762,6 +3762,48 @@ for /f "tokens=1 delims=:" %%A in ('curl -# -k "http://www.geoplugin.net/php.gp?
     }
 
     #[test]
+    fn copied_evidence_cleanup_aliases_emit_traits() {
+        let script = br#"copy C:\Windows\System32\wevtutil.exe C:\Users\Public\we.tmp
+C:\Users\Public\we.tmp cl Security
+copy C:\Windows\System32\fsutil.exe C:\Users\Public\fs.tmp
+C:\Users\Public\fs.tmp usn deletejournal /d c:
+copy C:\Windows\System32\reg.exe C:\Users\Public\rg.tmp
+C:\Users\Public\rg.tmp delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\UserAssist" /f
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        for target in [
+            r#"C:\Users\Public\we.tmp"#,
+            r#"C:\Users\Public\fs.tmp"#,
+            r#"C:\Users\Public\rg.tmp"#,
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::ManipulatedExec { target: t, .. }
+                        if t.eq_ignore_ascii_case(target)
+                )),
+                "copied evidence-cleanup alias {target} was not surfaced: {:?}",
+                report.traits
+            );
+        }
+        for action in [
+            "event-log-clear",
+            "usn-journal-delete",
+            "registry-history-delete",
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::EvidenceCleanup { action: a, .. } if a == action
+                )),
+                "missing copied EvidenceCleanup {action}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn generic_delete_does_not_emit_evidence_cleanup_trait() {
         let script = b"@echo off\r\n\
             del /f /q C:\\Temp\\installer.log\r\n\
