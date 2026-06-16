@@ -7767,17 +7767,11 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
     const SECURITY_PRODUCT_PATTERN: &str = r"Trend Micro|Windows Defender|Microsoft Defender|Sophos|Kaspersky|Symantec|McAfee|Avast|AVG|ESET|Malwarebytes|CrowdStrike|SentinelOne|CarbonBlack|Cylance|Bitdefender";
     const SECURITY_SERVICE_PATTERN: &str = r"MBAMService|MBAMScheduler|ekrn|egui|AVP[0-9.]*|KSDE[0-9.]*|McAWFwk|MSK80Service|McAPExe|McBootDelayStartSvc|mccspsvc|mfefire|McMPFSvc|mcpltsvc|McProxy|McODS|mfemms|McAfee SiteAdvisor Service|mfevtp|McNaiAnn|NortonSecurity|SBAMSvc|ZillyaAVAuxSvc|ZillyaAVCoreSvc|QHActiveDefense|avast! Antivirus|avast! Firewall|AVG Antivirus|AntiVirMailService|AntiVirService|Avira\.ServiceHost|AntiVirWebService|AntiVirSchedulerService|vsservppl|ProductAgentService|vsserv|updatesrv|cmdAgent|cmdvirth|DragonUpdater|PEFService|SentinelAgent|CSFalconService";
     const SECURITY_STARTUP_PATTERN: &str = r"AvastUI\.exe|QHSafeTray|Zillya Antivirus|SBAMTray|SBRegRebootCleaner|egui|IseUI|COMODO Internet Security|ClamWin|Avira SystrayStartTrigger|AVGUI\.exe|SUPERAntiSpyware|Malwarebytes|Windows Defender|SecurityHealth|ESET|McAfee|Norton|Symantec";
-    static EXCLUSION_PATH_DQ: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?i)Add-MpPreference\s+-Exclusion(Path|Extension|Process)\s+"([^"\r\n]+)""#)
-            .expect("excl-path-dq")
-    });
-    static EXCLUSION_PATH_SQ: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?i)Add-MpPreference\s+-Exclusion(Path|Extension|Process)\s+'([^'\r\n]+)'"#)
-            .expect("excl-path-sq")
-    });
-    static EXCLUSION_PATH_BARE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?i)Add-MpPreference\s+-Exclusion(Path|Extension|Process)\s+([^\s'";|&)]+)"#)
-            .expect("excl-path-bare")
+    static EXCLUSION_ARG_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?i)-Exclusion(Path|Extension|Process)\s*(?::|=|\s)\s*(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^\s'";|&)]+))"#,
+        )
+        .expect("exclusion arg regex")
     });
     static DISABLE_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?i)Set-MpPreference\s+-(Disable[A-Za-z]+|MAPSReporting|SubmitSamplesConsent)\s+(\S+)"#)
@@ -7887,22 +7881,28 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
     };
     if lower.contains("add-mppreference") || lower.contains("set-mppreference") {
         profile_defender_group!("mp_preference", {
-            for caps in EXCLUSION_PATH_DQ
-                .captures_iter(deobfuscated)
-                .chain(EXCLUSION_PATH_SQ.captures_iter(deobfuscated))
-                .chain(EXCLUSION_PATH_BARE.captures_iter(deobfuscated))
-            {
-                let kind = format!(
-                    "exclusion-{}",
-                    caps.get(1)
-                        .map(|m| m.as_str().to_ascii_lowercase())
-                        .unwrap_or_default()
-                );
-                let target = caps
-                    .get(2)
-                    .map(|m| m.as_str().to_string())
-                    .unwrap_or_default();
-                push(&kind, target);
+            for line in deobfuscated.lines() {
+                let lower_line = line.to_ascii_lowercase();
+                if !lower_line.contains("add-mppreference")
+                    && !lower_line.contains("set-mppreference")
+                {
+                    continue;
+                }
+                for caps in EXCLUSION_ARG_RE.captures_iter(line) {
+                    let kind = format!(
+                        "exclusion-{}",
+                        caps.get(1)
+                            .map(|m| m.as_str().to_ascii_lowercase())
+                            .unwrap_or_default()
+                    );
+                    let target = caps
+                        .get(2)
+                        .or_else(|| caps.get(3))
+                        .or_else(|| caps.get(4))
+                        .map(|m| m.as_str().to_string())
+                        .unwrap_or_default();
+                    push(&kind, target);
+                }
             }
 
             for caps in DISABLE_RE.captures_iter(deobfuscated) {
@@ -10326,6 +10326,10 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
         )
         .expect("rdp enable regex")
     });
+    static PS_RDP_ENABLE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?im)^[^\r\n]*?\b(?:Set|New)-ItemProperty\b[^\r\n]*"#)
+            .expect("powershell rdp enable regex")
+    });
     static HIDDEN_USER_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
             r#"(?im)^[^\r\n]*\breg(?:\.exe)?\s+add\s+["']?[^"'\r\n]*Winlogon\\SpecialAccounts\\UserList["']?[^\r\n]*/v\s+["']?([^"'\s]+)["']?[^\r\n]*/d\s+(?:0x0|0)\b[^\r\n]*"#,
@@ -10394,6 +10398,36 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
             .map(|m| m.as_str().trim().to_string())
             .unwrap_or_default();
         push("rdp-enable", "Terminal Server".to_string(), command);
+    }
+    for m in PS_RDP_ENABLE_RE.find_iter(deobfuscated) {
+        let command = m.as_str().trim();
+        let path = powershell_named_argument(command, "-Path")
+            .or_else(|| powershell_named_argument(command, "-LiteralPath"))
+            .unwrap_or_default();
+        if !path
+            .to_ascii_lowercase()
+            .contains(r"control\terminal server")
+        {
+            continue;
+        }
+        let value_name = powershell_named_argument(command, "-Name")
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let value = powershell_named_argument(command, "-Value")
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let enables_rdp = match value_name.as_str() {
+            "allowtsconnections" => value == "1" || value == "0x1",
+            "fdenytsconnections" => value == "0" || value == "0x0",
+            _ => false,
+        };
+        if enables_rdp {
+            push(
+                "rdp-enable",
+                "Terminal Server".to_string(),
+                command.to_string(),
+            );
+        }
     }
     for caps in HIDDEN_USER_RE.captures_iter(deobfuscated) {
         let target = caps

