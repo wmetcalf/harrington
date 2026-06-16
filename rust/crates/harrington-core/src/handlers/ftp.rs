@@ -126,6 +126,19 @@ fn parse_ftp_script(script: &str) -> Option<FtpScript> {
                 let local = join_local_path(&lcd, &local);
                 downloads.push(FtpDownload { remote, local });
             }
+            "mget" => {
+                for token in tokens.iter().skip(1) {
+                    let remote = strip_outer_quotes(token).trim();
+                    if remote.is_empty() || remote.contains(['*', '?']) {
+                        continue;
+                    }
+                    let remote = join_remote_path(&cwd, remote);
+                    let local =
+                        remote_basename(&remote).unwrap_or_else(|| normalize_remote_path(&remote));
+                    let local = join_local_path(&lcd, &local);
+                    downloads.push(FtpDownload { remote, local });
+                }
+            }
             _ => {}
         }
     }
