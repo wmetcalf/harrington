@@ -8860,6 +8860,10 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
         Regex::new(r#"(?im)^[^\r\n]*?\bfsutil(?:\.exe)?\s+usn\s+deletejournal\b[^\r\n]*"#)
             .expect("fsutil usn deletejournal regex")
     });
+    static CIPHER_WIPE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?im)^[^\r\n]*?\bcipher(?:\.exe)?\b[^\r\n]*(?:/|-)w(?::|\s+)?\s*("[^"\r\n]+"|'[^'\r\n]+'|[^\s\r\n]+)?[^\r\n]*"#)
+            .expect("cipher wipe regex")
+    });
     static DEL_LINE_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?im)^[^\r\n]*?\bdel(?:\.exe)?\b[^\r\n]*"#).expect("del line regex")
     });
@@ -8948,6 +8952,18 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
             .map(|m| m.as_str().trim().to_string())
             .unwrap_or_default();
         push("usn-journal-delete", command.clone(), command);
+    }
+
+    for caps in CIPHER_WIPE_RE.captures_iter(deobfuscated) {
+        let command = caps
+            .get(0)
+            .map(|m| m.as_str().trim().to_string())
+            .unwrap_or_default();
+        let target = caps
+            .get(1)
+            .map(|m| clean_token(m.as_str()))
+            .unwrap_or_else(|| command.clone());
+        push("free-space-wipe", target, command);
     }
 
     for caps in DEL_LINE_RE.captures_iter(deobfuscated) {
@@ -9062,6 +9078,7 @@ fn has_evidence_cleanup_atom(text: &str) -> bool {
     [
         "wevtutil",
         "fsutil",
+        "cipher",
         "prefetch",
         "recent",
         "automaticdestinations",

@@ -6929,6 +6929,22 @@ for /f "tokens=1 delims=:" %%A in ('curl -# -k "http://www.geoplugin.net/php.gp?
     }
 
     #[test]
+    fn cipher_wipe_free_space_emits_evidence_cleanup_trait() {
+        let script = br#"cipher /w:C:\Users\Public"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::EvidenceCleanup { action, target, .. }
+                    if action == "free-space-wipe" && target == r"C:\Users\Public"
+            )),
+            "cipher /w free-space wipe was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_evidence_cleanup_artifacts_emit_traits() {
         let script = br#"powershell -Command "Clear-EventLog -LogName Security"
 powershell -Command "Remove-Item -Recurse -Force C:\Windows\Prefetch\*"
