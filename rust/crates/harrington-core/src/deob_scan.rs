@@ -7834,7 +7834,7 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
             .expect("powershell stop-process regex")
     });
     static TASKKILL_SECURITY_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?i)\btaskkill(?:\.exe)?\b[^\r\n]*?/im\s+"?(SecurityHealthSystray|SecurityHealthService|WindowsDefender|MsMpEng|NisSrv|MpCmdRun|MBAMService|MBAMTray|avastui|avgui|egui|ekrn|bdservicehost|SentinelAgent|CrowdStrike|CSFalconService)\.exe"?\b[^\r\n]*"#)
+        Regex::new(r#"(?im)^[^\r\n]*?\btaskkill(?:\.exe)?\b[^\r\n]*?/im\s+"?(SecurityHealthSystray|SecurityHealthService|WindowsDefender|MsMpEng|NisSrv|MpCmdRun|MBAMService|MBAMTray|avastui|avgui|egui|ekrn|bdservicehost|SentinelAgent|CrowdStrike|CSFalconService)\.exe"?\b[^\r\n]*"#)
             .expect("taskkill security process")
     });
     static TASKKILL_SECURITY_FILTER_RE: Lazy<Regex> = Lazy::new(|| {
@@ -8127,6 +8127,13 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
                 }
             }
             for caps in TASKKILL_SECURITY_RE.captures_iter(deobfuscated) {
+                if caps
+                    .get(0)
+                    .map(|m| command_starts_with_echo(m.as_str()))
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
                 let process = caps
                     .get(1)
                     .map(|m| format!("{}.exe", m.as_str()))

