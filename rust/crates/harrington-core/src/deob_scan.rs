@@ -10722,7 +10722,7 @@ fn scan_uac_bypass(deobfuscated: &str, env: &mut Environment) {
                 "uac-enablelua-disabled",
             ),
             (
-                Regex::new(r#"(?i)\bNew-ItemProperty\b[^\r\n]*Policies\\system[^\r\n]*-Name\s+EnableLUA[^\r\n]*-Value\s+0\b"#).unwrap(),
+                Regex::new(r#"(?i)\b(?:New|Set)-ItemProperty\b[^\r\n]*Policies\\system[^\r\n]*-Name\s+EnableLUA[^\r\n]*-Value\s+0\b"#).unwrap(),
                 "uac-enablelua-disabled",
             ),
             (

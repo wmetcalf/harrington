@@ -2072,6 +2072,22 @@ echo UAC.ShellExecute "cmd.exe", "/c ""%~s0""", "", "runas", 1 >> "%temp%\getadm
     }
 
     #[test]
+    fn powershell_set_itemproperty_enablelua_emits_uac_bypass_trait() {
+        let script = br#"powershell.exe Set-ItemProperty -Path HKLM:Software\Microsoft\Windows\CurrentVersion\policies\system -Name EnableLUA -Value 0
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::UacBypass { technique } if technique == "uac-enablelua-disabled"
+            )),
+            "missing Set-ItemProperty EnableLUA UacBypass: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn msconfig_exe_4_in_deob_text_emits_uac_bypass_trait() {
         let mut env = crate::env::Environment::new(&AnalyzeConfig::default());
         crate::deob_scan::scan_deob_text("msconfig.exe /4", &mut env);
