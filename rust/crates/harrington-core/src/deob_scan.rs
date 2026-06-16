@@ -8919,6 +8919,9 @@ fn scan_network_probe(deobfuscated: &str, env: &mut Environment) {
         if let Some((kind, target)) = powershell_connection_test_probe(line) {
             push_network_probe(env, kind, target);
         }
+        if let Some((kind, target)) = powershell_wrapped_native_probe(line) {
+            push_network_probe(env, kind, target);
+        }
         let tokens = split_words(line);
         let Some(command) = tokens.first() else {
             continue;
@@ -8981,6 +8984,30 @@ fn powershell_connection_test_probe(line: &str) -> Option<(&'static str, String)
             .next()
     })?;
     normalize_probe_target(&target).map(|target| (kind, target))
+}
+
+fn powershell_wrapped_native_probe(line: &str) -> Option<(&'static str, String)> {
+    let lower = line.to_ascii_lowercase();
+    if !lower.contains("powershell") {
+        return None;
+    }
+    for (keyword, kind, option_family) in [
+        ("nslookup", "dns-lookup", "nslookup"),
+        ("tracert", "route-trace", "tracert"),
+        ("pathping", "route-trace", "pathping"),
+    ] {
+        if !contains_ascii_keyword(line, keyword) {
+            continue;
+        }
+        let target = powershell_positional_arguments(line, keyword)
+            .into_iter()
+            .find(|token| {
+                let lower = token.to_ascii_lowercase();
+                !network_probe_option_takes_value(option_family, &lower)
+            })?;
+        return normalize_probe_target(&target).map(|target| (kind, target));
+    }
+    None
 }
 
 fn contains_ascii_keyword(text: &str, keyword: &str) -> bool {

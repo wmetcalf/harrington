@@ -4240,6 +4240,33 @@ powershell -Command "Test-Connection files.example -Count 1"
     }
 
     #[test]
+    fn powershell_wrapped_native_probe_commands_emit_network_probes() {
+        let report = analyze(
+            br#"powershell -Command "nslookup dns-wrapper.example"
+powershell -Command "tracert route-wrapper.example"
+"#,
+            &AnalyzeConfig::default(),
+        );
+
+        for (probe_kind, target) in [
+            ("dns-lookup", "dns-wrapper.example"),
+            ("route-trace", "route-wrapper.example"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::NetworkProbe {
+                        probe_kind: kind,
+                        target: existing_target,
+                    } if kind == probe_kind && existing_target == target
+                )),
+                "missing PowerShell-wrapped native probe {probe_kind} {target}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn copied_ping_alias_emits_network_probe() {
         let script = br#"copy C:\Windows\System32\ping.exe C:\Users\Public\pg.tmp
 C:\Users\Public\pg.tmp -n 1 c2.example
