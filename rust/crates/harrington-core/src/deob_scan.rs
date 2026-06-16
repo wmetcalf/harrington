@@ -11222,7 +11222,10 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
         }
         let enabled = if command.to_ascii_lowercase().contains("set-netfirewallrule") {
             powershell_named_argument(command, "-Enabled")
-                .map(|value| matches!(value.to_ascii_lowercase().as_str(), "true" | "$true" | "1"))
+                .map(|value| {
+                    let value = value.to_ascii_lowercase();
+                    is_registry_dword_one(&value) || matches!(value.as_str(), "true" | "$true")
+                })
                 .unwrap_or(false)
         } else {
             true
