@@ -3391,6 +3391,28 @@ C:\Users\Public\rd.tmp C:\Windows\System32\comsvcs.dll, MiniDump 1234 C:\Users\P
     }
 
     #[test]
+    fn registry_hive_saves_emit_credential_access_trait() {
+        let script = br#"reg save HKLM\SAM C:\Users\Public\sam.save /y
+reg save HKLM\SYSTEM C:\Users\Public\system.save /y
+reg save HKLM\SECURITY C:\Users\Public\security.save /y
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::CredentialAccess { technique, target }
+                    if technique == "registry-hive-save"
+                        && target.contains(r"HKLM\SAM")
+                        && target.contains(r"HKLM\SYSTEM")
+                        && target.contains(r"HKLM\SECURITY")
+            )),
+            "registry hive saves were not surfaced as credential access: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_dotnet_clipboard_access_emits_input_capture_trait() {
         let script = br#"powershell -Command "[System.Windows.Forms.Clipboard]::GetText()"
 powershell -Command "[Windows.Forms.Clipboard]::SetText('copied')"

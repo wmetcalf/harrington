@@ -9995,6 +9995,10 @@ fn scan_credential_access(deobfuscated: &str, env: &mut Environment) {
              "wdigest-creds", |m| m.to_string()),
         ]
     });
+    static REG_HIVE_SAVE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?im)^[^\r\n]*?\breg(?:\.exe)?\s+save\s+["']?HKLM\\(?:SAM|SYSTEM|SECURITY)["']?\b[^\r\n]*"#)
+            .expect("registry hive save regex")
+    });
     for (re, tech, fmt) in PATTERNS.iter() {
         if let Some(m) = re.find(deobfuscated) {
             let target = fmt(m.as_str());
@@ -10010,6 +10014,24 @@ fn scan_credential_access(deobfuscated: &str, env: &mut Environment) {
                 target,
             });
         }
+    }
+    let hive_saves: Vec<String> = REG_HIVE_SAVE_RE
+        .find_iter(deobfuscated)
+        .map(|m| m.as_str().trim().to_string())
+        .collect();
+    if !hive_saves.is_empty()
+        && !env.traits.iter().any(|t| {
+            matches!(
+                t,
+                crate::traits::Trait::CredentialAccess { technique, .. }
+                    if technique == "registry-hive-save"
+            )
+        })
+    {
+        env.traits.push(crate::traits::Trait::CredentialAccess {
+            technique: "registry-hive-save".to_string(),
+            target: hive_saves.join("\n"),
+        });
     }
 }
 
@@ -10041,6 +10063,9 @@ fn has_credential_access_atom(text: &str) -> bool {
         "chromepass",
         "uselogoncredential",
         "wdigest",
+        "hklm\\sam",
+        "hklm\\system",
+        "hklm\\security",
     ]
     .iter()
     .any(|atom| lower.contains(atom))
