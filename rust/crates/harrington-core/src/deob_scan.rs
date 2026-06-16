@@ -6065,6 +6065,7 @@ fn scan_copied_sc_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
         };
         crate::handlers::passthrough::h_sc(&replay, env);
         scan_defender_evasion(&replay, env);
+        scan_enumeration(&replay, env);
         if let Some((service_name, bin_path)) =
             crate::handlers::passthrough::sc_service_binpath(&replay)
         {
@@ -9315,6 +9316,11 @@ fn network_utility_enumeration_kind(tokens: &[String], command: &str) -> Option<
             .map(|token| token.eq_ignore_ascii_case("query"))
             .unwrap_or(false)
             .then_some("registry-query"),
+        "sc" | "sc.exe" => tokens
+            .get(1)
+            .map(|token| token.eq_ignore_ascii_case("query"))
+            .unwrap_or(false)
+            .then_some("sc-query"),
         "klist" | "klist.exe" => Some("klist"),
         "setspn" | "setspn.exe" => tokens
             .iter()
@@ -9449,6 +9455,8 @@ fn has_enumeration_atom(text: &str) -> bool {
         "net share",
         "reg query",
         "reg.exe query",
+        "sc query",
+        "sc.exe query",
         "klist",
         "setspn",
         "schtasks",
@@ -9519,6 +9527,8 @@ mod enumeration_prefilter_tests {
             "net share",
             r#"reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Run"#,
             r#"reg.exe query HKLM\Software\Microsoft\Windows\CurrentVersion\Run"#,
+            "sc query WinDefend",
+            "sc.exe query state= all",
             "klist tickets",
             "setspn -Q */*",
             "schtasks /query /tn Updater",
