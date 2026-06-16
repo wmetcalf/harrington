@@ -10410,6 +10410,10 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
         )
         .expect("rdp firewall group enable regex")
     });
+    static PS_RDP_FIREWALL_GROUP_ENABLE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?im)^[^\r\n]*?\b(?:Enable|Set)-NetFirewallRule\b[^\r\n]*"#)
+            .expect("powershell rdp firewall group enable regex")
+    });
     let mut push = |technique: &str, target: String, command: String| {
         if env.traits.iter().any(|t| {
             matches!(
@@ -10531,6 +10535,26 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
             "Remote Desktop".to_string(),
             m.as_str().trim().to_string(),
         );
+    }
+    for m in PS_RDP_FIREWALL_GROUP_ENABLE_RE.find_iter(deobfuscated) {
+        let command = m.as_str().trim();
+        let group = powershell_named_argument(command, "-DisplayGroup")
+            .or_else(|| powershell_named_argument(command, "-Group"))
+            .unwrap_or_default();
+        let enabled = if command.to_ascii_lowercase().contains("set-netfirewallrule") {
+            powershell_named_argument(command, "-Enabled")
+                .map(|value| matches!(value.to_ascii_lowercase().as_str(), "true" | "$true" | "1"))
+                .unwrap_or(false)
+        } else {
+            true
+        };
+        if enabled && group.eq_ignore_ascii_case("Remote Desktop") {
+            push(
+                "rdp-firewall-open",
+                "Remote Desktop".to_string(),
+                command.to_string(),
+            );
+        }
     }
 }
 

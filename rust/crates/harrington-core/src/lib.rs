@@ -3630,6 +3630,41 @@ C:\Users\Public\nt.tmp localgroup Administrators backdoor /ADD
     }
 
     #[test]
+    fn powershell_remote_desktop_firewall_group_enable_emits_remote_access_trait() {
+        let script =
+            br#"powershell -Command "Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-firewall-open" && target == "Remote Desktop"
+            )),
+            "missing PowerShell Remote Desktop firewall group enablement: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_remote_desktop_firewall_set_enabled_emits_remote_access_trait() {
+        let script = br#"powershell -Command "Set-NetFirewallRule -DisplayGroup 'Remote Desktop' -Enabled True"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-firewall-open" && target == "Remote Desktop"
+            )),
+            "missing PowerShell Remote Desktop firewall set-enabled: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn file_concealment_preserves_full_command_context() {
         let path = format!(r#"C:\Users\Public\{}\payload.vbs"#, "A".repeat(240));
         let script = format!("attrib +h +s \"{path}\"\r\n");
