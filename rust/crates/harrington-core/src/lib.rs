@@ -5182,6 +5182,22 @@ powershell -Command "New-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Cont
     }
 
     #[test]
+    fn escaped_ampersand_whoami_text_does_not_emit_enumeration() {
+        let script = br#"echo keep ^& whoami /priv"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "whoami-priv" && command == "whoami /priv"
+            )),
+            "escaped ampersand echo text was misread as whoami enumeration: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn remote_desktop_users_group_add_emits_remote_access_trait() {
         let script = br#"net localgroup "Remote Desktop Users" support /add"#;
         let report = analyze(script, &AnalyzeConfig::default());

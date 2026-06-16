@@ -10657,6 +10657,9 @@ fn scan_enumeration(deobfuscated: &str, env: &mut Environment) {
         ]
     });
     for line in deobfuscated.lines() {
+        if command_starts_with_echo(line) {
+            continue;
+        }
         let tokens = split_words(line);
         let Some(command) = tokens.first() else {
             continue;
@@ -10667,19 +10670,24 @@ fn scan_enumeration(deobfuscated: &str, env: &mut Environment) {
         push_enumeration_once(env, kind, line.trim().to_string(), true);
     }
     for (re, kind, multi) in PATTERNS.iter() {
-        let matches: Box<dyn Iterator<Item = regex::Match<'_>> + '_> = if *multi {
-            Box::new(re.find_iter(deobfuscated))
-        } else {
-            Box::new(re.find(deobfuscated).into_iter())
-        };
-        for m in matches {
-            let cmd = m.as_str().trim().to_string();
-            let cmd = if *kind == "wmic-enum" {
-                sanitize_wmic_enum_command(&cmd)
+        for line in deobfuscated
+            .lines()
+            .filter(|line| !command_starts_with_echo(line))
+        {
+            let matches: Box<dyn Iterator<Item = regex::Match<'_>> + '_> = if *multi {
+                Box::new(re.find_iter(line))
             } else {
-                cmd
+                Box::new(re.find(line).into_iter())
             };
-            push_enumeration_once(env, kind, cmd, *multi);
+            for m in matches {
+                let cmd = m.as_str().trim().to_string();
+                let cmd = if *kind == "wmic-enum" {
+                    sanitize_wmic_enum_command(&cmd)
+                } else {
+                    cmd
+                };
+                push_enumeration_once(env, kind, cmd, *multi);
+            }
         }
     }
 }
