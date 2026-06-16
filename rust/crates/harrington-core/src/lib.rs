@@ -14141,9 +14141,11 @@ hh C:/Temp/payload.chm::/index.htm"#,
             &mut env,
         );
         interpret_line("msedge browser-direct.example/lure.pdf", &mut env);
+        interpret_line("chrome https://browser-direct.example/payload[1]", &mut env);
         for expected in [
             "https://explorer-direct.example/privacy/",
             "http://browser-direct.example/lure.pdf",
+            "https://browser-direct.example/payload[1]",
         ] {
             assert!(
                 env.traits
