@@ -650,6 +650,9 @@ fn scan_bitsadmin_deob_text(deobfuscated: &str, env: &mut Environment) {
         .collect();
 
     for line in deobfuscated.lines() {
+        if command_starts_with_echo(line) {
+            continue;
+        }
         let lower = line.to_ascii_lowercase();
         if !(lower.contains("/transfer")
             || lower.contains("/addfile")
@@ -7203,6 +7206,9 @@ fn scan_curl_redirect_deob_text(deobfuscated: &str, env: &mut Environment) {
         .collect();
 
     for line in deobfuscated.lines() {
+        if command_starts_with_echo(line) {
+            continue;
+        }
         let lower = line.to_ascii_lowercase();
         if !lower.contains("curl") || !line.contains('>') {
             continue;
@@ -7257,6 +7263,9 @@ fn scan_curl_deob_text(deobfuscated: &str, env: &mut Environment) {
         .collect();
 
     for line in deobfuscated.lines() {
+        if command_starts_with_echo(line) {
+            continue;
+        }
         let lower = line.to_ascii_lowercase();
         if !lower.contains("curl") {
             continue;
@@ -7490,6 +7499,9 @@ fn scan_wget_deob_text(deobfuscated: &str, env: &mut Environment) {
         .collect();
 
     for line in deobfuscated.lines() {
+        if command_starts_with_echo(line) {
+            continue;
+        }
         let lower = line.to_ascii_lowercase();
         let (wget_text, allow_renamed) = if lower.contains("wget") || lower.contains("get.exe") {
             let wget_pos = lower
@@ -7634,7 +7646,10 @@ fn scan_echoed_curl_deob_text(deobfuscated: &str, env: &mut Environment) {
 
     for line in deobfuscated.lines() {
         let lower = line.to_ascii_lowercase();
-        if !lower.contains("echo") || !lower.contains("curl") || !contains_liberal_url_scheme(line)
+        if !lower.contains("echo")
+            || !lower.contains("curl")
+            || !contains_liberal_url_scheme(line)
+            || !line.contains('>')
         {
             continue;
         }
