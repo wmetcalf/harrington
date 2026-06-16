@@ -8073,7 +8073,7 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
                     "lowriskfiletypes" => [".exe", ".bat", ".cmd", ".reg", ".msi"]
                         .iter()
                         .any(|ext| data.contains(ext)),
-                    "hidezoneinfoonproperties" => data == "1" || data == "0x1",
+                    "hidezoneinfoonproperties" => is_registry_dword_one(&data),
                     "savezoneinformation" => data == "2" || data == "0x2",
                     _ => false,
                 };
