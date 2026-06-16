@@ -3004,6 +3004,26 @@ C:\"Program Files"\WinRAR\WinRAR.exe x -y -inul -p1234 %temp%\up.zip %temp%
     }
 
     #[test]
+    fn seven_zip_x_with_attached_output_dir_emits_archive_extraction_trait() {
+        let script = br#"@echo off
+start /b /min cmd /c C:\ProgramData\7zz.exe x -y C:\ProgramData\tempy.7z -oC:\ProgramData\
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ArchiveExtraction { cmd, src, dst }
+                    if cmd.contains("7zz.exe")
+                        && src == r"C:\ProgramData\tempy.7z"
+                        && dst == r"C:\ProgramData\"
+            )),
+            "7z extraction trait missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_zipfile_extracttodirectory_emits_archive_extraction_trait() {
         let script = br#"@echo off
 powershell -Command "Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::ExtractToDirectory('C:/Users/Public/Document.zip', 'C:/Users/Public/Document')"

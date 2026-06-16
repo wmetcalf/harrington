@@ -12962,6 +12962,7 @@ fn scan_archive_extraction(deobfuscated: &str, env: &mut Environment) {
         && !contains_ascii_keyword(deobfuscated, "ExtractToDirectory")
         && !contains_ascii_keyword(deobfuscated, "tar")
         && !has_rar_archive_atom(deobfuscated)
+        && !has_seven_zip_archive_atom(deobfuscated)
     {
         return;
     }
@@ -13010,34 +13011,65 @@ fn scan_archive_extraction(deobfuscated: &str, env: &mut Environment) {
                 push_archive_extraction(env, segment, src, dst);
             }
         }
-        if !has_rar_archive_atom(line) {
+        if has_rar_archive_atom(line) {
+            for segment in crate::split::split_commands(line) {
+                let segment = segment.trim();
+                if !has_rar_archive_atom(segment) {
+                    continue;
+                }
+                let tokens = split_words(segment);
+                let Some(cmd) = tokens.first() else {
+                    continue;
+                };
+                if !matches!(
+                    basename_lower(strip_quotes(cmd)).as_str(),
+                    "rar" | "rar.exe" | "winrar" | "winrar.exe"
+                ) {
+                    continue;
+                }
+                let Some((src, dst)) = parse_rar_archive_extraction(&tokens) else {
+                    continue;
+                };
+                push_archive_extraction(env, segment, src, dst);
+            }
+        }
+        if !has_seven_zip_archive_atom(line) {
             continue;
         }
         for segment in crate::split::split_commands(line) {
             let segment = segment.trim();
-            if !has_rar_archive_atom(segment) {
+            if !has_seven_zip_archive_atom(segment) {
                 continue;
             }
             let tokens = split_words(segment);
-            let Some(cmd) = tokens.first() else {
-                continue;
-            };
-            if !matches!(
-                basename_lower(strip_quotes(cmd)).as_str(),
-                "rar" | "rar.exe" | "winrar" | "winrar.exe"
-            ) {
-                continue;
+            for idx in 0..tokens.len() {
+                if !is_seven_zip_command(strip_quotes(&tokens[idx])) {
+                    continue;
+                }
+                let Some((src, dst)) = parse_seven_zip_archive_extraction(&tokens[idx..]) else {
+                    continue;
+                };
+                push_archive_extraction(env, segment, src, dst);
             }
-            let Some((src, dst)) = parse_rar_archive_extraction(&tokens) else {
-                continue;
-            };
-            push_archive_extraction(env, segment, src, dst);
         }
     }
 }
 
 fn has_rar_archive_atom(text: &str) -> bool {
     contains_ascii_keyword(text, "rar") || contains_ascii_keyword(text, "WinRAR")
+}
+
+fn has_seven_zip_archive_atom(text: &str) -> bool {
+    contains_ascii_keyword(text, "7z")
+        || contains_ascii_keyword(text, "7za")
+        || contains_ascii_keyword(text, "7zz")
+}
+
+fn is_seven_zip_command(token: &str) -> bool {
+    matches!(
+        basename_lower(token).as_str(),
+        "7z" | "7z.exe" | "7za" | "7za.exe" | "7zz" | "7zz.exe"
+    )
 }
 
 fn parse_zipfile_extract_to_directory(command: &str) -> Vec<(String, String, String)> {
@@ -13170,6 +13202,53 @@ fn parse_rar_archive_extraction(tokens: &[String]) -> Option<(String, String)> {
         positional[0].clone(),
         positional[positional.len() - 1].clone(),
     ))
+}
+
+fn parse_seven_zip_archive_extraction(tokens: &[String]) -> Option<(String, String)> {
+    let mut mode_seen = false;
+    let mut src = None;
+    let mut dst = None;
+    let mut expect_output = false;
+    for token in tokens.iter().skip(1) {
+        let token = strip_quotes(token);
+        if token.is_empty() {
+            continue;
+        }
+        if expect_output {
+            dst = Some(token.to_string());
+            expect_output = false;
+            continue;
+        }
+        if !mode_seen {
+            if matches!(token.to_ascii_lowercase().as_str(), "x" | "e") {
+                mode_seen = true;
+            }
+            continue;
+        }
+        if token.eq_ignore_ascii_case("-o") || token.eq_ignore_ascii_case("/o") {
+            expect_output = true;
+            continue;
+        }
+        if let Some(attached_output) = token
+            .strip_prefix("-o")
+            .or_else(|| token.strip_prefix("/o"))
+        {
+            if !attached_output.is_empty() {
+                dst = Some(strip_quotes(attached_output).to_string());
+            }
+            continue;
+        }
+        if token.starts_with('-') || token.starts_with('/') {
+            continue;
+        }
+        if src.is_none() {
+            src = Some(token.to_string());
+        }
+    }
+    if !mode_seen {
+        return None;
+    }
+    Some((src?, dst?))
 }
 
 fn archive_path_has_unresolved_percent_var(path: &str) -> bool {
