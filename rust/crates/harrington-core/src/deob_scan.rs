@@ -5482,6 +5482,8 @@ fn scan_copied_enumeration_alias_deob_text(deobfuscated: &str, env: &mut Environ
             "whoami.exe" | "whoami" => "whoami.exe",
             "hostname.exe" | "hostname" => "hostname.exe",
             "quser.exe" | "quser" => "quser.exe",
+            "qwinsta.exe" | "qwinsta" => "qwinsta.exe",
+            "qprocess.exe" | "qprocess" => "qprocess.exe",
             "systeminfo.exe" | "systeminfo" => "systeminfo.exe",
             "tasklist.exe" | "tasklist" => "tasklist.exe",
             "wmic.exe" | "wmic" => "wmic.exe",
@@ -9224,11 +9226,6 @@ fn scan_enumeration(deobfuscated: &str, env: &mut Environment) {
                 false,
             ),
             (
-                Regex::new(r"(?i)\b(?:query\s+session|quser)\b").unwrap(),
-                "query-session",
-                false,
-            ),
-            (
                 Regex::new(r"(?i)\bGet-LocalUser\b").unwrap(),
                 "get-localuser",
                 false,
@@ -9300,6 +9297,18 @@ fn network_utility_enumeration_kind(tokens: &[String], command: &str) -> Option<
             .any(|token| token.eq_ignore_ascii_case("/user"))
             .then_some("whoami-user"),
         "hostname" | "hostname.exe" => Some("hostname"),
+        "query" | "query.exe" => {
+            tokens
+                .get(1)
+                .and_then(|token| match token.to_ascii_lowercase().as_str() {
+                    "session" => Some("query-session"),
+                    "user" => Some("query-user"),
+                    "process" => Some("query-process"),
+                    _ => None,
+                })
+        }
+        "quser" | "quser.exe" | "qwinsta" | "qwinsta.exe" => Some("query-session"),
+        "qprocess" | "qprocess.exe" => Some("query-process"),
         "ipconfig" | "ipconfig.exe" => Some("ipconfig"),
         "getmac" | "getmac.exe" => Some("getmac"),
         "netstat" | "netstat.exe" => Some("netstat"),
@@ -9385,7 +9394,11 @@ fn has_enumeration_atom(text: &str) -> bool {
         "whoami",
         "hostname",
         "query session",
+        "query user",
+        "query process",
         "quser",
+        "qwinsta",
+        "qprocess",
         "get-localuser",
         "get-netuser",
         "get-netgroup",
@@ -9433,7 +9446,11 @@ mod enumeration_prefilter_tests {
             "whoami /user",
             "hostname",
             "query session",
+            "query user",
+            "query process",
             "quser",
+            "qwinsta",
+            "qprocess *",
             "Get-LocalUser",
             "Get-NetGroup",
             "systeminfo",

