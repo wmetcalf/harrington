@@ -15909,6 +15909,20 @@ mod for_l_tests {
     }
 
     #[test]
+    fn compact_for_l_iterates_range() {
+        let script = b"for/l %%A in (1,1,3) do echo %%A\r\n";
+        let report = analyze(script, &Config::default());
+        for n in 1..=3 {
+            assert!(
+                report.deobfuscated.contains(&format!("echo {}", n)),
+                "missing echo {}: {}",
+                n,
+                report.deobfuscated
+            );
+        }
+    }
+
+    #[test]
     fn for_l_backward_range() {
         let script = b"for /L %%A in (3,-1,1) do echo %%A\r\n";
         let report = analyze(script, &Config::default());

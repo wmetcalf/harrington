@@ -23,7 +23,7 @@ static FOR_F_RE: Lazy<Regex> = Lazy::new(|| {
 static FOR_L_RE: Lazy<Regex> = Lazy::new(|| {
     // Accept both comma-separated "(11,-1,0)" and space-separated "(11 -1 0)" forms.
     Regex::new(
-        r"(?i)^\s*for\s+/L\s+%%?(?P<var>[A-Za-z])\s+in\s*\(\s*(?P<start>[-+]?\d+)[\s,]+(?P<step>[-+]?\d+)[\s,]+(?P<end>[-+]?\d+)\s*\)\s*do\s+(?P<body>.+)$"
+        r"(?i)^\s*for\s*/L\s+%%?(?P<var>[A-Za-z])\s+in\s*\(\s*(?P<start>[-+]?\d+)[\s,]+(?P<step>[-+]?\d+)[\s,]+(?P<end>[-+]?\d+)\s*\)\s*do\s+(?P<body>.+)$"
     ).expect("for /L regex")
 });
 
