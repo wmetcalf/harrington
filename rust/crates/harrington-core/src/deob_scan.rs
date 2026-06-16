@@ -7747,17 +7747,20 @@ fn scan_aria2_deob_text(deobfuscated: &str, env: &mut Environment) {
         if !matches!(basename_lower(cmd).as_str(), "aria2c" | "aria2c.exe") {
             continue;
         }
-        let Some((url, dst)) = crate::handlers::aria2::parse_aria2c_download(&tokens, env) else {
+        let downloads = crate::handlers::aria2::parse_aria2c_downloads(&tokens, env);
+        if downloads.is_empty() {
             continue;
         };
-        if !known.insert(url.clone()) {
-            continue;
+        for (url, dst) in downloads {
+            if !known.insert(url.clone()) {
+                continue;
+            }
+            env.traits.push(Trait::Download {
+                cmd: line.to_string(),
+                src: url,
+                dst,
+            });
         }
-        env.traits.push(Trait::Download {
-            cmd: line.to_string(),
-            src: url,
-            dst,
-        });
     }
 }
 

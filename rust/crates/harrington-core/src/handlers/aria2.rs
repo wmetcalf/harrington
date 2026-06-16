@@ -9,29 +9,33 @@ use crate::traits::Trait;
 
 pub fn h_aria2c(raw: &str, env: &mut Environment) {
     let tokens = split_words(raw);
-    let Some((url, dst)) = parse_aria2c_download(&tokens, env) else {
+    let downloads = parse_aria2c_downloads(&tokens, env);
+    if downloads.is_empty() {
         return;
     };
 
-    env.traits.push(Trait::Download {
-        cmd: raw.to_string(),
-        src: url.clone(),
-        dst: dst.clone(),
-    });
-    if let Some(dst) = dst {
-        env.modified_filesystem
-            .insert(filesystem_storage_key(&dst), FsEntry::Download { src: url });
-    } else if let Some(name) = url_basename(&url) {
-        env.modified_filesystem
-            .insert(name.to_ascii_lowercase(), FsEntry::Download { src: url });
+    for (url, dst) in downloads {
+        env.traits.push(Trait::Download {
+            cmd: raw.to_string(),
+            src: url.clone(),
+            dst: dst.clone(),
+        });
+        if let Some(dst) = dst {
+            env.modified_filesystem
+                .insert(filesystem_storage_key(&dst), FsEntry::Download { src: url });
+        } else if let Some(name) = url_basename(&url) {
+            env.modified_filesystem
+                .insert(name.to_ascii_lowercase(), FsEntry::Download { src: url });
+        }
     }
 }
 
-pub(crate) fn parse_aria2c_download(
+pub(crate) fn parse_aria2c_downloads(
     tokens: &[String],
     env: &Environment,
-) -> Option<(String, Option<String>)> {
+) -> Vec<(String, Option<String>)> {
     let mut url: Option<String> = None;
+    let mut urls: Vec<String> = Vec::new();
     let mut output: Option<String> = None;
     let mut directory: Option<String> = None;
     let mut i = 1;
@@ -108,14 +112,20 @@ pub(crate) fn parse_aria2c_download(
         }
         if lower == "-i" && tokens.get(i + 1).is_some() {
             if let Some(candidate) = tokens.get(i + 1) {
-                url = normalize_aria2_input_source(candidate.trim_matches(['"', '\'', ')']), env);
+                for found in aria2_input_sources(candidate.trim_matches(['"', '\'', ')']), env) {
+                    url = Some(found.clone());
+                    urls.push(found);
+                }
             }
             i += 2;
             continue;
         }
         if lower == "--input-file" && tokens.get(i + 1).is_some() {
             if let Some(candidate) = tokens.get(i + 1) {
-                url = normalize_aria2_input_source(candidate.trim_matches(['"', '\'', ')']), env);
+                for found in aria2_input_sources(candidate.trim_matches(['"', '\'', ')']), env) {
+                    url = Some(found.clone());
+                    urls.push(found);
+                }
             }
             i += 2;
             continue;
@@ -124,7 +134,10 @@ pub(crate) fn parse_aria2c_download(
             .strip_prefix("-i")
             .filter(|rest| !rest.is_empty() && !rest.starts_with('-'))
         {
-            url = normalize_aria2_input_source(rest.trim_matches(['"', '\'', ')']), env);
+            for found in aria2_input_sources(rest.trim_matches(['"', '\'', ')']), env) {
+                url = Some(found.clone());
+                urls.push(found);
+            }
             i += 1;
             continue;
         }
@@ -132,7 +145,10 @@ pub(crate) fn parse_aria2c_download(
             .or_else(|| strip_ascii_case_insensitive_prefix(token, "--input-file:"))
             .filter(|rest| !rest.is_empty())
         {
-            url = normalize_aria2_input_source(rest.trim_matches(['"', '\'', ')']), env);
+            for found in aria2_input_sources(rest.trim_matches(['"', '\'', ')']), env) {
+                url = Some(found.clone());
+                urls.push(found);
+            }
             i += 1;
             continue;
         }
@@ -141,39 +157,66 @@ pub(crate) fn parse_aria2c_download(
             continue;
         }
         if let Some(normalized) = normalize_url_like_token(token) {
-            url = Some(normalized);
+            url = Some(normalized.clone());
+            urls.push(normalized);
         }
         i += 1;
     }
 
-    let dst = match (directory, output) {
-        (Some(dir), Some(out)) if !is_windows_rooted_path(&out) => {
-            Some(join_windows_path_preserving_separator(&dir, &out))
+    if urls.is_empty() {
+        if let Some(url) = url {
+            urls.push(url);
         }
-        (_, Some(out)) => Some(out),
-        (Some(dir), None) => url
-            .as_deref()
-            .and_then(url_basename)
-            .map(|name| join_windows_path_preserving_separator(&dir, &name)),
-        (None, None) => None,
-    };
-    url.map(|u| (u, dst))
-}
+    }
 
-fn normalize_aria2_input_source(candidate: &str, env: &Environment) -> Option<String> {
-    normalize_url_like_token(candidate).or_else(|| {
-        filesystem_entry_for_path(env, candidate).and_then(|entry| match entry {
-            FsEntry::Content { content, .. } | FsEntry::Decoded { content, .. } => {
-                first_url_in_content(content)
-            }
-            _ => None,
+    let multi = urls.len() > 1;
+    urls.into_iter()
+        .map(|url| {
+            let dst =
+                aria2_destination_for_url(&url, output.as_deref(), directory.as_deref(), multi);
+            (url, dst)
         })
-    })
+        .collect()
 }
 
-fn first_url_in_content(content: &[u8]) -> Option<String> {
+fn aria2_input_sources(candidate: &str, env: &Environment) -> Vec<String> {
+    if let Some(url) = normalize_url_like_token(candidate) {
+        return vec![url];
+    }
+    let urls = filesystem_entry_for_path(env, candidate).and_then(|entry| match entry {
+        FsEntry::Content { content, .. } | FsEntry::Decoded { content, .. } => {
+            urls_in_content(content)
+        }
+        _ => None,
+    });
+    urls.unwrap_or_default()
+}
+
+fn urls_in_content(content: &[u8]) -> Option<Vec<String>> {
     let text = String::from_utf8_lossy(content);
-    text.split_whitespace().find_map(normalize_url_like_token)
+    let urls = text
+        .split_whitespace()
+        .filter_map(normalize_url_like_token)
+        .collect::<Vec<_>>();
+    (!urls.is_empty()).then_some(urls)
+}
+
+fn aria2_destination_for_url(
+    url: &str,
+    output: Option<&str>,
+    directory: Option<&str>,
+    multi: bool,
+) -> Option<String> {
+    match (directory, output) {
+        (Some(dir), Some(out)) if !multi && !is_windows_rooted_path(out) => {
+            Some(join_windows_path_preserving_separator(dir, out))
+        }
+        (_, Some(out)) if !multi => Some(out.to_string()),
+        (Some(dir), _) => {
+            url_basename(url).map(|name| join_windows_path_preserving_separator(dir, &name))
+        }
+        (None, _) => None,
+    }
 }
 
 fn aria2_value_flag(lower: &str) -> bool {

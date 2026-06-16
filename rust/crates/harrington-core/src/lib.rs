@@ -19610,6 +19610,29 @@ mod aria2_tests {
             env.traits
         );
     }
+
+    #[test]
+    fn aria2c_multiple_direct_urls_emit_structured_downloads() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"aria2c https://aria2-multi.example/a.exe https://aria2-multi.example/b.exe"#,
+            &mut env,
+        );
+
+        for expected in [
+            "https://aria2-multi.example/a.exe",
+            "https://aria2-multi.example/b.exe",
+        ] {
+            assert!(
+                env.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Download { src, dst, .. } if src == expected && dst.is_none()
+                )),
+                "aria2c multi-URL source {expected} not structured: {:?}",
+                env.traits
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -41035,6 +41058,45 @@ $v = 'fTp:\\var-liberal.example\stage.dat'"#,
         assert_eq!(
             generic_count, 0,
             "aria2c URL double-emitted as generic: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn aria2c_multiple_urls_in_deob_text_emit_structured_downloads() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"aria2c https://aria2-multi-deob.example/a.exe https://aria2-multi-deob.example/b.exe"#,
+            &mut env,
+        );
+
+        for expected in [
+            "https://aria2-multi-deob.example/a.exe",
+            "https://aria2-multi-deob.example/b.exe",
+        ] {
+            assert!(
+                env.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Download { src, dst, .. } if src == expected && dst.is_none()
+                )),
+                "aria2c deob-text multi-URL source {expected} not structured: {:?}",
+                env.traits
+            );
+        }
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, .. }
+                        if src.contains("aria2-multi-deob.example")
+                )
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "aria2c multi-URL deob text left generic duplicates: {:?}",
             env.traits
         );
     }
