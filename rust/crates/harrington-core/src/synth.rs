@@ -1648,6 +1648,9 @@ fn synth_getmac() -> Vec<String> {
 fn synth_powershell(args: &[&str], env: &Environment) -> Vec<String> {
     let command = args.join(" ");
     let lower = command.to_ascii_lowercase();
+    if let Some(url) = synth_powershell_output_url_literal(&command) {
+        return vec![url];
+    }
     if lower.contains("[system.net.dns]::gethostname()") {
         return vec![env
             .get("COMPUTERNAME")
@@ -1668,6 +1671,42 @@ fn synth_powershell(args: &[&str], env: &Environment) -> Vec<String> {
         return vec!["explorer".to_string()];
     }
     Vec::new()
+}
+
+fn synth_powershell_output_url_literal(command: &str) -> Option<String> {
+    let lower = command.to_ascii_lowercase();
+    for marker in ["write-output", "write-host", "echo", "[console]::writeline"] {
+        let Some(pos) = lower.find(marker) else {
+            continue;
+        };
+        let after = &command[pos + marker.len()..];
+        if let Some(url) = first_url_token(after) {
+            return Some(url);
+        }
+    }
+    None
+}
+
+fn first_url_token(text: &str) -> Option<String> {
+    let http = text.find("http://");
+    let https = text.find("https://");
+    let start = match (http, https) {
+        (Some(a), Some(b)) => a.min(b),
+        (Some(a), None) | (None, Some(a)) => a,
+        (None, None) => return None,
+    };
+    let tail = &text[start..];
+    if text[..start]
+        .chars()
+        .any(|ch| matches!(ch, ';' | '|' | '&' | '\r' | '\n'))
+    {
+        return None;
+    }
+    let end = tail
+        .find(|ch: char| ch.is_whitespace() || matches!(ch, '"' | '\'' | ')' | ']' | '}'))
+        .unwrap_or(tail.len());
+    let url = tail[..end].trim_end_matches(['.', ',', ';']);
+    (!url.is_empty()).then(|| url.to_string())
 }
 
 fn synth_fsutil(args: &[&str]) -> Vec<String> {

