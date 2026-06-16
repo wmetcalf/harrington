@@ -8454,6 +8454,8 @@ fn has_defender_service_process_atom_lower(lower: &str) -> bool {
         "stop-process",
         "spps ",
         "spps\t",
+        "kill ",
+        "kill\t",
     ];
     COMMAND_ATOMS.iter().any(|atom| lower.contains(atom))
 }
