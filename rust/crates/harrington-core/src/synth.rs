@@ -795,6 +795,7 @@ fn filter_findstr(args: &[&str], input: Vec<String>) -> Vec<String> {
     let mut match_end = false;
     let mut match_exact = false;
     let mut line_numbers = false;
+    let mut offsets = false;
     let mut i = 0;
     let limit = args.len();
     while i < limit {
@@ -832,6 +833,7 @@ fn filter_findstr(args: &[&str], input: Vec<String>) -> Vec<String> {
                         'e' => match_end = true,
                         'i' => case_insensitive = true,
                         'n' => line_numbers = true,
+                        'o' => offsets = true,
                         'v' => invert = true,
                         'r' => regex_mode = true,
                         'x' => match_exact = true,
@@ -879,20 +881,23 @@ fn filter_findstr(args: &[&str], input: Vec<String>) -> Vec<String> {
             .into_iter()
             .enumerate()
             .filter_map(|(idx, line)| {
-                let hit = if compiled.is_empty() {
-                    true
+                let hit_offset = if compiled.is_empty() {
+                    Some(0)
                 } else {
-                    compiled.iter().any(|re| re.is_match(&line))
+                    compiled
+                        .iter()
+                        .find_map(|re| re.find(&line).map(|m| m.start()))
                 };
+                let hit = hit_offset.is_some();
                 let matched = if invert { !hit } else { hit };
                 if !matched {
                     return None;
                 }
-                if line_numbers {
-                    Some(format!("{}:{line}", idx + 1))
-                } else {
-                    Some(line)
-                }
+                Some(format_findstr_output_line(
+                    line,
+                    line_numbers.then_some(idx + 1),
+                    offsets.then_some(hit_offset.unwrap_or(0)),
+                ))
             })
             .collect();
     }
@@ -909,38 +914,53 @@ fn filter_findstr(args: &[&str], input: Vec<String>) -> Vec<String> {
                 true
             } else {
                 patterns.iter().any(|p| {
-                    let pat = if case_insensitive {
-                        p.to_ascii_lowercase()
-                    } else {
-                        p.clone()
-                    };
-                    if match_exact || (match_begin && match_end) {
-                        l == pat
-                    } else if match_begin {
-                        l.starts_with(pat.as_str())
-                    } else if match_end {
-                        l.ends_with(pat.as_str())
-                    } else {
-                        l.contains(pat.as_str())
-                    }
+                    findstr_literal_match_offset(
+                        &l,
+                        p,
+                        case_insensitive,
+                        match_begin,
+                        match_end,
+                        match_exact,
+                    )
+                    .is_some()
                 })
             };
             let matched = if invert { !hit } else { hit };
             if !matched {
                 return None;
             }
-            if line_numbers {
-                Some(format!("{}:{line}", idx + 1))
-            } else {
-                Some(line)
-            }
+            let offset = offsets.then(|| {
+                if (invert && !hit) || patterns.is_empty() {
+                    0
+                } else {
+                    patterns
+                        .iter()
+                        .find_map(|p| {
+                            findstr_literal_match_offset(
+                                &l,
+                                p,
+                                case_insensitive,
+                                match_begin,
+                                match_end,
+                                match_exact,
+                            )
+                        })
+                        .unwrap_or(0)
+                }
+            });
+            Some(format_findstr_output_line(
+                line,
+                line_numbers.then_some(idx + 1),
+                offset,
+            ))
         })
         .collect()
 }
 
 fn filter_find(args: &[&str], input: Vec<String>) -> Vec<String> {
-    // find "literal"  — supports /i and /v
+    // find "literal"  — supports /i, /n, and /v
     let mut case_insensitive = false;
+    let mut line_numbers = false;
     let mut invert = false;
     let mut pattern = String::new();
     for a in args {
@@ -948,6 +968,7 @@ fn filter_find(args: &[&str], input: Vec<String>) -> Vec<String> {
             for f in flags.chars() {
                 match f.to_ascii_lowercase() {
                     'i' => case_insensitive = true,
+                    'n' => line_numbers = true,
                     'v' => invert = true,
                     _ => {}
                 }
@@ -966,20 +987,63 @@ fn filter_find(args: &[&str], input: Vec<String>) -> Vec<String> {
     };
     input
         .into_iter()
-        .filter(|line| {
+        .enumerate()
+        .filter_map(|(idx, line)| {
             let l = if case_insensitive {
                 line.to_ascii_lowercase()
             } else {
                 line.clone()
             };
             let hit = l.contains(&p);
-            if invert {
-                !hit
+            let matched = if invert { !hit } else { hit };
+            if !matched {
+                return None;
+            }
+            if line_numbers {
+                Some(format!("[{}]{line}", idx + 1))
             } else {
-                hit
+                Some(line)
             }
         })
         .collect()
+}
+
+fn format_findstr_output_line(
+    line: String,
+    line_number: Option<usize>,
+    offset: Option<usize>,
+) -> String {
+    match (line_number, offset) {
+        (Some(line_number), Some(offset)) => format!("{line_number}:{offset}:{line}"),
+        (Some(line_number), None) => format!("{line_number}:{line}"),
+        (None, Some(offset)) => format!("{offset}:{line}"),
+        (None, None) => line,
+    }
+}
+
+fn findstr_literal_match_offset(
+    line: &str,
+    pattern: &str,
+    case_insensitive: bool,
+    match_begin: bool,
+    match_end: bool,
+    match_exact: bool,
+) -> Option<usize> {
+    let pat = if case_insensitive {
+        pattern.to_ascii_lowercase()
+    } else {
+        pattern.to_string()
+    };
+    if match_exact || (match_begin && match_end) {
+        (line == pat).then_some(0)
+    } else if match_begin {
+        line.starts_with(pat.as_str()).then_some(0)
+    } else if match_end {
+        line.ends_with(pat.as_str())
+            .then_some(line.len().saturating_sub(pat.len()))
+    } else {
+        line.find(pat.as_str())
+    }
 }
 
 fn type_file(path: &str, env: &mut Environment) -> Vec<String> {
