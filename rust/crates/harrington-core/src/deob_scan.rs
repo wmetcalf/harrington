@@ -9543,14 +9543,13 @@ fn scan_account_modification(deobfuscated: &str, env: &mut Environment) {
             .get(0)
             .map(|m| m.as_str().trim().to_string())
             .unwrap_or_default();
-        let positional = powershell_positional_arguments(&command, "Add-LocalGroupMember");
-        let group =
-            powershell_named_argument(&command, "-Group").or_else(|| positional.first().cloned());
+        let mut positional =
+            powershell_positional_arguments(&command, "Add-LocalGroupMember").into_iter();
+        let group = powershell_named_argument(&command, "-Group").or_else(|| positional.next());
         let Some(group) = group else {
             continue;
         };
-        let account =
-            powershell_named_argument(&command, "-Member").or_else(|| positional.get(1).cloned());
+        let account = powershell_named_argument(&command, "-Member").or_else(|| positional.next());
         let Some(account) = account else {
             continue;
         };
