@@ -11309,8 +11309,14 @@ fn scan_powershell_registry_persistence(deobfuscated: &str, env: &mut Environmen
 
     for m in PS_ITEM_PROPERTY_RE.find_iter(deobfuscated) {
         let line = m.as_str().trim();
+        let positional = if find_ascii_case_insensitive(line, "New-ItemProperty", 0).is_some() {
+            powershell_positional_arguments(line, "New-ItemProperty")
+        } else {
+            powershell_positional_arguments(line, "Set-ItemProperty")
+        };
         let Some(path) = powershell_named_argument(line, "-Path")
             .or_else(|| powershell_named_argument(line, "-LiteralPath"))
+            .or_else(|| positional.first().cloned())
         else {
             continue;
         };
@@ -11324,8 +11330,12 @@ fn scan_powershell_registry_persistence(deobfuscated: &str, env: &mut Environmen
         {
             continue;
         }
-        let value_name = powershell_named_argument(line, "-Name").unwrap_or_default();
-        let command = powershell_named_argument(line, "-Value").unwrap_or_default();
+        let value_name = powershell_named_argument(line, "-Name")
+            .or_else(|| positional.get(1).cloned())
+            .unwrap_or_default();
+        let command = powershell_named_argument(line, "-Value")
+            .or_else(|| positional.get(2).cloned())
+            .unwrap_or_default();
         if env.traits.iter().any(|t| {
             matches!(
                 t,

