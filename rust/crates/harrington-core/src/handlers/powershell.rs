@@ -470,7 +470,7 @@ fn record_get_content_set_content_side_effects(body: &str, env: &mut Environment
 fn record_set_content_value_side_effects(body: &str, env: &mut Environment) {
     let tokens = split_words(body);
     for i in 0..tokens.len() {
-        if !is_set_content_token(&tokens[i]) {
+        if !is_direct_content_write_token(&tokens[i]) {
             continue;
         }
         let Some((dst, content)) = powershell_set_content_paths_and_value(&tokens, i + 1) else {
@@ -651,10 +651,10 @@ fn is_content_write_token(token: &str) -> bool {
     )
 }
 
-fn is_set_content_token(token: &str) -> bool {
+fn is_direct_content_write_token(token: &str) -> bool {
     matches!(
         strip_quotes(token).to_ascii_lowercase().as_str(),
-        "set-content" | "sc"
+        "set-content" | "sc" | "add-content" | "ac"
     )
 }
 
