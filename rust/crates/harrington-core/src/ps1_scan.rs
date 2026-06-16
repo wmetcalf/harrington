@@ -9144,6 +9144,7 @@ fn ps_literal_urls_in_download_context(text: &str) -> Vec<String> {
             if !crate::deob_scan::looks_like_liberal_url(&value)
                 || ps_url_inside_non_download_hash_option(text, start)
                 || ps_url_is_non_download_option_value(text, start)
+                || ps_url_is_path_filename_argument(text, start)
             {
                 return None;
             }
@@ -9712,6 +9713,11 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
                     if ps_url_is_non_download_option_value(text, url_match.start()) {
                         continue;
                     }
+                    if matches!(spec.atom_kind, PsUrlRegexAtomKind::UrlScheme)
+                        && ps_url_is_path_filename_argument(text, url_match.start())
+                    {
+                        continue;
+                    }
                     let mut url = clean_ps_url(url_match.as_str());
                     if is_schemeless_ip_url(&url) {
                         url = format!("http://{url}");
@@ -9942,6 +9948,13 @@ fn ps_url_is_non_download_option_value(text: &str, url_start: usize) -> bool {
     ps_non_download_option_before_value(
         before_url.trim_end_matches([' ', '\t', '\r', '\n', '"', '\'', '(', '=', ':']),
     ) || ps_quoted_non_download_option_before_value(before_url)
+}
+
+fn ps_url_is_path_filename_argument(text: &str, url_start: usize) -> bool {
+    let statement = logical_statement_at(text, url_start).to_ascii_lowercase();
+    statement.contains("::getfilename(")
+        || statement.contains("::getfilenamewithoutextension(")
+        || statement.contains("::getextension(")
 }
 
 fn ps_quoted_non_download_option_before_value(before_url: &str) -> bool {
