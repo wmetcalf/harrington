@@ -14705,6 +14705,12 @@ pub fn scan_extrac32_self_extract(deobfuscated: &str, env: &mut Environment) {
         .expect("extrac32 re")
     });
     for caps in EXTRAC32_RE.captures_iter(deobfuscated) {
+        if caps
+            .get(0)
+            .is_some_and(|m| containing_line_starts_with_echo(deobfuscated, m.start()))
+        {
+            continue;
+        }
         let (Some(src), Some(dst)) = (caps.get(1), caps.get(2)) else {
             continue;
         };

