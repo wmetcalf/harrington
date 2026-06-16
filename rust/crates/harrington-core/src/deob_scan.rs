@@ -7483,9 +7483,11 @@ fn scan_curl_deob_text(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
-fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>)> {
+fn parse_wget_like_downloads(tokens: &[String]) -> Vec<(String, Option<String>)> {
     let mut url: Option<String> = None;
+    let mut urls: Vec<String> = Vec::new();
     let mut dst: Option<String> = None;
+    let mut dst_is_output_document = false;
     let mut i = 1;
     while i < tokens.len() {
         let raw_token = tokens[i].trim_matches(['"', '\'', ')']);
@@ -7496,9 +7498,11 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
                 dst = tokens
                     .get(i + 1)
                     .map(|s| s.trim_matches(['"', '\'', ')']).to_string());
+                dst_is_output_document = true;
                 i += 2;
             } else {
                 dst = Some(rest.trim_matches(['"', '\'', ')']).to_string());
+                dst_is_output_document = true;
                 i += 1;
             }
             continue;
@@ -7511,6 +7515,7 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
             dst = tokens
                 .get(i + 1)
                 .map(|s| s.trim_matches(['"', '\'', ')']).to_string());
+            dst_is_output_document = true;
             i += 2;
             continue;
         }
@@ -7518,12 +7523,14 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
             dst = tokens
                 .get(i + 1)
                 .map(|s| s.trim_matches(['"', '\'', ')']).to_string());
+            dst_is_output_document = true;
             i += 2;
             continue;
         }
         if let Some(rest) = raw_token.strip_prefix("-O") {
             if !rest.is_empty() && !rest.starts_with('-') {
                 dst = Some(rest.trim_matches(['"', '\'', ')']).to_string());
+                dst_is_output_document = true;
                 i += 1;
                 continue;
             }
@@ -7533,6 +7540,7 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
         {
             if !rest.is_empty() {
                 dst = Some(rest.trim_matches(['"', '\'', ')']).to_string());
+                dst_is_output_document = true;
             }
             i += 1;
             continue;
@@ -7628,11 +7636,27 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
             continue;
         }
         if let Some(normalized) = normalize_wget_url_token(token) {
-            url = Some(normalized);
+            url = Some(normalized.clone());
+            urls.push(normalized);
         }
         i += 1;
     }
-    url.map(|u| (u, dst))
+    if urls.is_empty() {
+        if let Some(url) = url {
+            urls.push(url);
+        }
+    }
+    let multi = urls.len() > 1;
+    urls.into_iter()
+        .map(|url| {
+            let dst = if multi && dst_is_output_document {
+                None
+            } else {
+                dst.clone()
+            };
+            (url, dst)
+        })
+        .collect()
 }
 
 fn normalize_wget_url_token(token: &str) -> Option<String> {
@@ -7703,17 +7727,20 @@ fn scan_wget_deob_text(deobfuscated: &str, env: &mut Environment) {
         if !allow_renamed && cmd_base != "wget" && cmd_base != "wget.exe" && cmd_base != "get.exe" {
             continue;
         }
-        let Some((url, dst)) = parse_wget_like_download(&tokens) else {
+        let downloads = parse_wget_like_downloads(&tokens);
+        if downloads.is_empty() {
             continue;
         };
-        if !known.insert(url.clone()) {
-            continue;
+        for (url, dst) in downloads {
+            if !known.insert(url.clone()) {
+                continue;
+            }
+            env.traits.push(Trait::Download {
+                cmd: line.to_string(),
+                src: url,
+                dst,
+            });
         }
-        env.traits.push(Trait::Download {
-            cmd: line.to_string(),
-            src: url,
-            dst,
-        });
     }
 }
 

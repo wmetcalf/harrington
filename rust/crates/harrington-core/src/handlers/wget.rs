@@ -9,41 +9,46 @@ use crate::traits::Trait;
 
 pub fn h_wget(raw: &str, env: &mut Environment) {
     let tokens = split_words(raw);
-    let Some((url, dst)) = parse_wget_like_download(&tokens, env) else {
+    let downloads = parse_wget_like_downloads(&tokens, env);
+    if downloads.is_empty() {
         return;
     };
-    let dst_path = dst
-        .as_ref()
-        .map(WgetDestination::as_path)
-        .map(str::to_string);
 
-    env.traits.push(Trait::Download {
-        cmd: raw.to_string(),
-        src: url.clone(),
-        dst: dst_path.clone(),
-    });
-    if let Some(d) = dst_path.as_ref() {
-        env.modified_filesystem.insert(
-            filesystem_storage_key(d),
-            FsEntry::Download { src: url.clone() },
-        );
-    }
-    if let Some(WgetDestination::DirectoryPrefix(prefix)) = dst {
-        if let Some(name) = url_basename(&url) {
-            let path = join_windows_path_preserving_separator(&prefix, &name);
+    for (url, dst) in downloads {
+        let dst_path = dst
+            .as_ref()
+            .map(WgetDestination::as_path)
+            .map(str::to_string);
+
+        env.traits.push(Trait::Download {
+            cmd: raw.to_string(),
+            src: url.clone(),
+            dst: dst_path.clone(),
+        });
+        if let Some(d) = dst_path.as_ref() {
             env.modified_filesystem.insert(
-                filesystem_storage_key(&path),
-                FsEntry::Download { src: url },
+                filesystem_storage_key(d),
+                FsEntry::Download { src: url.clone() },
             );
         }
-    } else if dst_path.is_none() {
-        if let Some(name) = url_basename(&url) {
-            env.modified_filesystem
-                .insert(name.to_ascii_lowercase(), FsEntry::Download { src: url });
+        if let Some(WgetDestination::DirectoryPrefix(prefix)) = dst {
+            if let Some(name) = url_basename(&url) {
+                let path = join_windows_path_preserving_separator(&prefix, &name);
+                env.modified_filesystem.insert(
+                    filesystem_storage_key(&path),
+                    FsEntry::Download { src: url },
+                );
+            }
+        } else if dst_path.is_none() {
+            if let Some(name) = url_basename(&url) {
+                env.modified_filesystem
+                    .insert(name.to_ascii_lowercase(), FsEntry::Download { src: url });
+            }
         }
     }
 }
 
+#[derive(Clone)]
 enum WgetDestination {
     OutputDocument(String),
     DirectoryPrefix(String),
@@ -57,11 +62,12 @@ impl WgetDestination {
     }
 }
 
-fn parse_wget_like_download(
+fn parse_wget_like_downloads(
     tokens: &[String],
     env: &Environment,
-) -> Option<(String, Option<WgetDestination>)> {
+) -> Vec<(String, Option<WgetDestination>)> {
     let mut url: Option<String> = None;
+    let mut urls: Vec<String> = Vec::new();
     let mut dst: Option<WgetDestination> = None;
     let mut i = 1;
     while i < tokens.len() {
@@ -172,8 +178,9 @@ fn parse_wget_like_download(
                 .get(i + 1)
                 .map(|s| s.trim_matches(['"', '\'', ')']))
                 .unwrap_or_default();
-            if let Some(normalized) = normalize_wget_input_source(candidate, env) {
-                url = Some(normalized);
+            for normalized in wget_input_sources(candidate, env) {
+                url = Some(normalized.clone());
+                urls.push(normalized);
             }
             i += 2;
             continue;
@@ -183,18 +190,18 @@ fn parse_wget_like_download(
                 .get(i + 1)
                 .map(|s| s.trim_matches(['"', '\'', ')']))
                 .unwrap_or_default();
-            if let Some(normalized) = normalize_wget_input_source(candidate, env) {
-                url = Some(normalized);
+            for normalized in wget_input_sources(candidate, env) {
+                url = Some(normalized.clone());
+                urls.push(normalized);
             }
             i += 2;
             continue;
         }
         if let Some(rest) = raw_token.strip_prefix("-i") {
             if !rest.is_empty() && !rest.starts_with('-') {
-                if let Some(normalized) =
-                    normalize_wget_input_source(rest.trim_matches(['"', '\'', ')']), env)
-                {
-                    url = Some(normalized);
+                for normalized in wget_input_sources(rest.trim_matches(['"', '\'', ')']), env) {
+                    url = Some(normalized.clone());
+                    urls.push(normalized);
                 }
                 i += 1;
                 continue;
@@ -204,10 +211,9 @@ fn parse_wget_like_download(
             .or_else(|| strip_ascii_case_insensitive_prefix(raw_token, "--input-file:"))
         {
             if !rest.is_empty() {
-                if let Some(normalized) =
-                    normalize_wget_input_source(rest.trim_matches(['"', '\'', ')']), env)
-                {
-                    url = Some(normalized);
+                for normalized in wget_input_sources(rest.trim_matches(['"', '\'', ')']), env) {
+                    url = Some(normalized.clone());
+                    urls.push(normalized);
                 }
             }
             i += 1;
@@ -218,11 +224,30 @@ fn parse_wget_like_download(
             continue;
         }
         if let Some(normalized) = normalize_wget_url_token(raw_token) {
-            url = Some(normalized);
+            url = Some(normalized.clone());
+            urls.push(normalized);
         }
         i += 1;
     }
-    url.map(|u| (u, dst))
+    if urls.is_empty() {
+        if let Some(url) = url {
+            urls.push(url);
+        }
+    }
+    let multi = urls.len() > 1;
+    urls.into_iter()
+        .map(|url| (url, wget_destination_for_count(dst.clone(), multi)))
+        .collect()
+}
+
+fn wget_destination_for_count(
+    dst: Option<WgetDestination>,
+    multi: bool,
+) -> Option<WgetDestination> {
+    match dst {
+        Some(WgetDestination::OutputDocument(_)) if multi => None,
+        other => other,
+    }
 }
 
 fn normalize_wget_url_token(token: &str) -> Option<String> {
@@ -230,20 +255,26 @@ fn normalize_wget_url_token(token: &str) -> Option<String> {
         .or_else(|| crate::deob_scan::normalize_schemeless_domain_path_token(token))
 }
 
-fn normalize_wget_input_source(candidate: &str, env: &Environment) -> Option<String> {
-    normalize_wget_url_token(candidate).or_else(|| {
-        filesystem_entry_for_path(env, candidate).and_then(|entry| match entry {
-            FsEntry::Content { content, .. } | FsEntry::Decoded { content, .. } => {
-                first_wget_url_in_content(content)
-            }
-            _ => None,
-        })
-    })
+fn wget_input_sources(candidate: &str, env: &Environment) -> Vec<String> {
+    if let Some(url) = normalize_wget_url_token(candidate) {
+        return vec![url];
+    }
+    let urls = filesystem_entry_for_path(env, candidate).and_then(|entry| match entry {
+        FsEntry::Content { content, .. } | FsEntry::Decoded { content, .. } => {
+            urls_in_content(content)
+        }
+        _ => None,
+    });
+    urls.unwrap_or_default()
 }
 
-fn first_wget_url_in_content(content: &[u8]) -> Option<String> {
+fn urls_in_content(content: &[u8]) -> Option<Vec<String>> {
     let text = String::from_utf8_lossy(content);
-    text.split_whitespace().find_map(normalize_wget_url_token)
+    let urls = text
+        .split_whitespace()
+        .filter_map(normalize_wget_url_token)
+        .collect::<Vec<_>>();
+    (!urls.is_empty()).then_some(urls)
 }
 
 fn url_basename(url: &str) -> Option<String> {
