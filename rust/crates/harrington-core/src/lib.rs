@@ -9309,6 +9309,21 @@ powershell -Command "Get-CimInstance Win32_ShadowCopy | Remove-CimInstance"
     }
 
     #[test]
+    fn backup_artifact_deletion_emits_anti_recovery_trait() {
+        let script = br#"del /s /f /q d:\*.VHD d:\*.bac d:\*.bak d:\*.wbcat d:\*.bkf d:\Backup*.* d:\backup*.* d:\*.set d:\*.win d:\*.dsk"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AntiRecovery { action } if action == "backup-artifact-delete"
+            )),
+            "backup artifact deletion was not surfaced as anti-recovery: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn vssadmin_resize_shadowstorage_small_maxsize_emits_anti_recovery_trait() {
         let script = br#"vssadmin resize shadowstorage /for=C: /on=C: /maxsize=401MB"#;
         let report = analyze(script, &AnalyzeConfig::default());

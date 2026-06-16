@@ -9579,6 +9579,13 @@ fn scan_anti_recovery(deobfuscated: &str, env: &mut Environment) {
                 Regex::new(r"(?i)\breagentc(?:\.exe)?\s+/disable\b").unwrap(),
                 "reagentc-disable",
             ),
+            (
+                Regex::new(
+                    r"(?i)\b(?:del|erase)\b[^\r\n]*(?:\*\.vhdx?|\*\.bac|\*\.bak|\*\.wbcat|\*\.bkf|\bbackup\*\.\*)",
+                )
+                .unwrap(),
+                "backup-artifact-delete",
+            ),
         ]
     });
     let mut push_action = |action: &str| {
