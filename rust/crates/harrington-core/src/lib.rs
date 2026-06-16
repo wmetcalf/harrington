@@ -3798,6 +3798,24 @@ net start TermService
     }
 
     #[test]
+    fn wmic_rdtoggle_enable_emits_remote_access_trait() {
+        let script =
+            br#"wmic RDTOGGLE WHERE ServerName='%COMPUTERNAME%' call SetAllowTSConnections 1
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-enable" && target == "RDTOGGLE"
+            )),
+            "WMIC RDTOGGLE RDP enablement missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn file_concealment_preserves_full_command_context() {
         let path = format!(r#"C:\Users\Public\{}\payload.vbs"#, "A".repeat(240));
         let script = format!("attrib +h +s \"{path}\"\r\n");

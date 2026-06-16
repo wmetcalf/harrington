@@ -10514,6 +10514,12 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
         Regex::new(r#"(?im)^[^\r\n]*\bnet(?:\.exe)?\s+start\s+TermService\b[^\r\n]*"#)
             .expect("termservice start regex")
     });
+    static WMIC_RDTOGGLE_ENABLE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?im)^[^\r\n]*\bwmic(?:\.exe)?\b[^\r\n]*\bRDTOGGLE\b[^\r\n]*\bSetAllowTSConnections\b[^\r\n]*\b(?:1|true)\b[^\r\n]*"#,
+        )
+        .expect("wmic rdtoggle enable regex")
+    });
     static RDP_FIREWALL_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
             r#"(?im)^[^\r\n]*\bnetsh(?:\.exe)?\s+advfirewall\s+firewall\s+add\s+rule[^\r\n]*(?:Remote Desktop|localport\s*=\s*3389)[^\r\n]*action\s*=\s*allow[^\r\n]*"#,
@@ -10652,6 +10658,13 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
             m.as_str().trim().to_string(),
         );
     }
+    for m in WMIC_RDTOGGLE_ENABLE_RE.find_iter(deobfuscated) {
+        push(
+            "rdp-enable",
+            "RDTOGGLE".to_string(),
+            m.as_str().trim().to_string(),
+        );
+    }
     for m in RDP_FIREWALL_RE.find_iter(deobfuscated) {
         push(
             "rdp-firewall-open",
@@ -10699,6 +10712,7 @@ fn has_remote_access_atom(text: &str) -> bool {
         "fsinglesessionperuser",
         "rdp-tcp",
         "termservice",
+        "rdtoggle",
         "remote desktop",
         "3389",
     ];
