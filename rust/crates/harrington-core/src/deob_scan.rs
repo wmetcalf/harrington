@@ -7830,7 +7830,7 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
             .expect("powershell set-service regex")
     });
     static PS_STOP_PROCESS_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?im)^[^\r\n]*?\b(?:Stop-Process|spps|kill)\b[^\r\n]*"#)
+        Regex::new(r#"(?im)(?:^|[;|&])\s*[^\r\n;|&]*?\b(?:Stop-Process|spps|kill)\b[^\r\n;|&]*"#)
             .expect("powershell stop-process regex")
     });
     static TASKKILL_SECURITY_RE: Lazy<Regex> = Lazy::new(|| {

