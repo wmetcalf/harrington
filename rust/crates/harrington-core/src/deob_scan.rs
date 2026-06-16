@@ -11652,6 +11652,9 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
             .get(0)
             .map(|m| m.as_str().trim().to_string())
             .unwrap_or_default();
+        if command_starts_with_echo(&command) {
+            continue;
+        }
         push("rdp-enable", "Terminal Server".to_string(), command);
     }
     for m in PS_RDP_ENABLE_RE.find_iter(deobfuscated) {

