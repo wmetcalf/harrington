@@ -5994,6 +5994,7 @@ fn scan_copied_schtasks_alias_deob_text(deobfuscated: &str, env: &mut Environmen
         let child_start = env.exec_cmd.len();
         crate::handlers::passthrough::h_schtasks(&replay, env);
         scan_defender_evasion(&replay, env);
+        scan_enumeration(&replay, env);
         let new_children = env.exec_cmd.get(child_start..).unwrap_or_default().to_vec();
         for child in new_children {
             if let Some(cmd_inner) = crate::handlers::cmd::extract_cmd_inner(&child) {
@@ -9314,6 +9315,11 @@ fn network_utility_enumeration_kind(tokens: &[String], command: &str) -> Option<
                 )
             })
             .then_some("setspn-query"),
+        "schtasks" | "schtasks.exe" => tokens
+            .iter()
+            .skip(1)
+            .any(|token| token.eq_ignore_ascii_case("/query"))
+            .then_some("schtasks-query"),
         "whoami" | "whoami.exe" => tokens
             .iter()
             .skip(1)
@@ -9419,6 +9425,7 @@ fn has_enumeration_atom(text: &str) -> bool {
         "net share",
         "klist",
         "setspn",
+        "schtasks",
         "whoami",
         "hostname",
         "query session",
@@ -9481,6 +9488,7 @@ mod enumeration_prefilter_tests {
             "net share",
             "klist tickets",
             "setspn -Q */*",
+            "schtasks /query /tn Updater",
             "whoami /priv",
             "whoami /user",
             "hostname",

