@@ -9709,6 +9709,13 @@ fn powershell_named_argument_list(command: &str, name: &str) -> Vec<String> {
 }
 
 fn split_powershell_list_argument(value: &str) -> impl Iterator<Item = String> + '_ {
+    let mut value = value.trim();
+    if let Some(inner) = value
+        .strip_prefix("@(")
+        .and_then(|value| value.strip_suffix(')'))
+    {
+        value = inner.trim();
+    }
     value
         .split(',')
         .map(|item| item.trim().trim_matches(['"', '\'']).to_string())
