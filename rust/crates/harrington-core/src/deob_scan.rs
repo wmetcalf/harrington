@@ -9619,10 +9619,31 @@ fn scan_account_modification(deobfuscated: &str, env: &mut Environment) {
         }
         env.traits.push(crate::traits::Trait::AccountModification {
             action: action.to_string(),
-            account,
-            group,
-            command,
+            account: account.clone(),
+            group: group.clone(),
+            command: command.clone(),
         });
+        if action == "localgroup-add"
+            && group
+                .as_deref()
+                .is_some_and(|group| group.eq_ignore_ascii_case("Remote Desktop Users"))
+            && !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    crate::traits::Trait::RemoteAccess {
+                        technique,
+                        target,
+                        ..
+                    } if technique == "rdp-user-group-add" && target == &account
+                )
+            })
+        {
+            env.traits.push(crate::traits::Trait::RemoteAccess {
+                technique: "rdp-user-group-add".to_string(),
+                target: account,
+                command,
+            });
+        }
     };
     for caps in NET_USER_ADD_RE.captures_iter(deobfuscated) {
         let account = caps

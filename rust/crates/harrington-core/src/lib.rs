@@ -4349,6 +4349,33 @@ powershell -Command "New-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Cont
     }
 
     #[test]
+    fn remote_desktop_users_group_add_emits_remote_access_trait() {
+        let script = br#"net localgroup "Remote Desktop Users" support /add"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, group, .. }
+                    if action == "localgroup-add"
+                        && account == "support"
+                        && group.as_deref() == Some("Remote Desktop Users")
+            )),
+            "missing account modification for Remote Desktop Users add: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-user-group-add" && target == "support"
+            )),
+            "missing remote access trait for Remote Desktop Users add: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn net_user_active_yes_emits_account_modification_trait() {
         let script = br#"net user defaultuserx /active:yes"#;
         let report = analyze(script, &AnalyzeConfig::default());
