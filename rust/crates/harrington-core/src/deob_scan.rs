@@ -7,8 +7,10 @@
 
 #![allow(clippy::expect_used, clippy::type_complexity, clippy::unwrap_used)]
 
-use crate::env::{Config, Environment};
-use crate::handlers::util::{flag_url_value_after, split_words};
+use crate::env::{Config, Environment, FsEntry};
+use crate::handlers::util::{
+    filesystem_entry_for_path, filesystem_storage_key, flag_url_value_after, split_words,
+};
 use crate::traits::Trait;
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -7282,6 +7284,150 @@ fn scan_curl_redirect_deob_text(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
+fn scan_curl_stdin_config_deob_text(deobfuscated: &str, env: &mut Environment) {
+    let mut known: std::collections::HashSet<String> = env
+        .traits
+        .iter()
+        .filter_map(|t| match t {
+            Trait::Download { src, .. } => Some(src.clone()),
+            _ => None,
+        })
+        .collect();
+
+    for line in deobfuscated.lines() {
+        if command_starts_with_echo(line) {
+            continue;
+        }
+        let Some((left, right)) = split_top_level_pipe(line) else {
+            continue;
+        };
+        let Some(curl_cmd) = curl_stdin_config_command(right) else {
+            continue;
+        };
+        let Some(config_text) = piped_type_file_content(left, env) else {
+            continue;
+        };
+
+        let mut url = None;
+        let mut output = None;
+        let mut output_dir = None;
+        let mut remote_name = false;
+        crate::handlers::curl::apply_curl_config_text(
+            &config_text,
+            &mut url,
+            &mut output,
+            &mut output_dir,
+            &mut remote_name,
+        );
+        let Some(url) = url else {
+            continue;
+        };
+        if !known.insert(url.clone()) {
+            continue;
+        }
+        let dst = output
+            .map(|path| {
+                output_dir
+                    .as_deref()
+                    .filter(|_| !is_windows_rooted_path(&path))
+                    .map(|dir| join_windows_path(dir, &path))
+                    .unwrap_or(path)
+            })
+            .or_else(|| {
+                remote_name.then(|| {
+                    url_basename(&url).map(|name| {
+                        output_dir
+                            .as_deref()
+                            .map(|dir| join_windows_path(dir, &name))
+                            .unwrap_or(name)
+                    })
+                })?
+            });
+        env.traits.push(Trait::Download {
+            cmd: curl_cmd,
+            src: url.clone(),
+            dst: dst.clone(),
+        });
+        if let Some(dst) = dst {
+            env.modified_filesystem
+                .insert(filesystem_storage_key(&dst), FsEntry::Download { src: url });
+        }
+    }
+}
+
+fn split_top_level_pipe(line: &str) -> Option<(&str, &str)> {
+    let mut in_dq = false;
+    let mut in_sq = false;
+    let mut chars = line.char_indices().peekable();
+    while let Some((idx, ch)) = chars.next() {
+        if ch == '^' {
+            chars.next();
+            continue;
+        }
+        if ch == '"' && !in_sq {
+            in_dq = !in_dq;
+            continue;
+        }
+        if ch == '\'' && !in_dq {
+            in_sq = !in_sq;
+            continue;
+        }
+        if ch == '|' && !in_dq && !in_sq {
+            let left = line[..idx].trim();
+            let right = line[idx + ch.len_utf8()..].trim();
+            if !left.is_empty() && !right.is_empty() {
+                return Some((left, right));
+            }
+        }
+    }
+    None
+}
+
+fn curl_stdin_config_command(right: &str) -> Option<String> {
+    let tokens = split_words(right);
+    let cmd_idx = tokens
+        .iter()
+        .position(|token| matches!(basename_lower(token).as_str(), "curl" | "curl.exe"))?;
+    let mut i = cmd_idx + 1;
+    while i < tokens.len() {
+        let token = tokens[i].trim_matches(['"', '\'']);
+        let lower = token.to_ascii_lowercase();
+        if (token == "-K" || lower == "--config")
+            && tokens
+                .get(i + 1)
+                .is_some_and(|v| v.trim_matches(['"', '\'']) == "-")
+        {
+            return Some(tokens[cmd_idx..].join(" "));
+        }
+        if token == "-K-" || lower == "--config=-" || lower == "--config:-" {
+            return Some(tokens[cmd_idx..].join(" "));
+        }
+        i += 1;
+    }
+    None
+}
+
+fn piped_type_file_content(left: &str, env: &Environment) -> Option<String> {
+    let tokens = split_words(left);
+    let cmd_idx = tokens.iter().position(|token| {
+        matches!(
+            basename_lower(token).as_str(),
+            "type" | "more" | "cat" | "gc" | "get-content"
+        )
+    })?;
+    let path = tokens
+        .iter()
+        .skip(cmd_idx + 1)
+        .map(|token| token.trim_matches(['"', '\'']))
+        .find(|token| !token.is_empty() && !token.starts_with(['/', '-', '<', '>']))?;
+    let entry = filesystem_entry_for_path(env, path)?;
+    let content = match entry {
+        FsEntry::Content { content, .. } | FsEntry::Decoded { content, .. } => content,
+        _ => return None,
+    };
+    Some(String::from_utf8_lossy(content).into_owned())
+}
+
 fn scan_curl_deob_text(deobfuscated: &str, env: &mut Environment) {
     let mut known: std::collections::HashSet<String> = env
         .traits
@@ -13286,6 +13432,9 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     });
     scan_step!("curl_redirect_deob_text", {
         scan_curl_redirect_deob_text(deobfuscated, env);
+    });
+    scan_step!("curl_stdin_config_deob_text", {
+        scan_curl_stdin_config_deob_text(deobfuscated, env);
     });
     scan_step!("curl_deob_text", {
         scan_curl_deob_text(deobfuscated, env);

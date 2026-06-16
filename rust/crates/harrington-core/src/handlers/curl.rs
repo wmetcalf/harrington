@@ -269,6 +269,16 @@ fn apply_curl_config_file(
         _ => return,
     };
     let text = String::from_utf8_lossy(content);
+    apply_curl_config_text(&text, url, output, output_dir, remote_name);
+}
+
+pub(crate) fn apply_curl_config_text(
+    text: &str,
+    url: &mut Option<String>,
+    output: &mut Option<String>,
+    output_dir: &mut Option<String>,
+    remote_name: &mut bool,
+) {
     for line in text.lines() {
         let Some((key, value)) = curl_config_key_value(line) else {
             continue;

