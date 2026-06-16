@@ -8477,11 +8477,11 @@ fn scan_lateral_movement(deobfuscated: &str, env: &mut Environment) {
     static WMIC_NODE_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?i)\bwmic[^\r\n]*?/node:(?:"([^"]+)"|(\S+))"#).expect("wmic /node re")
     });
-    static INVOKE_CMD_RE: Lazy<Regex> = Lazy::new(|| {
+    static PS_REMOTING_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r#"(?i)\bInvoke-Command\b[^\r\n]*?-ComputerName\s+(?:"([^"]+)"|'([^']+)'|(\S+))"#,
+            r#"(?i)\b(Invoke-Command|icm|Enter-PSSession|etsn|New-PSSession|nsn)\b[^\r\n]*?-ComputerName(?:\s*[:=]\s*|\s+)(?:"+([^"'\s;|&}]+)"+|'([^']+)'|([^,\s;|&}]+))"#,
         )
-        .expect("invoke-cmd re")
+        .expect("powershell remoting re")
     });
     static SCHTASKS_S_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?i)\bschtasks[^\r\n]*?\s/s\s+(?:"([^"]+)"|(\S+))"#).expect("schtasks /s re")
@@ -8523,14 +8523,25 @@ fn scan_lateral_movement(deobfuscated: &str, env: &mut Environment) {
             .unwrap_or_default();
         push("wmic", host);
     }
-    for c in INVOKE_CMD_RE.captures_iter(deobfuscated) {
-        let host = c
+    for c in PS_REMOTING_RE.captures_iter(deobfuscated) {
+        let tool = match c
             .get(1)
-            .or_else(|| c.get(2))
+            .map(|m| m.as_str().to_ascii_lowercase())
+            .unwrap_or_default()
+            .as_str()
+        {
+            "icm" | "invoke-command" => "Invoke-Command",
+            "etsn" | "enter-pssession" => "Enter-PSSession",
+            "nsn" | "new-pssession" => "New-PSSession",
+            _ => "Invoke-Command",
+        };
+        let host = c
+            .get(2)
             .or_else(|| c.get(3))
+            .or_else(|| c.get(4))
             .map(|m| m.as_str().to_string())
             .unwrap_or_default();
-        push("Invoke-Command", host);
+        push(tool, host);
     }
     for c in SCHTASKS_S_RE.captures_iter(deobfuscated) {
         let host = c

@@ -3601,6 +3601,32 @@ C:\Users\Public\nt.tmp localgroup Administrators backdoor /ADD
     }
 
     #[test]
+    fn powershell_remoting_lateral_movement_forms_emit_traits() {
+        let script =
+            br#"powershell -Command "icm -ComputerName:target.example -ScriptBlock { hostname }"
+powershell -Command "Enter-PSSession -ComputerName ""adminbox.example"""
+powershell -Command "New-PSSession -ComputerName 'filesrv.example'"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        for (tool, host) in [
+            ("Invoke-Command", "target.example"),
+            ("Enter-PSSession", "adminbox.example"),
+            ("New-PSSession", "filesrv.example"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::LateralMovement { tool: t, target_host }
+                        if t == tool && target_host == host
+                )),
+                "missing PowerShell remoting lateral movement {tool} -> {host}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn copied_anti_recovery_aliases_emit_traits() {
         let script = br#"copy C:\Windows\System32\vssadmin.exe C:\Users\Public\vs.tmp
 C:\Users\Public\vs.tmp delete shadows /all /quiet
