@@ -7789,11 +7789,9 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
         )
         .expect("powershell stop-service security regex")
     });
-    static PS_SET_SERVICE_DISABLED_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(
-            r#"(?im)^[^\r\n]*?\bSet-Service\b[^\r\n]*(?:-Name\s+|-DisplayName\s+)?["']?(WinDefend|MsMpSvc|wuauserv|MpsSvc|WdNisSvc|SecurityHealthService|Sense)["']?\b[^\r\n]*-StartupType\s+Disabled\b[^\r\n]*"#,
-        )
-        .expect("powershell set-service disabled regex")
+    static PS_SET_SERVICE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?im)^[^\r\n]*?\bSet-Service\b[^\r\n]*"#)
+            .expect("powershell set-service regex")
     });
     static TASKKILL_SECURITY_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?i)\btaskkill(?:\.exe)?\b[^\r\n]*?/im\s+"?(SecurityHealthSystray|SecurityHealthService|WindowsDefender|MsMpEng|NisSrv|MpCmdRun|MBAMService|MBAMTray|avastui|avgui|egui|ekrn|bdservicehost|SentinelAgent|CrowdStrike|CSFalconService)\.exe"?\b[^\r\n]*"#)
@@ -7978,12 +7976,24 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
                     .unwrap_or_default();
                 push("powershell-stop-service", service);
             }
-            for caps in PS_SET_SERVICE_DISABLED_RE.captures_iter(deobfuscated) {
-                let service = caps
-                    .get(1)
-                    .map(|m| m.as_str().to_string())
-                    .unwrap_or_default();
-                push("powershell-service-disabled", service);
+            for m in PS_SET_SERVICE_RE.find_iter(deobfuscated) {
+                let command = m.as_str().trim();
+                let startup_type = powershell_named_argument(command, "-StartupType")
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+                if startup_type != "disabled" {
+                    continue;
+                }
+                let positional = powershell_positional_arguments(command, "Set-Service");
+                let Some(service) = powershell_named_argument(command, "-Name")
+                    .or_else(|| powershell_named_argument(command, "-DisplayName"))
+                    .or_else(|| positional.into_iter().next())
+                else {
+                    continue;
+                };
+                if is_security_service_name(&service) {
+                    push("powershell-service-disabled", service);
+                }
             }
             for caps in TASKKILL_SECURITY_RE.captures_iter(deobfuscated) {
                 let process = caps
@@ -8139,6 +8149,22 @@ fn is_encoded_security_product_remove_noise(target: &str) -> bool {
         .filter(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'+' | b'=' | b'@' | b'#'))
         .count();
     encodedish.saturating_mul(100) >= target.len() * 90
+}
+
+fn is_security_service_name(service: &str) -> bool {
+    matches!(
+        service
+            .trim_matches(['"', '\''])
+            .to_ascii_lowercase()
+            .as_str(),
+        "windefend"
+            | "msmpsvc"
+            | "wuauserv"
+            | "mpssvc"
+            | "wdnissvc"
+            | "securityhealthservice"
+            | "sense"
+    )
 }
 
 #[cfg(test)]
