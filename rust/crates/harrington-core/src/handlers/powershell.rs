@@ -439,6 +439,14 @@ fn record_get_content_set_content_side_effects(body: &str, env: &mut Environment
         let Some((src, pipe_idx)) = powershell_content_path_arg(&tokens, i + 1) else {
             continue;
         };
+        if let Some(dst) = powershell_stdout_redirect_destination(&tokens, pipe_idx + 1) {
+            let Some(entry) = tracked_transfer_entry(&src, env) else {
+                continue;
+            };
+            env.modified_filesystem
+                .insert(filesystem_storage_key(&dst), entry);
+            continue;
+        }
         let Some(set_idx) = tokens
             .iter()
             .enumerate()
@@ -623,11 +631,28 @@ fn is_content_write_token(token: &str) -> bool {
     )
 }
 
+fn powershell_stdout_redirect_destination(tokens: &[String], start: usize) -> Option<String> {
+    let token = strip_quotes(tokens.get(start)?);
+    for op in [">>", "1>>", ">", "1>"] {
+        if token == op {
+            return tokens
+                .get(start + 1)
+                .map(|value| strip_quotes(value).to_string());
+        }
+        if let Some(dst) = token.strip_prefix(op) {
+            if !dst.is_empty() {
+                return Some(strip_quotes(dst).to_string());
+            }
+        }
+    }
+    None
+}
+
 fn powershell_content_path_arg(tokens: &[String], start: usize) -> Option<(String, usize)> {
     let mut i = start;
     while i < tokens.len() {
         let token = strip_quotes(&tokens[i]);
-        if token == "|" || token == ";" {
+        if token == "|" || token == ";" || token.starts_with('>') || token.starts_with("1>") {
             return None;
         }
         let lower = token.to_ascii_lowercase();
