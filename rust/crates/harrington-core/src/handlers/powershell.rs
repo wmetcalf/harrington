@@ -419,6 +419,7 @@ fn content_from_entry(entry: Option<&FsEntry>) -> Option<Vec<u8>> {
 fn record_powershell_side_effects(body: &str, env: &mut Environment) {
     record_downloadfile_side_effects(body, env);
     record_set_content_value_side_effects(body, env);
+    record_quoted_literal_redirect_side_effects(body, env);
     record_file_transfer_side_effects(body, env);
     record_rename_item_side_effects(body, env);
     record_get_content_set_content_side_effects(body, env);
@@ -495,6 +496,66 @@ fn write_powershell_content(env: &mut Environment, dst: &str, content: Vec<u8>, 
     }
     env.modified_filesystem
         .insert(key, FsEntry::Content { content, append });
+}
+
+fn record_quoted_literal_redirect_side_effects(body: &str, env: &mut Environment) {
+    let Some((content, dst, append)) = powershell_quoted_literal_redirect(body) else {
+        return;
+    };
+    write_powershell_content(env, &dst, content.into_bytes(), append);
+}
+
+fn powershell_quoted_literal_redirect(body: &str) -> Option<(String, String, bool)> {
+    let bytes = body.as_bytes();
+    for (idx, byte) in bytes.iter().enumerate() {
+        if *byte != b'>' {
+            continue;
+        }
+        if idx > 0 && bytes.get(idx - 1) == Some(&b'2') {
+            continue;
+        }
+        let op_start = if idx > 0 && bytes.get(idx - 1) == Some(&b'1') {
+            idx - 1
+        } else {
+            idx
+        };
+        let append = bytes.get(idx + 1) == Some(&b'>');
+        let dst_start = idx + if append { 2 } else { 1 };
+        let content = powershell_quoted_literal_value(body[..op_start].trim_end())?;
+        let dst = split_words(&body[dst_start..])
+            .first()
+            .map(|value| strip_quotes(value).to_string())?;
+        if dst.is_empty() {
+            continue;
+        }
+        return Some((content, dst, append));
+    }
+    None
+}
+
+fn powershell_quoted_literal_value(token: &str) -> Option<String> {
+    let token = token.trim();
+    if token.len() < 2 {
+        return None;
+    }
+    for quote in ['\'', '"'] {
+        if token.starts_with(quote) && token.ends_with(quote) {
+            return Some(token[quote.len_utf8()..token.len() - quote.len_utf8()].to_string());
+        }
+        if token.ends_with(quote) {
+            if token[..token.len() - quote.len_utf8()].contains(quote) {
+                continue;
+            }
+            return Some(token[..token.len() - quote.len_utf8()].to_string());
+        }
+        if token.starts_with(quote) {
+            if token[quote.len_utf8()..].contains(quote) {
+                continue;
+            }
+            return Some(token[quote.len_utf8()..].to_string());
+        }
+    }
+    None
 }
 
 fn record_file_transfer_side_effects(body: &str, env: &mut Environment) {
