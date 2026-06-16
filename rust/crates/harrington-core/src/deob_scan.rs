@@ -9008,6 +9008,12 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
         Regex::new(r#"(?im)^[^\r\n]*?\b(?:Clear-History|clhy)\b[^\r\n]*"#)
             .expect("powershell clear-history regex")
     });
+    static PS_HISTORY_DISABLE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?im)^[^\r\n]*?\bSet-PSReadLineOption\b[^\r\n]*?-HistorySaveStyle(?:\s*[:=]\s*|\s+)SaveNothing\b[^\r\n]*"#,
+        )
+        .expect("powershell history disable regex")
+    });
 
     fn clean_token(token: &str) -> String {
         token
@@ -9226,6 +9232,15 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
         );
     }
 
+    for m in PS_HISTORY_DISABLE_RE.find_iter(deobfuscated) {
+        let command = m.as_str().trim().to_string();
+        push(
+            "powershell-history-disable",
+            "PowerShellHistory".to_string(),
+            command,
+        );
+    }
+
     for caps in PS_REMOVE_ITEM_RE.captures_iter(deobfuscated) {
         let Some(m) = caps.get(0) else {
             continue;
@@ -9310,6 +9325,8 @@ fn has_evidence_cleanup_atom(text: &str) -> bool {
         "clear-recyclebin",
         "clear-history",
         "clhy",
+        "set-psreadlineoption",
+        "historysavestyle",
         "remove-item",
     ]
     .iter()
