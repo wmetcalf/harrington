@@ -9013,15 +9013,15 @@ pub(crate) fn ps_downloadfile_calls(text: &str) -> Vec<(String, Option<String>)>
         }) else {
             continue;
         };
-        if !seen.insert(url.clone()) {
-            continue;
-        }
         let dst = parts.get(1).and_then(|arg| {
             ps_literal_arg(arg).or_else(|| {
                 let bindings = bindings.get_or_insert_with(|| ps_string_bindings(text));
                 ps_variable_arg(arg, bindings)
             })
         });
+        if !seen.insert((url.clone(), dst.clone())) {
+            continue;
+        }
         out.push((url, dst));
     }
     out

