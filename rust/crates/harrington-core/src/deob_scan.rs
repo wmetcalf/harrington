@@ -9005,7 +9005,7 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
             .expect("powershell clear-recyclebin regex")
     });
     static PS_CLEAR_HISTORY_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?im)^[^\r\n]*?\bClear-History\b[^\r\n]*"#)
+        Regex::new(r#"(?im)^[^\r\n]*?\b(?:Clear-History|clhy)\b[^\r\n]*"#)
             .expect("powershell clear-history regex")
     });
 
@@ -9301,6 +9301,7 @@ fn has_evidence_cleanup_atom(text: &str) -> bool {
         "clear-eventlog",
         "clear-recyclebin",
         "clear-history",
+        "clhy",
         "remove-item",
     ]
     .iter()

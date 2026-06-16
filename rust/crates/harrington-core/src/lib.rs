@@ -7197,6 +7197,23 @@ for /f "tokens=1 delims=:" %%A in ('curl -# -k "http://www.geoplugin.net/php.gp?
     }
 
     #[test]
+    fn powershell_clear_history_alias_emits_evidence_cleanup_trait() {
+        let script = br#"powershell -Command "clhy""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::EvidenceCleanup { action, target, .. }
+                    if action == "powershell-history-delete"
+                        && target == "PowerShellHistory"
+            )),
+            "PowerShell Clear-History alias was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn browser_history_file_delete_emits_evidence_cleanup_trait() {
         let script = br#"del "%LOCALAPPDATA%\Google\Chrome\User Data\Default\History""#;
         let report = analyze(script, &AnalyzeConfig::default());
