@@ -395,6 +395,9 @@ fn reg_data_value(raw: &str) -> Option<String> {
             let value_start = value_span.start;
             let value = raw[value_start..].trim_start();
             if value.starts_with(['"', '\'']) {
+                if let Some(span_value) = parse_reg_data_span_value(raw, value_span) {
+                    return Some(span_value);
+                }
                 return parse_flag_value(raw, value_start);
             }
             let value_end = reg_unquoted_value_end(raw, &spans[idx + 1..]);
@@ -411,6 +414,9 @@ fn reg_data_value(raw: &str) -> Option<String> {
             let value_start = span.end - rest.len();
             let value = raw[value_start..].trim_start();
             if value.starts_with(['"', '\'']) {
+                if let Some(span_value) = parse_reg_data_span_value(raw, &(value_start..span.end)) {
+                    return Some(span_value);
+                }
                 return parse_flag_value(raw, value_start);
             }
             let value_end = reg_unquoted_value_end(raw, &spans[idx..]);
@@ -418,6 +424,22 @@ fn reg_data_value(raw: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn parse_reg_data_span_value(raw: &str, span: &std::ops::Range<usize>) -> Option<String> {
+    let value = raw[span.clone()].trim();
+    let quote = value.as_bytes().first().copied()?;
+    if quote != b'"' && quote != b'\'' {
+        return None;
+    }
+    if value.as_bytes().last().copied() != Some(quote) {
+        return None;
+    }
+    let inner = &value[1..value.len() - 1];
+    if !inner.contains(quote as char) {
+        return None;
+    }
+    Some(inner.to_string())
 }
 
 fn reg_unquoted_value_end(raw: &str, value_spans: &[std::ops::Range<usize>]) -> usize {
@@ -1428,6 +1450,44 @@ mod tests {
         .expect("attached reg data should parse");
 
         assert_eq!(command, "cmd.exe /c echo hi");
+    }
+
+    #[test]
+    fn reg_data_value_preserves_raw_nested_quotes_until_force_option() {
+        let command = reg_data_value(
+            r#"reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\RunOnce" /v "CRUCIAL" /t REG_SZ /d "cmd.exe /c "C:\Users\Public\watch.bat"" /f"#,
+        )
+        .expect("nested quoted reg data should parse");
+
+        assert_eq!(command, r#"cmd.exe /c "C:\Users\Public\watch.bat""#);
+    }
+
+    #[test]
+    fn reg_add_nested_quoted_runonce_data_is_persisted_and_queued() {
+        let mut env = Environment::new(&Config::default());
+        h_reg(
+            r#"reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\RunOnce" /v "CRUCIAL" /t REG_SZ /d "cmd.exe /c "C:\Users\Public\watch.bat"" /f"#,
+            &mut env,
+        );
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { hive, value_name, command, .. }
+                    if hive == "HKCU"
+                        && value_name == "CRUCIAL"
+                        && command == r#"cmd.exe /c "C:\Users\Public\watch.bat""#
+            )),
+            "nested quoted RunOnce command was not captured fully: {:?}",
+            env.traits
+        );
+        assert!(
+            env.exec_cmd
+                .iter()
+                .any(|cmd| cmd == r#"C:\Users\Public\watch.bat"#),
+            "nested quoted RunOnce cmd child was not queued: {:?}",
+            env.exec_cmd
+        );
     }
 
     #[test]
