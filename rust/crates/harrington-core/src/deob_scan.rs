@@ -64,7 +64,7 @@ static BITSADMIN_WORD_RE: Lazy<Regex> =
 #[allow(clippy::expect_used)]
 static CMD_URL_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?i)\bset\s+"?([A-Za-z_][A-Za-z0-9_.$-]*)\s*=\s*['"]?((?:https?|ftp|file):[\x2f\x5c]+[^"'\s]+)"#,
+        r#"(?i)\bset\s+"?([A-Za-z_][A-Za-z0-9_.$-]*)\s*=\s*['"]?((?:https?|ftp|file):[\x2f\x5c]+[^\s"'<>(){}|^&;`,]+)"#,
     )
     .expect("cmd URL variable regex")
 });
@@ -72,7 +72,7 @@ static CMD_URL_VAR_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static CMD_SCHEMELESS_URL_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?i)\bset\s+"?([A-Za-z_][A-Za-z0-9_.$-]*url[A-Za-z0-9_.$-]*)\s*=\s*['"]?([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/[^\s"']+)"#,
+        r#"(?i)\bset\s+"?([A-Za-z_][A-Za-z0-9_.$-]*url[A-Za-z0-9_.$-]*)\s*=\s*['"]?([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/[^\s"'<>(){}|^&;`,]+)"#,
     )
     .expect("cmd schemeless URL variable regex")
 });
@@ -8797,7 +8797,7 @@ fn scan_remote_exec(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
     static WINRM_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?i)\b(?:winrm(?:\.cmd)?\s+(?:invoke|i)\s+[^\r\n]*?(?:[-/]r(?:emote)?[:=]?\s*)(\S+)|winrs\s+[-/]r(?:emote)?[:=]?\s*(\S+)|Invoke-WmiMethod\b[^\r\n]*?-ComputerName\s+(\S+)|Set-WmiInstance\b[^\r\n]*?-ComputerName\s+(\S+))"#)
+        Regex::new(r#"(?i)\b(?:winrm(?:\.(?:cmd|exe))?\s+(?:invoke|i)\s+[^\r\n]*?(?:[-/]r(?:emote)?[:=]?\s*)(\S+)|winrs(?:\.exe)?\s+[-/]r(?:emote)?[:=]?\s*(\S+)|Invoke-WmiMethod\b[^\r\n]*?-ComputerName\s+(\S+)|Set-WmiInstance\b[^\r\n]*?-ComputerName\s+(\S+))"#)
             .expect("winrm re")
     });
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
