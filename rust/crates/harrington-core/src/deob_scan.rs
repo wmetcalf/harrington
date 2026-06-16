@@ -11441,6 +11441,10 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
         )
             .expect("termservice start regex")
     });
+    static PS_TERMSERVICE_START_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?im)^[^\r\n]*?\b(?:Start-Service|sasv)\b[^\r\n]*"#)
+            .expect("powershell termservice start regex")
+    });
     static WMIC_RDTOGGLE_ENABLE_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
             r#"(?im)^[^\r\n]*\bwmic(?:\.exe)?\b[^\r\n]*\bRDTOGGLE\b[^\r\n]*\bSetAllowTSConnections\b[^\r\n]*\b(?:1|true)\b[^\r\n]*"#,
@@ -11603,6 +11607,32 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
             "TermService".to_string(),
             m.as_str().trim().to_string(),
         );
+    }
+    for m in PS_TERMSERVICE_START_RE.find_iter(deobfuscated) {
+        let command = m.as_str().trim();
+        let names = powershell_named_argument_list(command, "-Name");
+        let mut candidates: Vec<String> = names
+            .iter()
+            .flat_map(|name| split_powershell_list_argument(name))
+            .collect();
+        if candidates.is_empty() {
+            let positional = if find_ascii_case_insensitive(command, "Start-Service", 0).is_some() {
+                powershell_positional_arguments(command, "Start-Service")
+            } else {
+                powershell_positional_arguments(command, "sasv")
+            };
+            candidates.extend(positional);
+        }
+        if candidates
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case("TermService"))
+        {
+            push(
+                "rdp-service-enable",
+                "TermService".to_string(),
+                command.to_string(),
+            );
+        }
     }
     for m in WMIC_RDTOGGLE_ENABLE_RE.find_iter(deobfuscated) {
         push(

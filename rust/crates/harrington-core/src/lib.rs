@@ -4665,6 +4665,38 @@ reg add "HKLM\system\CurrentControlSet\Control\Terminal Server\WinStations\RDP-T
     }
 
     #[test]
+    fn powershell_start_service_termservice_emits_remote_access_trait() {
+        let script = br#"powershell -Command "Start-Service -Name TermService""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-service-enable" && target == "TermService"
+            )),
+            "PowerShell Start-Service TermService was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_sasv_termservice_emits_remote_access_trait() {
+        let script = br#"powershell -Command "sasv TermService""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-service-enable" && target == "TermService"
+            )),
+            "PowerShell sasv TermService was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_terminal_server_registry_writes_emit_remote_access_traits() {
         let script = br#"powershell -Command "Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0"
 powershell -Command "New-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name AllowTSConnections -PropertyType DWord -Value 1 -Force"
@@ -40438,8 +40470,9 @@ mod ps_alias_tests {
 
     #[test]
     fn wmi_and_service_aliases_expanded() {
-        let out =
-            expand_aliases("gwmi Win32_ShadowCopy | rwmi; gcim AntiVirusProduct; gsv WinDefend");
+        let out = expand_aliases(
+            "gwmi Win32_ShadowCopy | rwmi; gcim AntiVirusProduct; gsv WinDefend; sasv TermService",
+        );
         assert!(
             out.contains("Get-WmiObject Win32_ShadowCopy"),
             "got: {}",
@@ -40452,12 +40485,14 @@ mod ps_alias_tests {
             out
         );
         assert!(out.contains("Get-Service WinDefend"), "got: {}", out);
+        assert!(out.contains("Start-Service TermService"), "got: {}", out);
     }
 
     #[test]
     fn gate_allows_wmi_and_service_alias_only_payload() {
         use crate::ps_alias::expand_aliases_if_ps;
-        let out = expand_aliases_if_ps("gwmi Win32_ShadowCopy | rwmi; gsv WinDefend");
+        let out =
+            expand_aliases_if_ps("gwmi Win32_ShadowCopy | rwmi; gsv WinDefend; sasv TermService");
         assert!(
             out.contains("Get-WmiObject Win32_ShadowCopy"),
             "got: {}",
@@ -40465,6 +40500,7 @@ mod ps_alias_tests {
         );
         assert!(out.contains("Remove-WmiObject"), "got: {}", out);
         assert!(out.contains("Get-Service WinDefend"), "got: {}", out);
+        assert!(out.contains("Start-Service TermService"), "got: {}", out);
     }
 
     #[test]
