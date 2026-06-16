@@ -5656,6 +5656,7 @@ fn scan_copied_reg_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
         crate::handlers::passthrough::h_reg(&replay, env);
         scan_defender_evasion(&replay, env);
         scan_remote_access(&replay, env);
+        scan_enumeration(&replay, env);
         let new_children = env.exec_cmd.get(child_start..).unwrap_or_default().to_vec();
         for child in new_children {
             replay_copied_alias_child_command(&child, env);
@@ -9308,6 +9309,11 @@ fn network_utility_enumeration_kind(tokens: &[String], command: &str) -> Option<
                     _ => None,
                 })
         }
+        "reg" | "reg.exe" => tokens
+            .get(1)
+            .map(|token| token.eq_ignore_ascii_case("query"))
+            .unwrap_or(false)
+            .then_some("registry-query"),
         "klist" | "klist.exe" => Some("klist"),
         "setspn" | "setspn.exe" => tokens
             .iter()
@@ -9439,6 +9445,8 @@ fn has_enumeration_atom(text: &str) -> bool {
         "net accounts",
         "net config",
         "net share",
+        "reg query",
+        "reg.exe query",
         "klist",
         "setspn",
         "schtasks",
@@ -9506,6 +9514,8 @@ mod enumeration_prefilter_tests {
             "net accounts",
             "net config workstation",
             "net share",
+            r#"reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Run"#,
+            r#"reg.exe query HKLM\Software\Microsoft\Windows\CurrentVersion\Run"#,
             "klist tickets",
             "setspn -Q */*",
             "schtasks /query /tn Updater",
