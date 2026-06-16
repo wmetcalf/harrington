@@ -155,7 +155,14 @@ pub(crate) fn filesystem_entry_for_path<'a>(
 }
 
 fn normalize_windows_path(path: &str) -> String {
-    path.to_ascii_lowercase().replace('/', "\\")
+    let mut normalized = path.to_ascii_lowercase().replace('/', "\\");
+    while normalized.contains(r"\.\") {
+        normalized = normalized.replace(r"\.\", r"\");
+    }
+    normalized
+        .strip_prefix(r".\")
+        .unwrap_or(&normalized)
+        .to_string()
 }
 
 pub(crate) fn join_windows_path_preserving_separator(dir: &str, file: &str) -> String {

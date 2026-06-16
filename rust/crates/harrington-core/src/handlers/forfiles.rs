@@ -49,6 +49,8 @@ pub fn extract_forfiles_inners_with_env(raw: &str, env: &Environment) -> Option<
     if !inner.contains('@') {
         return Some(vec![inner]);
     }
+    let tokens = split_forfiles_tokens(raw);
+    let root = forfiles_option_value(&tokens, "/p").unwrap_or_default();
     let paths = tracked_forfiles_paths(raw, env);
     if paths.is_empty() {
         return Some(vec![inner]);
@@ -56,7 +58,7 @@ pub fn extract_forfiles_inners_with_env(raw: &str, env: &Environment) -> Option<
     Some(
         paths
             .into_iter()
-            .map(|path| substitute_forfiles_placeholders(&inner, &path))
+            .map(|path| substitute_forfiles_placeholders(&inner, &path, &root))
             .collect(),
     )
 }
@@ -141,14 +143,29 @@ fn forfiles_path_under_root(path: &str, normalized_root: &str, recursive: bool) 
     !rest.is_empty() && (recursive || !rest.contains('\\'))
 }
 
-fn substitute_forfiles_placeholders(inner: &str, path: &str) -> String {
+fn substitute_forfiles_placeholders(inner: &str, path: &str, root: &str) -> String {
     let file = windows_basename(path).unwrap_or(path);
     let (fname, ext) = split_filename_ext(file);
+    let relpath = forfiles_relative_path(path, root);
     let mut out = replace_ascii_ci(inner, "@path", &format!("\"{path}\""));
+    out = replace_ascii_ci(&out, "@relpath", &relpath);
     out = replace_ascii_ci(&out, "@file", file);
     out = replace_ascii_ci(&out, "@fname", fname);
     out = replace_ascii_ci(&out, "@ext", ext);
     replace_ascii_ci(&out, "@isdir", "FALSE")
+}
+
+fn forfiles_relative_path(path: &str, root: &str) -> String {
+    let normalized_path = normalize_wildcard_path(path);
+    let normalized_root = normalize_wildcard_path(&normalize_filesystem_storage_path(root))
+        .trim_end_matches('\\')
+        .to_string();
+    let rest = normalized_path
+        .strip_prefix(&normalized_root)
+        .map(|rest| rest.trim_start_matches('\\'))
+        .filter(|rest| !rest.is_empty())
+        .unwrap_or(path);
+    format!(r".\{rest}")
 }
 
 fn split_filename_ext(file: &str) -> (&str, &str) {
@@ -344,6 +361,27 @@ mod tests {
             )
             .as_deref(),
             Some(r"cmd /c C:\Work\run.js")
+        );
+    }
+
+    #[test]
+    fn substitutes_relative_path_placeholder() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            r"c:\work\sub\run.js".to_string(),
+            FsEntry::Content {
+                content: b"fetch('https://example.invalid')".to_vec(),
+                append: false,
+            },
+        );
+
+        assert_eq!(
+            extract_forfiles_inner_with_env(
+                r#"forfiles /p C:\Work /s /m *.js /c "cmd /c C:\Work\@relpath""#,
+                &env
+            )
+            .as_deref(),
+            Some(r"cmd /c C:\Work\.\sub\run.js")
         );
     }
 }
