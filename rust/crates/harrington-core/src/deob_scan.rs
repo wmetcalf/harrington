@@ -5210,6 +5210,7 @@ fn scan_copied_netsh_alias_deob_text(deobfuscated: &str, env: &mut Environment) 
         } else {
             format!("netsh.exe {rest}")
         };
+        scan_defender_evasion(&replay, env);
         scan_remote_access(&replay, env);
     }
 }
@@ -7417,7 +7418,8 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
             .expect("attachment policy weaken")
     });
     static FIREWALL_OFF_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?i)netsh\s+advfirewall\s+set\s+(\w+)\s+state\s+off"#).expect("fw-off")
+        Regex::new(r#"(?i)netsh(?:\.exe)?\s+advfirewall\s+set\s+(\w+)\s+state\s+off"#)
+            .expect("fw-off")
     });
     static SECURITY_PRODUCT_REMOVE_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(&format!(

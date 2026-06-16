@@ -2873,6 +2873,33 @@ C:\Users\Public\ns.tmp advfirewall firewall add rule name="Remote Desktop" dir=i
     }
 
     #[test]
+    fn copied_netsh_alias_emits_firewall_defender_evasion_trait() {
+        let script = br#"copy C:\Windows\System32\netsh.exe C:\Users\Public\ns.tmp
+C:\Users\Public\ns.tmp advfirewall set allprofiles state off
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\ns.tmp"#)
+            )),
+            "copied netsh alias invocation was not tied back to WindowsUtilManip: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "netsh-fw-off" && target == "allprofiles"
+            )),
+            "copied netsh firewall disable was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn rdp_disable_settings_do_not_emit_remote_access_trait() {
         let script = b"@echo off\r\n\
             reg add \"HKLM\\system\\CurrentControlSet\\Control\\Terminal Server\" /v \"AllowTSConnections\" /t REG_DWORD /d 0x0 /f\r\n\
