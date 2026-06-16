@@ -8801,7 +8801,7 @@ fn scan_network_probe(deobfuscated: &str, env: &mut Environment) {
     use regex::Regex;
     static RESOLVE_DNS_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r#"(?i)\bResolve-DnsName\s+(?:-Name\s+)?(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9.\-]+))"#,
+            r#"(?i)\bResolve-DnsName\b[^\r\n]*?(?:-Name(?:\s*[:=]\s*|\s+)(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9.\-]+))|(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9.\-]+)))"#,
         )
         .expect("resolve-dns re")
     });
@@ -8846,6 +8846,9 @@ fn scan_network_probe(deobfuscated: &str, env: &mut Environment) {
             .get(1)
             .or_else(|| c.get(2))
             .or_else(|| c.get(3))
+            .or_else(|| c.get(4))
+            .or_else(|| c.get(5))
+            .or_else(|| c.get(6))
             .map(|m| m.as_str().to_string())
             .unwrap_or_default();
         push_network_probe(env, "dns-lookup", h);

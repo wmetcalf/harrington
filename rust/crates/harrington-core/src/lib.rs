@@ -3938,6 +3938,37 @@ pathping -n 203.0.113.10
     }
 
     #[test]
+    fn network_probe_attached_option_values_do_not_hide_targets() {
+        let report = analyze(
+            br#"ping /n:1 beacon.example
+tracert -w=100 c2.example
+pathping /q:2 203.0.113.10
+Resolve-DnsName -Name:dns-attached.example
+Resolve-DnsName -Name=dns-equals.example
+"#,
+            &AnalyzeConfig::default(),
+        );
+
+        for (kind, target) in [
+            ("icmp-ping", "beacon.example"),
+            ("route-trace", "c2.example"),
+            ("route-trace", "203.0.113.10"),
+            ("dns-lookup", "dns-attached.example"),
+            ("dns-lookup", "dns-equals.example"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::NetworkProbe { probe_kind, target: t }
+                        if probe_kind == kind && t == target
+                )),
+                "missing network probe {kind} -> {target}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn copied_route_trace_aliases_emit_network_probe_traits() {
         let script = br#"copy C:\Windows\System32\tracert.exe C:\Users\Public\tr.tmp
 C:\Users\Public\tr.tmp -d c2.example
