@@ -11310,13 +11310,14 @@ fn scan_powershell_registry_persistence(deobfuscated: &str, env: &mut Environmen
     for m in PS_ITEM_PROPERTY_RE.find_iter(deobfuscated) {
         let line = m.as_str().trim();
         let positional = if find_ascii_case_insensitive(line, "New-ItemProperty", 0).is_some() {
-            powershell_positional_arguments(line, "New-ItemProperty")
+            powershell_itemproperty_positional_arguments(line, "New-ItemProperty")
         } else {
-            powershell_positional_arguments(line, "Set-ItemProperty")
+            powershell_itemproperty_positional_arguments(line, "Set-ItemProperty")
         };
+        let mut positional = positional.into_iter();
         let Some(path) = powershell_named_argument(line, "-Path")
             .or_else(|| powershell_named_argument(line, "-LiteralPath"))
-            .or_else(|| positional.first().cloned())
+            .or_else(|| positional.next())
         else {
             continue;
         };
@@ -11331,10 +11332,10 @@ fn scan_powershell_registry_persistence(deobfuscated: &str, env: &mut Environmen
             continue;
         }
         let value_name = powershell_named_argument(line, "-Name")
-            .or_else(|| positional.get(1).cloned())
+            .or_else(|| positional.next())
             .unwrap_or_default();
         let command = powershell_named_argument(line, "-Value")
-            .or_else(|| positional.get(2).cloned())
+            .or_else(|| positional.next())
             .unwrap_or_default();
         if env.traits.iter().any(|t| {
             matches!(
@@ -11364,6 +11365,42 @@ fn scan_powershell_registry_persistence(deobfuscated: &str, env: &mut Environmen
             env.exec_cmd_delayed.push(delayed);
         }
     }
+}
+
+fn powershell_itemproperty_positional_arguments(command: &str, keyword: &str) -> Vec<String> {
+    let Some(start) = find_ascii_case_insensitive(command, keyword, 0) else {
+        return Vec::new();
+    };
+    let tokens = split_words(&command[start..]);
+    let mut args = Vec::new();
+    let mut skip_next = false;
+    for token in tokens.iter().skip(1) {
+        let token = strip_quotes(token).trim_matches(['"', '\'']);
+        if token.is_empty() {
+            continue;
+        }
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if token.starts_with('-') {
+            let lower = token.to_ascii_lowercase();
+            if matches!(
+                lower
+                    .trim_start_matches('-')
+                    .split_once([':', '='])
+                    .map_or(lower.trim_start_matches('-'), |(name, _)| name),
+                "path" | "literalpath" | "name" | "value" | "propertytype" | "type"
+            ) && !lower.contains(':')
+                && !lower.contains('=')
+            {
+                skip_next = true;
+            }
+            continue;
+        }
+        args.push(token.to_string());
+    }
+    args
 }
 
 fn normalize_powershell_registry_path(path: &str) -> Option<(String, String)> {
