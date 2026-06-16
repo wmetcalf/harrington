@@ -8993,12 +8993,6 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
         Regex::new(r#"(?im)^[^\r\n]*?\breg(?:\.exe)?\s+delete\b[^\r\n]*(?:\\UserAssist\b|\\RecentDocs\b|\\MuiCache\b|\\BagMRU\b|\\Shell\\Bags\b|\\ComDlg32\\(?:OpenSavePidlMRU|LastVisitedPidlMRU|LastVisitedPidlMRULegacy|OpenSaveMRU)\b|\\RunMRU\b|\\TypedPaths\b)[^\r\n]*"#)
             .expect("registry history delete regex")
     });
-    static PS_CLEAR_EVENT_LOG_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(
-            r#"(?im)^[^\r\n]*?\bClear-EventLog\b[^\r\n]*?-LogName(?:\s*[:=]\s*|\s+)(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^\s;|&]+))[^\r\n]*"#,
-        )
-        .expect("powershell clear-eventlog regex")
-    });
     static PS_CLEAR_EVENT_LOG_LINE_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?im)^[^\r\n]*?\bClear-EventLog\b[^\r\n]*"#)
             .expect("powershell clear-eventlog line regex")
@@ -9197,24 +9191,15 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
         push("registry-history-delete", target, command);
     }
 
-    for caps in PS_CLEAR_EVENT_LOG_RE.captures_iter(deobfuscated) {
-        let command = caps
-            .get(0)
-            .map(|m| m.as_str().trim().to_string())
-            .unwrap_or_default();
-        for target in powershell_named_argument_list(&command, "-LogName") {
-            push_event_log_targets(&mut push, target, command.clone());
-        }
-    }
     for m in PS_CLEAR_EVENT_LOG_LINE_RE.find_iter(deobfuscated) {
         let command = m.as_str().trim();
-        if command.to_ascii_lowercase().contains("-logname") {
-            continue;
+        let mut targets = powershell_named_argument_list(command, "-LogName");
+        if targets.is_empty() {
+            targets = powershell_positional_arguments(command, "Clear-EventLog")
+                .into_iter()
+                .flat_map(|target| split_powershell_list_argument(&target).collect::<Vec<_>>())
+                .collect();
         }
-        let targets: Vec<String> = powershell_positional_arguments(command, "Clear-EventLog")
-            .into_iter()
-            .flat_map(|target| split_powershell_list_argument(&target).collect::<Vec<_>>())
-            .collect();
         if targets.is_empty() {
             continue;
         }

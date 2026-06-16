@@ -7506,6 +7506,24 @@ powershell -Command "Clear-RecycleBin -Force"
     }
 
     #[test]
+    fn powershell_clear_eventlog_short_logname_list_emits_each_log_cleanup_trait() {
+        let script = br#"powershell -Command "Clear-EventLog -Lo Security,System""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        for log_name in ["Security", "System"] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::EvidenceCleanup { action, target, .. }
+                        if action == "event-log-clear" && target == log_name
+                )),
+                "PowerShell short Clear-EventLog LogName target missing {log_name}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn copied_evidence_cleanup_aliases_emit_traits() {
         let script = br#"copy C:\Windows\System32\wevtutil.exe C:\Users\Public\we.tmp
 C:\Users\Public\we.tmp cl Security
