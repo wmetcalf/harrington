@@ -9529,15 +9529,21 @@ fn scan_account_modification(deobfuscated: &str, env: &mut Environment) {
             .get(0)
             .map(|m| m.as_str().trim().to_string())
             .unwrap_or_default();
-        let account = powershell_named_argument(&command, "-Name").or_else(|| {
-            powershell_positional_arguments(&command, "Enable-LocalUser")
+        let mut accounts = powershell_named_argument_list(&command, "-Name");
+        if accounts.is_empty() {
+            if let Some(account) = powershell_positional_arguments(&command, "Enable-LocalUser")
                 .into_iter()
                 .next()
-        });
-        let Some(account) = account else {
+            {
+                accounts.extend(split_powershell_list_argument(&account));
+            }
+        }
+        if accounts.is_empty() {
             continue;
-        };
-        push("local-user-enable", account, None, command);
+        }
+        for account in accounts {
+            push("local-user-enable", account, None, command.clone());
+        }
     }
     for caps in PS_SET_LOCAL_USER_RE.captures_iter(deobfuscated) {
         let command = caps

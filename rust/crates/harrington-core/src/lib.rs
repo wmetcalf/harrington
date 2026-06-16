@@ -3921,6 +3921,24 @@ powershell -Command "New-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Cont
     }
 
     #[test]
+    fn powershell_enable_localuser_name_list_emits_each_account_modification_trait() {
+        let script = br#"powershell -Command "Enable-LocalUser -Name defaultuserx, support""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        for account in ["defaultuserx", "support"] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::AccountModification { action, account: existing_account, .. }
+                        if action == "local-user-enable" && existing_account == account
+                )),
+                "PowerShell Enable-LocalUser account {account} missing: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn powershell_set_localuser_password_emits_account_modification_trait() {
         let script = br#"powershell -Command "Set-LocalUser -Name support -Password $p""#;
         let report = analyze(script, &AnalyzeConfig::default());
