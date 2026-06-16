@@ -6892,6 +6892,21 @@ powershell -Command "Get-CimInstance Win32_ShadowCopy | Remove-CimInstance"
     }
 
     #[test]
+    fn vssadmin_resize_shadowstorage_small_maxsize_emits_anti_recovery_trait() {
+        let script = br#"vssadmin resize shadowstorage /for=C: /on=C: /maxsize=401MB"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AntiRecovery { action } if action == "vssadmin-resize-shadowstorage"
+            )),
+            "vssadmin resize shadowstorage was not surfaced as anti-recovery: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn generic_delete_does_not_emit_evidence_cleanup_trait() {
         let script = b"@echo off\r\n\
             del /f /q C:\\Temp\\installer.log\r\n\

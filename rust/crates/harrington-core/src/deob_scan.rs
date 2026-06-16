@@ -8767,6 +8767,10 @@ fn scan_anti_recovery(deobfuscated: &str, env: &mut Environment) {
                 "vssadmin-delete-shadows",
             ),
             (
+                Regex::new(r"(?i)\bvssadmin(?:\.exe)?\s+resize\s+shadowstorage\b[^\r\n]*[/\-]maxsize\s*=").unwrap(),
+                "vssadmin-resize-shadowstorage",
+            ),
+            (
                 Regex::new(r"(?i)\bwmic[^\r\n]*?shadowcopy\b[^\r\n]*\bdelete\b").unwrap(),
                 "wmic-shadowcopy-delete",
             ),
