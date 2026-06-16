@@ -10080,6 +10080,10 @@ pub fn scan_inline_powershell_text(text: &str, env: &mut Environment) {
         return;
     }
     let scan_text = inline_powershell_scan_text(text);
+    let scan_text = inline_powershell_executable_scan_text(scan_text.as_ref());
+    if scan_text.trim().is_empty() {
+        return;
+    }
     let known_downloads: std::collections::HashSet<String> = env
         .traits
         .iter()
@@ -10139,6 +10143,34 @@ pub fn scan_inline_powershell_text(text: &str, env: &mut Environment) {
         }
     }
     env.traits.extend(new_traits);
+}
+
+fn inline_powershell_executable_scan_text(text: &str) -> std::borrow::Cow<'_, str> {
+    if !text.lines().any(inline_powershell_line_is_echo_text) {
+        return std::borrow::Cow::Borrowed(text);
+    }
+
+    let mut candidate = String::new();
+    for line in text.lines() {
+        if inline_powershell_line_is_echo_text(line) {
+            continue;
+        }
+        if !candidate.is_empty() {
+            candidate.push('\n');
+        }
+        candidate.push_str(line);
+    }
+
+    std::borrow::Cow::Owned(candidate)
+}
+
+fn inline_powershell_line_is_echo_text(line: &str) -> bool {
+    let trimmed = line.trim_start_matches(|ch: char| ch.is_ascii_whitespace() || ch == '@');
+    let Some(first) = crate::handlers::util::split_words(trimmed).first().cloned() else {
+        return false;
+    };
+    let token = first.to_ascii_lowercase();
+    token == "echo" || token.starts_with("echo.") || token.starts_with("echo:") || token == "echo("
 }
 
 fn inline_powershell_scan_text(text: &str) -> std::borrow::Cow<'_, str> {

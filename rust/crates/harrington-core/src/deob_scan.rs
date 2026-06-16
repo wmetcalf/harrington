@@ -13398,6 +13398,9 @@ pub fn scan_embedded_powershell_invocations(text: &str, env: &mut Environment) {
     }
     let normalized = text.replace('^', "");
     for line in normalized.lines() {
+        if command_starts_with_echo(line) {
+            continue;
+        }
         for m in EMBEDDED_POWERSHELL_RE.find_iter(line) {
             let tail = &line[m.start()..];
             if !looks_like_embedded_powershell_payload(tail) {
@@ -13637,6 +13640,9 @@ fn scan_embedded_powershell_downloads_in_deob_text(text: &str, env: &mut Environ
     payload_env.ps1_scan_cache_normalized = false;
 
     for line in normalized.lines() {
+        if command_starts_with_echo(line) {
+            continue;
+        }
         for m in EMBEDDED_POWERSHELL_RE.find_iter(line) {
             let tail = &line[m.start()..];
             if !has_powershell_download_atom(tail) {
@@ -13662,6 +13668,14 @@ fn scan_powershell_download_body_in_deob_text(text: &str, env: &mut Environment)
     if !has_powershell_download_atom(text) {
         return;
     }
+    let scan_text = text
+        .lines()
+        .filter(|line| !command_starts_with_echo(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if scan_text.trim().is_empty() {
+        return;
+    }
     let mut payload_env = Environment::new(&Config {
         max_depth: env.limits.max_depth,
         max_iterations: env.limits.max_iterations,
@@ -13674,7 +13688,7 @@ fn scan_powershell_download_body_in_deob_text(text: &str, env: &mut Environment)
         max_traits_per_kind: 100,
     });
     payload_env.ps1_scan_cache_normalized = false;
-    payload_env.all_extracted_ps1.push(text.as_bytes().to_vec());
+    payload_env.all_extracted_ps1.push(scan_text.into_bytes());
     crate::ps1_scan::scan_ps1_payloads(&mut payload_env);
 
     let mut known = env.known_extracted_urls();

