@@ -11616,13 +11616,13 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
     });
     static TERMSERVICE_ENABLE_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r#"(?im)^[^\r\n]*\bsc(?:\.exe)?\s+(?:\\\\[^\s]+\s+)?config\s+TermService\b[^\r\n]*\bstart\s*=\s*(?:auto|demand)\b[^\r\n]*"#,
+            r#"(?im)^[^\r\n]*?\bsc(?:\.exe)?\s+(?:\\\\[^\s]+\s+)?config\s+TermService\b[^\r\n]*\bstart\s*=\s*(?:auto|demand)\b[^\r\n]*"#,
         )
         .expect("termservice enable regex")
     });
     static TERMSERVICE_START_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r#"(?im)^[^\r\n]*\b(?:net(?:\.exe)?\s+start|sc(?:\.exe)?\s+(?:\\\\[^\s]+\s+)?start)\s+TermService\b[^\r\n]*"#,
+            r#"(?im)^[^\r\n]*?\b(?:net(?:\.exe)?\s+start|sc(?:\.exe)?\s+(?:\\\\[^\s]+\s+)?start)\s+TermService\b[^\r\n]*"#,
         )
             .expect("termservice start regex")
     });
@@ -11799,6 +11799,9 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
         push("rdp-timeout-disabled", target, command);
     }
     for m in TERMSERVICE_ENABLE_RE.find_iter(deobfuscated) {
+        if command_starts_with_echo(m.as_str()) {
+            continue;
+        }
         push(
             "rdp-service-enable",
             "TermService".to_string(),
@@ -11806,6 +11809,9 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
         );
     }
     for m in TERMSERVICE_START_RE.find_iter(deobfuscated) {
+        if command_starts_with_echo(m.as_str()) {
+            continue;
+        }
         push(
             "rdp-service-enable",
             "TermService".to_string(),

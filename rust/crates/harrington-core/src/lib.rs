@@ -5745,6 +5745,22 @@ net start TermService
     }
 
     #[test]
+    fn escaped_ampersand_termservice_text_does_not_emit_remote_access() {
+        let script = br#"echo keep ^& sc start TermService"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-service-enable" && target == "TermService"
+            )),
+            "escaped ampersand echo text was misread as TermService enablement: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_rdp_firewall_rule_name_emits_remote_access_trait() {
         let script =
             br#"powershell -Command "Enable-NetFirewallRule -Name RemoteDesktop-UserMode-In-TCP""#;
