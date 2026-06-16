@@ -8853,16 +8853,14 @@ fn scan_lateral_movement(deobfuscated: &str, env: &mut Environment) {
             ("New-PSSession", "New-PSSession"),
             ("nsn", "New-PSSession"),
         ] {
-            if contains_ascii_keyword(line, keyword)
-                && line.to_ascii_lowercase().contains("-computername")
-            {
-                for host in powershell_named_argument_list(line, "-ComputerName") {
+            if !contains_ascii_keyword(line, keyword) {
+                continue;
+            }
+            let named_hosts = powershell_named_argument_list(line, "-ComputerName");
+            if !named_hosts.is_empty() {
+                for host in named_hosts {
                     push(tool, host);
                 }
-            }
-            if !contains_ascii_keyword(line, keyword)
-                || line.to_ascii_lowercase().contains("-computername")
-            {
                 continue;
             }
             let Some(host) = powershell_positional_arguments(line, keyword)
