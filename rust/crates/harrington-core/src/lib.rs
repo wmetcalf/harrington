@@ -12831,6 +12831,27 @@ mod msiexec_tests {
     }
 
     #[test]
+    fn msiexec_url_package_preserves_balanced_bracket_suffix() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"msiexec /quiet /i "https://msiexec-direct.example/setup[1]""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { url, .. }
+                    if url == "https://msiexec-direct.example/setup[1]"
+            )
+        });
+        assert!(
+            has,
+            "msiexec bracketed URL argument was truncated: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn msiexec_attached_install_url_emits_typed_trait() {
         let mut env = Environment::new(&Config::default());
         interpret_line(

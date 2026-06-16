@@ -66,7 +66,7 @@ fn strip_quotes(s: &str) -> &str {
 }
 
 fn trim_url_suffix(url: &str) -> &str {
-    url.trim_end_matches(['"', '\'', ')', ']', '}', ';', ','])
+    crate::deob_scan::trim_liberal_url_suffix(url)
 }
 
 fn msiexec_url_from_token(token: &str) -> Option<String> {
