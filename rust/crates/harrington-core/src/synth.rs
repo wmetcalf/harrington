@@ -132,6 +132,8 @@ fn run_stage(stage: &str, input: Vec<String>, env: &mut Environment) -> Vec<Stri
         "schtasks" => synth_schtasks(&rest_args),
         "wevtutil" => synth_wevtutil(&rest_args),
         "ver" => synth_ver(),
+        "date" => synth_date(&rest_args),
+        "time" => synth_time(&rest_args),
         "ipconfig" => synth_ipconfig(),
         "hostname" => synth_hostname(env),
         "systeminfo" => synth_systeminfo(env),
@@ -547,6 +549,8 @@ fn is_supported_command(cmd: &str) -> bool {
             | "schtasks"
             | "wevtutil"
             | "ver"
+            | "date"
+            | "time"
             | "ipconfig"
             | "hostname"
             | "systeminfo"
@@ -1154,6 +1158,20 @@ fn synth_wevtutil(args: &[&str]) -> Vec<String> {
 
 fn synth_ver() -> Vec<String> {
     vec!["Microsoft Windows [Version 10.0.19045.4046]".to_string()]
+}
+
+fn synth_date(args: &[&str]) -> Vec<String> {
+    if args.iter().any(|arg| arg.eq_ignore_ascii_case("/t")) {
+        return vec!["Mon 06/15/2026".to_string()];
+    }
+    vec!["The current date is: Mon 06/15/2026".to_string()]
+}
+
+fn synth_time(args: &[&str]) -> Vec<String> {
+    if args.iter().any(|arg| arg.eq_ignore_ascii_case("/t")) {
+        return vec!["12:00 PM".to_string()];
+    }
+    vec!["The current time is: 12:00:00.00".to_string()]
 }
 
 fn synth_ipconfig() -> Vec<String> {

@@ -3853,6 +3853,32 @@ for /f "tokens=* delims=" %%U in ('type first.txt second.txt ^| find "https://"'
     }
 
     #[test]
+    fn for_f_reads_date_and_time_output() {
+        let script = concat!(
+            "for /f \"tokens=2\" %%D in ('date /t') do set TODAY=%%D\r\n",
+            "for /f \"tokens=1\" %%T in ('time /t') do set NOW=%%T\r\n",
+            "echo stamp=%TODAY%_%NOW%\r\n",
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo stamp=06/15/2026_12:00"),
+            "date/time output did not feed later variables: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ForUnresolvedSource { pipeline }
+                    if pipeline.eq_ignore_ascii_case("date /t")
+                        || pipeline.eq_ignore_ascii_case("time /t")
+            )),
+            "date/time should resolve synthetically: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn for_f_reads_whoami_user_sid_output() {
         let script = b"for /f \"skip=1 tokens=2\" %%S in ('whoami /user') do echo sid=%%S\r\n";
         let report = analyze(script, &Config::default());
