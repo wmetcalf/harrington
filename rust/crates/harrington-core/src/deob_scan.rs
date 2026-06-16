@@ -7783,6 +7783,12 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
         Regex::new(r#"(?i)sc(?:\.exe)?\s+(stop|config|delete)\s+(WinDefend|MsMpSvc|wuauserv|MpsSvc|WdNisSvc)"#)
             .expect("sc-defender")
     });
+    static PS_STOP_SERVICE_SECURITY_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?im)^[^\r\n]*?\bStop-Service\b[^\r\n]*(?:-Name\s+|-DisplayName\s+)?["']?(WinDefend|MsMpSvc|wuauserv|MpsSvc|WdNisSvc|SecurityHealthService|Sense)["']?\b[^\r\n]*"#,
+        )
+        .expect("powershell stop-service security regex")
+    });
     static TASKKILL_SECURITY_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?i)\btaskkill(?:\.exe)?\b[^\r\n]*?/im\s+"?(SecurityHealthSystray|SecurityHealthService|WindowsDefender|MsMpEng|NisSrv|MpCmdRun|MBAMService|MBAMTray|avastui|avgui|egui|ekrn|bdservicehost|SentinelAgent|CrowdStrike|CSFalconService)\.exe"?\b[^\r\n]*"#)
             .expect("taskkill security process")
@@ -7958,6 +7964,13 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
                     .map(|m| m.as_str().to_string())
                     .unwrap_or_default();
                 push(&format!("sc-{verb}"), svc);
+            }
+            for caps in PS_STOP_SERVICE_SECURITY_RE.captures_iter(deobfuscated) {
+                let service = caps
+                    .get(1)
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_default();
+                push("powershell-stop-service", service);
             }
             for caps in TASKKILL_SECURITY_RE.captures_iter(deobfuscated) {
                 let process = caps
@@ -8227,8 +8240,18 @@ fn has_defender_evasion_atom_lower(lower: &str) -> bool {
 
 fn has_defender_service_process_atom_lower(lower: &str) -> bool {
     const COMMAND_ATOMS: &[&str] = &[
-        "sc ", "sc.exe", "taskkill", "takeown", "icacls", "rename", "ren ", "ren\t", "move ",
-        "move\t", "move.exe",
+        "sc ",
+        "sc.exe",
+        "taskkill",
+        "takeown",
+        "icacls",
+        "rename",
+        "ren ",
+        "ren\t",
+        "move ",
+        "move\t",
+        "move.exe",
+        "stop-service",
     ];
     COMMAND_ATOMS.iter().any(|atom| lower.contains(atom))
 }
@@ -8359,6 +8382,7 @@ mod defender_evasion_prefilter_tests {
             r#"powershell Add-MpPreference -ExclusionPath C:\Users\Public"#,
             "Set-MpPreference -DisableRealtimeMonitoring $true",
             "sc stop WinDefend",
+            "Stop-Service WinDefend",
             "taskkill /im SecurityHealthSystray.exe /f",
             "taskkill /im WindowsDefender.exe /f",
             r#"takeown /f C:\Windows\System32\MsMpEng.exe"#,
@@ -8394,6 +8418,9 @@ mod defender_evasion_prefilter_tests {
     fn internal_gates_allow_known_defender_evasion_shapes() {
         assert!(has_defender_service_process_atom_lower(
             &"sc stop WinDefend".to_ascii_lowercase()
+        ));
+        assert!(has_defender_service_process_atom_lower(
+            &"Stop-Service WinDefend".to_ascii_lowercase()
         ));
         assert!(has_defender_service_process_atom_lower(
             &"taskkill /im SecurityHealthSystray.exe /f".to_ascii_lowercase()
