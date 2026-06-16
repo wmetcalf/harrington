@@ -7917,7 +7917,13 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
                         .or_else(|| caps.get(4))
                         .map(|m| m.as_str().to_string())
                         .unwrap_or_default();
-                    push(&kind, target);
+                    for target in target
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|target| !target.is_empty())
+                    {
+                        push(&kind, target.to_string());
+                    }
                 }
             }
 
