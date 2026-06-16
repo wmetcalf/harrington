@@ -2964,6 +2964,46 @@ tar -xf "%T%\p.zip" -C "%P%"
     }
 
     #[test]
+    fn rar_x_with_destination_emits_archive_extraction_trait() {
+        let script = br#"@echo off
+Rar x -pAnfoE5FeC6R5dPfRbxQgKMtZdV6v0OKC -inul -y DzbIZ1HRMj.rar C:\Users\Public\M20EKMMEH2
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ArchiveExtraction { cmd, src, dst }
+                    if cmd.starts_with("Rar ")
+                        && src == "DzbIZ1HRMj.rar"
+                        && dst == r"C:\Users\Public\M20EKMMEH2"
+            )),
+            "RAR extraction trait missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn winrar_x_with_quoted_program_files_path_emits_archive_extraction_trait() {
+        let script = br#"@echo off
+C:\"Program Files"\WinRAR\WinRAR.exe x -y -inul -p1234 %temp%\up.zip %temp%
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ArchiveExtraction { cmd, src, dst }
+                    if cmd.contains("WinRAR.exe")
+                        && src == r"C:\Users\puncher\AppData\Local\Temp\up.zip"
+                        && dst == r"C:\Users\puncher\AppData\Local\Temp"
+            )),
+            "WinRAR extraction trait missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn schtasks_create_emits_persistence_trait() {
         // `schtasks /create /tn X /tr Y` registers a scheduled-task
         // autorun. Same Persistence trait as reg-add Run, with

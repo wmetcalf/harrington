@@ -12960,6 +12960,7 @@ fn scan_service_install(deobfuscated: &str, env: &mut Environment) {
 fn scan_archive_extraction(deobfuscated: &str, env: &mut Environment) {
     if !contains_ascii_keyword(deobfuscated, "Expand-Archive")
         && !contains_ascii_keyword(deobfuscated, "tar")
+        && !has_rar_archive_atom(deobfuscated)
     {
         return;
     }
@@ -12981,12 +12982,34 @@ fn scan_archive_extraction(deobfuscated: &str, env: &mut Environment) {
                 push_archive_extraction(env, segment, src, dst);
             }
         }
-        if !contains_ascii_keyword(line, "tar") {
+        if contains_ascii_keyword(line, "tar") {
+            for segment in crate::split::split_commands(line) {
+                let segment = segment.trim();
+                if !contains_ascii_keyword(segment, "tar") {
+                    continue;
+                }
+                let tokens = split_words(segment);
+                let Some(cmd) = tokens.first() else {
+                    continue;
+                };
+                if !matches!(
+                    basename_lower(strip_quotes(cmd)).as_str(),
+                    "tar" | "tar.exe"
+                ) {
+                    continue;
+                }
+                let Some((src, dst)) = parse_tar_archive_extraction(&tokens) else {
+                    continue;
+                };
+                push_archive_extraction(env, segment, src, dst);
+            }
+        }
+        if !has_rar_archive_atom(line) {
             continue;
         }
         for segment in crate::split::split_commands(line) {
             let segment = segment.trim();
-            if !contains_ascii_keyword(segment, "tar") {
+            if !has_rar_archive_atom(segment) {
                 continue;
             }
             let tokens = split_words(segment);
@@ -12995,16 +13018,20 @@ fn scan_archive_extraction(deobfuscated: &str, env: &mut Environment) {
             };
             if !matches!(
                 basename_lower(strip_quotes(cmd)).as_str(),
-                "tar" | "tar.exe"
+                "rar" | "rar.exe" | "winrar" | "winrar.exe"
             ) {
                 continue;
             }
-            let Some((src, dst)) = parse_tar_archive_extraction(&tokens) else {
+            let Some((src, dst)) = parse_rar_archive_extraction(&tokens) else {
                 continue;
             };
             push_archive_extraction(env, segment, src, dst);
         }
     }
+}
+
+fn has_rar_archive_atom(text: &str) -> bool {
+    contains_ascii_keyword(text, "rar") || contains_ascii_keyword(text, "WinRAR")
 }
 
 fn push_archive_extraction(env: &mut Environment, cmd: &str, src: String, dst: String) {
@@ -13085,6 +13112,34 @@ fn parse_tar_archive_extraction(tokens: &[String]) -> Option<(String, String)> {
         return None;
     }
     Some((src?, dst?))
+}
+
+fn parse_rar_archive_extraction(tokens: &[String]) -> Option<(String, String)> {
+    let mut mode_seen = false;
+    let mut positional = Vec::new();
+    for token in tokens.iter().skip(1) {
+        let token = strip_quotes(token);
+        if token.is_empty() {
+            continue;
+        }
+        if !mode_seen {
+            if matches!(token.to_ascii_lowercase().as_str(), "x" | "e") {
+                mode_seen = true;
+            }
+            continue;
+        }
+        if token.starts_with('-') || token.starts_with('/') {
+            continue;
+        }
+        positional.push(token.to_string());
+    }
+    if !mode_seen || positional.len() < 2 {
+        return None;
+    }
+    Some((
+        positional[0].clone(),
+        positional[positional.len() - 1].clone(),
+    ))
 }
 
 fn archive_path_has_unresolved_percent_var(path: &str) -> bool {
