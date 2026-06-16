@@ -5330,6 +5330,24 @@ powershell -Command "Get-NetIPConfiguration"
     }
 
     #[test]
+    fn standalone_get_localgroup_emits_enumeration_trait() {
+        let report = analyze(
+            br#"powershell -Command "Get-LocalGroup""#,
+            &AnalyzeConfig::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "ps-localgroup" && command.contains("Get-LocalGroup")
+            )),
+            "standalone Get-LocalGroup enumeration missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_network_and_ad_discovery_cmdlets_emit_enumeration_traits() {
         let report = analyze(
             br#"powershell -Command "Get-NetTCPConnection"

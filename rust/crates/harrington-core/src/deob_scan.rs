@@ -9894,6 +9894,7 @@ fn has_enumeration_atom(text: &str) -> bool {
         "antivirusproduct",
         "get-computerinfo",
         "get-hotfix",
+        "get-localgroup",
         "get-localgroupmember",
         "get-netipconfiguration",
         "get-nettcpconnection",
