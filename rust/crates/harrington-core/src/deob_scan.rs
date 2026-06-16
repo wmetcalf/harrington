@@ -12958,51 +12958,133 @@ fn scan_service_install(deobfuscated: &str, env: &mut Environment) {
 }
 
 fn scan_archive_extraction(deobfuscated: &str, env: &mut Environment) {
-    if !contains_ascii_keyword(deobfuscated, "Expand-Archive") {
+    if !contains_ascii_keyword(deobfuscated, "Expand-Archive")
+        && !contains_ascii_keyword(deobfuscated, "tar")
+    {
         return;
     }
     for line in deobfuscated.lines() {
-        if !contains_ascii_keyword(line, "Expand-Archive") {
+        if contains_ascii_keyword(line, "Expand-Archive") {
+            for segment in powershell_statement_segments(line) {
+                let segment = segment.trim();
+                if !contains_ascii_keyword(segment, "Expand-Archive") {
+                    continue;
+                }
+                let Some(src) = powershell_named_argument(segment, "-Path")
+                    .or_else(|| powershell_named_argument(segment, "-LiteralPath"))
+                else {
+                    continue;
+                };
+                let Some(dst) = powershell_named_argument(segment, "-DestinationPath") else {
+                    continue;
+                };
+                push_archive_extraction(env, segment, src, dst);
+            }
+        }
+        if !contains_ascii_keyword(line, "tar") {
             continue;
         }
-        for segment in powershell_statement_segments(line) {
+        for segment in crate::split::split_commands(line) {
             let segment = segment.trim();
-            if !contains_ascii_keyword(segment, "Expand-Archive") {
+            if !contains_ascii_keyword(segment, "tar") {
                 continue;
             }
-            let Some(src) = powershell_named_argument(segment, "-Path")
-                .or_else(|| powershell_named_argument(segment, "-LiteralPath"))
-            else {
+            let tokens = split_words(segment);
+            let Some(cmd) = tokens.first() else {
                 continue;
             };
-            let Some(dst) = powershell_named_argument(segment, "-DestinationPath") else {
+            if !matches!(
+                basename_lower(strip_quotes(cmd)).as_str(),
+                "tar" | "tar.exe"
+            ) {
+                continue;
+            }
+            let Some((src, dst)) = parse_tar_archive_extraction(&tokens) else {
                 continue;
             };
-            if archive_path_has_unresolved_percent_var(&src)
-                || archive_path_has_unresolved_percent_var(&dst)
-            {
-                continue;
-            }
-            if env.traits.iter().any(|t| {
-                matches!(
-                    t,
-                    Trait::ArchiveExtraction {
-                        src: existing_src,
-                        dst: existing_dst,
-                        ..
-                    } if existing_src.eq_ignore_ascii_case(&src)
-                        && existing_dst.eq_ignore_ascii_case(&dst)
-                )
-            }) {
-                continue;
-            }
-            env.traits.push(Trait::ArchiveExtraction {
-                cmd: segment.to_string(),
-                src,
-                dst,
-            });
+            push_archive_extraction(env, segment, src, dst);
         }
     }
+}
+
+fn push_archive_extraction(env: &mut Environment, cmd: &str, src: String, dst: String) {
+    if archive_path_has_unresolved_percent_var(&src)
+        || archive_path_has_unresolved_percent_var(&dst)
+    {
+        return;
+    }
+    if env.traits.iter().any(|t| {
+        matches!(
+            t,
+            Trait::ArchiveExtraction {
+                src: existing_src,
+                dst: existing_dst,
+                ..
+            } if existing_src.eq_ignore_ascii_case(&src)
+                && existing_dst.eq_ignore_ascii_case(&dst)
+        )
+    }) {
+        return;
+    }
+    env.traits.push(Trait::ArchiveExtraction {
+        cmd: cmd.to_string(),
+        src,
+        dst,
+    });
+}
+
+fn parse_tar_archive_extraction(tokens: &[String]) -> Option<(String, String)> {
+    let mut extract = false;
+    let mut src = None;
+    let mut dst = None;
+    let mut expect_file = false;
+    let mut expect_destination = false;
+    for token in tokens.iter().skip(1) {
+        let token = strip_quotes(token);
+        if token.is_empty() {
+            continue;
+        }
+        if expect_destination {
+            dst = Some(token.to_string());
+            expect_destination = false;
+            continue;
+        }
+        if expect_file {
+            src = Some(token.to_string());
+            expect_file = false;
+            continue;
+        }
+        if token.eq_ignore_ascii_case("-C") {
+            expect_destination = true;
+            continue;
+        }
+        if let Some(attached_destination) = token.strip_prefix("-C") {
+            if !attached_destination.is_empty() {
+                dst = Some(strip_quotes(attached_destination).to_string());
+            }
+            continue;
+        }
+        let Some(flags) = token.strip_prefix('-') else {
+            if extract && src.is_none() {
+                src = Some(token.to_string());
+            }
+            continue;
+        };
+        let flags = flags.trim_start_matches('-');
+        extract |= flags.bytes().any(|b| b.eq_ignore_ascii_case(&b'x'));
+        if let Some(file_flag) = flags.find(|c: char| c.eq_ignore_ascii_case(&'f')) {
+            let attached = flags[file_flag + 1..].trim();
+            if attached.is_empty() {
+                expect_file = true;
+            } else {
+                src = Some(strip_quotes(attached).to_string());
+            }
+        }
+    }
+    if !extract {
+        return None;
+    }
+    Some((src?, dst?))
 }
 
 fn archive_path_has_unresolved_percent_var(path: &str) -> bool {

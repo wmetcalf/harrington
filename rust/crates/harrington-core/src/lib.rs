@@ -2942,6 +2942,28 @@ powershell -command "Expand-Archive -Path '%destination%\fresh.zip' -Destination
     }
 
     #[test]
+    fn tar_xf_with_destination_emits_archive_extraction_trait() {
+        let script = br#"@echo off
+set "T=%TEMP%"
+set "P=%T%\pyrt"
+tar -xf "%T%\p.zip" -C "%P%"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ArchiveExtraction { cmd, src, dst }
+                    if cmd.starts_with("tar ")
+                        && src == r"C:\Users\puncher\AppData\Local\Temp\p.zip"
+                        && dst == r"C:\Users\puncher\AppData\Local\Temp\pyrt"
+            )),
+            "tar extraction trait missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn schtasks_create_emits_persistence_trait() {
         // `schtasks /create /tn X /tr Y` registers a scheduled-task
         // autorun. Same Persistence trait as reg-add Run, with
