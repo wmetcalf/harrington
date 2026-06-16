@@ -4060,6 +4060,22 @@ powershell -Command "New-PSSession -ComputerName 'filesrv.example'"
     }
 
     #[test]
+    fn powershell_remoting_positional_computername_emits_lateral_movement() {
+        let script = br#"powershell -Command "icm target-pos.example -ScriptBlock { hostname }""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::LateralMovement { tool, target_host }
+                    if tool == "Invoke-Command" && target_host == "target-pos.example"
+            )),
+            "PowerShell positional remoting target missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn net_use_admin_share_emits_lateral_movement_trait() {
         let script = br#"net use \\target.example\C$ /user:DOMAIN\adm pass
 "#;

@@ -8577,6 +8577,32 @@ fn scan_lateral_movement(deobfuscated: &str, env: &mut Environment) {
             .unwrap_or_default();
         push(tool, host);
     }
+    for line in deobfuscated.lines() {
+        for (keyword, tool) in [
+            ("Invoke-Command", "Invoke-Command"),
+            ("icm", "Invoke-Command"),
+            ("Enter-PSSession", "Enter-PSSession"),
+            ("etsn", "Enter-PSSession"),
+            ("New-PSSession", "New-PSSession"),
+            ("nsn", "New-PSSession"),
+        ] {
+            if !contains_ascii_keyword(line, keyword)
+                || line.to_ascii_lowercase().contains("-computername")
+            {
+                continue;
+            }
+            let Some(host) = powershell_positional_arguments(line, keyword)
+                .into_iter()
+                .next()
+            else {
+                continue;
+            };
+            if host.starts_with('{') || host.starts_with('(') {
+                continue;
+            }
+            push(tool, host);
+        }
+    }
     for c in NET_USE_ADMIN_SHARE_RE.captures_iter(deobfuscated) {
         let host = c
             .get(1)
