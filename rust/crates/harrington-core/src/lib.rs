@@ -9070,9 +9070,12 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
         };
         if line_visits > crate::env::GOTO_LOOP_HARD_CAP {
             // Already emitted a GotoLoopElided trait further down on the
-            // first elided visit; nothing more to add. Stop iterating
-            // before max_iterations would catch this.
-            break;
+            // first elided visit; nothing more to add for this loop line.
+            // Fall through to the next physical line instead of stopping the
+            // script so static IOCs hidden behind menu/poll labels remain
+            // visible.
+            cursor += 1;
+            continue;
         }
         let line_output_elided = line_visits > crate::env::GOTO_LOOP_ELIDE_AFTER;
         if line_visits == crate::env::GOTO_LOOP_ELIDE_AFTER + 1 {
@@ -10613,6 +10616,30 @@ mod goto_tests {
                         && dst.as_deref() == Some("payload.exe")
             )),
             "fallthrough IOC after polling loop was lost: {:?}\ndeob:\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn interactive_set_p_menu_does_not_hide_later_label_iocs() {
+        use crate::traits::Trait;
+        let script = br#"@echo off
+:menu
+set /p choice="Choice: "
+if "%choice%"=="1" goto install
+goto menu
+:install
+start https://interactive-menu.example/download.exe
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::UrlLaunch { url, .. }
+                    if url == "https://interactive-menu.example/download.exe"
+            )),
+            "interactive menu label URL was missed: {:?}\n{}",
             report.traits,
             report.deobfuscated
         );

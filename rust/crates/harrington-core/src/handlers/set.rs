@@ -89,12 +89,6 @@ fn do_set_p(raw: &str, env: &mut Environment) {
         return;
     }
     let raw_body = raw_after_flag[2..].trim_start();
-    let stdin = redirections
-        .stdin
-        .or_else(|| set_p_attached_stdin(raw_body));
-    let Some(stdin) = stdin else {
-        return;
-    };
     let body = strip_set_prefix(&cleaned)
         .and_then(|rest| {
             let after_flag = rest.trim_start();
@@ -105,6 +99,13 @@ fn do_set_p(raw: &str, env: &mut Environment) {
         })
         .unwrap_or(raw_body);
     let Some(name) = set_p_name(body) else {
+        return;
+    };
+    let stdin = redirections
+        .stdin
+        .or_else(|| set_p_attached_stdin(raw_body));
+    let Some(stdin) = stdin else {
+        env.seed(name, &format!("%{name}%"));
         return;
     };
     let Some(value) = first_line_from_tracked_file(&stdin, env) else {
