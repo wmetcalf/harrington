@@ -9028,6 +9028,13 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
                 command.to_string(),
             );
         }
+        if lower.contains("consolehost_history.txt") || lower.contains("\\psreadline\\") {
+            push(
+                "powershell-history-delete",
+                "PowerShellHistory".to_string(),
+                command.to_string(),
+            );
+        }
     }
 
     for caps in REG_DELETE_HISTORY_RE.captures_iter(deobfuscated) {
@@ -9108,6 +9115,13 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
                 command.to_string(),
             );
         }
+        if lower.contains("consolehost_history.txt") || lower.contains("\\psreadline\\") {
+            push(
+                "powershell-history-delete",
+                "PowerShellHistory".to_string(),
+                command.to_string(),
+            );
+        }
     }
 }
 
@@ -9122,6 +9136,8 @@ fn has_evidence_cleanup_atom(text: &str) -> bool {
         "recent",
         "automaticdestinations",
         "customdestinations",
+        "consolehost_history.txt",
+        "psreadline",
         "userassist",
         "recentdocs",
         "muicache",

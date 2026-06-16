@@ -6962,6 +6962,24 @@ for /f "tokens=1 delims=:" %%A in ('curl -# -k "http://www.geoplugin.net/php.gp?
     }
 
     #[test]
+    fn powershell_history_file_delete_emits_evidence_cleanup_trait() {
+        let script =
+            br#"del "%APPDATA%\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::EvidenceCleanup { action, target, .. }
+                    if action == "powershell-history-delete"
+                        && target == "PowerShellHistory"
+            )),
+            "PowerShell history deletion was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_evidence_cleanup_artifacts_emit_traits() {
         let script = br#"powershell -Command "Clear-EventLog -LogName Security"
 powershell -Command "Remove-Item -Recurse -Force C:\Windows\Prefetch\*"
