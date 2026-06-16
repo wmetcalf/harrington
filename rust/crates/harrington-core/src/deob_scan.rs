@@ -11842,7 +11842,7 @@ fn scan_uac_bypass(deobfuscated: &str, env: &mut Environment) {
                 "uac-enablelua-disabled",
             ),
             (
-                Regex::new(r#"(?i)\b(?:New|Set)-ItemProperty\b[^\r\n]*Policies\\system[^\r\n]*-Name\s+EnableLUA[^\r\n]*-Value\s+0\b"#).unwrap(),
+                Regex::new(r#"(?i)\b(?:(?:New|Set)-ItemProperty|sp)\b[^\r\n]*Policies\\system[^\r\n]*-Name\s+EnableLUA[^\r\n]*-Value\s+0\b"#).unwrap(),
                 "uac-enablelua-disabled",
             ),
             (
@@ -11861,14 +11861,15 @@ fn scan_uac_bypass(deobfuscated: &str, env: &mut Environment) {
         }
     }
 
-    for line in deobfuscated
-        .lines()
-        .filter(|line| line.to_ascii_lowercase().contains("itemproperty"))
-    {
+    for line in deobfuscated.lines().filter(|line| {
+        line.to_ascii_lowercase().contains("itemproperty") || contains_ascii_keyword(line, "sp")
+    }) {
         let positional = if find_ascii_case_insensitive(line, "New-ItemProperty", 0).is_some() {
             powershell_itemproperty_positional_arguments(line, "New-ItemProperty")
         } else if find_ascii_case_insensitive(line, "Set-ItemProperty", 0).is_some() {
             powershell_itemproperty_positional_arguments(line, "Set-ItemProperty")
+        } else if contains_ascii_keyword(line, "sp") {
+            powershell_itemproperty_positional_arguments(line, "sp")
         } else {
             continue;
         };
@@ -12122,7 +12123,7 @@ fn scan_powershell_registry_persistence(deobfuscated: &str, env: &mut Environmen
     use once_cell::sync::Lazy;
     use regex::Regex;
     static PS_ITEM_PROPERTY_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?im)^[^\r\n]*?\b(?:New|Set)-ItemProperty\b[^\r\n]*"#)
+        Regex::new(r#"(?im)^[^\r\n]*?\b(?:(?:New|Set)-ItemProperty|sp)\b[^\r\n]*"#)
             .expect("powershell itemproperty persistence regex")
     });
 
@@ -12145,8 +12146,10 @@ fn scan_powershell_registry_persistence(deobfuscated: &str, env: &mut Environmen
         let line = m.as_str().trim();
         let positional = if find_ascii_case_insensitive(line, "New-ItemProperty", 0).is_some() {
             powershell_itemproperty_positional_arguments(line, "New-ItemProperty")
-        } else {
+        } else if find_ascii_case_insensitive(line, "Set-ItemProperty", 0).is_some() {
             powershell_itemproperty_positional_arguments(line, "Set-ItemProperty")
+        } else {
+            powershell_itemproperty_positional_arguments(line, "sp")
         };
         let mut positional = positional.into_iter();
         let Some(path) = powershell_named_argument(line, "-Path")

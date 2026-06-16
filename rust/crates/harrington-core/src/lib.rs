@@ -2146,6 +2146,38 @@ echo UAC.ShellExecute "cmd.exe", "/c ""%~s0""", "", "runas", 1 >> "%temp%\getadm
     }
 
     #[test]
+    fn powershell_sp_alias_enablelua_emits_uac_bypass_trait() {
+        let script = br#"powershell.exe sp -Path HKLM:Software\Microsoft\Windows\CurrentVersion\policies\system -Name EnableLUA -Value 0
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::UacBypass { technique } if technique == "uac-enablelua-disabled"
+            )),
+            "missing sp alias EnableLUA UacBypass: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_positional_sp_alias_enablelua_emits_uac_bypass_trait() {
+        let script = br#"powershell.exe sp HKLM:Software\Microsoft\Windows\CurrentVersion\policies\system EnableLUA 0
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::UacBypass { technique } if technique == "uac-enablelua-disabled"
+            )),
+            "missing positional sp alias EnableLUA UacBypass: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn uac_enablelua_padded_hex_zero_emits_uac_bypass_trait() {
         let script = br#"reg add HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System /v EnableLUA /t REG_DWORD /d 0x00000000 /f"#;
         let report = analyze(script, &AnalyzeConfig::default());
@@ -2362,6 +2394,55 @@ reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v updater /d "cmd 
                     && command == "calc.exe"
             )),
             "mixed PowerShell Run-key persistence missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_sp_alias_run_key_itemproperty_emits_persistence_trait() {
+        let script = br#"powershell -Command "sp -Path HKCU:\Software\Microsoft\Windows\CurrentVersion\Run -Name Updater -Value calc.exe"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence {
+                    hive,
+                    key,
+                    value_name,
+                    command,
+                } if hive == "HKCU"
+                    && key == r"Software\Microsoft\Windows\CurrentVersion\Run"
+                    && value_name == "Updater"
+                    && command == "calc.exe"
+            )),
+            "PowerShell sp alias Run-key persistence missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_sp_alias_positional_run_key_itemproperty_emits_persistence_trait() {
+        let script =
+            br#"powershell -Command "sp HKCU:\Software\Microsoft\Windows\CurrentVersion\Run Updater calc.exe"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence {
+                    hive,
+                    key,
+                    value_name,
+                    command,
+                } if hive == "HKCU"
+                    && key == r"Software\Microsoft\Windows\CurrentVersion\Run"
+                    && value_name == "Updater"
+                    && command == "calc.exe"
+            )),
+            "PowerShell positional sp alias Run-key persistence missing: {:?}",
             report.traits
         );
     }
@@ -40353,6 +40434,37 @@ mod ps_alias_tests {
         use crate::ps_alias::expand_aliases_if_ps;
         let out = expand_aliases_if_ps("tnc c2.example -Port 443");
         assert!(out.contains("Test-NetConnection"), "got: {}", out);
+    }
+
+    #[test]
+    fn wmi_and_service_aliases_expanded() {
+        let out =
+            expand_aliases("gwmi Win32_ShadowCopy | rwmi; gcim AntiVirusProduct; gsv WinDefend");
+        assert!(
+            out.contains("Get-WmiObject Win32_ShadowCopy"),
+            "got: {}",
+            out
+        );
+        assert!(out.contains("Remove-WmiObject"), "got: {}", out);
+        assert!(
+            out.contains("Get-CimInstance AntiVirusProduct"),
+            "got: {}",
+            out
+        );
+        assert!(out.contains("Get-Service WinDefend"), "got: {}", out);
+    }
+
+    #[test]
+    fn gate_allows_wmi_and_service_alias_only_payload() {
+        use crate::ps_alias::expand_aliases_if_ps;
+        let out = expand_aliases_if_ps("gwmi Win32_ShadowCopy | rwmi; gsv WinDefend");
+        assert!(
+            out.contains("Get-WmiObject Win32_ShadowCopy"),
+            "got: {}",
+            out
+        );
+        assert!(out.contains("Remove-WmiObject"), "got: {}", out);
+        assert!(out.contains("Get-Service WinDefend"), "got: {}", out);
     }
 
     #[test]

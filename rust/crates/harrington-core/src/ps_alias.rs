@@ -82,6 +82,11 @@ const ALIAS_TABLE: &[(&str, &str)] = &[
     ("start", "Start-Process"),
     // Services
     ("spsv", "Stop-Service"),
+    ("gsv", "Get-Service"),
+    // WMI / CIM
+    ("gwmi", "Get-WmiObject"),
+    ("gcim", "Get-CimInstance"),
+    ("rwmi", "Remove-WmiObject"),
     // History
     ("h", "Get-History"),
     ("history", "Get-History"),
@@ -130,7 +135,7 @@ pub fn looks_like_powershell(text: &str) -> bool {
                   |Import|Export|ConvertTo|ConvertFrom|Start|Stop|Enter|Exit
                   |Write|Read|Test|Format) - [A-Z][A-Za-z]+ \b
             | :: [A-Za-z_]
-            | (?:^|[\s;|&(]) (?:iex|iwr|irm|wget|curl|tnc) (?:\s|$|[\(\;\&\|])
+            | (?:^|[\s;|&(]) (?:iex|iwr|irm|wget|curl|tnc|gwmi|gcim|rwmi|gps|gsv) (?:\s|$|[\(\;\&\|])
             ",
         )
         .expect("ps marker re")
