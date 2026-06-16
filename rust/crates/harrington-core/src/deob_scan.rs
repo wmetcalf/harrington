@@ -11277,7 +11277,7 @@ fn scan_uac_bypass(deobfuscated: &str, env: &mut Environment) {
             (Regex::new(r"(?i)HKCU\\Software\\Classes\\(?:ms-settings|Folder|exefile|mscfile)\\Shell\\Open\\command").unwrap(), "classes-shell-open-hijack"),
             (Regex::new(r"(?i)IColorDataProxy|ICMLuaUtil").unwrap(), "com-elevation"),
             (
-                Regex::new(r#"(?i)\breg(?:\.exe)?\s+add[^\r\n]*\\Policies\\System[^\r\n]*/v\s+["']?EnableLUA["']?[^\r\n]*/d\s+["']?0["']?\b"#).unwrap(),
+                Regex::new(r#"(?i)\breg(?:\.exe)?\s+add[^\r\n]*\\Policies\\System[^\r\n]*/v\s+["']?EnableLUA["']?[^\r\n]*/d\s+["']?(?:0x0+|0+)["']?\b"#).unwrap(),
                 "uac-enablelua-disabled",
             ),
             (
@@ -11285,11 +11285,11 @@ fn scan_uac_bypass(deobfuscated: &str, env: &mut Environment) {
                 "uac-enablelua-disabled",
             ),
             (
-                Regex::new(r#"(?i)\breg(?:\.exe)?\s+add[^\r\n]*\\Policies\\System[^\r\n]*/v\s+["']?ConsentPromptBehaviorAdmin["']?[^\r\n]*/d\s+["']?0["']?\b"#).unwrap(),
+                Regex::new(r#"(?i)\breg(?:\.exe)?\s+add[^\r\n]*\\Policies\\System[^\r\n]*/v\s+["']?ConsentPromptBehaviorAdmin["']?[^\r\n]*/d\s+["']?(?:0x0+|0+)["']?\b"#).unwrap(),
                 "uac-consent-prompt-disabled",
             ),
             (
-                Regex::new(r#"(?i)\breg(?:\.exe)?\s+add[^\r\n]*\\Policies\\System[^\r\n]*/v\s+["']?LocalAccountTokenFilterPolicy["']?[^\r\n]*/d\s+["']?1["']?\b"#).unwrap(),
+                Regex::new(r#"(?i)\breg(?:\.exe)?\s+add[^\r\n]*\\Policies\\System[^\r\n]*/v\s+["']?LocalAccountTokenFilterPolicy["']?[^\r\n]*/d\s+["']?(?:0x0*1|0*1)["']?\b"#).unwrap(),
                 "uac-token-filter-disabled",
             ),
         ]
