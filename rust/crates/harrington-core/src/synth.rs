@@ -1389,6 +1389,19 @@ fn synth_tasklist(_args: &[&str]) -> Vec<String> {
 }
 
 fn synth_where(args: &[&str], env: &Environment) -> Vec<String> {
+    if let Some((root, pattern)) = where_recursive_args(args) {
+        let mut out = env
+            .modified_filesystem
+            .keys()
+            .filter(|path| where_recursive_matches(&root, &pattern, path))
+            .cloned()
+            .collect::<Vec<_>>();
+        out.sort();
+        out.dedup();
+        if !out.is_empty() {
+            return out;
+        }
+    }
     let bin = match where_pattern_arg(args) {
         Some(b) => b.to_ascii_lowercase(),
         None => return Vec::new(),
@@ -1401,6 +1414,41 @@ fn synth_where(args: &[&str], env: &Environment) -> Vec<String> {
         }
     }
     Vec::new()
+}
+
+fn where_recursive_args(args: &[&str]) -> Option<(String, String)> {
+    let mut iter = non_redirect_args(args).map(|arg| arg.trim_matches('"'));
+    while let Some(arg) = iter.next() {
+        if arg.eq_ignore_ascii_case("/r") {
+            let root = iter.next()?.to_string();
+            let pattern = iter
+                .find(|candidate| !candidate.is_empty() && !candidate.starts_with('/'))?
+                .to_string();
+            return Some((root, pattern));
+        }
+    }
+    None
+}
+
+fn where_recursive_matches(root: &str, pattern: &str, tracked_path: &str) -> bool {
+    let root = normalize_wildcard_path(&normalize_filesystem_storage_path(root));
+    let root = root.trim_end_matches('\\');
+    let path = normalize_wildcard_path(tracked_path);
+    if !path.starts_with(root) {
+        return false;
+    }
+    let suffix = &path[root.len()..];
+    if !suffix.starts_with('\\') {
+        return false;
+    }
+    let rest = suffix.trim_start_matches('\\');
+    !rest.is_empty()
+        && windows_basename(&path).is_some_and(|name| {
+            wildcard_match(
+                &normalize_wildcard_path(pattern),
+                &normalize_wildcard_path(name),
+            )
+        })
 }
 
 fn where_pattern_arg(args: &[&str]) -> Option<String> {
