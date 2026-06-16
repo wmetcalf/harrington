@@ -11719,6 +11719,9 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
             .get(0)
             .map(|m| m.as_str().trim().to_string())
             .unwrap_or_default();
+        if command_starts_with_echo(&command) {
+            continue;
+        }
         push("hidden-user", target, command);
     }
     for m in RDP_MULTIPLE_SESSIONS_RE.find_iter(deobfuscated) {
@@ -11832,6 +11835,9 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
     }
     for m in RDP_FIREWALL_ADD_RULE_RE.find_iter(deobfuscated) {
         let command = m.as_str().trim();
+        if command_starts_with_echo(command) {
+            continue;
+        }
         let lower = command.to_ascii_lowercase();
         if !lower.contains("action=allow")
             && !lower.contains("action = allow")
