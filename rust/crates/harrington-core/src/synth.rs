@@ -897,6 +897,20 @@ fn filter_find(args: &[&str], input: Vec<String>) -> Vec<String> {
 fn type_file(path: &str, env: &mut Environment) -> Vec<String> {
     let path = path.trim_matches('"');
 
+    if path.contains(['*', '?']) {
+        let normalized_pattern = normalize_wildcard_path(&normalize_filesystem_storage_path(path));
+        let tracked = env
+            .modified_filesystem
+            .keys()
+            .filter(|tracked| dir_wildcard_matches(path, &normalized_pattern, tracked))
+            .cloned()
+            .collect::<Vec<_>>();
+        return tracked
+            .into_iter()
+            .flat_map(|tracked| type_file(&tracked, env))
+            .collect();
+    }
+
     // %~f0 / explicit input path → read input bytes
     let is_self = path.contains("script.bat")
         || env
