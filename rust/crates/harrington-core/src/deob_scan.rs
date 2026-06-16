@@ -9004,6 +9004,10 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
         Regex::new(r#"(?im)^[^\r\n]*?\bClear-RecycleBin\b[^\r\n]*"#)
             .expect("powershell clear-recyclebin regex")
     });
+    static PS_CLEAR_HISTORY_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?im)^[^\r\n]*?\bClear-History\b[^\r\n]*"#)
+            .expect("powershell clear-history regex")
+    });
 
     fn clean_token(token: &str) -> String {
         token
@@ -9209,6 +9213,15 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
         push("recycle-bin-clear", "RecycleBin".to_string(), command);
     }
 
+    for m in PS_CLEAR_HISTORY_RE.find_iter(deobfuscated) {
+        let command = m.as_str().trim().to_string();
+        push(
+            "powershell-history-delete",
+            "PowerShellHistory".to_string(),
+            command,
+        );
+    }
+
     for caps in PS_REMOVE_ITEM_RE.captures_iter(deobfuscated) {
         let Some(m) = caps.get(0) else {
             continue;
@@ -9287,6 +9300,7 @@ fn has_evidence_cleanup_atom(text: &str) -> bool {
         "typedpaths",
         "clear-eventlog",
         "clear-recyclebin",
+        "clear-history",
         "remove-item",
     ]
     .iter()
