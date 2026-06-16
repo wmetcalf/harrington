@@ -5930,6 +5930,22 @@ powershell -Command "Clear-RecycleBin -Force"
     }
 
     #[test]
+    fn powershell_clear_eventlog_positional_name_emits_evidence_cleanup_trait() {
+        let script = br#"powershell -Command "Clear-EventLog Security""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::EvidenceCleanup { action, target, .. }
+                    if action == "event-log-clear" && target == "Security"
+            )),
+            "PowerShell positional Clear-EventLog cleanup missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn copied_evidence_cleanup_aliases_emit_traits() {
         let script = br#"copy C:\Windows\System32\wevtutil.exe C:\Users\Public\we.tmp
 C:\Users\Public\we.tmp cl Security

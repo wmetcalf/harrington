@@ -8719,6 +8719,10 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
         )
         .expect("powershell clear-eventlog regex")
     });
+    static PS_CLEAR_EVENT_LOG_LINE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?im)^[^\r\n]*?\bClear-EventLog\b[^\r\n]*"#)
+            .expect("powershell clear-eventlog line regex")
+    });
     static PS_REMOVE_ITEM_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?im)^[^\r\n]*?\b(?:Remove-Item|rm|del|erase|rd|rmdir)\b[^\r\n]*"#)
             .expect("powershell remove-item regex")
@@ -8840,6 +8844,19 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
             .map(|m| m.as_str().trim().to_string())
             .unwrap_or_default();
         push("event-log-clear", target, command);
+    }
+    for m in PS_CLEAR_EVENT_LOG_LINE_RE.find_iter(deobfuscated) {
+        let command = m.as_str().trim();
+        if command.to_ascii_lowercase().contains("-logname") {
+            continue;
+        }
+        let Some(target) = powershell_positional_arguments(command, "Clear-EventLog")
+            .into_iter()
+            .next()
+        else {
+            continue;
+        };
+        push("event-log-clear", clean_token(&target), command.to_string());
     }
 
     for m in PS_CLEAR_RECYCLE_BIN_RE.find_iter(deobfuscated) {
