@@ -7481,7 +7481,7 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
             .expect("security binary icacls")
     });
     static SECURITY_BINARY_RENAME_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?i)\bren(?:ame)?(?:\.exe)?\b[^\r\n]*(SecurityHealthService|SecurityHealthSystray|MsMpEng|NisSrv|MpCmdRun)\.exe\b[^\r\n]*"#)
+        Regex::new(r#"(?i)\b(?:ren(?:ame)?|move)(?:\.exe)?\b[^\r\n]*(SecurityHealthService|SecurityHealthSystray|MsMpEng|NisSrv|MpCmdRun)\.exe\b[^\r\n]*"#)
             .expect("security binary rename")
     });
     static SCHTASKS_TN_RE: Lazy<Regex> = Lazy::new(|| {
@@ -7881,7 +7881,8 @@ fn has_defender_evasion_atom_lower(lower: &str) -> bool {
 
 fn has_defender_service_process_atom_lower(lower: &str) -> bool {
     const COMMAND_ATOMS: &[&str] = &[
-        "sc ", "sc.exe", "taskkill", "takeown", "icacls", "rename", "ren ", "ren\t",
+        "sc ", "sc.exe", "taskkill", "takeown", "icacls", "rename", "ren ", "ren\t", "move ",
+        "move\t", "move.exe",
     ];
     COMMAND_ATOMS.iter().any(|atom| lower.contains(atom))
 }
@@ -8014,6 +8015,7 @@ mod defender_evasion_prefilter_tests {
             "taskkill /im SecurityHealthSystray.exe /f",
             "taskkill /im WindowsDefender.exe /f",
             r#"takeown /f C:\Windows\System32\MsMpEng.exe"#,
+            r#"move C:\Windows\System32\SecurityHealthService.exe C:\Windows\System32\SecurityHealthService.bak"#,
             r#"schtasks /Change /TN "Microsoft\Windows\Windows Defender\Cache Maintenance" /Disable"#,
             r#"reg add HKLM\System\CurrentControlSet\Services\WinDefend /v Start /d 4"#,
             r#"reg add HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\Attachments /v SaveZoneInformation /d 2"#,
@@ -8048,6 +8050,10 @@ mod defender_evasion_prefilter_tests {
         ));
         assert!(has_defender_service_process_atom_lower(
             &"taskkill /im SecurityHealthSystray.exe /f".to_ascii_lowercase()
+        ));
+        assert!(has_defender_service_process_atom_lower(
+            &r#"move C:\Windows\System32\SecurityHealthService.exe C:\Windows\System32\SecurityHealthService.bak"#
+                .to_ascii_lowercase()
         ));
         assert!(has_defender_scheduled_registry_firewall_atom_lower(
             &r#"reg add HKLM\System\CurrentControlSet\Services\WinDefend /v Start /d 4"#

