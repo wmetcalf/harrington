@@ -942,12 +942,14 @@ fn render_percent_tilde_from_chars(
         path_search = Some(chars[env_start..j].iter().collect());
         j += 1;
     }
-    path_search.as_ref()?;
     if j >= chars.len() || !chars[j].is_ascii_digit() {
         return None;
     }
     let flags = crate::lex::PercentTildeFlags::parse(&flag_str)?;
     let arg_index = (chars[j] as u32).saturating_sub('0' as u32) as u8;
+    if arg_index == 0 {
+        return None;
+    }
     Some((
         render_percent_tilde(env, flags, path_search.as_deref(), arg_index),
         j + 1,
