@@ -3945,6 +3945,7 @@ tracert -w=100 c2.example
 pathping /q:2 203.0.113.10
 Resolve-DnsName -Name:dns-attached.example
 Resolve-DnsName -Name=dns-equals.example
+Resolve-DnsName -Type A dns-positional-after-option.example
 "#,
             &AnalyzeConfig::default(),
         );
@@ -3955,6 +3956,7 @@ Resolve-DnsName -Name=dns-equals.example
             ("route-trace", "203.0.113.10"),
             ("dns-lookup", "dns-attached.example"),
             ("dns-lookup", "dns-equals.example"),
+            ("dns-lookup", "dns-positional-after-option.example"),
         ] {
             assert!(
                 report.traits.iter().any(|t| matches!(

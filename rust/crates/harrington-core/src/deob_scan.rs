@@ -8797,15 +8797,10 @@ mod evidence_cleanup_prefilter_tests {
 /// Network/IP discovery probes: nslookup, Resolve-DnsName, ping to
 /// non-loopback IPs, calls to ipify/checkip/ip-api/geolocation APIs.
 fn scan_network_probe(deobfuscated: &str, env: &mut Environment) {
-    use once_cell::sync::Lazy;
-    use regex::Regex;
-    static RESOLVE_DNS_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(
-            r#"(?i)\bResolve-DnsName\b[^\r\n]*?(?:-Name(?:\s*[:=]\s*|\s+)(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9.\-]+))|(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9.\-]+)))"#,
-        )
-        .expect("resolve-dns re")
-    });
     for line in deobfuscated.lines() {
+        if let Some(target) = resolve_dns_name_target(line) {
+            push_network_probe(env, "dns-lookup", target);
+        }
         let tokens = split_words(line);
         let Some(command) = tokens.first() else {
             continue;
@@ -8841,24 +8836,77 @@ fn scan_network_probe(deobfuscated: &str, env: &mut Environment) {
             _ => {}
         }
     }
-    for c in RESOLVE_DNS_RE.captures_iter(deobfuscated) {
-        let h = c
-            .get(1)
-            .or_else(|| c.get(2))
-            .or_else(|| c.get(3))
-            .or_else(|| c.get(4))
-            .or_else(|| c.get(5))
-            .or_else(|| c.get(6))
-            .map(|m| m.as_str().to_string())
-            .unwrap_or_default();
-        push_network_probe(env, "dns-lookup", h);
-    }
     let lower = deobfuscated.to_ascii_lowercase();
     for host in IP_DISCOVERY_HOSTS {
         if lower.contains(host) {
             push_network_probe(env, "ip-discovery", (*host).to_string());
         }
     }
+}
+
+fn resolve_dns_name_target(line: &str) -> Option<String> {
+    let command_start = find_ascii_case_insensitive(line, "resolve-dnsname", 0)?;
+    let before = line.as_bytes()[..command_start].last().copied();
+    if before.is_some_and(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+        return None;
+    }
+    let after_start = command_start + "resolve-dnsname".len();
+    let after = line.get(after_start..)?;
+    let mut skip_next = false;
+    let mut name_next = false;
+    let tokens = split_words(after);
+    for token in tokens {
+        let token = token.trim_matches(['"', '\'']);
+        if token.is_empty() {
+            continue;
+        }
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if name_next {
+            return normalize_probe_target(token);
+        }
+        let lower = token.to_ascii_lowercase();
+        if let Some(value) = attached_powershell_arg_value(&lower, token, "-name") {
+            return normalize_probe_target(value);
+        }
+        if lower == "-name" {
+            name_next = true;
+            continue;
+        }
+        if lower == "-type" || lower == "-server" || lower == "-dnssecok" {
+            skip_next = true;
+            continue;
+        }
+        if lower.starts_with('-') {
+            continue;
+        }
+        return normalize_probe_target(token);
+    }
+    None
+}
+
+fn attached_powershell_arg_value<'a>(
+    lower_token: &str,
+    original_token: &'a str,
+    name: &str,
+) -> Option<&'a str> {
+    let suffix = lower_token
+        .strip_prefix(name)
+        .filter(|suffix| suffix.starts_with(':') || suffix.starts_with('='))?;
+    let value_start = original_token.len() - suffix.len() + 1;
+    original_token
+        .get(value_start..)
+        .filter(|value| !value.is_empty())
+}
+
+fn normalize_probe_target(target: &str) -> Option<String> {
+    let target = target
+        .trim_matches(['"', '\''])
+        .trim_end_matches(['.', ',', ';'])
+        .to_string();
+    (!target.is_empty()).then_some(target)
 }
 
 fn network_probe_command_target(tokens: &[String], command: &str) -> Option<String> {
