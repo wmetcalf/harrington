@@ -4936,6 +4936,37 @@ powershell -Command "Get-ADComputer -Filter *"
     }
 
     #[test]
+    fn additional_powershell_host_network_discovery_emit_enumeration_traits() {
+        let report = analyze(
+            br#"powershell -Command "Get-NetRoute"
+powershell -Command "Get-DnsClientCache"
+powershell -Command "Get-SmbShare"
+powershell -Command "Get-NetFirewallProfile"
+powershell -Command "Get-ChildItem Env:"
+"#,
+            &AnalyzeConfig::default(),
+        );
+
+        for (kind, needle) in [
+            ("ps-netroute", "Get-NetRoute"),
+            ("ps-dnsclientcache", "Get-DnsClientCache"),
+            ("ps-smbshare", "Get-SmbShare"),
+            ("ps-netfirewallprofile", "Get-NetFirewallProfile"),
+            ("ps-env", "Get-ChildItem Env:"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Enumeration { enum_kind, command }
+                        if enum_kind == kind && command.contains(needle)
+                )),
+                "missing PowerShell host/network discovery enumeration {kind}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn powershell_discovery_enumeration_command_is_not_truncated() {
         let long_marker = "tail-marker-preserved-after-a-very-long-discovery-command";
         let script = format!(
