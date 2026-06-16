@@ -83,7 +83,17 @@ fn split_pipeline(p: &str) -> Vec<String> {
 
 fn run_stage(stage: &str, input: Vec<String>, env: &mut Environment) -> Vec<String> {
     // First token is the command
-    let stage = normalize_stage_prefix(stage);
+    let (redir_cleaned, redirs) = crate::redirect::extract_redirections(stage);
+    let input = if input.is_empty() {
+        redirs
+            .stdin
+            .as_deref()
+            .map(|path| type_file(path, env))
+            .unwrap_or(input)
+    } else {
+        input
+    };
+    let stage = normalize_stage_prefix(&redir_cleaned);
     let Some((cmd_token, rest)) = split_stage_command(stage) else {
         return Vec::new();
     };
@@ -120,7 +130,7 @@ fn run_stage(stage: &str, input: Vec<String>, env: &mut Environment) -> Vec<Stri
         "find" => synth_find(&rest_args, input, env),
         "more" => synth_more(stage, &rest_args, input, env),
         "sort" => synth_sort(stage, &rest_args, input, env),
-        "type" => synth_type(&rest_args, env),
+        "type" => synth_type(&rest_args, input, env),
         "assoc" => synth_assoc(&rest_args, env),
         "ftype" => synth_ftype(&rest_args, env),
         "reg" => synth_reg(&rest_args, env),
@@ -543,10 +553,13 @@ fn find_file_input_lines(path: &str, env: &mut Environment) -> Vec<String> {
     type_file(path, env)
 }
 
-fn synth_type(args: &[&str], env: &mut Environment) -> Vec<String> {
+fn synth_type(args: &[&str], input: Vec<String>, env: &mut Environment) -> Vec<String> {
     let mut out = Vec::new();
     for path in non_redirect_args(args) {
         out.extend(type_file(path, env));
+    }
+    if out.is_empty() && !input.is_empty() {
+        return input;
     }
     out
 }
