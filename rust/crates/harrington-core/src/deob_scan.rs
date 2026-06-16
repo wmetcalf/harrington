@@ -4808,6 +4808,54 @@ fn scan_copied_uac_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
         "msconfig.exe",
         crate::handlers::msconfig::h_msconfig,
     );
+
+    let mut aliases: std::collections::HashMap<String, &'static str> =
+        std::collections::HashMap::new();
+    for t in &env.traits {
+        let Trait::WindowsUtilManip { src, dst, .. } = t else {
+            continue;
+        };
+        let src_base = basename_lower(src);
+        let replay_command = match src_base.as_str() {
+            "fodhelper.exe" | "fodhelper" => "fodhelper.exe",
+            "eventvwr.exe" | "eventvwr" => "eventvwr.exe",
+            "sdclt.exe" | "sdclt" => "sdclt.exe",
+            "computerdefaults.exe" | "computerdefaults" => "computerdefaults.exe",
+            "wsreset.exe" | "wsreset" => "wsreset.exe",
+            "cmstp.exe" | "cmstp" => "cmstp.exe",
+            "msconfig.exe" | "msconfig" => "msconfig.exe",
+            _ => continue,
+        };
+        insert_alias_command_names(&mut aliases, dst, replay_command);
+    }
+    if aliases.is_empty() {
+        return;
+    }
+
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        let Some(cmd) = tokens.first() else {
+            continue;
+        };
+        let replay_command = aliases
+            .get(&basename_lower(cmd))
+            .or_else(|| aliases.get(&cmd.trim_matches(['"', '\'']).to_ascii_lowercase()));
+        let Some(replay_command) = replay_command else {
+            continue;
+        };
+
+        push_manipulated_exec_once(env, line, cmd);
+        let rest = line
+            .get(cmd.len()..)
+            .map(str::trim_start)
+            .unwrap_or_default();
+        let replay = if rest.is_empty() {
+            (*replay_command).to_string()
+        } else {
+            format!("{replay_command} {rest}")
+        };
+        scan_uac_bypass(&replay, env);
+    }
 }
 
 fn scan_copied_esentutl_alias_deob_text(deobfuscated: &str, env: &mut Environment) {

