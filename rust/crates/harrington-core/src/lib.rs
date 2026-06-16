@@ -4029,6 +4029,30 @@ for /f "tokens=* delims=" %%U in ('type first.txt second.txt ^| find "https://"'
     }
 
     #[test]
+    fn for_f_reads_wmic_localdatetime_output() {
+        let script = concat!(
+            "for /f \"tokens=2 delims==.\" %%T in ('wmic os get LocalDateTime /value') do set TS=%%T\r\n",
+            "echo ts=%TS%\r\n",
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo ts=20260615120000"),
+            "wmic LocalDateTime output did not feed later variable: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ForUnresolvedSource { pipeline }
+                    if pipeline.to_ascii_lowercase().contains("localdatetime")
+            )),
+            "wmic LocalDateTime should resolve synthetically: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn for_f_pipeline_allows_leading_stderr_redirection() {
         let script =
             br#"for /f "tokens=*" %%d in ('2^>NUL dir /b "%appdata%\discord\Local Storage\leveldb\"') do echo %%d"#;

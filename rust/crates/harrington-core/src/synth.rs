@@ -1314,6 +1314,19 @@ fn synth_wmic(args: &[&str]) -> Vec<String> {
     }
     if filtered
         .first()
+        .is_some_and(|arg| arg.eq_ignore_ascii_case("os"))
+        && joined.contains("localdatetime")
+    {
+        if joined.contains("/value") {
+            return vec!["LocalDateTime=20260615120000.000000-000".to_string()];
+        }
+        return vec![
+            "LocalDateTime".to_string(),
+            "20260615120000.000000-000".to_string(),
+        ];
+    }
+    if filtered
+        .first()
         .is_some_and(|arg| arg.eq_ignore_ascii_case("computersystem"))
         && joined.contains("manufacturer")
     {
