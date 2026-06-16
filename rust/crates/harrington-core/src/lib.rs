@@ -3694,6 +3694,22 @@ powershell -Command "New-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Cont
     }
 
     #[test]
+    fn net_user_active_yes_emits_account_modification_trait() {
+        let script = br#"net user defaultuserx /active:yes"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, .. }
+                    if action == "local-user-enable" && account == "defaultuserx"
+            )),
+            "net user /active:yes account enablement missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_local_user_and_group_member_emit_account_modification_traits() {
         let script = br#"powershell -Command "New-LocalUser -Name backdoor -Password $p"
 powershell -Command "Add-LocalGroupMember -Group Administrators -Member backdoor"

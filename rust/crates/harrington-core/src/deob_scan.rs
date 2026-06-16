@@ -9364,6 +9364,12 @@ fn scan_account_modification(deobfuscated: &str, env: &mut Environment) {
         )
         .expect("net user add regex")
     });
+    static NET_USER_ACTIVE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?im)^[^\r\n]*?\bnet1?(?:\.exe)?\s+user\s+("[^"\r\n]+"|'[^'\r\n]+'|[^\s/]+)[^\r\n]*\s/active\s*:\s*yes\b[^\r\n]*"#,
+        )
+        .expect("net user active regex")
+    });
     static NET_LOCALGROUP_ADD_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
             r#"(?im)^[^\r\n]*?\bnet1?(?:\.exe)?\s+localgroup\s+("[^"\r\n]+"|'[^'\r\n]+'|[^\s/]+)\s+("[^"\r\n]+"|'[^'\r\n]+'|[^\s/]+)[^\r\n]*\s/add\b[^\r\n]*"#,
@@ -9422,6 +9428,17 @@ fn scan_account_modification(deobfuscated: &str, env: &mut Environment) {
             .unwrap_or_default();
         push("local-user-add", account, None, command);
     }
+    for caps in NET_USER_ACTIVE_RE.captures_iter(deobfuscated) {
+        let account = caps
+            .get(1)
+            .map(|m| clean_token(m.as_str()))
+            .unwrap_or_default();
+        let command = caps
+            .get(0)
+            .map(|m| m.as_str().trim().to_string())
+            .unwrap_or_default();
+        push("local-user-enable", account, None, command);
+    }
     for caps in NET_LOCALGROUP_ADD_RE.captures_iter(deobfuscated) {
         let group = caps
             .get(1)
@@ -9477,6 +9494,10 @@ fn has_account_modification_atom(text: &str) -> bool {
     (lower.contains("/add")
         && lower.contains("net")
         && (lower.contains("user") || lower.contains("localgroup")))
+        || (lower.contains("/active")
+            && lower.contains("yes")
+            && lower.contains("net")
+            && lower.contains("user"))
         || lower.contains("new-localuser")
         || lower.contains("add-localgroupmember")
 }
@@ -9530,6 +9551,7 @@ mod account_modification_prefilter_tests {
             r#"net user support P@ssw0rd /add"#,
             r#"net1.exe user support P@ssw0rd /ADD"#,
             r#"net localgroup Administrators support /add"#,
+            r#"net user defaultuserx /active:yes"#,
         ] {
             assert!(has_account_modification_atom(sample), "blocked: {sample}");
         }
