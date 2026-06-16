@@ -8819,7 +8819,7 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
     }
 
     static EVENT_LOG_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?im)^[^\r\n]*?\bwevtutil(?:\.exe)?\s+cl\s+("[^"\r\n]+"|[^\s\r\n]+)[^\r\n]*"#)
+        Regex::new(r#"(?im)^[^\r\n]*?\bwevtutil(?:\.exe)?\s+(?:cl|clear-log)\s+("[^"\r\n]+"|[^\s\r\n]+)[^\r\n]*"#)
             .expect("wevtutil clear regex")
     });
     static USN_RE: Lazy<Regex> = Lazy::new(|| {
