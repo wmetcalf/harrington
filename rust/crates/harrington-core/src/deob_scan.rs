@@ -5490,6 +5490,8 @@ fn scan_copied_enumeration_alias_deob_text(deobfuscated: &str, env: &mut Environ
             "arp.exe" | "arp" => "arp.exe",
             "route.exe" | "route" => "route.exe",
             "nltest.exe" | "nltest" => "nltest.exe",
+            "dsquery.exe" | "dsquery" => "dsquery.exe",
+            "netdom.exe" | "netdom" => "netdom.exe",
             _ => continue,
         };
         insert_alias_command_names(&mut aliases, dst, replay_command);
@@ -9315,6 +9317,21 @@ fn network_utility_enumeration_kind(tokens: &[String], command: &str) -> Option<
                     || lower.starts_with("/trusted_domains")
             })
             .then_some("nltest-domain"),
+        "dsquery" | "dsquery.exe" => tokens
+            .get(1)
+            .map(|token| {
+                matches!(
+                    token.to_ascii_lowercase().as_str(),
+                    "user" | "computer" | "group" | "ou" | "server" | "*" | "contact" | "subnet"
+                )
+            })
+            .unwrap_or(false)
+            .then_some("dsquery"),
+        "netdom" | "netdom.exe" => tokens
+            .get(1)
+            .map(|token| token.eq_ignore_ascii_case("query"))
+            .unwrap_or(false)
+            .then_some("netdom-query"),
         _ => None,
     }
 }
@@ -9376,6 +9393,8 @@ fn has_enumeration_atom(text: &str) -> bool {
         "route print",
         "route.exe print",
         "nltest",
+        "dsquery",
+        "netdom query",
         "wmic process",
         "wmic.exe process",
         "wmic cpu",
@@ -9418,6 +9437,8 @@ mod enumeration_prefilter_tests {
             "route.exe print",
             "nltest /domain_trusts",
             "nltest /dclist:corp.example",
+            "dsquery user -limit 0",
+            "netdom query dc",
             "wmic process list",
             "wmic.exe process list",
             "wmic cpu get name",

