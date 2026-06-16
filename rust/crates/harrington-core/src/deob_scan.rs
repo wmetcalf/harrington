@@ -4810,6 +4810,16 @@ fn scan_copied_uac_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
     );
 }
 
+fn scan_copied_esentutl_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    scan_copied_handler_alias_deob_text(
+        deobfuscated,
+        env,
+        &["esentutl.exe", "esentutl"],
+        "esentutl.exe",
+        crate::handlers::esentutl::h_esentutl,
+    );
+}
+
 fn scan_copied_handler_alias_deob_text(
     deobfuscated: &str,
     env: &mut Environment,
@@ -8971,6 +8981,9 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     });
     scan_step!("copied_uac_alias_deob_text", {
         scan_copied_uac_alias_deob_text(deobfuscated, env);
+    });
+    scan_step!("copied_esentutl_alias_deob_text", {
+        scan_copied_esentutl_alias_deob_text(deobfuscated, env);
     });
     scan_step!("copied_certutil_alias_deob_text", {
         scan_copied_certutil_alias_deob_text(deobfuscated, env);
