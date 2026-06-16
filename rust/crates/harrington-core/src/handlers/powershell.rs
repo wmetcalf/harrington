@@ -666,6 +666,7 @@ fn direct_content_write_append_mode(token: &str) -> Option<bool> {
     match strip_quotes(token).to_ascii_lowercase().as_str() {
         "set-content" | "sc" => Some(false),
         "add-content" | "ac" => Some(true),
+        "out-file" => Some(false),
         _ => None,
     }
 }
@@ -716,7 +717,17 @@ fn powershell_set_content_paths_and_value(
             i += 2;
             continue;
         }
+        if lower == "-inputobject" {
+            value = Some(strip_quotes(tokens.get(i + 1)?).to_string());
+            i += 2;
+            continue;
+        }
         if let Some(content_value) = attached_ps_value_value(token) {
+            value = Some(content_value.to_string());
+            i += 1;
+            continue;
+        }
+        if let Some(content_value) = attached_ps_input_object_value(token) {
             value = Some(content_value.to_string());
             i += 1;
             continue;
@@ -772,6 +783,14 @@ fn attached_ps_path_value(token: &str) -> Option<&str> {
 fn attached_ps_value_value(token: &str) -> Option<&str> {
     let lower = token.to_ascii_lowercase();
     let rest = lower.strip_prefix("-value")?;
+    let original_rest = &token[token.len() - rest.len()..];
+    let value = original_rest.trim_start_matches([':', '=']);
+    (!value.is_empty()).then(|| strip_quotes(value))
+}
+
+fn attached_ps_input_object_value(token: &str) -> Option<&str> {
+    let lower = token.to_ascii_lowercase();
+    let rest = lower.strip_prefix("-inputobject")?;
     let original_rest = &token[token.len() - rest.len()..];
     let value = original_rest.trim_start_matches([':', '=']);
     (!value.is_empty()).then(|| strip_quotes(value))
