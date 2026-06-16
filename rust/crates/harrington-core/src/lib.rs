@@ -4267,6 +4267,24 @@ powershell -Command "tracert route-wrapper.example"
     }
 
     #[test]
+    fn powershell_wrapped_nslookup_attached_option_keeps_target() {
+        let report = analyze(
+            br#"powershell -Command "nslookup -type=A dns-option-wrapper.example""#,
+            &AnalyzeConfig::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::NetworkProbe { probe_kind, target }
+                    if probe_kind == "dns-lookup" && target == "dns-option-wrapper.example"
+            )),
+            "PowerShell-wrapped nslookup option target missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn copied_ping_alias_emits_network_probe() {
         let script = br#"copy C:\Windows\System32\ping.exe C:\Users\Public\pg.tmp
 C:\Users\Public\pg.tmp -n 1 c2.example

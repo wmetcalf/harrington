@@ -8996,21 +8996,32 @@ fn powershell_wrapped_native_probe(line: &str) -> Option<(&'static str, String)>
         ("tracert", "route-trace", "tracert"),
         ("pathping", "route-trace", "pathping"),
     ] {
-        if !contains_ascii_keyword(line, keyword) {
+        let Some(start) = find_ascii_keyword(line, keyword) else {
             continue;
-        }
-        let target = powershell_positional_arguments(line, keyword)
-            .into_iter()
-            .find(|token| {
-                let lower = token.to_ascii_lowercase();
-                !network_probe_option_takes_value(option_family, &lower)
-            })?;
+        };
+        let tokens = split_words(&line[start..]);
+        let target = if keyword == "nslookup" {
+            tokens
+                .iter()
+                .skip(1)
+                .find(|token| {
+                    let token = token.trim_matches(['"', '\'']);
+                    !token.starts_with('-') && !token.starts_with('/') && !token.is_empty()
+                })
+                .map(|token| token.trim_matches(['"', '\'']).to_string())
+        } else {
+            network_probe_command_target(&tokens, option_family)
+        }?;
         return normalize_probe_target(&target).map(|target| (kind, target));
     }
     None
 }
 
 fn contains_ascii_keyword(text: &str, keyword: &str) -> bool {
+    find_ascii_keyword(text, keyword).is_some()
+}
+
+fn find_ascii_keyword(text: &str, keyword: &str) -> Option<usize> {
     let mut cursor = 0;
     while let Some(start) = find_ascii_case_insensitive(text, keyword, cursor) {
         let end = start + keyword.len();
@@ -9019,11 +9030,11 @@ fn contains_ascii_keyword(text: &str, keyword: &str) -> bool {
         let left_ok = before.map(|b| !is_ascii_keyword_byte(b)).unwrap_or(true);
         let right_ok = after.map(|b| !is_ascii_keyword_byte(b)).unwrap_or(true);
         if left_ok && right_ok {
-            return true;
+            return Some(start);
         }
         cursor = end;
     }
-    false
+    None
 }
 
 fn is_ascii_keyword_byte(byte: u8) -> bool {
