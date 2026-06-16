@@ -10582,7 +10582,10 @@ pub fn scan_renamed_powershell_invocations(text: &str, env: &mut Environment) {
             if lower.starts_with('/') || lower.starts_with('-') {
                 continue;
             }
-            if command_basename(word) == "powershell.exe" {
+            if matches!(
+                command_basename(word).as_str(),
+                "powershell.exe" | "powershell" | "pwsh.exe" | "pwsh"
+            ) {
                 saw_powershell_source = true;
                 continue;
             }
