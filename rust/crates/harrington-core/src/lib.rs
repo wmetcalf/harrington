@@ -5310,6 +5310,26 @@ for /f "tokens=1 delims=:" %%A in ('curl -# -k "http://www.geoplugin.net/php.gp?
     }
 
     #[test]
+    fn powershell_evidence_cleanup_artifacts_emit_traits() {
+        let script = br#"powershell -Command "Clear-EventLog -LogName Security"
+powershell -Command "Remove-Item -Recurse -Force C:\Windows\Prefetch\*"
+powershell -Command "Remove-Item -Force $env:APPDATA\Microsoft\Windows\Recent\CustomDestinations\*"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        for action in ["event-log-clear", "prefetch-delete", "recent-items-delete"] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::EvidenceCleanup { action: a, .. } if a == action
+                )),
+                "missing PowerShell EvidenceCleanup {action}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn copied_evidence_cleanup_aliases_emit_traits() {
         let script = br#"copy C:\Windows\System32\wevtutil.exe C:\Users\Public\we.tmp
 C:\Users\Public\we.tmp cl Security

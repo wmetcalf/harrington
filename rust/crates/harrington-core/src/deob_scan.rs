@@ -8634,6 +8634,16 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
         Regex::new(r#"(?im)^[^\r\n]*?\breg(?:\.exe)?\s+delete\b[^\r\n]*(?:\\UserAssist\b|\\RecentDocs\b|\\MuiCache\b|\\BagMRU\b|\\Shell\\Bags\b|\\ComDlg32\\(?:OpenSavePidlMRU|LastVisitedPidlMRU|LastVisitedPidlMRULegacy|OpenSaveMRU)\b|\\RunMRU\b|\\TypedPaths\b)[^\r\n]*"#)
             .expect("registry history delete regex")
     });
+    static PS_CLEAR_EVENT_LOG_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?im)^[^\r\n]*?\bClear-EventLog\b[^\r\n]*?-LogName(?:\s*[:=]\s*|\s+)(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^\s;|&]+))[^\r\n]*"#,
+        )
+        .expect("powershell clear-eventlog regex")
+    });
+    static PS_REMOVE_ITEM_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?im)^[^\r\n]*?\b(?:Remove-Item|rm|del|erase|rd|rmdir)\b[^\r\n]*"#)
+            .expect("powershell remove-item regex")
+    });
 
     fn clean_token(token: &str) -> String {
         token
@@ -8734,6 +8744,46 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
         .to_string();
         push("registry-history-delete", target, command);
     }
+
+    for caps in PS_CLEAR_EVENT_LOG_RE.captures_iter(deobfuscated) {
+        let target = caps
+            .get(1)
+            .or_else(|| caps.get(2))
+            .or_else(|| caps.get(3))
+            .map(|m| clean_token(m.as_str()))
+            .unwrap_or_default();
+        let command = caps
+            .get(0)
+            .map(|m| m.as_str().trim().to_string())
+            .unwrap_or_default();
+        push("event-log-clear", target, command);
+    }
+
+    for caps in PS_REMOVE_ITEM_RE.captures_iter(deobfuscated) {
+        let Some(m) = caps.get(0) else {
+            continue;
+        };
+        let command = m.as_str().trim();
+        let lower = command.to_ascii_lowercase();
+        if lower.contains("\\prefetch\\") || lower.contains("/prefetch/") {
+            push(
+                "prefetch-delete",
+                "Prefetch".to_string(),
+                command.to_string(),
+            );
+        }
+        if lower.contains("\\recent\\")
+            || lower.contains("/recent/")
+            || lower.contains("automaticdestinations")
+            || lower.contains("customdestinations")
+        {
+            push(
+                "recent-items-delete",
+                "Recent".to_string(),
+                command.to_string(),
+            );
+        }
+    }
 }
 
 fn has_evidence_cleanup_atom(text: &str) -> bool {
@@ -8753,6 +8803,8 @@ fn has_evidence_cleanup_atom(text: &str) -> bool {
         "comdlg32",
         "runmru",
         "typedpaths",
+        "clear-eventlog",
+        "remove-item",
     ]
     .iter()
     .any(|atom| lower.contains(atom))
