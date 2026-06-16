@@ -8685,17 +8685,7 @@ fn scan_resolved_deob_var_fragment_urls(deobfuscated: &str, env: &mut Environmen
             }
             for caps in URL_RE.captures_iter(&expanded) {
                 let Some(m) = caps.get(1) else { continue };
-                let mut url = m.as_str().to_string();
-                while let Some(last) = url.chars().last() {
-                    if matches!(
-                        last,
-                        ',' | '.' | ';' | ':' | ')' | ']' | '}' | '"' | '\'' | '!' | '?' | '\\'
-                    ) {
-                        url.pop();
-                    } else {
-                        break;
-                    }
-                }
+                let mut url = trim_liberal_url_suffix(m.as_str()).to_string();
                 if url.len() < 8 {
                     continue;
                 }
@@ -8860,17 +8850,7 @@ pub fn scan_raw_marker_powershell_urls(input: &[u8], env: &mut Environment) {
         }
         for caps in URL_RE.captures_iter(line) {
             let Some(m) = caps.get(1) else { continue };
-            let mut url = m.as_str().to_string();
-            while let Some(last) = url.chars().last() {
-                if matches!(
-                    last,
-                    ',' | '.' | ';' | ':' | ')' | ']' | '}' | '"' | '\'' | '!' | '?' | '\\'
-                ) {
-                    url.pop();
-                } else {
-                    break;
-                }
-            }
+            let url = trim_liberal_url_suffix(m.as_str()).to_string();
             if url.len() < 10 || url.len() > 2048 {
                 continue;
             }
@@ -9326,16 +9306,7 @@ pub fn scan_damaged_scheme_download_urls(deobfuscated: &str, env: &mut Environme
                 continue;
             }
             let mut url = format!("https://{}", host_path.as_str());
-            while let Some(last) = url.chars().last() {
-                if matches!(
-                    last,
-                    ',' | '.' | ';' | ':' | ')' | ']' | '}' | '"' | '\'' | '!' | '\\'
-                ) {
-                    url.pop();
-                } else {
-                    break;
-                }
-            }
+            url = trim_liberal_url_suffix(&url).to_string();
             if url.len() < 10 || url.len() > 2048 {
                 continue;
             }
@@ -9807,17 +9778,7 @@ pub fn scan_ps_char_index_extractor_urls(deobfuscated: &str, env: &mut Environme
             // Look for URLs in the extracted string.
             for url_caps in URL_RE.captures_iter(&extracted) {
                 let Some(m) = url_caps.get(1) else { continue };
-                let mut url = m.as_str().to_string();
-                while let Some(last) = url.chars().last() {
-                    if matches!(
-                        last,
-                        ',' | '.' | ';' | ':' | ')' | ']' | '}' | '"' | '\'' | '!' | '?' | '\\'
-                    ) {
-                        url.pop();
-                    } else {
-                        break;
-                    }
-                }
+                let url = trim_liberal_url_suffix(m.as_str()).to_string();
                 if url.len() < 8 || is_noise_url(&url) {
                     continue;
                 }
@@ -10413,17 +10374,7 @@ pub fn scan_inline_b64_urls(deobfuscated: &str, env: &mut Environment) {
         let scan = &text[..text.len().min(8192)];
         for c2 in URL_RE.captures_iter(scan) {
             let Some(m) = c2.get(1) else { continue };
-            let mut url = m.as_str().to_string();
-            while let Some(last) = url.chars().last() {
-                if matches!(
-                    last,
-                    ',' | '.' | ';' | ':' | ')' | ']' | '}' | '"' | '\'' | '!' | '?' | '\\'
-                ) {
-                    url.pop();
-                } else {
-                    break;
-                }
-            }
+            let url = trim_liberal_url_suffix(m.as_str()).to_string();
             if url.len() < 8 || is_noise_url(&url) {
                 continue;
             }
@@ -10605,17 +10556,7 @@ pub fn scan_certutil_decoded_js(deobfuscated: &str, env: &mut Environment) {
         // needing the split-string expansion.
         for url_caps in URL_RE.captures_iter(&joined) {
             let Some(m) = url_caps.get(1) else { continue };
-            let mut url = m.as_str().to_string();
-            while let Some(last) = url.chars().last() {
-                if matches!(
-                    last,
-                    ',' | '.' | ';' | ':' | ')' | ']' | '}' | '"' | '\'' | '!' | '?'
-                ) {
-                    url.pop();
-                } else {
-                    break;
-                }
-            }
+            let url = trim_liberal_url_suffix(m.as_str()).to_string();
             if url.len() < 8 {
                 continue;
             }
@@ -10671,17 +10612,7 @@ pub fn scan_echoed_unicode_js(deobfuscated: &str, env: &mut Environment) {
         }
         for url_caps in URL_RE.captures_iter(&joined) {
             let Some(m) = url_caps.get(1) else { continue };
-            let mut url = m.as_str().to_string();
-            while let Some(last) = url.chars().last() {
-                if matches!(
-                    last,
-                    ',' | '.' | ';' | ':' | ')' | ']' | '}' | '"' | '\'' | '!' | '?'
-                ) {
-                    url.pop();
-                } else {
-                    break;
-                }
-            }
+            let url = trim_liberal_url_suffix(m.as_str()).to_string();
             if url.len() < 8 {
                 continue;
             }
