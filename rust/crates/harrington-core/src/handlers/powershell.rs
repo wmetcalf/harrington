@@ -469,11 +469,11 @@ fn record_file_transfer_side_effects(body: &str, env: &mut Environment) {
         let Some((src, dst)) = powershell_file_transfer_paths(&tokens, i + 1) else {
             continue;
         };
-        let Some(url) = tracked_download_url(&src, env) else {
+        let Some(entry) = tracked_transfer_entry(&src, env) else {
             continue;
         };
         env.modified_filesystem
-            .insert(filesystem_storage_key(&dst), FsEntry::Download { src: url });
+            .insert(filesystem_storage_key(&dst), entry);
     }
 }
 
@@ -534,12 +534,23 @@ fn record_rename_item_side_effects(body: &str, env: &mut Environment) {
         let Some((src, new_name)) = powershell_rename_item_paths(&tokens, i + 1) else {
             continue;
         };
-        let Some(url) = tracked_download_url(&src, env) else {
+        let Some(entry) = tracked_transfer_entry(&src, env) else {
             continue;
         };
         let dst = renamed_path_for_new_name(&src, &new_name);
         env.modified_filesystem
-            .insert(filesystem_storage_key(&dst), FsEntry::Download { src: url });
+            .insert(filesystem_storage_key(&dst), entry);
+    }
+}
+
+fn tracked_transfer_entry(path: &str, env: &Environment) -> Option<FsEntry> {
+    let entry = filesystem_entry_for_path(env, path)?;
+    match entry {
+        FsEntry::Content { .. }
+        | FsEntry::Decoded { .. }
+        | FsEntry::Download { .. }
+        | FsEntry::Copy { .. } => Some(entry.clone()),
+        FsEntry::Directory => None,
     }
 }
 
