@@ -367,7 +367,13 @@ pub fn h_reg(raw: &str, env: &mut Environment) {
     let value_lower = value_name.to_ascii_lowercase();
     let winlogon_value_persistence =
         key_lower.contains("\\winlogon") && matches!(value_lower.as_str(), "shell" | "userinit");
-    if !winlogon_value_persistence && !PERSISTENCE_PATHS.iter().any(|p| key_lower.contains(p)) {
+    let com_server_persistence = key_lower.contains("\\software\\classes\\clsid\\")
+        && (key_lower.ends_with("\\inprocserver32") || key_lower.ends_with("\\localserver32"))
+        && value_name.is_empty();
+    if !winlogon_value_persistence
+        && !com_server_persistence
+        && !PERSISTENCE_PATHS.iter().any(|p| key_lower.contains(p))
+    {
         return;
     }
     // Split hive from sub-key for clarity.
@@ -1487,6 +1493,43 @@ mod tests {
                 .any(|cmd| cmd == r#"C:\Users\Public\watch.bat"#),
             "nested quoted RunOnce cmd child was not queued: {:?}",
             env.exec_cmd
+        );
+    }
+
+    #[test]
+    fn reg_add_com_inprocserver_default_value_emits_persistence() {
+        let mut env = Environment::new(&Config::default());
+        h_reg(
+            r#"reg add "HKCU\Software\Classes\CLSID\{5B34E676-A2EE-9419-C6C2-A1C75E4BB01A}\InProcServer32" /ve /t REG_SZ /d "rundll32.exe" /f"#,
+            &mut env,
+        );
+        h_reg(
+            r#"reg add "HKCU\Software\Classes\CLSID\{5B34E676-A2EE-9419-C6C2-A1C75E4BB01A}\InProcServer32" /v "ThreadingModel" /t REG_SZ /d "Apartment" /f"#,
+            &mut env,
+        );
+
+        let persistence: Vec<_> = env
+            .traits
+            .iter()
+            .filter(|t| matches!(t, Trait::Persistence { .. }))
+            .collect();
+        assert_eq!(
+            persistence.len(),
+            1,
+            "only the COM server default value should emit persistence: {:?}",
+            env.traits
+        );
+        assert!(
+            persistence.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { hive, key, value_name, command }
+                    if hive == "HKCU"
+                        && key == r#"Software\Classes\CLSID\{5B34E676-A2EE-9419-C6C2-A1C75E4BB01A}\InProcServer32"#
+                        && value_name.is_empty()
+                        && command == "rundll32.exe"
+            )),
+            "COM InProcServer32 Persistence missing: {:?}",
+            env.traits
         );
     }
 
