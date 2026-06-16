@@ -10953,7 +10953,7 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
     use regex::Regex;
     static RDP_ENABLE_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r#"(?im)^[^\r\n]*\breg(?:\.exe)?\s+add\s+["']?[^"'\r\n]*Terminal Server[^"'\r\n]*["']?[^\r\n]*/v\s+["']?(AllowTSConnections|fDenyTSConnections)["']?[^\r\n]*/d\s+(0x1|1|0x0|0)\b[^\r\n]*"#,
+            r#"(?im)^[^\r\n]*\breg(?:\.exe)?\s+add\s+["']?[^"'\r\n]*Terminal Server[^"'\r\n]*["']?[^\r\n]*/v\s+["']?(AllowTSConnections|fDenyTSConnections)["']?[^\r\n]*/d\s+(0x0*1|0*1|0x0+|0+)\b[^\r\n]*"#,
         )
         .expect("rdp enable regex")
     });
@@ -11043,8 +11043,8 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
             .map(|m| m.as_str().to_ascii_lowercase())
             .unwrap_or_default();
         let enables_rdp = match value_name.as_str() {
-            "allowtsconnections" => value == "1" || value == "0x1",
-            "fdenytsconnections" => value == "0" || value == "0x0",
+            "allowtsconnections" => is_registry_dword_one(&value),
+            "fdenytsconnections" => is_registry_dword_zero(&value),
             _ => false,
         };
         if !enables_rdp {
@@ -11208,6 +11208,23 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
             }
         }
     }
+}
+
+fn is_registry_dword_zero(value: &str) -> bool {
+    let value = value.trim().trim_matches(['"', '\'']).to_ascii_lowercase();
+    let digits = value.strip_prefix("0x").unwrap_or(&value);
+    !digits.is_empty() && digits.bytes().all(|b| b == b'0')
+}
+
+fn is_registry_dword_one(value: &str) -> bool {
+    let value = value.trim().trim_matches(['"', '\'']).to_ascii_lowercase();
+    let digits = value.strip_prefix("0x").unwrap_or(&value);
+    !digits.is_empty()
+        && digits
+            .bytes()
+            .enumerate()
+            .all(|(idx, b)| b == b'0' || (idx == digits.len() - 1 && b == b'1'))
+        && digits.ends_with('1')
 }
 
 fn has_remote_access_atom(text: &str) -> bool {
