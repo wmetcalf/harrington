@@ -234,6 +234,8 @@ fn replay_copied_filesystem_alias(raw: &str, env: &mut Environment) -> bool {
         "robocopy.exe"
     } else if command_matches_copied_alias(&name, env, &["replace.exe", "replace"]) {
         "replace.exe"
+    } else if command_matches_copied_alias(&name, env, &["xcopy.exe", "xcopy"]) {
+        "xcopy.exe"
     } else {
         return false;
     };
@@ -249,6 +251,7 @@ fn replay_copied_filesystem_alias(raw: &str, env: &mut Environment) -> bool {
     match replay_command {
         "robocopy.exe" => crate::handlers::robocopy::h_robocopy(&replay, env),
         "replace.exe" => crate::handlers::replace::h_replace(&replay, env),
+        "xcopy.exe" => crate::handlers::copy::h_xcopy(&replay, env),
         _ => return false,
     }
     true
