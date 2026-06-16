@@ -9261,6 +9261,9 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
             .get(0)
             .map(|m| m.as_str().trim().to_string())
             .unwrap_or_default();
+        if command_starts_with_echo(&command) {
+            continue;
+        }
         let lower = command.to_ascii_lowercase();
         let target = [
             "userassist",

@@ -8073,6 +8073,23 @@ for /f "tokens=1 delims=:" %%A in ('curl -# -k "http://www.geoplugin.net/php.gp?
     }
 
     #[test]
+    fn escaped_ampersand_registry_history_text_does_not_emit_evidence_cleanup() {
+        let script =
+            br#"echo keep ^& reg delete HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\RunMRU /f"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::EvidenceCleanup { action, target, .. }
+                    if action == "registry-history-delete" && target == "runmru"
+            )),
+            "escaped ampersand echo text was misread as registry history cleanup: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_clear_history_emits_evidence_cleanup_trait() {
         let script = br#"powershell -Command "Clear-History""#;
         let report = analyze(script, &AnalyzeConfig::default());
