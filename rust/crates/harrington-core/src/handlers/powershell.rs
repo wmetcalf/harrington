@@ -415,7 +415,7 @@ fn content_from_entry(entry: Option<&FsEntry>) -> Option<Vec<u8>> {
 
 fn record_powershell_side_effects(body: &str, env: &mut Environment) {
     record_downloadfile_side_effects(body, env);
-    record_copy_item_side_effects(body, env);
+    record_file_transfer_side_effects(body, env);
     record_get_content_set_content_side_effects(body, env);
 }
 
@@ -456,13 +456,13 @@ fn record_get_content_set_content_side_effects(body: &str, env: &mut Environment
     }
 }
 
-fn record_copy_item_side_effects(body: &str, env: &mut Environment) {
+fn record_file_transfer_side_effects(body: &str, env: &mut Environment) {
     let tokens = split_words(body);
     for i in 0..tokens.len() {
-        if !is_copy_item_token(&tokens[i]) {
+        if !is_file_transfer_token(&tokens[i]) {
             continue;
         }
-        let Some((src, dst)) = powershell_copy_item_paths(&tokens, i + 1) else {
+        let Some((src, dst)) = powershell_file_transfer_paths(&tokens, i + 1) else {
             continue;
         };
         let Some(url) = tracked_download_url(&src, env) else {
@@ -473,14 +473,14 @@ fn record_copy_item_side_effects(body: &str, env: &mut Environment) {
     }
 }
 
-fn is_copy_item_token(token: &str) -> bool {
+fn is_file_transfer_token(token: &str) -> bool {
     matches!(
         strip_quotes(token).to_ascii_lowercase().as_str(),
-        "copy-item" | "copy" | "cp" | "cpi"
+        "copy-item" | "copy" | "cp" | "cpi" | "move-item" | "move" | "mv" | "mi"
     )
 }
 
-fn powershell_copy_item_paths(tokens: &[String], start: usize) -> Option<(String, String)> {
+fn powershell_file_transfer_paths(tokens: &[String], start: usize) -> Option<(String, String)> {
     let mut src: Option<String> = None;
     let mut dst: Option<String> = None;
     let mut positional: Vec<String> = Vec::new();
