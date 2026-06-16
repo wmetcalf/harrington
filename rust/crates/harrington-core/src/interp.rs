@@ -33,6 +33,11 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
     }
 
     if let Some(child) = conhost_child_command(raw) {
+        if raw_invokes_powershell(&child) {
+            crate::handlers::powershell::h_powershell(&child, env);
+            result.consumed = true;
+            return result;
+        }
         if let Some(inner) = crate::handlers::cmd::extract_cmd_inner(&child) {
             result.consumed = true;
             result.child_cmd_to_push = Some(inner);
@@ -223,7 +228,10 @@ fn conhost_child_command(raw: &str) -> Option<String> {
 
     for (start, end) in command_token_spans(raw).into_iter().skip(1) {
         let token = raw[start..end].trim_matches(['"', '\'']);
-        if command_basename_is(token, "cmd") {
+        if command_basename_is(token, "cmd")
+            || command_basename_is(token, "powershell")
+            || command_basename_is(token, "pwsh")
+        {
             return Some(raw[start..].trim().to_string());
         }
     }
