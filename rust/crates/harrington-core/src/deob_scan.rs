@@ -9143,7 +9143,11 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
                 command.to_string(),
             );
         }
-        if lower.contains("consolehost_history.txt") || lower.contains("\\psreadline\\") {
+        if lower.contains("consolehost_history.txt")
+            || lower.contains("\\psreadline\\")
+            || lower.contains("get-psreadlineoption")
+            || lower.contains("historysavepath")
+        {
             push(
                 "powershell-history-delete",
                 "PowerShellHistory".to_string(),
@@ -9246,7 +9250,11 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
                 command.to_string(),
             );
         }
-        if lower.contains("consolehost_history.txt") || lower.contains("\\psreadline\\") {
+        if lower.contains("consolehost_history.txt")
+            || lower.contains("\\psreadline\\")
+            || lower.contains("get-psreadlineoption")
+            || lower.contains("historysavepath")
+        {
             push(
                 "powershell-history-delete",
                 "PowerShellHistory".to_string(),
