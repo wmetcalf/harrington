@@ -10882,6 +10882,55 @@ fn scan_service_install(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
+/// PowerShell scheduled-task persistence where the task registration and action
+/// are present on the same deobfuscated command line.
+fn scan_powershell_scheduled_task(deobfuscated: &str, env: &mut Environment) {
+    use once_cell::sync::Lazy;
+    use regex::Regex;
+    static PS_REGISTER_TASK_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?im)^[^\r\n]*?\bRegister-ScheduledTask\b[^\r\n]*"#)
+            .expect("powershell register-scheduledtask regex")
+    });
+
+    for m in PS_REGISTER_TASK_RE.find_iter(deobfuscated) {
+        let line = m.as_str().trim();
+        if !line
+            .to_ascii_lowercase()
+            .contains("new-scheduledtaskaction")
+        {
+            continue;
+        }
+        let Some(task_name) = powershell_named_argument(line, "-TaskName") else {
+            continue;
+        };
+        let Some(execute) = powershell_named_argument(line, "-Execute") else {
+            continue;
+        };
+        let command = powershell_named_argument(line, "-Argument")
+            .map(|argument| format!("{execute} {argument}"))
+            .unwrap_or(execute);
+        if env.traits.iter().any(|t| {
+            matches!(
+                t,
+                crate::traits::Trait::Persistence {
+                    hive,
+                    key,
+                    command: existing_command,
+                    ..
+                } if hive == "ScheduledTask" && key == &task_name && existing_command == &command
+            )
+        }) {
+            continue;
+        }
+        env.traits.push(crate::traits::Trait::Persistence {
+            hive: "ScheduledTask".to_string(),
+            key: task_name,
+            value_name: String::new(),
+            command,
+        });
+    }
+}
+
 /// PowerShell `Start-Sleep -Seconds N` — beacon-style C2 cadence.
 fn scan_beacon_sleep(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
@@ -11162,6 +11211,9 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     });
     scan_step!("service_install", {
         scan_service_install(deobfuscated, env);
+    });
+    scan_step!("powershell_scheduled_task", {
+        scan_powershell_scheduled_task(deobfuscated, env);
     });
     scan_step!("beacon_sleep", {
         scan_beacon_sleep(deobfuscated, env);
