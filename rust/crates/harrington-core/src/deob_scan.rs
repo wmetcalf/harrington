@@ -5495,6 +5495,8 @@ fn scan_copied_enumeration_alias_deob_text(deobfuscated: &str, env: &mut Environ
             "nltest.exe" | "nltest" => "nltest.exe",
             "dsquery.exe" | "dsquery" => "dsquery.exe",
             "netdom.exe" | "netdom" => "netdom.exe",
+            "klist.exe" | "klist" => "klist.exe",
+            "setspn.exe" | "setspn" => "setspn.exe",
             _ => continue,
         };
         insert_alias_command_names(&mut aliases, dst, replay_command);
@@ -9301,6 +9303,17 @@ fn network_utility_enumeration_kind(tokens: &[String], command: &str) -> Option<
                     _ => None,
                 })
         }
+        "klist" | "klist.exe" => Some("klist"),
+        "setspn" | "setspn.exe" => tokens
+            .iter()
+            .skip(1)
+            .any(|token| {
+                matches!(
+                    token.to_ascii_lowercase().as_str(),
+                    "-q" | "/q" | "-l" | "/l"
+                )
+            })
+            .then_some("setspn-query"),
         "whoami" | "whoami.exe" => tokens
             .iter()
             .skip(1)
@@ -9404,6 +9417,8 @@ fn has_enumeration_atom(text: &str) -> bool {
         "net accounts",
         "net config",
         "net share",
+        "klist",
+        "setspn",
         "whoami",
         "hostname",
         "query session",
@@ -9458,6 +9473,8 @@ mod enumeration_prefilter_tests {
             "net accounts",
             "net config workstation",
             "net share",
+            "klist tickets",
+            "setspn -Q */*",
             "whoami /priv",
             "whoami /user",
             "hostname",

