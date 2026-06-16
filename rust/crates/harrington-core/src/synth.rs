@@ -303,9 +303,6 @@ fn synth_sort(
 }
 
 fn synth_findstr(args: &[&str], input: Vec<String>, env: &mut Environment) -> Vec<String> {
-    if !input.is_empty() {
-        return filter_findstr(args, input);
-    }
     let expanded_args: Vec<String> = args
         .iter()
         .map(|arg| {
@@ -317,6 +314,11 @@ fn synth_findstr(args: &[&str], input: Vec<String>, env: &mut Environment) -> Ve
             }
         })
         .collect();
+    let expanded_args = expand_findstr_pattern_file_args(&expanded_args, env);
+    if !input.is_empty() {
+        let refs: Vec<&str> = expanded_args.iter().map(String::as_str).collect();
+        return filter_findstr(&refs, input);
+    }
     let Some((file_idxs, file_inputs)) = findstr_file_input_args(&expanded_args, env) else {
         let refs: Vec<&str> = expanded_args.iter().map(String::as_str).collect();
         return filter_findstr(&refs, Vec::new());
@@ -339,6 +341,48 @@ fn synth_findstr(args: &[&str], input: Vec<String>, env: &mut Environment) -> Ve
         .flat_map(|(_, lines)| lines)
         .collect();
     filter_findstr(&filter_args, lines)
+}
+
+fn expand_findstr_pattern_file_args(args: &[String], env: &mut Environment) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        let arg = args[i].trim_matches('"');
+        let lower = arg.to_ascii_lowercase();
+        let mut consumed_next = false;
+        let pattern_file = if lower == "/g" {
+            consumed_next = true;
+            args.get(i + 1).map(|next| next.trim_matches('"'))
+        } else {
+            lower
+                .strip_prefix("/g:")
+                .map(|_| arg[3..].trim_matches('"'))
+        };
+        if let Some(path) = pattern_file {
+            let patterns = type_file(path, env)
+                .into_iter()
+                .filter(|line| !line.is_empty())
+                .collect::<Vec<_>>();
+            if patterns.is_empty() {
+                out.push(args[i].clone());
+                if consumed_next {
+                    if let Some(next) = args.get(i + 1) {
+                        out.push(next.clone());
+                    }
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+                continue;
+            }
+            out.extend(patterns);
+            i += if consumed_next { 2 } else { 1 };
+            continue;
+        }
+        out.push(args[i].clone());
+        i += 1;
+    }
+    out
 }
 
 fn findstr_file_input_args(
