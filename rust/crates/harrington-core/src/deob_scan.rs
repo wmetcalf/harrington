@@ -7822,7 +7822,7 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
         .expect("set-mp-disable")
     });
     static SC_DEFENDER_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?i)sc(?:\.exe)?\s+(?:\\\\[^\s]+\s+)?(stop|config|delete)\s+"?(WinDefend|MsMpSvc|wuauserv|MpsSvc|WdNisSvc)"?\b[^\r\n]*"#)
+        Regex::new(r#"(?im)^[^\r\n]*?\bsc(?:\.exe)?\s+(?:\\\\[^\s]+\s+)?(stop|config|delete)\s+"?(WinDefend|MsMpSvc|wuauserv|MpsSvc|WdNisSvc)"?\b[^\r\n]*"#)
             .expect("sc-defender")
     });
     static PS_SET_SERVICE_RE: Lazy<Regex> = Lazy::new(|| {
@@ -8033,6 +8033,9 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
         profile_defender_group!("service_process", {
             for caps in SC_DEFENDER_RE.captures_iter(deobfuscated) {
                 let command = caps.get(0).map(|m| m.as_str()).unwrap_or_default();
+                if command_starts_with_echo(command) {
+                    continue;
+                }
                 let verb = caps
                     .get(1)
                     .map(|m| m.as_str().to_ascii_lowercase())
