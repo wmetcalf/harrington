@@ -11109,8 +11109,12 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
             .unwrap_or_default()
             .to_ascii_lowercase();
         let enables_rdp = match value_name.as_str() {
-            "allowtsconnections" => matches!(value.as_str(), "1" | "0x1" | "true" | "$true"),
-            "fdenytsconnections" => matches!(value.as_str(), "0" | "0x0" | "false" | "$false"),
+            "allowtsconnections" => {
+                is_registry_dword_one(&value) || matches!(value.as_str(), "true" | "$true")
+            }
+            "fdenytsconnections" => {
+                is_registry_dword_zero(&value) || matches!(value.as_str(), "false" | "$false")
+            }
             _ => false,
         };
         if enables_rdp {

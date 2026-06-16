@@ -4167,6 +4167,23 @@ powershell -Command "New-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Cont
     }
 
     #[test]
+    fn powershell_padded_allowtsconnections_emits_remote_access_trait() {
+        let script = br#"powershell -Command "New-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name AllowTSConnections -PropertyType DWord -Value 0x00000001 -Force"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-enable" && target == "Terminal Server"
+            )),
+            "missing padded PowerShell AllowTSConnections RDP enablement: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn net_user_add_and_localgroup_add_emit_account_modification_traits() {
         let script = b"@echo off\r\n\
             net user WDAGUtilltyAccount \"qv69t4p#Z0kE3\" /add\r\n\
