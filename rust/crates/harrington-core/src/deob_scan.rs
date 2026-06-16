@@ -64,6 +64,14 @@ static BITSADMIN_WORD_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?i)\bbitsadmin(?:\.exe)?\b").expect("bitsadmin word regex"));
 
 #[allow(clippy::expect_used)]
+static CMD_QUOTED_URL_VAR_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?i)\bset\s+"([A-Za-z_][A-Za-z0-9_.$-]*)\s*=\s*((?:https?|ftp|file):[\x2f\x5c]+[^"\r\n]+)""#,
+    )
+    .expect("quoted cmd URL variable regex")
+});
+
+#[allow(clippy::expect_used)]
 static CMD_URL_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?i)\bset\s+"?([A-Za-z_][A-Za-z0-9_.$-]*)\s*=\s*['"]?((?:https?|ftp|file):[\x2f\x5c]+[^\s"'<>(){}|^&;`,]+)"#,
@@ -3673,6 +3681,20 @@ fn scan_url_variable_assignments(deobfuscated: &str, env: &mut Environment) {
 
     for line in deobfuscated.lines() {
         if !has_url_variable_assignment_atom(line) {
+            continue;
+        }
+        let mut emitted_quoted_cmd_url = false;
+        for caps in CMD_QUOTED_URL_VAR_RE.captures_iter(line) {
+            emitted_quoted_cmd_url = true;
+            emit_url_variable(
+                caps.get(1).map(|m| m.as_str()),
+                caps.get(2).map(|m| m.as_str()),
+                line,
+                env,
+                &mut known,
+            );
+        }
+        if emitted_quoted_cmd_url {
             continue;
         }
         for caps in CMD_URL_VAR_RE.captures_iter(line) {

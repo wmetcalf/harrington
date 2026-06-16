@@ -37439,6 +37439,7 @@ powershell -Command "ii -L:pslaunch-literal.example/h.pdf""#,
 @@if 1 EQU 1 set NN=https://raw.example/config.txt
 set "downloadUrl=vars-schemeless.example/payload.zip"
 set "mixedScheme=HtTpS://vars.example/mixed.bin"
+set "queryUrl=https://vars.example/payload.ps1?sig=abc&filename=g%C3%BCncel.ps1"
 $urlzip = "https://ps.example/stage.zip"
 $stageUrl = "ps-schemeless.example/stage.zip""#,
             &mut env,
@@ -37463,6 +37464,10 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
             ("NN", "https://raw.example/config.txt"),
             ("downloadUrl", "http://vars-schemeless.example/payload.zip"),
             ("mixedScheme", "https://vars.example/mixed.bin"),
+            (
+                "queryUrl",
+                "https://vars.example/payload.ps1?sig=abc&filename=g%C3%BCncel.ps1",
+            ),
             ("urlzip", "https://ps.example/stage.zip"),
             ("stageUrl", "http://ps-schemeless.example/stage.zip"),
         ] {
