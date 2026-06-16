@@ -8864,6 +8864,10 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
         Regex::new(r#"(?im)^[^\r\n]*?\bcipher(?:\.exe)?\b[^\r\n]*(?:/|-)w(?::|\s+)?\s*("[^"\r\n]+"|'[^'\r\n]+'|[^\s\r\n]+)?[^\r\n]*"#)
             .expect("cipher wipe regex")
     });
+    static SDELETE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?im)^[^\r\n]*?\bsdelete(?:64)?(?:\.exe)?\b([^\r\n]*)"#)
+            .expect("sdelete regex")
+    });
     static DEL_LINE_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?im)^[^\r\n]*?\bdel(?:\.exe)?\b[^\r\n]*"#).expect("del line regex")
     });
@@ -8934,6 +8938,28 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
         }
     }
 
+    fn last_non_flag_argument(args: &str) -> Option<String> {
+        let tokens = split_words(args);
+        let mut skip_next = false;
+        let mut last = None;
+        for token in tokens {
+            if skip_next {
+                skip_next = false;
+                continue;
+            }
+            let lower = token.to_ascii_lowercase();
+            if lower == "-p" || lower == "/p" {
+                skip_next = true;
+                continue;
+            }
+            if lower.starts_with('-') || lower.starts_with('/') {
+                continue;
+            }
+            last = Some(clean_token(&token));
+        }
+        last
+    }
+
     for caps in EVENT_LOG_RE.captures_iter(deobfuscated) {
         let target = caps
             .get(1)
@@ -8964,6 +8990,18 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
             .map(|m| clean_token(m.as_str()))
             .unwrap_or_else(|| command.clone());
         push("free-space-wipe", target, command);
+    }
+
+    for caps in SDELETE_RE.captures_iter(deobfuscated) {
+        let command = caps
+            .get(0)
+            .map(|m| m.as_str().trim().to_string())
+            .unwrap_or_default();
+        let target = caps
+            .get(1)
+            .and_then(|m| last_non_flag_argument(m.as_str()))
+            .unwrap_or_else(|| command.clone());
+        push("secure-delete", target, command);
     }
 
     for caps in DEL_LINE_RE.captures_iter(deobfuscated) {
@@ -9079,6 +9117,7 @@ fn has_evidence_cleanup_atom(text: &str) -> bool {
         "wevtutil",
         "fsutil",
         "cipher",
+        "sdelete",
         "prefetch",
         "recent",
         "automaticdestinations",
