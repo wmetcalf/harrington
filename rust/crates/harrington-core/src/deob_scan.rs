@@ -235,6 +235,41 @@ pub fn is_noise_url(url: &str) -> bool {
     false
 }
 
+pub fn is_noise_structured_download_url(url: &str) -> bool {
+    if !url.contains('%') {
+        return is_noise_url(url);
+    }
+    if url.contains("%%") {
+        return true;
+    }
+
+    let bytes = url.as_bytes();
+    let mut normalized = String::with_capacity(url.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let n1 = bytes.get(i + 1).copied();
+            let n2 = bytes.get(i + 2).copied();
+            let is_hex_pair = matches!(n1, Some(c) if c.is_ascii_hexdigit())
+                && matches!(n2, Some(c) if c.is_ascii_hexdigit());
+            if is_hex_pair {
+                normalized.push('%');
+                normalized.push(bytes[i + 1] as char);
+                normalized.push(bytes[i + 2] as char);
+                i += 3;
+                continue;
+            }
+            normalized.push_str("%25");
+            i += 1;
+            continue;
+        }
+        normalized.push(bytes[i] as char);
+        i += 1;
+    }
+
+    is_noise_url(&normalized)
+}
+
 // Exact URL strings (lowercase) that appear in corpus samples as embedded
 // page assets or attribution links — never C2.
 const NOISE_EXACT_URLS: &[&str] = &[
