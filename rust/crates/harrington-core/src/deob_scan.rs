@@ -5490,6 +5490,7 @@ fn scan_copied_enumeration_alias_deob_text(deobfuscated: &str, env: &mut Environ
             "ipconfig.exe" | "ipconfig" => "ipconfig.exe",
             "getmac.exe" | "getmac" => "getmac.exe",
             "netstat.exe" | "netstat" => "netstat.exe",
+            "nbtstat.exe" | "nbtstat" => "nbtstat.exe",
             "arp.exe" | "arp" => "arp.exe",
             "route.exe" | "route" => "route.exe",
             "nltest.exe" | "nltest" => "nltest.exe",
@@ -9363,6 +9364,7 @@ fn network_utility_enumeration_kind(tokens: &[String], command: &str) -> Option<
         "ipconfig" | "ipconfig.exe" => Some("ipconfig"),
         "getmac" | "getmac.exe" => Some("getmac"),
         "netstat" | "netstat.exe" => Some("netstat"),
+        "nbtstat" | "nbtstat.exe" => Some("nbtstat"),
         "arp" | "arp.exe" => tokens
             .iter()
             .skip(1)
@@ -9470,6 +9472,7 @@ fn has_enumeration_atom(text: &str) -> bool {
         "ipconfig",
         "getmac",
         "netstat",
+        "nbtstat",
         "arp -a",
         "arp.exe -a",
         "arp /a",
@@ -9539,6 +9542,7 @@ mod enumeration_prefilter_tests {
             "ipconfig /all",
             "getmac",
             "netstat -ano",
+            "nbtstat -n",
             "arp -a",
             "arp.exe /a",
             "route print",

