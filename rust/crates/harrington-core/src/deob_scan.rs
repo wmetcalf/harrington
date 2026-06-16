@@ -7918,13 +7918,21 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
                 {
                     continue;
                 }
+                let exclusion_flags = [
+                    "-ExclusionPath",
+                    "-ExclusionExtension",
+                    "-ExclusionProcess",
+                    "-ExclusionIpAddress",
+                ];
                 for (flag, kind) in [
                     ("-ExclusionPath", "exclusion-path"),
                     ("-ExclusionExtension", "exclusion-extension"),
                     ("-ExclusionProcess", "exclusion-process"),
                     ("-ExclusionIpAddress", "exclusion-ipaddress"),
                 ] {
-                    for target in powershell_named_argument_list(line, flag) {
+                    for target in
+                        powershell_named_argument_list_unique(line, flag, &exclusion_flags)
+                    {
                         push(kind, target);
                     }
                 }
@@ -10007,6 +10015,21 @@ fn powershell_named_argument_list(command: &str, name: &str) -> Vec<String> {
     let Some(name_pattern) = powershell_parameter_name_pattern(name) else {
         return Vec::new();
     };
+    powershell_named_argument_list_with_pattern(command, &name_pattern)
+}
+
+fn powershell_named_argument_list_unique(
+    command: &str,
+    name: &str,
+    candidate_names: &[&str],
+) -> Vec<String> {
+    let Some(name_pattern) = powershell_parameter_name_pattern_unique(name, candidate_names) else {
+        return Vec::new();
+    };
+    powershell_named_argument_list_with_pattern(command, &name_pattern)
+}
+
+fn powershell_named_argument_list_with_pattern(command: &str, name_pattern: &str) -> Vec<String> {
     let pattern = format!(
         r#"(?i){}\s*(?::|=|\s)\s*(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^\r\n;|&}}]+))"#,
         name_pattern
@@ -10056,6 +10079,39 @@ fn powershell_parameter_name_pattern(name: &str) -> Option<String> {
         .rev()
         .map(|len| regex::escape(&format!("-{}", &canonical[..len])))
         .collect::<Vec<_>>();
+    Some(format!("(?:{})", alternatives.join("|")))
+}
+
+fn powershell_parameter_name_pattern_unique(
+    name: &str,
+    candidate_names: &[&str],
+) -> Option<String> {
+    let canonical = name.strip_prefix('-')?;
+    if canonical.is_empty() || !canonical.is_ascii() {
+        return None;
+    }
+    let canonical_lower = canonical.to_ascii_lowercase();
+    let candidate_lowers = candidate_names
+        .iter()
+        .filter_map(|candidate| candidate.strip_prefix('-'))
+        .map(str::to_ascii_lowercase)
+        .collect::<Vec<_>>();
+    let min_prefix_len = canonical.len().min(2);
+    let alternatives = (min_prefix_len..=canonical.len())
+        .rev()
+        .filter(|len| {
+            let prefix = canonical_lower[..*len].to_string();
+            candidate_lowers
+                .iter()
+                .filter(|candidate| candidate.starts_with(&prefix))
+                .count()
+                == 1
+        })
+        .map(|len| regex::escape(&format!("-{}", &canonical[..len])))
+        .collect::<Vec<_>>();
+    if alternatives.is_empty() {
+        return None;
+    }
     Some(format!("(?:{})", alternatives.join("|")))
 }
 

