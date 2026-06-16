@@ -12959,6 +12959,7 @@ fn scan_service_install(deobfuscated: &str, env: &mut Environment) {
 
 fn scan_archive_extraction(deobfuscated: &str, env: &mut Environment) {
     if !contains_ascii_keyword(deobfuscated, "Expand-Archive")
+        && !contains_ascii_keyword(deobfuscated, "ExtractToDirectory")
         && !contains_ascii_keyword(deobfuscated, "tar")
         && !has_rar_archive_atom(deobfuscated)
     {
@@ -12980,6 +12981,11 @@ fn scan_archive_extraction(deobfuscated: &str, env: &mut Environment) {
                     continue;
                 };
                 push_archive_extraction(env, segment, src, dst);
+            }
+        }
+        if contains_ascii_keyword(line, "ExtractToDirectory") {
+            for (cmd, src, dst) in parse_zipfile_extract_to_directory(line) {
+                push_archive_extraction(env, &cmd, src, dst);
             }
         }
         if contains_ascii_keyword(line, "tar") {
@@ -13032,6 +13038,30 @@ fn scan_archive_extraction(deobfuscated: &str, env: &mut Environment) {
 
 fn has_rar_archive_atom(text: &str) -> bool {
     contains_ascii_keyword(text, "rar") || contains_ascii_keyword(text, "WinRAR")
+}
+
+fn parse_zipfile_extract_to_directory(command: &str) -> Vec<(String, String, String)> {
+    static ZIPFILE_EXTRACT_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?i)(?:\[(?:System\.)?IO\.Compression\.ZipFile\]\s*::\s*)?ExtractToDirectory\s*\(\s*(?:"([^"\r\n]+)"|'([^'\r\n]+)')\s*,\s*(?:"([^"\r\n]+)"|'([^'\r\n]+)')"#,
+        )
+        .expect("zipfile extract-to-directory regex")
+    });
+    ZIPFILE_EXTRACT_RE
+        .captures_iter(command)
+        .filter_map(|caps| {
+            let cmd = caps.get(0)?.as_str().to_string();
+            let src = caps
+                .get(1)
+                .or_else(|| caps.get(2))
+                .map(|m| m.as_str().to_string())?;
+            let dst = caps
+                .get(3)
+                .or_else(|| caps.get(4))
+                .map(|m| m.as_str().to_string())?;
+            Some((cmd, src, dst))
+        })
+        .collect()
 }
 
 fn push_archive_extraction(env: &mut Environment, cmd: &str, src: String, dst: String) {

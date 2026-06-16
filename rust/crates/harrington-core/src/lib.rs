@@ -3004,6 +3004,26 @@ C:\"Program Files"\WinRAR\WinRAR.exe x -y -inul -p1234 %temp%\up.zip %temp%
     }
 
     #[test]
+    fn powershell_zipfile_extracttodirectory_emits_archive_extraction_trait() {
+        let script = br#"@echo off
+powershell -Command "Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::ExtractToDirectory('C:/Users/Public/Document.zip', 'C:/Users/Public/Document')"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ArchiveExtraction { cmd, src, dst }
+                    if cmd.contains("ExtractToDirectory")
+                        && src == "C:/Users/Public/Document.zip"
+                        && dst == "C:/Users/Public/Document"
+            )),
+            "ZipFile ExtractToDirectory trait missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn schtasks_create_emits_persistence_trait() {
         // `schtasks /create /tn X /tr Y` registers a scheduled-task
         // autorun. Same Persistence trait as reg-add Run, with
