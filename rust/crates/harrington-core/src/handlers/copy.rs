@@ -9,9 +9,13 @@ pub fn h_copy(raw: &str, env: &mut Environment) {
     let tokens: Vec<String> = split_words(raw);
     let general_opts = ["/v", "/n", "/l", "/y", "/-y", "/z"];
     let file_opts = ["/a", "/b", "/d"];
+    let mut binary_mode = false;
     let mut args: Vec<String> = Vec::new();
     for t in tokens.iter().skip(1) {
         let lt = t.to_ascii_lowercase();
+        if lt == "/b" {
+            binary_mode = true;
+        }
         if general_opts.contains(&lt.as_str()) || file_opts.contains(&lt.as_str()) {
             continue;
         }
@@ -71,6 +75,9 @@ pub fn h_copy(raw: &str, env: &mut Environment) {
     }
     let src = collapse_slashes(&args[0]);
     let dst = collapse_slashes(&args[1]);
+    if binary_mode && src.contains(['*', '?']) && copy_wildcard_sources_as_concat(env, &src, &dst) {
+        return;
+    }
     if src.contains(['*', '?']) && copy_wildcard_sources(env, &src, &dst, false) {
         return;
     }
@@ -312,6 +319,47 @@ fn copy_wildcard_sources(
     for (dst_path, entry) in copied {
         env.modified_filesystem.insert(dst_path, entry);
     }
+    true
+}
+
+fn copy_wildcard_sources_as_concat(env: &mut Environment, src_pattern: &str, dst: &str) -> bool {
+    if wildcard_copy_destination_dir(env, dst, false).is_some() {
+        return false;
+    }
+    let mut matched = env
+        .modified_filesystem
+        .iter()
+        .filter_map(|(tracked_path, entry)| {
+            if matches!(entry, FsEntry::Directory)
+                || !wildcard_source_matches(src_pattern, tracked_path)
+            {
+                return None;
+            }
+            Some((tracked_path.clone(), entry.clone()))
+        })
+        .collect::<Vec<_>>();
+    if matched.is_empty() {
+        return false;
+    }
+    matched.sort_by(|(left, _), (right, _)| left.cmp(right));
+
+    let mut combined = Vec::new();
+    for (_, entry) in matched {
+        match entry {
+            FsEntry::Content { content, .. } | FsEntry::Decoded { content, .. } => {
+                combined.extend_from_slice(&content);
+            }
+            _ => return false,
+        }
+    }
+    insert_filesystem_entry(
+        env,
+        dst,
+        FsEntry::Content {
+            content: combined,
+            append: false,
+        },
+    );
     true
 }
 

