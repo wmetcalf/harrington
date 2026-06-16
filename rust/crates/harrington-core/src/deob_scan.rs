@@ -7969,6 +7969,22 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
                         push(&format!("setmp-{opt}"), val);
                     }
                 }
+                for (flag, opt) in [
+                    ("-MAPSReporting", "mapsreporting"),
+                    ("-SubmitSamplesConsent", "submitsamplesconsent"),
+                ] {
+                    let Some(val) = powershell_named_argument(line, flag) else {
+                        continue;
+                    };
+                    let val_lc = val.to_ascii_lowercase();
+                    let disabling = (opt == "mapsreporting"
+                        && (val_lc == "disabled" || is_registry_dword_zero(&val_lc)))
+                        || (opt == "submitsamplesconsent"
+                            && (is_registry_dword_value(&val_lc, 2) || val_lc == "never"));
+                    if disabling {
+                        push(&format!("setmp-{opt}"), val);
+                    }
+                }
             }
         });
     }
