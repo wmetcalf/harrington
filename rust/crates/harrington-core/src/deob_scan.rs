@@ -9320,6 +9320,9 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
             .get(0)
             .map(|m| m.as_str().trim().to_string())
             .unwrap_or_default();
+        if command_starts_with_echo(&command) {
+            continue;
+        }
         let target = caps
             .get(1)
             .map(|m| clean_token(m.as_str()))
@@ -9332,6 +9335,9 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
             .get(0)
             .map(|m| m.as_str().trim().to_string())
             .unwrap_or_default();
+        if command_starts_with_echo(&command) {
+            continue;
+        }
         let target = caps
             .get(1)
             .and_then(|m| last_non_flag_argument(m.as_str()))
@@ -9631,6 +9637,9 @@ mod evidence_cleanup_prefilter_tests {
 /// non-loopback IPs, calls to ipify/checkip/ip-api/geolocation APIs.
 fn scan_network_probe(deobfuscated: &str, env: &mut Environment) {
     for line in deobfuscated.lines() {
+        if command_starts_with_echo(line) {
+            continue;
+        }
         if let Some(target) = resolve_dns_name_target(line) {
             push_network_probe(env, "dns-lookup", target);
         }
@@ -9677,7 +9686,11 @@ fn scan_network_probe(deobfuscated: &str, env: &mut Environment) {
     }
     let lower = deobfuscated.to_ascii_lowercase();
     for host in IP_DISCOVERY_HOSTS {
-        if lower.contains(host) {
+        if lower
+            .lines()
+            .filter(|line| !command_starts_with_echo(line))
+            .any(|line| line.contains(host))
+        {
             push_network_probe(env, "ip-discovery", (*host).to_string());
         }
     }
@@ -10522,6 +10535,9 @@ fn scan_file_concealment(deobfuscated: &str, env: &mut Environment) {
     }
 
     for line in deobfuscated.lines() {
+        if command_starts_with_echo(line) {
+            continue;
+        }
         let tokens = split_words(line);
         let Some(cmd_index) = tokens.iter().position(|token| {
             matches!(
@@ -11621,6 +11637,9 @@ fn scan_ransom_ext(deobfuscated: &str, env: &mut Environment) {
     });
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for m in EXT_RE.find_iter(deobfuscated) {
+        if containing_line_starts_with_echo(deobfuscated, m.start()) {
+            continue;
+        }
         let ext = m.as_str().to_ascii_lowercase();
         if !seen.insert(ext.clone()) {
             continue;

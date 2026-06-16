@@ -4987,6 +4987,21 @@ powershell -Command "[Windows.Forms.Clipboard]::SetText('copied')"
     }
 
     #[test]
+    fn escaped_ampersand_ransom_extension_text_does_not_emit_marker() {
+        let script = br#"echo keep ^& copy C:\Users\Public\foo.locked C:\Users\Public\bar.locked"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RansomFileExtension { extension } if extension == ".locked"
+            )),
+            "escaped echo ransomware extension text emitted RansomFileExtension: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn wmic_for_f_inventory_command_is_trimmed() {
         let script = br#"for /f "tokens=3" %%a in ('wmic logicaldisk where "Size=250954240000" get Size | find "Size"') do echo %%a"#;
         let report = analyze(script, &AnalyzeConfig::default());
@@ -6620,6 +6635,22 @@ ping 127.0.0.1
                     if probe_kind == "icmp-ping" && target == "127.0.0.1"
             )),
             "loopback ping should not be surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn escaped_ampersand_ip_discovery_text_does_not_emit_network_probe() {
+        let script = br#"echo keep ^& curl https://api.ipify.org"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::NetworkProbe { probe_kind, target }
+                    if probe_kind == "ip-discovery" && target == "api.ipify.org"
+            )),
+            "escaped echo IP-discovery text emitted NetworkProbe: {:?}",
             report.traits
         );
     }
@@ -8423,6 +8454,31 @@ for /f "tokens=1 delims=:" %%A in ('curl -# -k "http://www.geoplugin.net/php.gp?
             "sdelete secure deletion was not surfaced: {:?}",
             report.traits
         );
+    }
+
+    #[test]
+    fn escaped_ampersand_secure_delete_text_does_not_emit_evidence_cleanup() {
+        for (script, unexpected_action) in [
+            (
+                br#"echo keep ^& cipher /w:C:\Users\Public"#.as_slice(),
+                "free-space-wipe",
+            ),
+            (
+                br#"echo keep ^& sdelete.exe -accepteula C:\Users\Public\file.txt"#.as_slice(),
+                "secure-delete",
+            ),
+        ] {
+            let report = analyze(script, &AnalyzeConfig::default());
+
+            assert!(
+                !report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::EvidenceCleanup { action, .. } if action == unexpected_action
+                )),
+                "escaped echo cleanup text emitted {unexpected_action}: {:?}",
+                report.traits
+            );
+        }
     }
 
     #[test]
@@ -11069,6 +11125,22 @@ C:\\Users\\Public\\atb.tmp +h +s C:\\Users\\Public\\stage.vbs\r\n";
                     && attributes.iter().any(|a| a == "system")
             )),
             "missing copied-attrib concealment trait: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn escaped_ampersand_attrib_text_does_not_emit_file_concealment() {
+        let script = br#"echo keep ^& attrib +h +s C:\Users\Public\stage.exe"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::FileConcealment { target, .. }
+                    if target == r"C:\Users\Public\stage.exe"
+            )),
+            "escaped echo attrib text emitted FileConcealment: {:?}",
             report.traits
         );
     }
