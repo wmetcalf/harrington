@@ -11900,35 +11900,53 @@ fn scan_powershell_scheduled_task(deobfuscated: &str, env: &mut Environment) {
         Regex::new(r#"(?im)^[^\r\n]*?\bRegister-ScheduledTask\b[^\r\n]*"#)
             .expect("powershell register-scheduledtask regex")
     });
+    static PS_TASK_ACTION_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?im)^[^\r\n]*?\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*[^\r\n]*?\bNew-ScheduledTaskAction\b[^\r\n]*"#,
+        )
+        .expect("powershell scheduled-task action assignment regex")
+    });
+
+    let mut action_vars = std::collections::HashMap::new();
+    for caps in PS_TASK_ACTION_ASSIGN_RE.captures_iter(deobfuscated) {
+        let Some(var) = caps
+            .get(1)
+            .map(|m| format!("${}", m.as_str().to_ascii_lowercase()))
+        else {
+            continue;
+        };
+        let Some(command) = caps
+            .get(0)
+            .and_then(|m| powershell_scheduled_task_action_command(m.as_str()))
+        else {
+            continue;
+        };
+        action_vars.insert(var, command);
+    }
 
     for m in PS_REGISTER_TASK_RE.find_iter(deobfuscated) {
         let line = m.as_str().trim();
-        if !line
-            .to_ascii_lowercase()
-            .contains("new-scheduledtaskaction")
-        {
-            continue;
-        }
         let task_positional = powershell_positional_arguments(line, "Register-ScheduledTask");
         let Some(task_name) = powershell_named_argument(line, "-TaskName")
             .or_else(|| task_positional.first().cloned())
         else {
             continue;
         };
-        let mut action_positional =
-            powershell_positional_arguments(line, "New-ScheduledTaskAction")
-                .into_iter()
-                .map(|arg| trim_powershell_statement_value(&arg))
-                .filter(|arg| !arg.eq_ignore_ascii_case("Register-ScheduledTask"));
-        let Some(execute) =
-            powershell_named_argument(line, "-Execute").or_else(|| action_positional.next())
-        else {
+        let command = if line
+            .to_ascii_lowercase()
+            .contains("new-scheduledtaskaction")
+        {
+            powershell_scheduled_task_action_command(line)
+        } else {
+            powershell_named_argument(line, "-Action").and_then(|action| {
+                action_vars
+                    .get(&action.trim().to_ascii_lowercase())
+                    .cloned()
+            })
+        };
+        let Some(command) = command else {
             continue;
         };
-        let command = powershell_named_argument(line, "-Argument")
-            .or_else(|| action_positional.next())
-            .map(|argument| format!("{execute} {argument}"))
-            .unwrap_or(execute);
         if env.traits.iter().any(|t| {
             matches!(
                 t,
@@ -11949,6 +11967,21 @@ fn scan_powershell_scheduled_task(deobfuscated: &str, env: &mut Environment) {
             command,
         });
     }
+}
+
+fn powershell_scheduled_task_action_command(command: &str) -> Option<String> {
+    let mut action_positional = powershell_positional_arguments(command, "New-ScheduledTaskAction")
+        .into_iter()
+        .map(|arg| trim_powershell_statement_value(&arg))
+        .filter(|arg| !arg.eq_ignore_ascii_case("Register-ScheduledTask"));
+    let execute =
+        powershell_named_argument(command, "-Execute").or_else(|| action_positional.next())?;
+    Some(
+        powershell_named_argument(command, "-Argument")
+            .or_else(|| action_positional.next())
+            .map(|argument| format!("{execute} {argument}"))
+            .unwrap_or(execute),
+    )
 }
 
 fn trim_powershell_statement_value(value: &str) -> String {
