@@ -8432,6 +8432,7 @@ fn normalize_powershell_quotes(text: &str) -> String {
         .chars()
         .any(|c| matches!(c, '\u{2018}' | '\u{2019}' | '\u{201C}' | '\u{201D}'))
         && !text.contains("\\\"")
+        && !text.contains("`\"")
     {
         return text.to_string();
     }
@@ -8443,7 +8444,7 @@ fn normalize_powershell_quotes(text: &str) -> String {
             _ => c,
         })
         .collect();
-    normalized.replace("\\\"", "\"")
+    normalized.replace("\\\"", "\"").replace("`\"", "\"")
 }
 
 fn strip_marker_noise(text: &str) -> String {
