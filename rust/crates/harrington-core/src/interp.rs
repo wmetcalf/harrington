@@ -153,7 +153,7 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
         return result;
     }
 
-    if replay_copied_robocopy_alias(raw, env) {
+    if replay_copied_filesystem_alias(raw, env) {
         result.consumed = true;
         return result;
     }
@@ -225,13 +225,18 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
     result
 }
 
-fn replay_copied_robocopy_alias(raw: &str, env: &mut Environment) -> bool {
+fn replay_copied_filesystem_alias(raw: &str, env: &mut Environment) -> bool {
     let Some(name) = command_name(raw) else {
         return false;
     };
-    if !command_matches_copied_alias(&name, env, &["robocopy.exe", "robocopy"]) {
+    let replay_command = if command_matches_copied_alias(&name, env, &["robocopy.exe", "robocopy"])
+    {
+        "robocopy.exe"
+    } else if command_matches_copied_alias(&name, env, &["replace.exe", "replace"]) {
+        "replace.exe"
+    } else {
         return false;
-    }
+    };
     let Some(rest_start) = raw.find(&name).map(|idx| idx + name.len()) else {
         return false;
     };
@@ -240,8 +245,12 @@ fn replay_copied_robocopy_alias(raw: &str, env: &mut Environment) -> bool {
         return false;
     }
     push_manipulated_exec_once(env, raw, &name);
-    let replay = format!("robocopy.exe {rest}");
-    crate::handlers::robocopy::h_robocopy(&replay, env);
+    let replay = format!("{replay_command} {rest}");
+    match replay_command {
+        "robocopy.exe" => crate::handlers::robocopy::h_robocopy(&replay, env),
+        "replace.exe" => crate::handlers::replace::h_replace(&replay, env),
+        _ => return false,
+    }
     true
 }
 

