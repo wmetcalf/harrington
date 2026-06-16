@@ -12612,7 +12612,7 @@ fn analyze_inner(
         profile_mark!("drive");
         out = summarize_large_pem_blocks(&out);
         profile_mark!("summarize_pem");
-        out = summarize_long_rem_comment_lines(&out, &mut env);
+        out = preserve_long_rem_comment_lines(&out, &mut env);
         profile_mark!("summarize_rem_comments");
         out = summarize_binary_noise_line_runs(&out, &mut env);
         profile_mark!("summarize_binary_noise");
@@ -15074,7 +15074,7 @@ fn summarize_large_pem_blocks(text: &str) -> String {
     out
 }
 
-fn summarize_long_rem_comment_lines(text: &str, env: &mut Environment) -> String {
+fn preserve_long_rem_comment_lines(text: &str, env: &mut Environment) -> String {
     const MIN_SUMMARY_BYTES: usize = 1024;
 
     if !contains_rem_comment_candidate(text) {
@@ -15083,9 +15083,8 @@ fn summarize_long_rem_comment_lines(text: &str, env: &mut Environment) -> String
 
     let mut out = String::with_capacity(text.len().min(256 * 1024));
     for line in text.split_inclusive('\n') {
-        let (body, eol) = split_line_ending(line);
+        let (body, _) = split_line_ending(line);
         let trimmed = body.trim_start_matches(['@', ' ', '\t']);
-        let leading_len = body.len() - trimmed.len();
         let lower = trimmed.to_ascii_lowercase();
         if !lower.starts_with("rem ") {
             out.push_str(line);
@@ -15099,11 +15098,7 @@ fn summarize_long_rem_comment_lines(text: &str, env: &mut Environment) -> String
         }
 
         rescue_truncated_urls(payload, body.len(), env);
-        out.push_str(&body[..leading_len]);
-        out.push_str("rem ::==== harrington: omitted ");
-        out.push_str(&payload.len().to_string());
-        out.push_str(" bytes from long REM comment line ====");
-        out.push_str(eol);
+        out.push_str(line);
     }
     out
 }
@@ -15448,13 +15443,6 @@ fn caret_obfuscated_rem_payload(line: &str) -> Option<(&str, &str)> {
     }
 }
 
-fn render_long_rem_comment_summary(leading: &str, payload: &str, out: &mut String) {
-    out.push_str(leading);
-    out.push_str("rem ::==== harrington: omitted ");
-    out.push_str(&payload.len().to_string());
-    out.push_str(" bytes from long REM comment line ====\r\n");
-}
-
 fn self_read_base64_match_markers(input: &[u8]) -> Vec<String> {
     let text = String::from_utf8_lossy(input);
     let lower = text.to_ascii_lowercase();
@@ -15704,7 +15692,10 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
             const MIN_SUMMARY_BYTES: usize = 1024;
             if payload.len() >= MIN_SUMMARY_BYTES {
                 rescue_truncated_urls(payload, logical.len(), env);
-                render_long_rem_comment_summary(leading, payload, out);
+                out.push_str(leading);
+                out.push_str("REM ");
+                out.push_str(payload);
+                out.push_str("\r\n");
                 cursor += 1;
                 continue;
             }
@@ -16617,22 +16608,20 @@ mod line_cap_tests {
     }
 
     #[test]
-    fn expanded_long_rem_noise_is_summarized_and_tail_url_rescued() {
+    fn expanded_long_rem_noise_is_preserved_and_tail_url_extracted() {
         let url = "https://long-rem-tail.attacker.example/payload.bat";
         let noise = "A".repeat(4096);
         let script = format!("set \"R=rem \"\r\n%R%{noise} {url}\r\n");
         let report = analyze(script.as_bytes(), &Config::default());
 
         assert!(
-            report
-                .deobfuscated
-                .contains("harrington: omitted 4147 bytes from long REM comment line"),
-            "expanded REM noise should be summarized, got:\n{}",
+            !report.deobfuscated.contains("harrington: omitted"),
+            "default analysis should not omit long REM forensic content:\n{}",
             report.deobfuscated
         );
         assert!(
-            report.deobfuscated.lines().all(|line| line.len() < 512),
-            "summarized REM output should stay compact, got:\n{}",
+            report.deobfuscated.contains(&format!("rem {noise} {url}")),
+            "expanded REM payload was not preserved:\n{}",
             report.deobfuscated
         );
         assert!(
@@ -16646,22 +16635,20 @@ mod line_cap_tests {
     }
 
     #[test]
-    fn caret_obfuscated_long_rem_noise_is_summarized_and_tail_url_rescued() {
+    fn caret_obfuscated_long_rem_noise_is_preserved_and_tail_url_extracted() {
         let url = "https://caret-rem-tail.attacker.example/payload.bat";
         let noise = "B".repeat(4096);
         let script = format!("@echo off\r\nR^E^M {noise} {url}\r\n");
         let report = analyze(script.as_bytes(), &Config::default());
 
         assert!(
-            report
-                .deobfuscated
-                .contains("bytes from long REM comment line"),
-            "caret-obfuscated REM noise should be summarized, got:\n{}",
+            !report.deobfuscated.contains("harrington: omitted"),
+            "default analysis should not omit caret-obfuscated REM forensic content:\n{}",
             report.deobfuscated
         );
         assert!(
-            report.deobfuscated.lines().all(|line| line.len() < 512),
-            "summarized caret-obfuscated REM output should stay compact, got:\n{}",
+            report.deobfuscated.contains(&format!("REM {noise} {url}")),
+            "caret-obfuscated REM payload was not preserved:\n{}",
             report.deobfuscated
         );
         assert!(
