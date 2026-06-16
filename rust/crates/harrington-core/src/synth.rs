@@ -828,21 +828,24 @@ fn filter_findstr(args: &[&str], input: Vec<String>) -> Vec<String> {
                     patterns.push(literal);
                 }
             } else {
-                for f in flags_and_maybe_literal.chars() {
-                    match f.to_ascii_lowercase() {
-                        'b' => match_begin = true,
-                        'e' => match_end = true,
-                        'i' => case_insensitive = true,
-                        'l' => literal_mode = true,
-                        'n' => line_numbers = true,
-                        'o' => offsets = true,
-                        'v' => invert = true,
-                        'r' => {
-                            regex_mode = true;
-                            literal_mode = false;
+                let flags_lower = flags_and_maybe_literal.to_ascii_lowercase();
+                if !flags_lower.starts_with("off") {
+                    for f in flags_lower.chars() {
+                        match f {
+                            'b' => match_begin = true,
+                            'e' => match_end = true,
+                            'i' => case_insensitive = true,
+                            'l' => literal_mode = true,
+                            'n' => line_numbers = true,
+                            'o' => offsets = true,
+                            'v' => invert = true,
+                            'r' => {
+                                regex_mode = true;
+                                literal_mode = false;
+                            }
+                            'x' => match_exact = true,
+                            _ => {}
                         }
-                        'x' => match_exact = true,
-                        _ => {}
                     }
                 }
             }

