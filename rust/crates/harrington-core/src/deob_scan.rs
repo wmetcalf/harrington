@@ -8627,6 +8627,10 @@ fn scan_anti_recovery(deobfuscated: &str, env: &mut Environment) {
                 "powershell-shadowcopy-delete",
             ),
             (
+                Regex::new(r"(?i)\bDisable-ComputerRestore\b[^\r\n]*").unwrap(),
+                "powershell-computerrestore-disable",
+            ),
+            (
                 Regex::new(r"(?i)\bbcdedit(?:\.exe)?[^\r\n]*?(?:/set\s+)?recoveryenabled\s+no")
                     .unwrap(),
                 "bcdedit-recoveryenabled-no",

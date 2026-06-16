@@ -5814,6 +5814,22 @@ powershell -Command "Get-CimInstance Win32_ShadowCopy | Remove-CimInstance"
     }
 
     #[test]
+    fn powershell_disable_computer_restore_emits_anti_recovery_trait() {
+        let script = br#"powershell -Command "Disable-ComputerRestore -Drive C:\"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AntiRecovery { action } if action == "powershell-computerrestore-disable"
+            )),
+            "PowerShell computer restore disable was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn generic_delete_does_not_emit_evidence_cleanup_trait() {
         let script = b"@echo off\r\n\
             del /f /q C:\\Temp\\installer.log\r\n\
