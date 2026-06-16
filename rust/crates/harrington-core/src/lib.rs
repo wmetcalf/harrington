@@ -5123,6 +5123,7 @@ powershell -Command "Get-CimInstance -Namespace root/SecurityCenter2 -ClassName 
         let report = analyze(
             br#"powershell -Command "Get-ComputerInfo"
 powershell -Command "Get-HotFix"
+powershell -Command "Get-LocalGroup"
 powershell -Command "Get-LocalGroupMember Administrators"
 powershell -Command "Get-NetIPConfiguration"
 "#,
@@ -5132,6 +5133,7 @@ powershell -Command "Get-NetIPConfiguration"
         for (kind, needle) in [
             ("ps-computerinfo", "Get-ComputerInfo"),
             ("ps-hotfix", "Get-HotFix"),
+            ("ps-localgroup", "Get-LocalGroup"),
             ("ps-localgroupmember", "Get-LocalGroupMember Administrators"),
             ("ps-netipconfiguration", "Get-NetIPConfiguration"),
         ] {

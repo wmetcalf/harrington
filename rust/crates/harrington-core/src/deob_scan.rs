@@ -9512,6 +9512,11 @@ fn scan_enumeration(deobfuscated: &str, env: &mut Environment) {
                 false,
             ),
             (
+                Regex::new(r"(?i)\bGet-LocalGroup\b[^\r\n]*").unwrap(),
+                "ps-localgroup",
+                false,
+            ),
+            (
                 Regex::new(r"(?i)\bGet-LocalGroupMember\b[^\r\n]*").unwrap(),
                 "ps-localgroupmember",
                 false,
