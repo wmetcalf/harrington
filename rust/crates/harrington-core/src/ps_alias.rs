@@ -80,6 +80,8 @@ const ALIAS_TABLE: &[(&str, &str)] = &[
     ("spps", "Stop-Process"),
     ("saps", "Start-Process"),
     ("start", "Start-Process"),
+    // Services
+    ("spsv", "Stop-Service"),
     // History
     ("h", "Get-History"),
     ("history", "Get-History"),

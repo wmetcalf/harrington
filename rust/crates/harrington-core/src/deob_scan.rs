@@ -7953,9 +7953,9 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
                 push(&format!("sc-{verb}"), svc);
             }
             for line in deobfuscated.lines() {
-                if !line.to_ascii_lowercase().contains("stop-service") {
+                let Some(stop_service_command) = powershell_service_command_keyword(line) else {
                     continue;
-                }
+                };
                 let mut services = powershell_named_argument_list(line, "-Name");
                 if services.is_empty() {
                     if let Some(display_name) = powershell_named_argument(line, "-DisplayName") {
@@ -7963,7 +7963,7 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
                     }
                 }
                 if services.is_empty() {
-                    let positional = powershell_positional_arguments(line, "Stop-Service");
+                    let positional = powershell_positional_arguments(line, stop_service_command);
                     if let Some(service) = positional.into_iter().next() {
                         services.extend(split_powershell_list_argument(&service));
                     }
@@ -8191,6 +8191,22 @@ fn is_security_service_name(service: &str) -> bool {
     )
 }
 
+fn powershell_service_command_keyword(line: &str) -> Option<&'static str> {
+    let lower = line.to_ascii_lowercase();
+    if lower.contains("stop-service") {
+        Some("Stop-Service")
+    } else if lower
+        .split(|c: char| {
+            c.is_ascii_whitespace() || matches!(c, ';' | '|' | '(' | '{' | '&' | '"' | '\'' | '`')
+        })
+        .any(|token| token == "spsv")
+    {
+        Some("spsv")
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 fn has_defender_evasion_atom(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
@@ -8315,6 +8331,8 @@ fn has_defender_service_process_atom_lower(lower: &str) -> bool {
         "move\t",
         "move.exe",
         "stop-service",
+        "spsv ",
+        "spsv\t",
         "set-service",
     ];
     COMMAND_ATOMS.iter().any(|atom| lower.contains(atom))
