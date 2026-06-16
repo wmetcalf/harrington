@@ -10474,6 +10474,12 @@ fn inline_powershell_line_is_echo_text(line: &str) -> bool {
 
 fn inline_powershell_scan_text(text: &str) -> std::borrow::Cow<'_, str> {
     const LARGE_TEXT_CANDIDATE_THRESHOLD: usize = 512 * 1024;
+    if inline_powershell_text_looks_like_batch(text) {
+        if let Some(candidate) = inline_powershell_launch_candidate_text(text) {
+            return std::borrow::Cow::Owned(candidate);
+        }
+    }
+
     if text.len() < LARGE_TEXT_CANDIDATE_THRESHOLD {
         return std::borrow::Cow::Borrowed(text);
     }
@@ -10482,6 +10488,14 @@ fn inline_powershell_scan_text(text: &str) -> std::borrow::Cow<'_, str> {
         return std::borrow::Cow::Borrowed(text);
     }
 
+    if let Some(candidate) = inline_powershell_launch_candidate_text(text) {
+        std::borrow::Cow::Owned(candidate)
+    } else {
+        std::borrow::Cow::Borrowed(text)
+    }
+}
+
+fn inline_powershell_launch_candidate_text(text: &str) -> Option<String> {
     let mut candidate = String::new();
     for line in text.lines() {
         if inline_powershell_launch_line_has_payload_signal(line) {
@@ -10491,11 +10505,10 @@ fn inline_powershell_scan_text(text: &str) -> std::borrow::Cow<'_, str> {
             candidate.push_str(line);
         }
     }
-
     if candidate.is_empty() {
-        std::borrow::Cow::Borrowed(text)
+        None
     } else {
-        std::borrow::Cow::Owned(candidate)
+        Some(candidate)
     }
 }
 
@@ -10504,6 +10517,17 @@ fn inline_powershell_text_needs_global_context(text: &str) -> bool {
         || contains_ascii_case_insensitive_bytes(text, b"downloadfile")
         || contains_ascii_case_insensitive_bytes(text, b"downloaddata")
         || contains_ascii_case_insensitive_bytes(text, b"callbyname")
+}
+
+fn inline_powershell_text_looks_like_batch(text: &str) -> bool {
+    text.lines().take(64).any(|line| {
+        let line = line.trim_start();
+        line.eq_ignore_ascii_case("@echo off")
+            || line.eq_ignore_ascii_case("echo off")
+            || line.to_ascii_lowercase().starts_with("setlocal")
+            || line.to_ascii_lowercase().starts_with("set ")
+            || line.to_ascii_lowercase().starts_with("start ")
+    })
 }
 
 fn inline_powershell_text_has_payload_signal(text: &str) -> bool {
