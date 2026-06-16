@@ -5534,6 +5534,8 @@ fn scan_copied_network_probe_alias_deob_text(deobfuscated: &str, env: &mut Envir
         let replay_command = match src_base.as_str() {
             "nslookup.exe" | "nslookup" => "nslookup.exe",
             "ping.exe" | "ping" => "ping.exe",
+            "tracert.exe" | "tracert" => "tracert.exe",
+            "pathping.exe" | "pathping" => "pathping.exe",
             _ => continue,
         };
         insert_alias_command_names(&mut aliases, dst, replay_command);
@@ -8792,8 +8794,18 @@ fn scan_network_probe(deobfuscated: &str, env: &mut Environment) {
                 }
             }
             "ping" | "ping.exe" => {
-                if let Some(target) = ping_probe_target(&tokens) {
+                if let Some(target) = network_probe_command_target(&tokens, "ping") {
                     push_network_probe(env, "icmp-ping", target);
+                }
+            }
+            "tracert" | "tracert.exe" => {
+                if let Some(target) = network_probe_command_target(&tokens, "tracert") {
+                    push_network_probe(env, "route-trace", target);
+                }
+            }
+            "pathping" | "pathping.exe" => {
+                if let Some(target) = network_probe_command_target(&tokens, "pathping") {
+                    push_network_probe(env, "route-trace", target);
                 }
             }
             _ => {}
@@ -8816,7 +8828,7 @@ fn scan_network_probe(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
-fn ping_probe_target(tokens: &[String]) -> Option<String> {
+fn network_probe_command_target(tokens: &[String], command: &str) -> Option<String> {
     let mut skip_next = false;
     for token in tokens.iter().skip(1) {
         let token = token.trim_matches(['"', '\'']);
@@ -8828,7 +8840,7 @@ fn ping_probe_target(tokens: &[String]) -> Option<String> {
             continue;
         }
         let lower = token.to_ascii_lowercase();
-        if ping_option_takes_value(&lower) {
+        if network_probe_option_takes_value(command, &lower) {
             skip_next = true;
             continue;
         }
@@ -8844,29 +8856,40 @@ fn ping_probe_target(tokens: &[String]) -> Option<String> {
     None
 }
 
-fn ping_option_takes_value(option: &str) -> bool {
-    matches!(
-        option,
-        "-n" | "/n"
-            | "-l"
-            | "/l"
-            | "-i"
-            | "/i"
-            | "-v"
-            | "/v"
-            | "-r"
-            | "/r"
-            | "-s"
-            | "/s"
-            | "-j"
-            | "/j"
-            | "-k"
-            | "/k"
-            | "-w"
-            | "/w"
-            | "-c"
-            | "/c"
-    )
+fn network_probe_option_takes_value(command: &str, option: &str) -> bool {
+    match command {
+        "ping" => matches!(
+            option,
+            "-n" | "/n"
+                | "-l"
+                | "/l"
+                | "-i"
+                | "/i"
+                | "-v"
+                | "/v"
+                | "-r"
+                | "/r"
+                | "-s"
+                | "/s"
+                | "-j"
+                | "/j"
+                | "-k"
+                | "/k"
+                | "-w"
+                | "/w"
+                | "-c"
+                | "/c"
+        ),
+        "tracert" => matches!(
+            option,
+            "-h" | "/h" | "-j" | "/j" | "-w" | "/w" | "-s" | "/s"
+        ),
+        "pathping" => matches!(
+            option,
+            "-h" | "/h" | "-g" | "/g" | "-p" | "/p" | "-q" | "/q" | "-w" | "/w"
+        ),
+        _ => false,
+    }
 }
 
 fn is_loopback_ping_target(target: &str) -> bool {

