@@ -3710,6 +3710,22 @@ powershell -Command "New-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Cont
     }
 
     #[test]
+    fn powershell_enable_localuser_emits_account_modification_trait() {
+        let script = br#"powershell -Command "Enable-LocalUser -Name defaultuserx""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, .. }
+                    if action == "local-user-enable" && account == "defaultuserx"
+            )),
+            "PowerShell Enable-LocalUser account enablement missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_local_user_and_group_member_emit_account_modification_traits() {
         let script = br#"powershell -Command "New-LocalUser -Name backdoor -Password $p"
 powershell -Command "Add-LocalGroupMember -Group Administrators -Member backdoor"
