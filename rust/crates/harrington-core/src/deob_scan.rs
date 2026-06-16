@@ -7789,6 +7789,10 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
         Regex::new(r#"(?i)\btaskkill(?:\.exe)?\b[^\r\n]*?/(?:fi|filter)\s+"?imagename\s+eq\s+(SecurityHealthSystray|SecurityHealthService|WindowsDefender|MsMpEng|NisSrv|MpCmdRun|MBAMService|MBAMTray|avastui|avgui|egui|ekrn|bdservicehost|SentinelAgent|CrowdStrike|CSFalconService)\.exe"?\b[^\r\n]*"#)
             .expect("taskkill security process filter")
     });
+    static WMIC_SECURITY_PROCESS_DELETE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?i)\bwmic(?:\.exe)?\s+process\b[^\r\n]*\bwhere\b[^\r\n]*\bname\s*=\s*['"]?(SecurityHealthSystray|SecurityHealthService|WindowsDefender|MsMpEng|NisSrv|MpCmdRun|MBAMService|MBAMTray|avastui|avgui|egui|ekrn|bdservicehost|SentinelAgent|CrowdStrike|CSFalconService)\.exe['"]?[^\r\n]*\b(?:delete|call\s+terminate)\b"#)
+            .expect("wmic security process delete")
+    });
     static SECURITY_BINARY_TAKEOWN_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?i)\btakeown(?:\.exe)?\b[^\r\n]*(SecurityHealthService|SecurityHealthSystray|MsMpEng|NisSrv|MpCmdRun)\.exe\b[^\r\n]*"#)
             .expect("security binary takeown")
@@ -8030,6 +8034,13 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
                     .map(|m| format!("{}.exe", m.as_str()))
                     .unwrap_or_default();
                 push("taskkill-security-process", process);
+            }
+            for caps in WMIC_SECURITY_PROCESS_DELETE_RE.captures_iter(deobfuscated) {
+                let process = caps
+                    .get(1)
+                    .map(|m| format!("{}.exe", m.as_str()))
+                    .unwrap_or_default();
+                push("wmic-security-process-delete", process);
             }
             for caps in SECURITY_BINARY_TAKEOWN_RE.captures_iter(deobfuscated) {
                 let binary = caps
@@ -8354,6 +8365,8 @@ fn has_defender_service_process_atom_lower(lower: &str) -> bool {
         "move ",
         "move\t",
         "move.exe",
+        "wmic process",
+        "wmic.exe process",
         "stop-service",
         "spsv ",
         "spsv\t",
