@@ -500,7 +500,11 @@ fn trim_html_quote_entity_suffix(mut token: &str) -> &str {
 
 pub(crate) fn normalize_liberal_url_token(token: &str) -> Option<String> {
     let mut token = token.trim().trim_matches(['"', '\'']);
-    if let Some(separator) = token.find("&&") {
+    if let Some(separator) = ["&&", "||"]
+        .iter()
+        .filter_map(|separator| token.find(separator))
+        .min()
+    {
         token = &token[..separator];
     }
     let end = token
