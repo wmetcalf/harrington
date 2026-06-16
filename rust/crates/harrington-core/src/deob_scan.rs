@@ -8966,7 +8966,7 @@ fn scan_anti_recovery(deobfuscated: &str, env: &mut Environment) {
             ),
             (
                 Regex::new(
-                    r"(?i)\b(?:Get-WmiObject|gwmi|Get-CimInstance|gcim)\b[^\r\n]*\bWin32_ShadowCopy\b[^\r\n]*(?:\.Delete\s*\(|Remove-CimInstance\b|Remove-WmiObject\b|rwmi\b)",
+                    r"(?i)\b(?:Get-WmiObject|gwmi|Get-CimInstance|gcim)\b[^\r\n;&]*\bWin32_ShadowCopy\b[^\r\n;&]*(?:\.Delete\s*\(|Remove-CimInstance\b|Remove-WmiObject\b|rwmi\b)",
                 )
                 .unwrap(),
                 "powershell-shadowcopy-delete",

@@ -4627,6 +4627,23 @@ reg save HKLM\SECURITY C:\Users\Public\security.save /y
     }
 
     #[test]
+    fn chained_registry_hive_save_target_excludes_benign_commands() {
+        let script = br#"echo keep & reg save HKLM\SAM C:\Users\Public\sam.save /y"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::CredentialAccess { technique, target }
+                    if technique == "registry-hive-save"
+                        && target == r"reg save HKLM\SAM C:\Users\Public\sam.save /y"
+            )),
+            "registry hive save target included chained benign command: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn ntdsutil_ifm_create_full_emits_credential_access_trait() {
         let script =
             br#"ntdsutil "activate instance ntds" ifm "create full C:\Users\Public\ifm" quit quit"#;
@@ -8398,6 +8415,21 @@ powershell -Command "Get-CimInstance Win32_ShadowCopy | Remove-CimInstance"
                 Trait::AntiRecovery { action } if action == "powershell-shadowcopy-delete"
             )),
             "PowerShell rwmi shadowcopy deletion was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_shadowcopy_query_does_not_inherit_later_remove_wmiobject() {
+        let script = br#"powershell -Command "Get-WmiObject Win32_ShadowCopy | Select-Object ID; Remove-WmiObject Win32_Process""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AntiRecovery { action } if action == "powershell-shadowcopy-delete"
+            )),
+            "shadowcopy query inherited unrelated later Remove-WmiObject: {:?}",
             report.traits
         );
     }
