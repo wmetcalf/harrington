@@ -32,7 +32,17 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
         return result;
     }
 
-    if let Some(inner) = crate::handlers::forfiles::extract_forfiles_inner(raw) {
+    if let Some(inner) = crate::handlers::forfiles::extract_forfiles_inner_with_env(raw, env) {
+        if crate::handlers::forfiles::extract_forfiles_inner(raw)
+            .as_ref()
+            .is_some_and(|original| original != &inner)
+        {
+            if let Some(cmd_inner) = crate::handlers::cmd::extract_cmd_inner(&inner) {
+                interpret_line(&cmd_inner, env);
+            } else {
+                interpret_line(&inner, env);
+            }
+        }
         result.child_cmd_to_push = Some(inner);
         result.child_cmd_delayed = false;
     }

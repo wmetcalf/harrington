@@ -1,6 +1,9 @@
 //! forfiles.exe handler — extracts the `/c` command child.
 
-use crate::env::Environment;
+use crate::env::{Environment, FsEntry};
+use crate::handlers::util::{
+    normalize_filesystem_storage_path, normalize_wildcard_path, wildcard_match,
+};
 use crate::traits::Trait;
 
 pub fn extract_forfiles_inner(raw: &str) -> Option<String> {
@@ -37,6 +40,17 @@ pub fn extract_forfiles_inner(raw: &str) -> Option<String> {
     None
 }
 
+pub fn extract_forfiles_inner_with_env(raw: &str, env: &Environment) -> Option<String> {
+    let inner = extract_forfiles_inner(raw)?;
+    if !inner.contains('@') {
+        return Some(inner);
+    }
+    let Some(path) = first_tracked_forfiles_path(raw, env) else {
+        return Some(inner);
+    };
+    Some(substitute_forfiles_placeholders(&inner, &path))
+}
+
 pub fn h_forfiles(raw: &str, env: &mut Environment) {
     if !env.traits.iter().any(|t| {
         matches!(
@@ -49,6 +63,97 @@ pub fn h_forfiles(raw: &str, env: &mut Environment) {
             cmd: raw.to_string(),
         });
     }
+}
+
+fn first_tracked_forfiles_path(raw: &str, env: &Environment) -> Option<String> {
+    let tokens = split_forfiles_tokens(raw);
+    let root = forfiles_option_value(&tokens, "/p").unwrap_or_default();
+    let mask = forfiles_option_value(&tokens, "/m").unwrap_or_else(|| "*".to_string());
+    let recursive = tokens
+        .iter()
+        .skip(1)
+        .any(|token| token.eq_ignore_ascii_case("/s") || token.eq_ignore_ascii_case("-s"));
+    let normalized_root = normalize_wildcard_path(&normalize_filesystem_storage_path(&root))
+        .trim_end_matches('\\')
+        .to_string();
+    let normalized_mask = normalize_wildcard_path(&mask);
+    let mut matched = env
+        .modified_filesystem
+        .iter()
+        .filter_map(|(path, entry)| {
+            if matches!(entry, FsEntry::Directory)
+                || !forfiles_path_under_root(path, &normalized_root, recursive)
+                || !windows_basename(path).is_some_and(|name| {
+                    wildcard_match(&normalized_mask, &normalize_wildcard_path(name))
+                })
+            {
+                return None;
+            }
+            Some(path.clone())
+        })
+        .collect::<Vec<_>>();
+    matched.sort();
+    matched.into_iter().next()
+}
+
+fn forfiles_option_value(tokens: &[String], flag: &str) -> Option<String> {
+    for (idx, token) in tokens.iter().enumerate().skip(1) {
+        if token.eq_ignore_ascii_case(flag) || token.eq_ignore_ascii_case(&flag.replace('/', "-")) {
+            return tokens
+                .get(idx + 1)
+                .map(|value| value.trim_matches(['"', '\'']).to_string());
+        }
+        for sep in [':', '='] {
+            let prefix = format!("{flag}{sep}");
+            let dash_prefix = format!("-{}{sep}", flag.trim_start_matches('/'));
+            let lower = token.to_ascii_lowercase();
+            if lower.starts_with(&prefix) || lower.starts_with(&dash_prefix) {
+                let offset = token.find(sep)? + 1;
+                let value = token[offset..].trim_matches(['"', '\'']).to_string();
+                if !value.is_empty() {
+                    return Some(value);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn forfiles_path_under_root(path: &str, normalized_root: &str, recursive: bool) -> bool {
+    if normalized_root.is_empty() {
+        return recursive || !path.contains(['\\', '/', ':']);
+    }
+    let normalized_path = normalize_wildcard_path(path);
+    let Some(rest) = normalized_path.strip_prefix(normalized_root) else {
+        return false;
+    };
+    let rest = rest.trim_start_matches('\\');
+    !rest.is_empty() && (recursive || !rest.contains('\\'))
+}
+
+fn substitute_forfiles_placeholders(inner: &str, path: &str) -> String {
+    replace_ascii_ci(inner, "@path", &format!("\"{path}\""))
+}
+
+fn replace_ascii_ci(input: &str, needle: &str, replacement: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let lower = input.to_ascii_lowercase();
+    let needle_lower = needle.to_ascii_lowercase();
+    let mut pos = 0usize;
+    while let Some(rel) = lower[pos..].find(&needle_lower) {
+        let abs = pos + rel;
+        out.push_str(&input[pos..abs]);
+        out.push_str(replacement);
+        pos = abs + needle.len();
+    }
+    out.push_str(&input[pos..]);
+    out
+}
+
+fn windows_basename(path: &str) -> Option<&str> {
+    path.rsplit(['\\', '/'])
+        .next()
+        .filter(|name| !name.is_empty())
 }
 
 fn command_basename_no_ext(token: &str) -> String {
@@ -93,7 +198,8 @@ fn split_forfiles_tokens(raw: &str) -> Vec<String> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::extract_forfiles_inner;
+    use super::{extract_forfiles_inner, extract_forfiles_inner_with_env};
+    use crate::env::{Config, Environment, FsEntry};
 
     #[test]
     fn extracts_quoted_c_command() {
@@ -146,5 +252,26 @@ mod tests {
     #[test]
     fn ignores_non_forfiles_command() {
         assert!(extract_forfiles_inner(r#"notforfiles /c "cmd /c echo hi""#).is_none());
+    }
+
+    #[test]
+    fn substitutes_path_placeholder_from_tracked_file() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            r"c:\work\run.js".to_string(),
+            FsEntry::Content {
+                content: b"fetch('https://example.invalid')".to_vec(),
+                append: false,
+            },
+        );
+
+        assert_eq!(
+            extract_forfiles_inner_with_env(
+                r#"forfiles /p C:\Work /m *.js /c "cmd /c @path""#,
+                &env
+            )
+            .as_deref(),
+            Some(r#"cmd /c "c:\work\run.js""#)
+        );
     }
 }
