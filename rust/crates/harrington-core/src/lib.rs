@@ -4705,6 +4705,22 @@ C:\Users\Public\nt.tmp localgroup Administrators backdoor /ADD
     }
 
     #[test]
+    fn legacy_netsh_rdp_portopening_emits_remote_access_trait() {
+        let script = br#"netsh firewall add portopening TCP 3389 "Remote Desktop" ENABLE"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-firewall-open" && target == "3389"
+            )),
+            "legacy netsh RDP port opening was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_remote_desktop_firewall_group_enable_emits_remote_access_trait() {
         let script =
             br#"powershell -Command "Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'"

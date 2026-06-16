@@ -11183,6 +11183,12 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
         )
         .expect("rdp firewall set rule regex")
     });
+    static LEGACY_RDP_PORTOPENING_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?im)^[^\r\n]*\bnetsh(?:\.exe)?\s+firewall\s+add\s+portopening\b[^\r\n]*\bTCP\b[^\r\n]*\b3389\b[^\r\n]*(?:\benable\b|\ballow\b)[^\r\n]*"#,
+        )
+        .expect("legacy rdp portopening regex")
+    });
     static PS_RDP_FIREWALL_GROUP_ENABLE_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?im)^[^\r\n]*?\b(?:Enable|Set)-NetFirewallRule\b[^\r\n]*"#)
             .expect("powershell rdp firewall group enable regex")
@@ -11359,6 +11365,13 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
             "rdp-firewall-open",
             "Remote Desktop".to_string(),
             command.to_string(),
+        );
+    }
+    for m in LEGACY_RDP_PORTOPENING_RE.find_iter(deobfuscated) {
+        push(
+            "rdp-firewall-open",
+            "3389".to_string(),
+            m.as_str().trim().to_string(),
         );
     }
     for m in PS_RDP_FIREWALL_GROUP_ENABLE_RE.find_iter(deobfuscated) {
