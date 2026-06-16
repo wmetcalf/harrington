@@ -1092,6 +1092,43 @@ fn summarize_dedupes_repeated_powershell_samples_without_changing_count() {
 }
 
 #[test]
+fn tldr_preserves_full_credential_access_target() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("lsass.bat");
+    let long_marker = "tail-marker-preserved-in-tldr-credential-access";
+    let target_path = [
+        r#"C:\Users\Public\alpha0001"#,
+        r#"nested\bravo0002"#,
+        r#"nested\charlie0003"#,
+        r#"nested\delta0004"#,
+        long_marker,
+        "lsass-memory-dump-output-file.dmp",
+    ]
+    .join(r#"\nested\"#);
+    fs::write(
+        &input,
+        format!("procdump64.exe -accepteula -ma lsass.exe {target_path}\r\n"),
+    )
+    .expect("write");
+
+    let out = Command::cargo_bin("harrington")
+        .expect("bin")
+        .args(["summarize", "--tldr", input.to_str().expect("path")])
+        .output()
+        .expect("run");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains(long_marker),
+        "tldr credential target was truncated:\n{stdout}"
+    );
+}
+
+#[test]
 fn summarize_can_enrich_lolbas_matches_from_external_json() {
     let dir = TempDir::new().expect("tmp");
     let input = dir.path().join("in.bat");

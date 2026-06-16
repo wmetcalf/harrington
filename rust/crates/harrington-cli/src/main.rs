@@ -2802,10 +2802,7 @@ fn build_tldr(file: &str, input: &[u8], report: &harrington_core::Report) -> Str
                 self_extract = true;
             }
             Trait::CredentialAccess { technique, target } => {
-                cred_access.insert(format!(
-                    "{technique}: {}",
-                    target.chars().take(60).collect::<String>()
-                ));
+                cred_access.insert(format!("{technique}: {target}"));
             }
             Trait::ProcessInjection { api } => {
                 injection.insert(api.clone());
