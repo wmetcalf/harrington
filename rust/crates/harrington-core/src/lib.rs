@@ -2771,6 +2771,25 @@ schtasks /create /tn "Updater" /tr "cmd /V:ON /c set U=https://schtasks.example/
     }
 
     #[test]
+    fn powershell_short_scheduled_task_parameters_emit_persistence_trait() {
+        let script = br#"powershell -Command "$a = New-ScheduledTaskAction -Ex 'cmd.exe' -Ar '/c calc.exe'; Register-ScheduledTask -Ta Updater -Ac $a -Fo"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { hive, key, command, .. }
+                    if hive == "ScheduledTask"
+                        && key == "Updater"
+                        && command == "cmd.exe /c calc.exe"
+            )),
+            "short PowerShell scheduled-task parameters missed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_multiline_scheduled_task_action_variable_emits_persistence_trait() {
         let script = br#"$a = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/c calc.exe'
 Register-ScheduledTask -TaskName Updater -Action $a -Force
@@ -44574,6 +44593,23 @@ mod service_install_tests {
                     if service_name == "UpdateSvc" && bin_path == "cmd.exe /c calc.exe"
             )),
             "mixed PowerShell New-Service install trait missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_short_new_service_parameters_emit_service_install_trait() {
+        let script = br#"powershell -Command "New-Service -Na UpdateSvc -Bi 'cmd.exe /c calc.exe' -Sta Automatic"
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ServiceInstall { service_name, bin_path }
+                    if service_name == "UpdateSvc" && bin_path == "cmd.exe /c calc.exe"
+            )),
+            "short PowerShell New-Service parameters missed: {:?}",
             report.traits
         );
     }

@@ -10000,9 +10000,10 @@ fn has_net_user_password_set_atom(text: &str) -> bool {
 }
 
 fn powershell_named_argument(command: &str, name: &str) -> Option<String> {
+    let name_pattern = powershell_parameter_name_pattern(name)?;
     let pattern = format!(
         r#"(?i){}\s*(?::|=|\s)\s*(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^\s"';&|)]+))"#,
-        regex::escape(name)
+        name_pattern
     );
     let re = regex::Regex::new(&pattern).ok()?;
     let caps = re.captures(command)?;
@@ -10014,9 +10015,12 @@ fn powershell_named_argument(command: &str, name: &str) -> Option<String> {
 }
 
 fn powershell_named_argument_list(command: &str, name: &str) -> Vec<String> {
+    let Some(name_pattern) = powershell_parameter_name_pattern(name) else {
+        return Vec::new();
+    };
     let pattern = format!(
         r#"(?i){}\s*(?::|=|\s)\s*(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^\r\n;|&}}]+))"#,
-        regex::escape(name)
+        name_pattern
     );
     let Ok(re) = regex::Regex::new(&pattern) else {
         return Vec::new();
@@ -10051,6 +10055,19 @@ fn split_powershell_list_argument(value: &str) -> impl Iterator<Item = String> +
         .split(',')
         .map(|item| item.trim().trim_matches(['"', '\'']).to_string())
         .filter(|item| !item.is_empty())
+}
+
+fn powershell_parameter_name_pattern(name: &str) -> Option<String> {
+    let canonical = name.strip_prefix('-')?;
+    if canonical.is_empty() || !canonical.is_ascii() {
+        return None;
+    }
+    let min_prefix_len = canonical.len().min(2);
+    let alternatives = (min_prefix_len..=canonical.len())
+        .rev()
+        .map(|len| regex::escape(&format!("-{}", &canonical[..len])))
+        .collect::<Vec<_>>();
+    Some(format!("(?:{})", alternatives.join("|")))
 }
 
 fn powershell_positional_arguments(command: &str, keyword: &str) -> Vec<String> {
