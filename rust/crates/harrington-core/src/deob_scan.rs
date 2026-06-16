@@ -10490,6 +10490,9 @@ fn scan_credential_access(deobfuscated: &str, env: &mut Environment) {
             // Wdigest credentials
             (Regex::new(r#"(?i)\b(?:UseLogonCredential|WDigest)\b"#).unwrap(),
              "wdigest-creds", |m| m.to_string()),
+            // Active Directory IFM media includes credential database material.
+            (Regex::new(r#"(?i)\bntdsutil(?:\.exe)?\b[^\r\n]*\bifm\b[^\r\n]*\bcreate\s+(?:full|rodc)\b[^\r\n]*"#).unwrap(),
+             "ntdsutil-ifm", |m| m.to_string()),
         ]
     });
     static REG_HIVE_SAVE_RE: Lazy<Regex> = Lazy::new(|| {
@@ -10560,6 +10563,8 @@ fn has_credential_access_atom(text: &str) -> bool {
         "chromepass",
         "uselogoncredential",
         "wdigest",
+        "ntdsutil",
+        "ntds.dit",
         "hklm\\sam",
         "hklm\\system",
         "hklm\\security",

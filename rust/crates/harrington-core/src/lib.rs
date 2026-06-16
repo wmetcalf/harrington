@@ -3889,6 +3889,23 @@ reg save HKLM\SECURITY C:\Users\Public\security.save /y
     }
 
     #[test]
+    fn ntdsutil_ifm_create_full_emits_credential_access_trait() {
+        let script =
+            br#"ntdsutil "activate instance ntds" ifm "create full C:\Users\Public\ifm" quit quit"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::CredentialAccess { technique, target }
+                    if technique == "ntdsutil-ifm" && target.contains("create full")
+            )),
+            "ntdsutil IFM creation was not surfaced as credential access: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_dotnet_clipboard_access_emits_input_capture_trait() {
         let script = br#"powershell -Command "[System.Windows.Forms.Clipboard]::GetText()"
 powershell -Command "[Windows.Forms.Clipboard]::SetText('copied')"
