@@ -314,7 +314,7 @@ fn synth_findstr(args: &[&str], input: Vec<String>, env: &mut Environment) -> Ve
             }
         })
         .collect();
-    let expanded_args = expand_findstr_pattern_file_args(&expanded_args, env);
+    let expanded_args = expand_findstr_indirect_args(&expanded_args, env);
     if !input.is_empty() {
         let refs: Vec<&str> = expanded_args.iter().map(String::as_str).collect();
         return filter_findstr(&refs, input);
@@ -343,27 +343,36 @@ fn synth_findstr(args: &[&str], input: Vec<String>, env: &mut Environment) -> Ve
     filter_findstr(&filter_args, lines)
 }
 
-fn expand_findstr_pattern_file_args(args: &[String], env: &mut Environment) -> Vec<String> {
+fn expand_findstr_indirect_args(args: &[String], env: &mut Environment) -> Vec<String> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < args.len() {
         let arg = args[i].trim_matches('"');
         let lower = arg.to_ascii_lowercase();
         let mut consumed_next = false;
-        let pattern_file = if lower == "/g" {
+        let indirect_file = if lower == "/g" {
+            consumed_next = true;
+            args.get(i + 1).map(|next| next.trim_matches('"'))
+        } else if lower == "/f" {
             consumed_next = true;
             args.get(i + 1).map(|next| next.trim_matches('"'))
         } else {
             lower
                 .strip_prefix("/g:")
                 .map(|_| arg[3..].trim_matches('"'))
+                .or_else(|| {
+                    lower
+                        .strip_prefix("/f:")
+                        .map(|_| arg[3..].trim_matches('"'))
+                })
         };
-        if let Some(path) = pattern_file {
-            let patterns = type_file(path, env)
+        if let Some(path) = indirect_file {
+            let lines = type_file(path, env)
                 .into_iter()
+                .map(|line| line.trim().to_string())
                 .filter(|line| !line.is_empty())
                 .collect::<Vec<_>>();
-            if patterns.is_empty() {
+            if lines.is_empty() {
                 out.push(args[i].clone());
                 if consumed_next {
                     if let Some(next) = args.get(i + 1) {
@@ -375,7 +384,7 @@ fn expand_findstr_pattern_file_args(args: &[String], env: &mut Environment) -> V
                 }
                 continue;
             }
-            out.extend(patterns);
+            out.extend(lines);
             i += if consumed_next { 2 } else { 1 };
             continue;
         }
