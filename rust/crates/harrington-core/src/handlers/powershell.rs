@@ -507,20 +507,24 @@ fn record_quoted_literal_redirect_side_effects(body: &str, env: &mut Environment
 
 fn powershell_quoted_literal_redirect(body: &str) -> Option<(String, String, bool)> {
     let bytes = body.as_bytes();
-    for (idx, byte) in bytes.iter().enumerate() {
+    for (idx, byte) in bytes.iter().enumerate().rev() {
         if *byte != b'>' {
             continue;
         }
-        if idx > 0 && bytes.get(idx - 1) == Some(&b'2') {
+        let (op_idx, append) = if idx > 0 && bytes.get(idx - 1) == Some(&b'>') {
+            (idx - 1, true)
+        } else {
+            (idx, bytes.get(idx + 1) == Some(&b'>'))
+        };
+        if op_idx > 0 && bytes.get(op_idx - 1) == Some(&b'2') {
             continue;
         }
-        let op_start = if idx > 0 && bytes.get(idx - 1) == Some(&b'1') {
-            idx - 1
+        let op_start = if op_idx > 0 && bytes.get(op_idx - 1) == Some(&b'1') {
+            op_idx - 1
         } else {
-            idx
+            op_idx
         };
-        let append = bytes.get(idx + 1) == Some(&b'>');
-        let dst_start = idx + if append { 2 } else { 1 };
+        let dst_start = op_idx + if append { 2 } else { 1 };
         let content = powershell_quoted_literal_value(body[..op_start].trim_end())?;
         let dst = split_words(&body[dst_start..])
             .first()
