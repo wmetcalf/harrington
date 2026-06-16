@@ -32,6 +32,15 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
         return result;
     }
 
+    if let Some(child) = conhost_child_command(raw) {
+        if let Some(inner) = crate::handlers::cmd::extract_cmd_inner(&child) {
+            result.consumed = true;
+            result.child_cmd_to_push = Some(inner);
+            result.child_cmd_delayed = crate::handlers::cmd::has_v_on_raw(&child);
+            return result;
+        }
+    }
+
     if let Some(inners) = crate::handlers::forfiles::extract_forfiles_inners_with_env(raw, env) {
         let original = crate::handlers::forfiles::extract_forfiles_inner(raw);
         for inner in &inners {
@@ -206,17 +215,64 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
     result
 }
 
+fn conhost_child_command(raw: &str) -> Option<String> {
+    let name = command_name(raw)?;
+    if !command_basename_is(&name, "conhost") {
+        return None;
+    }
+
+    for (start, end) in command_token_spans(raw).into_iter().skip(1) {
+        let token = raw[start..end].trim_matches(['"', '\'']);
+        if command_basename_is(token, "cmd") {
+            return Some(raw[start..].trim().to_string());
+        }
+    }
+    None
+}
+
+fn command_token_spans(raw: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut i = 0;
+    while i < raw.len() {
+        while raw.as_bytes().get(i).is_some_and(u8::is_ascii_whitespace) {
+            i += 1;
+        }
+        if i >= raw.len() {
+            break;
+        }
+        let start = i;
+        let quote = raw.as_bytes()[i];
+        if quote == b'"' || quote == b'\'' {
+            i += 1;
+            while i < raw.len() {
+                let ch = raw.as_bytes()[i];
+                i += 1;
+                if ch == quote {
+                    break;
+                }
+            }
+        } else {
+            while i < raw.len() && !raw.as_bytes()[i].is_ascii_whitespace() {
+                i += 1;
+            }
+        }
+        spans.push((start, i));
+    }
+    spans
+}
+
+fn command_basename_is(name: &str, expected: &str) -> bool {
+    let name = name.trim_start_matches(['@', '"', '(']);
+    let basename = name.rsplit(['\\', '/']).next().unwrap_or(name);
+    let lower = basename.trim_matches('"').to_ascii_lowercase();
+    lower.strip_suffix(".exe").unwrap_or(&lower) == expected
+}
+
 fn raw_invokes_powershell(raw: &str) -> bool {
     let Some(name) = command_name(raw) else {
         return false;
     };
-    let name = name.trim_start_matches(['@', '"', '(']);
-    let basename = name.rsplit(['\\', '/']).next().unwrap_or(name);
-    let lower = basename.trim_matches('"').to_ascii_lowercase();
-    matches!(
-        lower.strip_suffix(".exe").unwrap_or(&lower),
-        "powershell" | "pwsh"
-    )
+    command_basename_is(&name, "powershell") || command_basename_is(&name, "pwsh")
 }
 
 pub fn interpret_line(line: &str, env: &mut Environment) {

