@@ -6896,6 +6896,24 @@ powershell -Command "Get-CimInstance -Namespace root/SecurityCenter2 -ClassName 
     }
 
     #[test]
+    fn powershell_securitycenter_gcim_alias_emits_enumeration_trait() {
+        let report = analyze(
+            br#"powershell -Command "gcim -Namespace root/SecurityCenter2 -ClassName AntiVirusProduct""#,
+            &AnalyzeConfig::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "ps-securitycenter" && command.contains("AntiVirusProduct")
+            )),
+            "PowerShell gcim AntiVirusProduct discovery was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn additional_powershell_discovery_cmdlets_emit_enumeration_traits() {
         let report = analyze(
             br#"powershell -Command "Get-ComputerInfo"

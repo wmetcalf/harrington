@@ -10393,7 +10393,7 @@ fn scan_enumeration(deobfuscated: &str, env: &mut Environment) {
             ),
             (
                 Regex::new(
-                    r"(?i)\b(?:Get-CimInstance|Get-WmiObject)\b[^\r\n]*\bAntiVirusProduct\b[^\r\n]*",
+                    r"(?i)\b(?:Get-CimInstance|gcim|Get-WmiObject|gwmi)\b[^\r\n]*\bAntiVirusProduct\b[^\r\n]*",
                 )
                 .unwrap(),
                 "ps-securitycenter",
