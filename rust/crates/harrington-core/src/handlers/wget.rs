@@ -1,12 +1,15 @@
 //! wget handler — extracts URL + output target for native wget/get.exe calls.
 
-use super::util::{filesystem_storage_key, join_windows_path_preserving_separator, split_words};
+use super::util::{
+    filesystem_entry_for_path, filesystem_storage_key, join_windows_path_preserving_separator,
+    split_words,
+};
 use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
 
 pub fn h_wget(raw: &str, env: &mut Environment) {
     let tokens = split_words(raw);
-    let Some((url, dst)) = parse_wget_like_download(&tokens) else {
+    let Some((url, dst)) = parse_wget_like_download(&tokens, env) else {
         return;
     };
     let dst_path = dst
@@ -54,7 +57,10 @@ impl WgetDestination {
     }
 }
 
-fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<WgetDestination>)> {
+fn parse_wget_like_download(
+    tokens: &[String],
+    env: &Environment,
+) -> Option<(String, Option<WgetDestination>)> {
     let mut url: Option<String> = None;
     let mut dst: Option<WgetDestination> = None;
     let mut i = 1;
@@ -166,7 +172,7 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<WgetDes
                 .get(i + 1)
                 .map(|s| s.trim_matches(['"', '\'', ')']))
                 .unwrap_or_default();
-            if let Some(normalized) = normalize_wget_url_token(candidate) {
+            if let Some(normalized) = normalize_wget_input_source(candidate, env) {
                 url = Some(normalized);
             }
             i += 2;
@@ -177,7 +183,7 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<WgetDes
                 .get(i + 1)
                 .map(|s| s.trim_matches(['"', '\'', ')']))
                 .unwrap_or_default();
-            if let Some(normalized) = normalize_wget_url_token(candidate) {
+            if let Some(normalized) = normalize_wget_input_source(candidate, env) {
                 url = Some(normalized);
             }
             i += 2;
@@ -186,7 +192,7 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<WgetDes
         if let Some(rest) = raw_token.strip_prefix("-i") {
             if !rest.is_empty() && !rest.starts_with('-') {
                 if let Some(normalized) =
-                    normalize_wget_url_token(rest.trim_matches(['"', '\'', ')']))
+                    normalize_wget_input_source(rest.trim_matches(['"', '\'', ')']), env)
                 {
                     url = Some(normalized);
                 }
@@ -199,7 +205,7 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<WgetDes
         {
             if !rest.is_empty() {
                 if let Some(normalized) =
-                    normalize_wget_url_token(rest.trim_matches(['"', '\'', ')']))
+                    normalize_wget_input_source(rest.trim_matches(['"', '\'', ')']), env)
                 {
                     url = Some(normalized);
                 }
@@ -222,6 +228,22 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<WgetDes
 fn normalize_wget_url_token(token: &str) -> Option<String> {
     crate::deob_scan::normalize_liberal_url_token(token)
         .or_else(|| crate::deob_scan::normalize_schemeless_domain_path_token(token))
+}
+
+fn normalize_wget_input_source(candidate: &str, env: &Environment) -> Option<String> {
+    normalize_wget_url_token(candidate).or_else(|| {
+        filesystem_entry_for_path(env, candidate).and_then(|entry| match entry {
+            FsEntry::Content { content, .. } | FsEntry::Decoded { content, .. } => {
+                first_wget_url_in_content(content)
+            }
+            _ => None,
+        })
+    })
+}
+
+fn first_wget_url_in_content(content: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(content);
+    text.split_whitespace().find_map(normalize_wget_url_token)
 }
 
 fn url_basename(url: &str) -> Option<String> {
