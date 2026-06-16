@@ -38426,6 +38426,13 @@ mod ps_alias_tests {
     }
 
     #[test]
+    fn gate_allows_tnc_alias_only_payload() {
+        use crate::ps_alias::expand_aliases_if_ps;
+        let out = expand_aliases_if_ps("tnc c2.example -Port 443");
+        assert!(out.contains("Test-NetConnection"), "got: {}", out);
+    }
+
+    #[test]
     fn gate_allows_verb_noun_cmdlet() {
         use crate::ps_alias::expand_aliases_if_ps;
         let with_cmdlet = "Get-Item foo; start bar";
