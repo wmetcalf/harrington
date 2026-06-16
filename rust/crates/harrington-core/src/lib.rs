@@ -6030,6 +6030,24 @@ net start TermService
     }
 
     #[test]
+    fn escaped_ampersand_psexec_text_does_not_emit_lateral_movement() {
+        let report = analyze(
+            br#"echo keep ^& psexec \\target.example cmd /c whoami"#,
+            &AnalyzeConfig::default(),
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::LateralMovement { tool, target_host }
+                    if tool == "psexec" && target_host == "target.example"
+            )),
+            "escaped ampersand echo text was misread as psexec lateral movement: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_remoting_lateral_movement_forms_emit_traits() {
         let script =
             br#"powershell -Command "icm -ComputerName:target.example -ScriptBlock { hostname }"
@@ -6164,6 +6182,24 @@ powershell -Command "Set-WmiInstance -ComputerName='adminbox.example' -Class Win
                 report.traits
             );
         }
+    }
+
+    #[test]
+    fn escaped_ampersand_winrs_text_does_not_emit_remote_exec() {
+        let report = analyze(
+            br#"echo keep ^& winrs -r:target.example cmd /c whoami"#,
+            &AnalyzeConfig::default(),
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteExec { tool, target_host }
+                    if tool == "winrs" && target_host == "target.example"
+            )),
+            "escaped ampersand echo text was misread as winrs remote exec: {:?}",
+            report.traits
+        );
     }
 
     #[test]

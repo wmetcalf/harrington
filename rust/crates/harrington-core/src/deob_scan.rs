@@ -8922,6 +8922,11 @@ fn scan_lateral_movement(deobfuscated: &str, env: &mut Environment) {
         });
     };
     for c in PSEXEC_RE.captures_iter(deobfuscated) {
+        if c.get(0)
+            .is_some_and(|m| containing_line_starts_with_echo(deobfuscated, m.start()))
+        {
+            continue;
+        }
         if let Some(m) = c.get(1) {
             push("psexec", m.as_str().to_string());
         }
@@ -11202,6 +11207,18 @@ fn command_starts_with_echo(command: &str) -> bool {
         || first.starts_with("echo(")
 }
 
+fn containing_line_starts_with_echo(text: &str, offset: usize) -> bool {
+    let line_start = text[..offset]
+        .rfind(['\r', '\n'])
+        .map(|idx| idx + 1)
+        .unwrap_or(0);
+    let line_end = text[offset..]
+        .find(['\r', '\n'])
+        .map(|idx| offset + idx)
+        .unwrap_or(text.len());
+    command_starts_with_echo(&text[line_start..line_end])
+}
+
 fn has_credential_access_atom(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
     [
@@ -11556,6 +11573,12 @@ fn scan_remote_exec(deobfuscated: &str, env: &mut Environment) {
         });
     };
     for caps in WINRM_RE.captures_iter(deobfuscated) {
+        if caps
+            .get(0)
+            .is_some_and(|m| containing_line_starts_with_echo(deobfuscated, m.start()))
+        {
+            continue;
+        }
         let host = caps
             .get(1)
             .or_else(|| caps.get(2))
