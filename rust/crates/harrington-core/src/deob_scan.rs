@@ -5344,6 +5344,7 @@ fn scan_copied_reg_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
         };
         let child_start = env.exec_cmd.len();
         crate::handlers::passthrough::h_reg(&replay, env);
+        scan_defender_evasion(&replay, env);
         let new_children = env.exec_cmd.get(child_start..).unwrap_or_default().to_vec();
         for child in new_children {
             replay_copied_alias_child_command(&child, env);
@@ -5685,6 +5686,7 @@ fn scan_copied_schtasks_alias_deob_text(deobfuscated: &str, env: &mut Environmen
         };
         let child_start = env.exec_cmd.len();
         crate::handlers::passthrough::h_schtasks(&replay, env);
+        scan_defender_evasion(&replay, env);
         let new_children = env.exec_cmd.get(child_start..).unwrap_or_default().to_vec();
         for child in new_children {
             if let Some(cmd_inner) = crate::handlers::cmd::extract_cmd_inner(&child) {
