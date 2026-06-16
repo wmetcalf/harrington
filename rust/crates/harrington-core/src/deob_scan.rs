@@ -9035,6 +9035,13 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
                 command.to_string(),
             );
         }
+        if is_browser_history_cleanup_target(&lower) {
+            push(
+                "browser-history-delete",
+                "BrowserHistory".to_string(),
+                command.to_string(),
+            );
+        }
     }
 
     for caps in REG_DELETE_HISTORY_RE.captures_iter(deobfuscated) {
@@ -9122,7 +9129,25 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
                 command.to_string(),
             );
         }
+        if is_browser_history_cleanup_target(&lower) {
+            push(
+                "browser-history-delete",
+                "BrowserHistory".to_string(),
+                command.to_string(),
+            );
+        }
     }
+}
+
+fn is_browser_history_cleanup_target(lower: &str) -> bool {
+    (lower.contains("\\google\\chrome\\user data\\")
+        || lower.contains("\\microsoft\\edge\\user data\\")
+        || lower.contains("\\bravesoftware\\brave-browser\\user data\\"))
+        && (lower.contains("\\history")
+            || lower.contains("\\visited links")
+            || lower.contains("\\cookies")
+            || lower.contains("\\cache\\")
+            || lower.contains("\\code cache\\"))
 }
 
 fn has_evidence_cleanup_atom(text: &str) -> bool {
@@ -9138,6 +9163,9 @@ fn has_evidence_cleanup_atom(text: &str) -> bool {
         "customdestinations",
         "consolehost_history.txt",
         "psreadline",
+        "\\google\\chrome\\user data\\",
+        "\\microsoft\\edge\\user data\\",
+        "\\bravesoftware\\brave-browser\\user data\\",
         "userassist",
         "recentdocs",
         "muicache",
