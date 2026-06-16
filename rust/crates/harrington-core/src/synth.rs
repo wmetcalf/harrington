@@ -794,6 +794,7 @@ fn filter_findstr(args: &[&str], input: Vec<String>) -> Vec<String> {
     let mut match_begin = false;
     let mut match_end = false;
     let mut match_exact = false;
+    let mut line_numbers = false;
     let mut i = 0;
     let limit = args.len();
     while i < limit {
@@ -830,6 +831,7 @@ fn filter_findstr(args: &[&str], input: Vec<String>) -> Vec<String> {
                         'b' => match_begin = true,
                         'e' => match_end = true,
                         'i' => case_insensitive = true,
+                        'n' => line_numbers = true,
                         'v' => invert = true,
                         'r' => regex_mode = true,
                         'x' => match_exact = true,
@@ -875,23 +877,29 @@ fn filter_findstr(args: &[&str], input: Vec<String>) -> Vec<String> {
             .collect();
         return input
             .into_iter()
-            .filter(|line| {
+            .enumerate()
+            .filter_map(|(idx, line)| {
                 let hit = if compiled.is_empty() {
                     true
                 } else {
-                    compiled.iter().any(|re| re.is_match(line))
+                    compiled.iter().any(|re| re.is_match(&line))
                 };
-                if invert {
-                    !hit
+                let matched = if invert { !hit } else { hit };
+                if !matched {
+                    return None;
+                }
+                if line_numbers {
+                    Some(format!("{}:{line}", idx + 1))
                 } else {
-                    hit
+                    Some(line)
                 }
             })
             .collect();
     }
     input
         .into_iter()
-        .filter(|line| {
+        .enumerate()
+        .filter_map(|(idx, line)| {
             let l = if case_insensitive {
                 line.to_ascii_lowercase()
             } else {
@@ -917,10 +925,14 @@ fn filter_findstr(args: &[&str], input: Vec<String>) -> Vec<String> {
                     }
                 })
             };
-            if invert {
-                !hit
+            let matched = if invert { !hit } else { hit };
+            if !matched {
+                return None;
+            }
+            if line_numbers {
+                Some(format!("{}:{line}", idx + 1))
             } else {
-                hit
+                Some(line)
             }
         })
         .collect()
