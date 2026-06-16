@@ -7814,8 +7814,10 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
             .expect("fw-off")
     });
     static LEGACY_FIREWALL_OFF_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?i)netsh(?:\.exe)?\s+firewall\s+set\s+opmode\s+disable\b"#)
-            .expect("legacy fw-off")
+        Regex::new(
+            r#"(?i)netsh(?:\.exe)?\s+firewall\s+set\s+opmode\s+(?:disable|mode\s*=\s*disable)\b"#,
+        )
+        .expect("legacy fw-off")
     });
     static PS_FIREWALL_PROFILE_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?im)^[^\r\n]*?\bSet-NetFirewallProfile\b[^\r\n]*"#)

