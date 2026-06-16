@@ -3710,6 +3710,22 @@ powershell -Command "New-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Cont
     }
 
     #[test]
+    fn net_user_password_set_emits_account_modification_trait() {
+        let script = br#"net user support P@ssw0rd123!"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, .. }
+                    if action == "local-user-password-set" && account == "support"
+            )),
+            "net user password set account modification missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_enable_localuser_emits_account_modification_trait() {
         let script = br#"powershell -Command "Enable-LocalUser -Name defaultuserx""#;
         let report = analyze(script, &AnalyzeConfig::default());

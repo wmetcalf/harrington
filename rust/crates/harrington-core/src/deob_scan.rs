@@ -9370,6 +9370,12 @@ fn scan_account_modification(deobfuscated: &str, env: &mut Environment) {
         )
         .expect("net user active regex")
     });
+    static NET_USER_PASSWORD_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?im)^[^\r\n]*?\bnet1?(?:\.exe)?\s+user\s+("[^"\r\n]+"|'[^'\r\n]+'|[^\s/]+)\s+("[^"\r\n]+"|'[^'\r\n]+'|[^\s/]+)[^\r\n]*"#,
+        )
+        .expect("net user password regex")
+    });
     static NET_LOCALGROUP_ADD_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
             r#"(?im)^[^\r\n]*?\bnet1?(?:\.exe)?\s+localgroup\s+("[^"\r\n]+"|'[^'\r\n]+'|[^\s/]+)\s+("[^"\r\n]+"|'[^'\r\n]+'|[^\s/]+)[^\r\n]*\s/add\b[^\r\n]*"#,
@@ -9442,6 +9448,28 @@ fn scan_account_modification(deobfuscated: &str, env: &mut Environment) {
             .map(|m| m.as_str().trim().to_string())
             .unwrap_or_default();
         push("local-user-enable", account, None, command);
+    }
+    for caps in NET_USER_PASSWORD_RE.captures_iter(deobfuscated) {
+        let command = caps
+            .get(0)
+            .map(|m| m.as_str().trim().to_string())
+            .unwrap_or_default();
+        let lower_command = command.to_ascii_lowercase();
+        if lower_command.contains("/add") || lower_command.contains("/active") {
+            continue;
+        }
+        let account = caps
+            .get(1)
+            .map(|m| clean_token(m.as_str()))
+            .unwrap_or_default();
+        let password = caps
+            .get(2)
+            .map(|m| clean_token(m.as_str()))
+            .unwrap_or_default();
+        if password.starts_with('/') {
+            continue;
+        }
+        push("local-user-password-set", account, None, command);
     }
     for caps in NET_LOCALGROUP_ADD_RE.captures_iter(deobfuscated) {
         let group = caps
@@ -9517,9 +9545,40 @@ fn has_account_modification_atom(text: &str) -> bool {
             && lower.contains("yes")
             && lower.contains("net")
             && lower.contains("user"))
+        || has_net_user_password_set_atom(text)
         || lower.contains("new-localuser")
         || lower.contains("enable-localuser")
         || lower.contains("add-localgroupmember")
+}
+
+fn has_net_user_password_set_atom(text: &str) -> bool {
+    text.lines().any(|line| {
+        let tokens = split_words(line);
+        let Some(command) = tokens.first() else {
+            return false;
+        };
+        if !matches!(
+            command_basename(command).as_str(),
+            "net" | "net.exe" | "net1" | "net1.exe"
+        ) {
+            return false;
+        }
+        if !tokens
+            .get(1)
+            .map(|token| token.eq_ignore_ascii_case("user"))
+            .unwrap_or(false)
+        {
+            return false;
+        }
+        let Some(password) = tokens.get(3) else {
+            return false;
+        };
+        !password.starts_with('/')
+            && !tokens.iter().any(|token| {
+                let lower = token.to_ascii_lowercase();
+                lower == "/add" || lower.starts_with("/active")
+            })
+    })
 }
 
 fn powershell_named_argument(command: &str, name: &str) -> Option<String> {
@@ -9572,6 +9631,7 @@ mod account_modification_prefilter_tests {
             r#"net1.exe user support P@ssw0rd /ADD"#,
             r#"net localgroup Administrators support /add"#,
             r#"net user defaultuserx /active:yes"#,
+            r#"net user support P@ssw0rd123!"#,
             r#"Enable-LocalUser -Name defaultuserx"#,
         ] {
             assert!(has_account_modification_atom(sample), "blocked: {sample}");
