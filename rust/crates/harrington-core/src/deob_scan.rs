@@ -5374,6 +5374,55 @@ fn scan_copied_evidence_cleanup_alias_deob_text(deobfuscated: &str, env: &mut En
     }
 }
 
+fn scan_copied_enumeration_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    let mut aliases: std::collections::HashMap<String, &'static str> =
+        std::collections::HashMap::new();
+    for t in &env.traits {
+        let Trait::WindowsUtilManip { src, dst, .. } = t else {
+            continue;
+        };
+        let src_base = basename_lower(src);
+        let replay_command = match src_base.as_str() {
+            "net.exe" | "net" | "net1.exe" | "net1" => "net.exe",
+            "whoami.exe" | "whoami" => "whoami.exe",
+            "quser.exe" | "quser" => "quser.exe",
+            "systeminfo.exe" | "systeminfo" => "systeminfo.exe",
+            "tasklist.exe" | "tasklist" => "tasklist.exe",
+            "wmic.exe" | "wmic" => "wmic.exe",
+            _ => continue,
+        };
+        insert_alias_command_names(&mut aliases, dst, replay_command);
+    }
+    if aliases.is_empty() {
+        return;
+    }
+
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        let Some(cmd) = tokens.first() else {
+            continue;
+        };
+        let replay_command = aliases
+            .get(&basename_lower(cmd))
+            .or_else(|| aliases.get(&cmd.trim_matches(['"', '\'']).to_ascii_lowercase()));
+        let Some(replay_command) = replay_command else {
+            continue;
+        };
+
+        push_manipulated_exec_once(env, line, cmd);
+        let rest = line
+            .get(cmd.len()..)
+            .map(str::trim_start)
+            .unwrap_or_default();
+        let replay = if rest.is_empty() {
+            (*replay_command).to_string()
+        } else {
+            format!("{replay_command} {rest}")
+        };
+        scan_enumeration(&replay, env);
+    }
+}
+
 fn insert_alias_command_names(
     aliases: &mut std::collections::HashMap<String, &'static str>,
     dst: &str,
@@ -9006,11 +9055,17 @@ fn has_enumeration_atom(text: &str) -> bool {
         "systeminfo",
         "tasklist",
         "wmic process",
+        "wmic.exe process",
         "wmic cpu",
+        "wmic.exe cpu",
         "wmic computersystem",
+        "wmic.exe computersystem",
         "wmic logicaldisk",
+        "wmic.exe logicaldisk",
         "wmic partition",
+        "wmic.exe partition",
         "wmic path softwarelicensingservice",
+        "wmic.exe path softwarelicensingservice",
     ]
     .iter()
     .any(|atom| lower.contains(atom))
@@ -9032,7 +9087,9 @@ mod enumeration_prefilter_tests {
             "systeminfo",
             "tasklist",
             "wmic process list",
+            "wmic.exe process list",
             "wmic cpu get name",
+            "wmic.exe cpu get name",
             "wmic logicaldisk get size",
             "wmic path softwareLicensingService get OA3xOriginalProductKey",
         ] {
@@ -10165,6 +10222,9 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     });
     scan_step!("copied_evidence_cleanup_alias_deob_text", {
         scan_copied_evidence_cleanup_alias_deob_text(deobfuscated, env);
+    });
+    scan_step!("copied_enumeration_alias_deob_text", {
+        scan_copied_enumeration_alias_deob_text(deobfuscated, env);
     });
     scan_step!("copied_psexec_alias_deob_text", {
         scan_copied_psexec_alias_deob_text(deobfuscated, env);

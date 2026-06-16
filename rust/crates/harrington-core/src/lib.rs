@@ -3133,6 +3133,44 @@ C:\Users\Public\sc.tmp config WinDefend start= disabled
     }
 
     #[test]
+    fn copied_enumeration_aliases_emit_traits() {
+        let script = br#"copy C:\Windows\System32\whoami.exe C:\Users\Public\wa.tmp
+C:\Users\Public\wa.tmp /priv
+copy C:\Windows\System32\systeminfo.exe C:\Users\Public\si.tmp
+C:\Users\Public\si.tmp
+copy C:\Windows\System32\wbem\wmic.exe C:\Users\Public\wm.tmp
+C:\Users\Public\wm.tmp cpu get name
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        for target in [
+            r#"C:\Users\Public\wa.tmp"#,
+            r#"C:\Users\Public\si.tmp"#,
+            r#"C:\Users\Public\wm.tmp"#,
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::ManipulatedExec { target: t, .. }
+                        if t.eq_ignore_ascii_case(target)
+                )),
+                "copied enumeration alias {target} was not surfaced: {:?}",
+                report.traits
+            );
+        }
+        for enum_kind in ["whoami-priv", "systeminfo", "wmic-enum"] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Enumeration { enum_kind: k, .. } if k == enum_kind
+                )),
+                "missing copied Enumeration {enum_kind}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn wmic_for_f_inventory_command_is_trimmed() {
         let script = br#"for /f "tokens=3" %%a in ('wmic logicaldisk where "Size=250954240000" get Size | find "Size"') do echo %%a"#;
         let report = analyze(script, &AnalyzeConfig::default());
