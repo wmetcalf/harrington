@@ -7,6 +7,8 @@ use crate::handlers::util::{
     normalize_filesystem_storage_path, normalize_wildcard_path, split_words, wildcard_match,
 };
 
+type SynthFileInput = (String, Vec<String>);
+
 pub fn run_pipeline(pipeline: &str, env: &mut Environment) -> Vec<String> {
     if is_cmd_prompt_escape_probe(pipeline) {
         return vec!["[ESC]".to_string()];
@@ -315,7 +317,7 @@ fn synth_findstr(args: &[&str], input: Vec<String>, env: &mut Environment) -> Ve
             }
         })
         .collect();
-    let Some((file_idxs, lines)) = findstr_file_input_args(&expanded_args, env) else {
+    let Some((file_idxs, file_inputs)) = findstr_file_input_args(&expanded_args, env) else {
         let refs: Vec<&str> = expanded_args.iter().map(String::as_str).collect();
         return filter_findstr(&refs, Vec::new());
     };
@@ -324,13 +326,25 @@ fn synth_findstr(args: &[&str], input: Vec<String>, env: &mut Environment) -> Ve
         .enumerate()
         .filter_map(|(idx, arg)| (!file_idxs.contains(&idx)).then_some(arg.as_str()))
         .collect();
+    if findstr_outputs_matching_file_names(&expanded_args) {
+        return file_inputs
+            .into_iter()
+            .filter_map(|(name, lines)| {
+                (!filter_findstr(&filter_args, lines).is_empty()).then_some(name)
+            })
+            .collect();
+    }
+    let lines = file_inputs
+        .into_iter()
+        .flat_map(|(_, lines)| lines)
+        .collect();
     filter_findstr(&filter_args, lines)
 }
 
 fn findstr_file_input_args(
     args: &[String],
     env: &mut Environment,
-) -> Option<(Vec<usize>, Vec<String>)> {
+) -> Option<(Vec<usize>, Vec<SynthFileInput>)> {
     let mut file_idxs = Vec::new();
     let mut input = Vec::new();
     for (idx, arg) in args.iter().enumerate() {
@@ -338,13 +352,60 @@ fn findstr_file_input_args(
         if candidate.is_empty() || candidate.starts_with('/') {
             continue;
         }
-        let lines = type_file(candidate, env);
-        if !lines.is_empty() {
+        let files = findstr_file_inputs_for_arg(candidate, env);
+        if !files.is_empty() {
             file_idxs.push(idx);
-            input.extend(lines);
+            input.extend(files);
         }
     }
     (!file_idxs.is_empty()).then_some((file_idxs, input))
+}
+
+fn findstr_file_inputs_for_arg(candidate: &str, env: &mut Environment) -> Vec<SynthFileInput> {
+    if candidate.contains(['*', '?']) {
+        let normalized_pattern =
+            normalize_wildcard_path(&normalize_filesystem_storage_path(candidate));
+        let tracked = env
+            .modified_filesystem
+            .keys()
+            .filter(|path| dir_wildcard_matches(candidate, &normalized_pattern, path))
+            .cloned()
+            .collect::<Vec<_>>();
+        return tracked
+            .into_iter()
+            .filter_map(|path| {
+                let lines = type_file(&path, env);
+                (!lines.is_empty()).then(|| (findstr_file_output_name(candidate, &path), lines))
+            })
+            .collect();
+    }
+    let lines = type_file(candidate, env);
+    if lines.is_empty() {
+        Vec::new()
+    } else {
+        vec![(candidate.to_string(), lines)]
+    }
+}
+
+fn findstr_file_output_name(pattern: &str, tracked_path: &str) -> String {
+    if pattern.contains(['\\', '/', ':']) {
+        tracked_path.to_string()
+    } else {
+        windows_basename(tracked_path)
+            .unwrap_or(tracked_path)
+            .to_string()
+    }
+}
+
+fn findstr_outputs_matching_file_names(args: &[String]) -> bool {
+    args.iter().any(|arg| {
+        let flags = arg.strip_prefix('/').unwrap_or_default();
+        !flags
+            .chars()
+            .next()
+            .is_some_and(|c| c.eq_ignore_ascii_case(&'c'))
+            && flags.chars().any(|c| c.eq_ignore_ascii_case(&'m'))
+    })
 }
 
 fn synth_find(args: &[&str], input: Vec<String>, env: &mut Environment) -> Vec<String> {
