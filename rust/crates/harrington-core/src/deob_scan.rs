@@ -12245,7 +12245,7 @@ fn scan_service_install(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
     static SC_CREATE_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?i)\bsc(?:\.exe)?\s+create\s+(\S+)(?:\s+[^\r\n]*?\bbinPath=\s*(?:"([^"]+)"|(\S+)))?"#)
+        Regex::new(r#"(?im)^[^\r\n]*?\bsc(?:\.exe)?\s+create\s+(\S+)(?:\s+[^\r\n]*?\bbinPath=\s*(?:"([^"]+)"|(\S+)))?"#)
             .expect("sc create re")
     });
     static PS_NEW_SERVICE_RE: Lazy<Regex> = Lazy::new(|| {
@@ -12266,6 +12266,13 @@ fn scan_service_install(deobfuscated: &str, env: &mut Environment) {
         });
     };
     for caps in SC_CREATE_RE.captures_iter(deobfuscated) {
+        if caps
+            .get(0)
+            .map(|m| command_starts_with_echo(m.as_str()))
+            .unwrap_or(false)
+        {
+            continue;
+        }
         let name = caps
             .get(1)
             .map(|m| m.as_str().to_string())

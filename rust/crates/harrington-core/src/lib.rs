@@ -45742,6 +45742,22 @@ mod service_install_tests {
     }
 
     #[test]
+    fn escaped_ampersand_sc_create_text_does_not_emit_service_install() {
+        let script =
+            br#"echo keep ^& sc create BadSvc binPath= C:\Users\Public\bad.exe start= auto"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ServiceInstall { service_name, .. } if service_name == "BadSvc"
+            )),
+            "escaped ampersand echo text was misread as service install: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_new_service_emits_service_install_trait() {
         let script = br#"powershell -Command "New-Service -Name UpdateSvc -BinaryPathName 'cmd.exe /c calc.exe' -StartupType Automatic"
 "#;
