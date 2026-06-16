@@ -9348,13 +9348,7 @@ fn scan_enumeration(deobfuscated: &str, env: &mut Environment) {
             Box::new(re.find(deobfuscated).into_iter())
         };
         for m in matches {
-            let cmd = m
-                .as_str()
-                .chars()
-                .take(120)
-                .collect::<String>()
-                .trim()
-                .to_string();
+            let cmd = m.as_str().trim().to_string();
             let cmd = if *kind == "wmic-enum" {
                 sanitize_wmic_enum_command(&cmd)
             } else {

