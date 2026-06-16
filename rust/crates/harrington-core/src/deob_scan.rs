@@ -8661,6 +8661,15 @@ fn scan_lateral_movement(deobfuscated: &str, env: &mut Environment) {
             ("New-PSSession", "New-PSSession"),
             ("nsn", "New-PSSession"),
         ] {
+            if contains_ascii_keyword(line, keyword)
+                && line.to_ascii_lowercase().contains("-computername")
+            {
+                if let Some(hosts) = powershell_named_argument(line, "-ComputerName") {
+                    for host in hosts.split(',') {
+                        push(tool, host.to_string());
+                    }
+                }
+            }
             if !contains_ascii_keyword(line, keyword)
                 || line.to_ascii_lowercase().contains("-computername")
             {

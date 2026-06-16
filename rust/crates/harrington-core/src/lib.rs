@@ -4377,6 +4377,25 @@ powershell -Command "New-PSSession -ComputerName 'filesrv.example'"
     }
 
     #[test]
+    fn powershell_remoting_computername_list_emits_lateral_movement_for_each_host() {
+        let script =
+            br#"powershell -Command "icm -ComputerName host1.example,host2.example -ScriptBlock { hostname }""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        for host in ["host1.example", "host2.example"] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::LateralMovement { tool, target_host }
+                        if tool == "Invoke-Command" && target_host == host
+                )),
+                "PowerShell remoting host list target missing {host}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn net_use_admin_share_emits_lateral_movement_trait() {
         let script = br#"net use \\target.example\C$ /user:DOMAIN\adm pass
 "#;
