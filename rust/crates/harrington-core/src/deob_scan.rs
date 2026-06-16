@@ -10517,6 +10517,11 @@ fn scan_credential_access(deobfuscated: &str, env: &mut Environment) {
             // Direct AD database copy using built-in copy-capable tools.
             (Regex::new(r#"(?i)\b(?:esentutl|copy|xcopy|robocopy)(?:\.exe)?\b[^\r\n]*\bntds\.dit\b[^\r\n]*"#).unwrap(),
              "ntds-file-copy", |m| m.to_string()),
+            // Windows Credential Manager / vault enumeration.
+            (Regex::new(r#"(?i)\bcmdkey(?:\.exe)?\b[^\r\n]*(?:/|-)(?:list|l)\b[^\r\n]*"#).unwrap(),
+             "credential-manager-list", |m| m.to_string()),
+            (Regex::new(r#"(?i)\bvaultcmd(?:\.exe)?\b[^\r\n]*(?:/|-)(?:listcreds|listcredentials)\b[^\r\n]*"#).unwrap(),
+             "vaultcmd-listcreds", |m| m.to_string()),
         ]
     });
     static REG_HIVE_SAVE_RE: Lazy<Regex> = Lazy::new(|| {
@@ -10595,6 +10600,8 @@ fn has_credential_access_atom(text: &str) -> bool {
         "hkey_local_machine\\sam",
         "hkey_local_machine\\system",
         "hkey_local_machine\\security",
+        "cmdkey",
+        "vaultcmd",
     ]
     .iter()
     .any(|atom| lower.contains(atom))

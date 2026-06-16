@@ -4094,6 +4094,25 @@ reg save HKLM\SECURITY C:\Users\Public\security.save /y
     }
 
     #[test]
+    fn credential_manager_listing_emits_credential_access_trait() {
+        let script = br#"cmdkey /list
+vaultcmd /listcreds:"Windows Credentials"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        for technique in ["credential-manager-list", "vaultcmd-listcreds"] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::CredentialAccess { technique: existing, .. } if existing == technique
+                )),
+                "credential manager enumeration was not surfaced for {technique}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn powershell_dotnet_clipboard_access_emits_input_capture_trait() {
         let script = br#"powershell -Command "[System.Windows.Forms.Clipboard]::GetText()"
 powershell -Command "[Windows.Forms.Clipboard]::SetText('copied')"
