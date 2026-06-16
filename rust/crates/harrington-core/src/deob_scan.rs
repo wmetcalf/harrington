@@ -9116,6 +9116,14 @@ fn scan_account_modification(deobfuscated: &str, env: &mut Environment) {
         )
         .expect("net localgroup add regex")
     });
+    static PS_NEW_LOCAL_USER_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?im)^[^\r\n]*?\bNew-LocalUser\b[^\r\n]*"#)
+            .expect("powershell new-localuser regex")
+    });
+    static PS_ADD_LOCALGROUP_MEMBER_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?im)^[^\r\n]*?\bAdd-LocalGroupMember\b[^\r\n]*"#)
+            .expect("powershell add-localgroupmember regex")
+    });
     fn clean_token(token: &str) -> String {
         token
             .trim()
@@ -9175,13 +9183,52 @@ fn scan_account_modification(deobfuscated: &str, env: &mut Environment) {
             .unwrap_or_default();
         push("localgroup-add", account, Some(group), command);
     }
+    for caps in PS_NEW_LOCAL_USER_RE.captures_iter(deobfuscated) {
+        let command = caps
+            .get(0)
+            .map(|m| m.as_str().trim().to_string())
+            .unwrap_or_default();
+        let Some(account) = powershell_named_argument(&command, "-Name") else {
+            continue;
+        };
+        push("local-user-add", account, None, command);
+    }
+    for caps in PS_ADD_LOCALGROUP_MEMBER_RE.captures_iter(deobfuscated) {
+        let command = caps
+            .get(0)
+            .map(|m| m.as_str().trim().to_string())
+            .unwrap_or_default();
+        let Some(group) = powershell_named_argument(&command, "-Group") else {
+            continue;
+        };
+        let Some(account) = powershell_named_argument(&command, "-Member") else {
+            continue;
+        };
+        push("localgroup-add", account, Some(group), command);
+    }
 }
 
 fn has_account_modification_atom(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
-    lower.contains("/add")
+    (lower.contains("/add")
         && lower.contains("net")
-        && (lower.contains("user") || lower.contains("localgroup"))
+        && (lower.contains("user") || lower.contains("localgroup")))
+        || lower.contains("new-localuser")
+        || lower.contains("add-localgroupmember")
+}
+
+fn powershell_named_argument(command: &str, name: &str) -> Option<String> {
+    let pattern = format!(
+        r#"(?i){}\s*(?::|=|\s)\s*(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^\s"';&|)]+))"#,
+        regex::escape(name)
+    );
+    let re = regex::Regex::new(&pattern).ok()?;
+    let caps = re.captures(command)?;
+    caps.get(1)
+        .or_else(|| caps.get(2))
+        .or_else(|| caps.get(3))
+        .map(|m| m.as_str().trim_matches(['"', '\'']).to_string())
+        .filter(|value| !value.is_empty())
 }
 
 #[cfg(test)]

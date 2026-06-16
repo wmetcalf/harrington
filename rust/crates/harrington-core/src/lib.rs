@@ -3413,6 +3413,35 @@ powershell -Command "[Windows.Forms.Clipboard]::SetText('copied')"
     }
 
     #[test]
+    fn powershell_local_user_and_group_member_emit_account_modification_traits() {
+        let script = br#"powershell -Command "New-LocalUser -Name backdoor -Password $p"
+powershell -Command "Add-LocalGroupMember -Group Administrators -Member backdoor"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, .. }
+                    if action == "local-user-add" && account == "backdoor"
+            )),
+            "missing PowerShell local-user-add: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, group, .. }
+                    if action == "localgroup-add"
+                        && account == "backdoor"
+                        && group.as_deref() == Some("Administrators")
+            )),
+            "missing PowerShell localgroup-add: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn copied_net_alias_emits_account_modification_traits() {
         let script = br#"copy C:\Windows\System32\net.exe C:\Users\Public\nt.tmp
 C:\Users\Public\nt.tmp user backdoor P@ssw0rd /add
