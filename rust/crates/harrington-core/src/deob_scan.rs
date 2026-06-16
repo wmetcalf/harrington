@@ -11677,6 +11677,10 @@ fn scan_credential_access(deobfuscated: &str, env: &mut Environment) {
              "discord-token-store", |m| m.to_string()),
             (Regex::new(r#"(?i)\\Steam\\(?:config\\loginusers\.vdf|ssfn[^\s"'\r\n\\]*)"#).unwrap(),
              "steam-credential-path", |m| m.to_string()),
+            (Regex::new(r#"(?i)(?:^|[\\="'\s])AppData\\Roaming\\(?:Bitcoin|Zcash|Armory|bytecoin|com\.liberty\.jaxx|Exodus|Ethereum|Electrum|atomic|Guarda|Coinomi|WasabiWallet|Monero|Ripple|Dogecoin|Litecoin|DashCore|BitcoinABC|Vertcoin|Namecoin|DigiByte|Qtum|Firo|PPCoin|GridcoinResearch|Feathercoin|Raven|BitcoinGold|Komodo|Horizen|Nexus)(?:\\[^\s"'\r\n]*)?"#).unwrap(),
+             "crypto-wallet-path", trim_credential_path_prefix),
+            (Regex::new(r#"(?i)(?:^|[\\="'\s])AppData\\Roaming\\Telegram Desktop\\tdata(?:\\[^\s"'\r\n]*)?"#).unwrap(),
+             "telegram-tdata", trim_credential_path_prefix),
             // Windows Credential Manager files and DPAPI protect material.
             (Regex::new(r#"(?i)(?:%APPDATA%|%LOCALAPPDATA%|\\AppData\\(?:Roaming|Local))\\Microsoft\\(?:Credentials|Protect)(?:\\[^\s"']*)?"#).unwrap(),
              "windows-credential-path", |m| m.to_string()),
@@ -11746,6 +11750,13 @@ fn scan_credential_access(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
+fn trim_credential_path_prefix(path: &str) -> String {
+    path.trim_start_matches(|c: char| {
+        c == '=' || c == '"' || c == '\'' || c == '\\' || c.is_whitespace()
+    })
+    .to_string()
+}
+
 fn command_starts_with_echo(command: &str) -> bool {
     let command = command.trim_start().trim_start_matches('@');
     let Some(first) = split_words(command).into_iter().next() else {
@@ -11800,6 +11811,11 @@ fn has_credential_access_atom(text: &str) -> bool {
         "\\discordptb\\local storage\\leveldb\\",
         "\\steam\\config\\loginusers.vdf",
         "\\steam\\ssfn",
+        "appdata\\roaming\\exodus",
+        "appdata\\roaming\\ethereum\\keystore",
+        "appdata\\roaming\\electrum\\wallets",
+        "appdata\\roaming\\bitcoin\\wallets",
+        "appdata\\roaming\\telegram desktop\\tdata",
         "\\microsoft\\credentials\\",
         "\\microsoft\\protect\\",
         "%appdata%\\microsoft\\credentials",

