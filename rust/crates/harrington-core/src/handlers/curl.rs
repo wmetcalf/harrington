@@ -1,6 +1,9 @@
 //! curl handler — extracts URL + output target. Mirrors interpret_curl.
 
-use super::util::{filesystem_storage_key, join_windows_path_preserving_separator, split_words};
+use super::util::{
+    filesystem_entry_for_path, filesystem_storage_key, join_windows_path_preserving_separator,
+    split_words,
+};
 use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
 
@@ -51,6 +54,34 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
             }
             i += 2;
             continue;
+        }
+        if t == "-K" || t.eq_ignore_ascii_case("--config") {
+            if let Some(v) = tokens.get(i + 1) {
+                apply_curl_config_file(
+                    strip_quotes(v),
+                    env,
+                    &mut url,
+                    &mut output,
+                    &mut output_dir,
+                    &mut remote_name,
+                );
+            }
+            i += 2;
+            continue;
+        }
+        if let Some(value) = t.strip_prefix("-K") {
+            if !value.is_empty() && !value.starts_with('-') {
+                apply_curl_config_file(
+                    strip_quotes(value),
+                    env,
+                    &mut url,
+                    &mut output,
+                    &mut output_dir,
+                    &mut remote_name,
+                );
+                i += 1;
+                continue;
+            }
         }
         match t.as_str() {
             _ if t.eq_ignore_ascii_case("--url") => {
@@ -106,6 +137,26 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
                 if url.is_none() {
                     url = normalize_curl_url(value);
                 }
+                i += 1;
+                continue;
+            }
+            _ if strip_ascii_case_insensitive_prefix(t, "--config=")
+                .or_else(|| strip_ascii_case_insensitive_prefix(t, "--config:"))
+                .is_some() =>
+            {
+                let value = strip_quotes(
+                    strip_ascii_case_insensitive_prefix(t, "--config=")
+                        .or_else(|| strip_ascii_case_insensitive_prefix(t, "--config:"))
+                        .unwrap_or_default(),
+                );
+                apply_curl_config_file(
+                    value,
+                    env,
+                    &mut url,
+                    &mut output,
+                    &mut output_dir,
+                    &mut remote_name,
+                );
                 i += 1;
                 continue;
             }
@@ -200,6 +251,73 @@ fn normalize_curl_url(s: &str) -> Option<String> {
         return crate::deob_scan::normalize_liberal_url_token(s).or_else(|| Some(s.to_string()));
     }
     crate::deob_scan::normalize_schemeless_domain_path_token(s)
+}
+
+fn apply_curl_config_file(
+    candidate: &str,
+    env: &Environment,
+    url: &mut Option<String>,
+    output: &mut Option<String>,
+    output_dir: &mut Option<String>,
+    remote_name: &mut bool,
+) {
+    let Some(entry) = filesystem_entry_for_path(env, candidate) else {
+        return;
+    };
+    let content = match entry {
+        FsEntry::Content { content, .. } | FsEntry::Decoded { content, .. } => content,
+        _ => return,
+    };
+    let text = String::from_utf8_lossy(content);
+    for line in text.lines() {
+        let Some((key, value)) = curl_config_key_value(line) else {
+            continue;
+        };
+        match key.as_str() {
+            "url" => {
+                if let Some(normalized) = normalize_curl_url(&value) {
+                    *url = Some(normalized);
+                }
+            }
+            "output" | "output-document" | "o" if !value.is_empty() => {
+                *output = Some(value);
+            }
+            "output-dir" if !value.is_empty() => {
+                *output_dir = Some(value);
+            }
+            "remote-name" | "remote-name-all" | "o-remote"
+                if !matches!(
+                    value.to_ascii_lowercase().as_str(),
+                    "0" | "false" | "off" | "no"
+                ) =>
+            {
+                *remote_name = true;
+            }
+            _ => {}
+        }
+    }
+}
+
+fn curl_config_key_value(line: &str) -> Option<(String, String)> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.starts_with('#') {
+        return None;
+    }
+    let trimmed = trimmed.strip_prefix("--").unwrap_or(trimmed);
+    let (key, value) = trimmed
+        .split_once('=')
+        .or_else(|| trimmed.split_once(':'))
+        .or_else(|| trimmed.split_once(char::is_whitespace))
+        .map(|(key, value)| (key.trim(), value.trim()))
+        .unwrap_or((trimmed, ""));
+    let key = key
+        .trim_start_matches('-')
+        .trim_matches(['"', '\''])
+        .to_ascii_lowercase();
+    if key.is_empty() {
+        return None;
+    }
+    Some((key, strip_quotes(value).to_string()))
 }
 
 fn curl_value_flag(token: &str) -> bool {
