@@ -1918,12 +1918,28 @@ fn synth_wmic(args: &[&str]) -> Vec<String> {
         .is_some_and(|arg| arg.eq_ignore_ascii_case("group"))
         && joined.contains("get name")
     {
+        let group_name = if wmic_query_contains_sid(&joined, "s-1-5-32-555") {
+            "Remote Desktop Users"
+        } else {
+            "Administrators"
+        };
         if joined.contains("/value") {
-            return vec!["Name=Administrators".to_string()];
+            return vec![format!("Name={group_name}\r")];
         }
-        return vec!["Name".to_string(), "Administrators".to_string()];
+        return vec!["Name".to_string(), group_name.to_string()];
     }
     Vec::new()
+}
+
+fn wmic_query_contains_sid(query: &str, sid: &str) -> bool {
+    let normalize = |value: &str| {
+        value
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect::<String>()
+    };
+    normalize(query).contains(&normalize(sid))
 }
 
 fn synth_ping(args: &[&str]) -> Vec<String> {

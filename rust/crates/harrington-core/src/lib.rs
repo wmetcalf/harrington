@@ -5571,6 +5571,47 @@ powershell -Command "New-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Cont
     }
 
     #[test]
+    fn wmic_remote_desktop_users_sid_feeds_localgroup_add() {
+        let script = br#"set user=defaultuserx
+set rdp_sid=S-1-5-32-555
+set rdp_group=
+For /F "UseBackQ Tokens=1* Delims==" %%I In (`WMIC Group Where "SID = '%rdp_sid%'" Get Name /Value ^| Find "="`) Do set rdp_group=%%J
+set rdp_group=%rdp_group:~0,-1%
+net localgroup "%rdp_group%" %user% /add
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains(r#"net localgroup "Remote Desktop Users" defaultuserx /add"#),
+            "RDP group SID did not resolve through FOR/WMIC:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, group, .. }
+                    if action == "localgroup-add"
+                        && account == "defaultuserx"
+                        && group.as_deref() == Some("Remote Desktop Users")
+            )),
+            "missing account modification for resolved Remote Desktop Users add: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-user-group-add" && target == "defaultuserx"
+            )),
+            "missing remote access trait for resolved Remote Desktop Users add: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn net_user_active_yes_emits_account_modification_trait() {
         let script = br#"net user defaultuserx /active:yes"#;
         let report = analyze(script, &AnalyzeConfig::default());

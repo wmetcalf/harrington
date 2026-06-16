@@ -335,6 +335,13 @@ fn resolve_pure_percent_var_source(s: &str, env: &crate::env::Environment) -> Op
 }
 
 fn normalize_f_pipeline(pipeline: &str, env: &mut crate::env::Environment) -> String {
+    if pipeline.contains(['%', '!']) {
+        let normalized = crate::normalize::normalize_to_string(&crate::lex::lex(pipeline), env);
+        if normalized != pipeline {
+            return normalized;
+        }
+    }
+
     let trimmed = pipeline.trim_start();
     let leading_ws = pipeline.len().saturating_sub(trimmed.len());
     let Some(after_percent) = trimmed.strip_prefix('%') else {
