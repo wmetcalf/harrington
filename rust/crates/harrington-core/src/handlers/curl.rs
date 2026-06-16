@@ -13,6 +13,7 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
     let mut output_dir: Option<String> = None;
     let mut remote_name = false;
     let mut url: Option<String> = None;
+    let mut urls: Vec<String> = Vec::new();
     let mut i = 1;
     while i < tokens.len() {
         let t = &tokens[i];
@@ -86,7 +87,10 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
         match t.as_str() {
             _ if t.eq_ignore_ascii_case("--url") => {
                 if let Some(v) = tokens.get(i + 1) {
-                    url = normalize_curl_url(strip_quotes(v));
+                    if let Some(normalized) = normalize_curl_url(strip_quotes(v)) {
+                        url = Some(normalized.clone());
+                        urls.push(normalized);
+                    }
                 }
                 i += 2;
                 continue;
@@ -134,8 +138,9 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
                         .or_else(|| strip_ascii_case_insensitive_prefix(t, "--url:"))
                         .unwrap_or_default(),
                 );
-                if url.is_none() {
-                    url = normalize_curl_url(value);
+                if let Some(normalized) = normalize_curl_url(value) {
+                    url = Some(normalized.clone());
+                    urls.push(normalized);
                 }
                 i += 1;
                 continue;
@@ -171,42 +176,53 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
                     continue;
                 }
                 let candidate = strip_quotes(t);
-                if url.is_none() {
-                    url = normalize_curl_url(candidate);
+                if let Some(normalized) = normalize_curl_url(candidate) {
+                    url = Some(normalized.clone());
+                    urls.push(normalized);
                 }
                 i += 1;
             }
         }
     }
-    let Some(url) = url else { return };
+    if urls.is_empty() {
+        if let Some(url) = url {
+            urls.push(url);
+        }
+    }
+    if urls.is_empty() {
+        return;
+    }
+    let multi = urls.len() > 1;
 
-    let dst = if let Some(o) = output {
-        Some(
-            output_dir
-                .as_deref()
-                .filter(|_| !is_windows_rooted_path(&o))
-                .map(|dir| join_windows_path_preserving_separator(dir, &o))
-                .unwrap_or(o),
-        )
-    } else if remote_name {
-        url_basename(&url).map(|name| {
-            output_dir
-                .as_deref()
-                .map(|dir| join_windows_path_preserving_separator(dir, &name))
-                .unwrap_or(name)
-        })
-    } else {
-        None
-    };
+    for url in urls {
+        let dst = if let Some(o) = output.clone().filter(|_| !multi) {
+            Some(
+                output_dir
+                    .as_deref()
+                    .filter(|_| !is_windows_rooted_path(&o))
+                    .map(|dir| join_windows_path_preserving_separator(dir, &o))
+                    .unwrap_or(o),
+            )
+        } else if remote_name {
+            url_basename(&url).map(|name| {
+                output_dir
+                    .as_deref()
+                    .map(|dir| join_windows_path_preserving_separator(dir, &name))
+                    .unwrap_or(name)
+            })
+        } else {
+            None
+        };
 
-    env.traits.push(Trait::Download {
-        cmd: raw.to_string(),
-        src: url.clone(),
-        dst: dst.clone(),
-    });
-    if let Some(d) = dst {
-        env.modified_filesystem
-            .insert(filesystem_storage_key(&d), FsEntry::Download { src: url });
+        env.traits.push(Trait::Download {
+            cmd: raw.to_string(),
+            src: url.clone(),
+            dst: dst.clone(),
+        });
+        if let Some(d) = dst {
+            env.modified_filesystem
+                .insert(filesystem_storage_key(&d), FsEntry::Download { src: url });
+        }
     }
 }
 

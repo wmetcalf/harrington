@@ -4501,13 +4501,16 @@ fn scan_copied_curl_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
         }
         push_manipulated_exec_once(env, line, cmd);
 
-        if let Some((url, dst)) = parse_curl_like_download(&tokens) {
-            if known.insert(url.clone()) {
-                env.traits.push(Trait::Download {
-                    cmd: line.to_string(),
-                    src: url,
-                    dst,
-                });
+        let downloads = parse_curl_like_downloads(&tokens);
+        if !downloads.is_empty() {
+            for (url, dst) in downloads {
+                if known.insert(url.clone()) {
+                    env.traits.push(Trait::Download {
+                        cmd: line.to_string(),
+                        src: url,
+                        dst,
+                    });
+                }
             }
             continue;
         }
@@ -6792,8 +6795,9 @@ fn is_known_non_curl_compact_flag_host(cmd_base: &str) -> bool {
     )
 }
 
-fn parse_curl_like_download(tokens: &[String]) -> Option<(String, Option<String>)> {
+fn parse_curl_like_downloads(tokens: &[String]) -> Vec<(String, Option<String>)> {
     let mut url: Option<String> = None;
+    let mut urls: Vec<String> = Vec::new();
     let mut dst: Option<String> = None;
     let mut output_dir: Option<String> = None;
     let mut remote_name = false;
@@ -6867,7 +6871,8 @@ fn parse_curl_like_download(tokens: &[String]) -> Option<(String, Option<String>
             .or_else(|| strip_ascii_case_insensitive_prefix(raw_token, "--url:"))
         {
             if let Some(normalized) = normalize_curl_url_token(clean_command_url_token(rest)) {
-                url = Some(normalized);
+                url = Some(normalized.clone());
+                urls.push(normalized);
             }
             i += 1;
             continue;
@@ -6881,31 +6886,42 @@ fn parse_curl_like_download(tokens: &[String]) -> Option<(String, Option<String>
             continue;
         }
         if let Some(normalized) = normalize_curl_url_token(token) {
-            url = Some(normalized);
+            url = Some(normalized.clone());
+            urls.push(normalized);
         }
         i += 1;
     }
-    url.map(|u| {
-        let dst = dst
-            .map(|path| {
-                output_dir
-                    .as_deref()
-                    .filter(|_| !is_windows_rooted_path(&path))
-                    .map(|dir| join_windows_path(dir, &path))
-                    .unwrap_or(path)
-            })
-            .or_else(|| {
-                remote_name.then(|| {
-                    url_basename(&u).map(|name| {
-                        output_dir
-                            .as_deref()
-                            .map(|dir| join_windows_path(dir, &name))
-                            .unwrap_or(name)
-                    })
-                })?
-            });
-        (u, dst)
-    })
+    if urls.is_empty() {
+        if let Some(url) = url {
+            urls.push(url);
+        }
+    }
+    let multi = urls.len() > 1;
+    urls.into_iter()
+        .map(|u| {
+            let dst = dst
+                .clone()
+                .filter(|_| !multi)
+                .map(|path| {
+                    output_dir
+                        .as_deref()
+                        .filter(|_| !is_windows_rooted_path(&path))
+                        .map(|dir| join_windows_path(dir, &path))
+                        .unwrap_or(path)
+                })
+                .or_else(|| {
+                    remote_name.then(|| {
+                        url_basename(&u).map(|name| {
+                            output_dir
+                                .as_deref()
+                                .map(|dir| join_windows_path(dir, &name))
+                                .unwrap_or(name)
+                        })
+                    })?
+                });
+            (u, dst)
+        })
+        .collect()
 }
 
 fn normalize_curl_url_token(token: &str) -> Option<String> {
@@ -7259,28 +7275,33 @@ fn scan_curl_redirect_deob_text(deobfuscated: &str, env: &mut Environment) {
         if cmd_base != "curl" && cmd_base != "curl.exe" {
             continue;
         }
-        let parsed = parse_curl_like_download(&tokens).and_then(|(url, parsed_dst)| {
-            if looks_like_curl_url(&url) {
-                Some((url, parsed_dst))
-            } else {
-                None
+        let mut downloads = parse_curl_like_downloads(&tokens)
+            .into_iter()
+            .filter(|(url, _)| looks_like_curl_url(url))
+            .collect::<Vec<_>>();
+        if downloads.is_empty() {
+            if let Some(download) = parse_glued_curl_download(command_text) {
+                downloads.push(download);
             }
-        });
-        let Some((url, parsed_dst)) = parsed.or_else(|| parse_glued_curl_download(command_text))
-        else {
-            continue;
-        };
-        let parsed_dst = parsed_dst
-            .or_else(|| parse_glued_curl_download(command_text).and_then(|(_, dst)| dst))
-            .or_else(|| parse_curl_output_dst(command_text));
-        if !known.insert(url.clone()) {
+        }
+        if downloads.is_empty() {
             continue;
         }
-        env.traits.push(Trait::Download {
-            cmd: line.to_string(),
-            src: url,
-            dst: parsed_dst.or(redirect_dst),
-        });
+        let glued_dst = parse_glued_curl_download(command_text).and_then(|(_, dst)| dst);
+        let output_dst = parse_curl_output_dst(command_text);
+        for (url, parsed_dst) in downloads {
+            if !known.insert(url.clone()) {
+                continue;
+            }
+            env.traits.push(Trait::Download {
+                cmd: line.to_string(),
+                src: url,
+                dst: parsed_dst
+                    .or_else(|| glued_dst.clone())
+                    .or_else(|| output_dst.clone())
+                    .or_else(|| redirect_dst.clone()),
+            });
+        }
     }
 }
 
@@ -7458,28 +7479,33 @@ fn scan_curl_deob_text(deobfuscated: &str, env: &mut Environment) {
         if cmd_base != "curl" && cmd_base != "curl.exe" {
             continue;
         }
-        let parsed = parse_curl_like_download(&tokens).and_then(|(url, dst)| {
-            if looks_like_curl_url(&url) {
-                Some((url, dst))
-            } else {
-                None
-            }
-        });
+        let mut downloads = parse_curl_like_downloads(&tokens)
+            .into_iter()
+            .filter(|(url, _)| looks_like_curl_url(url))
+            .collect::<Vec<_>>();
         let raw_curl_text = &line[curl_pos..];
-        let Some((url, dst)) = parsed.or_else(|| parse_glued_curl_download(raw_curl_text)) else {
-            continue;
-        };
-        let dst = dst
-            .or_else(|| parse_glued_curl_download(raw_curl_text).and_then(|(_, dst)| dst))
-            .or_else(|| parse_curl_output_dst(raw_curl_text));
-        if !known.insert(url.clone()) {
+        if downloads.is_empty() {
+            if let Some(download) = parse_glued_curl_download(raw_curl_text) {
+                downloads.push(download);
+            }
+        }
+        if downloads.is_empty() {
             continue;
         }
-        env.traits.push(Trait::Download {
-            cmd: line.to_string(),
-            src: url,
-            dst,
-        });
+        let glued_dst = parse_glued_curl_download(raw_curl_text).and_then(|(_, dst)| dst);
+        let output_dst = parse_curl_output_dst(raw_curl_text);
+        for (url, dst) in downloads {
+            if !known.insert(url.clone()) {
+                continue;
+            }
+            env.traits.push(Trait::Download {
+                cmd: line.to_string(),
+                src: url,
+                dst: dst
+                    .or_else(|| glued_dst.clone())
+                    .or_else(|| output_dst.clone()),
+            });
+        }
     }
 }
 
@@ -7915,17 +7941,20 @@ fn scan_echoed_curl_deob_text(deobfuscated: &str, env: &mut Environment) {
         if cmd_base != "curl" && cmd_base != "curl.exe" {
             continue;
         }
-        let Some((url, dst)) = parse_curl_like_download(&tokens) else {
+        let downloads = parse_curl_like_downloads(&tokens);
+        if downloads.is_empty() {
             continue;
         };
-        if !known.insert(url.clone()) {
-            continue;
+        for (url, dst) in downloads {
+            if !known.insert(url.clone()) {
+                continue;
+            }
+            env.traits.push(Trait::Download {
+                cmd: line.to_string(),
+                src: url,
+                dst,
+            });
         }
-        env.traits.push(Trait::Download {
-            cmd: line.to_string(),
-            src: url,
-            dst,
-        });
     }
 }
 
