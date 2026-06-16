@@ -5484,6 +5484,11 @@ fn scan_copied_enumeration_alias_deob_text(deobfuscated: &str, env: &mut Environ
             "systeminfo.exe" | "systeminfo" => "systeminfo.exe",
             "tasklist.exe" | "tasklist" => "tasklist.exe",
             "wmic.exe" | "wmic" => "wmic.exe",
+            "ipconfig.exe" | "ipconfig" => "ipconfig.exe",
+            "getmac.exe" | "getmac" => "getmac.exe",
+            "netstat.exe" | "netstat" => "netstat.exe",
+            "arp.exe" | "arp" => "arp.exe",
+            "route.exe" | "route" => "route.exe",
             _ => continue,
         };
         insert_alias_command_names(&mut aliases, dst, replay_command);
@@ -9221,6 +9226,16 @@ fn scan_enumeration(deobfuscated: &str, env: &mut Environment) {
             ),
         ]
     });
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        let Some(command) = tokens.first() else {
+            continue;
+        };
+        let Some(kind) = network_utility_enumeration_kind(&tokens, command) else {
+            continue;
+        };
+        push_enumeration_once(env, kind, line.trim().to_string(), true);
+    }
     for (re, kind, multi) in PATTERNS.iter() {
         let matches: Box<dyn Iterator<Item = regex::Match<'_>> + '_> = if *multi {
             Box::new(re.find_iter(deobfuscated))
@@ -9240,21 +9255,49 @@ fn scan_enumeration(deobfuscated: &str, env: &mut Environment) {
             } else {
                 cmd
             };
-            if env.traits.iter().any(|t| {
-                matches!(
-                    t,
-                    crate::traits::Trait::Enumeration { enum_kind: k, command }
-                        if k == kind && (!*multi || command == &cmd)
-                )
-            }) {
-                continue;
-            }
-            env.traits.push(crate::traits::Trait::Enumeration {
-                enum_kind: kind.to_string(),
-                command: cmd,
-            });
+            push_enumeration_once(env, kind, cmd, *multi);
         }
     }
+}
+
+fn network_utility_enumeration_kind(tokens: &[String], command: &str) -> Option<&'static str> {
+    match command_basename(command).as_str() {
+        "ipconfig" | "ipconfig.exe" => Some("ipconfig"),
+        "getmac" | "getmac.exe" => Some("getmac"),
+        "netstat" | "netstat.exe" => Some("netstat"),
+        "arp" | "arp.exe" => tokens
+            .iter()
+            .skip(1)
+            .any(|token| matches!(token.to_ascii_lowercase().as_str(), "-a" | "/a" | "a"))
+            .then_some("arp"),
+        "route" | "route.exe" => tokens
+            .get(1)
+            .map(|token| token.eq_ignore_ascii_case("print"))
+            .unwrap_or(false)
+            .then_some("route"),
+        _ => None,
+    }
+}
+
+fn push_enumeration_once(
+    env: &mut Environment,
+    kind: &str,
+    command: String,
+    command_specific: bool,
+) {
+    if env.traits.iter().any(|t| {
+        matches!(
+            t,
+            crate::traits::Trait::Enumeration { enum_kind: k, command: existing_command }
+                if k == kind && (!command_specific || existing_command == &command)
+        )
+    }) {
+        return;
+    }
+    env.traits.push(crate::traits::Trait::Enumeration {
+        enum_kind: kind.to_string(),
+        command,
+    });
 }
 
 fn sanitize_wmic_enum_command(command: &str) -> String {
@@ -9283,6 +9326,15 @@ fn has_enumeration_atom(text: &str) -> bool {
         "get-netgroup",
         "systeminfo",
         "tasklist",
+        "ipconfig",
+        "getmac",
+        "netstat",
+        "arp -a",
+        "arp.exe -a",
+        "arp /a",
+        "arp.exe /a",
+        "route print",
+        "route.exe print",
         "wmic process",
         "wmic.exe process",
         "wmic cpu",
@@ -9315,6 +9367,13 @@ mod enumeration_prefilter_tests {
             "Get-NetGroup",
             "systeminfo",
             "tasklist",
+            "ipconfig /all",
+            "getmac",
+            "netstat -ano",
+            "arp -a",
+            "arp.exe /a",
+            "route print",
+            "route.exe print",
             "wmic process list",
             "wmic.exe process list",
             "wmic cpu get name",
