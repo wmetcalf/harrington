@@ -4644,6 +4644,22 @@ reg save HKLM\SECURITY C:\Users\Public\security.save /y
     }
 
     #[test]
+    fn escaped_ampersand_registry_hive_save_text_does_not_emit_credential_access() {
+        let script = br#"echo keep ^& reg save HKLM\SAM C:\Users\Public\sam.save /y"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::CredentialAccess { technique, target }
+                    if technique == "registry-hive-save" && target.contains(r"HKLM\SAM")
+            )),
+            "escaped ampersand echo text was misread as registry hive save: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn ntdsutil_ifm_create_full_emits_credential_access_trait() {
         let script =
             br#"ntdsutil "activate instance ntds" ifm "create full C:\Users\Public\ifm" quit quit"#;

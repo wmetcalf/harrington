@@ -9088,17 +9088,6 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
             .trim_matches('\'')
             .to_string()
     }
-    fn command_starts_with_echo(command: &str) -> bool {
-        let command = command.trim_start().trim_start_matches('@');
-        let Some(first) = split_words(command).into_iter().next() else {
-            return false;
-        };
-        let first = first.to_ascii_lowercase();
-        first == "echo"
-            || first.starts_with("echo.")
-            || first.starts_with("echo:")
-            || first.starts_with("echo(")
-    }
 
     let mut push = |action: &str, target: String, command: String| {
         if target.is_empty() {
@@ -11075,6 +11064,7 @@ fn scan_credential_access(deobfuscated: &str, env: &mut Environment) {
     let hive_saves: Vec<String> = REG_HIVE_SAVE_RE
         .find_iter(deobfuscated)
         .map(|m| m.as_str().trim().to_string())
+        .filter(|command| !command_starts_with_echo(command))
         .collect();
     if !hive_saves.is_empty()
         && !env.traits.iter().any(|t| {
@@ -11090,6 +11080,18 @@ fn scan_credential_access(deobfuscated: &str, env: &mut Environment) {
             target: hive_saves.join("\n"),
         });
     }
+}
+
+fn command_starts_with_echo(command: &str) -> bool {
+    let command = command.trim_start().trim_start_matches('@');
+    let Some(first) = split_words(command).into_iter().next() else {
+        return false;
+    };
+    let first = first.to_ascii_lowercase();
+    first == "echo"
+        || first.starts_with("echo.")
+        || first.starts_with("echo:")
+        || first.starts_with("echo(")
 }
 
 fn has_credential_access_atom(text: &str) -> bool {
