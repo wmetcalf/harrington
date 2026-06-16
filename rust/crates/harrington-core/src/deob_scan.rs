@@ -7928,7 +7928,8 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
                     // values like `$false` to avoid false positives in remediation
                     // scripts that turn protections back on.
                     let val_lc = val.to_ascii_lowercase();
-                    let trueish = matches!(val_lc.as_str(), "$true" | "1" | "true");
+                    let trueish = is_registry_dword_one(&val_lc)
+                        || matches!(val_lc.as_str(), "$true" | "true");
                     let disabling = (opt.starts_with("disable") && trueish)
                         || matches!(
                             (opt.as_str(), val_lc.as_str()),
