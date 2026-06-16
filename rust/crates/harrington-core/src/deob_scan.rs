@@ -3173,6 +3173,9 @@ fn scan_rundll32_download_exports_deob_text(deobfuscated: &str, env: &mut Enviro
         .collect();
 
     for line in deobfuscated.lines() {
+        if command_starts_with_echo(line) {
+            continue;
+        }
         let tokens = split_words(line);
         for i in 0..tokens.len() {
             let cmd = command_name(strip_quotes(&tokens[i]));
@@ -3246,6 +3249,9 @@ fn scan_glued_rundll32_deob_text(deobfuscated: &str, env: &mut Environment) {
         .collect();
 
     for line in deobfuscated.lines() {
+        if command_starts_with_echo(line) {
+            continue;
+        }
         if !contains_ascii_case_insensitive_atom(line, b"rundll32") {
             continue;
         }
