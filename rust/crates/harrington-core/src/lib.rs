@@ -4881,6 +4881,24 @@ powershell -Command "New-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Cont
     }
 
     #[test]
+    fn chained_net_user_add_emits_each_account_modification_trait() {
+        let script = br#"net user backdoor P@ssw0rd! /add & net user support S3cret! /add"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        for account in ["backdoor", "support"] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::AccountModification { action, account: existing_account, .. }
+                        if action == "local-user-add" && existing_account == account
+                )),
+                "missing chained net user add for {account}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn remote_desktop_users_group_add_emits_remote_access_trait() {
         let script = br#"net localgroup "Remote Desktop Users" support /add"#;
         let report = analyze(script, &AnalyzeConfig::default());
@@ -5061,6 +5079,33 @@ powershell -Command "Add-LocalGroupMember Administrators backdoor"
                         && group.as_deref() == Some("Administrators")
             )),
             "missing positional PowerShell localgroup-add: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_chained_local_account_modification_emits_traits() {
+        let script = br#"powershell -Command "New-LocalUser backdoor -Password $p; Add-LocalGroupMember Administrators backdoor""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, .. }
+                    if action == "local-user-add" && account == "backdoor"
+            )),
+            "missing chained PowerShell local-user-add: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, group, .. }
+                    if action == "localgroup-add"
+                        && account == "backdoor"
+                        && group.as_deref() == Some("Administrators")
+            )),
+            "missing chained PowerShell localgroup-add: {:?}",
             report.traits
         );
     }
