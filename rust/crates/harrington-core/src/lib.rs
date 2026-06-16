@@ -5249,6 +5249,36 @@ powershell -Command "Add-LocalGroupMember Administrators backdoor"
     }
 
     #[test]
+    fn powershell_chained_local_account_modification_preserves_statement_command() {
+        let script = br#"powershell -Command "New-LocalUser support -Password $p; Add-LocalGroupMember Administrators support""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, command, .. }
+                    if action == "local-user-add"
+                        && account == "support"
+                        && command == "New-LocalUser support -Password $p"
+            )),
+            "chained New-LocalUser command context was not preserved: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, group, command }
+                    if action == "localgroup-add"
+                        && account == "support"
+                        && group.as_deref() == Some("Administrators")
+                        && command == "Add-LocalGroupMember Administrators support"
+            )),
+            "chained Add-LocalGroupMember command context was not preserved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_mixed_localgroup_member_emits_account_modification_trait() {
         let script = br#"powershell -Command "Add-LocalGroupMember -Group Administrators backdoor"
 "#;

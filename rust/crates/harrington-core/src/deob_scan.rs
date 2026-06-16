@@ -9972,92 +9972,117 @@ fn scan_account_modification(deobfuscated: &str, env: &mut Environment) {
         push("localgroup-add", account, Some(group), command);
     }
     for caps in PS_NEW_LOCAL_USER_RE.captures_iter(deobfuscated) {
-        let command = caps
-            .get(0)
-            .map(|m| m.as_str().trim().to_string())
-            .unwrap_or_default();
-        let account = powershell_named_argument(&command, "-Name").or_else(|| {
-            powershell_positional_arguments(&command, "New-LocalUser")
-                .into_iter()
-                .next()
-        });
-        let Some(account) = account else {
+        let Some(m) = caps.get(0) else {
             continue;
         };
-        push("local-user-add", account, None, command);
+        for command in powershell_statement_segments(m.as_str()) {
+            let command = command.trim();
+            if !contains_ascii_keyword(command, "New-LocalUser") {
+                continue;
+            }
+            let account = powershell_named_argument(command, "-Name").or_else(|| {
+                powershell_positional_arguments(command, "New-LocalUser")
+                    .into_iter()
+                    .next()
+            });
+            let Some(account) = account else {
+                continue;
+            };
+            push("local-user-add", account, None, command.to_string());
+        }
     }
     for caps in PS_ENABLE_LOCAL_USER_RE.captures_iter(deobfuscated) {
-        let command = caps
-            .get(0)
-            .map(|m| m.as_str().trim().to_string())
-            .unwrap_or_default();
-        let mut accounts = powershell_named_argument_list(&command, "-Name");
-        if accounts.is_empty() {
-            if let Some(account) = powershell_positional_arguments(&command, "Enable-LocalUser")
-                .into_iter()
-                .next()
-            {
-                accounts.extend(split_powershell_list_argument(&account));
-            }
-        }
-        if accounts.is_empty() {
+        let Some(m) = caps.get(0) else {
             continue;
-        }
-        for account in accounts {
-            push("local-user-enable", account, None, command.clone());
+        };
+        for command in powershell_statement_segments(m.as_str()) {
+            let command = command.trim();
+            if !contains_ascii_keyword(command, "Enable-LocalUser") {
+                continue;
+            }
+            let mut accounts = powershell_named_argument_list(command, "-Name");
+            if accounts.is_empty() {
+                if let Some(account) = powershell_positional_arguments(command, "Enable-LocalUser")
+                    .into_iter()
+                    .next()
+                {
+                    accounts.extend(split_powershell_list_argument(&account));
+                }
+            }
+            if accounts.is_empty() {
+                continue;
+            }
+            for account in accounts {
+                push("local-user-enable", account, None, command.to_string());
+            }
         }
     }
     for caps in PS_SET_LOCAL_USER_RE.captures_iter(deobfuscated) {
-        let command = caps
-            .get(0)
-            .map(|m| m.as_str().trim().to_string())
-            .unwrap_or_default();
-        if powershell_named_argument(&command, "-Password").is_none() {
+        let Some(m) = caps.get(0) else {
             continue;
-        }
-        let mut accounts = powershell_named_argument_list(&command, "-Name");
-        if accounts.is_empty() {
-            if let Some(account) = powershell_positional_arguments(&command, "Set-LocalUser")
-                .into_iter()
-                .next()
-            {
-                accounts.extend(split_powershell_list_argument(&account));
+        };
+        for command in powershell_statement_segments(m.as_str()) {
+            let command = command.trim();
+            if !contains_ascii_keyword(command, "Set-LocalUser") {
+                continue;
             }
-        }
-        if accounts.is_empty() {
-            continue;
-        }
-        for account in accounts {
-            push("local-user-password-set", account, None, command.clone());
+            if powershell_named_argument(command, "-Password").is_none() {
+                continue;
+            }
+            let mut accounts = powershell_named_argument_list(command, "-Name");
+            if accounts.is_empty() {
+                if let Some(account) = powershell_positional_arguments(command, "Set-LocalUser")
+                    .into_iter()
+                    .next()
+                {
+                    accounts.extend(split_powershell_list_argument(&account));
+                }
+            }
+            if accounts.is_empty() {
+                continue;
+            }
+            for account in accounts {
+                push(
+                    "local-user-password-set",
+                    account,
+                    None,
+                    command.to_string(),
+                );
+            }
         }
     }
     for caps in PS_ADD_LOCALGROUP_MEMBER_RE.captures_iter(deobfuscated) {
-        let command = caps
-            .get(0)
-            .map(|m| m.as_str().trim().to_string())
-            .unwrap_or_default();
-        let mut positional =
-            powershell_positional_arguments(&command, "Add-LocalGroupMember").into_iter();
-        let group = powershell_named_argument(&command, "-Group").or_else(|| positional.next());
-        let Some(group) = group else {
+        let Some(m) = caps.get(0) else {
             continue;
         };
-        let mut accounts = powershell_named_argument_list(&command, "-Member");
-        if accounts.is_empty() {
-            if let Some(account) = positional.next() {
-                accounts.extend(split_powershell_list_argument(&account));
+        for command in powershell_statement_segments(m.as_str()) {
+            let command = command.trim();
+            if !contains_ascii_keyword(command, "Add-LocalGroupMember") {
+                continue;
             }
-        }
-        if accounts.is_empty() {
-            continue;
-        }
-        for account in accounts {
-            push(
-                "localgroup-add",
-                account,
-                Some(group.clone()),
-                command.clone(),
-            );
+            let mut positional =
+                powershell_positional_arguments(command, "Add-LocalGroupMember").into_iter();
+            let group = powershell_named_argument(command, "-Group").or_else(|| positional.next());
+            let Some(group) = group else {
+                continue;
+            };
+            let mut accounts = powershell_named_argument_list(command, "-Member");
+            if accounts.is_empty() {
+                if let Some(account) = positional.next() {
+                    accounts.extend(split_powershell_list_argument(&account));
+                }
+            }
+            if accounts.is_empty() {
+                continue;
+            }
+            for account in accounts {
+                push(
+                    "localgroup-add",
+                    account,
+                    Some(group.clone()),
+                    command.to_string(),
+                );
+            }
         }
     }
 }
