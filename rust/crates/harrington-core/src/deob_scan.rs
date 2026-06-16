@@ -7782,6 +7782,10 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
         Regex::new(r#"(?im)^[^\r\n]*?\bSet-Service\b[^\r\n]*"#)
             .expect("powershell set-service regex")
     });
+    static PS_STOP_PROCESS_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?im)^[^\r\n]*?\b(?:Stop-Process|spps|kill)\b[^\r\n]*"#)
+            .expect("powershell stop-process regex")
+    });
     static TASKKILL_SECURITY_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?i)\btaskkill(?:\.exe)?\b[^\r\n]*?/im\s+"?(SecurityHealthSystray|SecurityHealthService|WindowsDefender|MsMpEng|NisSrv|MpCmdRun|MBAMService|MBAMTray|avastui|avgui|egui|ekrn|bdservicehost|SentinelAgent|CrowdStrike|CSFalconService)\.exe"?\b[^\r\n]*"#)
             .expect("taskkill security process")
@@ -8022,6 +8026,30 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
                     }
                 }
             }
+            for m in PS_STOP_PROCESS_RE.find_iter(deobfuscated) {
+                let command = m.as_str().trim();
+                let keyword = powershell_stop_process_command_keyword(command);
+                let mut processes = powershell_named_argument_list(command, "-Name");
+                processes.extend(powershell_named_argument_list(command, "-ProcessName"));
+                if processes.is_empty() {
+                    processes.extend(powershell_named_argument_list(command, "-InputObject"));
+                }
+                if processes.is_empty() {
+                    if let Some(keyword) = keyword {
+                        if let Some(process) = powershell_positional_arguments(command, keyword)
+                            .into_iter()
+                            .next()
+                        {
+                            processes.extend(split_powershell_list_argument(&process));
+                        }
+                    }
+                }
+                for process in processes {
+                    if let Some(process) = normalize_security_process_name(&process) {
+                        push("powershell-stop-process", process);
+                    }
+                }
+            }
             for caps in TASKKILL_SECURITY_RE.captures_iter(deobfuscated) {
                 let process = caps
                     .get(1)
@@ -8226,6 +8254,34 @@ fn is_security_service_name(service: &str) -> bool {
     )
 }
 
+fn normalize_security_process_name(process: &str) -> Option<String> {
+    let process = process
+        .trim()
+        .trim_matches(['"', '\''])
+        .trim_end_matches(".exe")
+        .to_ascii_lowercase();
+    let canonical = match process.as_str() {
+        "securityhealthsystray" => "SecurityHealthSystray.exe",
+        "securityhealthservice" => "SecurityHealthService.exe",
+        "windowsdefender" => "WindowsDefender.exe",
+        "msmpeng" => "MsMpEng.exe",
+        "nissrv" => "NisSrv.exe",
+        "mpcmdrun" => "MpCmdRun.exe",
+        "mbamservice" => "MBAMService.exe",
+        "mbamtray" => "MBAMTray.exe",
+        "avastui" => "avastui.exe",
+        "avgui" => "avgui.exe",
+        "egui" => "egui.exe",
+        "ekrn" => "ekrn.exe",
+        "bdservicehost" => "bdservicehost.exe",
+        "sentinelagent" => "SentinelAgent.exe",
+        "crowdstrike" => "CrowdStrike.exe",
+        "csfalconservice" => "CSFalconService.exe",
+        _ => return None,
+    };
+    Some(canonical.to_string())
+}
+
 fn powershell_service_command_keyword(line: &str) -> Option<&'static str> {
     let lower = line.to_ascii_lowercase();
     if lower.contains("stop-service") {
@@ -8237,6 +8293,29 @@ fn powershell_service_command_keyword(line: &str) -> Option<&'static str> {
         .any(|token| token == "spsv")
     {
         Some("spsv")
+    } else {
+        None
+    }
+}
+
+fn powershell_stop_process_command_keyword(line: &str) -> Option<&'static str> {
+    let lower = line.to_ascii_lowercase();
+    if lower.contains("stop-process") {
+        Some("Stop-Process")
+    } else if lower
+        .split(|c: char| {
+            c.is_ascii_whitespace() || matches!(c, ';' | '|' | '(' | '{' | '&' | '"' | '\'' | '`')
+        })
+        .any(|token| token == "spps")
+    {
+        Some("spps")
+    } else if lower
+        .split(|c: char| {
+            c.is_ascii_whitespace() || matches!(c, ';' | '|' | '(' | '{' | '&' | '"' | '\'' | '`')
+        })
+        .any(|token| token == "kill")
+    {
+        Some("kill")
     } else {
         None
     }
@@ -8372,6 +8451,9 @@ fn has_defender_service_process_atom_lower(lower: &str) -> bool {
         "spsv ",
         "spsv\t",
         "set-service",
+        "stop-process",
+        "spps ",
+        "spps\t",
     ];
     COMMAND_ATOMS.iter().any(|atom| lower.contains(atom))
 }
