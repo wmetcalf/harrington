@@ -7826,7 +7826,7 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
             .expect("sc-defender")
     });
     static PS_SET_SERVICE_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?im)^[^\r\n]*?\bSet-Service\b[^\r\n]*"#)
+        Regex::new(r#"(?im)^[^\r\n]*?\b(?:Set-Service|ssv)\b[^\r\n]*"#)
             .expect("powershell set-service regex")
     });
     static PS_STOP_PROCESS_RE: Lazy<Regex> = Lazy::new(|| {
@@ -8076,7 +8076,12 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
                 if startup_type != "disabled" {
                     continue;
                 }
-                let positional = powershell_positional_arguments(command, "Set-Service");
+                let positional = if find_ascii_case_insensitive(command, "Set-Service", 0).is_some()
+                {
+                    powershell_positional_arguments(command, "Set-Service")
+                } else {
+                    powershell_positional_arguments(command, "ssv")
+                };
                 let mut services = powershell_named_argument_list(command, "-Name");
                 if services.is_empty() {
                     if let Some(display_name) = powershell_named_argument(command, "-DisplayName") {
@@ -11469,7 +11474,7 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
             .expect("powershell termservice start regex")
     });
     static PS_TERMSERVICE_CONFIG_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?im)^[^\r\n]*?\bSet-Service\b[^\r\n]*"#)
+        Regex::new(r#"(?im)^[^\r\n]*?\b(?:Set-Service|ssv)\b[^\r\n]*"#)
             .expect("powershell termservice config regex")
     });
     static WMIC_RDTOGGLE_ENABLE_RE: Lazy<Regex> = Lazy::new(|| {
@@ -11678,7 +11683,11 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
             .flat_map(|name| split_powershell_list_argument(name))
             .collect();
         if candidates.is_empty() {
-            let positional = powershell_positional_arguments(command, "Set-Service");
+            let positional = if find_ascii_case_insensitive(command, "Set-Service", 0).is_some() {
+                powershell_positional_arguments(command, "Set-Service")
+            } else {
+                powershell_positional_arguments(command, "ssv")
+            };
             if let Some(name) = positional.first() {
                 candidates.extend(split_powershell_list_argument(name));
             }

