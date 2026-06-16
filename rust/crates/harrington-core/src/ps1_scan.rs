@@ -104,6 +104,14 @@ static DOWNLOADFILE_CALL_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static DOWNLOADFILE_PATH_COMBINE_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)\bDownloadFile(?:(?:Task)?Async)?\s*\(\s*([^,\r\n]{1,512})\s*,\s*(\[(?:System\.)?IO\.Path\]\s*::\s*Combine\s*\([^)]{1,512}\))\s*\)"#,
+    )
+    .expect("downloadfile path combine")
+});
+
+#[allow(clippy::expect_used)]
 static DOWNLOADSTRING_FRAGMENT_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?i)\b(?:loadString|ADSTRING)\s*\(\s*'{1,2}(https?://[^'")]+)"#)
         .expect("downloadstring fragment")
@@ -3174,6 +3182,14 @@ static PS_PATH_COMBINE_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
         r#"\$(?:(?:global|script|local|private):)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\[(?:System\.)?IO\.Path\]\s*::\s*Combine\s*\(\s*([^,()]{1,256})\s*,\s*(?:'((?:''|[^'])*)'|"([^"`$\\]*(?:\\.[^"`$\\]*)*)")\s*\)"#,
     )
     .expect("ps Path.Combine assign")
+});
+
+#[allow(clippy::expect_used)]
+static PS_PATH_COMBINE_ARG_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)^\s*\[(?:System\.)?IO\.Path\]\s*::\s*Combine\s*\(\s*([^,()]{1,256})\s*,\s*(?:'((?:''|[^'])*)'|"([^"`$\\]*(?:\\.[^"`$\\]*)*)")\s*\)\s*$"#,
+    )
+    .expect("ps Path.Combine arg")
 });
 
 #[allow(clippy::expect_used)]
@@ -9216,6 +9232,24 @@ pub(crate) fn ps_downloadfile_calls(text: &str) -> Vec<(String, Option<String>)>
     let mut bindings = None;
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
+    for caps in DOWNLOADFILE_PATH_COMBINE_RE.captures_iter(text) {
+        let (Some(src_arg), Some(dst_arg)) = (caps.get(1), caps.get(2)) else {
+            continue;
+        };
+        let Some(url) = ps_literal_url_arg(src_arg.as_str()).or_else(|| {
+            let bindings = bindings.get_or_insert_with(|| ps_string_bindings(text));
+            ps_url_arg(src_arg.as_str(), bindings)
+        }) else {
+            continue;
+        };
+        let Some(dst) = ps_path_combine_arg(dst_arg.as_str()) else {
+            continue;
+        };
+        if !seen.insert((url.clone(), Some(dst.clone()))) {
+            continue;
+        }
+        out.push((url, Some(dst)));
+    }
     for caps in DOWNLOADFILE_CALL_RE.captures_iter(text) {
         let Some(args) = caps.get(1).map(|m| m.as_str()) else {
             continue;
@@ -9312,7 +9346,9 @@ fn ps_string_arg(
     arg: &str,
     bindings: &std::collections::HashMap<String, String>,
 ) -> Option<String> {
-    ps_literal_arg(arg).or_else(|| ps_variable_arg(arg, bindings))
+    ps_literal_arg(arg)
+        .or_else(|| ps_path_combine_arg(arg))
+        .or_else(|| ps_variable_arg(arg, bindings))
 }
 
 fn ps_literal_arg(arg: &str) -> Option<String> {
@@ -9334,6 +9370,19 @@ fn ps_variable_arg(
         return None;
     }
     bindings.get(&name.to_ascii_lowercase()).cloned()
+}
+
+fn ps_path_combine_arg(arg: &str) -> Option<String> {
+    let caps = PS_PATH_COMBINE_ARG_RE.captures(arg)?;
+    let base = ps_unquote_path_component(caps.get(1)?.as_str());
+    let leaf = caps
+        .get(2)
+        .map(|m| m.as_str().replace("''", "'"))
+        .or_else(|| caps.get(3).map(|m| m.as_str().to_string()))?;
+    if base.is_empty() || leaf.is_empty() || is_large_literal_carrier(&leaf) {
+        return None;
+    }
+    Some(join_ps_path_components(&base, &leaf))
 }
 
 fn split_ps_top_level_args(args: &str) -> Vec<&str> {

