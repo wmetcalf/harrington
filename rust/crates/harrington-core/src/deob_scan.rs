@@ -12248,8 +12248,10 @@ fn scan_powershell_registry_persistence(deobfuscated: &str, env: &mut Environmen
     use once_cell::sync::Lazy;
     use regex::Regex;
     static PS_ITEM_PROPERTY_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?im)^[^\r\n]*?\b(?:(?:New|Set)-ItemProperty|sp)\b[^\r\n]*"#)
-            .expect("powershell itemproperty persistence regex")
+        Regex::new(
+            r#"(?im)(?:^|[;|&])\s*[^\r\n;|&]*?\b(?:(?:New|Set)-ItemProperty|sp)\b[^\r\n;|&]*"#,
+        )
+        .expect("powershell itemproperty persistence regex")
     });
 
     const PERSISTENCE_PATHS: &[&str] = &[

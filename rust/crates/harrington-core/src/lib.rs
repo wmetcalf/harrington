@@ -2420,6 +2420,25 @@ reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v updater /d "cmd 
     }
 
     #[test]
+    fn powershell_chained_run_key_itemproperty_emits_persistence_trait() {
+        let script = br#"powershell -Command "Set-ItemProperty -Path HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer -Name Clean -Value ok; New-ItemProperty -Path HKCU:\Software\Microsoft\Windows\CurrentVersion\Run -Name Updater -Value calc.exe""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { hive, key, value_name, command }
+                    if hive == "HKCU"
+                        && key.ends_with(r"Software\Microsoft\Windows\CurrentVersion\Run")
+                        && value_name == "Updater"
+                        && command == "calc.exe"
+            )),
+            "chained PowerShell Run-key persistence missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_sp_alias_run_key_itemproperty_emits_persistence_trait() {
         let script = br#"powershell -Command "sp -Path HKCU:\Software\Microsoft\Windows\CurrentVersion\Run -Name Updater -Value calc.exe"
 "#;
