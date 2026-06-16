@@ -6914,6 +6914,31 @@ powershell -Command "Get-CimInstance -Namespace root/SecurityCenter2 -ClassName 
     }
 
     #[test]
+    fn powershell_process_service_aliases_emit_enumeration_traits() {
+        let report = analyze(
+            br#"powershell -Command "gps explorer"
+powershell -Command "gsv WinDefend"
+"#,
+            &AnalyzeConfig::default(),
+        );
+
+        for (kind, needle) in [
+            ("ps-get-process", "gps explorer"),
+            ("ps-get-service", "gsv WinDefend"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Enumeration { enum_kind, command }
+                        if enum_kind == kind && command.contains(needle)
+                )),
+                "PowerShell discovery alias {kind} was not surfaced: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn additional_powershell_discovery_cmdlets_emit_enumeration_traits() {
         let report = analyze(
             br#"powershell -Command "Get-ComputerInfo"
