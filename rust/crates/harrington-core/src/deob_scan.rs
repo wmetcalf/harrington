@@ -6405,6 +6405,7 @@ fn scan_copied_rundll32_alias_deob_text(deobfuscated: &str, env: &mut Environmen
             format!("rundll32.exe {rest}")
         };
         crate::handlers::rundll32::h_rundll32(&replay, env);
+        scan_credential_access(&replay, env);
     }
 }
 
@@ -9116,7 +9117,7 @@ fn scan_credential_access(deobfuscated: &str, env: &mut Environment) {
     static PATTERNS: Lazy<Vec<(Regex, &str, fn(&str) -> String)>> = Lazy::new(|| {
         vec![
             // lsass dump via comsvcs.dll / procdump / rundll32 minidumpwritedump
-            (Regex::new(r#"(?i)\b(?:rundll32\s+\S*comsvcs\.dll[^\r\n]*?MiniDump|procdump(?:64)?(?:\.exe)?[^\r\n]*?lsass|sqldumper[^\r\n]*?lsass)"#).unwrap(),
+            (Regex::new(r#"(?i)\b(?:rundll32(?:\.exe)?\s+\S*comsvcs\.dll[^\r\n]*?MiniDump|procdump(?:64)?(?:\.exe)?[^\r\n]*?lsass|sqldumper[^\r\n]*?lsass)"#).unwrap(),
              "lsass-dump", |m: &str| m.chars().take(120).collect()),
             // Mimikatz invocations
             (Regex::new(r#"(?i)\b(?:Invoke-Mimikatz|mimikatz(?:\.exe)?\b|sekurlsa::|kerberos::|crypto::|lsadump::)"#).unwrap(),

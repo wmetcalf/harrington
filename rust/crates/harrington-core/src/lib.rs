@@ -3171,6 +3171,54 @@ C:\Users\Public\wm.tmp cpu get name
     }
 
     #[test]
+    fn rundll32_exe_comsvcs_minidump_emits_credential_access_trait() {
+        let script =
+            br#"rundll32.exe C:\Windows\System32\comsvcs.dll, MiniDump 1234 C:\Users\Public\lsass.dmp full"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::CredentialAccess { technique, target }
+                    if technique == "lsass-dump"
+                        && target.contains("comsvcs.dll")
+                        && target.contains("MiniDump")
+            )),
+            "rundll32.exe comsvcs MiniDump was not surfaced as credential access: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_rundll32_alias_comsvcs_minidump_emits_credential_access_trait() {
+        let script = br#"copy C:\Windows\System32\rundll32.exe C:\Users\Public\rd.tmp
+C:\Users\Public\rd.tmp C:\Windows\System32\comsvcs.dll, MiniDump 1234 C:\Users\Public\lsass.dmp full
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\rd.tmp"#)
+            )),
+            "copied rundll32 alias was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::CredentialAccess { technique, target }
+                    if technique == "lsass-dump"
+                        && target.contains("comsvcs.dll")
+                        && target.contains("MiniDump")
+            )),
+            "copied rundll32 comsvcs MiniDump was not surfaced as credential access: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn wmic_for_f_inventory_command_is_trimmed() {
         let script = br#"for /f "tokens=3" %%a in ('wmic logicaldisk where "Size=250954240000" get Size | find "Size"') do echo %%a"#;
         let report = analyze(script, &AnalyzeConfig::default());
