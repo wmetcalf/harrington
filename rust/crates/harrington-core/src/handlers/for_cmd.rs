@@ -74,7 +74,18 @@ fn parse_f_opts(opts: &str) -> FOpts {
                         }
                         if part == "*" {
                             o.tokens_star = true;
-                        } else if let Some((start, end)) = parse_token_range(part) {
+                            continue;
+                        }
+                        let (part, attached_star) = part
+                            .strip_suffix('*')
+                            .map_or((part, false), |prefix| (prefix.trim_end(), true));
+                        if attached_star {
+                            o.tokens_star = true;
+                        }
+                        if part.is_empty() {
+                            continue;
+                        }
+                        if let Some((start, end)) = parse_token_range(part) {
                             o.tokens.extend(start..=end);
                         } else if let Ok(n) = part.parse::<usize>() {
                             o.tokens.push(n);

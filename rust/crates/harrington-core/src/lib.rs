@@ -15362,6 +15362,21 @@ for /F "tokens=1,* delims==" %%A in (config.ini) do echo key=%%A value=%%B
     }
 
     #[test]
+    fn for_f_attached_tokens_star_assigns_remainder_to_next_variable() {
+        let script = br#"echo alpha beta gamma delta>config.ini
+for /F "tokens=2* delims= " %%A in (config.ini) do echo second=%%A rest=%%B
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report
+                .deobfuscated
+                .contains("echo second=beta rest=gamma delta"),
+            "got:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn for_f_skips_default_eol_comment_lines() {
         let script = br#"echo ;ignored>config.ini
 echo alpha>>config.ini
