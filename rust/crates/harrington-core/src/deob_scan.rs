@@ -8074,7 +8074,7 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
                         .iter()
                         .any(|ext| data.contains(ext)),
                     "hidezoneinfoonproperties" => is_registry_dword_one(&data),
-                    "savezoneinformation" => data == "2" || data == "0x2",
+                    "savezoneinformation" => is_registry_dword_value(&data, 2),
                     _ => false,
                 };
                 if weakens {
@@ -11237,20 +11237,23 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
 }
 
 fn is_registry_dword_zero(value: &str) -> bool {
-    let value = value.trim().trim_matches(['"', '\'']).to_ascii_lowercase();
-    let digits = value.strip_prefix("0x").unwrap_or(&value);
-    !digits.is_empty() && digits.bytes().all(|b| b == b'0')
+    is_registry_dword_value(value, 0)
 }
 
 fn is_registry_dword_one(value: &str) -> bool {
+    is_registry_dword_value(value, 1)
+}
+
+fn is_registry_dword_value(value: &str, expected: u64) -> bool {
     let value = value.trim().trim_matches(['"', '\'']).to_ascii_lowercase();
-    let digits = value.strip_prefix("0x").unwrap_or(&value);
-    !digits.is_empty()
-        && digits
-            .bytes()
-            .enumerate()
-            .all(|(idx, b)| b == b'0' || (idx == digits.len() - 1 && b == b'1'))
-        && digits.ends_with('1')
+    if let Some(hex) = value.strip_prefix("0x") {
+        return !hex.is_empty()
+            && hex.bytes().all(|b| b.is_ascii_hexdigit())
+            && u64::from_str_radix(hex, 16).ok() == Some(expected);
+    }
+    !value.is_empty()
+        && value.bytes().all(|b| b.is_ascii_digit())
+        && value.parse::<u64>().ok() == Some(expected)
 }
 
 fn has_remote_access_atom(text: &str) -> bool {
