@@ -5010,6 +5010,100 @@ fn scan_copied_runas_alias_deob_text(deobfuscated: &str, env: &mut Environment) 
     }
 }
 
+fn scan_copied_net_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    let mut aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for t in &env.traits {
+        let Trait::WindowsUtilManip { src, dst, .. } = t else {
+            continue;
+        };
+        let src_base = basename_lower(src);
+        if !matches!(src_base.as_str(), "net.exe" | "net" | "net1.exe" | "net1") {
+            continue;
+        }
+        insert_alias_names(&mut aliases, dst);
+    }
+    if aliases.is_empty() {
+        return;
+    }
+
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        let Some(cmd) = tokens.first() else {
+            continue;
+        };
+        if !aliases.contains(&basename_lower(cmd))
+            && !aliases.contains(&cmd.trim_matches(['"', '\'']).to_ascii_lowercase())
+        {
+            continue;
+        }
+        if tokens.len() < 3 {
+            continue;
+        }
+
+        push_manipulated_exec_once(env, line, cmd);
+        let subcommand = tokens[1].trim_matches(['"', '\'']).to_ascii_lowercase();
+        let has_add = tokens
+            .iter()
+            .any(|token| token.trim_matches(['"', '\'']).eq_ignore_ascii_case("/add"));
+        if !has_add {
+            continue;
+        }
+        match subcommand.as_str() {
+            "user" => {
+                let account = clean_account_modification_token(&tokens[2]);
+                push_account_modification_once(env, "local-user-add", account, None, line);
+            }
+            "localgroup" if tokens.len() >= 4 => {
+                let group = clean_account_modification_token(&tokens[2]);
+                let account = clean_account_modification_token(&tokens[3]);
+                push_account_modification_once(env, "localgroup-add", account, Some(group), line);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn clean_account_modification_token(token: &str) -> String {
+    token
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .to_string()
+}
+
+fn push_account_modification_once(
+    env: &mut Environment,
+    action: &str,
+    account: String,
+    group: Option<String>,
+    command: &str,
+) {
+    if account.is_empty() {
+        return;
+    }
+    if env.traits.iter().any(|t| {
+        matches!(
+            t,
+            Trait::AccountModification {
+                action: existing_action,
+                account: existing_account,
+                group: existing_group,
+                ..
+            } if existing_action == action
+                && existing_account == &account
+                && existing_group == &group
+        )
+    }) {
+        return;
+    }
+    env.traits.push(Trait::AccountModification {
+        action: action.to_string(),
+        account,
+        group,
+        command: command.to_string(),
+    });
+}
+
 fn scan_copied_reg_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
     let mut aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
     for t in &env.traits {
@@ -9754,6 +9848,9 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     });
     scan_step!("copied_runas_alias_deob_text", {
         scan_copied_runas_alias_deob_text(deobfuscated, env);
+    });
+    scan_step!("copied_net_alias_deob_text", {
+        scan_copied_net_alias_deob_text(deobfuscated, env);
     });
     scan_step!("copied_reg_alias_deob_text", {
         scan_copied_reg_alias_deob_text(deobfuscated, env);

