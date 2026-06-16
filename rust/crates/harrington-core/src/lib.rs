@@ -1105,6 +1105,18 @@ sh.Run("powershell -Command Invoke-WebRequest https://direct-js-const.example/p"
     }
 
     #[test]
+    fn start_quoted_url_preserves_bracketed_path() {
+        let script = b"start \"\" firefox -url \"https://opened.example/[a]/doc.pdf\"\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(t,
+                Trait::UrlLaunch { url, .. } if url == "https://opened.example/[a]/doc.pdf")),
+            "start browser URL launch bracketed path was truncated: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn start_quote_spliced_url_launch_collapses_empty_quote_pairs() {
         let script =
             br#"start "" "https://raw.githubuserc""o""ntent.c""o""m/example/repo/main/DOC.zip""#;

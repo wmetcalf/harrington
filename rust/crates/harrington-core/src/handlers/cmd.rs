@@ -423,11 +423,12 @@ fn start_option_remainder<'a>(arg: &str, after_arg: &'a str) -> Option<&'a str> 
 }
 
 /// Extract a URL from the start of `s`, stopping at whitespace, quotes,
-/// angle brackets, or shell-grouping characters. Parens/brackets terminate
+/// angle brackets, or shell-grouping characters. Parens terminate
 /// because `start powershell ... iex(irm https://host/p.png)` would
 /// otherwise include the trailing `)` of the cmd group — leaving the URL
 /// as `https://host/p.png)`, which then duplicates a clean copy extracted
-/// from the PS body.
+/// from the PS body. Bracketed URL paths are preserved and unmatched trailing
+/// brackets are trimmed by URL normalization.
 fn extract_url_at(s: &str) -> String {
     s.chars()
         .take_while(|c| {
@@ -438,8 +439,6 @@ fn extract_url_at(s: &str) -> String {
                 && *c != '>'
                 && *c != '('
                 && *c != ')'
-                && *c != '['
-                && *c != ']'
                 && *c != '|'
                 && *c != '&'
         })
