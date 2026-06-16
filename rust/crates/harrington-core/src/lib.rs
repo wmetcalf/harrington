@@ -5367,6 +5367,7 @@ powershell -Command "Get-ADComputer -Filter *"
 powershell -Command "Get-DnsClientCache"
 powershell -Command "Get-SmbShare"
 powershell -Command "Get-NetFirewallProfile"
+powershell -Command "Get-ScheduledTask"
 powershell -Command "Get-ChildItem Env:"
 "#,
             &AnalyzeConfig::default(),
@@ -5377,6 +5378,7 @@ powershell -Command "Get-ChildItem Env:"
             ("ps-dnsclientcache", "Get-DnsClientCache"),
             ("ps-smbshare", "Get-SmbShare"),
             ("ps-netfirewallprofile", "Get-NetFirewallProfile"),
+            ("ps-scheduledtask", "Get-ScheduledTask"),
             ("ps-env", "Get-ChildItem Env:"),
         ] {
             assert!(
