@@ -2903,6 +2903,45 @@ move "C:\Users\puncher\Downloads\startupppp.bat" "%APPDATA%\Microsoft\Windows\St
     }
 
     #[test]
+    fn powershell_expand_archive_emits_archive_extraction_trait() {
+        let script = br#"@echo off
+set "destination=%USERPROFILE%\Pictures"
+powershell -command "Expand-Archive -Path '%destination%\fresh.zip' -DestinationPath '%destination%'"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ArchiveExtraction { cmd, src, dst }
+                    if cmd.contains("Expand-Archive")
+                        && src == r"C:\Users\puncher\Pictures\fresh.zip"
+                        && dst == r"C:\Users\puncher\Pictures"
+            )),
+            "Expand-Archive extraction trait missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_expand_archive_skips_unresolved_percent_paths() {
+        let script = br#"@echo off
+powershell -command "Expand-Archive -Path '%destination%\fresh.zip' -DestinationPath '%destination%'"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ArchiveExtraction { src, dst, .. }
+                    if src.contains("%destination%") || dst.contains("%destination%")
+            )),
+            "unresolved Expand-Archive extraction should be skipped: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn schtasks_create_emits_persistence_trait() {
         // `schtasks /create /tn X /tr Y` registers a scheduled-task
         // autorun. Same Persistence trait as reg-add Run, with
@@ -13488,6 +13527,9 @@ fn semantic_dedup_key(t: &Trait) -> Option<String> {
         )),
         Trait::CertutilDownload { url, dst } => Some(format!("CertutilDownload\0{url}\0{dst}")),
         Trait::BitsadminDownload { url, dst } => Some(format!("BitsadminDownload\0{url}\0{dst}")),
+        Trait::ArchiveExtraction { src, dst, .. } => {
+            Some(format!("ArchiveExtraction\0{src}\0{dst}"))
+        }
         Trait::DownloadInDeobText { src, .. } => Some(format!("DownloadInDeobText\0{src}")),
         Trait::UncWebDavC2 {
             share_path,

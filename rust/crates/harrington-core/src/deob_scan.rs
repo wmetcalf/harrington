@@ -12898,6 +12898,74 @@ fn scan_service_install(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
+fn scan_archive_extraction(deobfuscated: &str, env: &mut Environment) {
+    if !contains_ascii_keyword(deobfuscated, "Expand-Archive") {
+        return;
+    }
+    for line in deobfuscated.lines() {
+        if !contains_ascii_keyword(line, "Expand-Archive") {
+            continue;
+        }
+        for segment in powershell_statement_segments(line) {
+            let segment = segment.trim();
+            if !contains_ascii_keyword(segment, "Expand-Archive") {
+                continue;
+            }
+            let Some(src) = powershell_named_argument(segment, "-Path")
+                .or_else(|| powershell_named_argument(segment, "-LiteralPath"))
+            else {
+                continue;
+            };
+            let Some(dst) = powershell_named_argument(segment, "-DestinationPath") else {
+                continue;
+            };
+            if archive_path_has_unresolved_percent_var(&src)
+                || archive_path_has_unresolved_percent_var(&dst)
+            {
+                continue;
+            }
+            if env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ArchiveExtraction {
+                        src: existing_src,
+                        dst: existing_dst,
+                        ..
+                    } if existing_src.eq_ignore_ascii_case(&src)
+                        && existing_dst.eq_ignore_ascii_case(&dst)
+                )
+            }) {
+                continue;
+            }
+            env.traits.push(Trait::ArchiveExtraction {
+                cmd: segment.to_string(),
+                src,
+                dst,
+            });
+        }
+    }
+}
+
+fn archive_path_has_unresolved_percent_var(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    let mut idx = 0usize;
+    while idx < bytes.len() {
+        if bytes[idx] != b'%' {
+            idx += 1;
+            continue;
+        }
+        let Some(end_rel) = bytes[idx + 1..].iter().position(|b| *b == b'%') else {
+            return false;
+        };
+        let name = &path[idx + 1..idx + 1 + end_rel];
+        if !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+            return true;
+        }
+        idx += end_rel + 2;
+    }
+    false
+}
+
 /// PowerShell scheduled-task persistence where the task registration and action
 /// are present on the same deobfuscated command line.
 fn scan_powershell_scheduled_task(deobfuscated: &str, env: &mut Environment) {
@@ -13521,6 +13589,9 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     });
     scan_step!("service_install", {
         scan_service_install(deobfuscated, env);
+    });
+    scan_step!("archive_extraction", {
+        scan_archive_extraction(deobfuscated, env);
     });
     scan_step!("powershell_scheduled_task", {
         scan_powershell_scheduled_task(deobfuscated, env);

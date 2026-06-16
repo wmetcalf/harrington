@@ -425,6 +425,13 @@ pub enum Trait {
         service_name: String,
         bin_path: String,
     },
+    /// Archive extraction by a command-line tool, such as PowerShell
+    /// `Expand-Archive -Path payload.zip -DestinationPath out`.
+    ArchiveExtraction {
+        cmd: String,
+        src: String,
+        dst: String,
+    },
     /// PowerShell `Start-Sleep -Seconds N` pattern indicating a beacon
     /// loop / sleep-then-callback C2 cadence. MITRE T1102 (Web Service)
     /// / T1029 (Scheduled Transfer). `seconds` is the sleep duration.
