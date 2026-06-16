@@ -7330,48 +7330,60 @@ fn scan_curl_stdin_config_deob_text(deobfuscated: &str, env: &mut Environment) {
         };
 
         let mut url = None;
+        let mut urls = Vec::new();
         let mut output = None;
         let mut output_dir = None;
         let mut remote_name = false;
         crate::handlers::curl::apply_curl_config_text(
             &config_text,
             &mut url,
+            &mut urls,
             &mut output,
             &mut output_dir,
             &mut remote_name,
         );
-        let Some(url) = url else {
-            continue;
-        };
-        if !known.insert(url.clone()) {
+        if urls.is_empty() {
+            if let Some(url) = url {
+                urls.push(url);
+            }
+        }
+        if urls.is_empty() {
             continue;
         }
-        let dst = output
-            .map(|path| {
-                output_dir
-                    .as_deref()
-                    .filter(|_| !is_windows_rooted_path(&path))
-                    .map(|dir| join_windows_path(dir, &path))
-                    .unwrap_or(path)
-            })
-            .or_else(|| {
-                remote_name.then(|| {
-                    url_basename(&url).map(|name| {
-                        output_dir
-                            .as_deref()
-                            .map(|dir| join_windows_path(dir, &name))
-                            .unwrap_or(name)
-                    })
-                })?
+        let multi = urls.len() > 1;
+        for url in urls {
+            if !known.insert(url.clone()) {
+                continue;
+            }
+            let dst = output
+                .clone()
+                .filter(|_| !multi)
+                .map(|path| {
+                    output_dir
+                        .as_deref()
+                        .filter(|_| !is_windows_rooted_path(&path))
+                        .map(|dir| join_windows_path(dir, &path))
+                        .unwrap_or(path)
+                })
+                .or_else(|| {
+                    remote_name.then(|| {
+                        url_basename(&url).map(|name| {
+                            output_dir
+                                .as_deref()
+                                .map(|dir| join_windows_path(dir, &name))
+                                .unwrap_or(name)
+                        })
+                    })?
+                });
+            env.traits.push(Trait::Download {
+                cmd: curl_cmd.clone(),
+                src: url.clone(),
+                dst: dst.clone(),
             });
-        env.traits.push(Trait::Download {
-            cmd: curl_cmd,
-            src: url.clone(),
-            dst: dst.clone(),
-        });
-        if let Some(dst) = dst {
-            env.modified_filesystem
-                .insert(filesystem_storage_key(&dst), FsEntry::Download { src: url });
+            if let Some(dst) = dst {
+                env.modified_filesystem
+                    .insert(filesystem_storage_key(&dst), FsEntry::Download { src: url });
+            }
         }
     }
 }

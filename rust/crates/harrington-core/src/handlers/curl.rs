@@ -62,6 +62,7 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
                     strip_quotes(v),
                     env,
                     &mut url,
+                    &mut urls,
                     &mut output,
                     &mut output_dir,
                     &mut remote_name,
@@ -76,6 +77,7 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
                     strip_quotes(value),
                     env,
                     &mut url,
+                    &mut urls,
                     &mut output,
                     &mut output_dir,
                     &mut remote_name,
@@ -158,6 +160,7 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
                     value,
                     env,
                     &mut url,
+                    &mut urls,
                     &mut output,
                     &mut output_dir,
                     &mut remote_name,
@@ -273,6 +276,7 @@ fn apply_curl_config_file(
     candidate: &str,
     env: &Environment,
     url: &mut Option<String>,
+    urls: &mut Vec<String>,
     output: &mut Option<String>,
     output_dir: &mut Option<String>,
     remote_name: &mut bool,
@@ -285,12 +289,13 @@ fn apply_curl_config_file(
         _ => return,
     };
     let text = String::from_utf8_lossy(content);
-    apply_curl_config_text(&text, url, output, output_dir, remote_name);
+    apply_curl_config_text(&text, url, urls, output, output_dir, remote_name);
 }
 
 pub(crate) fn apply_curl_config_text(
     text: &str,
     url: &mut Option<String>,
+    urls: &mut Vec<String>,
     output: &mut Option<String>,
     output_dir: &mut Option<String>,
     remote_name: &mut bool,
@@ -302,7 +307,8 @@ pub(crate) fn apply_curl_config_text(
         match key.as_str() {
             "url" => {
                 if let Some(normalized) = normalize_curl_url(&value) {
-                    *url = Some(normalized);
+                    *url = Some(normalized.clone());
+                    urls.push(normalized);
                 }
             }
             "output" | "output-document" | "o" if !value.is_empty() => {
