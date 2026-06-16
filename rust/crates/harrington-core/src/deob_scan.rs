@@ -10987,7 +10987,7 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
     });
     static TERMSERVICE_ENABLE_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r#"(?im)^[^\r\n]*\bsc(?:\.exe)?\s+config\s+TermService\b[^\r\n]*\bstart\s*=\s*(?:auto|demand)\b[^\r\n]*"#,
+            r#"(?im)^[^\r\n]*\bsc(?:\.exe)?\s+(?:\\\\[^\s]+\s+)?config\s+TermService\b[^\r\n]*\bstart\s*=\s*(?:auto|demand)\b[^\r\n]*"#,
         )
         .expect("termservice enable regex")
     });
