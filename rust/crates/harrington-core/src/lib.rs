@@ -36493,6 +36493,24 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
     }
 
     #[test]
+    fn escaped_ampersand_python_requests_text_does_not_emit_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"echo keep ^& python -c "import requests; requests.get('https://py.example/echoed').text""#,
+            &mut env,
+        );
+
+        assert!(
+            !env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == "https://py.example/echoed"
+            )),
+            "escaped ampersand echo text was misread as Python requests download: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn python_download_preserves_full_command_context() {
         let mut env = crate::env::Environment::new(&Config::default());
         let padding = "A".repeat(260);

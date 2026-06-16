@@ -748,6 +748,21 @@ fn first_unquoted_ampersand_segment(text: &str) -> &str {
 }
 
 fn scan_python_requests_get_deob_text(deobfuscated: &str, env: &mut Environment) {
+    let filtered_deobfuscated;
+    let deobfuscated = if deobfuscated.lines().any(command_starts_with_echo) {
+        filtered_deobfuscated = deobfuscated
+            .lines()
+            .filter(|line| !command_starts_with_echo(line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if filtered_deobfuscated.trim().is_empty() {
+            return;
+        }
+        filtered_deobfuscated.as_str()
+    } else {
+        deobfuscated
+    };
+
     let has_direct_download = has_python_direct_download_scan_atom(deobfuscated);
     let has_base64_decode = has_python_base64_decode_scan_atom(deobfuscated);
     if !has_direct_download && !has_base64_decode {
