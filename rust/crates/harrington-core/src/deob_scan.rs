@@ -10724,6 +10724,28 @@ fn scan_remote_exec(deobfuscated: &str, env: &mut Environment) {
             .expect("winrm re")
     });
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut push = |tool: &str, host: String| {
+        let host = host
+            .trim_matches(|c: char| c == '"' || c == '\'')
+            .trim()
+            .to_string();
+        let key = format!("{tool}\0{host}");
+        if !seen.insert(key) {
+            return;
+        }
+        if env.traits.iter().any(|t| {
+            matches!(
+                t, crate::traits::Trait::RemoteExec { tool: tl, target_host: h }
+                    if tl == tool && h == &host
+            )
+        }) {
+            return;
+        }
+        env.traits.push(crate::traits::Trait::RemoteExec {
+            tool: tool.to_string(),
+            target_host: host,
+        });
+    };
     for caps in WINRM_RE.captures_iter(deobfuscated) {
         let host = caps
             .get(1)
@@ -10770,22 +10792,26 @@ fn scan_remote_exec(deobfuscated: &str, env: &mut Environment) {
         } else {
             "Set-WmiInstance"
         };
-        let key = format!("{tool}\0{host}");
-        if !seen.insert(key) {
-            continue;
+        push(tool, host);
+    }
+    for line in deobfuscated.lines() {
+        for (keyword, tool) in [
+            ("Invoke-WmiMethod", "Invoke-WmiMethod"),
+            ("Set-WmiInstance", "Set-WmiInstance"),
+            ("Invoke-CimMethod", "Invoke-CimMethod"),
+        ] {
+            if !contains_ascii_keyword(line, keyword)
+                || !line.to_ascii_lowercase().contains("-computername")
+            {
+                continue;
+            }
+            let Some(hosts) = powershell_named_argument(line, "-ComputerName") else {
+                continue;
+            };
+            for host in hosts.split(',') {
+                push(tool, host.to_string());
+            }
         }
-        if env.traits.iter().any(|t| {
-            matches!(
-                t, crate::traits::Trait::RemoteExec { tool: tl, target_host: h }
-                    if tl == tool && h == &host
-            )
-        }) {
-            continue;
-        }
-        env.traits.push(crate::traits::Trait::RemoteExec {
-            tool: tool.to_string(),
-            target_host: host,
-        });
     }
 }
 
