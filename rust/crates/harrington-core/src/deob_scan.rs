@@ -7767,12 +7767,6 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
     const SECURITY_PRODUCT_PATTERN: &str = r"Trend Micro|Windows Defender|Microsoft Defender|Sophos|Kaspersky|Symantec|McAfee|Avast|AVG|ESET|Malwarebytes|CrowdStrike|SentinelOne|CarbonBlack|Cylance|Bitdefender";
     const SECURITY_SERVICE_PATTERN: &str = r"MBAMService|MBAMScheduler|ekrn|egui|AVP[0-9.]*|KSDE[0-9.]*|McAWFwk|MSK80Service|McAPExe|McBootDelayStartSvc|mccspsvc|mfefire|McMPFSvc|mcpltsvc|McProxy|McODS|mfemms|McAfee SiteAdvisor Service|mfevtp|McNaiAnn|NortonSecurity|SBAMSvc|ZillyaAVAuxSvc|ZillyaAVCoreSvc|QHActiveDefense|avast! Antivirus|avast! Firewall|AVG Antivirus|AntiVirMailService|AntiVirService|Avira\.ServiceHost|AntiVirWebService|AntiVirSchedulerService|vsservppl|ProductAgentService|vsserv|updatesrv|cmdAgent|cmdvirth|DragonUpdater|PEFService|SentinelAgent|CSFalconService";
     const SECURITY_STARTUP_PATTERN: &str = r"AvastUI\.exe|QHSafeTray|Zillya Antivirus|SBAMTray|SBRegRebootCleaner|egui|IseUI|COMODO Internet Security|ClamWin|Avira SystrayStartTrigger|AVGUI\.exe|SUPERAntiSpyware|Malwarebytes|Windows Defender|SecurityHealth|ESET|McAfee|Norton|Symantec";
-    static EXCLUSION_ARG_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(
-            r#"(?i)-Exclusion(Path|Extension|Process|IpAddress)\s*(?::|=|\s)\s*(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^\s'";|&)]+))"#,
-        )
-        .expect("exclusion arg regex")
-    });
     static DISABLE_ARG_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
             r#"(?i)-(Disable[A-Za-z]+|MAPSReporting|SubmitSamplesConsent)\s*(?::|=|\s)\s*(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^\s'";|&)]+))"#,
@@ -7904,25 +7898,14 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
                 {
                     continue;
                 }
-                for caps in EXCLUSION_ARG_RE.captures_iter(line) {
-                    let kind = format!(
-                        "exclusion-{}",
-                        caps.get(1)
-                            .map(|m| m.as_str().to_ascii_lowercase())
-                            .unwrap_or_default()
-                    );
-                    let target = caps
-                        .get(2)
-                        .or_else(|| caps.get(3))
-                        .or_else(|| caps.get(4))
-                        .map(|m| m.as_str().to_string())
-                        .unwrap_or_default();
-                    for target in target
-                        .split(',')
-                        .map(str::trim)
-                        .filter(|target| !target.is_empty())
-                    {
-                        push(&kind, target.to_string());
+                for (flag, kind) in [
+                    ("-ExclusionPath", "exclusion-path"),
+                    ("-ExclusionExtension", "exclusion-extension"),
+                    ("-ExclusionProcess", "exclusion-process"),
+                    ("-ExclusionIpAddress", "exclusion-ipaddress"),
+                ] {
+                    for target in powershell_named_argument_list(line, flag) {
+                        push(kind, target);
                     }
                 }
             }

