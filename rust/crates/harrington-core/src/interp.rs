@@ -153,6 +153,11 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
         return result;
     }
 
+    if replay_copied_robocopy_alias(raw, env) {
+        result.consumed = true;
+        return result;
+    }
+
     if let Some(body) = crate::handlers::call::call_body(raw) {
         let raw_wrapper_needs_bang_preservation = body.contains('!')
             && (crate::handlers::cmd::extract_cmd_inner(body).is_some()
@@ -218,6 +223,77 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
     }
 
     result
+}
+
+fn replay_copied_robocopy_alias(raw: &str, env: &mut Environment) -> bool {
+    let Some(name) = command_name(raw) else {
+        return false;
+    };
+    if !command_matches_copied_alias(&name, env, &["robocopy.exe", "robocopy"]) {
+        return false;
+    }
+    let Some(rest_start) = raw.find(&name).map(|idx| idx + name.len()) else {
+        return false;
+    };
+    let rest = raw[rest_start..].trim_start();
+    if rest.is_empty() {
+        return false;
+    }
+    push_manipulated_exec_once(env, raw, &name);
+    let replay = format!("robocopy.exe {rest}");
+    crate::handlers::robocopy::h_robocopy(&replay, env);
+    true
+}
+
+fn command_matches_copied_alias(name: &str, env: &Environment, source_bases: &[&str]) -> bool {
+    let name_trimmed = name.trim_matches(['"', '\'']);
+    let name_lower = name_trimmed.to_ascii_lowercase();
+    let name_base = command_basename_lower(name_trimmed);
+    env.traits.iter().any(|t| {
+        let crate::traits::Trait::WindowsUtilManip { src, dst, .. } = t else {
+            return false;
+        };
+        let src_base = command_basename_lower(src);
+        if !source_bases.iter().any(|base| src_base == *base) {
+            return false;
+        }
+        let dst_trimmed = dst.trim_matches(['"', '\'']);
+        let dst_lower = dst_trimmed.to_ascii_lowercase();
+        let dst_base = command_basename_lower(dst_trimmed);
+        name_lower == dst_lower || name_base == dst_base
+    })
+}
+
+fn push_manipulated_exec_once(env: &mut Environment, raw: &str, target: &str) {
+    if env.traits.iter().any(|t| {
+        matches!(
+            t,
+            crate::traits::Trait::ManipulatedExec {
+                cmd: existing_cmd,
+                target: existing_target
+            } if existing_cmd == raw && existing_target.eq_ignore_ascii_case(target.trim_matches(['"', '\'']))
+        )
+    }) {
+        return;
+    }
+    env.traits.push(crate::traits::Trait::ManipulatedExec {
+        cmd: raw.to_string(),
+        target: target.trim_matches(['"', '\'']).to_string(),
+    });
+}
+
+fn command_basename_lower(path: &str) -> String {
+    let trimmed = path
+        .trim_start_matches(|ch: char| {
+            ch.is_ascii_whitespace() || matches!(ch, '@' | '"' | '\'' | '(' | ';' | ',')
+        })
+        .trim_matches(['"', '\''])
+        .to_ascii_lowercase();
+    trimmed
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(&trimmed)
+        .to_string()
 }
 
 fn conhost_child_command(raw: &str) -> Option<String> {

