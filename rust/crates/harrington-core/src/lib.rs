@@ -3446,6 +3446,22 @@ powershell -Command "[Windows.Forms.Clipboard]::SetText('copied')"
     }
 
     #[test]
+    fn get_key_state_emits_input_capture_trait() {
+        let script = br#"powershell -Command "Add-Type '[DllImport(\"user32.dll\")] public static extern short GetKeyState(int nVirtKey);'"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::InputCapture { capture_kind } if capture_kind == "keylog"
+            )),
+            "GetKeyState keylogging marker was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn wmic_for_f_inventory_command_is_trimmed() {
         let script = br#"for /f "tokens=3" %%a in ('wmic logicaldisk where "Size=250954240000" get Size | find "Size"') do echo %%a"#;
         let report = analyze(script, &AnalyzeConfig::default());

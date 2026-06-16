@@ -10309,7 +10309,7 @@ fn scan_input_capture(deobfuscated: &str, env: &mut Environment) {
         vec![
             (
                 Regex::new(
-                    r#"(?i)\b(?:GetAsyncKeyState|SetWindowsHookEx(?:A|W)?|GetKeyboardState)\b"#,
+                    r#"(?i)\b(?:GetAsyncKeyState|GetKeyState|SetWindowsHookEx(?:A|W)?|GetKeyboardState)\b"#,
                 )
                 .unwrap(),
                 "keylog",
