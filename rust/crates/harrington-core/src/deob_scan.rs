@@ -9556,15 +9556,21 @@ fn scan_account_modification(deobfuscated: &str, env: &mut Environment) {
         if powershell_named_argument(&command, "-Password").is_none() {
             continue;
         }
-        let account = powershell_named_argument(&command, "-Name").or_else(|| {
-            powershell_positional_arguments(&command, "Set-LocalUser")
+        let mut accounts = powershell_named_argument_list(&command, "-Name");
+        if accounts.is_empty() {
+            if let Some(account) = powershell_positional_arguments(&command, "Set-LocalUser")
                 .into_iter()
                 .next()
-        });
-        let Some(account) = account else {
+            {
+                accounts.extend(split_powershell_list_argument(&account));
+            }
+        }
+        if accounts.is_empty() {
             continue;
-        };
-        push("local-user-password-set", account, None, command);
+        }
+        for account in accounts {
+            push("local-user-password-set", account, None, command.clone());
+        }
     }
     for caps in PS_ADD_LOCALGROUP_MEMBER_RE.captures_iter(deobfuscated) {
         let command = caps
