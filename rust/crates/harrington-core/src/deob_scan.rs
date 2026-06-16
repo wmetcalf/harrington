@@ -7789,6 +7789,12 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
         )
         .expect("powershell stop-service security regex")
     });
+    static PS_SET_SERVICE_DISABLED_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?im)^[^\r\n]*?\bSet-Service\b[^\r\n]*(?:-Name\s+|-DisplayName\s+)?["']?(WinDefend|MsMpSvc|wuauserv|MpsSvc|WdNisSvc|SecurityHealthService|Sense)["']?\b[^\r\n]*-StartupType\s+Disabled\b[^\r\n]*"#,
+        )
+        .expect("powershell set-service disabled regex")
+    });
     static TASKKILL_SECURITY_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?i)\btaskkill(?:\.exe)?\b[^\r\n]*?/im\s+"?(SecurityHealthSystray|SecurityHealthService|WindowsDefender|MsMpEng|NisSrv|MpCmdRun|MBAMService|MBAMTray|avastui|avgui|egui|ekrn|bdservicehost|SentinelAgent|CrowdStrike|CSFalconService)\.exe"?\b[^\r\n]*"#)
             .expect("taskkill security process")
@@ -7971,6 +7977,13 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
                     .map(|m| m.as_str().to_string())
                     .unwrap_or_default();
                 push("powershell-stop-service", service);
+            }
+            for caps in PS_SET_SERVICE_DISABLED_RE.captures_iter(deobfuscated) {
+                let service = caps
+                    .get(1)
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_default();
+                push("powershell-service-disabled", service);
             }
             for caps in TASKKILL_SECURITY_RE.captures_iter(deobfuscated) {
                 let process = caps
@@ -8252,6 +8265,7 @@ fn has_defender_service_process_atom_lower(lower: &str) -> bool {
         "move\t",
         "move.exe",
         "stop-service",
+        "set-service",
     ];
     COMMAND_ATOMS.iter().any(|atom| lower.contains(atom))
 }
@@ -8383,6 +8397,7 @@ mod defender_evasion_prefilter_tests {
             "Set-MpPreference -DisableRealtimeMonitoring $true",
             "sc stop WinDefend",
             "Stop-Service WinDefend",
+            "Set-Service WinDefend -StartupType Disabled",
             "taskkill /im SecurityHealthSystray.exe /f",
             "taskkill /im WindowsDefender.exe /f",
             r#"takeown /f C:\Windows\System32\MsMpEng.exe"#,
@@ -8421,6 +8436,9 @@ mod defender_evasion_prefilter_tests {
         ));
         assert!(has_defender_service_process_atom_lower(
             &"Stop-Service WinDefend".to_ascii_lowercase()
+        ));
+        assert!(has_defender_service_process_atom_lower(
+            &"Set-Service WinDefend -StartupType Disabled".to_ascii_lowercase()
         ));
         assert!(has_defender_service_process_atom_lower(
             &"taskkill /im SecurityHealthSystray.exe /f".to_ascii_lowercase()
