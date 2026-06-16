@@ -9581,15 +9581,22 @@ fn resolve_dns_name_target(line: &str) -> Option<String> {
             return normalize_probe_target(token);
         }
         let lower = token.to_ascii_lowercase();
-        if let Some(value) = attached_powershell_arg_value(&lower, token, "-name") {
+        if let Some(value) = attached_powershell_arg_value(&lower, token, "-Name") {
             return normalize_probe_target(value);
         }
-        if lower == "-name" {
+        if powershell_parameter_token_matches(&lower, "-Name").is_some() {
             name_next = true;
             continue;
         }
-        if lower == "-type" || lower == "-server" || lower == "-dnssecok" {
-            skip_next = true;
+        if let Some(attached) = powershell_parameter_token_matches(&lower, "-Type") {
+            skip_next = !attached;
+            continue;
+        }
+        if let Some(attached) = powershell_parameter_token_matches(&lower, "-Server") {
+            skip_next = !attached;
+            continue;
+        }
+        if powershell_parameter_token_matches(&lower, "-DnssecOk").is_some() {
             continue;
         }
         if lower.starts_with('-') {
@@ -9600,15 +9607,29 @@ fn resolve_dns_name_target(line: &str) -> Option<String> {
     None
 }
 
+fn powershell_parameter_token_matches(lower_token: &str, name: &str) -> Option<bool> {
+    let canonical = name.strip_prefix('-')?.to_ascii_lowercase();
+    if canonical.is_empty() {
+        return None;
+    }
+    let body = lower_token.strip_prefix('-')?;
+    let (parameter, attached) = body
+        .split_once([':', '='])
+        .map_or((body, false), |(parameter, _)| (parameter, true));
+    let min_prefix_len = canonical.len().min(2);
+    (parameter.len() >= min_prefix_len && canonical.starts_with(parameter)).then_some(attached)
+}
+
 fn attached_powershell_arg_value<'a>(
     lower_token: &str,
     original_token: &'a str,
     name: &str,
 ) -> Option<&'a str> {
-    let suffix = lower_token
-        .strip_prefix(name)
-        .filter(|suffix| suffix.starts_with(':') || suffix.starts_with('='))?;
-    let value_start = original_token.len() - suffix.len() + 1;
+    let attached = powershell_parameter_token_matches(lower_token, name)?;
+    if !attached {
+        return None;
+    }
+    let value_start = lower_token.find([':', '='])? + 1;
     original_token
         .get(value_start..)
         .filter(|value| !value.is_empty())
