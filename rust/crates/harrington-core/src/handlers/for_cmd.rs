@@ -14,7 +14,7 @@ use regex::Regex;
 #[allow(clippy::expect_used)]
 static FOR_F_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)^\s*for\s+/F\s*(?:"(?P<opts>[^"]*)")?\s*%%?(?P<var>[A-Za-z])\s+in\s*\(\s*(?P<src>.+?)\s*\)\s*do\s+(?P<body>.+)$"#
+        r#"(?is)^\s*for\s*/F\s*(?:"(?P<opts>[^"]*)")?\s*%%?(?P<var>[A-Za-z])\s+in\s*\(\s*(?P<src>.+?)\s*\)\s*do\s+(?P<body>.+)$"#
     ).expect("for /F regex")
 });
 
