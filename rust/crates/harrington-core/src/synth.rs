@@ -386,7 +386,8 @@ fn findstr_file_inputs_for_arg(
             .into_iter()
             .filter_map(|path| {
                 let lines = type_file(&path, env);
-                (!lines.is_empty()).then(|| (findstr_file_output_name(candidate, &path), lines))
+                (!lines.is_empty())
+                    .then(|| (findstr_file_output_name(candidate, &path, recursive), lines))
             })
             .collect();
     }
@@ -398,8 +399,8 @@ fn findstr_file_inputs_for_arg(
     }
 }
 
-fn findstr_file_output_name(pattern: &str, tracked_path: &str) -> String {
-    if pattern.contains(['\\', '/', ':']) {
+fn findstr_file_output_name(pattern: &str, tracked_path: &str, recursive: bool) -> String {
+    if recursive || pattern.contains(['\\', '/', ':']) {
         tracked_path.to_string()
     } else {
         windows_basename(tracked_path)

