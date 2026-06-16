@@ -13,6 +13,9 @@ pub fn h_echo(raw: &str, env: &mut Environment) {
             redir.stdout = Some(target);
         }
     }
+    if redir.stdout.is_some() && has_unquoted_pipe(&cleaned) {
+        return;
+    }
     let echo = strip_echo_prefix(&cleaned);
     let after_echo = echo.map(|prefix| prefix.body).unwrap_or(&cleaned);
     let payload = after_echo.trim_start();
@@ -107,6 +110,25 @@ fn update_echo_state(payload: &str, env: &mut Environment) {
     } else if state.eq_ignore_ascii_case("on") {
         env.echo_enabled = true;
     }
+}
+
+fn has_unquoted_pipe(raw: &str) -> bool {
+    let mut in_double = false;
+    let mut in_single = false;
+    let mut chars = raw.chars();
+    while let Some(c) = chars.next() {
+        if c == '^' {
+            chars.next();
+            continue;
+        }
+        match c {
+            '"' if !in_single => in_double = !in_double,
+            '\'' if !in_double => in_single = !in_single,
+            '|' if !in_double && !in_single => return true,
+            _ => {}
+        }
+    }
+    false
 }
 
 fn extract_inline_echo_stdout_redirect(

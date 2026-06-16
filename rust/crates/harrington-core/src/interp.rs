@@ -378,6 +378,8 @@ pub fn interpret_line(line: &str, env: &mut Environment) {
     let Some(name) = command_name(line) else {
         return;
     };
+    let captured_synthetic_stdout =
+        has_unquoted_pipe(line) && capture_synthetic_stdout_redirect(line, env);
     if let Some(handler) = handlers::lookup(&name) {
         handler(line, env);
         return;
@@ -431,7 +433,9 @@ pub fn interpret_line(line: &str, env: &mut Environment) {
         }
         _ => {}
     }
-    capture_synthetic_stdout_redirect(line, env);
+    if !captured_synthetic_stdout {
+        capture_synthetic_stdout_redirect(line, env);
+    }
     capture_synthetic_option_output(line, env);
 }
 
@@ -584,23 +588,28 @@ fn xcopy_pipeline_tail(line: &str) -> Option<&str> {
     }
 }
 
-fn capture_synthetic_stdout_redirect(line: &str, env: &mut Environment) {
+fn capture_synthetic_stdout_redirect(line: &str, env: &mut Environment) -> bool {
     let (cleaned, redir) = crate::redirect::extract_redirections(line);
     let Some(stdout) = redir.stdout else {
-        return;
+        return false;
     };
     let command = cleaned.trim();
     if command.is_empty() || cleaned == line || is_block_delimiter(command) {
-        return;
+        return false;
     }
     if !crate::synth::can_run_pipeline(&cleaned) {
-        return;
+        return false;
+    }
+    if let Some(content) = crate::synth::run_pipeline_bytes(&cleaned, env) {
+        write_synthetic_bytes(stdout.path(), stdout.append(), content, env);
+        return true;
     }
     let lines = crate::synth::run_pipeline(&cleaned, env);
     if lines.is_empty() {
-        return;
+        return false;
     }
     write_synthetic_lines(stdout.path(), stdout.append(), lines, env);
+    true
 }
 
 fn capture_synthetic_option_output(line: &str, env: &mut Environment) {
@@ -660,6 +669,10 @@ fn sort_output_file_command(line: &str) -> Option<(String, String)> {
 fn write_synthetic_lines(path: &str, append: bool, lines: Vec<String>, env: &mut Environment) {
     let mut content = lines.join("\r\n").into_bytes();
     content.extend_from_slice(b"\r\n");
+    write_synthetic_bytes(path, append, content, env);
+}
+
+fn write_synthetic_bytes(path: &str, append: bool, content: Vec<u8>, env: &mut Environment) {
     let key = crate::handlers::util::filesystem_storage_key(path);
     let cap = env.limits.max_output_bytes as usize;
     if append {
@@ -694,6 +707,25 @@ fn write_synthetic_lines(path: &str, append: bool, lines: Vec<String>, env: &mut
 
 fn is_block_delimiter(command: &str) -> bool {
     matches!(command, "(" | ")")
+}
+
+fn has_unquoted_pipe(raw: &str) -> bool {
+    let mut in_double = false;
+    let mut in_single = false;
+    let mut chars = raw.chars();
+    while let Some(c) = chars.next() {
+        if c == '^' {
+            chars.next();
+            continue;
+        }
+        match c {
+            '"' if !in_single => in_double = !in_double,
+            '\'' if !in_double => in_single = !in_single,
+            '|' if !in_double && !in_single => return true,
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Extract the command name from a normalized line: the first token before

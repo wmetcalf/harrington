@@ -27,6 +27,29 @@ pub fn run_pipeline(pipeline: &str, env: &mut Environment) -> Vec<String> {
     buf
 }
 
+pub fn run_pipeline_bytes(pipeline: &str, env: &mut Environment) -> Option<Vec<u8>> {
+    let stages = split_pipeline(pipeline);
+    let last = stages.last()?.trim();
+    let (redir_cleaned, _) = crate::redirect::extract_redirections(last);
+    let stage = normalize_stage_prefix(&redir_cleaned);
+    let (cmd_token, rest) = split_stage_command(stage)?;
+    let cmd = synth_command_key_with_env(cmd_token, env);
+    if cmd != "set" {
+        return None;
+    }
+    let prompt = set_p_prompt(rest)?;
+    if prompt.is_empty() {
+        return None;
+    }
+    if !stages[..stages.len() - 1]
+        .iter()
+        .all(|stage| stage_command(stage).is_some_and(|cmd| is_supported_command(&cmd)))
+    {
+        return None;
+    }
+    Some(prompt.as_bytes().to_vec())
+}
+
 fn is_cmd_prompt_escape_probe(pipeline: &str) -> bool {
     let stages = split_pipeline(pipeline);
     if stages.len() != 2 {
@@ -105,6 +128,13 @@ fn run_stage(stage: &str, input: Vec<String>, env: &mut Environment) -> Vec<Stri
     let rest_args: Vec<&str> = parts.iter().map(String::as_str).collect();
     match cmd.as_str() {
         "set" => {
+            if let Some(prompt) = set_p_prompt(rest) {
+                return if prompt.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![prompt.to_string()]
+                };
+            }
             let prefix = rest_args
                 .first()
                 .copied()
@@ -178,6 +208,16 @@ fn run_stage(stage: &str, input: Vec<String>, env: &mut Environment) -> Vec<Stri
             Vec::new()
         }
     }
+}
+
+fn set_p_prompt(rest: &str) -> Option<&str> {
+    let rest = rest.trim_start();
+    if !rest.get(..2)?.eq_ignore_ascii_case("/p") {
+        return None;
+    }
+    let body = rest[2..].trim_start();
+    let (_, prompt) = body.split_once('=')?;
+    Some(prompt)
 }
 
 fn normalize_stage_prefix(stage: &str) -> &str {
