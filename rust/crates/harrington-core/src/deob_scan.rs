@@ -11136,18 +11136,61 @@ fn scan_uac_bypass(deobfuscated: &str, env: &mut Environment) {
     });
     for (re, tech) in PATTERNS.iter() {
         if re.is_match(deobfuscated) {
-            if env.traits.iter().any(|t| {
-                matches!(
-                    t, crate::traits::Trait::UacBypass { technique: tk } if tk == tech
-                )
-            }) {
-                continue;
-            }
-            env.traits.push(crate::traits::Trait::UacBypass {
-                technique: tech.to_string(),
-            });
+            push_uac_bypass_trait(env, tech);
         }
     }
+
+    for line in deobfuscated
+        .lines()
+        .filter(|line| line.to_ascii_lowercase().contains("itemproperty"))
+    {
+        let positional = if find_ascii_case_insensitive(line, "New-ItemProperty", 0).is_some() {
+            powershell_itemproperty_positional_arguments(line, "New-ItemProperty")
+        } else if find_ascii_case_insensitive(line, "Set-ItemProperty", 0).is_some() {
+            powershell_itemproperty_positional_arguments(line, "Set-ItemProperty")
+        } else {
+            continue;
+        };
+        let mut positional = positional.into_iter();
+        let path = powershell_named_argument(line, "-Path")
+            .or_else(|| powershell_named_argument(line, "-LiteralPath"))
+            .or_else(|| positional.next())
+            .unwrap_or_default();
+        if !path.to_ascii_lowercase().contains(r"policies\system") {
+            continue;
+        }
+        let name = powershell_named_argument(line, "-Name")
+            .or_else(|| positional.next())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let value = powershell_named_argument(line, "-Value")
+            .or_else(|| positional.next())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        match (name.as_str(), value.as_str()) {
+            ("enablelua", "0" | "0x0") => push_uac_bypass_trait(env, "uac-enablelua-disabled"),
+            ("consentpromptbehavioradmin", "0" | "0x0") => {
+                push_uac_bypass_trait(env, "uac-consent-prompt-disabled");
+            }
+            ("localaccounttokenfilterpolicy", "1" | "0x1") => {
+                push_uac_bypass_trait(env, "uac-token-filter-disabled");
+            }
+            _ => {}
+        }
+    }
+}
+
+fn push_uac_bypass_trait(env: &mut Environment, tech: &str) {
+    if env.traits.iter().any(|t| {
+        matches!(
+            t, crate::traits::Trait::UacBypass { technique } if technique == tech
+        )
+    }) {
+        return;
+    }
+    env.traits.push(crate::traits::Trait::UacBypass {
+        technique: tech.to_string(),
+    });
 }
 
 fn has_uac_bypass_atom(text: &str) -> bool {
