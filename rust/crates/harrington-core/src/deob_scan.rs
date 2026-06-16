@@ -10894,8 +10894,15 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
     }
     for m in PS_RDP_ENABLE_RE.find_iter(deobfuscated) {
         let command = m.as_str().trim();
+        let positional = if find_ascii_case_insensitive(command, "New-ItemProperty", 0).is_some() {
+            powershell_itemproperty_positional_arguments(command, "New-ItemProperty")
+        } else {
+            powershell_itemproperty_positional_arguments(command, "Set-ItemProperty")
+        };
+        let mut positional = positional.into_iter();
         let path = powershell_named_argument(command, "-Path")
             .or_else(|| powershell_named_argument(command, "-LiteralPath"))
+            .or_else(|| positional.next())
             .unwrap_or_default();
         if !path
             .to_ascii_lowercase()
@@ -10904,9 +10911,11 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
             continue;
         }
         let value_name = powershell_named_argument(command, "-Name")
+            .or_else(|| positional.next())
             .unwrap_or_default()
             .to_ascii_lowercase();
         let value = powershell_named_argument(command, "-Value")
+            .or_else(|| positional.next())
             .unwrap_or_default()
             .to_ascii_lowercase();
         let enables_rdp = match value_name.as_str() {
