@@ -9044,7 +9044,10 @@ pub(crate) fn ps_download_side_effects(text: &str) -> Vec<(String, String)> {
     for spec in PS_URL_REGEX_SPECS {
         if !matches!(
             spec.atom_kind,
-            PsUrlRegexAtomKind::Iwr | PsUrlRegexAtomKind::Irm | PsUrlRegexAtomKind::CurlExe
+            PsUrlRegexAtomKind::Iwr
+                | PsUrlRegexAtomKind::Irm
+                | PsUrlRegexAtomKind::CurlExe
+                | PsUrlRegexAtomKind::StartBits
         ) || !regex_atom_profile.matches(spec.atom_kind)
         {
             continue;

