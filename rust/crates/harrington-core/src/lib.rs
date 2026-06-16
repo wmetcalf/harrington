@@ -4773,6 +4773,22 @@ C:\Users\Public\nt.tmp localgroup Administrators backdoor /ADD
     }
 
     #[test]
+    fn powershell_new_firewall_rule_rdp_port_emits_remote_access_trait() {
+        let script = br#"powershell -Command "New-NetFirewallRule -DisplayName RDP -Direction Inbound -Action Allow -Protocol TCP -LocalPort 3389""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-firewall-open" && target == "3389"
+            )),
+            "PowerShell New-NetFirewallRule RDP port opening was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn terminal_services_enablement_emits_remote_access_trait() {
         let script = br#"sc config TermService start= auto
 net start TermService

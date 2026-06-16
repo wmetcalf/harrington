@@ -11190,7 +11190,7 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
         .expect("legacy rdp portopening regex")
     });
     static PS_RDP_FIREWALL_GROUP_ENABLE_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?im)^[^\r\n]*?\b(?:Enable|Set)-NetFirewallRule\b[^\r\n]*"#)
+        Regex::new(r#"(?im)^[^\r\n]*?\b(?:Enable|Set|New)-NetFirewallRule\b[^\r\n]*"#)
             .expect("powershell rdp firewall group enable regex")
     });
     let mut push = |technique: &str, target: String, command: String| {
@@ -11376,6 +11376,25 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
     }
     for m in PS_RDP_FIREWALL_GROUP_ENABLE_RE.find_iter(deobfuscated) {
         let command = m.as_str().trim();
+        if contains_ascii_keyword(command, "New-NetFirewallRule") {
+            let action = powershell_named_argument(command, "-Action")
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            let protocol = powershell_named_argument(command, "-Protocol")
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            let ports = powershell_named_argument_list(command, "-LocalPort");
+            if action == "allow"
+                && (protocol.is_empty() || protocol == "tcp")
+                && ports
+                    .iter()
+                    .flat_map(|port| split_powershell_list_argument(port))
+                    .any(|port| port == "3389")
+            {
+                push("rdp-firewall-open", "3389".to_string(), command.to_string());
+            }
+            continue;
+        }
         let positional =
             if find_ascii_case_insensitive(command, "Enable-NetFirewallRule", 0).is_some() {
                 powershell_positional_arguments(command, "Enable-NetFirewallRule")
