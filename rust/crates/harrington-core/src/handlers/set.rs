@@ -5,9 +5,15 @@ use crate::traits::Trait;
 use crate::{arith, redirect};
 
 pub fn h_set(raw: &str, env: &mut Environment) {
-    let rest = match strip_set_prefix(raw) {
-        Some(r) => r,
-        None => return,
+    let cleaned_prefix;
+    let rest = if let Some(rest) = strip_set_prefix(raw) {
+        rest
+    } else {
+        cleaned_prefix = redirect::extract_redirections(raw).0;
+        match strip_set_prefix(&cleaned_prefix) {
+            Some(rest) => rest,
+            None => return,
+        }
     };
     if rest.trim().is_empty() {
         return;
@@ -70,8 +76,13 @@ pub fn h_set(raw: &str, env: &mut Environment) {
 
 fn do_set_p(raw: &str, env: &mut Environment) {
     let (cleaned, redirections) = redirect::extract_redirections(raw);
-    let Some(raw_rest) = strip_set_prefix(raw) else {
-        return;
+    let raw_rest = if let Some(rest) = strip_set_prefix(raw) {
+        rest
+    } else {
+        match strip_set_prefix(&cleaned) {
+            Some(rest) => rest,
+            None => return,
+        }
     };
     let raw_after_flag = raw_rest.trim_start();
     if !raw_after_flag.to_ascii_lowercase().starts_with("/p") {
