@@ -684,10 +684,15 @@ fn value_likely_has_nested_ref(s: &str) -> bool {
     // Look for `%<name>%` or `!<name>!` patterns. A bare `%%` (with no
     // closing `%`) is the percent-escape literal — don't re-lex that.
     let bytes = s.as_bytes();
+    let url_like = looks_like_url_value(s);
     let mut i = 0;
     while i < bytes.len() {
         let sigil = bytes[i];
         if sigil == b'%' || sigil == b'!' {
+            if sigil == b'%' && url_like && percent_encoded_escape_at(bytes, i) {
+                i += 3;
+                continue;
+            }
             // Need at least one name char after, then a closing same-sigil.
             let mut j = i + 1;
             let mut has_name = false;
@@ -708,6 +713,17 @@ fn value_likely_has_nested_ref(s: &str) -> bool {
     false
 }
 
+fn looks_like_url_value(s: &str) -> bool {
+    let lower = s.to_ascii_lowercase();
+    lower.contains("://") || lower.starts_with("http:") || lower.starts_with("ftp:")
+}
+
+fn percent_encoded_escape_at(bytes: &[u8], idx: usize) -> bool {
+    matches!(bytes.get(idx), Some(b'%'))
+        && matches!(bytes.get(idx + 1), Some(c) if c.is_ascii_hexdigit())
+        && matches!(bytes.get(idx + 2), Some(c) if c.is_ascii_hexdigit())
+}
+
 /// Variable expansion that walks a string char-by-char, expanding `%VAR%` and
 /// `!VAR!` (when delayed expansion is on) but preserving everything else
 /// (including operators like `;`, `&`, `|` that the lexer would otherwise
@@ -725,6 +741,13 @@ fn expand_vars_in_string(s: &str, env: &mut Environment, depth: u32) -> String {
                 // top level. Inside DoubleQuoted content the same forms
                 // need to be preserved verbatim so the analyst sees what
                 // the FOR body actually does.
+                if is_url_percent_escape_at(&chars, i) {
+                    out.push('%');
+                    out.push(chars[i + 1]);
+                    out.push(chars[i + 2]);
+                    i += 3;
+                    continue;
+                }
                 if chars.get(i + 1) == Some(&'%') {
                     let mut k = i + 2;
                     let mut had_tilde = false;
@@ -845,6 +868,26 @@ fn expand_vars_in_string(s: &str, env: &mut Environment, depth: u32) -> String {
     out
 }
 
+fn is_url_percent_escape_at(chars: &[char], idx: usize) -> bool {
+    let Some(first) = chars.get(idx + 1) else {
+        return false;
+    };
+    let Some(second) = chars.get(idx + 2) else {
+        return false;
+    };
+    if !first.is_ascii_hexdigit() || !second.is_ascii_hexdigit() {
+        return false;
+    }
+    let start = chars[..idx]
+        .iter()
+        .rposition(|c| c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>' | '(' | ')'))
+        .map(|pos| pos + 1)
+        .unwrap_or(0);
+    let prefix: String = chars[start..idx].iter().collect();
+    let lower = prefix.to_ascii_lowercase();
+    lower.contains("://") || lower.starts_with("http:") || lower.starts_with("ftp:")
+}
+
 fn render_percent_tilde_from_chars(
     chars: &[char],
     start: usize,
@@ -962,11 +1005,13 @@ fn resolve_var_ref(body: &str, env: &mut Environment, _is_bang: bool, depth: u32
             }
         }
     };
-    // Re-lex/re-normalize if the resolved value itself contains %/!/^
+    // Re-lex/re-normalize if the resolved value itself contains nested refs
+    // or carets. Do not re-lex URL-encoded `%XX` escapes: they are literal
+    // URL bytes, not CMD variable references.
     if depth + 1 >= MAX_REEXPAND_DEPTH {
         return value;
     }
-    if value.contains('%') || value.contains('!') || value.contains('^') {
+    if value_likely_has_nested_ref(&value) || value.contains('^') {
         let inner = lex(&value);
         normalize_inner(&inner, env, depth + 1)
     } else {
@@ -1207,6 +1252,29 @@ mod dosfuscation_tests {
         env.set("b", "%a%bar");
         let got = normalize_to_string(&lex("%b%"), &mut env);
         assert_eq!(got, "foobar", "got: {:?}", got);
+    }
+
+    #[test]
+    fn url_encoded_percent_escapes_in_quoted_url_are_preserved() {
+        let got = nm(r#"set "url=https://example.test/payload?filename=g%C3%BCncel.ps1""#);
+        assert_eq!(
+            got,
+            r#"set "url=https://example.test/payload?filename=g%C3%BCncel.ps1""#
+        );
+    }
+
+    #[test]
+    fn url_encoded_percent_escapes_in_resolved_url_are_preserved() {
+        let mut env = Environment::new(&Config::default());
+        env.set(
+            "url",
+            "https://example.test/payload?filename=g%C3%BCncel.ps1",
+        );
+        let got = normalize_to_string(&lex(r#""%url%""#), &mut env);
+        assert_eq!(
+            got,
+            r#""https://example.test/payload?filename=g%C3%BCncel.ps1""#
+        );
     }
 
     #[test]
