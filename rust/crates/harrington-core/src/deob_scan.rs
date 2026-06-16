@@ -10517,7 +10517,7 @@ fn scan_credential_access(deobfuscated: &str, env: &mut Environment) {
         ]
     });
     static REG_HIVE_SAVE_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?im)^[^\r\n]*?\breg(?:\.exe)?\s+save\s+["']?HKLM\\(?:SAM|SYSTEM|SECURITY)["']?\b[^\r\n]*"#)
+        Regex::new(r#"(?im)^[^\r\n]*?\breg(?:\.exe)?\s+save\s+["']?(?:HKLM|HKEY_LOCAL_MACHINE)\\(?:SAM|SYSTEM|SECURITY)["']?\b[^\r\n]*"#)
             .expect("registry hive save regex")
     });
     for (re, tech, fmt) in PATTERNS.iter() {
@@ -10589,6 +10589,9 @@ fn has_credential_access_atom(text: &str) -> bool {
         "hklm\\sam",
         "hklm\\system",
         "hklm\\security",
+        "hkey_local_machine\\sam",
+        "hkey_local_machine\\system",
+        "hkey_local_machine\\security",
     ]
     .iter()
     .any(|atom| lower.contains(atom))

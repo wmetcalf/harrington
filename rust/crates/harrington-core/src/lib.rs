@@ -3954,6 +3954,23 @@ reg save HKLM\SECURITY C:\Users\Public\security.save /y
     }
 
     #[test]
+    fn full_registry_hive_saves_emit_credential_access_trait() {
+        let script = br#"reg save HKEY_LOCAL_MACHINE\SAM C:\Users\Public\sam.save /y"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::CredentialAccess { technique, target }
+                    if technique == "registry-hive-save"
+                        && target.contains(r"HKEY_LOCAL_MACHINE\SAM")
+            )),
+            "full registry hive save was not surfaced as credential access: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn ntdsutil_ifm_create_full_emits_credential_access_trait() {
         let script =
             br#"ntdsutil "activate instance ntds" ifm "create full C:\Users\Public\ifm" quit quit"#;
