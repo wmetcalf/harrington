@@ -7657,6 +7657,86 @@ fn scan_curl_deob_text(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
+pub fn scan_raw_curl_known_percent_urls(raw: &str, env: &mut Environment) {
+    if !contains_ascii_keyword(raw, "curl") || !raw.contains('%') {
+        return;
+    }
+    for line in raw.lines() {
+        if command_starts_with_echo(line) || !contains_ascii_keyword(line, "curl") {
+            continue;
+        }
+        let Some(expanded) = expand_known_percent_vars_for_scan(line, env) else {
+            continue;
+        };
+        if expanded == line || !contains_ascii_keyword(&expanded, "curl") {
+            continue;
+        }
+        scan_curl_deob_text(&expanded, env);
+    }
+}
+
+fn expand_known_percent_vars_for_scan(text: &str, env: &Environment) -> Option<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut changed = false;
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] != '%' {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        if chars.get(i + 1) == Some(&'%') {
+            out.push('%');
+            out.push('%');
+            i += 2;
+            continue;
+        }
+        let mut j = i + 1;
+        while j < chars.len() && chars[j] != '%' {
+            j += 1;
+        }
+        if j >= chars.len() {
+            out.push('%');
+            i += 1;
+            continue;
+        }
+        let name: String = chars[i + 1..j].iter().collect();
+        if is_simple_percent_var_name(&name) {
+            if let Some(value) = known_percent_var_value_for_scan(&name, env) {
+                out.push_str(&value);
+                changed = true;
+                i = j + 1;
+                continue;
+            }
+        }
+        out.push('%');
+        out.push_str(&name);
+        out.push('%');
+        i = j + 1;
+    }
+    changed.then_some(out)
+}
+
+fn known_percent_var_value_for_scan(name: &str, env: &Environment) -> Option<String> {
+    env.get(name).or_else(|| {
+        env.traits.iter().rev().find_map(|t| match t {
+            Trait::UrlVariable {
+                name: existing,
+                url,
+                ..
+            } if existing.eq_ignore_ascii_case(name) => Some(url.clone()),
+            _ => None,
+        })
+    })
+}
+
+fn is_simple_percent_var_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.contains(['%', ':', '!', '^', '&', '|', '<', '>', '"'])
+        && name.chars().all(|c| !c.is_control())
+}
+
 fn parse_wget_like_downloads(tokens: &[String]) -> Vec<(String, Option<String>)> {
     let mut url: Option<String> = None;
     let mut urls: Vec<String> = Vec::new();

