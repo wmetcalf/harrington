@@ -19898,6 +19898,27 @@ mod msiexec_tests {
     }
 
     #[test]
+    fn msiexec_log_url_is_not_treated_as_package_argument() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"msiexec /i local.msi /l*v https://msiexec-log-only.example/install.log"#,
+            &mut env,
+        );
+
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { url, .. }
+                        if url == "https://msiexec-log-only.example/install.log"
+                )
+            }),
+            "msiexec log URL was promoted as package source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn msiexec_local_administrative_install_emits_lolbas_trait() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
@@ -36571,6 +36592,27 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
                 .iter()
                 .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
             "msiexec package URL double-emitted as generic: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn msiexec_log_url_in_deob_text_is_not_package_argument() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"msiexec /i local.msi /l*v https://msiexec-log-only-deob.example/install.log"#,
+            &mut env,
+        );
+
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { url, .. } | Trait::DownloadInDeobText { src: url, .. }
+                        if url == "https://msiexec-log-only-deob.example/install.log"
+                )
+            }),
+            "msiexec deob-text log URL was promoted as download/package source: {:?}",
             env.traits
         );
     }

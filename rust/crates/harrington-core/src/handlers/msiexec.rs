@@ -9,15 +9,7 @@ pub fn h_msiexec(raw: &str, env: &mut Environment) {
     if msiexec_has_package_argument(&tokens) {
         push_lolbas(raw, env);
     }
-    if let Some(url) = tokens
-        .iter()
-        .skip(1)
-        .filter_map(|token| {
-            let token = strip_quotes(token);
-            msiexec_url_from_token(token)
-        })
-        .next()
-    {
+    if let Some(url) = msiexec_package_url(&tokens) {
         env.traits.push(Trait::UrlArgument {
             cmd: raw.to_string(),
             url,
@@ -105,6 +97,13 @@ fn msiexec_has_package_argument(tokens: &[String]) -> bool {
         .enumerate()
         .skip(1)
         .any(|(idx, token)| msiexec_package_candidate(token, tokens.get(idx + 1)).is_some())
+}
+
+fn msiexec_package_url(tokens: &[String]) -> Option<String> {
+    tokens.iter().enumerate().skip(1).find_map(|(idx, token)| {
+        let candidate = msiexec_package_candidate(token, tokens.get(idx + 1))?;
+        msiexec_url_from_token(&candidate)
+    })
 }
 
 fn msiexec_prior_download_url(tokens: &[String], env: &Environment) -> Option<String> {

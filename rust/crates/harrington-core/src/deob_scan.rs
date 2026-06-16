@@ -470,6 +470,24 @@ pub(crate) fn is_noise_url_context(line: &str, url: &str) -> bool {
     {
         return true;
     }
+    if msiexec_line_url_is_non_package(line, url) {
+        return true;
+    }
+    false
+}
+
+fn msiexec_line_url_is_non_package(line: &str, url: &str) -> bool {
+    let tokens = split_words(line);
+    for (idx, token) in tokens.iter().enumerate() {
+        let cmd = command_name(strip_quotes(token));
+        if cmd != "msiexec" && cmd != "msiexec.exe" {
+            continue;
+        }
+        let Some(package_url) = msiexec_package_url_after(&tokens, idx + 1) else {
+            return true;
+        };
+        return package_url != url;
+    }
     false
 }
 
@@ -3908,9 +3926,12 @@ fn scan_process_url_arguments(deobfuscated: &str, env: &mut Environment) {
         if !is_url_argument_process(&cmd) || is_url_launcher_command(&cmd) {
             continue;
         }
-        let Some(url) =
-            first_url_after(&tokens, 1, cmd == "msiexec" || cmd == "msiexec.exe", false)
-        else {
+        let url = if cmd == "msiexec" || cmd == "msiexec.exe" {
+            msiexec_package_url_after(&tokens, 1)
+        } else {
+            first_url_after(&tokens, 1, false, false)
+        };
+        let Some(url) = url else {
             continue;
         };
         if is_noise_url(&url) {
@@ -4093,6 +4114,22 @@ fn msiexec_prior_download_url_after(
             continue;
         };
         if let Some(url) = url_for_download_destination(&candidate, downloads) {
+            return Some(url);
+        }
+    }
+    None
+}
+
+fn msiexec_package_url_after(tokens: &[String], start: usize) -> Option<String> {
+    let limit = tokens.len().min(start.saturating_add(12));
+    for i in start..limit {
+        let Some(candidate) = msiexec_package_candidate(&tokens[i], tokens.get(i + 1)) else {
+            continue;
+        };
+        let candidate = trim_url_suffix(&candidate);
+        if let Some(url) = normalize_liberal_url_token(candidate)
+            .or_else(|| normalize_schemeless_domain_path_token(candidate))
+        {
             return Some(url);
         }
     }
