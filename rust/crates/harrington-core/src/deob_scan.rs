@@ -11396,7 +11396,7 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
         .expect("rdp enable regex")
     });
     static PS_RDP_ENABLE_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?im)^[^\r\n]*?\b(?:Set|New)-ItemProperty\b[^\r\n]*"#)
+        Regex::new(r#"(?im)^[^\r\n]*?\b(?:(?:Set|New)-ItemProperty|sp)\b[^\r\n]*"#)
             .expect("powershell rdp enable regex")
     });
     static HIDDEN_USER_RE: Lazy<Regex> = Lazy::new(|| {
