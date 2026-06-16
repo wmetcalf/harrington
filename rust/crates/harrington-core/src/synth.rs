@@ -273,6 +273,13 @@ fn stage_command(stage: &str) -> Option<String> {
 }
 
 fn split_stage_command(stage: &str) -> Option<(&str, &str)> {
+    if stage
+        .get(..3)
+        .is_some_and(|head| head.eq_ignore_ascii_case("set"))
+        && stage[3..].starts_with('/')
+    {
+        return Some((&stage[..3], &stage[3..]));
+    }
     let mut in_dq = false;
     let mut in_sq = false;
     let mut in_percent = false;
