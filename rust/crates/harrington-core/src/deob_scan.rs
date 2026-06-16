@@ -8515,6 +8515,12 @@ fn scan_lateral_movement(deobfuscated: &str, env: &mut Environment) {
         )
         .expect("powershell remoting re")
     });
+    static NET_USE_ADMIN_SHARE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?i)\bnet1?(?:\.exe)?\s+use\s+(?:(?:[A-Z]:|\*)\s+)?(?:"\\\\([^\\/"'\s]+)\\(?:[A-Z]\$|ADMIN\$|IPC\$)(?:\\[^"\r\n]*)?[^"\r\n]*"|\\\\([^\\/"'\s]+)\\(?:[A-Z]\$|ADMIN\$|IPC\$)(?:\\[^\s\r\n]*)?[^\r\n]*)"#,
+        )
+        .expect("net use admin share regex")
+    });
     static SCHTASKS_S_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?i)\bschtasks[^\r\n]*?\s/s\s+(?:"([^"]+)"|(\S+))"#).expect("schtasks /s re")
     });
@@ -8574,6 +8580,14 @@ fn scan_lateral_movement(deobfuscated: &str, env: &mut Environment) {
             .map(|m| m.as_str().to_string())
             .unwrap_or_default();
         push(tool, host);
+    }
+    for c in NET_USE_ADMIN_SHARE_RE.captures_iter(deobfuscated) {
+        let host = c
+            .get(1)
+            .or_else(|| c.get(2))
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default();
+        push("net-use", host);
     }
     for c in SCHTASKS_S_RE.captures_iter(deobfuscated) {
         let host = c

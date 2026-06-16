@@ -3970,6 +3970,23 @@ powershell -Command "New-PSSession -ComputerName 'filesrv.example'"
     }
 
     #[test]
+    fn net_use_admin_share_emits_lateral_movement_trait() {
+        let script = br#"net use \\target.example\C$ /user:DOMAIN\adm pass
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::LateralMovement { tool, target_host }
+                    if tool == "net-use" && target_host == "target.example"
+            )),
+            "net use admin share lateral movement missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_wmi_remoting_attached_computername_emits_remote_exec() {
         let script = br#"powershell -Command "Invoke-WmiMethod -ComputerName:target.example -Class Win32_Process -Name Create -ArgumentList 'cmd /c hostname'"
 powershell -Command "Set-WmiInstance -ComputerName='adminbox.example' -Class Win32_Process -Arguments @{CommandLine='cmd /c whoami'}"
