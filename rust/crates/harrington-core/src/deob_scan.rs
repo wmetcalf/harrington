@@ -5010,6 +5010,78 @@ fn scan_copied_runas_alias_deob_text(deobfuscated: &str, env: &mut Environment) 
     }
 }
 
+fn scan_copied_psexec_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    let mut aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for t in &env.traits {
+        let Trait::WindowsUtilManip { src, dst, .. } = t else {
+            continue;
+        };
+        let src_base = basename_lower(src);
+        if src_base != "psexec.exe" && src_base != "psexec" {
+            continue;
+        }
+        insert_alias_names(&mut aliases, dst);
+    }
+    if aliases.is_empty() {
+        return;
+    }
+
+    let lines: Vec<&str> = deobfuscated.lines().collect();
+    for (line_idx, line) in lines.iter().enumerate() {
+        let tokens = split_words(line);
+        let Some(cmd) = tokens.first() else {
+            continue;
+        };
+        if !aliases.contains(&basename_lower(cmd))
+            && !aliases.contains(&cmd.trim_matches(['"', '\'']).to_ascii_lowercase())
+        {
+            continue;
+        }
+        if tokens.len() < 2 {
+            continue;
+        }
+        if env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::ManipulatedExec {
+                    cmd: existing_cmd,
+                    target
+                } if existing_cmd == line && target.eq_ignore_ascii_case(cmd.trim_matches(['"', '\'']))
+            )
+        }) {
+            continue;
+        }
+
+        push_manipulated_exec_once(env, line, cmd);
+        let rest = line
+            .get(cmd.len()..)
+            .map(str::trim_start)
+            .unwrap_or_default();
+        let replay = if rest.is_empty() {
+            "psexec.exe".to_string()
+        } else {
+            format!("psexec.exe {rest}")
+        };
+        crate::handlers::passthrough::h_psexec(&replay, env);
+        if let Some((host, inner)) = crate::handlers::passthrough::psexec_child_command(&replay) {
+            if !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::LateralMovement { tool, target_host }
+                        if tool == "psexec" && target_host == &host
+                )
+            }) {
+                env.traits.push(Trait::LateralMovement {
+                    tool: "psexec".to_string(),
+                    target_host: host,
+                });
+            }
+            replay_copied_alias_child_command(&inner, env);
+            replay_following_url_variable_curl(line, &lines, line_idx, env);
+        }
+    }
+}
+
 fn scan_copied_winrs_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
     let mut aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
     for t in &env.traits {
@@ -9621,6 +9693,9 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     });
     scan_step!("copied_runas_alias_deob_text", {
         scan_copied_runas_alias_deob_text(deobfuscated, env);
+    });
+    scan_step!("copied_psexec_alias_deob_text", {
+        scan_copied_psexec_alias_deob_text(deobfuscated, env);
     });
     scan_step!("copied_winrs_alias_deob_text", {
         scan_copied_winrs_alias_deob_text(deobfuscated, env);
