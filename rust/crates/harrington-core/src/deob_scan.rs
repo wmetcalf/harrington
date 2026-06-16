@@ -8970,6 +8970,8 @@ fn powershell_connection_test_probe(line: &str) -> Option<(&'static str, String)
         ("tnc", "tcp-connect")
     } else if lower.contains("test-connection") {
         ("Test-Connection", "icmp-ping")
+    } else if lower.contains("powershell") && contains_ascii_keyword(line, "ping") {
+        ("ping", "icmp-ping")
     } else {
         return None;
     };
