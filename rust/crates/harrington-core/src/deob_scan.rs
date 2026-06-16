@@ -10522,6 +10522,9 @@ fn scan_credential_access(deobfuscated: &str, env: &mut Environment) {
              "credential-manager-list", |m| m.to_string()),
             (Regex::new(r#"(?i)\bvaultcmd(?:\.exe)?\b[^\r\n]*(?:/|-)(?:listcreds|listcredentials)\b[^\r\n]*"#).unwrap(),
              "vaultcmd-listcreds", |m| m.to_string()),
+            // runas /savecred executes with stored credentials.
+            (Regex::new(r#"(?i)\brunas(?:\.exe)?\b[^\r\n]*(?:/|-)savecred\b[^\r\n]*"#).unwrap(),
+             "runas-savecred", |m| m.to_string()),
         ]
     });
     static REG_HIVE_SAVE_RE: Lazy<Regex> = Lazy::new(|| {
@@ -10602,6 +10605,7 @@ fn has_credential_access_atom(text: &str) -> bool {
         "hkey_local_machine\\security",
         "cmdkey",
         "vaultcmd",
+        "savecred",
     ]
     .iter()
     .any(|atom| lower.contains(atom))
