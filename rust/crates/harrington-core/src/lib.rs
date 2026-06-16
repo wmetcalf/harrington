@@ -4050,6 +4050,22 @@ reg add "HKLM\system\CurrentControlSet\Control\Terminal Server\WinStations\RDP-T
     }
 
     #[test]
+    fn sc_start_termservice_emits_remote_access_trait() {
+        let script = br#"sc start TermService"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-service-enable" && target == "TermService"
+            )),
+            "sc start TermService was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_terminal_server_registry_writes_emit_remote_access_traits() {
         let script = br#"powershell -Command "Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0"
 powershell -Command "New-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name AllowTSConnections -PropertyType DWord -Value 1 -Force"

@@ -10992,7 +10992,9 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
         .expect("termservice enable regex")
     });
     static TERMSERVICE_START_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?im)^[^\r\n]*\bnet(?:\.exe)?\s+start\s+TermService\b[^\r\n]*"#)
+        Regex::new(
+            r#"(?im)^[^\r\n]*\b(?:net(?:\.exe)?\s+start|sc(?:\.exe)?\s+(?:\\\\[^\s]+\s+)?start)\s+TermService\b[^\r\n]*"#,
+        )
             .expect("termservice start regex")
     });
     static WMIC_RDTOGGLE_ENABLE_RE: Lazy<Regex> = Lazy::new(|| {
