@@ -11258,13 +11258,24 @@ fn scan_powershell_scheduled_task(deobfuscated: &str, env: &mut Environment) {
         {
             continue;
         }
-        let Some(task_name) = powershell_named_argument(line, "-TaskName") else {
+        let task_positional = powershell_positional_arguments(line, "Register-ScheduledTask");
+        let Some(task_name) = powershell_named_argument(line, "-TaskName")
+            .or_else(|| task_positional.first().cloned())
+        else {
             continue;
         };
-        let Some(execute) = powershell_named_argument(line, "-Execute") else {
+        let action_positional: Vec<String> =
+            powershell_positional_arguments(line, "New-ScheduledTaskAction")
+                .into_iter()
+                .map(|arg| trim_powershell_statement_value(&arg))
+                .collect();
+        let Some(execute) = powershell_named_argument(line, "-Execute")
+            .or_else(|| action_positional.first().cloned())
+        else {
             continue;
         };
         let command = powershell_named_argument(line, "-Argument")
+            .or_else(|| action_positional.get(1).cloned())
             .map(|argument| format!("{execute} {argument}"))
             .unwrap_or(execute);
         if env.traits.iter().any(|t| {
@@ -11287,6 +11298,15 @@ fn scan_powershell_scheduled_task(deobfuscated: &str, env: &mut Environment) {
             command,
         });
     }
+}
+
+fn trim_powershell_statement_value(value: &str) -> String {
+    value
+        .trim()
+        .trim_end_matches(';')
+        .trim()
+        .trim_matches(['"', '\''])
+        .to_string()
 }
 
 fn scan_powershell_registry_persistence(deobfuscated: &str, env: &mut Environment) {
