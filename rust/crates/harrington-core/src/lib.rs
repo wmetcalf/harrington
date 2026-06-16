@@ -7999,6 +7999,23 @@ for /f "tokens=1 delims=:" %%A in ('curl -# -k "http://www.geoplugin.net/php.gp?
     }
 
     #[test]
+    fn powershell_chained_remove_item_does_not_inherit_history_context() {
+        let script = br#"powershell -Command "Write-Output (Get-PSReadLineOption).HistorySavePath; Remove-Item C:\Temp\scratch.txt -Force""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::EvidenceCleanup { action, target, .. }
+                    if action == "powershell-history-delete"
+                        && target == "PowerShellHistory"
+            )),
+            "unrelated chained Remove-Item inherited PowerShell history context: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_psreadline_history_disable_emits_evidence_cleanup_trait() {
         let script = br#"powershell -Command "Set-PSReadLineOption -HistorySaveStyle SaveNothing""#;
         let report = analyze(script, &AnalyzeConfig::default());

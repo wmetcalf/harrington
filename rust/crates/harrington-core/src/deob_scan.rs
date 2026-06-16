@@ -9308,45 +9308,56 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
         let Some(m) = caps.get(0) else {
             continue;
         };
-        let command = m.as_str().trim();
-        let lower = command.to_ascii_lowercase();
-        if lower.contains("\\prefetch\\") || lower.contains("/prefetch/") {
-            push(
-                "prefetch-delete",
-                "Prefetch".to_string(),
-                command.to_string(),
-            );
-        }
-        if lower.contains("\\recent\\")
-            || lower.contains("/recent/")
-            || lower.contains("automaticdestinations")
-            || lower.contains("customdestinations")
-        {
-            push(
-                "recent-items-delete",
-                "Recent".to_string(),
-                command.to_string(),
-            );
-        }
-        if lower.contains("consolehost_history.txt")
-            || lower.contains("\\psreadline\\")
-            || lower.contains("get-psreadlineoption")
-            || lower.contains("historysavepath")
-        {
-            push(
-                "powershell-history-delete",
-                "PowerShellHistory".to_string(),
-                command.to_string(),
-            );
-        }
-        if is_browser_history_cleanup_target(&lower) {
-            push(
-                "browser-history-delete",
-                "BrowserHistory".to_string(),
-                command.to_string(),
-            );
+        for command in powershell_statement_segments(m.as_str()) {
+            let command = command.trim();
+            if !powershell_remove_item_segment_has_command(command) {
+                continue;
+            }
+            let lower = command.to_ascii_lowercase();
+            if lower.contains("\\prefetch\\") || lower.contains("/prefetch/") {
+                push(
+                    "prefetch-delete",
+                    "Prefetch".to_string(),
+                    command.to_string(),
+                );
+            }
+            if lower.contains("\\recent\\")
+                || lower.contains("/recent/")
+                || lower.contains("automaticdestinations")
+                || lower.contains("customdestinations")
+            {
+                push(
+                    "recent-items-delete",
+                    "Recent".to_string(),
+                    command.to_string(),
+                );
+            }
+            if lower.contains("consolehost_history.txt")
+                || lower.contains("\\psreadline\\")
+                || lower.contains("get-psreadlineoption")
+                || lower.contains("historysavepath")
+            {
+                push(
+                    "powershell-history-delete",
+                    "PowerShellHistory".to_string(),
+                    command.to_string(),
+                );
+            }
+            if is_browser_history_cleanup_target(&lower) {
+                push(
+                    "browser-history-delete",
+                    "BrowserHistory".to_string(),
+                    command.to_string(),
+                );
+            }
         }
     }
+}
+
+fn powershell_remove_item_segment_has_command(command: &str) -> bool {
+    ["Remove-Item", "ri", "rm", "del", "erase", "rd", "rmdir"]
+        .into_iter()
+        .any(|keyword| contains_ascii_keyword(command, keyword))
 }
 
 fn is_browser_history_cleanup_target(lower: &str) -> bool {
