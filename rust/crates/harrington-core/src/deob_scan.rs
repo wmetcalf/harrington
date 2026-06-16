@@ -10246,17 +10246,7 @@ pub fn scan_js_fromcharcode_urls(deobfuscated: &str, env: &mut Environment) {
     for chunk in &to_scan {
         for url_caps in URL_RE.captures_iter(chunk) {
             let Some(m) = url_caps.get(1) else { continue };
-            let mut url = m.as_str().to_string();
-            while let Some(last) = url.chars().last() {
-                if matches!(
-                    last,
-                    ',' | '.' | ';' | ':' | ')' | ']' | '}' | '"' | '\'' | '!' | '?' | '\\'
-                ) {
-                    url.pop();
-                } else {
-                    break;
-                }
-            }
+            let url = trim_liberal_url_suffix(m.as_str()).to_string();
             if url.len() < 8 || is_noise_url(&url) {
                 continue;
             }
@@ -11837,6 +11827,14 @@ mod js_fromcharcode_url_tests {
     fn single_fromcharcode_decodes_url() {
         // eszja_1.3.41.js corpus shape — `String.fromCharCode(104,116,116,…)`.
         let url = "https://nav.domains/fall_back";
+        let script = format!("var u = String.fromCharCode({});", fcc(url));
+        let extracted = urls(&script);
+        assert_eq!(extracted, vec![url.to_string()]);
+    }
+
+    #[test]
+    fn fromcharcode_url_preserves_balanced_bracket_suffix() {
+        let url = "https://nav.domains/payload[1]";
         let script = format!("var u = String.fromCharCode({});", fcc(url));
         let extracted = urls(&script);
         assert_eq!(extracted, vec![url.to_string()]);
