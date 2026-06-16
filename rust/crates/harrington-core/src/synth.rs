@@ -459,7 +459,7 @@ fn synth_find(args: &[&str], input: Vec<String>, env: &mut Environment) -> Vec<S
     };
     let mut lines = Vec::new();
     for path in paths {
-        lines.extend(type_file(path, env));
+        lines.extend(find_file_input_lines(path, env));
     }
     if lines.is_empty() {
         return Vec::new();
@@ -470,6 +470,24 @@ fn synth_find(args: &[&str], input: Vec<String>, env: &mut Environment) -> Vec<S
         .filter(|arg| !paths.contains(arg))
         .collect::<Vec<_>>();
     filter_find(&filter_args, lines)
+}
+
+fn find_file_input_lines(path: &str, env: &mut Environment) -> Vec<String> {
+    let path = path.trim_matches('"');
+    if path.contains(['*', '?']) {
+        let normalized_pattern = normalize_wildcard_path(&normalize_filesystem_storage_path(path));
+        let tracked = env
+            .modified_filesystem
+            .keys()
+            .filter(|tracked| dir_wildcard_matches(path, &normalized_pattern, tracked))
+            .cloned()
+            .collect::<Vec<_>>();
+        return tracked
+            .into_iter()
+            .flat_map(|tracked| type_file(&tracked, env))
+            .collect();
+    }
+    type_file(path, env)
 }
 
 fn synth_type(args: &[&str], env: &mut Environment) -> Vec<String> {

