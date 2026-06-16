@@ -5528,6 +5528,7 @@ fn scan_copied_network_probe_alias_deob_text(deobfuscated: &str, env: &mut Envir
         let src_base = basename_lower(src);
         let replay_command = match src_base.as_str() {
             "nslookup.exe" | "nslookup" => "nslookup.exe",
+            "ping.exe" | "ping" => "ping.exe",
             _ => continue,
         };
         insert_alias_command_names(&mut aliases, dst, replay_command);
@@ -8772,21 +8773,25 @@ fn scan_network_probe(deobfuscated: &str, env: &mut Environment) {
         let Some(command) = tokens.first() else {
             continue;
         };
-        if !matches!(
-            command_basename(command).as_str(),
-            "nslookup" | "nslookup.exe"
-        ) {
-            continue;
-        }
-        if let Some(target) = tokens.iter().skip(1).find(|token| {
-            let token = token.trim_matches(['"', '\'']);
-            !token.starts_with('-') && !token.starts_with('/') && !token.is_empty()
-        }) {
-            push_network_probe(
-                env,
-                "dns-lookup",
-                target.trim_matches(['"', '\'']).to_string(),
-            );
+        match command_basename(command).as_str() {
+            "nslookup" | "nslookup.exe" => {
+                if let Some(target) = tokens.iter().skip(1).find(|token| {
+                    let token = token.trim_matches(['"', '\'']);
+                    !token.starts_with('-') && !token.starts_with('/') && !token.is_empty()
+                }) {
+                    push_network_probe(
+                        env,
+                        "dns-lookup",
+                        target.trim_matches(['"', '\'']).to_string(),
+                    );
+                }
+            }
+            "ping" | "ping.exe" => {
+                if let Some(target) = ping_probe_target(&tokens) {
+                    push_network_probe(env, "icmp-ping", target);
+                }
+            }
+            _ => {}
         }
     }
     for c in RESOLVE_DNS_RE.captures_iter(deobfuscated) {
@@ -8804,6 +8809,70 @@ fn scan_network_probe(deobfuscated: &str, env: &mut Environment) {
             push_network_probe(env, "ip-discovery", (*host).to_string());
         }
     }
+}
+
+fn ping_probe_target(tokens: &[String]) -> Option<String> {
+    let mut skip_next = false;
+    for token in tokens.iter().skip(1) {
+        let token = token.trim_matches(['"', '\'']);
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if token.is_empty() {
+            continue;
+        }
+        let lower = token.to_ascii_lowercase();
+        if ping_option_takes_value(&lower) {
+            skip_next = true;
+            continue;
+        }
+        if lower.starts_with('-') || lower.starts_with('/') {
+            continue;
+        }
+        let target = token.trim_end_matches(['.', ',', ';']).to_string();
+        if is_loopback_ping_target(&target) {
+            return None;
+        }
+        return Some(target);
+    }
+    None
+}
+
+fn ping_option_takes_value(option: &str) -> bool {
+    matches!(
+        option,
+        "-n" | "/n"
+            | "-l"
+            | "/l"
+            | "-i"
+            | "/i"
+            | "-v"
+            | "/v"
+            | "-r"
+            | "/r"
+            | "-s"
+            | "/s"
+            | "-j"
+            | "/j"
+            | "-k"
+            | "/k"
+            | "-w"
+            | "/w"
+            | "-c"
+            | "/c"
+    )
+}
+
+fn is_loopback_ping_target(target: &str) -> bool {
+    let lower = target.trim_matches(['[', ']']).to_ascii_lowercase();
+    if matches!(lower.as_str(), "localhost" | "::1") {
+        return true;
+    }
+    lower
+        .parse::<std::net::IpAddr>()
+        .map(|addr| addr.is_loopback())
+        .unwrap_or(false)
 }
 
 pub(crate) fn scan_network_probe_url(url: &str, env: &mut Environment) {
