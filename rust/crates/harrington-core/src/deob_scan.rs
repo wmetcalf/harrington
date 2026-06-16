@@ -5420,6 +5420,7 @@ fn scan_copied_evidence_cleanup_alias_deob_text(deobfuscated: &str, env: &mut En
             format!("{replay_command} {rest}")
         };
         scan_evidence_cleanup(&replay, env);
+        scan_enumeration(&replay, env);
     }
 }
 
@@ -9327,6 +9328,22 @@ fn network_utility_enumeration_kind(tokens: &[String], command: &str) -> Option<
             .skip(1)
             .any(|token| token.eq_ignore_ascii_case("show"))
             .then_some("netsh-show"),
+        "wevtutil" | "wevtutil.exe" => tokens
+            .get(1)
+            .map(|token| token.eq_ignore_ascii_case("qe"))
+            .unwrap_or(false)
+            .then_some("event-log-query"),
+        "fsutil" | "fsutil.exe" => {
+            let dirty = tokens
+                .get(1)
+                .map(|token| token.eq_ignore_ascii_case("dirty"))
+                .unwrap_or(false);
+            let query = tokens
+                .get(2)
+                .map(|token| token.eq_ignore_ascii_case("query"))
+                .unwrap_or(false);
+            (dirty && query).then_some("fsutil-query")
+        }
         "klist" | "klist.exe" => Some("klist"),
         "setspn" | "setspn.exe" => tokens
             .iter()
@@ -9464,6 +9481,10 @@ fn has_enumeration_atom(text: &str) -> bool {
         "sc query",
         "sc.exe query",
         "netsh",
+        "wevtutil qe",
+        "wevtutil.exe qe",
+        "fsutil dirty query",
+        "fsutil.exe dirty query",
         "klist",
         "setspn",
         "schtasks",
@@ -9537,6 +9558,8 @@ mod enumeration_prefilter_tests {
             "sc query WinDefend",
             "sc.exe query state= all",
             "netsh advfirewall show allprofiles state",
+            "wevtutil qe System /c:1 /f:text",
+            "fsutil dirty query C:",
             "klist tickets",
             "setspn -Q */*",
             "schtasks /query /tn Updater",
