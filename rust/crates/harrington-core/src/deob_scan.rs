@@ -10931,6 +10931,92 @@ fn scan_powershell_scheduled_task(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
+fn scan_powershell_registry_persistence(deobfuscated: &str, env: &mut Environment) {
+    use once_cell::sync::Lazy;
+    use regex::Regex;
+    static PS_ITEM_PROPERTY_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?im)^[^\r\n]*?\b(?:New|Set)-ItemProperty\b[^\r\n]*"#)
+            .expect("powershell itemproperty persistence regex")
+    });
+
+    const PERSISTENCE_PATHS: &[&str] = &[
+        r"\currentversion\run",
+        r"\currentversion\runonce",
+        r"\currentversion\runservices",
+        r"\currentversion\runservicesonce",
+        r"\currentversion\explorer\run",
+        r"\currentversion\policies\explorer\run",
+        r"\currentversion\shell\open\command",
+        r"\winlogon\userinit",
+        r"\winlogon\shell",
+        r"\image file execution options\",
+        r"\currentversion\app paths\",
+        r"\currentversion\winlogon\shell",
+    ];
+
+    for m in PS_ITEM_PROPERTY_RE.find_iter(deobfuscated) {
+        let line = m.as_str().trim();
+        let Some(path) = powershell_named_argument(line, "-Path")
+            .or_else(|| powershell_named_argument(line, "-LiteralPath"))
+        else {
+            continue;
+        };
+        let Some((hive, key)) = normalize_powershell_registry_path(&path) else {
+            continue;
+        };
+        let key_lower = format!("\\{}", key.to_ascii_lowercase());
+        if !PERSISTENCE_PATHS
+            .iter()
+            .any(|path| key_lower.contains(path))
+        {
+            continue;
+        }
+        let value_name = powershell_named_argument(line, "-Name").unwrap_or_default();
+        let command = powershell_named_argument(line, "-Value").unwrap_or_default();
+        if env.traits.iter().any(|t| {
+            matches!(
+                t,
+                crate::traits::Trait::Persistence {
+                    hive: existing_hive,
+                    key: existing_key,
+                    value_name: existing_value,
+                    ..
+                } if existing_hive == &hive
+                    && existing_key == &key
+                    && existing_value == &value_name
+            )
+        }) {
+            continue;
+        }
+        env.traits.push(crate::traits::Trait::Persistence {
+            hive,
+            key,
+            value_name,
+            command: command.clone(),
+        });
+        if let Some((child, delayed)) =
+            crate::handlers::passthrough::persisted_command_child(&command)
+        {
+            env.exec_cmd.push(child);
+            env.exec_cmd_delayed.push(delayed);
+        }
+    }
+}
+
+fn normalize_powershell_registry_path(path: &str) -> Option<(String, String)> {
+    let path = path.trim().trim_matches(['"', '\'']).replace('/', "\\");
+    let (hive, rest) = path
+        .split_once(":\\")
+        .or_else(|| path.split_once(':'))
+        .or_else(|| path.split_once('\\'))?;
+    let hive = hive.trim().to_ascii_uppercase();
+    if !matches!(hive.as_str(), "HKCU" | "HKLM") {
+        return None;
+    }
+    let key = rest.trim_start_matches('\\').to_string();
+    (!key.is_empty()).then_some((hive, key))
+}
+
 /// PowerShell `Start-Sleep -Seconds N` — beacon-style C2 cadence.
 fn scan_beacon_sleep(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
@@ -11214,6 +11300,9 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     });
     scan_step!("powershell_scheduled_task", {
         scan_powershell_scheduled_task(deobfuscated, env);
+    });
+    scan_step!("powershell_registry_persistence", {
+        scan_powershell_registry_persistence(deobfuscated, env);
     });
     scan_step!("beacon_sleep", {
         scan_beacon_sleep(deobfuscated, env);
