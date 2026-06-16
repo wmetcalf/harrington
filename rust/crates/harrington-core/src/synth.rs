@@ -1053,8 +1053,8 @@ fn synth_dir(args: &[&str], env: &mut Environment) -> Vec<String> {
             path = a.trim_matches('"').to_string();
         }
     }
-    let out = if flags.iter().any(|flag| flag.eq_ignore_ascii_case("/b")) {
-        let recursive = flags.iter().any(|flag| flag.eq_ignore_ascii_case("/s"));
+    let out = if flags.iter().any(|flag| dir_has_switch(flag, 'b')) {
+        let recursive = flags.iter().any(|flag| dir_has_switch(flag, 's'));
         dir_tracked_file_names(&path, env, recursive)
     } else {
         Vec::new()
@@ -1062,6 +1062,14 @@ fn synth_dir(args: &[&str], env: &mut Environment) -> Vec<String> {
     env.traits
         .push(crate::traits::Trait::DirListing { path, flags });
     out
+}
+
+fn dir_has_switch(flag: &str, switch: char) -> bool {
+    flag.trim_start_matches('/').split('/').any(|part| {
+        part.chars()
+            .next()
+            .is_some_and(|c| c.eq_ignore_ascii_case(&switch))
+    })
 }
 
 fn dir_tracked_file_names(path: &str, env: &Environment, recursive: bool) -> Vec<String> {
