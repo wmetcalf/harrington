@@ -11376,15 +11376,12 @@ fn scan_uac_bypass(deobfuscated: &str, env: &mut Environment) {
             .or_else(|| positional.next())
             .unwrap_or_default()
             .to_ascii_lowercase();
-        match (name.as_str(), value.as_str()) {
-            ("enablelua", "0" | "0x0") => push_uac_bypass_trait(env, "uac-enablelua-disabled"),
-            ("consentpromptbehavioradmin", "0" | "0x0") => {
-                push_uac_bypass_trait(env, "uac-consent-prompt-disabled");
-            }
-            ("localaccounttokenfilterpolicy", "1" | "0x1") => {
-                push_uac_bypass_trait(env, "uac-token-filter-disabled");
-            }
-            _ => {}
+        if name == "enablelua" && is_registry_dword_zero(&value) {
+            push_uac_bypass_trait(env, "uac-enablelua-disabled");
+        } else if name == "consentpromptbehavioradmin" && is_registry_dword_zero(&value) {
+            push_uac_bypass_trait(env, "uac-consent-prompt-disabled");
+        } else if name == "localaccounttokenfilterpolicy" && is_registry_dword_one(&value) {
+            push_uac_bypass_trait(env, "uac-token-filter-disabled");
         }
     }
 }

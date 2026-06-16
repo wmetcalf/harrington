@@ -2088,6 +2088,22 @@ echo UAC.ShellExecute "cmd.exe", "/c ""%~s0""", "", "runas", 1 >> "%temp%\getadm
     }
 
     #[test]
+    fn powershell_set_itemproperty_padded_enablelua_emits_uac_bypass_trait() {
+        let script = br#"powershell.exe Set-ItemProperty -Path HKLM:Software\Microsoft\Windows\CurrentVersion\policies\system -Name EnableLUA -Value 0x00000000
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::UacBypass { technique } if technique == "uac-enablelua-disabled"
+            )),
+            "missing padded Set-ItemProperty EnableLUA UacBypass: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_positional_set_itemproperty_enablelua_emits_uac_bypass_trait() {
         let script = br#"powershell.exe Set-ItemProperty HKLM:Software\Microsoft\Windows\CurrentVersion\policies\system EnableLUA 0
 "#;
