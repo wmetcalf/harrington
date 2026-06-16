@@ -5271,6 +5271,25 @@ xcopy /E /I "C:\Users\puncher\AppData\Roaming\Electrum\wallets\*" "%TEMP%\Wallet
     }
 
     #[test]
+    fn browser_extension_store_paths_emit_credential_access_trait() {
+        let script = br#"set "chrome=C:\Users\puncher\AppData\Local\Google\Chrome\User Data\Default\Local Extension Settings"
+set "opera=C:\Users\puncher\AppData\Roaming\Opera Software\Opera Stable\Extensions"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::CredentialAccess { technique, target }
+                    if technique == "browser-extension-store"
+                        && target.contains(r"Chrome\User Data\Default\Local Extension Settings")
+            )),
+            "browser extension store path was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_dotnet_clipboard_access_emits_input_capture_trait() {
         let script = br#"powershell -Command "[System.Windows.Forms.Clipboard]::GetText()"
 powershell -Command "[Windows.Forms.Clipboard]::SetText('copied')"
