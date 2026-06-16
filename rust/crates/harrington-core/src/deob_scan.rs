@@ -507,6 +507,9 @@ pub(crate) fn normalize_liberal_url_token(token: &str) -> Option<String> {
     {
         token = &token[..separator];
     }
+    if let Some(separator) = single_amp_command_separator(token) {
+        token = &token[..separator];
+    }
     let end = token
         .find(['"', '\'', ')', '}', ';', ',', '`', '<', '>'])
         .unwrap_or(token.len());
@@ -543,6 +546,41 @@ pub(crate) fn normalize_liberal_url_token(token: &str) -> Option<String> {
             return None;
         }
         return Some(format!("{scheme}://{}", rest.replace('\\', "/")));
+    }
+    None
+}
+
+fn single_amp_command_separator(token: &str) -> Option<usize> {
+    for (idx, _) in token.match_indices('&') {
+        let rest = token[idx + 1..].trim_start();
+        let command = rest
+            .split(|ch: char| ch.is_ascii_whitespace() || matches!(ch, '"' | '\'' | '/' | '\\'))
+            .next()
+            .unwrap_or_default()
+            .trim_end_matches(['.', ';', ',', ')'])
+            .to_ascii_lowercase();
+        if matches!(
+            command.as_str(),
+            "curl"
+                | "curl.exe"
+                | "wget"
+                | "wget.exe"
+                | "certutil"
+                | "certutil.exe"
+                | "powershell"
+                | "powershell.exe"
+                | "pwsh"
+                | "pwsh.exe"
+                | "bitsadmin"
+                | "bitsadmin.exe"
+                | "mshta"
+                | "mshta.exe"
+                | "cmd"
+                | "cmd.exe"
+                | "start"
+        ) {
+            return Some(idx);
+        }
     }
     None
 }
