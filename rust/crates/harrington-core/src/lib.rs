@@ -3838,6 +3838,22 @@ net start TermService
     }
 
     #[test]
+    fn powershell_boolean_rdp_registry_values_emit_remote_access_trait() {
+        let script = br#"powershell -Command "Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value $false""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-enable" && target == "Terminal Server"
+            )),
+            "PowerShell boolean RDP registry enablement missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn wmic_rdtoggle_enable_emits_remote_access_trait() {
         let script =
             br#"wmic RDTOGGLE WHERE ServerName='%COMPUTERNAME%' call SetAllowTSConnections 1
