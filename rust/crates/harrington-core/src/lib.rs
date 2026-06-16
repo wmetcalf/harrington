@@ -2981,9 +2981,46 @@ C:\Users\Public\ic.tmp C:\Windows\System32\SecurityHealthService.exe /grant:r Ev
     }
 
     #[test]
+    fn copied_sc_alias_emits_defender_evasion_traits() {
+        let script = br#"copy C:\Windows\System32\sc.exe C:\Users\Public\sc.tmp
+C:\Users\Public\sc.tmp stop WinDefend
+C:\Users\Public\sc.tmp config WinDefend start= disabled
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\sc.tmp"#)
+            )),
+            "copied sc alias invocation was not tied back to WindowsUtilManip: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "sc-stop" && target == "WinDefend"
+            )),
+            "copied sc stop was not surfaced as defender evasion: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "sc-config" && target == "WinDefend"
+            )),
+            "copied sc config was not surfaced as defender evasion: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn rdp_disable_settings_do_not_emit_remote_access_trait() {
         let script = b"@echo off\r\n\
-            reg add \"HKLM\\system\\CurrentControlSet\\Control\\Terminal Server\" /v \"AllowTSConnections\" /t REG_DWORD /d 0x0 /f\r\n\
+        reg add \"HKLM\\system\\CurrentControlSet\\Control\\Terminal Server\" /v \"AllowTSConnections\" /t REG_DWORD /d 0x0 /f\r\n\
             reg add \"HKLM\\system\\CurrentControlSet\\Control\\Terminal Server\" /v \"fDenyTSConnections\" /t REG_DWORD /d 0x1 /f\r\n";
         let report = analyze(script, &AnalyzeConfig::default());
         assert!(

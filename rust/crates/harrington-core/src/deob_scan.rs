@@ -5748,6 +5748,7 @@ fn scan_copied_sc_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
             format!("sc.exe {rest}")
         };
         crate::handlers::passthrough::h_sc(&replay, env);
+        scan_defender_evasion(&replay, env);
         if let Some((service_name, bin_path)) =
             crate::handlers::passthrough::sc_service_binpath(&replay)
         {
