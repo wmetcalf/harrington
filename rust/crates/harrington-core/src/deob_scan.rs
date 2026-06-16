@@ -5260,6 +5260,7 @@ fn scan_copied_netsh_alias_deob_text(deobfuscated: &str, env: &mut Environment) 
         };
         scan_defender_evasion(&replay, env);
         scan_remote_access(&replay, env);
+        scan_enumeration(&replay, env);
     }
 }
 
@@ -9321,6 +9322,11 @@ fn network_utility_enumeration_kind(tokens: &[String], command: &str) -> Option<
             .map(|token| token.eq_ignore_ascii_case("query"))
             .unwrap_or(false)
             .then_some("sc-query"),
+        "netsh" | "netsh.exe" => tokens
+            .iter()
+            .skip(1)
+            .any(|token| token.eq_ignore_ascii_case("show"))
+            .then_some("netsh-show"),
         "klist" | "klist.exe" => Some("klist"),
         "setspn" | "setspn.exe" => tokens
             .iter()
@@ -9457,6 +9463,7 @@ fn has_enumeration_atom(text: &str) -> bool {
         "reg.exe query",
         "sc query",
         "sc.exe query",
+        "netsh",
         "klist",
         "setspn",
         "schtasks",
@@ -9529,6 +9536,7 @@ mod enumeration_prefilter_tests {
             r#"reg.exe query HKLM\Software\Microsoft\Windows\CurrentVersion\Run"#,
             "sc query WinDefend",
             "sc.exe query state= all",
+            "netsh advfirewall show allprofiles state",
             "klist tickets",
             "setspn -Q */*",
             "schtasks /query /tn Updater",

