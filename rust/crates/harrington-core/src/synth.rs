@@ -1070,7 +1070,7 @@ fn dir_has_switch(flag: &str, switch: char) -> bool {
 
 fn dir_tracked_file_names(path: &str, env: &Environment, recursive: bool) -> Vec<String> {
     let path = path.trim_matches('"');
-    if path.is_empty() {
+    if path.is_empty() || is_current_dir_listing_path(path) {
         return dir_current_file_names(env, recursive);
     }
     if path.contains(['*', '?']) {
@@ -1102,6 +1102,10 @@ fn dir_tracked_file_names(path: &str, env: &Environment, recursive: bool) -> Vec
         }
     }
     Vec::new()
+}
+
+fn is_current_dir_listing_path(path: &str) -> bool {
+    matches!(path, "." | r".\" | "./")
 }
 
 fn dir_current_file_names(env: &Environment, recursive: bool) -> Vec<String> {
