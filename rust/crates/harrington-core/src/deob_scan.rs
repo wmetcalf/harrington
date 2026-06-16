@@ -11675,6 +11675,8 @@ fn scan_credential_access(deobfuscated: &str, env: &mut Environment) {
              "browser-cred-path", |m| m.to_string()),
             (Regex::new(r#"(?i)\\discord(?:canary|ptb)?\\Local Storage\\leveldb\\[^\s"'\r\n]+"#).unwrap(),
              "discord-token-store", |m| m.to_string()),
+            (Regex::new(r#"(?i)\\Steam\\(?:config\\loginusers\.vdf|ssfn[^\s"'\r\n\\]*)"#).unwrap(),
+             "steam-credential-path", |m| m.to_string()),
             // Windows Credential Manager files and DPAPI protect material.
             (Regex::new(r#"(?i)(?:%APPDATA%|%LOCALAPPDATA%|\\AppData\\(?:Roaming|Local))\\Microsoft\\(?:Credentials|Protect)(?:\\[^\s"']*)?"#).unwrap(),
              "windows-credential-path", |m| m.to_string()),
@@ -11796,6 +11798,8 @@ fn has_credential_access_atom(text: &str) -> bool {
         "\\discord\\local storage\\leveldb\\",
         "\\discordcanary\\local storage\\leveldb\\",
         "\\discordptb\\local storage\\leveldb\\",
+        "\\steam\\config\\loginusers.vdf",
+        "\\steam\\ssfn",
         "\\microsoft\\credentials\\",
         "\\microsoft\\protect\\",
         "%appdata%\\microsoft\\credentials",
