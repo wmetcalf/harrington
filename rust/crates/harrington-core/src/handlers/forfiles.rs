@@ -41,14 +41,24 @@ pub fn extract_forfiles_inner(raw: &str) -> Option<String> {
 }
 
 pub fn extract_forfiles_inner_with_env(raw: &str, env: &Environment) -> Option<String> {
+    extract_forfiles_inners_with_env(raw, env).and_then(|inners| inners.into_iter().next())
+}
+
+pub fn extract_forfiles_inners_with_env(raw: &str, env: &Environment) -> Option<Vec<String>> {
     let inner = extract_forfiles_inner(raw)?;
     if !inner.contains('@') {
-        return Some(inner);
+        return Some(vec![inner]);
     }
-    let Some(path) = first_tracked_forfiles_path(raw, env) else {
-        return Some(inner);
-    };
-    Some(substitute_forfiles_placeholders(&inner, &path))
+    let paths = tracked_forfiles_paths(raw, env);
+    if paths.is_empty() {
+        return Some(vec![inner]);
+    }
+    Some(
+        paths
+            .into_iter()
+            .map(|path| substitute_forfiles_placeholders(&inner, &path))
+            .collect(),
+    )
 }
 
 pub fn h_forfiles(raw: &str, env: &mut Environment) {
@@ -65,7 +75,7 @@ pub fn h_forfiles(raw: &str, env: &mut Environment) {
     }
 }
 
-fn first_tracked_forfiles_path(raw: &str, env: &Environment) -> Option<String> {
+fn tracked_forfiles_paths(raw: &str, env: &Environment) -> Vec<String> {
     let tokens = split_forfiles_tokens(raw);
     let root = forfiles_option_value(&tokens, "/p").unwrap_or_default();
     let mask = forfiles_option_value(&tokens, "/m").unwrap_or_else(|| "*".to_string());
@@ -93,7 +103,7 @@ fn first_tracked_forfiles_path(raw: &str, env: &Environment) -> Option<String> {
         })
         .collect::<Vec<_>>();
     matched.sort();
-    matched.into_iter().next()
+    matched
 }
 
 fn forfiles_option_value(tokens: &[String], flag: &str) -> Option<String> {
@@ -198,7 +208,9 @@ fn split_forfiles_tokens(raw: &str) -> Vec<String> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::{extract_forfiles_inner, extract_forfiles_inner_with_env};
+    use super::{
+        extract_forfiles_inner, extract_forfiles_inner_with_env, extract_forfiles_inners_with_env,
+    };
     use crate::env::{Config, Environment, FsEntry};
 
     #[test]
@@ -272,6 +284,29 @@ mod tests {
             )
             .as_deref(),
             Some(r#"cmd /c "c:\work\run.js""#)
+        );
+    }
+
+    #[test]
+    fn substitutes_path_placeholder_for_each_tracked_file() {
+        let mut env = Environment::new(&Config::default());
+        for path in [r"c:\work\a.js", r"c:\work\b.js"] {
+            env.modified_filesystem.insert(
+                path.to_string(),
+                FsEntry::Content {
+                    content: b"fetch('https://example.invalid')".to_vec(),
+                    append: false,
+                },
+            );
+        }
+
+        assert_eq!(
+            extract_forfiles_inners_with_env(
+                r#"forfiles /p C:\Work /m *.js /c "cmd /c @path""#,
+                &env
+            )
+            .unwrap(),
+            vec![r#"cmd /c "c:\work\a.js""#, r#"cmd /c "c:\work\b.js""#]
         );
     }
 }

