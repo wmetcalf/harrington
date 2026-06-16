@@ -6013,6 +6013,46 @@ net start TermService
     }
 
     #[test]
+    fn escaped_ampersand_inmem_load_text_does_not_emit_assembly_load_trait() {
+        for (script, unexpected) in [
+            (
+                br#"echo keep ^& powershell [Reflection.Assembly]::Load([Convert]::FromBase64String('TVqQAAMAAAAEAAAA'))"#.as_slice(),
+                "Load",
+            ),
+            (
+                br#"echo keep ^& powershell [System.AppDomain]::CurrentDomain.Load($buf)"#.as_slice(),
+                "AppDomain.Load",
+            ),
+        ] {
+            let report = analyze(script, &AnalyzeConfig::default());
+
+            assert!(
+                !report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::InMemoryAssemblyLoad { variant } if variant == unexpected
+                )),
+                "escaped echo in-memory load text emitted {unexpected}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn escaped_ampersand_start_sleep_text_does_not_emit_beacon_sleep() {
+        let script = br#"echo keep ^& powershell Start-Sleep -Seconds 30"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::BeaconSleep { seconds } if *seconds == 30)),
+            "escaped echo Start-Sleep text emitted BeaconSleep: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn lateral_movement_anti_recovery_probe_enum_traits() {
         let script = b"@echo off\r\n\
             psexec \\\\target.example -u admin -p pass cmd\r\n\
@@ -46225,6 +46265,22 @@ mod service_install_tests {
                 Trait::ServiceInstall { service_name, .. } if service_name == "BadSvc"
             )),
             "escaped ampersand echo text was misread as service install: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn escaped_ampersand_powershell_new_service_text_does_not_emit_service_install() {
+        let script =
+            br#"echo keep ^& powershell New-Service -Name BadSvc -BinaryPathName C:\Users\Public\bad.exe"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ServiceInstall { service_name, .. } if service_name == "BadSvc"
+            )),
+            "escaped ampersand PowerShell New-Service text was misread as service install: {:?}",
             report.traits
         );
     }

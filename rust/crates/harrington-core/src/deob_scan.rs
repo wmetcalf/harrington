@@ -8854,19 +8854,34 @@ fn scan_inmem_assembly_load(deobfuscated: &str, env: &mut Environment) {
 
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for caps in REFLECT_RE.captures_iter(deobfuscated) {
+        if caps
+            .get(0)
+            .is_some_and(|m| containing_line_starts_with_echo(deobfuscated, m.start()))
+        {
+            continue;
+        }
         let variant = caps
             .get(1)
             .map(|m| m.as_str().to_string())
             .unwrap_or_default();
         push_inmem_assembly_load(env, &mut seen, variant);
     }
-    if APPDOMAIN_LOAD_RE.is_match(deobfuscated) {
+    if APPDOMAIN_LOAD_RE
+        .find_iter(deobfuscated)
+        .any(|m| !containing_line_starts_with_echo(deobfuscated, m.start()))
+    {
         push_inmem_assembly_load(env, &mut seen, "AppDomain.Load".to_string());
     }
-    if DYNAMIC_REFLECT_LOAD_RE.is_match(deobfuscated) {
+    if DYNAMIC_REFLECT_LOAD_RE
+        .find_iter(deobfuscated)
+        .any(|m| !containing_line_starts_with_echo(deobfuscated, m.start()))
+    {
         push_inmem_assembly_load(env, &mut seen, "DynamicLoad".to_string());
     }
-    if CUSTOM_LOADASSEMBLY_RE.is_match(deobfuscated) {
+    if CUSTOM_LOADASSEMBLY_RE
+        .find_iter(deobfuscated)
+        .any(|m| !containing_line_starts_with_echo(deobfuscated, m.start()))
+    {
         push_inmem_assembly_load(env, &mut seen, "LoadAssembly".to_string());
     }
 }
@@ -11349,6 +11364,9 @@ fn scan_process_injection(deobfuscated: &str, env: &mut Environment) {
     });
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for m in API_RE.find_iter(deobfuscated) {
+        if containing_line_starts_with_echo(deobfuscated, m.start()) {
+            continue;
+        }
         let api = m.as_str().to_string();
         if !seen.insert(api.clone()) {
             continue;
@@ -11431,6 +11449,23 @@ mod process_injection_prefilter_tests {
         assert!(!has_process_injection_atom(
             "Get-Process | Select-Object ProcessName"
         ));
+    }
+
+    #[test]
+    fn escaped_ampersand_process_injection_text_does_not_emit_trait() {
+        let mut env = Environment::new(&Config::default());
+        scan_process_injection(
+            r#"echo keep & powershell Add-Type -MemberDefinition '[DllImport("kernel32.dll")] public static extern IntPtr VirtualAlloc();'"#,
+            &mut env,
+        );
+
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::ProcessInjection { api } if api == "VirtualAlloc")),
+            "escaped echo process-injection text emitted ProcessInjection: {:?}",
+            env.traits
+        );
     }
 
     #[test]
@@ -12398,6 +12433,9 @@ fn scan_service_install(deobfuscated: &str, env: &mut Environment) {
         push(name, path);
     }
     for m in PS_NEW_SERVICE_RE.find_iter(deobfuscated) {
+        if containing_line_starts_with_echo(deobfuscated, m.start()) {
+            continue;
+        }
         let command = m.as_str().trim();
         let mut positional = powershell_positional_arguments(command, "New-Service").into_iter();
         let Some(name) = powershell_named_argument(command, "-Name").or_else(|| positional.next())
@@ -12744,6 +12782,12 @@ fn scan_beacon_sleep(deobfuscated: &str, env: &mut Environment) {
     });
     let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
     for caps in SLEEP_RE.captures_iter(deobfuscated).take(8) {
+        if caps
+            .get(0)
+            .is_some_and(|m| containing_line_starts_with_echo(deobfuscated, m.start()))
+        {
+            continue;
+        }
         let secs = caps
             .get(1)
             .and_then(|m| m.as_str().parse::<u32>().ok())
