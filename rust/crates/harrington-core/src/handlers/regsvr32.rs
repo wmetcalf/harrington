@@ -167,11 +167,7 @@ fn strip_current_dir_prefix(path: &str) -> Option<&str> {
 
 fn webdav_url_for_candidate(candidate: &str) -> Option<String> {
     let candidate = trim_url_suffix(strip_quotes(candidate)).trim();
-    if !candidate.starts_with(r"\\")
-        || !contains_ascii_case_insensitive(candidate, r"\davwwwroot\")
-        || !candidate.contains('@')
-        || !regsvr32_loadable_target(candidate)
-    {
+    if !candidate.starts_with(r"\\") || !regsvr32_loadable_target(candidate) {
         return None;
     }
     let parts: Vec<&str> = candidate
@@ -179,12 +175,22 @@ fn webdav_url_for_candidate(candidate: &str) -> Option<String> {
         .filter(|part| !part.is_empty())
         .collect();
     let host_port = parts.first()?;
-    let (host, port) = host_port.split_once('@')?;
-    if host.is_empty() || port.is_empty() {
+    if let Some((host, port)) = host_port.split_once('@') {
+        if host.is_empty()
+            || port.is_empty()
+            || !contains_ascii_case_insensitive(candidate, r"\davwwwroot\")
+        {
+            return None;
+        }
+        return Some(crate::deob_scan::unc_webdav_to_http_url(
+            host, port, candidate,
+        ));
+    }
+    if parts.len() < 3 || !parts[1].eq_ignore_ascii_case("webdav") || parts[2].is_empty() {
         return None;
     }
     Some(crate::deob_scan::unc_webdav_to_http_url(
-        host, port, candidate,
+        host_port, "80", candidate,
     ))
 }
 

