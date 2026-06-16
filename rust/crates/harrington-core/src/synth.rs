@@ -1075,7 +1075,7 @@ fn dir_has_switch(flag: &str, switch: char) -> bool {
 fn dir_tracked_file_names(path: &str, env: &Environment, recursive: bool) -> Vec<String> {
     let path = path.trim_matches('"');
     if path.is_empty() {
-        return Vec::new();
+        return dir_current_file_names(env, recursive);
     }
     if path.contains(['*', '?']) {
         let normalized_pattern = normalize_wildcard_path(&normalize_filesystem_storage_path(path));
@@ -1100,6 +1100,18 @@ fn dir_tracked_file_names(path: &str, env: &Environment, recursive: bool) -> Vec
         }
     }
     Vec::new()
+}
+
+fn dir_current_file_names(env: &Environment, recursive: bool) -> Vec<String> {
+    let mut names = env
+        .modified_filesystem
+        .keys()
+        .filter(|path| recursive || !path.contains(['\\', '/', ':']))
+        .map(|path| dir_listing_name(path, recursive))
+        .collect::<Vec<_>>();
+    names.sort();
+    names.dedup();
+    names
 }
 
 fn dir_listing_name(path: &str, recursive: bool) -> String {

