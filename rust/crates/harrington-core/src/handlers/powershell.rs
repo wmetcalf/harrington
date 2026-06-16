@@ -418,6 +418,7 @@ fn content_from_entry(entry: Option<&FsEntry>) -> Option<Vec<u8>> {
 
 fn record_powershell_side_effects(body: &str, env: &mut Environment) {
     record_downloadfile_side_effects(body, env);
+    record_set_content_value_side_effects(body, env);
     record_file_transfer_side_effects(body, env);
     record_rename_item_side_effects(body, env);
     record_get_content_set_content_side_effects(body, env);
@@ -463,6 +464,25 @@ fn record_get_content_set_content_side_effects(body: &str, env: &mut Environment
         };
         env.modified_filesystem
             .insert(filesystem_storage_key(&dst), entry);
+    }
+}
+
+fn record_set_content_value_side_effects(body: &str, env: &mut Environment) {
+    let tokens = split_words(body);
+    for i in 0..tokens.len() {
+        if !is_set_content_token(&tokens[i]) {
+            continue;
+        }
+        let Some((dst, content)) = powershell_set_content_paths_and_value(&tokens, i + 1) else {
+            continue;
+        };
+        env.modified_filesystem.insert(
+            filesystem_storage_key(&dst),
+            FsEntry::Content {
+                content: content.into_bytes(),
+                append: false,
+            },
+        );
     }
 }
 
@@ -631,6 +651,13 @@ fn is_content_write_token(token: &str) -> bool {
     )
 }
 
+fn is_set_content_token(token: &str) -> bool {
+    matches!(
+        strip_quotes(token).to_ascii_lowercase().as_str(),
+        "set-content" | "sc"
+    )
+}
+
 fn powershell_stdout_redirect_destination(tokens: &[String], start: usize) -> Option<String> {
     let token = strip_quotes(tokens.get(start)?);
     for op in [">>", "1>>", ">", "1>"] {
@@ -646,6 +673,50 @@ fn powershell_stdout_redirect_destination(tokens: &[String], start: usize) -> Op
         }
     }
     None
+}
+
+fn powershell_set_content_paths_and_value(
+    tokens: &[String],
+    start: usize,
+) -> Option<(String, String)> {
+    let mut path: Option<String> = None;
+    let mut value: Option<String> = None;
+    let mut positional: Vec<String> = Vec::new();
+    let mut i = start;
+    while i < tokens.len() {
+        let token = strip_quotes(&tokens[i]);
+        if token == "|" || token == ";" {
+            break;
+        }
+        let lower = token.to_ascii_lowercase();
+        if lower == "-path" || lower == "-literalpath" {
+            path = Some(strip_quotes(tokens.get(i + 1)?).to_string());
+            i += 2;
+            continue;
+        }
+        if let Some(path_value) = attached_ps_path_value(token) {
+            path = Some(path_value.to_string());
+            i += 1;
+            continue;
+        }
+        if lower == "-value" {
+            value = Some(strip_quotes(tokens.get(i + 1)?).to_string());
+            i += 2;
+            continue;
+        }
+        if let Some(content_value) = attached_ps_value_value(token) {
+            value = Some(content_value.to_string());
+            i += 1;
+            continue;
+        }
+        if !token.starts_with('-') {
+            positional.push(token.to_string());
+        }
+        i += 1;
+    }
+    let path = path.or_else(|| positional.first().cloned())?;
+    let value = value.or_else(|| positional.get(1).cloned())?;
+    Some((path, value))
 }
 
 fn powershell_content_path_arg(tokens: &[String], start: usize) -> Option<(String, usize)> {
@@ -684,6 +755,14 @@ fn attached_ps_path_value(token: &str) -> Option<&str> {
         }
     }
     None
+}
+
+fn attached_ps_value_value(token: &str) -> Option<&str> {
+    let lower = token.to_ascii_lowercase();
+    let rest = lower.strip_prefix("-value")?;
+    let original_rest = &token[token.len() - rest.len()..];
+    let value = original_rest.trim_start_matches([':', '=']);
+    (!value.is_empty()).then(|| strip_quotes(value))
 }
 
 fn attached_ps_destination_value(token: &str) -> Option<&str> {
