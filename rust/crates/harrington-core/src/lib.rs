@@ -8106,6 +8106,24 @@ for /f "tokens=1 delims=:" %%A in ('curl -# -k "http://www.geoplugin.net/php.gp?
     }
 
     #[test]
+    fn escaped_ampersand_del_history_text_does_not_emit_evidence_cleanup() {
+        let script =
+            br#"echo keep ^& del %APPDATA%\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::EvidenceCleanup { action, target, .. }
+                    if action == "powershell-history-delete"
+                        && target == "PowerShellHistory"
+            )),
+            "escaped ampersand echo text was misread as PowerShell history delete: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_clear_history_emits_evidence_cleanup_trait() {
         let script = br#"powershell -Command "Clear-History""#;
         let report = analyze(script, &AnalyzeConfig::default());

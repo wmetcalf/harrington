@@ -9224,6 +9224,9 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
             continue;
         };
         let command = m.as_str().trim();
+        if command_starts_with_echo(command) {
+            continue;
+        }
         let lower = command.to_ascii_lowercase();
         if lower.contains("\\prefetch\\") || lower.contains("/prefetch/") {
             push(
@@ -9360,6 +9363,9 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
         let Some(m) = caps.get(0) else {
             continue;
         };
+        if command_starts_with_echo(m.as_str()) {
+            continue;
+        }
         for command in powershell_statement_segments(m.as_str()) {
             let command = command.trim();
             if !powershell_remove_item_segment_has_command(command) {
