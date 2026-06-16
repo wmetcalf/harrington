@@ -8760,15 +8760,17 @@ fn scan_lateral_movement(deobfuscated: &str, env: &mut Environment) {
 fn scan_anti_recovery(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
+    static VSSADMIN_RESIZE_SHADOWSTORAGE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?im)^[^\r\n]*\bvssadmin(?:\.exe)?\s+resize\s+shadowstorage\b[^\r\n]*[/\-]maxsize\s*=\s*"?([^"'\s]+)"?[^\r\n]*"#,
+        )
+        .expect("vssadmin resize shadowstorage regex")
+    });
     static PATTERNS: Lazy<Vec<(Regex, &str)>> = Lazy::new(|| {
         vec![
             (
                 Regex::new(r"(?i)\bvssadmin(?:\.exe)?\s+delete\s+shadows").unwrap(),
                 "vssadmin-delete-shadows",
-            ),
-            (
-                Regex::new(r"(?i)\bvssadmin(?:\.exe)?\s+resize\s+shadowstorage\b[^\r\n]*[/\-]maxsize\s*=").unwrap(),
-                "vssadmin-resize-shadowstorage",
             ),
             (
                 Regex::new(r"(?i)\bwmic[^\r\n]*?shadowcopy\b[^\r\n]*\bdelete\b").unwrap(),
@@ -8808,20 +8810,32 @@ fn scan_anti_recovery(deobfuscated: &str, env: &mut Environment) {
             ),
         ]
     });
-    for (re, action) in PATTERNS.iter() {
-        if !re.is_match(deobfuscated) {
-            continue;
-        }
+    let mut push_action = |action: &str| {
         if env.traits.iter().any(|t| {
             matches!(
                 t, crate::traits::Trait::AntiRecovery { action: a } if a == action
             )
         }) {
-            continue;
+            return;
         }
         env.traits.push(crate::traits::Trait::AntiRecovery {
             action: action.to_string(),
         });
+    };
+    for (re, action) in PATTERNS.iter() {
+        if !re.is_match(deobfuscated) {
+            continue;
+        }
+        push_action(action);
+    }
+    for caps in VSSADMIN_RESIZE_SHADOWSTORAGE_RE.captures_iter(deobfuscated) {
+        let Some(maxsize) = caps.get(1).map(|m| m.as_str().trim()) else {
+            continue;
+        };
+        if maxsize.eq_ignore_ascii_case("unbounded") {
+            continue;
+        }
+        push_action("vssadmin-resize-shadowstorage");
     }
 }
 
