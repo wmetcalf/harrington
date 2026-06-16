@@ -4697,6 +4697,56 @@ reg add "HKLM\system\CurrentControlSet\Control\Terminal Server\WinStations\RDP-T
     }
 
     #[test]
+    fn powershell_set_service_termservice_auto_emits_remote_access_trait() {
+        let script =
+            br#"powershell -Command "Set-Service -Name TermService -StartupType Automatic""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-service-enable" && target == "TermService"
+            )),
+            "PowerShell Set-Service TermService auto was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_positional_set_service_termservice_demand_emits_remote_access_trait() {
+        let script = br#"powershell -Command "Set-Service TermService -StartupType Manual""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-service-enable" && target == "TermService"
+            )),
+            "PowerShell positional Set-Service TermService demand was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_set_service_termservice_disabled_is_not_remote_access_enablement() {
+        let script =
+            br#"powershell -Command "Set-Service -Name TermService -StartupType Disabled""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-service-enable" && target == "TermService"
+            )),
+            "disabled TermService was mislabeled as RDP enablement: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_terminal_server_registry_writes_emit_remote_access_traits() {
         let script = br#"powershell -Command "Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0"
 powershell -Command "New-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name AllowTSConnections -PropertyType DWord -Value 1 -Force"

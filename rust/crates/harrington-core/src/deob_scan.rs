@@ -11445,6 +11445,10 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
         Regex::new(r#"(?im)^[^\r\n]*?\b(?:Start-Service|sasv)\b[^\r\n]*"#)
             .expect("powershell termservice start regex")
     });
+    static PS_TERMSERVICE_CONFIG_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?im)^[^\r\n]*?\bSet-Service\b[^\r\n]*"#)
+            .expect("powershell termservice config regex")
+    });
     static WMIC_RDTOGGLE_ENABLE_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
             r#"(?im)^[^\r\n]*\bwmic(?:\.exe)?\b[^\r\n]*\bRDTOGGLE\b[^\r\n]*\bSetAllowTSConnections\b[^\r\n]*\b(?:1|true)\b[^\r\n]*"#,
@@ -11622,6 +11626,39 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
                 powershell_positional_arguments(command, "sasv")
             };
             candidates.extend(positional);
+        }
+        if candidates
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case("TermService"))
+        {
+            push(
+                "rdp-service-enable",
+                "TermService".to_string(),
+                command.to_string(),
+            );
+        }
+    }
+    for m in PS_TERMSERVICE_CONFIG_RE.find_iter(deobfuscated) {
+        let command = m.as_str().trim();
+        let startup_type = powershell_named_argument(command, "-StartupType")
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if !matches!(
+            startup_type.as_str(),
+            "automatic" | "auto" | "manual" | "demand"
+        ) {
+            continue;
+        }
+        let names = powershell_named_argument_list(command, "-Name");
+        let mut candidates: Vec<String> = names
+            .iter()
+            .flat_map(|name| split_powershell_list_argument(name))
+            .collect();
+        if candidates.is_empty() {
+            let positional = powershell_positional_arguments(command, "Set-Service");
+            if let Some(name) = positional.first() {
+                candidates.extend(split_powershell_list_argument(name));
+            }
         }
         if candidates
             .iter()
