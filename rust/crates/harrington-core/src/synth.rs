@@ -950,9 +950,34 @@ fn synth_dir(args: &[&str], env: &mut Environment) -> Vec<String> {
             path = a.trim_matches('"').to_string();
         }
     }
+    let out = if flags.iter().any(|flag| flag.eq_ignore_ascii_case("/b")) {
+        dir_tracked_file_name(&path, env)
+            .map(|name| vec![name])
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     env.traits
         .push(crate::traits::Trait::DirListing { path, flags });
-    Vec::new()
+    out
+}
+
+fn dir_tracked_file_name(path: &str, env: &Environment) -> Option<String> {
+    let path = path.trim_matches('"');
+    if path.is_empty() || path.contains(['*', '?']) {
+        return None;
+    }
+    let key = path.to_ascii_lowercase();
+    if env.modified_filesystem.contains_key(&key) {
+        return windows_basename(path).map(str::to_string);
+    }
+    if let Some(stripped) = strip_current_dir_prefix(path) {
+        let key = stripped.to_ascii_lowercase();
+        if env.modified_filesystem.contains_key(&key) {
+            return windows_basename(stripped).map(str::to_string);
+        }
+    }
+    None
 }
 
 fn synth_ftype(args: &[&str], env: &Environment) -> Vec<String> {
