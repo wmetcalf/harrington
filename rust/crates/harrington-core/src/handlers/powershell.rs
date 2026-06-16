@@ -443,7 +443,7 @@ fn record_get_content_set_content_side_effects(body: &str, env: &mut Environment
             .iter()
             .enumerate()
             .skip(pipe_idx + 1)
-            .find_map(|(idx, token)| is_set_content_token(token).then_some(idx))
+            .find_map(|(idx, token)| is_content_write_token(token).then_some(idx))
         else {
             continue;
         };
@@ -616,10 +616,10 @@ fn is_get_content_token(token: &str) -> bool {
     )
 }
 
-fn is_set_content_token(token: &str) -> bool {
+fn is_content_write_token(token: &str) -> bool {
     matches!(
         strip_quotes(token).to_ascii_lowercase().as_str(),
-        "set-content" | "sc"
+        "set-content" | "sc" | "out-file"
     )
 }
 
