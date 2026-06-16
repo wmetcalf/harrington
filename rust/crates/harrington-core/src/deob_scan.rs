@@ -7974,14 +7974,24 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
                     continue;
                 }
                 let positional = powershell_positional_arguments(command, "Set-Service");
-                let Some(service) = powershell_named_argument(command, "-Name")
-                    .or_else(|| powershell_named_argument(command, "-DisplayName"))
-                    .or_else(|| positional.into_iter().next())
-                else {
+                let mut services = powershell_named_argument_list(command, "-Name");
+                if services.is_empty() {
+                    if let Some(display_name) = powershell_named_argument(command, "-DisplayName") {
+                        services.push(display_name);
+                    }
+                }
+                if services.is_empty() {
+                    if let Some(service) = positional.into_iter().next() {
+                        services.extend(split_powershell_list_argument(&service));
+                    }
+                }
+                if services.is_empty() {
                     continue;
-                };
-                if is_security_service_name(&service) {
-                    push("powershell-service-disabled", service);
+                }
+                for service in services {
+                    if is_security_service_name(&service) {
+                        push("powershell-service-disabled", service);
+                    }
                 }
             }
             for caps in TASKKILL_SECURITY_RE.captures_iter(deobfuscated) {

