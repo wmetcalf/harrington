@@ -953,7 +953,8 @@ fn synth_dir(args: &[&str], env: &mut Environment) -> Vec<String> {
         }
     }
     let out = if flags.iter().any(|flag| flag.eq_ignore_ascii_case("/b")) {
-        dir_tracked_file_names(&path, env)
+        let recursive = flags.iter().any(|flag| flag.eq_ignore_ascii_case("/s"));
+        dir_tracked_file_names(&path, env, recursive)
     } else {
         Vec::new()
     };
@@ -962,7 +963,7 @@ fn synth_dir(args: &[&str], env: &mut Environment) -> Vec<String> {
     out
 }
 
-fn dir_tracked_file_names(path: &str, env: &Environment) -> Vec<String> {
+fn dir_tracked_file_names(path: &str, env: &Environment, recursive: bool) -> Vec<String> {
     let path = path.trim_matches('"');
     if path.is_empty() {
         return Vec::new();
@@ -972,11 +973,8 @@ fn dir_tracked_file_names(path: &str, env: &Environment) -> Vec<String> {
         let mut names = env
             .modified_filesystem
             .keys()
-            .filter_map(|tracked| {
-                windows_basename(tracked)
-                    .filter(|_| dir_wildcard_matches(path, &normalized_pattern, tracked))
-                    .map(str::to_string)
-            })
+            .filter(|tracked| dir_wildcard_matches(path, &normalized_pattern, tracked))
+            .map(|tracked| dir_listing_name(tracked, recursive))
             .collect::<Vec<_>>();
         names.sort();
         names.dedup();
@@ -984,21 +982,23 @@ fn dir_tracked_file_names(path: &str, env: &Environment) -> Vec<String> {
     }
     let key = path.to_ascii_lowercase();
     if env.modified_filesystem.contains_key(&key) {
-        return windows_basename(path)
-            .map(str::to_string)
-            .into_iter()
-            .collect();
+        return vec![dir_listing_name(path, recursive)];
     }
     if let Some(stripped) = strip_current_dir_prefix(path) {
         let key = stripped.to_ascii_lowercase();
         if env.modified_filesystem.contains_key(&key) {
-            return windows_basename(stripped)
-                .map(str::to_string)
-                .into_iter()
-                .collect();
+            return vec![dir_listing_name(stripped, recursive)];
         }
     }
     Vec::new()
+}
+
+fn dir_listing_name(path: &str, recursive: bool) -> String {
+    if recursive {
+        path.to_string()
+    } else {
+        windows_basename(path).unwrap_or(path).to_string()
+    }
 }
 
 fn dir_wildcard_matches(pattern: &str, normalized_pattern: &str, tracked_path: &str) -> bool {

