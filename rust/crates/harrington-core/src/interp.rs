@@ -268,6 +268,7 @@ pub fn interpret_line(line: &str, env: &mut Environment) {
         _ => {}
     }
     capture_synthetic_stdout_redirect(line, env);
+    capture_synthetic_option_output(line, env);
 }
 
 fn push_implicit_download_source_url(path: &str, env: &mut Environment) {
@@ -435,11 +436,69 @@ fn capture_synthetic_stdout_redirect(line: &str, env: &mut Environment) {
     if lines.is_empty() {
         return;
     }
+    write_synthetic_lines(stdout.path(), stdout.append(), lines, env);
+}
+
+fn capture_synthetic_option_output(line: &str, env: &mut Environment) {
+    let Some((cleaned, output_path)) = sort_output_file_command(line) else {
+        return;
+    };
+    let lines = crate::synth::run_pipeline(&cleaned, env);
+    if lines.is_empty() {
+        return;
+    }
+    write_synthetic_lines(&output_path, false, lines, env);
+}
+
+fn sort_output_file_command(line: &str) -> Option<(String, String)> {
+    let (cleaned, redir) = crate::redirect::extract_redirections(line);
+    if redir.stdout.is_some() {
+        return None;
+    }
+    let words = crate::handlers::util::split_words(&cleaned);
+    let command = words.first()?;
+    let base = command
+        .trim_matches('"')
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(command)
+        .trim_end_matches(".exe")
+        .to_ascii_lowercase();
+    if base != "sort" {
+        return None;
+    }
+
+    let mut output = None;
+    let mut kept = Vec::new();
+    kept.push(words[0].clone());
+    let mut i = 1;
+    while i < words.len() {
+        let arg = words[i].trim_matches('"');
+        let lower = arg.to_ascii_lowercase();
+        if lower == "/o" {
+            if let Some(next) = words.get(i + 1) {
+                output = Some(next.trim_matches('"').to_string());
+                i += 2;
+                continue;
+            }
+        } else if lower.starts_with("/o:") && arg.len() > 3 {
+            output = Some(arg[3..].trim_matches('"').to_string());
+            i += 1;
+            continue;
+        }
+        kept.push(words[i].clone());
+        i += 1;
+    }
+    let output = output.filter(|path| !path.is_empty())?;
+    Some((kept.join(" "), output))
+}
+
+fn write_synthetic_lines(path: &str, append: bool, lines: Vec<String>, env: &mut Environment) {
     let mut content = lines.join("\r\n").into_bytes();
     content.extend_from_slice(b"\r\n");
-    let key = crate::handlers::util::filesystem_storage_key(stdout.path());
+    let key = crate::handlers::util::filesystem_storage_key(path);
     let cap = env.limits.max_output_bytes as usize;
-    if stdout.append() {
+    if append {
         if let Some(crate::env::FsEntry::Content {
             content: existing,
             append,
@@ -464,7 +523,7 @@ fn capture_synthetic_stdout_redirect(line: &str, env: &mut Environment) {
         key,
         crate::env::FsEntry::Content {
             content: bounded,
-            append: stdout.append(),
+            append,
         },
     );
 }
