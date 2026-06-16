@@ -5010,6 +5010,131 @@ fn scan_copied_runas_alias_deob_text(deobfuscated: &str, env: &mut Environment) 
     }
 }
 
+fn scan_copied_winrs_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    let mut aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for t in &env.traits {
+        let Trait::WindowsUtilManip { src, dst, .. } = t else {
+            continue;
+        };
+        let src_base = basename_lower(src);
+        if src_base != "winrs.exe" && src_base != "winrs" {
+            continue;
+        }
+        insert_alias_names(&mut aliases, dst);
+    }
+    if aliases.is_empty() {
+        return;
+    }
+
+    let lines: Vec<&str> = deobfuscated.lines().collect();
+    for (line_idx, line) in lines.iter().enumerate() {
+        let tokens = split_words(line);
+        let Some(cmd) = tokens.first() else {
+            continue;
+        };
+        if !aliases.contains(&basename_lower(cmd))
+            && !aliases.contains(&cmd.trim_matches(['"', '\'']).to_ascii_lowercase())
+        {
+            continue;
+        }
+        if tokens.len() < 2 {
+            continue;
+        }
+        if env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::ManipulatedExec {
+                    cmd: existing_cmd,
+                    target
+                } if existing_cmd == line && target.eq_ignore_ascii_case(cmd.trim_matches(['"', '\'']))
+            )
+        }) {
+            continue;
+        }
+
+        push_manipulated_exec_once(env, line, cmd);
+        let rest = line
+            .get(cmd.len()..)
+            .map(str::trim_start)
+            .unwrap_or_default();
+        let replay = if rest.is_empty() {
+            "winrs.exe".to_string()
+        } else {
+            format!("winrs.exe {rest}")
+        };
+        crate::handlers::passthrough::h_winrs(&replay, env);
+        if let Some((host, inner)) = crate::handlers::passthrough::winrs_child_command(&replay) {
+            if !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::RemoteExec { tool, target_host }
+                        if tool == "winrs" && target_host == &host
+                )
+            }) {
+                env.traits.push(Trait::RemoteExec {
+                    tool: "winrs".to_string(),
+                    target_host: host,
+                });
+            }
+            replay_copied_alias_child_command(&inner, env);
+            replay_following_url_variable_curl(line, &lines, line_idx, env);
+        }
+    }
+}
+
+fn replay_copied_alias_child_command(command: &str, env: &mut Environment) {
+    let (child, delayed) = if let Some(cmd_inner) = crate::handlers::cmd::extract_cmd_inner(command)
+    {
+        (cmd_inner, crate::handlers::cmd::has_v_on_raw(command))
+    } else {
+        (command.to_string(), false)
+    };
+
+    let saved_delayed = env.delayed_expansion;
+    if delayed {
+        env.delayed_expansion = true;
+    }
+    for segment in crate::split::split_commands(&child) {
+        let normalized =
+            crate::normalize::normalize_literal_command_fast(&segment).unwrap_or_else(|| {
+                let toks = crate::lex::lex(&segment);
+                crate::normalize::normalize_to_string(&toks, env)
+            });
+        crate::interp::interpret_line(&normalized, env);
+    }
+    env.delayed_expansion = saved_delayed;
+}
+
+fn replay_following_url_variable_curl(
+    source_line: &str,
+    lines: &[&str],
+    line_idx: usize,
+    env: &mut Environment,
+) {
+    let Some(url) = env.traits.iter().rev().find_map(|t| match t {
+        Trait::UrlVariable { cmd, url, .. } if cmd == source_line => Some(url.clone()),
+        _ => None,
+    }) else {
+        return;
+    };
+    let Some(next_line) = lines.get(line_idx + 1).map(|line| line.trim()) else {
+        return;
+    };
+    if next_line.contains("://") {
+        return;
+    }
+    let tokens = split_words(next_line);
+    let Some(first) = tokens.first() else {
+        return;
+    };
+    let tool = command_name(strip_quotes(first));
+    if tool != "curl" && tool != "curl.exe" {
+        return;
+    }
+    let replay = format!("{} {}", next_line.trim_end(), url);
+    crate::handlers::curl::h_curl(&replay, env);
+}
+
 fn scan_copied_schtasks_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
     let mut aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
     for t in &env.traits {
@@ -9413,6 +9538,9 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     });
     scan_step!("copied_runas_alias_deob_text", {
         scan_copied_runas_alias_deob_text(deobfuscated, env);
+    });
+    scan_step!("copied_winrs_alias_deob_text", {
+        scan_copied_winrs_alias_deob_text(deobfuscated, env);
     });
     scan_step!("copied_schtasks_alias_deob_text", {
         scan_copied_schtasks_alias_deob_text(deobfuscated, env);
