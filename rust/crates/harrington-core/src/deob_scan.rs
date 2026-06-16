@@ -12176,29 +12176,33 @@ fn scan_powershell_scheduled_task(deobfuscated: &str, env: &mut Environment) {
     }
 
     for m in PS_REGISTER_TASK_RE.find_iter(deobfuscated) {
-        let line = m.as_str().trim();
-        let task_positional = powershell_positional_arguments(line, "Register-ScheduledTask");
-        let Some(task_name) = powershell_named_argument(line, "-TaskName")
-            .or_else(|| task_positional.first().cloned())
-        else {
-            continue;
-        };
-        let command = if line
-            .to_ascii_lowercase()
-            .contains("new-scheduledtaskaction")
-        {
-            powershell_scheduled_task_action_command(line)
-        } else {
-            powershell_named_argument(line, "-Action").and_then(|action| {
-                action_vars
-                    .get(&action.trim().to_ascii_lowercase())
-                    .cloned()
-            })
-        };
-        let Some(command) = command else {
-            continue;
-        };
-        if env.traits.iter().any(|t| {
+        for line in powershell_statement_segments(m.as_str()) {
+            let line = line.trim();
+            if !contains_ascii_keyword(line, "Register-ScheduledTask") {
+                continue;
+            }
+            let task_positional = powershell_positional_arguments(line, "Register-ScheduledTask");
+            let Some(task_name) = powershell_named_argument(line, "-TaskName")
+                .or_else(|| task_positional.first().cloned())
+            else {
+                continue;
+            };
+            let command = if line
+                .to_ascii_lowercase()
+                .contains("new-scheduledtaskaction")
+            {
+                powershell_scheduled_task_action_command(line)
+            } else {
+                powershell_named_argument(line, "-Action").and_then(|action| {
+                    action_vars
+                        .get(&action.trim().to_ascii_lowercase())
+                        .cloned()
+                })
+            };
+            let Some(command) = command else {
+                continue;
+            };
+            if env.traits.iter().any(|t| {
             matches!(
                 t,
                 crate::traits::Trait::Persistence {
@@ -12211,12 +12215,13 @@ fn scan_powershell_scheduled_task(deobfuscated: &str, env: &mut Environment) {
         }) {
             continue;
         }
-        env.traits.push(crate::traits::Trait::Persistence {
-            hive: "ScheduledTask".to_string(),
-            key: task_name,
-            value_name: String::new(),
-            command,
-        });
+            env.traits.push(crate::traits::Trait::Persistence {
+                hive: "ScheduledTask".to_string(),
+                key: task_name,
+                value_name: String::new(),
+                command,
+            });
+        }
     }
 }
 

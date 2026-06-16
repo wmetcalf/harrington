@@ -2964,6 +2964,29 @@ schtasks /create /tn "Updater" /tr "cmd /V:ON /c set U=https://schtasks.example/
     }
 
     #[test]
+    fn powershell_chained_inline_scheduled_tasks_emit_each_persistence_trait() {
+        let script = br#"powershell -Command "Register-ScheduledTask -TaskName FirstTask -Action (New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/c one.exe') -Force; Register-ScheduledTask -TaskName SecondTask -Action (New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/c two.exe') -Force""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        for (task_name, command) in [
+            ("FirstTask", "cmd.exe /c one.exe"),
+            ("SecondTask", "cmd.exe /c two.exe"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Persistence { hive, key, command: existing_command, .. }
+                        if hive == "ScheduledTask"
+                            && key == task_name
+                            && existing_command == command
+                )),
+                "chained inline scheduled task missing {task_name}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn powershell_short_scheduled_task_parameters_emit_persistence_trait() {
         let script = br#"powershell -Command "$a = New-ScheduledTaskAction -Ex 'cmd.exe' -Ar '/c calc.exe'; Register-ScheduledTask -Ta Updater -Ac $a -Fo"
 "#;
