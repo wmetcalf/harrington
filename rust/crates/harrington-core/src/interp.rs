@@ -32,6 +32,8 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
         return result;
     }
 
+    capture_piped_powershell_stdin(raw, env);
+
     if let Some(child) = conhost_child_command(raw) {
         if raw_invokes_powershell(&child) {
             crate::handlers::powershell::h_powershell(&child, env);
@@ -369,6 +371,68 @@ fn raw_invokes_powershell(raw: &str) -> bool {
         return false;
     };
     command_basename_is(&name, "powershell") || command_basename_is(&name, "pwsh")
+}
+
+fn capture_piped_powershell_stdin(raw: &str, env: &mut Environment) {
+    let Some((left, right)) = split_first_unquoted_pipe(raw) else {
+        return;
+    };
+    let toks = crate::lex::lex(left);
+    let normalized_left = crate::normalize::normalize_to_string(&toks, env);
+    let toks = crate::lex::lex(right);
+    let normalized_right = crate::normalize::normalize_to_string(&toks, env);
+    let right = normalized_right.trim();
+    let has_powershell_stdin = if powershell_reads_stdin(right) {
+        true
+    } else {
+        crate::handlers::cmd::extract_cmd_inner(right)
+            .is_some_and(|child| powershell_reads_stdin(&child))
+    };
+    if !has_powershell_stdin {
+        return;
+    }
+
+    let lines = crate::synth::run_pipeline(&normalized_left, env);
+    if lines.is_empty() {
+        return;
+    }
+    let mut payload = lines.join("\r\n").into_bytes();
+    payload.extend_from_slice(b"\r\n");
+    if !env.exec_ps1.iter().any(|existing| existing == &payload) {
+        env.exec_ps1.push(payload);
+    }
+}
+
+fn powershell_reads_stdin(raw: &str) -> bool {
+    if !raw_invokes_powershell(raw) {
+        return false;
+    }
+    crate::handlers::util::split_words(raw)
+        .iter()
+        .skip(1)
+        .map(|token| token.trim_matches(['"', '\'']))
+        .any(|token| token == "-")
+}
+
+fn split_first_unquoted_pipe(raw: &str) -> Option<(&str, &str)> {
+    let mut in_double = false;
+    let mut in_single = false;
+    let mut chars = raw.char_indices().peekable();
+    while let Some((idx, ch)) = chars.next() {
+        if ch == '^' {
+            chars.next();
+            continue;
+        }
+        match ch {
+            '"' if !in_single => in_double = !in_double,
+            '\'' if !in_double => in_single = !in_single,
+            '|' if !in_double && !in_single => {
+                return Some((&raw[..idx], &raw[idx + ch.len_utf8()..]));
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 pub fn interpret_line(line: &str, env: &mut Environment) {

