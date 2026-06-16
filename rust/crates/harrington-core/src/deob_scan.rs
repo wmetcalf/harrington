@@ -11322,18 +11322,18 @@ fn scan_powershell_scheduled_task(deobfuscated: &str, env: &mut Environment) {
         else {
             continue;
         };
-        let action_positional: Vec<String> =
+        let mut action_positional =
             powershell_positional_arguments(line, "New-ScheduledTaskAction")
                 .into_iter()
                 .map(|arg| trim_powershell_statement_value(&arg))
-                .collect();
-        let Some(execute) = powershell_named_argument(line, "-Execute")
-            .or_else(|| action_positional.first().cloned())
+                .filter(|arg| !arg.eq_ignore_ascii_case("Register-ScheduledTask"));
+        let Some(execute) =
+            powershell_named_argument(line, "-Execute").or_else(|| action_positional.next())
         else {
             continue;
         };
         let command = powershell_named_argument(line, "-Argument")
-            .or_else(|| action_positional.get(1).cloned())
+            .or_else(|| action_positional.next())
             .map(|argument| format!("{execute} {argument}"))
             .unwrap_or(execute);
         if env.traits.iter().any(|t| {
