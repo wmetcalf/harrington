@@ -7996,7 +7996,7 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
                     .captures(line)
                     .and_then(|caps| caps.get(1).or_else(|| caps.get(2)))
                     .map(|m| m.as_str().to_string())
-                    .unwrap_or_else(|| line.trim().chars().take(160).collect());
+                    .unwrap_or_else(|| line.trim().to_string());
                 push("scheduled-task-disable", task_name);
             }
             for caps in DEFENDER_SERVICE_START_DISABLED_RE.captures_iter(deobfuscated) {
@@ -8039,7 +8039,7 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
             for caps in SECURITY_PRODUCT_REMOVE_RE.captures_iter(deobfuscated) {
                 let target = caps
                     .get(1)
-                    .map(|m| m.as_str().trim().chars().take(160).collect::<String>())
+                    .map(|m| m.as_str().trim().to_string())
                     .unwrap_or_default();
                 if is_encoded_security_product_remove_noise(&target) {
                     continue;
