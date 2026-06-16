@@ -656,7 +656,7 @@ fn powershell_content_path_arg(tokens: &[String], start: usize) -> Option<(Strin
             return None;
         }
         let lower = token.to_ascii_lowercase();
-        if lower == "-path" || lower == "-literalpath" {
+        if lower == "-path" || lower == "-literalpath" || lower == "-filepath" {
             let value = strip_quotes(tokens.get(i + 1)?).to_string();
             return Some((value, i + 1));
         }
@@ -673,7 +673,7 @@ fn powershell_content_path_arg(tokens: &[String], start: usize) -> Option<(Strin
 
 fn attached_ps_path_value(token: &str) -> Option<&str> {
     let lower = token.to_ascii_lowercase();
-    for flag in ["-path", "-literalpath"] {
+    for flag in ["-path", "-literalpath", "-filepath"] {
         let Some(rest) = lower.strip_prefix(flag) else {
             continue;
         };
