@@ -9306,18 +9306,23 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
     }
 
     for m in PS_HISTORY_DISABLE_LINE_RE.find_iter(deobfuscated) {
-        let command = m.as_str().trim();
-        if !powershell_named_argument(command, "-HistorySaveStyle")
-            .map(|value| value.eq_ignore_ascii_case("SaveNothing"))
-            .unwrap_or(false)
-        {
-            continue;
+        for command in powershell_statement_segments(m.as_str()) {
+            let command = command.trim();
+            if !contains_ascii_keyword(command, "Set-PSReadLineOption") {
+                continue;
+            }
+            if !powershell_named_argument(command, "-HistorySaveStyle")
+                .map(|value| value.eq_ignore_ascii_case("SaveNothing"))
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            push(
+                "powershell-history-disable",
+                "PowerShellHistory".to_string(),
+                command.to_string(),
+            );
         }
-        push(
-            "powershell-history-disable",
-            "PowerShellHistory".to_string(),
-            command.to_string(),
-        );
     }
 
     for caps in PS_REMOVE_ITEM_RE.captures_iter(deobfuscated) {
