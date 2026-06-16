@@ -10135,7 +10135,7 @@ fn scan_input_capture(deobfuscated: &str, env: &mut Environment) {
             ),
             (
                 Regex::new(
-                    r#"(?i)\b(?:Get-Clipboard|Set-Clipboard|GetClipboardData|OpenClipboard)\b"#,
+                    r#"(?i)\b(?:Get-Clipboard|Set-Clipboard|GetClipboardData|OpenClipboard)\b|\b(?:System\.)?Windows\.Forms\.Clipboard\]::(?:GetText|SetText|GetData|SetData)\b"#,
                 )
                 .unwrap(),
                 "clipboard",

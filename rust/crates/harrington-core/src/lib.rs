@@ -3328,6 +3328,23 @@ C:\Users\Public\rd.tmp C:\Windows\System32\comsvcs.dll, MiniDump 1234 C:\Users\P
     }
 
     #[test]
+    fn powershell_dotnet_clipboard_access_emits_input_capture_trait() {
+        let script = br#"powershell -Command "[System.Windows.Forms.Clipboard]::GetText()"
+powershell -Command "[Windows.Forms.Clipboard]::SetText('copied')"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::InputCapture { capture_kind } if capture_kind == "clipboard"
+            )),
+            "PowerShell .NET clipboard access was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn wmic_for_f_inventory_command_is_trimmed() {
         let script = br#"for /f "tokens=3" %%a in ('wmic logicaldisk where "Size=250954240000" get Size | find "Size"') do echo %%a"#;
         let report = analyze(script, &AnalyzeConfig::default());
