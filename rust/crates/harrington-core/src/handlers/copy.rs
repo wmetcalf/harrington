@@ -88,6 +88,7 @@ pub fn h_copy(raw: &str, env: &mut Environment) {
             dst: dst.clone(),
         });
     }
+    push_startup_folder_persistence(env, &src, &dst);
     let entry = copied_entry(&src, env).unwrap_or(FsEntry::Copy { src: src.clone() });
     insert_copied_entry(env, &src, &dst, entry);
 }
@@ -124,6 +125,7 @@ pub fn h_xcopy(raw: &str, env: &mut Environment) {
             dst: dst.clone(),
         });
     }
+    push_startup_folder_persistence(env, &src, &dst);
     let entry = copied_entry(&src, env).unwrap_or(FsEntry::Copy { src: src.clone() });
     insert_copied_entry(env, &src, &dst, entry);
     if assume_directory_dst && xcopy_dst_looks_like_directory(&dst) {
@@ -172,6 +174,7 @@ fn track_rename_like(
             dst: dst.clone(),
         });
     }
+    push_startup_folder_persistence(env, &src, &dst);
     if allow_directory_dst && src.contains(['*', '?']) && move_wildcard_sources(env, &src, &dst) {
         return;
     }
@@ -451,6 +454,75 @@ fn rename_destination_in_source_directory(src: &str, dst: &str) -> Option<String
         return None;
     }
     Some(join_windows_path_preserving_separator(dir, dst))
+}
+
+fn push_startup_folder_persistence(env: &mut Environment, src: &str, dst: &str) {
+    let Some((key, value_name, command)) = startup_folder_persistence_parts(src, dst) else {
+        return;
+    };
+    if env.traits.iter().any(|t| {
+        matches!(
+            t,
+            Trait::Persistence {
+                hive,
+                key: existing_key,
+                value_name: existing_value,
+                command: existing_command,
+            } if hive == "StartupFolder"
+                && existing_key.eq_ignore_ascii_case(&key)
+                && existing_value.eq_ignore_ascii_case(&value_name)
+                && existing_command.eq_ignore_ascii_case(&command)
+        )
+    }) {
+        return;
+    }
+    env.traits.push(Trait::Persistence {
+        hive: "StartupFolder".to_string(),
+        key,
+        value_name,
+        command: command.clone(),
+    });
+    if let Some(FsEntry::Download { src: url }) = copied_entry(src, env) {
+        push_url_argument(env, command, url);
+    }
+}
+
+fn startup_folder_persistence_parts(src: &str, dst: &str) -> Option<(String, String, String)> {
+    let dst = collapse_slashes(dst);
+    let lower = dst.to_ascii_lowercase().replace('/', "\\");
+    let marker = r"\microsoft\windows\start menu\programs\startup";
+    let marker_pos = lower.find(marker)?;
+    let after_marker = &lower[marker_pos + marker.len()..];
+    let final_path = if after_marker.is_empty() || after_marker == "\\" {
+        let basename = windows_basename(src)?;
+        join_windows_path_preserving_separator(dst.trim_end_matches(['\\', '/']), basename)
+    } else {
+        dst.trim_end_matches(['\\', '/']).to_string()
+    };
+    let value_name = windows_basename(&final_path)?.to_string();
+    let key = final_path
+        .rsplit_once(['\\', '/'])
+        .map(|(dir, _)| dir.to_string())
+        .unwrap_or_default();
+    if key.is_empty() {
+        return None;
+    }
+    Some((key, value_name, final_path))
+}
+
+fn push_url_argument(env: &mut Environment, cmd: String, url: String) {
+    if env.traits.iter().any(|t| {
+        matches!(
+            t,
+            Trait::UrlArgument {
+                cmd: existing_cmd,
+                url: existing_url,
+            } if existing_cmd == &cmd && existing_url == &url
+        )
+    }) {
+        return;
+    }
+    env.traits.push(Trait::UrlArgument { cmd, url });
 }
 
 fn windows_basename(path: &str) -> Option<&str> {
