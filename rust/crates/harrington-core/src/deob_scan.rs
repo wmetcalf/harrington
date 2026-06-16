@@ -7813,6 +7813,10 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
         Regex::new(r#"(?i)netsh(?:\.exe)?\s+advfirewall\s+set\s+(\w+)\s+state\s+off"#)
             .expect("fw-off")
     });
+    static LEGACY_FIREWALL_OFF_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?i)netsh(?:\.exe)?\s+firewall\s+set\s+opmode\s+disable\b"#)
+            .expect("legacy fw-off")
+    });
     static PS_FIREWALL_PROFILE_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?im)^[^\r\n]*?\bSet-NetFirewallProfile\b[^\r\n]*"#)
             .expect("powershell firewall profile regex")
@@ -8084,6 +8088,9 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
                     .unwrap_or_default();
                 push("netsh-fw-off", prof);
             }
+            for _ in LEGACY_FIREWALL_OFF_RE.find_iter(deobfuscated) {
+                push("netsh-fw-off", "legacy-firewall".to_string());
+            }
             for m in PS_FIREWALL_PROFILE_RE.find_iter(deobfuscated) {
                 let command = m.as_str().trim();
                 let positional = powershell_positional_arguments(command, "Set-NetFirewallProfile");
@@ -8238,6 +8245,7 @@ fn has_defender_evasion_atom_lower(lower: &str) -> bool {
         "hidezoneinfoonproperties",
         "savezoneinformation",
         "advfirewall",
+        "netsh firewall",
         "set-netfirewallprofile",
         "invoke-nullamsi",
         "amsiinitfailed",
@@ -8341,6 +8349,7 @@ fn has_defender_service_process_atom_lower(lower: &str) -> bool {
 fn has_defender_scheduled_registry_firewall_atom_lower(lower: &str) -> bool {
     lower.contains("schtasks")
         || lower.contains("advfirewall")
+        || lower.contains("netsh firewall")
         || lower.contains("set-netfirewallprofile")
         || (lower.contains("reg")
             && (lower.contains("\\services\\")
