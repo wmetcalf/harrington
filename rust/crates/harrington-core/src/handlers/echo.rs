@@ -13,7 +13,8 @@ pub fn h_echo(raw: &str, env: &mut Environment) {
             redir.stdout = Some(target);
         }
     }
-    let after_echo = strip_echo_prefix(&cleaned).unwrap_or(&cleaned);
+    let echo = strip_echo_prefix(&cleaned);
+    let after_echo = echo.map(|prefix| prefix.body).unwrap_or(&cleaned);
     let payload = after_echo.trim_start();
 
     let Some(target) = redir.stdout else {
@@ -23,7 +24,7 @@ pub fn h_echo(raw: &str, env: &mut Environment) {
     let path = target.path().to_string();
     let append = target.append();
 
-    let payload = if payload.is_empty() {
+    let payload = if payload.is_empty() && !echo.is_some_and(|prefix| prefix.literal_empty) {
         if env.echo_enabled {
             "ECHO is on.".to_string()
         } else {
@@ -72,11 +73,29 @@ pub fn h_echo(raw: &str, env: &mut Environment) {
     );
 }
 
-fn strip_echo_prefix(raw: &str) -> Option<&str> {
+#[derive(Debug, Clone, Copy)]
+struct EchoPrefix<'a> {
+    body: &'a str,
+    literal_empty: bool,
+}
+
+fn strip_echo_prefix(raw: &str) -> Option<EchoPrefix<'_>> {
     let trimmed = raw.trim_start();
     let trimmed = trimmed.strip_prefix('@').unwrap_or(trimmed).trim_start();
     if trimmed.len() >= 4 && trimmed[..4].eq_ignore_ascii_case("echo") {
-        return Some(&trimmed[4..]);
+        let body = &trimmed[4..];
+        if let Some(separator) = body.chars().next() {
+            if matches!(separator, '.' | ':' | '/' | '(') {
+                return Some(EchoPrefix {
+                    body: &body[separator.len_utf8()..],
+                    literal_empty: true,
+                });
+            }
+        }
+        return Some(EchoPrefix {
+            body,
+            literal_empty: false,
+        });
     }
     None
 }

@@ -619,6 +619,20 @@ pub fn command_name(line: &str) -> Option<String> {
     if name.is_empty() {
         return None;
     }
+    // `echo.`, `echo:`, `echo/`, and `echo(` are common syntax variants
+    // for emitting literal text or blank lines without ambiguity around
+    // `echo on/off`. Normalize them before handler dispatch even when the
+    // payload is attached (`echo.hello>out`).
+    if name
+        .get(..4)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("echo"))
+        && name[4..]
+            .chars()
+            .next()
+            .is_some_and(|ch| matches!(ch, '.' | ':' | '/' | '('))
+    {
+        return Some("echo".to_string());
+    }
     // `echo.` (and `echo..` etc.) is a common obfuscation for empty echo output.
     // Strip trailing dots and normalise to "echo" if that's what remains.
     let name_trimmed = name.trim_end_matches('.');
