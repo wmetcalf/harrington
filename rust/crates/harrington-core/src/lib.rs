@@ -3938,6 +3938,22 @@ reg save HKLM\SECURITY C:\Users\Public\security.save /y
     }
 
     #[test]
+    fn esentutl_ntds_copy_emits_credential_access_trait() {
+        let script = br#"esentutl.exe /y C:\Windows\NTDS\ntds.dit /d C:\Users\Public\ntds.dit"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::CredentialAccess { technique, target }
+                    if technique == "ntds-file-copy" && target.contains("ntds.dit")
+            )),
+            "esentutl ntds.dit copy was not surfaced as credential access: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_dotnet_clipboard_access_emits_input_capture_trait() {
         let script = br#"powershell -Command "[System.Windows.Forms.Clipboard]::GetText()"
 powershell -Command "[Windows.Forms.Clipboard]::SetText('copied')"

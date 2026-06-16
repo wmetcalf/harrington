@@ -10497,6 +10497,9 @@ fn scan_credential_access(deobfuscated: &str, env: &mut Environment) {
             // Active Directory IFM media includes credential database material.
             (Regex::new(r#"(?i)\bntdsutil(?:\.exe)?\b[^\r\n]*\bifm\b[^\r\n]*\bcreate\s+(?:full|rodc)\b[^\r\n]*"#).unwrap(),
              "ntdsutil-ifm", |m| m.to_string()),
+            // Direct AD database copy using built-in copy-capable tools.
+            (Regex::new(r#"(?i)\b(?:esentutl|copy|xcopy|robocopy)(?:\.exe)?\b[^\r\n]*\bntds\.dit\b[^\r\n]*"#).unwrap(),
+             "ntds-file-copy", |m| m.to_string()),
         ]
     });
     static REG_HIVE_SAVE_RE: Lazy<Regex> = Lazy::new(|| {
