@@ -9058,7 +9058,7 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
             .expect("powershell clear-eventlog line regex")
     });
     static PS_REMOVE_ITEM_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?im)^[^\r\n]*?\b(?:Remove-Item|rm|del|erase|rd|rmdir)\b[^\r\n]*"#)
+        Regex::new(r#"(?im)^[^\r\n]*?\b(?:Remove-Item|ri|rm|del|erase|rd|rmdir)\b[^\r\n]*"#)
             .expect("powershell remove-item regex")
     });
     static PS_CLEAR_RECYCLE_BIN_RE: Lazy<Regex> = Lazy::new(|| {

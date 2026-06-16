@@ -7778,6 +7778,22 @@ powershell -Command "Clear-RecycleBin -Force"
     }
 
     #[test]
+    fn deob_text_ri_alias_prefetch_delete_emits_evidence_cleanup_trait() {
+        let mut env = Environment::new(&AnalyzeConfig::default());
+        crate::deob_scan::scan_deob_text(r#"ri -Force C:\Windows\Prefetch\*"#, &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::EvidenceCleanup { action, target, .. }
+                    if action == "prefetch-delete" && target == "Prefetch"
+            )),
+            "deob-text ri alias prefetch deletion missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn powershell_clear_eventlog_positional_name_emits_evidence_cleanup_trait() {
         let script = br#"powershell -Command "Clear-EventLog Security""#;
         let report = analyze(script, &AnalyzeConfig::default());
