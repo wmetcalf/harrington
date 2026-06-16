@@ -8406,22 +8406,34 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
                 {
                     continue;
                 }
+                push_mppreference_invoke_expression_exclusion_process(line, &mut push);
                 let exclusion_flags = [
                     "-ExclusionPath",
                     "-ExclusionExtension",
                     "-ExclusionProcess",
                     "-ExclusionIpAddress",
                 ];
-                for (flag, kind) in [
-                    ("-ExclusionPath", "exclusion-path"),
-                    ("-ExclusionExtension", "exclusion-extension"),
-                    ("-ExclusionProcess", "exclusion-process"),
-                    ("-ExclusionIpAddress", "exclusion-ipaddress"),
-                ] {
-                    for target in
-                        powershell_named_argument_list_unique(line, flag, &exclusion_flags)
+                for segment in powershell_statement_segments(line) {
+                    let segment = segment.trim();
+                    if !contains_ascii_keyword(segment, "Add-MpPreference")
+                        && !contains_ascii_keyword(segment, "Set-MpPreference")
                     {
-                        push(kind, target);
+                        continue;
+                    }
+                    if powershell_statement_segment_is_assignment(segment) {
+                        continue;
+                    }
+                    for (flag, kind) in [
+                        ("-ExclusionPath", "exclusion-path"),
+                        ("-ExclusionExtension", "exclusion-extension"),
+                        ("-ExclusionProcess", "exclusion-process"),
+                        ("-ExclusionIpAddress", "exclusion-ipaddress"),
+                    ] {
+                        for target in
+                            powershell_named_argument_list_unique(segment, flag, &exclusion_flags)
+                        {
+                            push(kind, target);
+                        }
                     }
                 }
             }
@@ -9129,6 +9141,46 @@ fn has_defender_amsi_etw_atom_lower(lower: &str) -> bool {
         "system.diagnostics.eventing.eventprovider",
     ];
     AMSI_ETW_ATOMS.iter().any(|atom| lower.contains(atom))
+}
+
+fn push_mppreference_invoke_expression_exclusion_process(
+    line: &str,
+    push: &mut impl FnMut(&str, String),
+) {
+    if !contains_ascii_keyword(line, "Invoke-Expression")
+        || !contains_ascii_keyword(line, "Add-MpPreference")
+        || !contains_ascii_keyword(line, "-ExclusionProcess")
+    {
+        return;
+    }
+    static PS_ARRAY_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?i)\$[A-Za-z_][A-Za-z0-9_]*\s*=\s*@\(([^)\r\n]{1,1024})\)"#)
+            .expect("powershell array assignment regex")
+    });
+    for caps in PS_ARRAY_ASSIGN_RE.captures_iter(line) {
+        let Some(items) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        for item in split_powershell_list_argument(items) {
+            if item.contains(['$', '%']) || item.trim().is_empty() {
+                continue;
+            }
+            push("exclusion-process", item);
+        }
+    }
+}
+
+fn powershell_statement_segment_is_assignment(segment: &str) -> bool {
+    let trimmed = segment.trim_start();
+    if !trimmed.starts_with('$') {
+        return false;
+    }
+    let command_pos = find_ascii_case_insensitive(trimmed, "Add-MpPreference", 0)
+        .or_else(|| find_ascii_case_insensitive(trimmed, "Set-MpPreference", 0));
+    let Some(command_pos) = command_pos else {
+        return false;
+    };
+    trimmed[..command_pos].contains('=')
 }
 
 #[cfg(test)]

