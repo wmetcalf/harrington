@@ -2927,6 +2927,60 @@ C:\Users\Public\tk.tmp /f /im MsMpEng.exe
     }
 
     #[test]
+    fn copied_takeown_alias_emits_defender_evasion_trait() {
+        let script = br#"copy C:\Windows\System32\takeown.exe C:\Users\Public\to.tmp
+C:\Users\Public\to.tmp /f C:\Windows\System32\SecurityHealthService.exe
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\to.tmp"#)
+            )),
+            "copied takeown alias invocation was not tied back to WindowsUtilManip: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "security-binary-takeown" && target == "SecurityHealthService.exe"
+            )),
+            "copied takeown security-binary tampering was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_icacls_alias_emits_defender_evasion_trait() {
+        let script = br#"copy C:\Windows\System32\icacls.exe C:\Users\Public\ic.tmp
+C:\Users\Public\ic.tmp C:\Windows\System32\SecurityHealthService.exe /grant:r Everyone:F /c
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\ic.tmp"#)
+            )),
+            "copied icacls alias invocation was not tied back to WindowsUtilManip: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "security-binary-acl-grant" && target == "SecurityHealthService.exe"
+            )),
+            "copied icacls security-binary ACL tampering was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn rdp_disable_settings_do_not_emit_remote_access_trait() {
         let script = b"@echo off\r\n\
             reg add \"HKLM\\system\\CurrentControlSet\\Control\\Terminal Server\" /v \"AllowTSConnections\" /t REG_DWORD /d 0x0 /f\r\n\

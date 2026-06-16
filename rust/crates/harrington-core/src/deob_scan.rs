@@ -5215,17 +5215,21 @@ fn scan_copied_netsh_alias_deob_text(deobfuscated: &str, env: &mut Environment) 
     }
 }
 
-fn scan_copied_taskkill_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
-    let mut aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
+fn scan_copied_defender_evasion_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    let mut aliases: std::collections::HashMap<String, &'static str> =
+        std::collections::HashMap::new();
     for t in &env.traits {
         let Trait::WindowsUtilManip { src, dst, .. } = t else {
             continue;
         };
         let src_base = basename_lower(src);
-        if src_base != "taskkill.exe" && src_base != "taskkill" {
-            continue;
-        }
-        insert_alias_names(&mut aliases, dst);
+        let replay_command = match src_base.as_str() {
+            "taskkill.exe" | "taskkill" => "taskkill.exe",
+            "takeown.exe" | "takeown" => "takeown.exe",
+            "icacls.exe" | "icacls" => "icacls.exe",
+            _ => continue,
+        };
+        insert_alias_command_names(&mut aliases, dst, replay_command);
     }
     if aliases.is_empty() {
         return;
@@ -5236,11 +5240,12 @@ fn scan_copied_taskkill_alias_deob_text(deobfuscated: &str, env: &mut Environmen
         let Some(cmd) = tokens.first() else {
             continue;
         };
-        if !aliases.contains(&basename_lower(cmd))
-            && !aliases.contains(&cmd.trim_matches(['"', '\'']).to_ascii_lowercase())
-        {
+        let replay_command = aliases
+            .get(&basename_lower(cmd))
+            .or_else(|| aliases.get(&cmd.trim_matches(['"', '\'']).to_ascii_lowercase()));
+        let Some(replay_command) = replay_command else {
             continue;
-        }
+        };
         if tokens.len() < 2 {
             continue;
         }
@@ -5262,12 +5267,28 @@ fn scan_copied_taskkill_alias_deob_text(deobfuscated: &str, env: &mut Environmen
             .map(str::trim_start)
             .unwrap_or_default();
         let replay = if rest.is_empty() {
-            "taskkill.exe".to_string()
+            (*replay_command).to_string()
         } else {
-            format!("taskkill.exe {rest}")
+            format!("{replay_command} {rest}")
         };
         scan_defender_evasion(&replay, env);
     }
+}
+
+fn insert_alias_command_names(
+    aliases: &mut std::collections::HashMap<String, &'static str>,
+    dst: &str,
+    replay_command: &'static str,
+) {
+    let dst_base = basename_lower(dst);
+    aliases.insert(dst_base.clone(), replay_command);
+    if let Some(stem) = dst_base.strip_suffix(".exe") {
+        aliases.insert(stem.to_string(), replay_command);
+    }
+    aliases.insert(
+        dst.trim_matches(['"', '\'']).to_ascii_lowercase(),
+        replay_command,
+    );
 }
 
 fn scan_copied_reg_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
@@ -10025,8 +10046,8 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     scan_step!("copied_netsh_alias_deob_text", {
         scan_copied_netsh_alias_deob_text(deobfuscated, env);
     });
-    scan_step!("copied_taskkill_alias_deob_text", {
-        scan_copied_taskkill_alias_deob_text(deobfuscated, env);
+    scan_step!("copied_defender_evasion_alias_deob_text", {
+        scan_copied_defender_evasion_alias_deob_text(deobfuscated, env);
     });
     scan_step!("copied_reg_alias_deob_text", {
         scan_copied_reg_alias_deob_text(deobfuscated, env);
