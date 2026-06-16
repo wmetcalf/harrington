@@ -497,6 +497,25 @@ fn strip_quotes(s: &str) -> &str {
     s
 }
 
+fn strip_copy_file_mode_suffix(s: &str) -> &str {
+    let s = strip_quotes(s);
+    let lower = s.to_ascii_lowercase();
+    if lower.ends_with("/a") || lower.ends_with("/b") {
+        let without_suffix = &s[..s.len().saturating_sub(2)];
+        if !without_suffix.is_empty() && copy_file_mode_suffix_is_unambiguous(without_suffix) {
+            return without_suffix;
+        }
+    }
+    s
+}
+
+fn copy_file_mode_suffix_is_unambiguous(stem: &str) -> bool {
+    if !stem.contains(['\\', '/']) {
+        return true;
+    }
+    windows_basename(stem).is_some_and(|basename| basename.contains('.'))
+}
+
 fn push_copy_arg_parts(args: &mut Vec<String>, token: &str) {
     let mut current = String::new();
     let mut parts = Vec::new();
@@ -517,7 +536,7 @@ fn push_copy_arg_parts(args: &mut Vec<String>, token: &str) {
         }
         if ch == '+' && !in_dq && !in_sq {
             if !current.is_empty() {
-                parts.push(strip_quotes(&current).to_string());
+                parts.push(strip_copy_file_mode_suffix(&current).to_string());
                 current.clear();
             }
             parts.push("+".to_string());
@@ -528,13 +547,13 @@ fn push_copy_arg_parts(args: &mut Vec<String>, token: &str) {
     }
 
     if !current.is_empty() {
-        parts.push(strip_quotes(&current).to_string());
+        parts.push(strip_copy_file_mode_suffix(&current).to_string());
     }
 
     if saw_separator {
         args.extend(parts);
     } else {
-        args.push(strip_quotes(token).to_string());
+        args.push(strip_copy_file_mode_suffix(token).to_string());
     }
 }
 

@@ -27486,6 +27486,61 @@ mod copy_multi_source_tests {
     }
 
     #[test]
+    fn copy_b_per_file_suffix_multi_source_concat_tracked() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "a.bin".to_string(),
+            FsEntry::Content {
+                content: b"AAAA".to_vec(),
+                append: false,
+            },
+        );
+        env.modified_filesystem.insert(
+            "b.bin".to_string(),
+            FsEntry::Content {
+                content: b"BBBB".to_vec(),
+                append: false,
+            },
+        );
+
+        interpret_line("copy a.bin/b+b.bin/b out.exe/b", &mut env);
+
+        let entry = env
+            .modified_filesystem
+            .get("out.exe")
+            .expect("out.exe missing");
+        assert!(
+            matches!(entry, FsEntry::Content { content, .. } if content == b"AAAABBBB"),
+            "copy /b suffix operands did not preserve concatenated content: {:?}",
+            entry
+        );
+    }
+
+    #[test]
+    fn copy_slash_path_ending_b_is_not_treated_as_binary_suffix() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            r"c:\temp\b".to_string(),
+            FsEntry::Content {
+                content: b"payload".to_vec(),
+                append: false,
+            },
+        );
+
+        interpret_line("copy C:/Temp/b out.txt", &mut env);
+
+        let entry = env
+            .modified_filesystem
+            .get("out.txt")
+            .expect("out.txt missing");
+        assert!(
+            matches!(entry, FsEntry::Content { content, .. } if content == b"payload"),
+            "slash path ending in /b was misparsed as copy binary suffix: {:?}",
+            entry
+        );
+    }
+
+    #[test]
     fn copy_b_wildcard_source_concat_tracked() {
         let mut env = Environment::new(&Config::default());
         env.modified_filesystem.insert(
