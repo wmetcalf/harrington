@@ -9197,7 +9197,12 @@ fn scan_account_modification(deobfuscated: &str, env: &mut Environment) {
             .get(0)
             .map(|m| m.as_str().trim().to_string())
             .unwrap_or_default();
-        let Some(account) = powershell_named_argument(&command, "-Name") else {
+        let account = powershell_named_argument(&command, "-Name").or_else(|| {
+            powershell_positional_arguments(&command, "New-LocalUser")
+                .into_iter()
+                .next()
+        });
+        let Some(account) = account else {
             continue;
         };
         push("local-user-add", account, None, command);
@@ -9207,10 +9212,15 @@ fn scan_account_modification(deobfuscated: &str, env: &mut Environment) {
             .get(0)
             .map(|m| m.as_str().trim().to_string())
             .unwrap_or_default();
-        let Some(group) = powershell_named_argument(&command, "-Group") else {
+        let positional = powershell_positional_arguments(&command, "Add-LocalGroupMember");
+        let group =
+            powershell_named_argument(&command, "-Group").or_else(|| positional.first().cloned());
+        let Some(group) = group else {
             continue;
         };
-        let Some(account) = powershell_named_argument(&command, "-Member") else {
+        let account =
+            powershell_named_argument(&command, "-Member").or_else(|| positional.get(1).cloned());
+        let Some(account) = account else {
             continue;
         };
         push("localgroup-add", account, Some(group), command);
@@ -9238,6 +9248,31 @@ fn powershell_named_argument(command: &str, name: &str) -> Option<String> {
         .or_else(|| caps.get(3))
         .map(|m| m.as_str().trim_matches(['"', '\'']).to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn powershell_positional_arguments(command: &str, keyword: &str) -> Vec<String> {
+    let Some(start) = find_ascii_case_insensitive(command, keyword, 0) else {
+        return Vec::new();
+    };
+    let tokens = split_words(&command[start..]);
+    let mut args = Vec::new();
+    let mut skip_next = false;
+    for token in tokens.iter().skip(1) {
+        let token = strip_quotes(token).trim_matches(['"', '\'']);
+        if token.is_empty() {
+            continue;
+        }
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if token.starts_with('-') {
+            skip_next = true;
+            continue;
+        }
+        args.push(token.to_string());
+    }
+    args
 }
 
 #[cfg(test)]
