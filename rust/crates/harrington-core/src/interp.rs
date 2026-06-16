@@ -462,15 +462,15 @@ fn sort_output_file_command(line: &str) -> Option<(String, String)> {
         .rsplit(['\\', '/'])
         .next()
         .unwrap_or(command)
-        .trim_end_matches(".exe")
         .to_ascii_lowercase();
+    let base = base.strip_suffix(".exe").unwrap_or(&base);
     if base != "sort" {
         return None;
     }
 
     let mut output = None;
     let mut kept = Vec::new();
-    kept.push(words[0].clone());
+    kept.push("sort".to_string());
     let mut i = 1;
     while i < words.len() {
         let arg = words[i].trim_matches('"');

