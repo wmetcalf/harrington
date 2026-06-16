@@ -7774,7 +7774,7 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
         .expect("set-mp-disable")
     });
     static SC_DEFENDER_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?i)sc(?:\.exe)?\s+(?:\\\\[^\s]+\s+)?(stop|config|delete)\s+"?(WinDefend|MsMpSvc|wuauserv|MpsSvc|WdNisSvc)"?\b"#)
+        Regex::new(r#"(?i)sc(?:\.exe)?\s+(?:\\\\[^\s]+\s+)?(stop|config|delete)\s+"?(WinDefend|MsMpSvc|wuauserv|MpsSvc|WdNisSvc)"?\b[^\r\n]*"#)
             .expect("sc-defender")
     });
     static PS_SET_SERVICE_RE: Lazy<Regex> = Lazy::new(|| {
@@ -7946,10 +7946,14 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
     if has_defender_service_process_atom_lower(&lower) {
         profile_defender_group!("service_process", {
             for caps in SC_DEFENDER_RE.captures_iter(deobfuscated) {
+                let command = caps.get(0).map(|m| m.as_str()).unwrap_or_default();
                 let verb = caps
                     .get(1)
                     .map(|m| m.as_str().to_ascii_lowercase())
                     .unwrap_or_default();
+                if verb == "config" && !sc_config_disables_service(command) {
+                    continue;
+                }
                 let svc = caps
                     .get(2)
                     .map(|m| m.as_str().to_string())
@@ -11242,6 +11246,21 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
 
 fn is_registry_dword_zero(value: &str) -> bool {
     is_registry_dword_value(value, 0)
+}
+
+fn sc_config_disables_service(command: &str) -> bool {
+    let lower = command.to_ascii_lowercase();
+    let Some(start_idx) = lower.find("start") else {
+        return false;
+    };
+    let after_start = &lower[start_idx + "start".len()..];
+    let after_equals = after_start.trim_start();
+    let after_equals = after_equals.strip_prefix('=').unwrap_or(after_equals);
+    after_equals
+        .trim_start()
+        .split_ascii_whitespace()
+        .next()
+        .is_some_and(|value| value.trim_matches('"') == "disabled")
 }
 
 fn is_registry_dword_one(value: &str) -> bool {

