@@ -6773,6 +6773,21 @@ powershell -Command "Get-CimInstance Win32_ShadowCopy | Remove-CimInstance"
     }
 
     #[test]
+    fn reagentc_disable_emits_anti_recovery_trait() {
+        let script = br#"reagentc /disable"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AntiRecovery { action } if action == "reagentc-disable"
+            )),
+            "reagentc /disable was not surfaced as anti-recovery: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn generic_delete_does_not_emit_evidence_cleanup_trait() {
         let script = b"@echo off\r\n\
             del /f /q C:\\Temp\\installer.log\r\n\

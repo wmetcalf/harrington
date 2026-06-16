@@ -8798,6 +8798,10 @@ fn scan_anti_recovery(deobfuscated: &str, env: &mut Environment) {
                 .unwrap(),
                 "wbadmin-delete",
             ),
+            (
+                Regex::new(r"(?i)\breagentc(?:\.exe)?\s+/disable\b").unwrap(),
+                "reagentc-disable",
+            ),
         ]
     });
     for (re, action) in PATTERNS.iter() {
