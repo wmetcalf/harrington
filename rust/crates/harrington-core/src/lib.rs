@@ -7276,6 +7276,33 @@ powershell -Command "Get-ChildItem Env:"
     }
 
     #[test]
+    fn powershell_module_command_alias_discovery_emit_enumeration_traits() {
+        let report = analyze(
+            br#"powershell -Command "Get-Command -Name *Download*"
+powershell -Command "Get-Alias"
+powershell -Command "gmo -ListAvailable"
+"#,
+            &AnalyzeConfig::default(),
+        );
+
+        for (kind, needle) in [
+            ("ps-get-command", "Get-Command -Name *Download*"),
+            ("ps-get-alias", "Get-Alias"),
+            ("ps-get-module", "gmo -ListAvailable"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Enumeration { enum_kind, command }
+                        if enum_kind == kind && command.contains(needle)
+                )),
+                "missing PowerShell command surface discovery {kind}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn powershell_discovery_enumeration_command_is_not_truncated() {
         let long_marker = "tail-marker-preserved-after-a-very-long-discovery-command";
         let script = format!(
@@ -40646,6 +40673,14 @@ mod ps_alias_tests {
         assert!(out.contains("Get-Service WinDefend"), "got: {}", out);
         assert!(out.contains("Start-Service TermService"), "got: {}", out);
         assert!(out.contains("Set-Service WinDefend"), "got: {}", out);
+    }
+
+    #[test]
+    fn command_surface_aliases_expanded() {
+        let out = expand_aliases("gcm *Download*; gal; gmo -ListAvailable");
+        assert!(out.contains("Get-Command *Download*"), "got: {}", out);
+        assert!(out.contains("Get-Alias"), "got: {}", out);
+        assert!(out.contains("Get-Module -ListAvailable"), "got: {}", out);
     }
 
     #[test]
