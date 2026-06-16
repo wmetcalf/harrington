@@ -3627,6 +3627,29 @@ powershell -Command "New-PSSession -ComputerName 'filesrv.example'"
     }
 
     #[test]
+    fn powershell_wmi_remoting_attached_computername_emits_remote_exec() {
+        let script = br#"powershell -Command "Invoke-WmiMethod -ComputerName:target.example -Class Win32_Process -Name Create -ArgumentList 'cmd /c hostname'"
+powershell -Command "Set-WmiInstance -ComputerName='adminbox.example' -Class Win32_Process -Arguments @{CommandLine='cmd /c whoami'}"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        for (tool, host) in [
+            ("Invoke-WmiMethod", "target.example"),
+            ("Set-WmiInstance", "adminbox.example"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::RemoteExec { tool: t, target_host }
+                        if t == tool && target_host == host
+                )),
+                "missing PowerShell WMI remote exec {tool} -> {host}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn copied_anti_recovery_aliases_emit_traits() {
         let script = br#"copy C:\Windows\System32\vssadmin.exe C:\Users\Public\vs.tmp
 C:\Users\Public\vs.tmp delete shadows /all /quiet

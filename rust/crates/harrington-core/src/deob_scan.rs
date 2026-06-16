@@ -10061,7 +10061,7 @@ fn scan_remote_exec(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
     static WINRM_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?i)\b(?:winrm(?:\.(?:cmd|exe))?\s+(?:invoke|i)\s+[^\r\n]*?(?:[-/]r(?:emote)?[:=]?\s*)(\S+)|winrs(?:\.exe)?\s+[-/]r(?:emote)?[:=]?\s*(\S+)|Invoke-WmiMethod\b[^\r\n]*?-ComputerName\s+(\S+)|Set-WmiInstance\b[^\r\n]*?-ComputerName\s+(\S+))"#)
+        Regex::new(r#"(?i)\b(?:winrm(?:\.(?:cmd|exe))?\s+(?:invoke|i)\s+[^\r\n]*?(?:[-/]r(?:emote)?[:=]?\s*)(\S+)|winrs(?:\.exe)?\s+[-/]r(?:emote)?[:=]?\s*(\S+)|Invoke-WmiMethod\b[^\r\n]*?-ComputerName(?:\s*[:=]\s*|\s+)(?:"+([^"'\s;|&}]+)"+|'([^']+)'|([^,\s;|&}]+))|Set-WmiInstance\b[^\r\n]*?-ComputerName(?:\s*[:=]\s*|\s+)(?:"+([^"'\s;|&}]+)"+|'([^']+)'|([^,\s;|&}]+)))"#)
             .expect("winrm re")
     });
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -10071,6 +10071,10 @@ fn scan_remote_exec(deobfuscated: &str, env: &mut Environment) {
             .or_else(|| caps.get(2))
             .or_else(|| caps.get(3))
             .or_else(|| caps.get(4))
+            .or_else(|| caps.get(5))
+            .or_else(|| caps.get(6))
+            .or_else(|| caps.get(7))
+            .or_else(|| caps.get(8))
             .map(|m| {
                 m.as_str()
                     .trim_matches(|c: char| c == '"' || c == '\'')
