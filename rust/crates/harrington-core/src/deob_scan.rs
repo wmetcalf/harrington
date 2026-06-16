@@ -11007,10 +11007,18 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
     }
     for m in PS_RDP_FIREWALL_GROUP_ENABLE_RE.find_iter(deobfuscated) {
         let command = m.as_str().trim();
+        let positional =
+            if find_ascii_case_insensitive(command, "Enable-NetFirewallRule", 0).is_some() {
+                powershell_positional_arguments(command, "Enable-NetFirewallRule")
+            } else {
+                powershell_positional_arguments(command, "Set-NetFirewallRule")
+            };
         let group = powershell_named_argument(command, "-DisplayGroup")
             .or_else(|| powershell_named_argument(command, "-Group"))
             .unwrap_or_default();
-        let name = powershell_named_argument(command, "-Name").unwrap_or_default();
+        let name = powershell_named_argument(command, "-Name")
+            .or_else(|| positional.first().cloned())
+            .unwrap_or_default();
         let enabled = if command.to_ascii_lowercase().contains("set-netfirewallrule") {
             powershell_named_argument(command, "-Enabled")
                 .map(|value| matches!(value.to_ascii_lowercase().as_str(), "true" | "$true" | "1"))
