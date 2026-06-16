@@ -9187,6 +9187,11 @@ fn scan_enumeration(deobfuscated: &str, env: &mut Environment) {
                 false,
             ),
             (
+                Regex::new(r"(?im)^[^\r\n]*?\bnet1?(?:\.exe)?\s+view\b[^\r\n]*").unwrap(),
+                "net-view",
+                false,
+            ),
+            (
                 Regex::new(r"(?i)\bwhoami(?:\.exe)?\s+/(?:priv|groups|all)\b").unwrap(),
                 "whoami-priv",
                 false,
@@ -9360,6 +9365,7 @@ mod enumeration_prefilter_tests {
     fn prefilter_allows_known_enumeration_commands() {
         for sample in [
             "net user",
+            "net view /domain",
             "whoami /priv",
             "query session",
             "quser",
