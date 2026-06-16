@@ -142,7 +142,23 @@ fn forfiles_path_under_root(path: &str, normalized_root: &str, recursive: bool) 
 }
 
 fn substitute_forfiles_placeholders(inner: &str, path: &str) -> String {
-    replace_ascii_ci(inner, "@path", &format!("\"{path}\""))
+    let file = windows_basename(path).unwrap_or(path);
+    let (fname, ext) = split_filename_ext(file);
+    let mut out = replace_ascii_ci(inner, "@path", &format!("\"{path}\""));
+    out = replace_ascii_ci(&out, "@file", file);
+    out = replace_ascii_ci(&out, "@fname", fname);
+    out = replace_ascii_ci(&out, "@ext", ext);
+    replace_ascii_ci(&out, "@isdir", "FALSE")
+}
+
+fn split_filename_ext(file: &str) -> (&str, &str) {
+    let Some(dot) = file.rfind('.') else {
+        return (file, "");
+    };
+    if dot == 0 {
+        return (file, "");
+    }
+    file.split_at(dot)
 }
 
 fn replace_ascii_ci(input: &str, needle: &str, replacement: &str) -> String {
@@ -307,6 +323,27 @@ mod tests {
             )
             .unwrap(),
             vec![r#"cmd /c "c:\work\a.js""#, r#"cmd /c "c:\work\b.js""#]
+        );
+    }
+
+    #[test]
+    fn substitutes_name_and_extension_placeholders() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            r"c:\work\run.js".to_string(),
+            FsEntry::Content {
+                content: b"fetch('https://example.invalid')".to_vec(),
+                append: false,
+            },
+        );
+
+        assert_eq!(
+            extract_forfiles_inner_with_env(
+                r#"forfiles /p C:\Work /m *.js /c "cmd /c C:\Work\@fname@ext""#,
+                &env
+            )
+            .as_deref(),
+            Some(r"cmd /c C:\Work\run.js")
         );
     }
 }
