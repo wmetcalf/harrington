@@ -10813,6 +10813,23 @@ fn scan_service_install(deobfuscated: &str, env: &mut Environment) {
         Regex::new(r#"(?i)\bsc(?:\.exe)?\s+create\s+(\S+)(?:\s+[^\r\n]*?\bbinPath=\s*(?:"([^"]+)"|(\S+)))?"#)
             .expect("sc create re")
     });
+    static PS_NEW_SERVICE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?im)^[^\r\n]*?\bNew-Service\b[^\r\n]*"#)
+            .expect("powershell new-service regex")
+    });
+    let mut push = |name: String, path: String| {
+        if env.traits.iter().any(|t| {
+            matches!(
+                t, crate::traits::Trait::ServiceInstall { service_name: n, .. } if n == &name
+            )
+        }) {
+            return;
+        }
+        env.traits.push(crate::traits::Trait::ServiceInstall {
+            service_name: name,
+            bin_path: path,
+        });
+    };
     for caps in SC_CREATE_RE.captures_iter(deobfuscated) {
         let name = caps
             .get(1)
@@ -10823,17 +10840,15 @@ fn scan_service_install(deobfuscated: &str, env: &mut Environment) {
             .or_else(|| caps.get(3))
             .map(|m| m.as_str().to_string())
             .unwrap_or_default();
-        if env.traits.iter().any(|t| {
-            matches!(
-                t, crate::traits::Trait::ServiceInstall { service_name: n, .. } if n == &name
-            )
-        }) {
+        push(name, path);
+    }
+    for m in PS_NEW_SERVICE_RE.find_iter(deobfuscated) {
+        let command = m.as_str().trim();
+        let Some(name) = powershell_named_argument(command, "-Name") else {
             continue;
-        }
-        env.traits.push(crate::traits::Trait::ServiceInstall {
-            service_name: name,
-            bin_path: path,
-        });
+        };
+        let path = powershell_named_argument(command, "-BinaryPathName").unwrap_or_default();
+        push(name, path);
     }
 }
 

