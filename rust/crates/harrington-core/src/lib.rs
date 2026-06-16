@@ -5982,6 +5982,28 @@ attrib \"C:\\Users\\Public\\payload.exe\" +r +a +s +h\r\n";
             report.traits
         );
     }
+
+    #[test]
+    fn copied_attrib_alias_emits_file_concealment_trait() {
+        let script = b"@echo off\r\n\
+copy C:\\Windows\\System32\\attrib.exe C:\\Users\\Public\\atb.tmp\r\n\
+C:\\Users\\Public\\atb.tmp +h +s C:\\Users\\Public\\stage.vbs\r\n";
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::FileConcealment {
+                    target,
+                    attributes,
+                    ..
+                } if target.ends_with("stage.vbs")
+                    && attributes.iter().any(|a| a == "hidden")
+                    && attributes.iter().any(|a| a == "system")
+            )),
+            "missing copied-attrib concealment trait: {:?}",
+            report.traits
+        );
+    }
 }
 
 #[cfg(test)]

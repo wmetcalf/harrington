@@ -5422,6 +5422,53 @@ fn scan_copied_evidence_cleanup_alias_deob_text(deobfuscated: &str, env: &mut En
     }
 }
 
+fn scan_copied_attrib_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    let mut aliases: std::collections::HashMap<String, &'static str> =
+        std::collections::HashMap::new();
+    for t in &env.traits {
+        let Trait::WindowsUtilManip { src, dst, .. } = t else {
+            continue;
+        };
+        let src_base = basename_lower(src);
+        let replay_command = match src_base.as_str() {
+            "attrib.exe" | "attrib" => "attrib.exe",
+            _ => continue,
+        };
+        insert_alias_command_names(&mut aliases, dst, replay_command);
+    }
+    if aliases.is_empty() {
+        return;
+    }
+
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        let Some(cmd) = tokens.first() else {
+            continue;
+        };
+        let replay_command = aliases
+            .get(&basename_lower(cmd))
+            .or_else(|| aliases.get(&cmd.trim_matches(['"', '\'']).to_ascii_lowercase()));
+        let Some(replay_command) = replay_command else {
+            continue;
+        };
+        if tokens.len() < 2 {
+            continue;
+        }
+
+        push_manipulated_exec_once(env, line, cmd);
+        let rest = line
+            .get(cmd.len()..)
+            .map(str::trim_start)
+            .unwrap_or_default();
+        let replay = if rest.is_empty() {
+            (*replay_command).to_string()
+        } else {
+            format!("{replay_command} {rest}")
+        };
+        scan_file_concealment(&replay, env);
+    }
+}
+
 fn scan_copied_enumeration_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
     let mut aliases: std::collections::HashMap<String, &'static str> =
         std::collections::HashMap::new();
@@ -8967,10 +9014,12 @@ fn scan_file_concealment(deobfuscated: &str, env: &mut Environment) {
 
     for line in deobfuscated.lines() {
         let tokens = split_words(line);
-        let Some(cmd_index) = tokens
-            .iter()
-            .position(|token| basename_lower(clean_token(token).as_str()) == "attrib")
-        else {
+        let Some(cmd_index) = tokens.iter().position(|token| {
+            matches!(
+                basename_lower(clean_token(token).as_str()).as_str(),
+                "attrib" | "attrib.exe"
+            )
+        }) else {
             continue;
         };
 
@@ -10333,6 +10382,9 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     });
     scan_step!("copied_evidence_cleanup_alias_deob_text", {
         scan_copied_evidence_cleanup_alias_deob_text(deobfuscated, env);
+    });
+    scan_step!("copied_attrib_alias_deob_text", {
+        scan_copied_attrib_alias_deob_text(deobfuscated, env);
     });
     scan_step!("copied_enumeration_alias_deob_text", {
         scan_copied_enumeration_alias_deob_text(deobfuscated, env);
