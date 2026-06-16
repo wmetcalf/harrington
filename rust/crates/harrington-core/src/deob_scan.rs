@@ -5504,6 +5504,7 @@ fn scan_copied_enumeration_alias_deob_text(deobfuscated: &str, env: &mut Environ
             "driverquery.exe" | "driverquery" => "driverquery.exe",
             "auditpol.exe" | "auditpol" => "auditpol.exe",
             "dsregcmd.exe" | "dsregcmd" => "dsregcmd.exe",
+            "tzutil.exe" | "tzutil" => "tzutil.exe",
             _ => continue,
         };
         insert_alias_command_names(&mut aliases, dst, replay_command);
@@ -9372,6 +9373,12 @@ fn network_utility_enumeration_kind(tokens: &[String], command: &str) -> Option<
             .skip(1)
             .any(|token| token.eq_ignore_ascii_case("/status"))
             .then_some("dsregcmd"),
+        "tzutil" | "tzutil.exe" => tokens
+            .iter()
+            .skip(1)
+            .any(|token| token.eq_ignore_ascii_case("/g"))
+            .then_some("tzutil"),
+        "vol" | "vol.exe" => Some("volume-query"),
         "whoami" | "whoami.exe" => tokens
             .iter()
             .skip(1)
@@ -9492,6 +9499,9 @@ fn has_enumeration_atom(text: &str) -> bool {
         "driverquery",
         "auditpol",
         "dsregcmd",
+        "tzutil",
+        "vol ",
+        "vol\t",
         "whoami",
         "hostname",
         "query session",
@@ -9567,6 +9577,8 @@ mod enumeration_prefilter_tests {
             "driverquery /v",
             "auditpol /get /category:*",
             "dsregcmd /status",
+            "tzutil /g",
+            "vol %SystemDrive%",
             "whoami /priv",
             "whoami /user",
             "hostname",
