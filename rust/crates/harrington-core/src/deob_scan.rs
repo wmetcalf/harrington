@@ -12248,10 +12248,8 @@ fn scan_powershell_registry_persistence(deobfuscated: &str, env: &mut Environmen
     use once_cell::sync::Lazy;
     use regex::Regex;
     static PS_ITEM_PROPERTY_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(
-            r#"(?im)(?:^|[;|&])\s*[^\r\n;|&]*?\b(?:(?:New|Set)-ItemProperty|sp)\b[^\r\n;|&]*"#,
-        )
-        .expect("powershell itemproperty persistence regex")
+        Regex::new(r#"(?im)^[^\r\n]*?\b(?:(?:New|Set)-ItemProperty|sp)\b[^\r\n]*"#)
+            .expect("powershell itemproperty persistence regex")
     });
 
     const PERSISTENCE_PATHS: &[&str] = &[
@@ -12270,65 +12268,147 @@ fn scan_powershell_registry_persistence(deobfuscated: &str, env: &mut Environmen
     ];
 
     for m in PS_ITEM_PROPERTY_RE.find_iter(deobfuscated) {
-        let line = m.as_str().trim();
-        let positional = if find_ascii_case_insensitive(line, "New-ItemProperty", 0).is_some() {
-            powershell_itemproperty_positional_arguments(line, "New-ItemProperty")
-        } else if find_ascii_case_insensitive(line, "Set-ItemProperty", 0).is_some() {
-            powershell_itemproperty_positional_arguments(line, "Set-ItemProperty")
-        } else {
-            powershell_itemproperty_positional_arguments(line, "sp")
-        };
-        let mut positional = positional.into_iter();
-        let Some(path) = powershell_named_argument(line, "-Path")
-            .or_else(|| powershell_named_argument(line, "-LiteralPath"))
-            .or_else(|| positional.next())
-        else {
-            continue;
-        };
-        let Some((hive, key)) = normalize_powershell_registry_path(&path) else {
-            continue;
-        };
-        let key_lower = format!("\\{}", key.to_ascii_lowercase());
-        if !PERSISTENCE_PATHS
-            .iter()
-            .any(|path| key_lower.contains(path))
-        {
-            continue;
-        }
-        let value_name = powershell_named_argument(line, "-Name")
-            .or_else(|| positional.next())
-            .unwrap_or_default();
-        let command = powershell_named_argument(line, "-Value")
-            .or_else(|| positional.next())
-            .unwrap_or_default();
-        if env.traits.iter().any(|t| {
-            matches!(
-                t,
-                crate::traits::Trait::Persistence {
-                    hive: existing_hive,
-                    key: existing_key,
-                    value_name: existing_value,
-                    ..
-                } if existing_hive == &hive
-                    && existing_key == &key
-                    && existing_value == &value_name
-            )
-        }) {
-            continue;
-        }
-        env.traits.push(crate::traits::Trait::Persistence {
-            hive,
-            key,
-            value_name,
-            command: command.clone(),
-        });
-        if let Some((child, delayed)) =
-            crate::handlers::passthrough::persisted_command_child(&command)
-        {
-            env.exec_cmd.push(child);
-            env.exec_cmd_delayed.push(delayed);
+        for line in powershell_statement_segments(m.as_str()) {
+            let line = line.trim();
+            if !powershell_itemproperty_segment_has_command(line) {
+                continue;
+            }
+            let positional = if find_ascii_case_insensitive(line, "New-ItemProperty", 0).is_some() {
+                powershell_itemproperty_positional_arguments(line, "New-ItemProperty")
+            } else if find_ascii_case_insensitive(line, "Set-ItemProperty", 0).is_some() {
+                powershell_itemproperty_positional_arguments(line, "Set-ItemProperty")
+            } else {
+                powershell_itemproperty_positional_arguments(line, "sp")
+            };
+            let mut positional = positional.into_iter();
+            let Some(path) = powershell_named_argument(line, "-Path")
+                .or_else(|| powershell_named_argument(line, "-LiteralPath"))
+                .or_else(|| positional.next())
+            else {
+                continue;
+            };
+            let Some((hive, key)) = normalize_powershell_registry_path(&path) else {
+                continue;
+            };
+            let key_lower = format!("\\{}", key.to_ascii_lowercase());
+            if !PERSISTENCE_PATHS
+                .iter()
+                .any(|path| key_lower.contains(path))
+            {
+                continue;
+            }
+            let value_name = powershell_named_argument(line, "-Name")
+                .or_else(|| positional.next())
+                .unwrap_or_default();
+            let command = powershell_named_argument(line, "-Value")
+                .or_else(|| positional.next())
+                .unwrap_or_default();
+            if env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    crate::traits::Trait::Persistence {
+                        hive: existing_hive,
+                        key: existing_key,
+                        value_name: existing_value,
+                        ..
+                    } if existing_hive == &hive
+                        && existing_key == &key
+                        && existing_value == &value_name
+                )
+            }) {
+                continue;
+            }
+            env.traits.push(crate::traits::Trait::Persistence {
+                hive,
+                key,
+                value_name,
+                command: command.clone(),
+            });
+            if let Some((child, delayed)) =
+                crate::handlers::passthrough::persisted_command_child(&command)
+            {
+                env.exec_cmd.push(child);
+                env.exec_cmd_delayed.push(delayed);
+            }
         }
     }
+}
+
+fn powershell_itemproperty_segment_has_command(segment: &str) -> bool {
+    contains_ascii_keyword(segment, "New-ItemProperty")
+        || contains_ascii_keyword(segment, "Set-ItemProperty")
+        || segment
+            .split(|c: char| {
+                c.is_ascii_whitespace()
+                    || matches!(c, ';' | '|' | '(' | '{' | '&' | '"' | '\'' | '`')
+            })
+            .any(|token| token.eq_ignore_ascii_case("sp"))
+}
+
+fn powershell_statement_segments(line: &str) -> Vec<&str> {
+    let line = powershell_command_body_for_segments(line).unwrap_or(line);
+    let mut segments = Vec::new();
+    let mut start = 0usize;
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut chars = line.char_indices().peekable();
+    while let Some((idx, ch)) = chars.next() {
+        match ch {
+            '\'' if !in_double => {
+                if in_single && chars.peek().is_some_and(|(_, next)| *next == '\'') {
+                    chars.next();
+                } else {
+                    in_single = !in_single;
+                }
+            }
+            '"' if !in_single => in_double = !in_double,
+            '`' if in_double => {
+                chars.next();
+            }
+            ';' | '|' | '&' if !in_single && !in_double => {
+                if start < idx {
+                    segments.push(&line[start..idx]);
+                }
+                start = idx + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    if start < line.len() {
+        segments.push(&line[start..]);
+    }
+    segments
+}
+
+fn powershell_command_body_for_segments(line: &str) -> Option<&str> {
+    let command_pos = find_ascii_case_insensitive(line, "-Command", 0)
+        .or_else(|| find_ascii_case_insensitive(line, "/Command", 0))
+        .or_else(|| find_ascii_case_insensitive(line, "-c", 0))
+        .or_else(|| find_ascii_case_insensitive(line, "/c", 0))?;
+    let after_flag = &line[command_pos..];
+    let flag_len = if after_flag
+        .get(..8)
+        .is_some_and(|flag| flag.eq_ignore_ascii_case("-Command"))
+        || after_flag
+            .get(..8)
+            .is_some_and(|flag| flag.eq_ignore_ascii_case("/Command"))
+    {
+        8
+    } else {
+        2
+    };
+    let mut body = after_flag.get(flag_len..)?.trim_start();
+    if body.starts_with([':', '=']) {
+        body = body[1..].trim_start();
+    }
+    body = body.trim();
+    if body.len() >= 2 {
+        let bytes = body.as_bytes();
+        if matches!(bytes.first(), Some(b'"' | b'\'')) && bytes.first() == bytes.last() {
+            body = &body[1..body.len() - 1];
+        }
+    }
+    (!body.is_empty()).then_some(body)
 }
 
 fn powershell_itemproperty_positional_arguments(command: &str, keyword: &str) -> Vec<String> {
