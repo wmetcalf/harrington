@@ -5,8 +5,12 @@
 //! used by `drive()` is `run_for_from_raw`; `h_for` (called on the *normalized* line)
 //! is a no-op so that no double-execution occurs.
 
-use crate::env::Environment;
+use crate::env::{Environment, FsEntry};
 use crate::for_loop::run_body;
+use crate::handlers::util::{
+    filesystem_entry_for_path, normalize_filesystem_storage_path, normalize_wildcard_path,
+    wildcard_match,
+};
 use once_cell::sync::Lazy;
 use regex::Regex;
 
@@ -25,6 +29,15 @@ static FOR_L_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r"(?i)^\s*for\s*/L\s+%%?(?P<var>\S)\s+in\s*\(\s*(?P<start>[-+]?\d+)[\s,]+(?P<step>[-+]?\d+)[\s,]+(?P<end>[-+]?\d+)\s*\)\s*do\s+(?P<body>.+)$"
     ).expect("for /L regex")
+});
+
+// Regex is a compile-time constant; .expect on a literal panic-at-startup is a developer error.
+#[allow(clippy::expect_used)]
+static FOR_D_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"(?i)^\s*for\s*/D\s+%%?(?P<var>\S)\s+in\s*\(\s*(?P<set>[^)]+)\)\s*do\s+(?P<body>.+)$",
+    )
+    .expect("for /D regex")
 });
 
 // Regex is a compile-time constant; .expect on a literal panic-at-startup is a developer error.
@@ -638,6 +651,24 @@ pub fn run_for_from_raw(raw: &str, env: &mut Environment) -> bool {
         return true;
     }
 
+    if let Some(caps) = FOR_D_RE.captures(trimmed) {
+        let var = caps
+            .name("var")
+            .and_then(|m| m.as_str().chars().next())
+            .unwrap_or('A');
+        let set = caps
+            .name("set")
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default();
+        let body = caps
+            .name("body")
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default();
+        let values = resolve_for_d_values(&set, env);
+        run_iter_body(&body, var, values.into_iter(), env);
+        return true;
+    }
+
     if let Some(caps) = FOR_PLAIN_RE.captures(trimmed) {
         let var = caps
             .name("var")
@@ -658,22 +689,87 @@ pub fn run_for_from_raw(raw: &str, env: &mut Environment) -> bool {
         // by `split_whitespace` alone and used verbatim in the substring
         // index (`!unique:~+1,1!` works, but only because parse_substr
         // accepts the leading sign — for safety we drop it here too).
-        let values: Vec<String> = set
-            .split(|c: char| c.is_whitespace() || c == ',' || c == ';')
-            .filter(|s| !s.is_empty())
-            .map(|s| {
-                if let Some(rest) = s.strip_prefix('+') {
-                    rest.to_string()
-                } else {
-                    s.to_string()
-                }
-            })
-            .collect();
+        let values = split_for_set_values(&set, false);
         run_iter_body(&body, var, values.into_iter(), env);
         return true;
     }
 
     false
+}
+
+fn resolve_for_d_values(set: &str, env: &Environment) -> Vec<String> {
+    split_for_set_values(set, true)
+        .into_iter()
+        .flat_map(|candidate| {
+            if candidate.contains(['*', '?']) {
+                tracked_directories_matching(&candidate, env)
+            } else if matches!(
+                filesystem_entry_for_path(env, &candidate),
+                Some(FsEntry::Directory)
+            ) {
+                vec![candidate]
+            } else {
+                Vec::new()
+            }
+        })
+        .collect()
+}
+
+fn tracked_directories_matching(pattern: &str, env: &Environment) -> Vec<String> {
+    let normalized_pattern = normalize_wildcard_path(&normalize_filesystem_storage_path(pattern));
+    let mut matched = env
+        .modified_filesystem
+        .iter()
+        .filter_map(|(tracked_path, entry)| {
+            if !matches!(entry, FsEntry::Directory)
+                || !directory_pattern_matches(pattern, &normalized_pattern, tracked_path)
+            {
+                return None;
+            }
+            Some(tracked_path.clone())
+        })
+        .collect::<Vec<_>>();
+    matched.sort();
+    matched
+}
+
+fn directory_pattern_matches(pattern: &str, normalized_pattern: &str, tracked_path: &str) -> bool {
+    let normalized_path = normalize_wildcard_path(tracked_path);
+    if pattern.contains(['\\', '/', ':']) {
+        return wildcard_match(normalized_pattern, &normalized_path);
+    }
+    windows_basename(tracked_path).is_some_and(|name| {
+        !tracked_path.contains(['\\', '/', ':'])
+            && wildcard_match(normalized_pattern, &normalize_wildcard_path(name))
+    })
+}
+
+fn windows_basename(path: &str) -> Option<&str> {
+    path.trim_matches(['"', '\''])
+        .rsplit(['\\', '/'])
+        .next()
+        .filter(|name| !name.is_empty())
+}
+
+fn split_for_set_values(set: &str, strip_quotes: bool) -> Vec<String> {
+    set.split(|c: char| c.is_whitespace() || c == ',' || c == ';')
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            if strip_quotes {
+                s.trim_matches(['"', '\''])
+            } else {
+                s
+            }
+        })
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            if let Some(rest) = s.strip_prefix('+') {
+                rest.to_string()
+            } else {
+                s.to_string()
+            }
+        })
+        .collect()
 }
 
 fn preserve_for_probe_random_lookups(raw: &str, env: &Environment) {

