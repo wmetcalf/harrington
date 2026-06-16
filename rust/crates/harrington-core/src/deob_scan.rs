@@ -3315,6 +3315,9 @@ fn scan_mshta_local_deob_text(deobfuscated: &str, env: &mut Environment) {
         .collect();
 
     for line in deobfuscated.lines() {
+        if command_starts_with_echo(line) {
+            continue;
+        }
         if !contains_ascii_case_insensitive_atom(line, b"mshta") {
             continue;
         }

