@@ -9027,6 +9027,59 @@ pub(crate) fn ps_downloadfile_calls(text: &str) -> Vec<(String, Option<String>)>
     out
 }
 
+pub(crate) fn ps_download_side_effects(text: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for (src, dst) in ps_downloadfile_calls(text) {
+        let Some(dst) = dst else {
+            continue;
+        };
+        if seen.insert((src.clone(), dst.clone())) {
+            out.push((src, dst));
+        }
+    }
+
+    let regex_atom_profile = PsUrlRegexAtomProfile::new(text);
+    for spec in PS_URL_REGEX_SPECS {
+        if !matches!(
+            spec.atom_kind,
+            PsUrlRegexAtomKind::Iwr | PsUrlRegexAtomKind::Irm | PsUrlRegexAtomKind::CurlExe
+        ) || !regex_atom_profile.matches(spec.atom_kind)
+        {
+            continue;
+        }
+        for caps in spec.regex.captures_iter(text) {
+            let Some(url_match) = caps.get(1) else {
+                continue;
+            };
+            if ps_url_inside_non_download_hash_option(text, url_match.start())
+                || ps_url_is_non_download_option_value(text, url_match.start())
+            {
+                continue;
+            }
+            let statement = logical_statement_at(text, url_match.start());
+            let Some(dst) = outfile_hint_from(statement) else {
+                continue;
+            };
+            let mut url = clean_ps_url(url_match.as_str());
+            if is_schemeless_ip_url(&url) {
+                url = format!("http://{url}");
+            }
+            let Some(src) = crate::deob_scan::normalize_liberal_url_token(&url)
+                .or_else(|| crate::deob_scan::normalize_schemeless_domain_path_token(&url))
+            else {
+                continue;
+            };
+            if seen.insert((src.clone(), dst.clone())) {
+                out.push((src, dst));
+            }
+        }
+    }
+
+    out
+}
+
 fn ps_literal_url_arg(arg: &str) -> Option<String> {
     ps_literal_arg(arg).and_then(|value| normalize_ps_download_url(&value))
 }

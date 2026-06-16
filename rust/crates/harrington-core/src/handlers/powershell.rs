@@ -365,22 +365,12 @@ fn content_from_entry(entry: Option<&FsEntry>) -> Option<Vec<u8>> {
 }
 
 fn record_downloadfile_side_effects(body: &str, env: &mut Environment) {
-    for (src, dst) in crate::ps1_scan::ps_downloadfile_calls(body) {
-        let Some(dst) = dst else {
-            continue;
-        };
-        if !downloadfile_side_effect_content_supported(&src) {
-            continue;
-        }
+    for (src, dst) in crate::ps1_scan::ps_download_side_effects(body) {
         env.modified_filesystem.insert(
             crate::handlers::util::filesystem_storage_key(&dst),
             FsEntry::Download { src },
         );
     }
-}
-
-fn downloadfile_side_effect_content_supported(src: &str) -> bool {
-    src.to_ascii_lowercase().contains("ip-api.com/csv")
 }
 
 fn trim_nul_padding_body(body: &str) -> &str {
