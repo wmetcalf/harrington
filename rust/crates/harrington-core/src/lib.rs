@@ -5623,10 +5623,16 @@ for /f "tokens=1 delims=:" %%A in ('curl -# -k "http://www.geoplugin.net/php.gp?
         let script = br#"powershell -Command "Clear-EventLog -LogName Security"
 powershell -Command "Remove-Item -Recurse -Force C:\Windows\Prefetch\*"
 powershell -Command "Remove-Item -Force $env:APPDATA\Microsoft\Windows\Recent\CustomDestinations\*"
+powershell -Command "Clear-RecycleBin -Force"
 "#;
         let report = analyze(script, &AnalyzeConfig::default());
 
-        for action in ["event-log-clear", "prefetch-delete", "recent-items-delete"] {
+        for action in [
+            "event-log-clear",
+            "prefetch-delete",
+            "recent-items-delete",
+            "recycle-bin-clear",
+        ] {
             assert!(
                 report.traits.iter().any(|t| matches!(
                     t,
