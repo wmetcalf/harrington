@@ -10759,6 +10759,7 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
         let group = powershell_named_argument(command, "-DisplayGroup")
             .or_else(|| powershell_named_argument(command, "-Group"))
             .unwrap_or_default();
+        let name = powershell_named_argument(command, "-Name").unwrap_or_default();
         let enabled = if command.to_ascii_lowercase().contains("set-netfirewallrule") {
             powershell_named_argument(command, "-Enabled")
                 .map(|value| matches!(value.to_ascii_lowercase().as_str(), "true" | "$true" | "1"))
@@ -10766,10 +10767,15 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
         } else {
             true
         };
-        if enabled && group.eq_ignore_ascii_case("Remote Desktop") {
+        let rdp_rule_name = name.to_ascii_lowercase().contains("remotedesktop");
+        if enabled && (group.eq_ignore_ascii_case("Remote Desktop") || rdp_rule_name) {
             push(
                 "rdp-firewall-open",
-                "Remote Desktop".to_string(),
+                if rdp_rule_name {
+                    name
+                } else {
+                    "Remote Desktop".to_string()
+                },
                 command.to_string(),
             );
         }
@@ -10789,6 +10795,7 @@ fn has_remote_access_atom(text: &str) -> bool {
         "termservice",
         "rdtoggle",
         "remote desktop",
+        "remotedesktop",
         "3389",
     ];
     let lower = text.to_ascii_lowercase();

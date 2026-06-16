@@ -3820,6 +3820,24 @@ net start TermService
     }
 
     #[test]
+    fn powershell_rdp_firewall_rule_name_emits_remote_access_trait() {
+        let script =
+            br#"powershell -Command "Enable-NetFirewallRule -Name RemoteDesktop-UserMode-In-TCP""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-firewall-open"
+                        && target == "RemoteDesktop-UserMode-In-TCP"
+            )),
+            "RDP firewall rule-name enablement missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn wmic_rdtoggle_enable_emits_remote_access_trait() {
         let script =
             br#"wmic RDTOGGLE WHERE ServerName='%COMPUTERNAME%' call SetAllowTSConnections 1
