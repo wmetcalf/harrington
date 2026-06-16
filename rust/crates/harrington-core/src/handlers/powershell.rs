@@ -450,13 +450,11 @@ fn record_get_content_set_content_side_effects(body: &str, env: &mut Environment
         let Some((dst, _)) = powershell_content_path_arg(&tokens, set_idx + 1) else {
             continue;
         };
-        let Some(FsEntry::Download { src: url }) = filesystem_entry_for_path(env, &src) else {
+        let Some(entry) = tracked_transfer_entry(&src, env) else {
             continue;
         };
-        env.modified_filesystem.insert(
-            filesystem_storage_key(&dst),
-            FsEntry::Download { src: url.clone() },
-        );
+        env.modified_filesystem
+            .insert(filesystem_storage_key(&dst), entry);
     }
 }
 
