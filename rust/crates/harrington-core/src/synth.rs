@@ -791,6 +791,7 @@ fn filter_findstr(args: &[&str], input: Vec<String>) -> Vec<String> {
     let mut case_insensitive = false;
     let mut invert = false;
     let mut regex_mode = false;
+    let mut literal_mode = false;
     let mut match_begin = false;
     let mut match_end = false;
     let mut match_exact = false;
@@ -832,10 +833,14 @@ fn filter_findstr(args: &[&str], input: Vec<String>) -> Vec<String> {
                         'b' => match_begin = true,
                         'e' => match_end = true,
                         'i' => case_insensitive = true,
+                        'l' => literal_mode = true,
                         'n' => line_numbers = true,
                         'o' => offsets = true,
                         'v' => invert = true,
-                        'r' => regex_mode = true,
+                        'r' => {
+                            regex_mode = true;
+                            literal_mode = false;
+                        }
                         'x' => match_exact = true,
                         _ => {}
                     }
@@ -849,6 +854,7 @@ fn filter_findstr(args: &[&str], input: Vec<String>) -> Vec<String> {
     // Auto-enable regex mode for ^anchor / $end / [class] patterns even when
     // /R wasn't explicitly passed. Many real scripts omit /R but use anchors.
     if !regex_mode
+        && !literal_mode
         && patterns
             .iter()
             .any(|p| p.starts_with('^') || p.ends_with('$') || p.contains('['))

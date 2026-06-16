@@ -23,8 +23,10 @@ use std::collections::{HashMap, HashSet};
 // `[\x2f\x5c]+` = one-or-more forward-slash or backslash.
 pub(crate) static URL_RE: Lazy<Regex> = Lazy::new(|| {
     // Also exclude `;` (PS statement separator), backtick (PS escape),
-    // and comma — these terminate URLs in real CMD/PS source.
-    Regex::new(r#"(?i)\b(https?:[\x2f\x5c]+[^\s"'<>(){}\[\]|^&;`,]+|ftp:[\x2f\x5c]+[^\s"'<>(){}\[\]|^&;`,]+|file:[\x2f\x5c]+[^\s"'<>(){}\[\]|^&;`,]+)"#)
+    // and comma — these terminate URLs in real CMD/PS source. Square
+    // brackets are allowed so forensic URLs such as `/[a]/payload` are
+    // preserved; unmatched trailing brackets are trimmed after capture.
+    Regex::new(r#"(?i)\b(https?:[\x2f\x5c]+[^\s"'<>(){}|^&;`,]+|ftp:[\x2f\x5c]+[^\s"'<>(){}|^&;`,]+|file:[\x2f\x5c]+[^\s"'<>(){}|^&;`,]+)"#)
         .expect("url sweep regex")
 });
 
@@ -118,7 +120,7 @@ static EMBEDDED_POWERSHELL_RE: Lazy<Regex> = Lazy::new(|| {
 // (`;`, `,`, `)`, `(`, etc.) so `... 'URL'); other-stmt` doesn't capture
 // past the URL into the next statement.
 static PROCESS_URL_ARG_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"(?i)(?:^|[\s(])(?:[A-Za-z]:\\)?[^\s"()]+?\.(?:exe|com|scr|bat|cmd)\s+["']((?:https?|file):[\x2f\x5c]+[^\s"'<>(){}\[\]|^&;`,]+)["']"#)
+    Regex::new(r#"(?i)(?:^|[\s(])(?:[A-Za-z]:\\)?[^\s"()]+?\.(?:exe|com|scr|bat|cmd)\s+["']((?:https?|file):[\x2f\x5c]+[^\s"'<>(){}|^&;`,]+)["']"#)
         .expect("process URL argument regex")
 });
 
@@ -464,15 +466,10 @@ fn trim_html_quote_entity_suffix(mut token: &str) -> &str {
 pub(crate) fn normalize_liberal_url_token(token: &str) -> Option<String> {
     let mut token = token.trim().trim_matches(['"', '\'']);
     let end = token
-        .find(|c: char| {
-            matches!(
-                c,
-                '"' | '\'' | ')' | ']' | '}' | ';' | ',' | '`' | '<' | '>'
-            )
-        })
+        .find(['"', '\'', ')', '}', ';', ',', '`', '<', '>'])
         .unwrap_or(token.len());
     token = &token[..end];
-    token = token.trim_end_matches(['.', ',', ';', ':', '\\']);
+    token = trim_liberal_url_suffix(token);
     token = trim_html_quote_entity_suffix(token);
 
     let lower = token.to_ascii_lowercase();
@@ -506,6 +503,29 @@ pub(crate) fn normalize_liberal_url_token(token: &str) -> Option<String> {
         return Some(format!("{scheme}://{}", rest.replace('\\', "/")));
     }
     None
+}
+
+pub(crate) fn trim_liberal_url_suffix(mut token: &str) -> &str {
+    loop {
+        let Some(last) = token.chars().last() else {
+            return token;
+        };
+        let trim = match last {
+            '.' | ',' | ';' | ':' | '\\' | '"' | '\'' | '!' | '?' | '&' => true,
+            ')' => trailing_closer_is_unbalanced(token, '(', ')'),
+            ']' => trailing_closer_is_unbalanced(token, '[', ']'),
+            '}' => trailing_closer_is_unbalanced(token, '{', '}'),
+            _ => false,
+        };
+        if !trim {
+            return token;
+        }
+        token = &token[..token.len() - last.len_utf8()];
+    }
+}
+
+fn trailing_closer_is_unbalanced(token: &str, opener: char, closer: char) -> bool {
+    token.chars().filter(|c| *c == closer).count() > token.chars().filter(|c| *c == opener).count()
 }
 
 pub(crate) fn normalize_schemeless_domain_path_token(token: &str) -> Option<String> {
@@ -8578,18 +8598,7 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
         let mut seen_new: std::collections::HashSet<String> = std::collections::HashSet::new();
         for caps in URL_RE.captures_iter(deobfuscated) {
             let Some(m) = caps.get(1) else { continue };
-            let mut url = m.as_str().to_string();
-            // Trim common trailing punctuation that the regex's terminator class missed
-            while let Some(last) = url.chars().last() {
-                if matches!(
-                    last,
-                    ',' | '.' | ';' | ':' | ')' | ']' | '}' | '"' | '\'' | '!' | '?' | '\\' | '&'
-                ) {
-                    url.pop();
-                } else {
-                    break;
-                }
-            }
+            let mut url = trim_liberal_url_suffix(m.as_str()).to_string();
             if url.len() < 8 {
                 continue;
             } // http://x is the minimum sensible URL
