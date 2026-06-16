@@ -125,6 +125,7 @@ fn run_stage(stage: &str, input: Vec<String>, env: &mut Environment) -> Vec<Stri
                 .map(|(k, v)| format!("{}={}", canonical_env_name(&k), v))
                 .collect()
         }
+        "echo" => synth_echo(rest),
         "cmd" | "cmd.exe" => synth_cmd(rest, input, env),
         "findstr" => synth_findstr(&rest_args, input, env),
         "find" => synth_find(&rest_args, input, env),
@@ -564,6 +565,18 @@ fn synth_type(args: &[&str], input: Vec<String>, env: &mut Environment) -> Vec<S
     out
 }
 
+fn synth_echo(rest: &str) -> Vec<String> {
+    let text = rest.trim();
+    if text.is_empty() {
+        return Vec::new();
+    }
+    let lower = text.to_ascii_lowercase();
+    if matches!(lower.as_str(), "on" | "off") {
+        return Vec::new();
+    }
+    vec![text.to_string()]
+}
+
 fn synth_command_key(token: &str) -> String {
     synth_command_key_inner(token, None)
 }
@@ -711,6 +724,7 @@ fn is_supported_command(cmd: &str) -> bool {
     matches!(
         cmd,
         "set"
+            | "echo"
             | "findstr"
             | "cmd"
             | "cmd.exe"
