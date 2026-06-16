@@ -33,6 +33,15 @@ static FOR_L_RE: Lazy<Regex> = Lazy::new(|| {
 
 // Regex is a compile-time constant; .expect on a literal panic-at-startup is a developer error.
 #[allow(clippy::expect_used)]
+static FOR_R_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"(?i)^\s*for\s*/R(?:\s+(?P<root>.+?))?\s+%%?(?P<var>\S)\s+in\s*\(\s*(?P<set>[^)]+)\)\s*do\s+(?P<body>.+)$",
+    )
+    .expect("for /R regex")
+});
+
+// Regex is a compile-time constant; .expect on a literal panic-at-startup is a developer error.
+#[allow(clippy::expect_used)]
 static FOR_D_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r"(?i)^\s*for\s*/D\s+%%?(?P<var>\S)\s+in\s*\(\s*(?P<set>[^)]+)\)\s*do\s+(?P<body>.+)$",
@@ -651,6 +660,25 @@ pub fn run_for_from_raw(raw: &str, env: &mut Environment) -> bool {
         return true;
     }
 
+    if let Some(caps) = FOR_R_RE.captures(trimmed) {
+        let var = caps
+            .name("var")
+            .and_then(|m| m.as_str().chars().next())
+            .unwrap_or('A');
+        let root = caps.name("root").map(|m| m.as_str()).unwrap_or_default();
+        let set = caps
+            .name("set")
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default();
+        let body = caps
+            .name("body")
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default();
+        let values = resolve_for_r_values(root, &set, env);
+        run_iter_body(&body, var, values.into_iter(), env);
+        return true;
+    }
+
     if let Some(caps) = FOR_D_RE.captures(trimmed) {
         let var = caps
             .name("var")
@@ -713,6 +741,63 @@ fn resolve_for_d_values(set: &str, env: &Environment) -> Vec<String> {
             }
         })
         .collect()
+}
+
+fn resolve_for_r_values(root: &str, set: &str, env: &Environment) -> Vec<String> {
+    let root = root.trim().trim_matches(['"', '\'']);
+    let patterns = split_for_set_values(set, true);
+    let mut matched = Vec::new();
+    for pattern in patterns {
+        matched.extend(tracked_files_matching_recursive(root, &pattern, env));
+    }
+    matched.sort();
+    matched.dedup();
+    matched
+}
+
+fn tracked_files_matching_recursive(root: &str, pattern: &str, env: &Environment) -> Vec<String> {
+    let normalized_pattern = normalize_wildcard_path(pattern);
+    let normalized_root = normalize_wildcard_path(&normalize_filesystem_storage_path(root))
+        .trim_end_matches('\\')
+        .to_string();
+    env.modified_filesystem
+        .iter()
+        .filter_map(|(tracked_path, entry)| {
+            if matches!(entry, FsEntry::Directory)
+                || !recursive_file_is_under_root(tracked_path, &normalized_root)
+                || !recursive_file_pattern_matches(pattern, &normalized_pattern, tracked_path)
+            {
+                return None;
+            }
+            Some(tracked_path.clone())
+        })
+        .collect()
+}
+
+fn recursive_file_is_under_root(tracked_path: &str, normalized_root: &str) -> bool {
+    if normalized_root.is_empty() {
+        return true;
+    }
+    let normalized_path = normalize_wildcard_path(tracked_path);
+    normalized_path == normalized_root
+        || normalized_path
+            .strip_prefix(normalized_root)
+            .is_some_and(|rest| rest.starts_with('\\'))
+}
+
+fn recursive_file_pattern_matches(
+    pattern: &str,
+    normalized_pattern: &str,
+    tracked_path: &str,
+) -> bool {
+    if pattern.contains(['\\', '/', ':']) {
+        return wildcard_match(
+            &normalize_wildcard_path(&normalize_filesystem_storage_path(pattern)),
+            &normalize_wildcard_path(tracked_path),
+        );
+    }
+    windows_basename(tracked_path)
+        .is_some_and(|name| wildcard_match(normalized_pattern, &normalize_wildcard_path(name)))
 }
 
 fn tracked_directories_matching(pattern: &str, env: &Environment) -> Vec<String> {
