@@ -7773,9 +7773,11 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
         )
         .expect("exclusion arg regex")
     });
-    static DISABLE_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?i)Set-MpPreference\s+-(Disable[A-Za-z]+|MAPSReporting|SubmitSamplesConsent)\s+(\S+)"#)
-            .expect("set-mp-disable")
+    static DISABLE_ARG_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?i)-(Disable[A-Za-z]+|MAPSReporting|SubmitSamplesConsent)\s*(?::|=|\s)\s*(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^\s'";|&)]+))"#,
+        )
+        .expect("set-mp-disable")
     });
     static SC_DEFENDER_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?i)sc(?:\.exe)?\s+(stop|config|delete)\s+(WinDefend|MsMpSvc|wuauserv|MpsSvc|WdNisSvc)"#)
@@ -7905,33 +7907,40 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
                 }
             }
 
-            for caps in DISABLE_RE.captures_iter(deobfuscated) {
-                let opt = caps
-                    .get(1)
-                    .map(|m| m.as_str().to_ascii_lowercase())
-                    .unwrap_or_default();
-                let val = caps
-                    .get(2)
-                    .map(|m| m.as_str().to_string())
-                    .unwrap_or_default();
-                // Only flag the disabling forms — `$true` / `1` / `Disabled` /
-                // `2` (SubmitSamplesConsent=2 = never submit). Skip enabling
-                // values like `$false` to avoid false positives in remediation
-                // scripts that turn protections back on.
-                let val_lc = val.to_ascii_lowercase();
-                let disabling = matches!(
-                    (opt.as_str(), val_lc.as_str()),
-                    ("disablerealtimemonitoring", "$true" | "1" | "true")
-                        | ("disablebehaviormonitoring", "$true" | "1" | "true")
-                        | ("disableioavprotection", "$true" | "1" | "true")
-                        | ("disableblockatfirstseen", "$true" | "1" | "true")
-                        | ("disableprivacymode", "$true" | "1" | "true")
-                        | ("disablescriptscanning", "$true" | "1" | "true")
-                        | ("mapsreporting", "disabled" | "0")
-                ) || (opt == "submitsamplesconsent"
-                    && (val_lc == "2" || val_lc == "never"));
-                if disabling {
-                    push(&format!("setmp-{opt}"), val);
+            for line in deobfuscated.lines() {
+                if !line.to_ascii_lowercase().contains("set-mppreference") {
+                    continue;
+                }
+                for caps in DISABLE_ARG_RE.captures_iter(line) {
+                    let opt = caps
+                        .get(1)
+                        .map(|m| m.as_str().to_ascii_lowercase())
+                        .unwrap_or_default();
+                    let val = caps
+                        .get(2)
+                        .or_else(|| caps.get(3))
+                        .or_else(|| caps.get(4))
+                        .map(|m| m.as_str().to_string())
+                        .unwrap_or_default();
+                    // Only flag the disabling forms — `$true` / `1` / `Disabled` /
+                    // `2` (SubmitSamplesConsent=2 = never submit). Skip enabling
+                    // values like `$false` to avoid false positives in remediation
+                    // scripts that turn protections back on.
+                    let val_lc = val.to_ascii_lowercase();
+                    let disabling = matches!(
+                        (opt.as_str(), val_lc.as_str()),
+                        ("disablerealtimemonitoring", "$true" | "1" | "true")
+                            | ("disablebehaviormonitoring", "$true" | "1" | "true")
+                            | ("disableioavprotection", "$true" | "1" | "true")
+                            | ("disableblockatfirstseen", "$true" | "1" | "true")
+                            | ("disableprivacymode", "$true" | "1" | "true")
+                            | ("disablescriptscanning", "$true" | "1" | "true")
+                            | ("mapsreporting", "disabled" | "0")
+                    ) || (opt == "submitsamplesconsent"
+                        && (val_lc == "2" || val_lc == "never"));
+                    if disabling {
+                        push(&format!("setmp-{opt}"), val);
+                    }
                 }
             }
         });
@@ -10360,6 +10369,12 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
         )
         .expect("rdp firewall regex")
     });
+    static RDP_FIREWALL_GROUP_ENABLE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?im)^[^\r\n]*\bnetsh(?:\.exe)?\s+advfirewall\s+firewall\s+set\s+rule[^\r\n]*group\s*=\s*"?remote desktop"?[^\r\n]*\bnew\s+enable\s*=\s*yes\b[^\r\n]*"#,
+        )
+        .expect("rdp firewall group enable regex")
+    });
     let mut push = |technique: &str, target: String, command: String| {
         if env.traits.iter().any(|t| {
             matches!(
@@ -10472,6 +10487,13 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
         push(
             "rdp-firewall-open",
             "3389".to_string(),
+            m.as_str().trim().to_string(),
+        );
+    }
+    for m in RDP_FIREWALL_GROUP_ENABLE_RE.find_iter(deobfuscated) {
+        push(
+            "rdp-firewall-open",
+            "Remote Desktop".to_string(),
             m.as_str().trim().to_string(),
         );
     }

