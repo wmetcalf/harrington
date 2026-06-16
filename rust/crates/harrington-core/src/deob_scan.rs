@@ -7815,6 +7815,10 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
         Regex::new(r#"(?i)netsh(?:\.exe)?\s+advfirewall\s+set\s+(\w+)\s+state\s+off"#)
             .expect("fw-off")
     });
+    static PS_FIREWALL_PROFILE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?im)^[^\r\n]*?\bSet-NetFirewallProfile\b[^\r\n]*"#)
+            .expect("powershell firewall profile regex")
+    });
     static SECURITY_PRODUCT_REMOVE_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(&format!(
             r#"(?im)^[^\r\n]*?\b(?:rmdir|rd|del)(?:\.exe)?\b([^\r\n]*(?:{SECURITY_PRODUCT_PATTERN})[^\r\n]*)"#
@@ -8040,6 +8044,23 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
                     .unwrap_or_default();
                 push("netsh-fw-off", prof);
             }
+            for m in PS_FIREWALL_PROFILE_RE.find_iter(deobfuscated) {
+                let command = m.as_str().trim();
+                let enabled = powershell_named_argument(command, "-Enabled")
+                    .map(|value| {
+                        matches!(
+                            value.to_ascii_lowercase().as_str(),
+                            "false" | "$false" | "0"
+                        )
+                    })
+                    .unwrap_or(false);
+                if !enabled {
+                    continue;
+                }
+                let target = powershell_named_argument(command, "-Profile")
+                    .unwrap_or_else(|| "profile".to_string());
+                push("firewall-profile-disabled", target);
+            }
         });
     }
 
@@ -8129,6 +8150,7 @@ fn has_defender_evasion_atom_lower(lower: &str) -> bool {
         "hidezoneinfoonproperties",
         "savezoneinformation",
         "advfirewall",
+        "set-netfirewallprofile",
         "invoke-nullamsi",
         "amsiinitfailed",
         "amsiutils",
@@ -8218,6 +8240,7 @@ fn has_defender_service_process_atom_lower(lower: &str) -> bool {
 fn has_defender_scheduled_registry_firewall_atom_lower(lower: &str) -> bool {
     lower.contains("schtasks")
         || lower.contains("advfirewall")
+        || lower.contains("set-netfirewallprofile")
         || (lower.contains("reg")
             && (lower.contains("\\services\\")
                 || lower.contains("\\policies\\attachments")
