@@ -3433,6 +3433,9 @@ fn scan_desktopimgdownldr_deob_text(deobfuscated: &str, env: &mut Environment) {
         .collect();
 
     for line in deobfuscated.lines() {
+        if command_starts_with_echo(line) {
+            continue;
+        }
         let tokens = split_words(line);
         for i in 0..tokens.len() {
             let cmd = command_name(strip_quotes(&tokens[i]));
@@ -3473,6 +3476,9 @@ fn scan_certoc_deob_text(deobfuscated: &str, env: &mut Environment) {
         .collect();
 
     for line in deobfuscated.lines() {
+        if command_starts_with_echo(line) {
+            continue;
+        }
         let tokens = split_words(line);
         for i in 0..tokens.len() {
             let cmd = command_name(strip_quotes(&tokens[i]));

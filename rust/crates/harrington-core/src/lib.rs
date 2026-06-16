@@ -34977,6 +34977,21 @@ mod deob_url_scan_tests {
     }
 
     #[test]
+    fn escaped_ampersand_mshta_text_does_not_emit_structured_download() {
+        let script = br#"echo keep ^& mshta "https://hta.example/echoed.hta""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == "https://hta.example/echoed.hta"
+            )),
+            "escaped ampersand echo text was misread as mshta execution: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn mshta_downloaded_hta_in_deob_text_resolves_url() {
         let mut env = crate::env::Environment::new(&Config::default());
         env.traits.push(Trait::Download {
@@ -35072,6 +35087,24 @@ start "" start-schemeless.example/lure.pdf"#,
                 env.traits
             );
         }
+    }
+
+    #[test]
+    fn escaped_ampersand_url_launch_text_does_not_emit_url_launch() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"echo keep ^& rundll32.exe url.dll,FileProtocolHandler "https://rundll32-launch.example/echoed.pdf""#,
+            &mut env,
+        );
+
+        assert!(
+            !env.traits.iter().any(|t| matches!(
+                t,
+                Trait::UrlLaunch { url, .. } if url == "https://rundll32-launch.example/echoed.pdf"
+            )),
+            "escaped ampersand echo text was misread as URL launch: {:?}",
+            env.traits
+        );
     }
 
     #[test]
@@ -35950,6 +35983,23 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
     }
 
     #[test]
+    fn escaped_ampersand_desktopimgdownldr_text_does_not_emit_download() {
+        let report = analyze(
+            br#"echo keep ^& desktopimgdownldr.exe /lockscreenurl:https://desktopimg-deob.example/echoed.jpg /eventName:test"#,
+            &Config::default(),
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == "https://desktopimg-deob.example/echoed.jpg"
+            )),
+            "escaped ampersand echo text was misread as desktopimgdownldr download: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn certoc_getcacaps_url_in_deob_text_emits_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         let url = "https://certoc-deob.example/stage.ps1";
@@ -35978,6 +36028,23 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
                 .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
             "certoc GetCACAPS URL double-emitted as generic: {:?}",
             env.traits
+        );
+    }
+
+    #[test]
+    fn escaped_ampersand_certoc_text_does_not_emit_download() {
+        let report = analyze(
+            br#"echo keep ^& certoc.exe -GetCACAPS https://certoc-deob.example/echoed.ps1"#,
+            &Config::default(),
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == "https://certoc-deob.example/echoed.ps1"
+            )),
+            "escaped ampersand echo text was misread as certoc download: {:?}",
+            report.traits
         );
     }
 
