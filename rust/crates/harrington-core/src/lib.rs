@@ -3896,6 +3896,23 @@ powershell -Command "Set-WmiInstance -ComputerName='adminbox.example' -Class Win
     }
 
     #[test]
+    fn powershell_cim_method_computername_emits_remote_exec() {
+        let script = br#"powershell -Command "Invoke-CimMethod -ComputerName target.example -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine='cmd /c whoami'}"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteExec { tool, target_host }
+                    if tool == "Invoke-CimMethod" && target_host == "target.example"
+            )),
+            "missing PowerShell CIM remote exec: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn copied_anti_recovery_aliases_emit_traits() {
         let script = br#"copy C:\Windows\System32\vssadmin.exe C:\Users\Public\vs.tmp
 C:\Users\Public\vs.tmp delete shadows /all /quiet
