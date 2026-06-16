@@ -7931,11 +7931,10 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
                     let trueish = is_registry_dword_one(&val_lc)
                         || matches!(val_lc.as_str(), "$true" | "true");
                     let disabling = (opt.starts_with("disable") && trueish)
-                        || matches!(
-                            (opt.as_str(), val_lc.as_str()),
-                            ("mapsreporting", "disabled" | "0")
-                        )
-                        || (opt == "submitsamplesconsent" && (val_lc == "2" || val_lc == "never"));
+                        || (opt == "mapsreporting"
+                            && (val_lc == "disabled" || is_registry_dword_zero(&val_lc)))
+                        || (opt == "submitsamplesconsent"
+                            && (is_registry_dword_value(&val_lc, 2) || val_lc == "never"));
                     if disabling {
                         push(&format!("setmp-{opt}"), val);
                     }

