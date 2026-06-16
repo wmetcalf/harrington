@@ -470,25 +470,124 @@ pub(crate) fn is_noise_url_context(line: &str, url: &str) -> bool {
     {
         return true;
     }
-    if msiexec_line_url_is_non_package(line, url) {
+    if msiexec_line_url_is_logging_operand(line, url) {
         return true;
     }
     false
 }
 
-fn msiexec_line_url_is_non_package(line: &str, url: &str) -> bool {
+fn msiexec_line_url_is_logging_operand(line: &str, url: &str) -> bool {
     let tokens = split_words(line);
+    if !tokens.iter().any(|token| {
+        matches!(
+            command_name(strip_quotes(token)).as_str(),
+            "msiexec" | "msiexec.exe"
+        )
+    }) {
+        return false;
+    }
     for (idx, token) in tokens.iter().enumerate() {
-        let cmd = command_name(strip_quotes(token));
-        if cmd != "msiexec" && cmd != "msiexec.exe" {
-            continue;
+        let token = strip_quotes(token);
+        let lower = token.to_ascii_lowercase();
+        if msiexec_logging_flag(&lower) {
+            if let Some(next) = tokens.get(idx + 1) {
+                if token_url_matches(strip_quotes(next), url) {
+                    return true;
+                }
+            }
         }
-        let Some(package_url) = msiexec_package_url_after(&tokens, idx + 1) else {
+        if msiexec_attached_logging_url_token(token)
+            .is_some_and(|candidate| normalize_liberal_url_token(candidate).as_deref() == Some(url))
+        {
             return true;
-        };
-        return package_url != url;
+        }
     }
     false
+}
+
+fn token_url_matches(token: &str, url: &str) -> bool {
+    normalize_liberal_url_token(token).as_deref() == Some(url)
+}
+
+fn msiexec_logging_flag(lower: &str) -> bool {
+    if lower == "/log" || lower == "-log" {
+        return true;
+    }
+    let Some(rest) = lower
+        .strip_prefix("/l")
+        .or_else(|| lower.strip_prefix("-l"))
+    else {
+        return false;
+    };
+    !rest.is_empty()
+        && rest.bytes().all(|b| {
+            matches!(
+                b,
+                b'*' | b'i'
+                    | b'w'
+                    | b'e'
+                    | b'a'
+                    | b'r'
+                    | b'u'
+                    | b'c'
+                    | b'm'
+                    | b'o'
+                    | b'p'
+                    | b'v'
+                    | b'x'
+                    | b'+'
+                    | b'!'
+            )
+        })
+}
+
+fn msiexec_attached_logging_url_token(token: &str) -> Option<&str> {
+    let lower = token.to_ascii_lowercase();
+    for prefix in ["/log", "-log"] {
+        let Some(rest) = lower.strip_prefix(prefix) else {
+            continue;
+        };
+        let original_rest = &token[token.len() - rest.len()..];
+        let candidate = original_rest.trim_start_matches([':', '=']);
+        if looks_like_direct_url(candidate) {
+            return Some(candidate);
+        }
+    }
+    for prefix in ["/l", "-l"] {
+        let Some(rest) = lower.strip_prefix(prefix) else {
+            continue;
+        };
+        let url_idx = rest.find("http:").or_else(|| rest.find("https:"))?;
+        let flag_part = &rest[..url_idx];
+        if flag_part.is_empty()
+            || !flag_part.bytes().all(|b| {
+                matches!(
+                    b,
+                    b'*' | b'i'
+                        | b'w'
+                        | b'e'
+                        | b'a'
+                        | b'r'
+                        | b'u'
+                        | b'c'
+                        | b'm'
+                        | b'o'
+                        | b'p'
+                        | b'v'
+                        | b'x'
+                        | b'+'
+                        | b'!'
+                )
+            })
+        {
+            continue;
+        }
+        let candidate = &token[token.len() - rest.len() + url_idx..];
+        if looks_like_direct_url(candidate) {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 fn strip_quotes(s: &str) -> &str {
