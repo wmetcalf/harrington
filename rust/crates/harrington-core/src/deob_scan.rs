@@ -9276,6 +9276,12 @@ static B64_URL_PREFIX_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static ROT13_URL_PREFIX_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?i)\b(?:uggcf|uggc|sgc):[\x2f\x5c]+[^\s"'<>(){}|^&;`,]{6,500}"#)
+        .expect("rot13 url prefix regex")
+});
+
+#[allow(clippy::expect_used)]
 static DAMAGED_SCHEME_URL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?i)(?:^|[^A-Za-z])([A-Za-z0-9_%!$:~,\-]{0,80})://([A-Za-z0-9][A-Za-z0-9.\-]{2,}\.[A-Za-z]{2,}(?::\d+)?(?:/[^\s"'<>)]*)?)"#,
@@ -9482,6 +9488,50 @@ pub fn scan_b64_url_prefix(deobfuscated: &str, env: &mut Environment) {
 
 fn is_base64_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/')
+}
+
+/// Scan for ROT13-obfuscated URL tokens such as `uggcf://...`. These show
+/// up in staged PowerShell/.NET argument lists where we do not want to
+/// reverse the managed payload, but the network indicators are still present
+/// as simple encoded strings.
+pub fn scan_rot13_url_prefix(deobfuscated: &str, env: &mut Environment) {
+    let known = env.known_extracted_urls();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for m in ROT13_URL_PREFIX_RE.find_iter(deobfuscated) {
+        let mut text = rot13_ascii(m.as_str());
+        if !(text.starts_with("http://")
+            || text.starts_with("https://")
+            || text.starts_with("ftp://"))
+        {
+            continue;
+        }
+        text = trim_liberal_url_suffix(&text).to_string();
+        if let Some(normalized) = normalize_liberal_url_token(&text) {
+            text = normalized;
+        }
+        if text.len() < 10 || text.len() > 2048 {
+            continue;
+        }
+        if is_noise_url(&text) || known.contains(&text) || !seen.insert(text.clone()) {
+            continue;
+        }
+        env.traits.push(Trait::Download {
+            cmd: "rot13-url-prefix".to_string(),
+            src: text,
+            dst: None,
+        });
+    }
+}
+
+fn rot13_ascii(input: &str) -> String {
+    input
+        .bytes()
+        .map(|b| match b {
+            b'a'..=b'z' => (((b - b'a' + 13) % 26) + b'a') as char,
+            b'A'..=b'Z' => (((b - b'A' + 13) % 26) + b'A') as char,
+            _ => b as char,
+        })
+        .collect()
 }
 
 /// Match a single PowerShell `[char[]]@(N,N,...)-join''` chunk.
