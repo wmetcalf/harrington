@@ -228,13 +228,14 @@ pub fn interpret_line(line: &str, env: &mut Environment) {
     // the implicit launcher as a trait so CAPE-vs-harrington compare can
     // see the spawned binary; the URL/payload extraction has already
     // happened via the recursive certutil-decode + JS scan path.
-    let lower = name.to_ascii_lowercase();
+    let script_path = name.trim_matches(['"', '\'']).to_string();
+    let lower = script_path.to_ascii_lowercase();
     let stripped = lower.trim_start_matches(['@', '"', '(']);
     let ext = stripped.rsplit('.').next().unwrap_or("");
     let has_wscript_exec = env
         .traits
         .iter()
-        .any(|t| matches!(t, crate::traits::Trait::WscriptExec { src } if src == &name));
+        .any(|t| matches!(t, crate::traits::Trait::WscriptExec { src } if src == &script_path));
     let has_mshta_lolbas = env
         .traits
         .iter()
@@ -245,24 +246,25 @@ pub fn interpret_line(line: &str, env: &mut Environment) {
         .any(|t| matches!(t, crate::traits::Trait::Lolbas { name: n, .. } if n == "hh"));
     match ext {
         "js" | "jse" | "wsf" | "wsh" | "vbs" | "vbe" if !has_wscript_exec => {
-            push_implicit_download_source_url(&name, env);
-            queue_implicit_script_content(&name, ext, env);
-            env.traits
-                .push(crate::traits::Trait::WscriptExec { src: name.clone() });
+            push_implicit_download_source_url(&script_path, env);
+            queue_implicit_script_content(&script_path, ext, env);
+            env.traits.push(crate::traits::Trait::WscriptExec {
+                src: script_path.clone(),
+            });
         }
         "hta" if !has_mshta_lolbas => {
-            push_implicit_download_source_url(&name, env);
+            push_implicit_download_source_url(&script_path, env);
             // Mshta trait exists but takes different fields — use a Lolbas.
             env.traits.push(crate::traits::Trait::Lolbas {
                 name: "mshta".to_string(),
-                cmd: name.clone(),
+                cmd: script_path.clone(),
             });
         }
         "chm" if !has_hh_lolbas => {
-            push_implicit_download_source_url(&name, env);
+            push_implicit_download_source_url(&script_path, env);
             env.traits.push(crate::traits::Trait::Lolbas {
                 name: "hh".to_string(),
-                cmd: name.clone(),
+                cmd: script_path.clone(),
             });
         }
         _ => {}

