@@ -152,8 +152,32 @@ fn has_non_redirection_body(body: &str) -> bool {
 
 fn command_body_payload(body: &str) -> String {
     let body = strip_trailing_nul_redirections(body.trim());
-    let body = body.trim().trim_matches('"').trim_matches('\'');
+    let body = strip_matching_outer_quotes(body.trim());
+    let body = strip_unmatched_trailing_wrapper_double_quote(body);
     trim_nul_padding_body(body).to_string()
+}
+
+fn strip_matching_outer_quotes(s: &str) -> &str {
+    let bytes = s.as_bytes();
+    if bytes.len() >= 2
+        && matches!(bytes.first(), Some(b'"' | b'\''))
+        && bytes.first() == bytes.last()
+    {
+        &s[1..s.len() - 1]
+    } else {
+        s
+    }
+}
+
+fn strip_unmatched_trailing_wrapper_double_quote(s: &str) -> &str {
+    let Some(prefix) = s.strip_suffix('"') else {
+        return s;
+    };
+    if prefix.as_bytes().contains(&b'"') {
+        s
+    } else {
+        prefix.trim_end()
+    }
 }
 
 fn strip_trailing_nul_redirections(mut body: &str) -> &str {
@@ -932,7 +956,7 @@ fn command_body_from_attached_value(value: &str, rest: &[String]) -> String {
         let mut body = String::from(first);
         body.push(' ');
         body.push_str(&rest.join(" "));
-        body.trim().trim_matches('"').trim_matches('\'').to_string()
+        strip_matching_outer_quotes(body.trim()).to_string()
     }
 }
 
@@ -1093,5 +1117,44 @@ mod tests {
             env.exec_ps1,
             vec![b"Write-Output hi > C:\\Users\\Public\\out.txt".to_vec()]
         );
+    }
+
+    #[test]
+    fn command_preserves_trailing_single_quote_inside_double_quoted_body() {
+        let mut env = Environment::new(&Config::default());
+
+        h_powershell(
+            r#"powershell -Command "Invoke-WebRequest -Uri '%url%' -OutFile '%php_file%'""#,
+            &mut env,
+        );
+
+        assert_eq!(
+            env.exec_ps1,
+            vec![b"Invoke-WebRequest -Uri '%url%' -OutFile '%php_file%'".to_vec()]
+        );
+    }
+
+    #[test]
+    fn command_strips_dangling_outer_double_quote_from_vbs_suffix() {
+        let mut env = Environment::new(&Config::default());
+
+        h_powershell(
+            r#"powershell.exe -NoP -Command Write-Host inparams""#,
+            &mut env,
+        );
+
+        assert_eq!(env.exec_ps1, vec![b"Write-Host inparams".to_vec()]);
+    }
+
+    #[test]
+    fn command_preserves_balanced_inner_double_quotes() {
+        let mut env = Environment::new(&Config::default());
+
+        h_powershell(
+            r#"powershell.exe -NoP -Command Write-Host "inparams""#,
+            &mut env,
+        );
+
+        assert_eq!(env.exec_ps1, vec![b"Write-Host \"inparams\"".to_vec()]);
     }
 }
