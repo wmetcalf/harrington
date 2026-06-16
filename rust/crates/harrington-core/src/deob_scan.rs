@@ -13801,7 +13801,9 @@ fn has_ps_replace_chain_url_atom(text: &str) -> bool {
         || lower.contains("-replace ")
         || lower.contains("-replace\t")
         || lower.contains("-replace\r")
-        || lower.contains("-replace\n"))
+        || lower.contains("-replace\n")
+        || lower.contains("-ireplace")
+        || lower.contains("-creplace"))
         && (lower.contains("htxp")
             || lower.contains("hxxp")
             || lower.contains("quwd")
@@ -16313,6 +16315,12 @@ mod ps_replace_chain_url_prefilter_tests {
         ));
         assert!(has_ps_replace_chain_url_atom(
             r#"$u='quwdevil.example/p'; $u=$u -replace 'quwd','https://'"#
+        ));
+        assert!(has_ps_replace_chain_url_atom(
+            r#"$u='quwdevil.example/p'; $u=$u -ireplace 'quwd','https://'"#
+        ));
+        assert!(has_ps_replace_chain_url_atom(
+            r#"$u='quwdevil.example/p'; $u=$u -creplace 'quwd','https://'"#
         ));
     }
 
