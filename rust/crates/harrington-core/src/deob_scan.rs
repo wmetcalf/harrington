@@ -8096,10 +8096,22 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
                 if !enabled {
                     continue;
                 }
-                let target = powershell_named_argument(command, "-Profile")
-                    .or_else(|| positional.first().cloned())
-                    .unwrap_or_else(|| "profile".to_string());
-                push("firewall-profile-disabled", target);
+                let mut targets = powershell_named_argument_list(command, "-Profile");
+                if targets.is_empty() {
+                    if let Some(positional) = positional.first() {
+                        targets.extend(split_powershell_list_argument(positional));
+                    }
+                }
+                if targets.is_empty() {
+                    push("firewall-profile-disabled", "profile".to_string());
+                } else {
+                    if targets.len() > 1 {
+                        push("firewall-profile-disabled", targets.join(","));
+                    }
+                    for target in targets {
+                        push("firewall-profile-disabled", target);
+                    }
+                }
             }
         });
     }
