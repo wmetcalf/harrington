@@ -7926,6 +7926,22 @@ for /f "tokens=1 delims=:" %%A in ('curl -# -k "http://www.geoplugin.net/php.gp?
     }
 
     #[test]
+    fn escaped_ampersand_wevtutil_text_does_not_emit_evidence_cleanup() {
+        let script = br#"echo keep ^& wevtutil cl Security"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::EvidenceCleanup { action, target, .. }
+                    if action == "event-log-clear" && target == "Security"
+            )),
+            "escaped ampersand echo text was misread as wevtutil cleanup: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn cipher_wipe_free_space_emits_evidence_cleanup_trait() {
         let script = br#"cipher /w:C:\Users\Public"#;
         let report = analyze(script, &AnalyzeConfig::default());

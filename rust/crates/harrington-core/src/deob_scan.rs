@@ -9088,6 +9088,17 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
             .trim_matches('\'')
             .to_string()
     }
+    fn command_starts_with_echo(command: &str) -> bool {
+        let command = command.trim_start().trim_start_matches('@');
+        let Some(first) = split_words(command).into_iter().next() else {
+            return false;
+        };
+        let first = first.to_ascii_lowercase();
+        first == "echo"
+            || first.starts_with("echo.")
+            || first.starts_with("echo:")
+            || first.starts_with("echo(")
+    }
 
     let mut push = |action: &str, target: String, command: String| {
         if target.is_empty() {
@@ -9148,13 +9159,16 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
     }
 
     for caps in EVENT_LOG_RE.captures_iter(deobfuscated) {
-        let target = caps
-            .get(1)
-            .map(|m| clean_token(m.as_str()))
-            .unwrap_or_default();
         let command = caps
             .get(0)
             .map(|m| m.as_str().trim().to_string())
+            .unwrap_or_default();
+        if command_starts_with_echo(&command) {
+            continue;
+        }
+        let target = caps
+            .get(1)
+            .map(|m| clean_token(m.as_str()))
             .unwrap_or_default();
         push_event_log_targets(&mut push, target, command);
     }
