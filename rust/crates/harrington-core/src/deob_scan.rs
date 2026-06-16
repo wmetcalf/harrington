@@ -7774,7 +7774,7 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
         .expect("set-mp-disable")
     });
     static SC_DEFENDER_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?i)sc(?:\.exe)?\s+(stop|config|delete)\s+(WinDefend|MsMpSvc|wuauserv|MpsSvc|WdNisSvc)"#)
+        Regex::new(r#"(?i)sc(?:\.exe)?\s+(?:\\\\[^\s]+\s+)?(stop|config|delete)\s+"?(WinDefend|MsMpSvc|wuauserv|MpsSvc|WdNisSvc)"?\b"#)
             .expect("sc-defender")
     });
     static PS_SET_SERVICE_RE: Lazy<Regex> = Lazy::new(|| {
