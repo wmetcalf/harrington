@@ -2239,6 +2239,34 @@ echo UAC.ShellExecute "cmd.exe", "/c ""%~s0""", "", "runas", 1 >> "%temp%\getadm
     }
 
     #[test]
+    fn escaped_ampersand_cmstp_text_does_not_emit_uac_bypass() {
+        let script = br#"echo keep ^& cmstp.exe /s /au C:\Users\Public\stage.inf"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(t, Trait::UacBypass { technique } if technique == "cmstp-au")
+            }),
+            "escaped echo cmstp text emitted UacBypass: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn escaped_ampersand_msconfig_text_does_not_emit_uac_bypass() {
+        let script = br#"echo keep ^& msconfig.exe /4"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(t, Trait::UacBypass { technique } if technique == "msconfig-4")
+            }),
+            "escaped echo msconfig text emitted UacBypass: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn copied_cmstp_alias_in_deob_text_emits_uac_bypass_trait() {
         let mut env = crate::env::Environment::new(&AnalyzeConfig::default());
         env.traits.push(Trait::WindowsUtilManip {
@@ -24243,6 +24271,32 @@ wscript loader.js
             "deob-text wscript invocation did not emit WscriptExec: {:?}",
             env.traits
         );
+    }
+
+    #[test]
+    fn escaped_ampersand_script_host_text_does_not_emit_exec_trait() {
+        for (script, unexpected) in [
+            (r#"echo keep & wscript C:\Temp\stage.vbs"#, "wscript"),
+            (
+                r#"echo keep & cscript //nologo C:\Temp\stage.vbs"#,
+                "cscript",
+            ),
+        ] {
+            let mut env = Environment::new(&Config::default());
+            crate::deob_scan::scan_deob_text(script, &mut env);
+
+            assert!(
+                !env.traits.iter().any(|t| matches!(
+                    (unexpected, t),
+                    ("wscript", Trait::WscriptExec { src }) if src == r#"C:\Temp\stage.vbs"#
+                ) || matches!(
+                    (unexpected, t),
+                    ("cscript", Trait::CscriptExec { src }) if src == r#"C:\Temp\stage.vbs"#
+                )),
+                "escaped echo {unexpected} text emitted script-host trait: {:?}",
+                env.traits
+            );
+        }
     }
 
     #[test]

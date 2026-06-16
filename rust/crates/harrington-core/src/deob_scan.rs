@@ -12237,7 +12237,10 @@ fn scan_uac_bypass(deobfuscated: &str, env: &mut Environment) {
         ]
     });
     for (re, tech) in PATTERNS.iter() {
-        if re.is_match(deobfuscated) {
+        if re
+            .find_iter(deobfuscated)
+            .any(|m| !containing_line_starts_with_echo(deobfuscated, m.start()))
+        {
             push_uac_bypass_trait(env, tech);
         }
     }
@@ -12245,6 +12248,9 @@ fn scan_uac_bypass(deobfuscated: &str, env: &mut Environment) {
     for line in deobfuscated.lines().filter(|line| {
         line.to_ascii_lowercase().contains("itemproperty") || contains_ascii_keyword(line, "sp")
     }) {
+        if command_starts_with_echo(line) {
+            continue;
+        }
         let positional = if find_ascii_case_insensitive(line, "New-ItemProperty", 0).is_some() {
             powershell_itemproperty_positional_arguments(line, "New-ItemProperty")
         } else if find_ascii_case_insensitive(line, "Set-ItemProperty", 0).is_some() {
@@ -12852,6 +12858,9 @@ fn scan_script_host_deob_text(deobfuscated: &str, env: &mut Environment) {
         let Some(cmd_match) = caps.name("cmd") else {
             continue;
         };
+        if containing_line_starts_with_echo(deobfuscated, cmd_match.start()) {
+            continue;
+        }
         if script_host_match_is_registry_value(deobfuscated, cmd_match.start()) {
             continue;
         }
