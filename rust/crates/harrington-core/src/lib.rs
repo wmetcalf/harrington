@@ -3848,6 +3848,33 @@ C:\Users\Public\tk.tmp /f /im MsMpEng.exe
     }
 
     #[test]
+    fn copied_wmic_alias_security_process_delete_emits_defender_evasion_trait() {
+        let script = br#"copy C:\Windows\System32\wbem\wmic.exe C:\Users\Public\wm.tmp
+C:\Users\Public\wm.tmp process where "name='MsMpEng.exe'" delete
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\wm.tmp"#)
+            )),
+            "copied WMIC alias was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "wmic-security-process-delete" && target == "MsMpEng.exe"
+            )),
+            "copied WMIC security-process delete was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn copied_takeown_alias_emits_defender_evasion_trait() {
         let script = br#"copy C:\Windows\System32\takeown.exe C:\Users\Public\to.tmp
 C:\Users\Public\to.tmp /f C:\Windows\System32\SecurityHealthService.exe

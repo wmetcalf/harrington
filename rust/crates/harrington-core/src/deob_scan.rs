@@ -4985,6 +4985,7 @@ fn scan_copied_wmic_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
         } else {
             format!("wmic.exe {rest}")
         };
+        scan_defender_evasion(&replay, env);
         crate::handlers::wmic::h_wmic(&replay, env);
         if let Some(inner) = crate::handlers::wmic::wmic_process_create_inner(&replay) {
             if let Some(cmd_inner) = crate::handlers::cmd::extract_cmd_inner(&inner) {
