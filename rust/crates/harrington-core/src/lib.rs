@@ -9542,6 +9542,29 @@ mod line_cap_tests {
     }
 
     #[test]
+    fn default_config_preserves_long_single_line() {
+        let payload = "A".repeat(70 * 1024);
+        let script = format!("echo {payload}\r\n");
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            !report.deobfuscated.contains("…[truncated]"),
+            "default config should not truncate forensic output"
+        );
+        assert!(
+            report.deobfuscated.contains(&payload),
+            "default config dropped long line payload"
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::LineTruncated { .. })),
+            "default config emitted LineTruncated: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn sandbox_truncated_input_marker_emits_line_truncated() {
         let script = format!(
             "&([scriptblock]::Create($x=({}...[truncated]",
