@@ -5497,6 +5497,10 @@ fn scan_copied_enumeration_alias_deob_text(deobfuscated: &str, env: &mut Environ
             "netdom.exe" | "netdom" => "netdom.exe",
             "klist.exe" | "klist" => "klist.exe",
             "setspn.exe" | "setspn" => "setspn.exe",
+            "gpresult.exe" | "gpresult" => "gpresult.exe",
+            "driverquery.exe" | "driverquery" => "driverquery.exe",
+            "auditpol.exe" | "auditpol" => "auditpol.exe",
+            "dsregcmd.exe" | "dsregcmd" => "dsregcmd.exe",
             _ => continue,
         };
         insert_alias_command_names(&mut aliases, dst, replay_command);
@@ -9320,6 +9324,18 @@ fn network_utility_enumeration_kind(tokens: &[String], command: &str) -> Option<
             .skip(1)
             .any(|token| token.eq_ignore_ascii_case("/query"))
             .then_some("schtasks-query"),
+        "gpresult" | "gpresult.exe" => Some("gpresult"),
+        "driverquery" | "driverquery.exe" => Some("driverquery"),
+        "auditpol" | "auditpol.exe" => tokens
+            .iter()
+            .skip(1)
+            .any(|token| token.eq_ignore_ascii_case("/get"))
+            .then_some("auditpol"),
+        "dsregcmd" | "dsregcmd.exe" => tokens
+            .iter()
+            .skip(1)
+            .any(|token| token.eq_ignore_ascii_case("/status"))
+            .then_some("dsregcmd"),
         "whoami" | "whoami.exe" => tokens
             .iter()
             .skip(1)
@@ -9426,6 +9442,10 @@ fn has_enumeration_atom(text: &str) -> bool {
         "klist",
         "setspn",
         "schtasks",
+        "gpresult",
+        "driverquery",
+        "auditpol",
+        "dsregcmd",
         "whoami",
         "hostname",
         "query session",
@@ -9489,6 +9509,10 @@ mod enumeration_prefilter_tests {
             "klist tickets",
             "setspn -Q */*",
             "schtasks /query /tn Updater",
+            "gpresult /r",
+            "driverquery /v",
+            "auditpol /get /category:*",
+            "dsregcmd /status",
             "whoami /priv",
             "whoami /user",
             "hostname",

