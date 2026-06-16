@@ -40477,6 +40477,16 @@ mod ps_alias_tests {
     }
 
     #[test]
+    fn invoke_item_alias_expanded() {
+        let out = expand_aliases("ii https://launch-alias.example/doc.pdf");
+        assert!(
+            out.contains("Invoke-Item https://launch-alias.example/doc.pdf"),
+            "got: {}",
+            out
+        );
+    }
+
+    #[test]
     fn ni_expanded_in_function_def() {
         let out = expand_aliases("(ni -p function: -n Decoder)");
         assert!(out.contains("New-Item"), "got: {}", out);
@@ -40559,6 +40569,17 @@ mod ps_alias_tests {
         use crate::ps_alias::expand_aliases_if_ps;
         let out = expand_aliases_if_ps("tnc c2.example -Port 443");
         assert!(out.contains("Test-NetConnection"), "got: {}", out);
+    }
+
+    #[test]
+    fn gate_allows_invoke_item_alias_only_payload() {
+        use crate::ps_alias::expand_aliases_if_ps;
+        let out = expand_aliases_if_ps("ii https://launch-gate-alias.example/doc.pdf");
+        assert!(
+            out.contains("Invoke-Item https://launch-gate-alias.example/doc.pdf"),
+            "got: {}",
+            out
+        );
     }
 
     #[test]

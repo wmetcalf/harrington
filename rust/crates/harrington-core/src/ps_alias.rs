@@ -18,6 +18,7 @@ const ALIAS_TABLE: &[(&str, &str)] = &[
     ("iex", "Invoke-Expression"),
     ("icm", "Invoke-Command"),
     ("ihy", "Invoke-History"),
+    ("ii", "Invoke-Item"),
     // Item operations
     ("gi", "Get-Item"),
     ("gci", "Get-ChildItem"),
@@ -136,7 +137,7 @@ pub fn looks_like_powershell(text: &str) -> bool {
                   |Import|Export|ConvertTo|ConvertFrom|Start|Stop|Enter|Exit
                   |Write|Read|Test|Format) - [A-Z][A-Za-z]+ \b
             | :: [A-Za-z_]
-            | (?:^|[\s;|&(]) (?:iex|iwr|irm|wget|curl|tnc|gwmi|gcim|rwmi|gps|gsv|sasv) (?:\s|$|[\(\;\&\|])
+            | (?:^|[\s;|&(]) (?:iex|iwr|irm|ii|wget|curl|tnc|gwmi|gcim|rwmi|gps|gsv|sasv) (?:\s|$|[\(\;\&\|])
             ",
         )
         .expect("ps marker re")
