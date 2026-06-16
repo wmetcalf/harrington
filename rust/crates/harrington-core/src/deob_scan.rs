@@ -9568,11 +9568,23 @@ fn scan_account_modification(deobfuscated: &str, env: &mut Environment) {
         let Some(group) = group else {
             continue;
         };
-        let account = powershell_named_argument(&command, "-Member").or_else(|| positional.next());
-        let Some(account) = account else {
+        let mut accounts = powershell_named_argument_list(&command, "-Member");
+        if accounts.is_empty() {
+            if let Some(account) = positional.next() {
+                accounts.extend(split_powershell_list_argument(&account));
+            }
+        }
+        if accounts.is_empty() {
             continue;
-        };
-        push("localgroup-add", account, Some(group), command);
+        }
+        for account in accounts {
+            push(
+                "localgroup-add",
+                account,
+                Some(group.clone()),
+                command.clone(),
+            );
+        }
     }
 }
 

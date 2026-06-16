@@ -4014,6 +4014,28 @@ powershell -Command "Add-LocalGroupMember Administrators backdoor"
     }
 
     #[test]
+    fn powershell_localgroup_member_list_emits_each_account_modification_trait() {
+        let script =
+            br#"powershell -Command "Add-LocalGroupMember -Group Administrators -Member backdoor, support"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        for account in ["backdoor", "support"] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::AccountModification { action, account: existing_account, group, .. }
+                        if action == "localgroup-add"
+                            && existing_account == account
+                            && group.as_deref() == Some("Administrators")
+                )),
+                "missing PowerShell localgroup-add account {account}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn copied_net_alias_emits_account_modification_traits() {
         let script = br#"copy C:\Windows\System32\net.exe C:\Users\Public\nt.tmp
 C:\Users\Public\nt.tmp user backdoor P@ssw0rd /add
