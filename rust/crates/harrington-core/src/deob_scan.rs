@@ -5489,6 +5489,7 @@ fn scan_copied_enumeration_alias_deob_text(deobfuscated: &str, env: &mut Environ
             "netstat.exe" | "netstat" => "netstat.exe",
             "arp.exe" | "arp" => "arp.exe",
             "route.exe" | "route" => "route.exe",
+            "nltest.exe" | "nltest" => "nltest.exe",
             _ => continue,
         };
         insert_alias_command_names(&mut aliases, dst, replay_command);
@@ -9303,6 +9304,17 @@ fn network_utility_enumeration_kind(tokens: &[String], command: &str) -> Option<
             .map(|token| token.eq_ignore_ascii_case("print"))
             .unwrap_or(false)
             .then_some("route"),
+        "nltest" | "nltest.exe" => tokens
+            .iter()
+            .skip(1)
+            .any(|token| {
+                let lower = token.to_ascii_lowercase();
+                lower.starts_with("/domain_trusts")
+                    || lower.starts_with("/dclist")
+                    || lower.starts_with("/dsgetdc")
+                    || lower.starts_with("/trusted_domains")
+            })
+            .then_some("nltest-domain"),
         _ => None,
     }
 }
@@ -9363,6 +9375,7 @@ fn has_enumeration_atom(text: &str) -> bool {
         "arp.exe /a",
         "route print",
         "route.exe print",
+        "nltest",
         "wmic process",
         "wmic.exe process",
         "wmic cpu",
@@ -9403,6 +9416,8 @@ mod enumeration_prefilter_tests {
             "arp.exe /a",
             "route print",
             "route.exe print",
+            "nltest /domain_trusts",
+            "nltest /dclist:corp.example",
             "wmic process list",
             "wmic.exe process list",
             "wmic cpu get name",

