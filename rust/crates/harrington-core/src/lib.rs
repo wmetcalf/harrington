@@ -8514,6 +8514,21 @@ powershell -Command "Get-CimInstance Win32_ShadowCopy | Remove-CimInstance"
     }
 
     #[test]
+    fn escaped_ampersand_vssadmin_text_does_not_emit_anti_recovery() {
+        let script = br#"echo keep ^& vssadmin delete shadows /all /quiet"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AntiRecovery { action } if action == "vssadmin-delete-shadows"
+            )),
+            "escaped ampersand echo text was misread as vssadmin anti-recovery: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn vssadmin_resize_shadowstorage_small_maxsize_emits_anti_recovery_trait() {
         let script = br#"vssadmin resize shadowstorage /for=C: /on=C: /maxsize=401MB"#;
         let report = analyze(script, &AnalyzeConfig::default());

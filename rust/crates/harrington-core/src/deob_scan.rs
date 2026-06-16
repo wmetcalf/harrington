@@ -9011,12 +9011,23 @@ fn scan_anti_recovery(deobfuscated: &str, env: &mut Environment) {
         });
     };
     for (re, action) in PATTERNS.iter() {
-        if !re.is_match(deobfuscated) {
+        if !deobfuscated
+            .lines()
+            .filter(|line| !command_starts_with_echo(line))
+            .any(|line| re.is_match(line))
+        {
             continue;
         }
         push_action(action);
     }
     for caps in VSSADMIN_RESIZE_SHADOWSTORAGE_RE.captures_iter(deobfuscated) {
+        if caps
+            .get(0)
+            .map(|m| command_starts_with_echo(m.as_str()))
+            .unwrap_or(false)
+        {
+            continue;
+        }
         let Some(maxsize) = caps.get(1).map(|m| m.as_str().trim()) else {
             continue;
         };
