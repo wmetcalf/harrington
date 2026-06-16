@@ -470,7 +470,7 @@ fn record_get_content_set_content_side_effects(body: &str, env: &mut Environment
 fn record_set_content_value_side_effects(body: &str, env: &mut Environment) {
     let tokens = split_words(body);
     for i in 0..tokens.len() {
-        let Some(append) = direct_content_write_append_mode(&tokens[i]) else {
+        let Some(append) = direct_content_write_append_mode(&tokens, i) else {
             continue;
         };
         let Some((dst, content)) = powershell_set_content_paths_and_value(&tokens, i + 1) else {
@@ -662,13 +662,26 @@ fn is_content_write_token(token: &str) -> bool {
     )
 }
 
-fn direct_content_write_append_mode(token: &str) -> Option<bool> {
-    match strip_quotes(token).to_ascii_lowercase().as_str() {
+fn direct_content_write_append_mode(tokens: &[String], idx: usize) -> Option<bool> {
+    match strip_quotes(tokens.get(idx)?).to_ascii_lowercase().as_str() {
         "set-content" | "sc" => Some(false),
         "add-content" | "ac" => Some(true),
-        "out-file" => Some(false),
+        "out-file" => Some(powershell_has_switch(tokens, idx + 1, "-append")),
         _ => None,
     }
+}
+
+fn powershell_has_switch(tokens: &[String], start: usize, switch: &str) -> bool {
+    for token in tokens.iter().skip(start) {
+        let token = strip_quotes(token);
+        if token == "|" || token == ";" {
+            break;
+        }
+        if token.eq_ignore_ascii_case(switch) {
+            return true;
+        }
+    }
+    false
 }
 
 fn powershell_stdout_redirect_destination(tokens: &[String], start: usize) -> Option<String> {
