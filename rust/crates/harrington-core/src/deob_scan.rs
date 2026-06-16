@@ -11571,46 +11571,53 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
         push("rdp-enable", "Terminal Server".to_string(), command);
     }
     for m in PS_RDP_ENABLE_RE.find_iter(deobfuscated) {
-        let command = m.as_str().trim();
-        let positional = if find_ascii_case_insensitive(command, "New-ItemProperty", 0).is_some() {
-            powershell_itemproperty_positional_arguments(command, "New-ItemProperty")
-        } else {
-            powershell_itemproperty_positional_arguments(command, "Set-ItemProperty")
-        };
-        let mut positional = positional.into_iter();
-        let path = powershell_named_argument(command, "-Path")
-            .or_else(|| powershell_named_argument(command, "-LiteralPath"))
-            .or_else(|| positional.next())
-            .unwrap_or_default();
-        if !path
-            .to_ascii_lowercase()
-            .contains(r"control\terminal server")
-        {
-            continue;
-        }
-        let value_name = powershell_named_argument(command, "-Name")
-            .or_else(|| positional.next())
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        let value = powershell_named_argument(command, "-Value")
-            .or_else(|| positional.next())
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        let enables_rdp = match value_name.as_str() {
-            "allowtsconnections" => {
-                is_registry_dword_one(&value) || matches!(value.as_str(), "true" | "$true")
+        for command in powershell_statement_segments(m.as_str()) {
+            let command = command.trim();
+            let keyword = if find_ascii_case_insensitive(command, "New-ItemProperty", 0).is_some() {
+                "New-ItemProperty"
+            } else if find_ascii_case_insensitive(command, "Set-ItemProperty", 0).is_some() {
+                "Set-ItemProperty"
+            } else if contains_ascii_keyword(command, "sp") {
+                "sp"
+            } else {
+                continue;
+            };
+            let positional = powershell_itemproperty_positional_arguments(command, keyword);
+            let mut positional = positional.into_iter();
+            let path = powershell_named_argument(command, "-Path")
+                .or_else(|| powershell_named_argument(command, "-LiteralPath"))
+                .or_else(|| positional.next())
+                .unwrap_or_default();
+            if !path
+                .to_ascii_lowercase()
+                .contains(r"control\terminal server")
+            {
+                continue;
             }
-            "fdenytsconnections" => {
-                is_registry_dword_zero(&value) || matches!(value.as_str(), "false" | "$false")
+            let value_name = powershell_named_argument(command, "-Name")
+                .or_else(|| positional.next())
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            let value = powershell_named_argument(command, "-Value")
+                .or_else(|| positional.next())
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            let enables_rdp = match value_name.as_str() {
+                "allowtsconnections" => {
+                    is_registry_dword_one(&value) || matches!(value.as_str(), "true" | "$true")
+                }
+                "fdenytsconnections" => {
+                    is_registry_dword_zero(&value) || matches!(value.as_str(), "false" | "$false")
+                }
+                _ => false,
+            };
+            if enables_rdp {
+                push(
+                    "rdp-enable",
+                    "Terminal Server".to_string(),
+                    command.to_string(),
+                );
             }
-            _ => false,
-        };
-        if enables_rdp {
-            push(
-                "rdp-enable",
-                "Terminal Server".to_string(),
-                command.to_string(),
-            );
         }
     }
     for caps in HIDDEN_USER_RE.captures_iter(deobfuscated) {
