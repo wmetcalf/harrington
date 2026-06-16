@@ -379,7 +379,7 @@ pub fn interpret_line(line: &str, env: &mut Environment) {
         return;
     };
     let captured_synthetic_stdout =
-        has_unquoted_pipe(line) && capture_synthetic_stdout_redirect(line, env);
+        should_pre_capture_synthetic_stdout(line) && capture_synthetic_stdout_redirect(line, env);
     if let Some(handler) = handlers::lookup(&name) {
         handler(line, env);
         return;
@@ -707,6 +707,30 @@ fn write_synthetic_bytes(path: &str, append: bool, content: Vec<u8>, env: &mut E
 
 fn is_block_delimiter(command: &str) -> bool {
     matches!(command, "(" | ")")
+}
+
+fn should_pre_capture_synthetic_stdout(line: &str) -> bool {
+    has_unquoted_pipe(line) || is_set_p_prompt_stdout_redirect(line)
+}
+
+fn is_set_p_prompt_stdout_redirect(line: &str) -> bool {
+    let (cleaned, redir) = crate::redirect::extract_redirections(line);
+    if redir.stdout.is_none() || cleaned == line {
+        return false;
+    }
+    let Some(name) = command_name(&cleaned) else {
+        return false;
+    };
+    if !name.eq_ignore_ascii_case("set") {
+        return false;
+    }
+    let Some((_, rest)) = crate::synth::split_stage_command_for_interp(cleaned.trim()) else {
+        return false;
+    };
+    rest.trim_start()
+        .get(..2)
+        .is_some_and(|flag| flag.eq_ignore_ascii_case("/p"))
+        && rest.contains('=')
 }
 
 fn has_unquoted_pipe(raw: &str) -> bool {

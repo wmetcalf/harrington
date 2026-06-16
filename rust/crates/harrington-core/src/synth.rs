@@ -215,9 +215,18 @@ fn set_p_prompt(rest: &str) -> Option<&str> {
     if !rest.get(..2)?.eq_ignore_ascii_case("/p") {
         return None;
     }
-    let body = rest[2..].trim_start();
+    let body = strip_balanced_quotes(rest[2..].trim_start());
     let (_, prompt) = body.split_once('=')?;
     Some(prompt)
+}
+
+fn strip_balanced_quotes(s: &str) -> &str {
+    let s = s.trim();
+    if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
+        &s[1..s.len() - 1]
+    } else {
+        s
+    }
 }
 
 fn normalize_stage_prefix(stage: &str) -> &str {
@@ -270,6 +279,10 @@ fn strip_leading_redirection(s: &str) -> Option<&str> {
 
 fn stage_command(stage: &str) -> Option<String> {
     split_stage_command(normalize_stage_prefix(stage)).map(|(part, _)| synth_command_key(part))
+}
+
+pub(crate) fn split_stage_command_for_interp(stage: &str) -> Option<(&str, &str)> {
+    split_stage_command(normalize_stage_prefix(stage))
 }
 
 fn split_stage_command(stage: &str) -> Option<(&str, &str)> {
