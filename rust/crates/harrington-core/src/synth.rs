@@ -94,6 +94,9 @@ fn run_stage(stage: &str, input: Vec<String>, env: &mut Environment) -> Vec<Stri
         input
     };
     let stage = normalize_stage_prefix(&redir_cleaned);
+    if let Some(text) = inline_echo_text(stage) {
+        return synth_echo(text);
+    }
     let Some((cmd_token, rest)) = split_stage_command(stage) else {
         return Vec::new();
     };
@@ -575,6 +578,19 @@ fn synth_echo(rest: &str) -> Vec<String> {
         return Vec::new();
     }
     vec![text.to_string()]
+}
+
+fn inline_echo_text(stage: &str) -> Option<&str> {
+    let stage = stage.trim_start();
+    let head = stage.get(..4)?;
+    if !head.eq_ignore_ascii_case("echo") {
+        return None;
+    }
+    let marker = stage[4..].chars().next()?;
+    if matches!(marker, '.' | ':' | '(' | '[' | '/' | '=') {
+        return Some(&stage[5..]);
+    }
+    None
 }
 
 fn synth_command_key(token: &str) -> String {
