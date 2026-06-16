@@ -4671,6 +4671,23 @@ C:\Users\Public\nt.tmp localgroup Administrators backdoor /ADD
     }
 
     #[test]
+    fn netsh_remote_desktop_firewall_group_enable_any_order_emits_remote_access_trait() {
+        let script =
+            br#"netsh advfirewall firewall set rule new enable=yes group="remote desktop""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-firewall-open" && target == "Remote Desktop"
+            )),
+            "netsh Remote Desktop group enable with reordered args was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn netsh_rdp_firewall_allow_any_argument_order_emits_remote_access_trait() {
         let script =
             br#"netsh advfirewall firewall add rule name=rdp action=allow protocol=TCP localport=3389 dir=in"#;

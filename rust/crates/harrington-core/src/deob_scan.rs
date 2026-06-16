@@ -11177,11 +11177,11 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
         )
         .expect("rdp firewall add rule regex")
     });
-    static RDP_FIREWALL_GROUP_ENABLE_RE: Lazy<Regex> = Lazy::new(|| {
+    static RDP_FIREWALL_SET_RULE_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r#"(?im)^[^\r\n]*\bnetsh(?:\.exe)?\s+advfirewall\s+firewall\s+set\s+rule[^\r\n]*group\s*=\s*"?remote desktop"?[^\r\n]*\bnew\s+enable\s*=\s*yes\b[^\r\n]*"#,
+            r#"(?im)^[^\r\n]*\bnetsh(?:\.exe)?\s+advfirewall\s+firewall\s+set\s+rule\b[^\r\n]*"#,
         )
-        .expect("rdp firewall group enable regex")
+        .expect("rdp firewall set rule regex")
     });
     static PS_RDP_FIREWALL_GROUP_ENABLE_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?im)^[^\r\n]*?\b(?:Enable|Set)-NetFirewallRule\b[^\r\n]*"#)
@@ -11349,11 +11349,16 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
         }
         push("rdp-firewall-open", "3389".to_string(), command.to_string());
     }
-    for m in RDP_FIREWALL_GROUP_ENABLE_RE.find_iter(deobfuscated) {
+    for m in RDP_FIREWALL_SET_RULE_RE.find_iter(deobfuscated) {
+        let command = m.as_str().trim();
+        let lower = command.to_ascii_lowercase();
+        if !lower.contains("remote desktop") || !netsh_arg_is_yes(&lower, "enable") {
+            continue;
+        }
         push(
             "rdp-firewall-open",
             "Remote Desktop".to_string(),
-            m.as_str().trim().to_string(),
+            command.to_string(),
         );
     }
     for m in PS_RDP_FIREWALL_GROUP_ENABLE_RE.find_iter(deobfuscated) {
@@ -11417,6 +11422,20 @@ fn sc_config_disables_service(command: &str) -> bool {
         .split_ascii_whitespace()
         .next()
         .is_some_and(|value| value.trim_matches('"') == "disabled")
+}
+
+fn netsh_arg_is_yes(lower: &str, name: &str) -> bool {
+    let Some(idx) = lower.find(name) else {
+        return false;
+    };
+    let after_name = &lower[idx + name.len()..];
+    let after_equals = after_name.trim_start();
+    let after_equals = after_equals.strip_prefix('=').unwrap_or(after_equals);
+    after_equals
+        .trim_start()
+        .split_ascii_whitespace()
+        .next()
+        .is_some_and(|value| value.trim_matches('"') == "yes")
 }
 
 fn is_registry_dword_one(value: &str) -> bool {
