@@ -7880,7 +7880,7 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
         .expect("legacy fw-off")
     });
     static PS_FIREWALL_PROFILE_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?im)^[^\r\n]*?\bSet-NetFirewallProfile\b[^\r\n]*"#)
+        Regex::new(r#"(?im)(?:^|[;|&])\s*[^\r\n;|&]*?\bSet-NetFirewallProfile\b[^\r\n;|&]*"#)
             .expect("powershell firewall profile regex")
     });
     static SECURITY_PRODUCT_REMOVE_RE: Lazy<Regex> = Lazy::new(|| {
