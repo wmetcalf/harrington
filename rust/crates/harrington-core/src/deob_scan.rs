@@ -8946,17 +8946,13 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
     }
 
     for caps in PS_CLEAR_EVENT_LOG_RE.captures_iter(deobfuscated) {
-        let target = caps
-            .get(1)
-            .or_else(|| caps.get(2))
-            .or_else(|| caps.get(3))
-            .map(|m| clean_token(m.as_str()))
-            .unwrap_or_default();
         let command = caps
             .get(0)
             .map(|m| m.as_str().trim().to_string())
             .unwrap_or_default();
-        push_event_log_targets(&mut push, target, command);
+        for target in powershell_named_argument_list(&command, "-LogName") {
+            push_event_log_targets(&mut push, target, command.clone());
+        }
     }
     for m in PS_CLEAR_EVENT_LOG_LINE_RE.find_iter(deobfuscated) {
         let command = m.as_str().trim();
