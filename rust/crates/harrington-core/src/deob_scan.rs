@@ -7581,6 +7581,9 @@ fn scan_certutil_urlcache_deob_text(deobfuscated: &str, env: &mut Environment) {
         .collect();
 
     for line in deobfuscated.lines() {
+        if command_starts_with_echo(line) {
+            continue;
+        }
         let lower = line.to_ascii_lowercase();
         if !lower.contains("-urlcache")
             && !lower.contains("/urlcache")

