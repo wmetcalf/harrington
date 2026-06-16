@@ -4801,6 +4801,22 @@ reg add "HKLM\system\CurrentControlSet\Control\Terminal Server\WinStations\RDP-T
     }
 
     #[test]
+    fn powershell_chained_set_service_termservice_enable_emits_remote_access_trait() {
+        let script = br#"powershell -Command "Set-Service WinDefend -StartupType Disabled; Set-Service TermService -StartupType Automatic""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-service-enable" && target == "TermService"
+            )),
+            "chained PowerShell Set-Service TermService enablement was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_set_service_termservice_disabled_is_not_remote_access_enablement() {
         let script =
             br#"powershell -Command "Set-Service -Name TermService -StartupType Disabled""#;

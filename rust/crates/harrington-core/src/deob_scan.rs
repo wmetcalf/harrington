@@ -11494,11 +11494,11 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
             .expect("termservice start regex")
     });
     static PS_TERMSERVICE_START_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?im)^[^\r\n]*?\b(?:Start-Service|sasv)\b[^\r\n]*"#)
+        Regex::new(r#"(?im)(?:^|[;|&])\s*[^\r\n;|&]*?\b(?:Start-Service|sasv)\b[^\r\n;|&]*"#)
             .expect("powershell termservice start regex")
     });
     static PS_TERMSERVICE_CONFIG_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?im)^[^\r\n]*?\b(?:Set-Service|ssv)\b[^\r\n]*"#)
+        Regex::new(r#"(?im)(?:^|[;|&])\s*[^\r\n;|&]*?\b(?:Set-Service|ssv)\b[^\r\n;|&]*"#)
             .expect("powershell termservice config regex")
     });
     static WMIC_RDTOGGLE_ENABLE_RE: Lazy<Regex> = Lazy::new(|| {
