@@ -5159,6 +5159,61 @@ fn scan_copied_robocopy_alias_deob_text(deobfuscated: &str, env: &mut Environmen
     }
 }
 
+fn scan_copied_netsh_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    let mut aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for t in &env.traits {
+        let Trait::WindowsUtilManip { src, dst, .. } = t else {
+            continue;
+        };
+        let src_base = basename_lower(src);
+        if src_base != "netsh.exe" && src_base != "netsh" {
+            continue;
+        }
+        insert_alias_names(&mut aliases, dst);
+    }
+    if aliases.is_empty() {
+        return;
+    }
+
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        let Some(cmd) = tokens.first() else {
+            continue;
+        };
+        if !aliases.contains(&basename_lower(cmd))
+            && !aliases.contains(&cmd.trim_matches(['"', '\'']).to_ascii_lowercase())
+        {
+            continue;
+        }
+        if tokens.len() < 2 {
+            continue;
+        }
+        if env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::ManipulatedExec {
+                    cmd: existing_cmd,
+                    target
+                } if existing_cmd == line && target.eq_ignore_ascii_case(cmd.trim_matches(['"', '\'']))
+            )
+        }) {
+            continue;
+        }
+
+        push_manipulated_exec_once(env, line, cmd);
+        let rest = line
+            .get(cmd.len()..)
+            .map(str::trim_start)
+            .unwrap_or_default();
+        let replay = if rest.is_empty() {
+            "netsh.exe".to_string()
+        } else {
+            format!("netsh.exe {rest}")
+        };
+        scan_remote_access(&replay, env);
+    }
+}
+
 fn scan_copied_reg_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
     let mut aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
     for t in &env.traits {
@@ -9259,7 +9314,7 @@ fn scan_remote_access(deobfuscated: &str, env: &mut Environment) {
     });
     static RDP_FIREWALL_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r#"(?im)^[^\r\n]*\bnetsh\s+advfirewall\s+firewall\s+add\s+rule[^\r\n]*(?:Remote Desktop|localport\s*=\s*3389)[^\r\n]*action\s*=\s*allow[^\r\n]*"#,
+            r#"(?im)^[^\r\n]*\bnetsh(?:\.exe)?\s+advfirewall\s+firewall\s+add\s+rule[^\r\n]*(?:Remote Desktop|localport\s*=\s*3389)[^\r\n]*action\s*=\s*allow[^\r\n]*"#,
         )
         .expect("rdp firewall regex")
     });
@@ -9909,6 +9964,9 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     });
     scan_step!("copied_robocopy_alias_deob_text", {
         scan_copied_robocopy_alias_deob_text(deobfuscated, env);
+    });
+    scan_step!("copied_netsh_alias_deob_text", {
+        scan_copied_netsh_alias_deob_text(deobfuscated, env);
     });
     scan_step!("copied_reg_alias_deob_text", {
         scan_copied_reg_alias_deob_text(deobfuscated, env);
