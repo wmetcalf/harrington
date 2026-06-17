@@ -55,6 +55,12 @@ pub fn h_call(raw: &str, env: &mut Environment) {
     }
 
     if !body.is_empty() {
+        if let Some(inner) = crate::handlers::cmd::extract_cmd_inner(body) {
+            env.exec_cmd.push(inner);
+            env.exec_cmd_delayed
+                .push(crate::handlers::cmd::has_v_on_raw(body));
+            return;
+        }
         crate::interp::interpret_line(body, env);
     }
 }

