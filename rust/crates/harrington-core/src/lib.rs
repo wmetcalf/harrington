@@ -12771,6 +12771,59 @@ fn normalized_payload_has_url_missing_from_out(payload: &str, out: &str) -> bool
         .any(|url| !out.contains(&url))
 }
 
+fn extracted_ps1_aes_payload_is_redundant(raw: &str, normalized: &str, out: &str) -> bool {
+    let normalized = normalized.trim();
+    if normalized.len() >= 64 && out.contains(normalized) {
+        return true;
+    }
+
+    let raw = raw.trim();
+    if raw.len() >= 64 && out.contains(raw) {
+        return true;
+    }
+
+    let signature = compact_ascii_non_ws_prefix(normalized, 192);
+    signature.len() >= 64 && contains_ascii_ws_insensitive_signature(out, &signature)
+}
+
+fn compact_ascii_non_ws_prefix(text: &str, limit: usize) -> Vec<u8> {
+    text.bytes()
+        .filter(|byte| !byte.is_ascii_whitespace())
+        .take(limit)
+        .collect()
+}
+
+fn contains_ascii_ws_insensitive_signature(haystack: &str, signature: &[u8]) -> bool {
+    if signature.is_empty() {
+        return false;
+    }
+
+    let haystack = haystack.as_bytes();
+    for start in 0..haystack.len() {
+        if haystack[start].is_ascii_whitespace() || haystack[start] != signature[0] {
+            continue;
+        }
+        let mut sig_idx = 0;
+        let mut hay_idx = start;
+        while hay_idx < haystack.len() && sig_idx < signature.len() {
+            let byte = haystack[hay_idx];
+            hay_idx += 1;
+            if byte.is_ascii_whitespace() {
+                continue;
+            }
+            if byte != signature[sig_idx] {
+                break;
+            }
+            sig_idx += 1;
+        }
+        if sig_idx == signature.len() {
+            return true;
+        }
+    }
+
+    false
+}
+
 fn analyze_inner(
     input: &[u8],
     cfg: &Config,
@@ -13058,9 +13111,15 @@ fn analyze_inner(
                 .unwrap_or_else(|| String::from_utf8_lossy(body).into_owned())
         })
         .collect();
-    for ps in &extracted_ps1_for_aes {
+    for (idx, ps) in extracted_ps1_for_aes.iter().enumerate() {
         if env.check_deadline() {
             break;
+        }
+        if extracted_ps1_normalized
+            .get(idx)
+            .is_some_and(|normalized| extracted_ps1_aes_payload_is_redundant(ps, normalized, &out))
+        {
+            continue;
         }
         aes_chain::extract_from_chain(input, ps, &mut env);
     }
@@ -13068,6 +13127,9 @@ fn analyze_inner(
     for ps in &extracted_ps1_normalized {
         if env.check_deadline() {
             break;
+        }
+        if extracted_ps1_aes_payload_is_redundant(ps, ps, &out) {
+            continue;
         }
         aes_chain::extract_from_chain(input, ps, &mut env);
     }
@@ -49247,7 +49309,7 @@ mod disguised_binary_tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod ps1_payload_normalization_tests {
-    use super::normalize_extracted_ps1_payloads;
+    use super::{extracted_ps1_aes_payload_is_redundant, normalize_extracted_ps1_payloads};
 
     #[test]
     fn duplicate_payloads_preserve_one_to_one_normalized_outputs() {
@@ -49261,5 +49323,14 @@ mod ps1_payload_normalization_tests {
         assert_eq!(normalized.len(), payloads.len());
         assert_eq!(normalized[0], normalized[2]);
         assert_ne!(normalized[0], normalized[1]);
+    }
+
+    #[test]
+    fn extracted_ps1_aes_scan_skips_payload_when_normalized_form_is_already_in_deob() {
+        let raw = "function QdMyg($caDYi){ $uTDaY=[System.Security.Cryptography.Aes]::Create(); $uTDaY.Key=[System.Convert]::FromBase64String('AAAAAAAAAAAAAAAAAAAAAA=='); }";
+        let normalized = "function QdMyg($caDYi){ $uTDaY=[System.Security.Cryptography.Aes]::Create(); $uTDaY.Key=[System.Convert]::FromBase64String('AAAAAAAAAAAAAAAAAAAAAA=='); }";
+        let out = "function QdMyg($caDYi){\t$uTDaY=[System.Security.Cryptography.Aes]::Create();\t$uTDaY.Key=[System.Convert]::FromBase64String('AAAAAAAAAAAAAAAAAAAAAA=='); }";
+
+        assert!(extracted_ps1_aes_payload_is_redundant(raw, normalized, out));
     }
 }
