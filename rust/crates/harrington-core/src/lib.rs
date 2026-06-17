@@ -15781,6 +15781,8 @@ fn pem_end_marker(line: &str) -> Option<(&'static str, &'static str)> {
         Some(("-----END CERTIFICATE REQUEST-----", "certificate request"))
     } else if line.contains("-----BEGIN CERTIFICATE-----") {
         Some(("-----END CERTIFICATE-----", "certificate"))
+    } else if line.contains("-----BEGIN X509 CRL-----") {
+        Some(("-----END X509 CRL-----", "X509 CRL"))
     } else {
         None
     }
@@ -17051,6 +17053,41 @@ mod pem_summary_tests {
                 .any(|t| matches!(t, Trait::CertutilDecode { src, dst, .. } if src == "%~f0" && dst == "out.exe")),
             "certutil trait should still be emitted: {:?}",
             report.traits
+        );
+    }
+
+    #[test]
+    fn large_x509_crl_body_is_summarized_during_drive() {
+        let mut script =
+            String::from("@echo off\r\ncertutil -decodehex -f \"%~f0\" out.exe 9\r\n-----BEGIN X509 CRL-----\r\n");
+        let body_line = "A".repeat(64);
+        for _ in 0..600 {
+            script.push_str(&body_line);
+            script.push_str("\r\n");
+        }
+        script.push_str("-----END X509 CRL-----\r\n");
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("harrington: omitted 39600 bytes from X509 CRL body"),
+            "large X509 CRL body should be summarized, got {} bytes:\n{}",
+            report.deobfuscated.len(),
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.contains("-----BEGIN X509 CRL-----")
+                && report.deobfuscated.contains("-----END X509 CRL-----"),
+            "summary should preserve X509 CRL boundaries:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report
+                .deobfuscated
+                .contains(&format!("{body_line}\r\n{body_line}\r\n{body_line}")),
+            "summarized output should not retain the full repeated CRL body"
         );
     }
 }
