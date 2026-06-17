@@ -5323,6 +5323,16 @@ fn scan_copied_net_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
         }
 
         push_manipulated_exec_once(env, line, cmd);
+        let rest = line
+            .get(cmd.len()..)
+            .map(str::trim_start)
+            .unwrap_or_default();
+        let replay = if rest.is_empty() {
+            "net.exe".to_string()
+        } else {
+            format!("net.exe {rest}")
+        };
+        crate::handlers::net::h_net(&replay, env);
         let subcommand = tokens[1].trim_matches(['"', '\'']).to_ascii_lowercase();
         let has_add = tokens
             .iter()

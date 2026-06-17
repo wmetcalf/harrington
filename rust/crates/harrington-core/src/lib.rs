@@ -6376,6 +6376,27 @@ C:\Users\Public\nt.tmp localgroup "Remote Desktop Users" support /add
     }
 
     #[test]
+    fn copied_net_alias_use_emits_net_use_trait() {
+        let script = br#"copy C:\Windows\System32\net.exe C:\Users\Public\nt.tmp
+C:\Users\Public\nt.tmp use Z: \\target.example\C$ /user:DOMAIN\adm pass
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::NetUse { info, .. }
+                    if info.devicename.as_deref() == Some("Z:")
+                        && info.server.as_deref() == Some(r#"\\target.example\C$"#)
+                        && info.user.as_deref() == Some(r#"DOMAIN\adm"#)
+                        && info.password.as_deref() == Some("pass")
+            )),
+            "copied-net use did not emit structured NetUse: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn account_modification_preserves_full_command_context() {
         let comment = "A".repeat(260);
         let script = format!("net user support P@ssw0rd /add /comment:\"{comment}\"\r\n");
