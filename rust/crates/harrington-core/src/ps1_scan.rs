@@ -2371,7 +2371,99 @@ fn expand_start_process_argument_list(text: &str) -> String {
         }
         cursor = end;
     }
+    append_start_process_positional_argument_list(text, &mut out);
     out
+}
+
+fn append_start_process_positional_argument_list(text: &str, out: &mut String) {
+    let lower = text.to_ascii_lowercase();
+    let mut cursor = 0usize;
+    while let Some(rel) = lower[cursor..].find("start-process") {
+        let start = cursor + rel;
+        let end = start + "start-process".len();
+        if !is_ps_word_boundary_before(&lower, start) || !is_ps_word_boundary_at(&lower, end) {
+            cursor = end;
+            continue;
+        }
+        let Some((argument, argument_end)) =
+            parse_start_process_positional_powershell_argument(text, end)
+        else {
+            cursor = end;
+            continue;
+        };
+        let normalized = argument
+            .replace("\\\"", "\"")
+            .replace("`\"", "\"")
+            .replace("\\'", "'");
+        if let Some(decoded) = decode_start_process_encoded_argument(&normalized) {
+            if !out.contains(&decoded) {
+                out.push('\n');
+                out.push_str(&decoded);
+            }
+        }
+        cursor = argument_end;
+    }
+}
+
+fn parse_start_process_positional_powershell_argument(
+    text: &str,
+    start: usize,
+) -> Option<(String, usize)> {
+    let (first, first_end) = parse_ps_argument_atom(text, start)?;
+    if ps_process_target_is_powershell(&first) {
+        return parse_ps_argument_atom(text, first_end);
+    }
+
+    if let Some(target) = start_process_filepath_attached_value(&first) {
+        if ps_process_target_is_powershell(target) {
+            return parse_ps_argument_atom(text, first_end);
+        }
+        return None;
+    }
+
+    if !start_process_filepath_flag(&first) {
+        return None;
+    }
+    let (target, target_end) = parse_ps_argument_atom(text, first_end)?;
+    if !ps_process_target_is_powershell(&target) {
+        return None;
+    }
+    parse_ps_argument_atom(text, target_end)
+}
+
+fn start_process_filepath_flag(token: &str) -> bool {
+    let lower = token.trim_matches(['"', '\'']).to_ascii_lowercase();
+    matches!(lower.as_str(), "-filepath" | "-file" | "-f")
+}
+
+fn start_process_filepath_attached_value(token: &str) -> Option<&str> {
+    let token = token.trim_matches(['"', '\'']);
+    let (flag, value) = token.split_once([':', '='])?;
+    start_process_filepath_flag(flag).then_some(value)
+}
+
+fn ps_process_target_is_powershell(target: &str) -> bool {
+    let trimmed = target.trim_matches(['"', '\'']);
+    let basename = trimmed.rsplit(['\\', '/']).next().unwrap_or(trimmed);
+    let lower = basename.to_ascii_lowercase();
+    matches!(
+        lower.strip_suffix(".exe").unwrap_or(&lower),
+        "powershell" | "pwsh"
+    )
+}
+
+fn is_ps_word_boundary_before(text: &str, idx: usize) -> bool {
+    if idx == 0 {
+        return true;
+    }
+    is_ps_word_boundary_at(text, idx - 1)
+}
+
+fn is_ps_word_boundary_at(text: &str, idx: usize) -> bool {
+    match text.as_bytes().get(idx) {
+        Some(b) => !(b.is_ascii_alphanumeric() || *b == b'-' || *b == b'_'),
+        None => true,
+    }
 }
 
 fn ps_quoted_array_space_bindings(text: &str) -> std::collections::HashMap<String, String> {
@@ -2652,6 +2744,12 @@ fn has_start_process_argument_list_flag(lower: &str) -> bool {
         cursor = pos + 2;
     }
     false
+}
+
+fn has_start_process_positional_powershell_signal(lower: &str) -> bool {
+    lower.contains("start-process")
+        && (lower.contains("powershell") || lower.contains("pwsh"))
+        && lower.contains("encodedcommand")
 }
 
 fn parse_ps_quoted_argument(text: &str, start: usize) -> Option<(String, usize)> {
@@ -8651,7 +8749,8 @@ struct PsObfuscationSignals {
 impl PsObfuscationSignals {
     fn new(text: &str) -> Self {
         let lower = text.to_ascii_lowercase();
-        let argument_list = has_start_process_argument_list_flag(&lower);
+        let argument_list = has_start_process_argument_list_flag(&lower)
+            || has_start_process_positional_powershell_signal(&lower);
         let has_function_def = lower.contains("function ")
             || lower.contains("-name ")
             || lower.contains("-n ")
