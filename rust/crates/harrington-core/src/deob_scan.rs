@@ -6127,6 +6127,14 @@ fn scan_copied_winrm_alias_deob_text(deobfuscated: &str, env: &mut Environment) 
 }
 
 fn replay_copied_alias_child_command(command: &str, env: &mut Environment) {
+    replay_copied_alias_child_command_with_delayed(command, false, env);
+}
+
+fn replay_copied_alias_child_command_with_delayed(
+    command: &str,
+    force_delayed: bool,
+    env: &mut Environment,
+) {
     let (child, delayed) = if let Some(cmd_inner) = crate::handlers::cmd::extract_cmd_inner(command)
     {
         (cmd_inner, crate::handlers::cmd::has_v_on_raw(command))
@@ -6135,17 +6143,12 @@ fn replay_copied_alias_child_command(command: &str, env: &mut Environment) {
     };
 
     let saved_delayed = env.delayed_expansion;
-    if delayed {
+    if delayed || force_delayed {
         env.delayed_expansion = true;
     }
-    for segment in crate::split::split_commands(&child) {
-        let normalized =
-            crate::normalize::normalize_literal_command_fast(&segment).unwrap_or_else(|| {
-                let toks = crate::lex::lex(&segment);
-                crate::normalize::normalize_to_string(&toks, env)
-            });
-        crate::interp::interpret_line(&normalized, env);
-    }
+    let child = child.replace("^!", "!");
+    let mut sink = String::new();
+    crate::drive(child.as_bytes(), env, &mut sink);
     env.delayed_expansion = saved_delayed;
 }
 
@@ -6220,7 +6223,7 @@ fn scan_copied_schtasks_alias_deob_text(deobfuscated: &str, env: &mut Environmen
         if tokens.len() < 2 {
             continue;
         }
-        if env.traits.iter().any(|t| {
+        let already_manipulated = env.traits.iter().any(|t| {
             matches!(
                 t,
                 Trait::ManipulatedExec {
@@ -6228,11 +6231,11 @@ fn scan_copied_schtasks_alias_deob_text(deobfuscated: &str, env: &mut Environmen
                     target
                 } if existing_cmd == line && target.eq_ignore_ascii_case(cmd.trim_matches(['"', '\'']))
             )
-        }) {
-            continue;
-        }
+        });
 
-        push_manipulated_exec_once(env, line, cmd);
+        if !already_manipulated {
+            push_manipulated_exec_once(env, line, cmd);
+        }
         let rest = line
             .get(cmd.len()..)
             .map(str::trim_start)
@@ -6243,16 +6246,21 @@ fn scan_copied_schtasks_alias_deob_text(deobfuscated: &str, env: &mut Environmen
             format!("schtasks.exe {rest}")
         };
         let child_start = env.exec_cmd.len();
+        let delayed_start = env.exec_cmd_delayed.len();
         crate::handlers::passthrough::h_schtasks(&replay, env);
         scan_defender_evasion(&replay, env);
         scan_enumeration(&replay, env);
         let new_children = env.exec_cmd.get(child_start..).unwrap_or_default().to_vec();
-        for child in new_children {
-            if let Some(cmd_inner) = crate::handlers::cmd::extract_cmd_inner(&child) {
-                crate::interp::interpret_line(&cmd_inner, env);
-            } else {
-                crate::interp::interpret_line(&child, env);
-            }
+        let new_delayed = env
+            .exec_cmd_delayed
+            .get(delayed_start..)
+            .unwrap_or_default()
+            .to_vec();
+        for (child, delayed) in new_children
+            .into_iter()
+            .zip(new_delayed.into_iter().chain(std::iter::repeat(false)))
+        {
+            replay_copied_alias_child_command_with_delayed(&child, delayed, env);
         }
     }
 }

