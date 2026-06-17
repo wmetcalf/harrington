@@ -6599,9 +6599,10 @@ fn scan_copied_cmd_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
         return;
     }
 
-    for line in deobfuscated.lines() {
+    let lines: Vec<&str> = deobfuscated.lines().collect();
+    for (idx, line) in lines.iter().copied().enumerate() {
         let tokens = split_words(line);
-        let (Some(cmd), Some(switch)) = (tokens.first(), tokens.get(1)) else {
+        let Some(cmd) = tokens.first() else {
             continue;
         };
         if !aliases.contains(&basename_lower(cmd))
@@ -6609,15 +6610,38 @@ fn scan_copied_cmd_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
         {
             continue;
         }
-        let switch = switch.trim_matches(['"', '\'']);
-        if !switch.eq_ignore_ascii_case("/c")
-            && !switch.eq_ignore_ascii_case("-c")
-            && !switch.eq_ignore_ascii_case("/k")
-            && !switch.eq_ignore_ascii_case("-k")
-        {
+        if !tokens.iter().skip(1).any(|token| {
+            let token = token.trim_matches(['"', '\'']);
+            token.eq_ignore_ascii_case("/c")
+                || token.eq_ignore_ascii_case("-c")
+                || token.eq_ignore_ascii_case("/k")
+                || token.eq_ignore_ascii_case("-k")
+        }) {
             continue;
         }
         push_manipulated_exec_once(env, line, cmd);
+        let rest = line
+            .get(cmd.len()..)
+            .map(str::trim_start)
+            .unwrap_or_default();
+        let replay = if rest.is_empty() {
+            "cmd.exe".to_string()
+        } else {
+            format!("cmd.exe {rest}")
+        };
+        let replay = maybe_extend_copied_cmd_replay(&replay, lines.get(idx + 1).copied());
+        replay_copied_alias_child_command(&replay, env);
+    }
+}
+
+fn maybe_extend_copied_cmd_replay(replay: &str, next_line: Option<&str>) -> String {
+    let Some(next) = next_line.map(str::trim).filter(|line| !line.is_empty()) else {
+        return replay.to_string();
+    };
+    if crate::handlers::cmd::has_v_on_raw(replay) && next.contains('!') {
+        format!("{replay}&&{next}")
+    } else {
+        replay.to_string()
     }
 }
 

