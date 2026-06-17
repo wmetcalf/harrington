@@ -5327,15 +5327,23 @@ fn scan_copied_net_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
         let has_add = tokens
             .iter()
             .any(|token| token.trim_matches(['"', '\'']).eq_ignore_ascii_case("/add"));
-        if !has_add {
-            continue;
-        }
         match subcommand.as_str() {
-            "user" => {
+            "user" if has_add => {
                 let account = clean_account_modification_token(&tokens[2]);
                 push_account_modification_once(env, "local-user-add", account, None, line);
             }
+            "user" if copied_net_user_active_yes(&tokens) => {
+                let account = clean_account_modification_token(&tokens[2]);
+                push_account_modification_once(env, "local-user-enable", account, None, line);
+            }
+            "user" if copied_net_user_password_set(&tokens) => {
+                let account = clean_account_modification_token(&tokens[2]);
+                push_account_modification_once(env, "local-user-password-set", account, None, line);
+            }
             "localgroup" if tokens.len() >= 4 => {
+                if !has_add {
+                    continue;
+                }
                 let group = clean_account_modification_token(&tokens[2]);
                 let account = clean_account_modification_token(&tokens[3]);
                 push_account_modification_once(env, "localgroup-add", account, Some(group), line);
@@ -5343,6 +5351,29 @@ fn scan_copied_net_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
             _ => {}
         }
     }
+}
+
+fn copied_net_user_active_yes(tokens: &[String]) -> bool {
+    tokens.iter().skip(3).any(|token| {
+        let lower = token.trim_matches(['"', '\'']).to_ascii_lowercase();
+        lower
+            .strip_prefix("/active")
+            .and_then(|rest| rest.strip_prefix(':'))
+            .is_some_and(|value| value.eq_ignore_ascii_case("yes"))
+    })
+}
+
+fn copied_net_user_password_set(tokens: &[String]) -> bool {
+    let Some(password) = tokens.get(3) else {
+        return false;
+    };
+    if password.trim_matches(['"', '\'']).starts_with('/') {
+        return false;
+    }
+    !tokens.iter().any(|token| {
+        let lower = token.trim_matches(['"', '\'']).to_ascii_lowercase();
+        lower.eq_ignore_ascii_case("/add") || lower.starts_with("/active")
+    })
 }
 
 fn clean_account_modification_token(token: &str) -> String {
@@ -5380,10 +5411,31 @@ fn push_account_modification_once(
     }
     env.traits.push(Trait::AccountModification {
         action: action.to_string(),
-        account,
-        group,
+        account: account.clone(),
+        group: group.clone(),
         command: command.to_string(),
     });
+    if action == "localgroup-add"
+        && group
+            .as_deref()
+            .is_some_and(|group| group.eq_ignore_ascii_case("Remote Desktop Users"))
+        && !env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::RemoteAccess {
+                    technique,
+                    target,
+                    ..
+                } if technique == "rdp-user-group-add" && target == &account
+            )
+        })
+    {
+        env.traits.push(Trait::RemoteAccess {
+            technique: "rdp-user-group-add".to_string(),
+            target: account.to_string(),
+            command: command.to_string(),
+        });
+    }
 }
 
 fn scan_copied_robocopy_alias_deob_text(deobfuscated: &str, env: &mut Environment) {

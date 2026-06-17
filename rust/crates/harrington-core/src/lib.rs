@@ -6330,6 +6330,52 @@ C:\Users\Public\nt.tmp localgroup Administrators backdoor /ADD
     }
 
     #[test]
+    fn copied_net_alias_emits_user_enable_and_password_set_traits() {
+        let script = br#"copy C:\Windows\System32\net.exe C:\Users\Public\nt.tmp
+C:\Users\Public\nt.tmp user defaultuserx /active:yes
+C:\Users\Public\nt.tmp user support N3wP@ssw0rd!
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, .. }
+                    if action == "local-user-enable" && account == "defaultuserx"
+            )),
+            "missing copied-net local-user-enable: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, .. }
+                    if action == "local-user-password-set" && account == "support"
+            )),
+            "missing copied-net local-user-password-set: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_net_alias_remote_desktop_users_group_add_emits_remote_access() {
+        let script = br#"copy C:\Windows\System32\net.exe C:\Users\Public\nt.tmp
+C:\Users\Public\nt.tmp localgroup "Remote Desktop Users" support /add
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-user-group-add" && target == "support"
+            )),
+            "missing copied-net Remote Desktop Users remote access trait: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn account_modification_preserves_full_command_context() {
         let comment = "A".repeat(260);
         let script = format!("net user support P@ssw0rd /add /comment:\"{comment}\"\r\n");
