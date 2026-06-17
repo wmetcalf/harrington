@@ -25,7 +25,7 @@ fn find_cmd_executable_end(raw: &str) -> Option<usize> {
     while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
         i += 1;
     }
-    if !is_cmd_token(&raw[start..i]) {
+    if !is_cmd_token(&raw[start..i]) && !is_comspec_token(&raw[start..i]) {
         return None;
     }
     // Optional second cmd token (e.g. `cmd.exe cmd /c X`).

