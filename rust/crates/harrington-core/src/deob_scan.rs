@@ -9682,6 +9682,10 @@ fn scan_lateral_movement(deobfuscated: &str, env: &mut Environment) {
 /// Anti-recovery: shadow copy delete, BCD recoveryenabled no, wbadmin
 /// delete catalog. Ransomware staging IOCs.
 fn scan_anti_recovery(deobfuscated: &str, env: &mut Environment) {
+    if !has_anti_recovery_atom(deobfuscated) {
+        return;
+    }
+
     use once_cell::sync::Lazy;
     use regex::Regex;
     static VSSADMIN_RESIZE_SHADOWSTORAGE_RE: Lazy<Regex> = Lazy::new(|| {
@@ -9778,6 +9782,97 @@ fn scan_anti_recovery(deobfuscated: &str, env: &mut Environment) {
             continue;
         }
         push_action("vssadmin-resize-shadowstorage");
+    }
+}
+
+fn has_anti_recovery_atom(text: &str) -> bool {
+    text.lines().any(|line| {
+        if command_starts_with_echo(line) {
+            return false;
+        }
+        let lower = line.to_ascii_lowercase();
+        if lower.contains("vssadmin")
+            && (lower.contains("delete") || lower.contains("resize shadowstorage"))
+        {
+            return true;
+        }
+        if lower.contains("shadowcopy")
+            && (lower.contains("delete")
+                || lower.contains(".delete")
+                || lower.contains("remove-wmiobject")
+                || lower.contains("remove-ciminstance")
+                || line_has_standalone_ascii_keyword(line.as_bytes(), b"rwmi"))
+        {
+            return true;
+        }
+        if lower.contains("disable-computerrestore") {
+            return true;
+        }
+        if lower.contains("bcdedit")
+            && (lower.contains("recoveryenabled") || lower.contains("bootstatuspolicy"))
+        {
+            return true;
+        }
+        if lower.contains("wbadmin") && lower.contains("delete") {
+            return true;
+        }
+        if lower.contains("reagentc") && lower.contains("/disable") {
+            return true;
+        }
+        if (line_has_standalone_ascii_keyword(line.as_bytes(), b"del")
+            || line_has_standalone_ascii_keyword(line.as_bytes(), b"erase"))
+            && [
+                "*.vhd",
+                "*.vhdx",
+                "*.bac",
+                "*.bak",
+                "*.wbcat",
+                "*.bkf",
+                "backup*.*",
+            ]
+            .iter()
+            .any(|atom| lower.contains(atom))
+        {
+            return true;
+        }
+        false
+    })
+}
+
+#[cfg(test)]
+mod anti_recovery_prefilter_tests {
+    use super::has_anti_recovery_atom;
+
+    #[test]
+    fn prefilter_allows_known_anti_recovery_atoms() {
+        for sample in [
+            "vssadmin delete shadows /all /quiet",
+            "vssadmin.exe resize shadowstorage /for=C: /on=C: /maxsize=401MB",
+            "wmic shadowcopy delete",
+            "Get-WmiObject Win32_ShadowCopy | Remove-WmiObject",
+            "gwmi Win32_ShadowCopy | rwmi",
+            "Disable-ComputerRestore -Drive C:",
+            "bcdedit /set recoveryenabled no",
+            "bcdedit /set bootstatuspolicy ignoreallfailures",
+            "wbadmin delete catalog -quiet",
+            "reagentc.exe /disable",
+            r#"del /q C:\Backups\*.vhdx"#,
+            r#"erase C:\Backups\*.bak"#,
+        ] {
+            assert!(has_anti_recovery_atom(sample), "blocked: {sample}");
+        }
+    }
+
+    #[test]
+    fn prefilter_blocks_unrelated_text_and_echo_only_commands() {
+        for sample in [
+            "echo vssadmin delete shadows /all /quiet",
+            "set msg=recoveryenabled no but no recovery utility command",
+            "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12",
+            "copy C:\\Windows\\System32\\powershell.exe payload.exe",
+        ] {
+            assert!(!has_anti_recovery_atom(sample), "allowed: {sample}");
+        }
     }
 }
 
