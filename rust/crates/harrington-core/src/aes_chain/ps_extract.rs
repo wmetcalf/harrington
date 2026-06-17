@@ -135,15 +135,130 @@ static AES_IV_RE: Lazy<Regex> = Lazy::new(|| {
 /// Extract AES key+IV bytes from stage-3 PS. Returns `None` if either is
 /// missing or fails base64 decode.
 pub fn find_aes_key_iv(text: &str) -> Option<(Vec<u8>, Vec<u8>)> {
-    let key_b64 = AES_KEY_RE.captures(text)?.get(1)?.as_str();
-    let iv_b64 = AES_IV_RE.captures(text)?.get(1)?.as_str();
-    let key = base64::engine::general_purpose::STANDARD
-        .decode(key_b64)
-        .ok()?;
-    let iv = base64::engine::general_purpose::STANDARD
-        .decode(iv_b64)
-        .ok()?;
+    let key = AES_KEY_RE
+        .captures(text)
+        .and_then(|caps| caps.get(1))
+        .and_then(|m| {
+            base64::engine::general_purpose::STANDARD
+                .decode(m.as_str())
+                .ok()
+        })
+        .or_else(|| find_aes_byte_array_assignment(text, "Key"))?;
+    let iv = AES_IV_RE
+        .captures(text)
+        .and_then(|caps| caps.get(1))
+        .and_then(|m| {
+            base64::engine::general_purpose::STANDARD
+                .decode(m.as_str())
+                .ok()
+        })
+        .or_else(|| find_aes_byte_array_assignment(text, "IV"))?;
     Some((key, iv))
+}
+
+fn find_aes_byte_array_assignment(text: &str, field: &str) -> Option<Vec<u8>> {
+    let field_pos = find_ascii_case_insensitive(text, field, 0)?;
+    let mut search_start = field_pos;
+    while let Some(pos) = find_ascii_case_insensitive(text, field, search_start) {
+        let after_field = skip_ascii_ws(text, pos + field.len());
+        if text.as_bytes().get(after_field) != Some(&b'=') {
+            search_start = pos + field.len();
+            continue;
+        }
+        let after_equals = skip_ascii_ws(text, after_field + 1);
+        let after_type = match ps_byte_array_type_len(text.get(after_equals..)?) {
+            Some(len) => skip_ascii_ws(text, after_equals + len),
+            None => {
+                search_start = pos + field.len();
+                continue;
+            }
+        };
+        if text.as_bytes().get(after_type) != Some(&b'@') {
+            search_start = pos + field.len();
+            continue;
+        }
+        let open = skip_ascii_ws(text, after_type + 1);
+        if text.as_bytes().get(open) != Some(&b'(') {
+            search_start = pos + field.len();
+            continue;
+        }
+        let close = text[open + 1..].find(')')? + open + 1;
+        let bytes = parse_ps_byte_array(&text[open + 1..close])?;
+        if matches!(
+            (field.to_ascii_lowercase().as_str(), bytes.len()),
+            ("key", 16 | 24 | 32) | ("iv", 16)
+        ) {
+            return Some(bytes);
+        }
+        search_start = pos + field.len();
+    }
+    None
+}
+
+fn ps_byte_array_type_len(text: &str) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    if bytes.get(i) != Some(&b'[') {
+        return None;
+    }
+    i += 1;
+    i = skip_ascii_ws(text, i);
+    let type_name = "byte";
+    if text
+        .get(i..i + type_name.len())?
+        .eq_ignore_ascii_case(type_name)
+    {
+        i += type_name.len();
+    } else {
+        return None;
+    }
+    i = skip_ascii_ws(text, i);
+    if bytes.get(i) != Some(&b'[') || bytes.get(i + 1) != Some(&b']') {
+        return None;
+    }
+    i += 2;
+    i = skip_ascii_ws(text, i);
+    if bytes.get(i) != Some(&b']') {
+        return None;
+    }
+    Some(i + 1)
+}
+
+fn parse_ps_byte_array(body: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    for raw in body.split(',') {
+        let token = raw.trim();
+        if token.is_empty() {
+            return None;
+        }
+        let value = if let Some(hex) = token
+            .strip_prefix("0x")
+            .or_else(|| token.strip_prefix("0X"))
+        {
+            u8::from_str_radix(hex, 16).ok()?
+        } else {
+            token.parse::<u8>().ok()?
+        };
+        out.push(value);
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+fn find_ascii_case_insensitive(text: &str, needle: &str, start: usize) -> Option<usize> {
+    let lower = text[start..].to_ascii_lowercase();
+    lower
+        .find(&needle.to_ascii_lowercase())
+        .map(|pos| start + pos)
+}
+
+fn skip_ascii_ws(text: &str, mut idx: usize) -> usize {
+    while let Some(byte) = text.as_bytes().get(idx) {
+        if !byte.is_ascii_whitespace() {
+            break;
+        }
+        idx += 1;
+    }
+    idx
 }
 
 /// Find every `[Convert]::FromBase64String('<b64>')` literal in `text` and
@@ -311,6 +426,36 @@ mod tests {
         let (key, iv) = find_aes_key_iv(text).unwrap();
         assert_eq!(key.len(), 32);
         assert_eq!(iv.len(), 16);
+    }
+
+    #[test]
+    fn aes_key_iv_byte_array_hex_literals_extracted() {
+        let text = "$aes.Key=[byte[]]@(0xFA,0xB2,0x9A,0x62,0x85,0x3F,0x9E,0xED,0x91,0xF4,0x73,0x7C,0xFA,0xBF,0x8C,0x9E);\
+                    $aes.IV=[byte[]]@(0xFE,0x6A,0x14,0x2C,0x64,0xB9,0x42,0x68,0x05,0xA9,0x3B,0xB7,0x26,0x98,0x6B,0xEF);";
+        let (key, iv) = find_aes_key_iv(text).unwrap();
+        assert_eq!(
+            key,
+            vec![
+                0xFA, 0xB2, 0x9A, 0x62, 0x85, 0x3F, 0x9E, 0xED, 0x91, 0xF4, 0x73, 0x7C, 0xFA, 0xBF,
+                0x8C, 0x9E
+            ]
+        );
+        assert_eq!(
+            iv,
+            vec![
+                0xFE, 0x6A, 0x14, 0x2C, 0x64, 0xB9, 0x42, 0x68, 0x05, 0xA9, 0x3B, 0xB7, 0x26, 0x98,
+                0x6B, 0xEF
+            ]
+        );
+    }
+
+    #[test]
+    fn aes_key_iv_byte_array_decimal_literals_extracted() {
+        let text = "$aes.Key = [Byte []]@(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24);\
+                    $aes.IV = [BYTE[]]@(101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116);";
+        let (key, iv) = find_aes_key_iv(text).unwrap();
+        assert_eq!(key, (1u8..=24).collect::<Vec<_>>());
+        assert_eq!(iv, (101u8..=116).collect::<Vec<_>>());
     }
 
     #[test]
