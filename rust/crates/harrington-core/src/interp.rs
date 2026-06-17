@@ -50,17 +50,24 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
 
     if let Some(inners) = crate::handlers::forfiles::extract_forfiles_inners_with_env(raw, env) {
         let original = crate::handlers::forfiles::extract_forfiles_inner(raw);
-        for inner in &inners {
-            if original.as_ref().is_some_and(|original| original != inner) {
-                if let Some(cmd_inner) = crate::handlers::cmd::extract_cmd_inner(inner) {
-                    interpret_line(&cmd_inner, env);
+        let has_substitution = original
+            .as_ref()
+            .is_some_and(|original| inners.iter().any(|inner| original != inner));
+        if has_substitution {
+            for inner in inners {
+                if let Some(cmd_inner) = crate::handlers::cmd::extract_cmd_inner(&inner) {
+                    env.exec_cmd.push(cmd_inner);
+                    env.exec_cmd_delayed
+                        .push(crate::handlers::cmd::has_v_on_raw(&inner));
                 } else {
-                    interpret_line(inner, env);
+                    env.exec_cmd.push(inner);
+                    env.exec_cmd_delayed.push(false);
                 }
             }
+        } else {
+            result.child_cmd_to_push = inners.into_iter().next();
+            result.child_cmd_delayed = false;
         }
-        result.child_cmd_to_push = inners.into_iter().next();
-        result.child_cmd_delayed = false;
     }
 
     // cmd /c handler: extract child from raw text so var refs aren't expanded

