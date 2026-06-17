@@ -1127,12 +1127,19 @@ fn persisted_command_looks_dispatchable(command: &str) -> bool {
 pub(crate) fn persisted_command_child(command: &str) -> Option<(String, bool)> {
     let command = strip_outer_quotes(command.trim()).trim();
     if let Some(inner) = super::cmd::extract_cmd_inner(command) {
-        return Some((inner, super::cmd::has_v_on_raw(command)));
+        return Some((
+            unescape_outer_caret_bangs(&inner),
+            super::cmd::has_v_on_raw(command),
+        ));
     }
     if persisted_command_looks_dispatchable(command) {
-        return Some((command.to_string(), false));
+        return Some((unescape_outer_caret_bangs(command), false));
     }
     None
+}
+
+fn unescape_outer_caret_bangs(command: &str) -> String {
+    command.replace("^!", "!")
 }
 
 pub(crate) fn sc_service_binpath(raw: &str) -> Option<(String, String)> {
