@@ -381,12 +381,16 @@ pub fn h_start(raw: &str, env: &mut Environment) {
         return;
     }
     if let Some(child) = extract_cmd_inner(inner.as_ref()) {
-        env.exec_cmd.push(child);
+        env.exec_cmd.push(unescape_outer_caret_bangs(&child));
         env.exec_cmd_delayed.push(has_v_on_raw(inner.as_ref()));
         return;
     }
     // Recurse: interpret the inner command inline.
     crate::interp::interpret_line(inner.as_ref(), env);
+}
+
+fn unescape_outer_caret_bangs(command: &str) -> String {
+    command.replace("^!", "!")
 }
 
 pub(crate) fn start_child_command(raw: &str) -> Option<&str> {
