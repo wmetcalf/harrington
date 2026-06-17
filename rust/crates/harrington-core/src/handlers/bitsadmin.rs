@@ -137,9 +137,14 @@ fn bitsadmin_notify_command(tokens: &[String]) -> Option<(String, String)> {
         } else {
             format!("{program} {params}")
         };
+        let command = unescape_outer_caret_bangs(&command);
         return Some((job, command));
     }
     None
+}
+
+fn unescape_outer_caret_bangs(command: &str) -> String {
+    command.replace("^!", "!")
 }
 
 fn strip_notify_attached_value(token: &str) -> Option<&str> {

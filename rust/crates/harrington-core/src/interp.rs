@@ -251,6 +251,8 @@ fn raw_persisted_command_needs_bang_preservation(raw: &str, env: &mut Environmen
             Some(crate::handlers::passthrough::h_reg)
         } else if lower.starts_with("schtasks ") || lower.starts_with("schtasks.exe ") {
             Some(crate::handlers::passthrough::h_schtasks)
+        } else if lower.starts_with("bitsadmin ") || lower.starts_with("bitsadmin.exe ") {
+            Some(crate::handlers::bitsadmin::h_bitsadmin)
         } else {
             None
         };
