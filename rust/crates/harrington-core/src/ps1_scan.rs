@@ -2425,7 +2425,18 @@ fn parse_start_process_positional_powershell_argument(
     start: usize,
 ) -> Option<(String, usize)> {
     let empty_bindings = std::collections::HashMap::new();
-    let (first, first_end) = parse_ps_argument_atom(text, start)?;
+    let mut pos = start;
+    let (first, first_end) = loop {
+        let (token, token_end) = parse_ps_argument_atom(text, pos)?;
+        if start_process_filepath_flag(&token)
+            || start_process_filepath_attached_value(&token).is_some()
+            || ps_process_target_is_powershell(&token)
+        {
+            break (token, token_end);
+        }
+        let next = skip_start_process_leading_option(text, &token, token_end)?;
+        pos = next;
+    };
     if ps_process_target_is_powershell(&first) {
         return parse_ps_argument_list_value(text, first_end, &empty_bindings);
     }
@@ -2445,6 +2456,40 @@ fn parse_start_process_positional_powershell_argument(
         return None;
     }
     parse_ps_argument_list_value(text, target_end, &empty_bindings)
+}
+
+fn skip_start_process_leading_option(text: &str, token: &str, token_end: usize) -> Option<usize> {
+    let takes_value = start_process_leading_option_takes_value(token)?;
+    if !takes_value || start_process_option_has_attached_value(token) {
+        return Some(token_end);
+    }
+    let (_, value_end) = parse_ps_argument_atom(text, token_end)?;
+    Some(value_end)
+}
+
+fn start_process_option_has_attached_value(token: &str) -> bool {
+    token.trim_matches(['"', '\'']).contains([':', '='])
+}
+
+fn start_process_leading_option_takes_value(token: &str) -> Option<bool> {
+    let lower = token.trim_matches(['"', '\'']).to_ascii_lowercase();
+    let name = lower
+        .split_once([':', '='])
+        .map(|(name, _)| name)
+        .unwrap_or(&lower);
+    match name {
+        "-credential"
+        | "-verb"
+        | "-windowstyle"
+        | "-workingdirectory"
+        | "-redirectstandarderror"
+        | "-redirectstandardinput"
+        | "-redirectstandardoutput"
+        | "-environment" => Some(true),
+        "-loaduserprofile" | "-nonewwindow" | "-passthru" | "-wait" | "-usenewenvironment"
+        | "-whatif" | "-confirm" => Some(false),
+        _ => None,
+    }
 }
 
 fn start_process_filepath_flag(token: &str) -> bool {
