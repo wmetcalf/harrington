@@ -2378,13 +2378,7 @@ fn expand_start_process_argument_list(text: &str) -> String {
 fn append_start_process_positional_argument_list(text: &str, out: &mut String) {
     let lower = text.to_ascii_lowercase();
     let mut cursor = 0usize;
-    while let Some(rel) = lower[cursor..].find("start-process") {
-        let start = cursor + rel;
-        let end = start + "start-process".len();
-        if !is_ps_word_boundary_before(&lower, start) || !is_ps_word_boundary_at(&lower, end) {
-            cursor = end;
-            continue;
-        }
+    while let Some((_, end)) = find_start_process_launcher(&lower, cursor) {
         let Some((argument, argument_end)) =
             parse_start_process_positional_powershell_argument(text, end)
         else {
@@ -2403,6 +2397,27 @@ fn append_start_process_positional_argument_list(text: &str, out: &mut String) {
         }
         cursor = argument_end;
     }
+}
+
+fn find_start_process_launcher(lower: &str, cursor: usize) -> Option<(usize, usize)> {
+    const NAMES: &[&str] = &["start-process", "saps", "start"];
+    let mut best: Option<(usize, usize)> = None;
+    for name in NAMES {
+        let mut search = cursor;
+        while let Some(rel) = lower[search..].find(name) {
+            let start = search + rel;
+            let end = start + name.len();
+            if is_ps_word_boundary_before(lower, start) && is_ps_word_boundary_at(lower, end) {
+                match best {
+                    Some((best_start, _)) if best_start <= start => {}
+                    _ => best = Some((start, end)),
+                }
+                break;
+            }
+            search = end;
+        }
+    }
+    best
 }
 
 fn parse_start_process_positional_powershell_argument(
@@ -2747,7 +2762,7 @@ fn has_start_process_argument_list_flag(lower: &str) -> bool {
 }
 
 fn has_start_process_positional_powershell_signal(lower: &str) -> bool {
-    lower.contains("start-process")
+    (lower.contains("start-process") || lower.contains("saps") || lower.contains("start"))
         && (lower.contains("powershell") || lower.contains("pwsh"))
         && lower.contains("encodedcommand")
 }
