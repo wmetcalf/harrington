@@ -15506,6 +15506,36 @@ fn summarize_inert_binary_noise_line(line: &str, env: &mut Environment, out: &mu
     false
 }
 
+fn render_fast_percent_chain_logical_line(
+    _logical: &str,
+    normalized: String,
+    env: &mut Environment,
+    out: &mut String,
+    line_output_elided: bool,
+) -> bool {
+    if normalized.len() < 1024 || !normalized.starts_with('#') {
+        return false;
+    }
+    if normalized
+        .bytes()
+        .any(|b| b.is_ascii_whitespace() || matches!(b, b'%' | b'!' | b'^' | b'&' | b'|'))
+    {
+        return false;
+    }
+    if !line_output_elided {
+        rescue_truncated_urls(&normalized, normalized.len(), env);
+        env.traits.push(crate::traits::Trait::LineTruncated {
+            original_len: normalized.len() as u64,
+        });
+        out.push_str(&format!(
+            "::==== harrington: omitted {} bytes from hash-prefixed carrier line ====",
+            normalized.len()
+        ));
+        out.push_str("\r\n");
+    }
+    true
+}
+
 fn summarize_nul_padding_lines(text: &str, env: &mut Environment) -> String {
     const MIN_NUL_PADDING_BYTES: usize = 1024;
 
@@ -16162,6 +16192,18 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
         };
         if let Some(start) = fast_expand_start {
             profile_fast_expand_us += start.elapsed().as_micros();
+        }
+        if let Some(fast) = fast_normalized.as_ref() {
+            if render_fast_percent_chain_logical_line(
+                logical,
+                fast.clone(),
+                env,
+                out,
+                line_output_elided,
+            ) {
+                cursor += 1;
+                continue;
+            }
         }
 
         let commands = if drive_profile_enabled {
@@ -16980,6 +17022,34 @@ mod line_cap_tests {
                 .any(|t| matches!(t, Trait::LineTruncated { original_len } if *original_len == padding.len() as u64)),
             "expected LineTruncated for NUL padding line: {:?}",
             env.traits
+        );
+    }
+
+    #[test]
+    fn fast_percent_chain_logical_line_skips_raw_dispatch_and_renders_expanded_line() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.set("A", "#");
+        env.set("B", "e");
+        env.set("C", "c");
+        env.set("D", "h");
+        env.set("E", "o");
+        let logical = "%A%%B%%C%%D%%E%".repeat(512);
+        let mut out = String::new();
+
+        assert!(
+            crate::render_fast_percent_chain_logical_line(
+                &logical,
+                "#echo".repeat(512),
+                &mut env,
+                &mut out,
+                false
+            ),
+            "fast percent chain line should be rendered directly"
+        );
+        assert!(
+            out.contains("harrington: omitted 2560 bytes from hash-prefixed carrier line"),
+            "hash-prefixed carrier summary missing from fast path: {:?}",
+            out
         );
     }
 
