@@ -7,8 +7,9 @@ use once_cell::sync::Lazy;
 use regex::bytes::Regex as ByteRegex;
 
 #[allow(clippy::expect_used)]
-static URL_UTF8_RE: Lazy<ByteRegex> =
-    Lazy::new(|| ByteRegex::new(r"(?i)(?:https?|ftp)://[\x21-\x7e]{4,300}").expect("url utf8 re"));
+static URL_UTF8_RE: Lazy<ByteRegex> = Lazy::new(|| {
+    ByteRegex::new(r"(?i)(?:https?|ftp):[\x2f\x5c]+[\x21-\x7e]{4,300}").expect("url utf8 re")
+});
 
 const NOISE: &[&str] = &[
     "digicert",
@@ -67,7 +68,7 @@ pub fn scan_urls(bytes: &[u8], limit: usize) -> Vec<String> {
     // UTF-8 / ASCII pass.
     for m in URL_UTF8_RE.find_iter(bytes) {
         if let Ok(s) = std::str::from_utf8(m.as_bytes()) {
-            let cleaned = trim_trailing(s).to_string();
+            let cleaned = normalize_recovered_url(s);
             if cleaned.len() < 8 {
                 continue;
             }
@@ -104,7 +105,7 @@ pub fn scan_urls(bytes: &[u8], limit: usize) -> Vec<String> {
             // Re-run the UTF-8 url regex on this ASCII-projected text.
             for m in URL_UTF8_RE.find_iter(decoded.as_bytes()) {
                 if let Ok(s) = std::str::from_utf8(m.as_bytes()) {
-                    let cleaned = trim_trailing(s).to_string();
+                    let cleaned = normalize_recovered_url(s);
                     if cleaned.len() < 8 {
                         continue;
                     }
@@ -122,6 +123,11 @@ pub fn scan_urls(bytes: &[u8], limit: usize) -> Vec<String> {
         }
     }
     out
+}
+
+fn normalize_recovered_url(url: &str) -> String {
+    let trimmed = trim_trailing(url);
+    crate::deob_scan::normalize_liberal_url_token(trimmed).unwrap_or_else(|| trimmed.to_string())
 }
 
 fn has_utf16le_url_marker(bytes: &[u8]) -> bool {
@@ -159,6 +165,18 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_utf8_liberal_slash_url() {
+        let bytes = b"junk\x00\x00hTTp:\\\\evil.example.com\\payload.dll\x00more junk";
+        let urls = scan_urls(bytes, 16);
+        assert!(
+            urls.iter()
+                .any(|u| u == "http://evil.example.com/payload.dll"),
+            "got: {:?}",
+            urls
+        );
+    }
+
+    #[test]
     fn finds_utf8_ftp_url() {
         let bytes = b"junk\x00ftp://stage.example.net/payload.bin\x00more junk";
         let urls = scan_urls(bytes, 16);
@@ -182,6 +200,24 @@ mod tests {
         }
         let urls = scan_urls(&bytes, 16);
         assert!(urls.iter().any(|u| u == s), "got: {:?}", urls);
+    }
+
+    #[test]
+    fn normalizes_utf16le_liberal_slash_url() {
+        let s = "hTTps:\\\\utf16-slash.example.org\\payload";
+        let mut bytes = Vec::new();
+        for c in s.chars() {
+            let cp = c as u32;
+            bytes.push((cp & 0xff) as u8);
+            bytes.push(((cp >> 8) & 0xff) as u8);
+        }
+        let urls = scan_urls(&bytes, 16);
+        assert!(
+            urls.iter()
+                .any(|u| u == "https://utf16-slash.example.org/payload"),
+            "got: {:?}",
+            urls
+        );
     }
 
     #[test]
