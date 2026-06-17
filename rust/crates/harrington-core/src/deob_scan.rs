@@ -7680,7 +7680,7 @@ fn scan_curl_deob_text(deobfuscated: &str, env: &mut Environment) {
 }
 
 pub fn scan_raw_curl_known_percent_urls(raw: &str, env: &mut Environment) {
-    if !contains_ascii_keyword(raw, "curl") || !raw.contains('%') {
+    if !has_raw_curl_known_percent_atom(raw) {
         return;
     }
     for line in raw.lines() {
@@ -7695,6 +7695,57 @@ pub fn scan_raw_curl_known_percent_urls(raw: &str, env: &mut Environment) {
         }
         scan_curl_deob_text(&expanded, env);
     }
+}
+
+fn has_raw_curl_known_percent_atom(raw: &str) -> bool {
+    if !raw.contains('%') {
+        return false;
+    }
+    raw.lines().any(|line| {
+        !looks_like_raw_encoded_carrier_line(line)
+            && line_has_standalone_ascii_keyword(line.as_bytes(), b"curl")
+    })
+}
+
+fn looks_like_raw_encoded_carrier_line(line: &str) -> bool {
+    const MIN_LEN: usize = 64 * 1024;
+
+    let trimmed = line.trim();
+    if trimmed.len() < MIN_LEN || trimmed.len() != line.len() {
+        return false;
+    }
+    if trimmed.bytes().any(|b| b.is_ascii_whitespace()) {
+        return false;
+    }
+
+    let encoded = trimmed
+        .bytes()
+        .filter(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=' | b'-' | b'_'))
+        .count();
+    encoded * 100 >= trimmed.len() * 99
+}
+
+fn line_has_standalone_ascii_keyword(line: &[u8], keyword: &[u8]) -> bool {
+    if keyword.is_empty() || line.len() < keyword.len() {
+        return false;
+    }
+    let first = keyword[0].to_ascii_lowercase();
+    for start in 0..=line.len() - keyword.len() {
+        if line[start].to_ascii_lowercase() != first {
+            continue;
+        }
+        if !line[start..start + keyword.len()].eq_ignore_ascii_case(keyword) {
+            continue;
+        }
+        let before = start.checked_sub(1).and_then(|idx| line.get(idx)).copied();
+        let after = line.get(start + keyword.len()).copied();
+        let left_ok = before.map(|b| !is_ascii_keyword_byte(b)).unwrap_or(true);
+        let right_ok = after.map(|b| !is_ascii_keyword_byte(b)).unwrap_or(true);
+        if left_ok && right_ok {
+            return true;
+        }
+    }
+    false
 }
 
 fn expand_known_percent_vars_for_scan(text: &str, env: &Environment) -> Option<String> {
@@ -15782,6 +15833,9 @@ pub fn scan_extrac32_self_extract(deobfuscated: &str, env: &mut Environment) {
 pub fn scan_js_unescape_urls(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
+    if !has_js_unescape_atom(deobfuscated) {
+        return;
+    }
     // Unbounded upper limit on the captured arg: Rust's regex DFA
     // size is exponential in the explicit upper bound, and
     // `{12,16384}` blows past the 10 MB cap. Cap the lex run via the
@@ -15824,6 +15878,12 @@ pub fn scan_js_unescape_urls(deobfuscated: &str, env: &mut Environment) {
             });
         }
     }
+}
+
+fn has_js_unescape_atom(text: &str) -> bool {
+    text.contains('%')
+        && (contains_ascii_keyword(text, "unescape")
+            || contains_ascii_keyword(text, "decodeURIComponent"))
 }
 
 /// Mirror JavaScript's `unescape()` / `decodeURIComponent()` —
@@ -17393,7 +17453,7 @@ mod extrac32_self_extract_tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod js_unescape_url_tests {
-    use super::scan_js_unescape_urls;
+    use super::{has_js_unescape_atom, scan_js_unescape_urls};
     use crate::env::Environment;
     use crate::traits::Trait;
     use crate::Config;
@@ -17423,6 +17483,18 @@ mod js_unescape_url_tests {
         let extracted = urls(&script);
         assert!(extracted.iter().any(|u| u == "https://gov-cn.cloud/01Gni"));
         assert!(extracted.iter().any(|u| u == "https://gov-cn.cloud/NKB39"));
+    }
+
+    #[test]
+    fn js_unescape_atom_gate_requires_decoder_name_and_percent_escape() {
+        assert!(has_js_unescape_atom(
+            "eval(DeCoDeUrIComponent('%68%74%74%70'))"
+        ));
+        assert!(has_js_unescape_atom("var s = unescape('%68%74%74%70');"));
+        assert!(!has_js_unescape_atom(&"A".repeat(128 * 1024)));
+        assert!(!has_js_unescape_atom(
+            "decodeURIComponent('plain text without escapes')"
+        ));
     }
 
     #[test]
@@ -17466,6 +17538,27 @@ mod js_unescape_url_tests {
             pct("just some random text no URL here")
         );
         assert!(urls(&s).is_empty());
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod raw_curl_known_percent_tests {
+    use super::has_raw_curl_known_percent_atom;
+
+    #[test]
+    fn raw_curl_known_percent_atom_requires_standalone_curl_and_percent_expansion() {
+        assert!(has_raw_curl_known_percent_atom(
+            "set TOOL=curl\r\nset U=https://example.test/a\r\n%TOOL% -L %U%"
+        ));
+        assert!(has_raw_curl_known_percent_atom(
+            "set TOOL=curl\r\n%TOOL% -L https://example.test/a"
+        ));
+        let encoded_carrier = format!("{}+curl+{}%", "A".repeat(70_000), "B".repeat(70_000));
+        assert!(!has_raw_curl_known_percent_atom(&encoded_carrier));
+        assert!(!has_raw_curl_known_percent_atom(
+            "curl -L https://example.test/a"
+        ));
     }
 }
 
