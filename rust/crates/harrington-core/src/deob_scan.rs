@@ -6440,6 +6440,7 @@ fn replay_persisted_child_command(command: &str, env: &mut Environment) {
         return;
     };
     let child = crate::handlers::cmd::extract_cmd_inner(&child).unwrap_or(child);
+    let child = child.replace("^!", "!");
     let saved_delayed = env.delayed_expansion;
     if delayed {
         env.delayed_expansion = true;

