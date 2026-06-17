@@ -408,13 +408,40 @@ fn first_capture_string(caps: regex::Captures<'_>) -> Option<String> {
 }
 
 fn outfile_hint_from(text: &str) -> Option<String> {
+    outfile_hint_raw_from(text).map(normalize_destination_hint)
+}
+
+fn outfile_hint_from_with_bindings(
+    text: &str,
+    bindings: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    outfile_hint_from_with_bindings_and_env(text, bindings, None)
+}
+
+fn outfile_hint_from_with_bindings_and_env(
+    text: &str,
+    bindings: &std::collections::HashMap<String, String>,
+    env: Option<&Environment>,
+) -> Option<String> {
+    let raw = outfile_hint_raw_from(text)?;
+    let value = ps_string_arg(&raw, bindings).unwrap_or(raw);
+    let value = if contains_ascii_case_insensitive_bytes(&value, b"$env:") {
+        env.map_or(value.clone(), |env| {
+            expand_ps_environment_references(&value, env)
+        })
+    } else {
+        value
+    };
+    Some(normalize_destination_hint(value))
+}
+
+fn outfile_hint_raw_from(text: &str) -> Option<String> {
     OUTFILE_RE
         .captures(text)
         .or_else(|| BITS_DESTINATION_RE.captures(text))
         .or_else(|| CURL_OUTPUT_RE.captures(text))
         .or_else(|| CONTENT_REDIRECT_DESTINATION_RE.captures(text))
         .and_then(first_capture_string)
-        .map(normalize_destination_hint)
 }
 
 fn outfile_hint_for_download(text: &str, src: &str) -> Option<String> {
@@ -9392,6 +9419,7 @@ pub(crate) fn ps_download_side_effects(text: &str) -> Vec<(String, String)> {
     }
 
     let regex_atom_profile = PsUrlRegexAtomProfile::new(text);
+    let mut bindings = None;
     for spec in PS_URL_REGEX_SPECS {
         if !matches!(
             spec.atom_kind,
@@ -9425,6 +9453,11 @@ pub(crate) fn ps_download_side_effects(text: &str) -> Vec<(String, String)> {
             let Some(dst) = outfile_hint_for_download(statement, &src) else {
                 continue;
             };
+            let dst = outfile_hint_from_with_bindings(
+                statement,
+                bindings.get_or_insert_with(|| ps_string_bindings(text)),
+            )
+            .unwrap_or(dst);
             if seen.insert((src.clone(), dst.clone())) {
                 out.push((src, dst));
             }
@@ -10171,6 +10204,7 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
         let command_context = format!("(ps1 #{idx}) {primary}");
 
         for text in &candidates {
+            let mut bindings = None;
             let stage_start = std::time::Instant::now();
             for (url, dst) in ps_downloadfile_calls(text) {
                 if !seen.insert((idx, url.clone())) {
@@ -10195,7 +10229,13 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
                     env,
                     command_context.clone(),
                     url,
-                    dst.or_else(|| outfile_hint_from(primary)),
+                    dst.or_else(|| {
+                        outfile_hint_from_with_bindings(
+                            primary,
+                            bindings.get_or_insert_with(|| ps_dynamic_download_bindings(text)),
+                        )
+                        .or_else(|| outfile_hint_from(primary))
+                    }),
                     primary,
                 );
             }
@@ -10253,7 +10293,14 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
                         .get(0)
                         .map(|m| logical_statement_at(text, m.start()))
                         .unwrap_or(primary);
-                    let dst_hint = outfile_hint_for_download(statement, &url);
+                    let dst_hint = outfile_hint_for_download(statement, &url).and_then(|dst| {
+                        outfile_hint_from_with_bindings_and_env(
+                            statement,
+                            bindings.get_or_insert_with(|| ps_dynamic_download_bindings(text)),
+                            Some(env),
+                        )
+                        .or(Some(dst))
+                    });
                     push_download_and_execution_url_argument(
                         env,
                         command_context.clone(),
@@ -10274,7 +10321,11 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
                     env,
                     command_context.clone(),
                     url,
-                    outfile_hint_from(primary),
+                    outfile_hint_from_with_bindings(
+                        primary,
+                        bindings.get_or_insert_with(|| ps_dynamic_download_bindings(text)),
+                    )
+                    .or_else(|| outfile_hint_from(primary)),
                     primary,
                 );
             }
