@@ -15573,6 +15573,78 @@ fn summarize_inert_binary_noise_line(line: &str, env: &mut Environment, out: &mu
     false
 }
 
+fn summarize_repetitive_echo_noise_line(
+    line: &str,
+    env: &mut Environment,
+    out: &mut String,
+) -> bool {
+    const MIN_SUMMARY_BYTES: usize = 64 * 1024;
+
+    let trimmed = line.trim_start();
+    let leading = &line[..line.len() - trimmed.len()];
+    let command = trimmed.strip_prefix('@').unwrap_or(trimmed);
+    if !command
+        .as_bytes()
+        .get(..5)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"echo "))
+    {
+        return false;
+    }
+
+    let payload = &command[5..];
+    if payload.len() < MIN_SUMMARY_BYTES {
+        return false;
+    }
+    if payload
+        .bytes()
+        .any(|b| matches!(b, b'>' | b'<' | b'|' | b'&'))
+    {
+        return false;
+    }
+    if !looks_like_repetitive_echo_padding(payload) {
+        return false;
+    }
+
+    rescue_truncated_urls(payload, line.len(), env);
+    env.traits.push(crate::traits::Trait::LineTruncated {
+        original_len: line.len() as u64,
+    });
+    out.push_str(leading);
+    out.push_str(&format!(
+        "::==== harrington: omitted {} bytes from repetitive echo padding ====",
+        payload.len()
+    ));
+    true
+}
+
+fn looks_like_repetitive_echo_padding(payload: &str) -> bool {
+    const SAMPLE_BYTES: usize = 4096;
+    const MIN_UNIQUE_BYTES: usize = 16;
+    const MAX_UNIQUE_BYTES: usize = 64;
+
+    let sample = payload
+        .as_bytes()
+        .get(..SAMPLE_BYTES)
+        .unwrap_or(payload.as_bytes());
+    if sample.iter().any(|b| b.is_ascii_whitespace()) {
+        return false;
+    }
+
+    let mut seen = [false; 256];
+    let mut unique = 0usize;
+    for &byte in sample {
+        if !byte.is_ascii_graphic() {
+            return false;
+        }
+        if !seen[byte as usize] {
+            seen[byte as usize] = true;
+            unique += 1;
+        }
+    }
+
+    (MIN_UNIQUE_BYTES..=MAX_UNIQUE_BYTES).contains(&unique)
+}
+
 fn render_fast_percent_chain_logical_line(
     _logical: &str,
     normalized: String,
@@ -16178,6 +16250,12 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
         }
 
         if summarize_inert_binary_noise_line(logical, env, out) {
+            out.push_str("\r\n");
+            cursor += 1;
+            continue;
+        }
+
+        if summarize_repetitive_echo_noise_line(logical, env, out) {
             out.push_str("\r\n");
             cursor += 1;
             continue;
@@ -17131,6 +17209,45 @@ mod line_cap_tests {
                 .iter()
                 .any(|t| matches!(t, Trait::LineTruncated { original_len } if *original_len == payload.len() as u64)),
             "expected LineTruncated only for carrier line: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn long_repetitive_echo_padding_line_is_summarized_without_command_truncation() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        let padding =
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".repeat(1_200);
+        let command = "powershell.exe -NoProfile -Command \"Write-Output keep\"";
+        let mut out = String::new();
+
+        assert!(
+            crate::summarize_repetitive_echo_noise_line(
+                &format!("echo {padding}"),
+                &mut env,
+                &mut out
+            ),
+            "repetitive echo padding line should be summarized"
+        );
+        assert!(
+            !crate::summarize_repetitive_echo_noise_line(command, &mut env, &mut out),
+            "real command line should not be summarized"
+        );
+        assert!(
+            out.contains("harrington: omitted 74400 bytes from repetitive echo padding"),
+            "echo padding summary missing from output: {:?}",
+            out
+        );
+        assert!(
+            !out.contains(&padding),
+            "raw padding leaked into summary: {:?}",
+            out
+        );
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::LineTruncated { original_len } if *original_len == (padding.len() + 5) as u64)),
+            "expected LineTruncated only for echo padding line: {:?}",
             env.traits
         );
     }
