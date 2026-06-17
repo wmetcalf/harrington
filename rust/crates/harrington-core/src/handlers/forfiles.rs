@@ -85,9 +85,7 @@ fn tracked_forfiles_paths(raw: &str, env: &Environment) -> Vec<String> {
         .iter()
         .skip(1)
         .any(|token| token.eq_ignore_ascii_case("/s") || token.eq_ignore_ascii_case("-s"));
-    let normalized_root = normalize_wildcard_path(&normalize_filesystem_storage_path(&root))
-        .trim_end_matches('\\')
-        .to_string();
+    let normalized_root = normalized_forfiles_root(&root);
     let normalized_mask = normalize_wildcard_path(&mask);
     let mut matched = env
         .modified_filesystem
@@ -157,15 +155,24 @@ fn substitute_forfiles_placeholders(inner: &str, path: &str, root: &str) -> Stri
 
 fn forfiles_relative_path(path: &str, root: &str) -> String {
     let normalized_path = normalize_wildcard_path(path);
-    let normalized_root = normalize_wildcard_path(&normalize_filesystem_storage_path(root))
-        .trim_end_matches('\\')
-        .to_string();
+    let normalized_root = normalized_forfiles_root(root);
     let rest = normalized_path
         .strip_prefix(&normalized_root)
         .map(|rest| rest.trim_start_matches('\\'))
         .filter(|rest| !rest.is_empty())
         .unwrap_or(path);
     format!(r".\{rest}")
+}
+
+fn normalized_forfiles_root(root: &str) -> String {
+    let normalized = normalize_wildcard_path(&normalize_filesystem_storage_path(root))
+        .trim_end_matches('\\')
+        .to_string();
+    if normalized == "." {
+        String::new()
+    } else {
+        normalized
+    }
 }
 
 fn split_filename_ext(file: &str) -> (&str, &str) {
