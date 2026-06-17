@@ -2374,6 +2374,7 @@ fn expand_start_process_argument_list(text: &str) -> String {
 }
 
 fn parse_ps_argument_list_value(text: &str, start: usize) -> Option<(String, usize)> {
+    let start = skip_ps_argument_array_prefix(text, start);
     let (first, mut end) = parse_ps_quoted_argument(text, start)?;
     let mut parts = vec![first];
 
@@ -2398,6 +2399,37 @@ fn parse_ps_argument_list_value(text: &str, start: usize) -> Option<(String, usi
     }
 
     Some((parts.join(" "), end))
+}
+
+fn skip_ps_argument_array_prefix(text: &str, start: usize) -> usize {
+    let mut pos = start;
+    while pos < text.len() {
+        let Some(ch) = text[pos..].chars().next() else {
+            return pos;
+        };
+        if !ch.is_whitespace() {
+            break;
+        }
+        pos += ch.len_utf8();
+    }
+
+    if text.as_bytes().get(pos) == Some(&b'@') {
+        let mut next = pos + 1;
+        while next < text.len() {
+            let Some(ch) = text[next..].chars().next() else {
+                return pos;
+            };
+            if !ch.is_whitespace() {
+                break;
+            }
+            next += ch.len_utf8();
+        }
+        if text.as_bytes().get(next) == Some(&b'(') {
+            return next + 1;
+        }
+    }
+
+    pos
 }
 
 fn decode_start_process_encoded_argument(argument: &str) -> Option<String> {
