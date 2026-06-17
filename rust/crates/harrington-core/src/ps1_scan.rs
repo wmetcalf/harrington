@@ -2424,14 +2424,15 @@ fn parse_start_process_positional_powershell_argument(
     text: &str,
     start: usize,
 ) -> Option<(String, usize)> {
+    let empty_bindings = std::collections::HashMap::new();
     let (first, first_end) = parse_ps_argument_atom(text, start)?;
     if ps_process_target_is_powershell(&first) {
-        return parse_ps_argument_atom(text, first_end);
+        return parse_ps_argument_list_value(text, first_end, &empty_bindings);
     }
 
     if let Some(target) = start_process_filepath_attached_value(&first) {
         if ps_process_target_is_powershell(target) {
-            return parse_ps_argument_atom(text, first_end);
+            return parse_ps_argument_list_value(text, first_end, &empty_bindings);
         }
         return None;
     }
@@ -2443,7 +2444,7 @@ fn parse_start_process_positional_powershell_argument(
     if !ps_process_target_is_powershell(&target) {
         return None;
     }
-    parse_ps_argument_atom(text, target_end)
+    parse_ps_argument_list_value(text, target_end, &empty_bindings)
 }
 
 fn start_process_filepath_flag(token: &str) -> bool {
