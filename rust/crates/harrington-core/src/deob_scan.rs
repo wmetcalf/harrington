@@ -11620,10 +11620,22 @@ fn sanitize_wmic_enum_command(command: &str) -> String {
 fn has_enumeration_atom(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
     [
-        "net",
+        "net user",
+        "net.exe user",
+        "net group",
+        "net.exe group",
+        "net localgroup",
+        "net.exe localgroup",
+        "net view",
+        "net.exe view",
+        "net1 view",
+        "net1.exe view",
         "net accounts",
+        "net.exe accounts",
         "net config",
+        "net.exe config",
         "net share",
+        "net.exe share",
         "reg query",
         "reg.exe query",
         "sc query",
@@ -11705,6 +11717,7 @@ fn has_enumeration_atom(text: &str) -> bool {
         "nltest",
         "dsquery",
         "netdom query",
+        "netdom.exe query",
         "wmic process",
         "wmic.exe process",
         "wmic cpu",
@@ -11800,6 +11813,9 @@ mod enumeration_prefilter_tests {
     #[test]
     fn prefilter_blocks_unrelated_commands() {
         assert!(!has_enumeration_atom("echo hello"));
+        assert!(!has_enumeration_atom(
+            "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12"
+        ));
     }
 }
 
