@@ -5165,11 +5165,7 @@ fn scan_copied_forfiles_alias_deob_text(deobfuscated: &str, env: &mut Environmen
             crate::handlers::forfiles::extract_forfiles_inners_with_env(&replay, env)
         {
             for inner in inners {
-                if let Some(cmd_inner) = crate::handlers::cmd::extract_cmd_inner(&inner) {
-                    crate::interp::interpret_line(&cmd_inner, env);
-                } else {
-                    crate::interp::interpret_line(&inner, env);
-                }
+                replay_copied_alias_child_command(&inner, env);
             }
         }
     }
@@ -5291,11 +5287,7 @@ fn scan_copied_runas_alias_deob_text(deobfuscated: &str, env: &mut Environment) 
         };
         crate::handlers::passthrough::h_runas(&replay, env);
         if let Some(inner) = crate::handlers::passthrough::runas_child_command(&replay) {
-            if let Some(cmd_inner) = crate::handlers::cmd::extract_cmd_inner(&inner) {
-                crate::interp::interpret_line(&cmd_inner, env);
-            } else {
-                crate::interp::interpret_line(&inner, env);
-            }
+            replay_copied_alias_child_command(&inner, env);
         }
     }
 }

