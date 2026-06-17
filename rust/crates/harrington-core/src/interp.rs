@@ -56,7 +56,7 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
         if has_substitution {
             for inner in inners {
                 if let Some(cmd_inner) = crate::handlers::cmd::extract_cmd_inner(&inner) {
-                    env.exec_cmd.push(cmd_inner);
+                    env.exec_cmd.push(unescape_outer_caret_bangs(&cmd_inner));
                     env.exec_cmd_delayed
                         .push(crate::handlers::cmd::has_v_on_raw(&inner));
                 } else {
@@ -65,7 +65,10 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
                 }
             }
         } else {
-            result.child_cmd_to_push = inners.into_iter().next();
+            result.child_cmd_to_push = inners
+                .into_iter()
+                .next()
+                .map(|inner| unescape_outer_caret_bangs(&inner));
             result.child_cmd_delayed = false;
         }
     }
@@ -237,6 +240,10 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
     }
 
     result
+}
+
+fn unescape_outer_caret_bangs(command: &str) -> String {
+    command.replace("^!", "!")
 }
 
 fn raw_persisted_command_needs_bang_preservation(raw: &str, env: &mut Environment) -> bool {
