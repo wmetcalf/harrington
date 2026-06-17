@@ -2339,8 +2339,13 @@ fn expand_start_process_argument_list(text: &str) -> String {
     let mut out = text.to_string();
     let mut cursor = 0usize;
     let lower = text.to_ascii_lowercase();
-    while let Some(rel) = lower[cursor..].find("-argumentlist") {
-        let pos = cursor + rel + "-argumentlist".len();
+    while let Some(rel) = lower[cursor..].find("-a") {
+        let flag_start = cursor + rel;
+        let Some(flag_len) = start_process_argument_list_flag_len_at(&lower, flag_start) else {
+            cursor = flag_start + 2;
+            continue;
+        };
+        let pos = flag_start + flag_len;
         let Some((inner, end)) = parse_ps_quoted_argument(text, pos) else {
             cursor = pos;
             continue;
@@ -2350,17 +2355,120 @@ fn expand_start_process_argument_list(text: &str) -> String {
             .replace("`\"", "\"")
             .replace("\\'", "'");
         let normalized_lower = normalized.to_ascii_lowercase();
-        if normalized_lower.contains("frombase64string")
+        let should_append_normalized = normalized_lower.contains("frombase64string")
             || normalized_lower.contains("download")
             || normalized.contains("http://")
-            || normalized.contains("https://")
-        {
+            || normalized.contains("https://");
+        if let Some(decoded) = decode_start_process_encoded_argument(&normalized) {
+            if !out.contains(&decoded) {
+                out.push('\n');
+                out.push_str(&decoded);
+            }
+        } else if should_append_normalized && !out.contains(&normalized) {
             out.push('\n');
             out.push_str(&normalized);
         }
         cursor = end;
     }
     out
+}
+
+fn decode_start_process_encoded_argument(argument: &str) -> Option<String> {
+    let tokens = crate::handlers::util::split_words(argument);
+    let mut i = 0usize;
+    while i < tokens.len() {
+        let token = crate::handlers::util::strip_outer_quotes(&tokens[i]);
+        if let Some((flag, value)) = attached_ps_flag_value(token) {
+            if flag == "EncodedCommand" {
+                return decode_powershell_encoded_command(value);
+            }
+        }
+        if crate::handlers::powershell::canonical_ps_flag(token) == Some("EncodedCommand") {
+            let encoded = collect_base64_argument(&tokens[i + 1..]);
+            if let Some(decoded) = decode_powershell_encoded_command(&encoded) {
+                return Some(decoded);
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+fn attached_ps_flag_value(token: &str) -> Option<(&'static str, &str)> {
+    let stripped = token
+        .strip_prefix('/')
+        .or_else(|| token.strip_prefix('-'))?;
+    let delimiter = stripped.find([':', '='])?;
+    let flag = crate::handlers::powershell::canonical_ps_flag(
+        &token[..token.len() - stripped.len() + delimiter],
+    )?;
+    let value = &stripped[delimiter + 1..];
+    if value.is_empty() {
+        return None;
+    }
+    Some((flag, value))
+}
+
+fn collect_base64_argument(tokens: &[String]) -> String {
+    let mut out = String::new();
+    for token in tokens {
+        let token = crate::handlers::util::strip_outer_quotes(token);
+        if token.is_empty() || !token.chars().all(is_base64_char) {
+            break;
+        }
+        out.push_str(token);
+    }
+    out
+}
+
+fn is_base64_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=')
+}
+
+fn decode_powershell_encoded_command(encoded: &str) -> Option<String> {
+    if encoded.len() < 16 || !encoded.chars().all(is_base64_char) {
+        return None;
+    }
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .ok()?;
+    let decoded = decode_payload(&decoded).into_owned();
+    looks_like_powershell_payload(decoded.as_bytes()).then_some(decoded)
+}
+
+fn start_process_argument_list_flag_len_at(lower: &str, pos: usize) -> Option<usize> {
+    const FLAGS: &[&str] = &[
+        "-argumentlist",
+        "-arguments",
+        "-argument",
+        "-args",
+        "-arg",
+        "-a",
+    ];
+    FLAGS.iter().find_map(|flag| {
+        let end = pos.checked_add(flag.len())?;
+        let rest = lower.get(pos..end)?;
+        if rest != *flag {
+            return None;
+        }
+        let next = lower.as_bytes().get(end).copied();
+        if matches!(next, Some(b) if b.is_ascii_alphanumeric() || b == b'-') {
+            return None;
+        }
+        Some(flag.len())
+    })
+}
+
+fn has_start_process_argument_list_flag(lower: &str) -> bool {
+    let mut cursor = 0usize;
+    while let Some(rel) = lower[cursor..].find("-a") {
+        let pos = cursor + rel;
+        if start_process_argument_list_flag_len_at(lower, pos).is_some() {
+            return true;
+        }
+        cursor = pos + 2;
+    }
+    false
 }
 
 fn parse_ps_quoted_argument(text: &str, start: usize) -> Option<(String, usize)> {
@@ -2371,6 +2479,16 @@ fn parse_ps_quoted_argument(text: &str, start: usize) -> Option<(String, usize)>
             break;
         }
         pos += ch.len_utf8();
+    }
+    if matches!(text.as_bytes().get(pos), Some(b':' | b'=')) {
+        pos += 1;
+        while pos < text.len() {
+            let ch = text[pos..].chars().next()?;
+            if !ch.is_whitespace() {
+                break;
+            }
+            pos += ch.len_utf8();
+        }
     }
     let quote = text[pos..].chars().next()?;
     if quote != '\'' && quote != '"' {
@@ -8344,7 +8462,7 @@ struct PsObfuscationSignals {
 impl PsObfuscationSignals {
     fn new(text: &str) -> Self {
         let lower = text.to_ascii_lowercase();
-        let argument_list = lower.contains("-argumentlist");
+        let argument_list = has_start_process_argument_list_flag(&lower);
         let has_function_def = lower.contains("function ")
             || lower.contains("-name ")
             || lower.contains("-n ")
