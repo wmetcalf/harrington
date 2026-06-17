@@ -15501,17 +15501,22 @@ fn summarize_long_encoded_marker_lines(text: &str, env: &mut Environment) -> Str
 }
 
 fn summarize_long_encoded_marker_line(line: &str, env: &mut Environment, out: &mut String) -> bool {
-    if !is_long_encoded_marker_line(line) {
+    let summary_kind = if is_long_encoded_marker_line(line) {
+        "encoded marker carrier line"
+    } else if is_long_opaque_encoded_carrier_line(line) {
+        "encoded carrier line"
+    } else {
         return false;
-    }
+    };
 
     rescue_truncated_urls(line, line.len(), env);
     env.traits.push(crate::traits::Trait::LineTruncated {
         original_len: line.len() as u64,
     });
     out.push_str(&format!(
-        "::==== harrington: omitted {} bytes from encoded marker carrier line ====",
-        line.len()
+        "::==== harrington: omitted {} bytes from {} ====",
+        line.len(),
+        summary_kind
     ));
     true
 }
@@ -15876,6 +15881,45 @@ fn is_long_encoded_marker_line(line: &str) -> bool {
         && markers >= MIN_MARKERS
         && markers * 100 >= total
         && (encoded + markers) * 100 >= total * 99
+}
+
+fn is_long_opaque_encoded_carrier_line(line: &str) -> bool {
+    const MIN_LEN: usize = 64 * 1024;
+    const MAX_SPECIFIC_BASE64_DECODE_BYTES: usize = 1024 * 1024;
+
+    let trimmed = line.trim();
+    if trimmed.len() < MIN_LEN || trimmed.len() != line.len() {
+        return false;
+    }
+    if trimmed.bytes().any(|b| b.is_ascii_whitespace()) {
+        return false;
+    }
+
+    let mut encoded = 0usize;
+    let mut other = 0usize;
+    for b in trimmed.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=' | b'-' | b'_') {
+            encoded += 1;
+        } else {
+            other += 1;
+        }
+    }
+
+    let total = encoded + other;
+    if total < MIN_LEN || encoded * 100 < total * 99 {
+        return false;
+    }
+
+    if other == 0 && trimmed.len() <= MAX_SPECIFIC_BASE64_DECODE_BYTES {
+        use base64::Engine as _;
+        if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(trimmed) {
+            if looks_like_powershell_payload_bytes(&decoded) {
+                return false;
+            }
+        }
+    }
+
+    true
 }
 
 fn contains_rem_comment_candidate(text: &str) -> bool {
@@ -17046,6 +17090,39 @@ mod line_cap_tests {
         );
         assert!(
             summarized.contains(&command),
+            "long command line should not be summarized:\n{}",
+            summarized
+        );
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::LineTruncated { original_len } if *original_len == payload.len() as u64)),
+            "expected LineTruncated only for carrier line: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn long_opaque_encoded_carrier_line_is_summarized_without_command_truncation() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        let payload = format!("SEROXEN{}", "A".repeat(70_000));
+        let command = "powershell.exe -NoProfile -Command \"Write-Output 'keep-me'\"\r\n";
+        let text = format!("{payload}\r\n{command}");
+
+        let summarized = crate::summarize_long_encoded_marker_lines(&text, &mut env);
+
+        assert!(
+            summarized.contains("harrington: omitted 70007 bytes from encoded carrier line"),
+            "opaque carrier line was not summarized:\n{}",
+            summarized
+        );
+        assert!(
+            !summarized.contains(&payload),
+            "raw carrier line leaked into summary:\n{}",
+            summarized
+        );
+        assert!(
+            summarized.contains(command),
             "long command line should not be summarized:\n{}",
             summarized
         );
