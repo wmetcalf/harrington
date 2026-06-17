@@ -51,9 +51,13 @@ fn is_comspec_token(tok: &str) -> bool {
     if tok.eq_ignore_ascii_case("%comspec%") {
         return true;
     }
-    comspec_substring_token(tok)
+    comspec_expanded_token(tok)
         .as_deref()
         .is_some_and(is_cmd_token)
+}
+
+fn comspec_expanded_token(tok: &str) -> Option<String> {
+    comspec_substring_token(tok).or_else(|| comspec_substitute_token(tok))
 }
 
 fn comspec_substring_token(tok: &str) -> Option<String> {
@@ -76,6 +80,25 @@ fn comspec_substring_token(tok: &str) -> Option<String> {
     };
     end = end.clamp(begin, total);
     Some(COMSPEC[begin as usize..end as usize].to_string())
+}
+
+fn comspec_substitute_token(tok: &str) -> Option<String> {
+    const COMSPEC: &str = r"C:\WINDOWS\system32\cmd.exe";
+    let lower = tok.to_ascii_lowercase();
+    if !lower.starts_with("%comspec:") || !tok.ends_with('%') {
+        return None;
+    }
+    let body = &tok["%comspec:".len()..tok.len() - 1];
+    let (needle, replacement) = body.split_once('=')?;
+    let (wildcard, needle) = needle
+        .strip_prefix('*')
+        .map_or((false, needle), |needle| (true, needle));
+    Some(crate::normalize::apply_substitute(
+        COMSPEC,
+        needle,
+        replacement,
+        wildcard,
+    ))
 }
 
 fn is_cmd_token(tok: &str) -> bool {
