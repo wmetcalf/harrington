@@ -10245,6 +10245,9 @@ mod evidence_cleanup_prefilter_tests {
 /// Network/IP discovery probes: nslookup, Resolve-DnsName, ping to
 /// non-loopback IPs, calls to ipify/checkip/ip-api/geolocation APIs.
 fn scan_network_probe(deobfuscated: &str, env: &mut Environment) {
+    if !has_network_probe_atom(deobfuscated) {
+        return;
+    }
     for line in deobfuscated.lines() {
         if command_starts_with_echo(line) {
             continue;
@@ -10303,6 +10306,51 @@ fn scan_network_probe(deobfuscated: &str, env: &mut Environment) {
             push_network_probe(env, "ip-discovery", (*host).to_string());
         }
     }
+}
+
+fn has_network_probe_atom(text: &str) -> bool {
+    text.lines().any(|line| {
+        if command_starts_with_echo(line) {
+            return false;
+        }
+        let bytes = line.as_bytes();
+        if [
+            b"ping".as_slice(),
+            b"nslookup".as_slice(),
+            b"tracert".as_slice(),
+            b"pathping".as_slice(),
+            b"resolve-dnsname".as_slice(),
+            b"test-netconnection".as_slice(),
+            b"test-connection".as_slice(),
+        ]
+        .iter()
+        .any(|keyword| line_has_standalone_ascii_keyword(bytes, keyword))
+        {
+            return true;
+        }
+        if line_has_standalone_ascii_keyword(bytes, b"tnc")
+            && (line_trimmed_starts_with_ascii_keyword(line, b"tnc")
+                || find_ascii_case_insensitive(line, "powershell", 0).is_some())
+        {
+            return true;
+        }
+        IP_DISCOVERY_HOSTS
+            .iter()
+            .any(|host| find_ascii_case_insensitive(line, host, 0).is_some())
+    })
+}
+
+fn line_trimmed_starts_with_ascii_keyword(line: &str, keyword: &[u8]) -> bool {
+    let trimmed = line.trim_start();
+    let bytes = trimmed.as_bytes();
+    if bytes.len() < keyword.len() || !bytes[..keyword.len()].eq_ignore_ascii_case(keyword) {
+        return false;
+    }
+    bytes
+        .get(keyword.len())
+        .copied()
+        .map(|b| !is_ascii_keyword_byte(b))
+        .unwrap_or(true)
 }
 
 fn powershell_connection_test_probe(line: &str) -> Option<(&'static str, String)> {
@@ -10592,6 +10640,42 @@ fn push_network_probe(env: &mut Environment, kind: &str, target: String) {
         probe_kind: kind.to_string(),
         target,
     });
+}
+
+#[cfg(test)]
+mod network_probe_prefilter_tests {
+    use super::has_network_probe_atom;
+
+    #[test]
+    fn prefilter_allows_probe_commands_and_public_ip_hosts() {
+        for sample in [
+            "ping 8.8.8.8",
+            "ping.exe -n 1 beacon.example",
+            "nslookup c2.example",
+            "powershell -Command \"Resolve-DnsName dns.example\"",
+            "powershell -Command \"Test-NetConnection c2.example -Port 443\"",
+            "powershell -Command \"tnc c2.example -Port 443\"",
+            "powershell -Command \"Test-Connection files.example -Count 1\"",
+            "tracert -d route.example",
+            "pathping -n route.example",
+            "curl http://www.geoplugin.net/php.gp?ip",
+        ] {
+            assert!(has_network_probe_atom(sample), "blocked: {sample}");
+        }
+    }
+
+    #[test]
+    fn prefilter_blocks_path_and_echo_only_false_positives() {
+        for sample in [
+            r#"C:\Users\Public\PingOptimizerMain.bat"#,
+            r#"set "file=C:\Users\Public\PingOptimizerMain.bat""#,
+            "echo ping 8.8.8.8",
+            "echo keep ^& curl https://api.ipify.org",
+            "the campaign name contains tnc but no command",
+        ] {
+            assert!(!has_network_probe_atom(sample), "allowed: {sample}");
+        }
+    }
 }
 
 /// Local account backdoor setup: create a local user or add an account
