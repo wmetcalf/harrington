@@ -21,8 +21,9 @@ pub fn h_wmic(raw: &str, env: &mut Environment) {
     env.traits.push(Trait::WmicProcessCreate {
         inner_cmd: command.clone(),
     });
+    let delayed = crate::handlers::cmd::has_v_on_raw(&command);
     env.exec_cmd.push(command);
-    env.exec_cmd_delayed.push(false);
+    env.exec_cmd_delayed.push(delayed);
 }
 
 pub(crate) fn wmic_process_create_inner(raw: &str) -> Option<String> {

