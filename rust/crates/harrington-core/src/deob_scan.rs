@@ -4617,6 +4617,10 @@ fn scan_copied_bitsadmin_alias_deob_text(deobfuscated: &str, env: &mut Environme
             format!("bitsadmin.exe {rest}")
         };
         crate::handlers::bitsadmin::h_bitsadmin(&replay, env);
+        if let Some((_job, command)) = crate::handlers::bitsadmin::bitsadmin_notify_command(&replay)
+        {
+            replay_persisted_child_command(&command, env);
+        }
     }
 }
 

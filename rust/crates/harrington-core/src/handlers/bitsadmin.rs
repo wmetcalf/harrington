@@ -7,7 +7,7 @@ use crate::traits::Trait;
 pub fn h_bitsadmin(raw: &str, env: &mut Environment) {
     let tokens = split_words(raw);
     let lower: Vec<String> = tokens.iter().map(|s| s.to_ascii_lowercase()).collect();
-    if let Some((job, command)) = bitsadmin_notify_command(&tokens) {
+    if let Some((job, command)) = bitsadmin_notify_command(raw) {
         push_lolbas(env, raw);
         push_notify_persistence(env, job, command.clone());
         if let Some((child, delayed)) =
@@ -107,7 +107,8 @@ fn bitsadmin_flag_matches(token: &str, flag: &str) -> bool {
             .is_some_and(|byte| matches!(*byte, b':' | b'='))
 }
 
-fn bitsadmin_notify_command(tokens: &[String]) -> Option<(String, String)> {
+pub(crate) fn bitsadmin_notify_command(raw: &str) -> Option<(String, String)> {
+    let tokens = split_words(raw);
     let mut i = 1usize;
     while i < tokens.len() {
         let token = strip_quotes(&tokens[i]);
