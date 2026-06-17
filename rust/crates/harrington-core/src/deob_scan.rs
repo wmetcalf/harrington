@@ -6360,7 +6360,8 @@ fn scan_copied_at_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
         return;
     }
 
-    for line in deobfuscated.lines() {
+    let lines: Vec<&str> = deobfuscated.lines().collect();
+    for (idx, line) in lines.iter().copied().enumerate() {
         let tokens = split_words(line);
         let Some(cmd) = tokens.first() else {
             continue;
@@ -6395,6 +6396,7 @@ fn scan_copied_at_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
         } else {
             format!("at.exe {rest}")
         };
+        let replay = maybe_extend_copied_at_replay(&replay, lines.get(idx + 1).copied());
         crate::handlers::passthrough::h_at(&replay, env);
         if let Some(target_host) = crate::handlers::passthrough::at_remote_host(&replay) {
             env.traits.push(Trait::LateralMovement {
@@ -6414,15 +6416,37 @@ fn scan_copied_at_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
-fn replay_persisted_child_command(command: &str, env: &mut Environment) {
-    if let Some((child, _delayed)) = crate::handlers::passthrough::persisted_command_child(command)
-    {
-        if let Some(cmd_inner) = crate::handlers::cmd::extract_cmd_inner(&child) {
-            crate::interp::interpret_line(&cmd_inner, env);
-        } else {
-            crate::interp::interpret_line(&child, env);
-        }
+fn maybe_extend_copied_at_replay(replay: &str, next_line: Option<&str>) -> String {
+    let Some(next) = next_line.map(str::trim).filter(|line| !line.is_empty()) else {
+        return replay.to_string();
+    };
+    let Some((_time, command)) = crate::handlers::passthrough::at_scheduled_command(replay) else {
+        return replay.to_string();
+    };
+    let Some((_child, delayed)) = crate::handlers::passthrough::persisted_command_child(&command)
+    else {
+        return replay.to_string();
+    };
+    if delayed && next.contains('!') {
+        format!("{replay}&&{next}")
+    } else {
+        replay.to_string()
     }
+}
+
+fn replay_persisted_child_command(command: &str, env: &mut Environment) {
+    let Some((child, delayed)) = crate::handlers::passthrough::persisted_command_child(command)
+    else {
+        return;
+    };
+    let child = crate::handlers::cmd::extract_cmd_inner(&child).unwrap_or(child);
+    let saved_delayed = env.delayed_expansion;
+    if delayed {
+        env.delayed_expansion = true;
+    }
+    let mut sink = String::new();
+    crate::drive(child.as_bytes(), env, &mut sink);
+    env.delayed_expansion = saved_delayed;
 }
 
 fn scan_copied_handler_alias_deob_text(

