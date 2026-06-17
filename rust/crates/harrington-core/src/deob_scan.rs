@@ -5225,11 +5225,7 @@ fn scan_copied_wmic_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
         scan_defender_evasion(&replay, env);
         crate::handlers::wmic::h_wmic(&replay, env);
         if let Some(inner) = crate::handlers::wmic::wmic_process_create_inner(&replay) {
-            if let Some(cmd_inner) = crate::handlers::cmd::extract_cmd_inner(&inner) {
-                crate::interp::interpret_line(&cmd_inner, env);
-            } else {
-                crate::interp::interpret_line(&inner, env);
-            }
+            replay_copied_alias_child_command(&inner, env);
         }
     }
 }

