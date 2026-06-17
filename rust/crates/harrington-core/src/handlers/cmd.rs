@@ -47,8 +47,35 @@ fn find_cmd_executable_end(raw: &str) -> Option<usize> {
 }
 
 fn is_comspec_token(tok: &str) -> bool {
-    tok.trim_matches(['"', '\'', '\\'])
-        .eq_ignore_ascii_case("%comspec%")
+    let tok = tok.trim_matches(['"', '\'', '\\']);
+    if tok.eq_ignore_ascii_case("%comspec%") {
+        return true;
+    }
+    comspec_substring_token(tok)
+        .as_deref()
+        .is_some_and(is_cmd_token)
+}
+
+fn comspec_substring_token(tok: &str) -> Option<String> {
+    const COMSPEC: &str = r"C:\WINDOWS\system32\cmd.exe";
+    let lower = tok.to_ascii_lowercase();
+    let body = lower.strip_prefix("%comspec:~")?.strip_suffix('%')?;
+    let (start_text, len_text) = body.split_once(',').map_or((body, None), |(start, len)| {
+        (start.trim(), Some(len.trim()))
+    });
+    let start = start_text.trim().parse::<isize>().ok()?;
+    let len = len_text.map(str::parse::<isize>).transpose().ok()?;
+
+    let total = COMSPEC.len() as isize;
+    let mut begin = if start < 0 { total + start } else { start };
+    begin = begin.clamp(0, total);
+    let mut end = match len {
+        Some(len) if len < 0 => total + len,
+        Some(len) => begin + len,
+        None => total,
+    };
+    end = end.clamp(begin, total);
+    Some(COMSPEC[begin as usize..end as usize].to_string())
 }
 
 fn is_cmd_token(tok: &str) -> bool {
