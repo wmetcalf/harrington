@@ -5717,6 +5717,7 @@ fn scan_copied_evidence_cleanup_alias_deob_text(deobfuscated: &str, env: &mut En
             "wevtutil.exe" | "wevtutil" => "wevtutil.exe",
             "fsutil.exe" | "fsutil" => "fsutil.exe",
             "reg.exe" | "reg" => "reg.exe",
+            "cipher.exe" | "cipher" => "cipher.exe",
             _ => continue,
         };
         insert_alias_command_names(&mut aliases, dst, replay_command);

@@ -9703,6 +9703,8 @@ copy C:\Windows\System32\fsutil.exe C:\Users\Public\fs.tmp
 C:\Users\Public\fs.tmp usn deletejournal /d c:
 copy C:\Windows\System32\reg.exe C:\Users\Public\rg.tmp
 C:\Users\Public\rg.tmp delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\UserAssist" /f
+copy C:\Windows\System32\cipher.exe C:\Users\Public\ci.tmp
+C:\Users\Public\ci.tmp /w:C:\Users\Public
 "#;
         let report = analyze(script, &AnalyzeConfig::default());
 
@@ -9710,6 +9712,7 @@ C:\Users\Public\rg.tmp delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Ex
             r#"C:\Users\Public\we.tmp"#,
             r#"C:\Users\Public\fs.tmp"#,
             r#"C:\Users\Public\rg.tmp"#,
+            r#"C:\Users\Public\ci.tmp"#,
         ] {
             assert!(
                 report.traits.iter().any(|t| matches!(
@@ -9725,6 +9728,7 @@ C:\Users\Public\rg.tmp delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Ex
             "event-log-clear",
             "usn-journal-delete",
             "registry-history-delete",
+            "free-space-wipe",
         ] {
             assert!(
                 report.traits.iter().any(|t| matches!(
