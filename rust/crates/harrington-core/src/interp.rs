@@ -72,6 +72,11 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
         // emits its trait). The child push happens regardless.
     }
 
+    if raw_persisted_command_needs_bang_preservation(raw, env) {
+        result.consumed = true;
+        return result;
+    }
+
     if let Some((service_name, bin_path)) = crate::handlers::passthrough::sc_service_binpath(raw) {
         if !env.traits.iter().any(|t| {
             matches!(
@@ -225,6 +230,38 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
     }
 
     result
+}
+
+fn raw_persisted_command_needs_bang_preservation(raw: &str, env: &mut Environment) -> bool {
+    if !raw.contains('!') {
+        return false;
+    }
+    let lower = raw
+        .trim_start_matches(['@', ' ', '\t', '('])
+        .to_ascii_lowercase();
+    let handler: Option<fn(&str, &mut Environment)> =
+        if lower.starts_with("reg ") || lower.starts_with("reg.exe ") {
+            Some(crate::handlers::passthrough::h_reg)
+        } else if lower.starts_with("schtasks ") || lower.starts_with("schtasks.exe ") {
+            Some(crate::handlers::passthrough::h_schtasks)
+        } else {
+            None
+        };
+    let Some(handler) = handler else {
+        return false;
+    };
+
+    let trait_len = env.traits.len();
+    let exec_len = env.exec_cmd.len();
+    let delayed_len = env.exec_cmd_delayed.len();
+    handler(raw, env);
+    if env.exec_cmd.len() > exec_len {
+        return true;
+    }
+    env.traits.truncate(trait_len);
+    env.exec_cmd.truncate(exec_len);
+    env.exec_cmd_delayed.truncate(delayed_len);
+    false
 }
 
 fn replay_copied_filesystem_alias(raw: &str, env: &mut Environment) -> bool {
