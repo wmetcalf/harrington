@@ -8,7 +8,7 @@ use regex::bytes::Regex as ByteRegex;
 
 #[allow(clippy::expect_used)]
 static URL_UTF8_RE: Lazy<ByteRegex> =
-    Lazy::new(|| ByteRegex::new(r"(?i)https?://[\x21-\x7e]{4,300}").expect("url utf8 re"));
+    Lazy::new(|| ByteRegex::new(r"(?i)(?:https?|ftp)://[\x21-\x7e]{4,300}").expect("url utf8 re"));
 
 const NOISE: &[&str] = &[
     "digicert",
@@ -86,7 +86,7 @@ pub fn scan_urls(bytes: &[u8], limit: usize) -> Vec<String> {
     // UTF-16LE pass: convert pairs to bytes, then scan that as a string.
     // We check both alignments because embedded user strings and appended
     // blobs do not always start on an even byte offset.
-    if bytes.len() >= 16 && has_utf16le_http_marker(bytes) {
+    if bytes.len() >= 16 && has_utf16le_url_marker(bytes) {
         let mut decoded = String::with_capacity(bytes.len() / 2);
         for offset in [0usize, 1] {
             decoded.clear();
@@ -124,16 +124,20 @@ pub fn scan_urls(bytes: &[u8], limit: usize) -> Vec<String> {
     out
 }
 
-fn has_utf16le_http_marker(bytes: &[u8]) -> bool {
+fn has_utf16le_url_marker(bytes: &[u8]) -> bool {
     bytes.windows(8).any(|window| {
         window[1] == 0
             && window[3] == 0
             && window[5] == 0
             && window[7] == 0
-            && window[0].eq_ignore_ascii_case(&b'h')
-            && window[2].eq_ignore_ascii_case(&b't')
-            && window[4].eq_ignore_ascii_case(&b't')
-            && window[6].eq_ignore_ascii_case(&b'p')
+            && ((window[0].eq_ignore_ascii_case(&b'h')
+                && window[2].eq_ignore_ascii_case(&b't')
+                && window[4].eq_ignore_ascii_case(&b't')
+                && window[6].eq_ignore_ascii_case(&b'p'))
+                || (window[0].eq_ignore_ascii_case(&b'f')
+                    && window[2].eq_ignore_ascii_case(&b't')
+                    && window[4].eq_ignore_ascii_case(&b'p')
+                    && window[6] == b':'))
     })
 }
 
@@ -155,9 +159,34 @@ mod tests {
     }
 
     #[test]
+    fn finds_utf8_ftp_url() {
+        let bytes = b"junk\x00ftp://stage.example.net/payload.bin\x00more junk";
+        let urls = scan_urls(bytes, 16);
+        assert!(
+            urls.iter()
+                .any(|u| u == "ftp://stage.example.net/payload.bin"),
+            "got: {:?}",
+            urls
+        );
+    }
+
+    #[test]
     fn finds_utf16le_url() {
         // Encode "https://utf16.example.org/p" as UTF-16LE.
         let s = "https://utf16.example.org/p";
+        let mut bytes = Vec::new();
+        for c in s.chars() {
+            let cp = c as u32;
+            bytes.push((cp & 0xff) as u8);
+            bytes.push(((cp >> 8) & 0xff) as u8);
+        }
+        let urls = scan_urls(&bytes, 16);
+        assert!(urls.iter().any(|u| u == s), "got: {:?}", urls);
+    }
+
+    #[test]
+    fn finds_utf16le_ftp_url() {
+        let s = "ftp://utf16-ftp.example.org/payload";
         let mut bytes = Vec::new();
         for c in s.chars() {
             let cp = c as u32;
@@ -184,11 +213,12 @@ mod tests {
     #[test]
     fn utf16_marker_gate_allows_both_alignments() {
         let aligned = b"h\0t\0t\0p\0:\0/\0/\0x\0";
-        assert!(has_utf16le_http_marker(aligned));
+        assert!(has_utf16le_url_marker(aligned));
         let mut unaligned = vec![0x41];
         unaligned.extend_from_slice(aligned);
-        assert!(has_utf16le_http_marker(&unaligned));
-        assert!(!has_utf16le_http_marker(
+        assert!(has_utf16le_url_marker(&unaligned));
+        assert!(has_utf16le_url_marker(b"f\0t\0p\0:\0/\0/\0x\0"));
+        assert!(!has_utf16le_url_marker(
             b"plain ascii http://example.test/p"
         ));
     }
