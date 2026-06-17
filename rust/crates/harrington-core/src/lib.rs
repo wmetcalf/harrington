@@ -12786,6 +12786,22 @@ fn extracted_ps1_aes_payload_is_redundant(raw: &str, normalized: &str, out: &str
     signature.len() >= 64 && contains_ascii_ws_insensitive_signature(out, &signature)
 }
 
+fn redundant_extracted_ps1_aes_payloads(
+    raw_payloads: &[String],
+    normalized_payloads: &[String],
+    out: &str,
+) -> Vec<bool> {
+    raw_payloads
+        .iter()
+        .enumerate()
+        .map(|(idx, raw)| {
+            normalized_payloads.get(idx).is_some_and(|normalized| {
+                extracted_ps1_aes_payload_is_redundant(raw, normalized, out)
+            })
+        })
+        .collect()
+}
+
 fn compact_ascii_non_ws_prefix(text: &str, limit: usize) -> Vec<u8> {
     text.bytes()
         .filter(|byte| !byte.is_ascii_whitespace())
@@ -13111,22 +13127,35 @@ fn analyze_inner(
                 .unwrap_or_else(|| String::from_utf8_lossy(body).into_owned())
         })
         .collect();
+    let redundant_extracted_ps1_aes = redundant_extracted_ps1_aes_payloads(
+        &extracted_ps1_for_aes,
+        &extracted_ps1_normalized,
+        &out,
+    );
     for (idx, ps) in extracted_ps1_for_aes.iter().enumerate() {
         if env.check_deadline() {
             break;
         }
-        if extracted_ps1_normalized
+        if redundant_extracted_ps1_aes
             .get(idx)
-            .is_some_and(|normalized| extracted_ps1_aes_payload_is_redundant(ps, normalized, &out))
+            .copied()
+            .unwrap_or(false)
         {
             continue;
         }
         aes_chain::extract_from_chain(input, ps, &mut env);
     }
     profile_mark!("extracted_ps1_aes_chain");
-    for ps in &extracted_ps1_normalized {
+    for (idx, ps) in extracted_ps1_normalized.iter().enumerate() {
         if env.check_deadline() {
             break;
+        }
+        if redundant_extracted_ps1_aes
+            .get(idx)
+            .copied()
+            .unwrap_or(false)
+        {
+            continue;
         }
         if extracted_ps1_aes_payload_is_redundant(ps, ps, &out) {
             continue;
@@ -49503,7 +49532,10 @@ mod disguised_binary_tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod ps1_payload_normalization_tests {
-    use super::{extracted_ps1_aes_payload_is_redundant, normalize_extracted_ps1_payloads};
+    use super::{
+        extracted_ps1_aes_payload_is_redundant, normalize_extracted_ps1_payloads,
+        redundant_extracted_ps1_aes_payloads,
+    };
 
     #[test]
     fn duplicate_payloads_preserve_one_to_one_normalized_outputs() {
@@ -49526,5 +49558,19 @@ mod ps1_payload_normalization_tests {
         let out = "function QdMyg($caDYi){\t$uTDaY=[System.Security.Cryptography.Aes]::Create();\t$uTDaY.Key=[System.Convert]::FromBase64String('AAAAAAAAAAAAAAAAAAAAAA=='); }";
 
         assert!(extracted_ps1_aes_payload_is_redundant(raw, normalized, out));
+    }
+
+    #[test]
+    fn raw_extracted_ps1_aes_redundancy_marks_matching_normalized_payload_redundant() {
+        let raw = "$JVpI='CrxeaxtxexDxecrxyptxorx'.Replace('x', '');$uTDaY=[System.Security.Cryptography.Aes]::Create();$uTDaY.Key=[System.Convert]::FromBase64String('AAAAAAAAAAAAAAAAAAAAAA==');".to_string();
+        let normalized = "$JVpI='CreateDecryptor';$uTDaY=[System.Security.Cryptography.Aes]::Create();$uTDaY.Key=[System.Convert]::FromBase64String('AAAAAAAAAAAAAAAAAAAAAA==');".to_string();
+        let raw_payloads = vec![raw.clone()];
+        let normalized_payloads = vec![normalized];
+        let out = format!("set \"loader=-w hidden -c {raw}\"");
+
+        assert_eq!(
+            redundant_extracted_ps1_aes_payloads(&raw_payloads, &normalized_payloads, &out),
+            vec![true]
+        );
     }
 }
