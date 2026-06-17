@@ -2346,7 +2346,7 @@ fn expand_start_process_argument_list(text: &str) -> String {
             continue;
         };
         let pos = flag_start + flag_len;
-        let Some((inner, end)) = parse_ps_quoted_argument(text, pos) else {
+        let Some((inner, end)) = parse_ps_argument_list_value(text, pos) else {
             cursor = pos;
             continue;
         };
@@ -2371,6 +2371,33 @@ fn expand_start_process_argument_list(text: &str) -> String {
         cursor = end;
     }
     out
+}
+
+fn parse_ps_argument_list_value(text: &str, start: usize) -> Option<(String, usize)> {
+    let (first, mut end) = parse_ps_quoted_argument(text, start)?;
+    let mut parts = vec![first];
+
+    loop {
+        let mut pos = end;
+        while pos < text.len() {
+            let ch = text[pos..].chars().next()?;
+            if !ch.is_whitespace() {
+                break;
+            }
+            pos += ch.len_utf8();
+        }
+        if text.as_bytes().get(pos) != Some(&b',') {
+            break;
+        }
+        pos += 1;
+        let Some((next, next_end)) = parse_ps_quoted_argument(text, pos) else {
+            break;
+        };
+        parts.push(next);
+        end = next_end;
+    }
+
+    Some((parts.join(" "), end))
 }
 
 fn decode_start_process_encoded_argument(argument: &str) -> Option<String> {
