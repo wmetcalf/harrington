@@ -2431,7 +2431,7 @@ fn parse_ps_argument_list_value(
             return Some((value.clone(), end));
         }
     }
-    let (first, mut end) = parse_ps_quoted_argument(text, start)?;
+    let (first, mut end) = parse_ps_argument_atom(text, start)?;
     let mut parts = vec![first];
 
     loop {
@@ -2447,7 +2447,7 @@ fn parse_ps_argument_list_value(
             break;
         }
         pos += 1;
-        let Some((next, next_end)) = parse_ps_quoted_argument(text, pos) else {
+        let Some((next, next_end)) = parse_ps_argument_atom(text, pos) else {
             break;
         };
         parts.push(next);
@@ -2455,6 +2455,41 @@ fn parse_ps_argument_list_value(
     }
 
     Some((parts.join(" "), end))
+}
+
+fn parse_ps_argument_atom(text: &str, start: usize) -> Option<(String, usize)> {
+    if let Some(quoted) = parse_ps_quoted_argument(text, start) {
+        return Some(quoted);
+    }
+
+    let mut pos = start;
+    while pos < text.len() {
+        let ch = text[pos..].chars().next()?;
+        if !ch.is_whitespace() {
+            break;
+        }
+        pos += ch.len_utf8();
+    }
+    if matches!(text.as_bytes().get(pos), Some(b':' | b'=')) {
+        pos += 1;
+        while pos < text.len() {
+            let ch = text[pos..].chars().next()?;
+            if !ch.is_whitespace() {
+                break;
+            }
+            pos += ch.len_utf8();
+        }
+    }
+
+    let atom_start = pos;
+    while pos < text.len() {
+        let ch = text[pos..].chars().next()?;
+        if ch.is_whitespace() || matches!(ch, ',' | ';' | ')' | ']' | '}') {
+            break;
+        }
+        pos += ch.len_utf8();
+    }
+    (pos > atom_start).then(|| (text[atom_start..pos].to_string(), pos))
 }
 
 fn parse_ps_variable_reference(text: &str, start: usize) -> Option<(&str, usize)> {

