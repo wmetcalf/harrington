@@ -48,7 +48,7 @@ fn find_cmd_executable_end(raw: &str) -> Option<usize> {
 
 fn is_comspec_token(tok: &str) -> bool {
     let tok = tok.trim_matches(['"', '\'', '\\']);
-    if tok.eq_ignore_ascii_case("%comspec%") {
+    if tok.eq_ignore_ascii_case("%comspec%") || tok.eq_ignore_ascii_case("!comspec!") {
         return true;
     }
     comspec_expanded_token(tok)
@@ -63,7 +63,7 @@ fn comspec_expanded_token(tok: &str) -> Option<String> {
 fn comspec_substring_token(tok: &str) -> Option<String> {
     const COMSPEC: &str = r"C:\WINDOWS\system32\cmd.exe";
     let lower = tok.to_ascii_lowercase();
-    let body = lower.strip_prefix("%comspec:~")?.strip_suffix('%')?;
+    let body = comspec_delimited_body(&lower, "~")?;
     let (start_text, len_text) = body.split_once(',').map_or((body, None), |(start, len)| {
         (start.trim(), Some(len.trim()))
     });
@@ -85,10 +85,7 @@ fn comspec_substring_token(tok: &str) -> Option<String> {
 fn comspec_substitute_token(tok: &str) -> Option<String> {
     const COMSPEC: &str = r"C:\WINDOWS\system32\cmd.exe";
     let lower = tok.to_ascii_lowercase();
-    if !lower.starts_with("%comspec:") || !tok.ends_with('%') {
-        return None;
-    }
-    let body = &tok["%comspec:".len()..tok.len() - 1];
+    let body = comspec_delimited_body(&lower, "")?;
     let (needle, replacement) = body.split_once('=')?;
     let (wildcard, needle) = needle
         .strip_prefix('*')
@@ -99,6 +96,22 @@ fn comspec_substitute_token(tok: &str) -> Option<String> {
         replacement,
         wildcard,
     ))
+}
+
+fn comspec_delimited_body<'a>(lower_tok: &'a str, prefix: &str) -> Option<&'a str> {
+    let prefix = format!("comspec:{prefix}");
+    for delimiter in ['%', '!'] {
+        if let Some(body) = lower_tok
+            .strip_prefix(delimiter)
+            .and_then(|body| body.strip_prefix(&prefix))
+            .and_then(|body| body.strip_suffix(delimiter))
+        {
+            if !body.is_empty() {
+                return Some(body);
+            }
+        }
+    }
+    None
 }
 
 fn is_cmd_token(tok: &str) -> bool {
@@ -732,6 +745,19 @@ mod extract_cmd_inner_tests {
     fn slash_c_attached_quoted_body() {
         let r = extract_cmd_inner("cmd.exe /d /c\"echo attached-body\"").unwrap();
         assert_eq!(r, "echo attached-body");
+    }
+
+    #[test]
+    fn bang_comspec_substring_extracts_body() {
+        let r = extract_cmd_inner("!COMSPEC:~-7! /V:ON /c echo bang-substring").unwrap();
+        assert_eq!(r, "echo bang-substring");
+    }
+
+    #[test]
+    fn bang_comspec_substitution_extracts_body() {
+        let r =
+            extract_cmd_inner("!COMSPEC:*System32\\=! /V:ON /c echo bang-substitution").unwrap();
+        assert_eq!(r, "echo bang-substitution");
     }
 }
 

