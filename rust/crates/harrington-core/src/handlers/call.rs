@@ -56,7 +56,7 @@ pub fn h_call(raw: &str, env: &mut Environment) {
 
     if !body.is_empty() {
         if let Some(inner) = crate::handlers::cmd::extract_cmd_inner(body) {
-            env.exec_cmd.push(inner);
+            env.exec_cmd.push(unescape_outer_caret_bangs(&inner));
             env.exec_cmd_delayed
                 .push(crate::handlers::cmd::has_v_on_raw(body));
             return;
@@ -71,6 +71,10 @@ pub(crate) fn call_body(raw: &str) -> Option<&str> {
     });
     let after = strip_keyword_ci(rest, "call")?;
     Some(after.trim_start())
+}
+
+fn unescape_outer_caret_bangs(command: &str) -> String {
+    command.replace("^!", "!")
 }
 
 #[cfg(test)]

