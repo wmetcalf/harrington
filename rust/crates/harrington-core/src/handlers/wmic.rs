@@ -17,10 +17,11 @@ pub fn h_wmic(raw: &str, env: &mut Environment) {
             target_host,
         });
     }
+    let command = unescape_outer_caret_bangs(&inner);
     env.traits.push(Trait::WmicProcessCreate {
-        inner_cmd: inner.clone(),
+        inner_cmd: command.clone(),
     });
-    env.exec_cmd.push(inner);
+    env.exec_cmd.push(command);
     env.exec_cmd_delayed.push(false);
 }
 
@@ -154,6 +155,10 @@ fn wmic_commandline_value_start(tail: &str) -> Option<usize> {
 
 fn strip_quotes(text: &str) -> &str {
     text.trim_matches(|c| c == '"' || c == '\'')
+}
+
+fn unescape_outer_caret_bangs(command: &str) -> String {
+    command.replace("^!", "!")
 }
 
 #[cfg(test)]
