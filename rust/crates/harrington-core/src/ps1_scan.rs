@@ -2339,6 +2339,7 @@ fn expand_start_process_argument_list(text: &str) -> String {
     let mut out = text.to_string();
     let mut cursor = 0usize;
     let lower = text.to_ascii_lowercase();
+    let array_bindings = ps_quoted_array_space_bindings(text);
     while let Some(rel) = lower[cursor..].find("-a") {
         let flag_start = cursor + rel;
         let Some(flag_len) = start_process_argument_list_flag_len_at(&lower, flag_start) else {
@@ -2346,7 +2347,7 @@ fn expand_start_process_argument_list(text: &str) -> String {
             continue;
         };
         let pos = flag_start + flag_len;
-        let Some((inner, end)) = parse_ps_argument_list_value(text, pos) else {
+        let Some((inner, end)) = parse_ps_argument_list_value(text, pos, &array_bindings) else {
             cursor = pos;
             continue;
         };
@@ -2373,8 +2374,38 @@ fn expand_start_process_argument_list(text: &str) -> String {
     out
 }
 
-fn parse_ps_argument_list_value(text: &str, start: usize) -> Option<(String, usize)> {
+fn ps_quoted_array_space_bindings(text: &str) -> std::collections::HashMap<String, String> {
+    let mut bindings = std::collections::HashMap::new();
+    for caps in PS_ARRAY_ASSIGN_RE.captures_iter(text) {
+        let (Some(name), Some(parts_text)) = (caps.get(1), caps.get(2)) else {
+            continue;
+        };
+        let parts: Vec<String> = JOIN_PART_RE
+            .captures_iter(parts_text.as_str())
+            .filter_map(|c| {
+                c.get(1)
+                    .or_else(|| c.get(2))
+                    .map(|m| m.as_str().to_string())
+            })
+            .collect();
+        if parts.len() > 1 {
+            bindings.insert(name.as_str().to_ascii_lowercase(), parts.join(" "));
+        }
+    }
+    bindings
+}
+
+fn parse_ps_argument_list_value(
+    text: &str,
+    start: usize,
+    array_bindings: &std::collections::HashMap<String, String>,
+) -> Option<(String, usize)> {
     let start = skip_ps_argument_array_prefix(text, start);
+    if let Some((name, end)) = parse_ps_variable_reference(text, start) {
+        if let Some(value) = array_bindings.get(&name.to_ascii_lowercase()) {
+            return Some((value.clone(), end));
+        }
+    }
     let (first, mut end) = parse_ps_quoted_argument(text, start)?;
     let mut parts = vec![first];
 
@@ -2399,6 +2430,39 @@ fn parse_ps_argument_list_value(text: &str, start: usize) -> Option<(String, usi
     }
 
     Some((parts.join(" "), end))
+}
+
+fn parse_ps_variable_reference(text: &str, start: usize) -> Option<(&str, usize)> {
+    let mut pos = start;
+    while pos < text.len() {
+        let ch = text[pos..].chars().next()?;
+        if !ch.is_whitespace() {
+            break;
+        }
+        pos += ch.len_utf8();
+    }
+    if matches!(text.as_bytes().get(pos), Some(b':' | b'=')) {
+        pos += 1;
+        while pos < text.len() {
+            let ch = text[pos..].chars().next()?;
+            if !ch.is_whitespace() {
+                break;
+            }
+            pos += ch.len_utf8();
+        }
+    }
+    if text.as_bytes().get(pos) != Some(&b'$') {
+        return None;
+    }
+    let name_start = pos + 1;
+    let mut name_end = name_start;
+    while let Some(&b) = text.as_bytes().get(name_end) {
+        if !(b.is_ascii_alphanumeric() || b == b'_') {
+            break;
+        }
+        name_end += 1;
+    }
+    (name_end > name_start).then_some((&text[name_start..name_end], name_end))
 }
 
 fn skip_ps_argument_array_prefix(text: &str, start: usize) -> usize {
