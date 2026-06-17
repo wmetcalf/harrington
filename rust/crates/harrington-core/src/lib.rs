@@ -12199,11 +12199,33 @@ fn pre_scan_polyglot_script_block(input: &[u8], env: &mut Environment) {
 }
 
 fn contains_ascii_case_insensitive_bytes(haystack: &[u8], needle: &[u8]) -> bool {
-    needle.is_empty()
-        || (haystack.len() >= needle.len()
-            && haystack
-                .windows(needle.len())
-                .any(|window| window.eq_ignore_ascii_case(needle)))
+    ascii_case_insensitive_bytes_contains(haystack, needle)
+}
+
+fn ascii_case_insensitive_bytes_contains(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if haystack.len() < needle.len() {
+        return false;
+    }
+
+    let first = needle[0];
+    let last_start = haystack.len() - needle.len();
+    let mut idx = 0usize;
+    while idx <= last_start {
+        while idx <= last_start && !haystack[idx].eq_ignore_ascii_case(&first) {
+            idx += 1;
+        }
+        if idx > last_start {
+            return false;
+        }
+        if haystack[idx..idx + needle.len()].eq_ignore_ascii_case(needle) {
+            return true;
+        }
+        idx += 1;
+    }
+    false
 }
 
 fn push_unique_payload(payloads: &mut Vec<Vec<u8>>, payload: Vec<u8>) {
@@ -13769,16 +13791,7 @@ fn recovered_artifact_string_is_behavior_hint(s: &str) -> bool {
 }
 
 fn ascii_case_insensitive_contains(haystack: &str, needle: &str) -> bool {
-    if needle.is_empty() {
-        return true;
-    }
-    if haystack.len() < needle.len() {
-        return false;
-    }
-    haystack
-        .as_bytes()
-        .windows(needle.len())
-        .any(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
+    ascii_case_insensitive_bytes_contains(haystack.as_bytes(), needle.as_bytes())
 }
 
 fn trait_kind(t: &Trait) -> String {
@@ -16374,13 +16387,7 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
 }
 
 fn input_contains_ascii_case_insensitive(input: &[u8], needle: &[u8]) -> bool {
-    !needle.is_empty()
-        && input.windows(needle.len()).any(|window| {
-            window
-                .iter()
-                .zip(needle)
-                .all(|(byte, needle_byte)| byte.eq_ignore_ascii_case(needle_byte))
-        })
+    !needle.is_empty() && ascii_case_insensitive_bytes_contains(input, needle)
 }
 
 fn input_has_truncation_marker(input: &[u8]) -> bool {
