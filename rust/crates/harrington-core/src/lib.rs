@@ -12852,6 +12852,8 @@ fn analyze_inner(
         profile_mark!("summarize_rem_comments");
         out = summarize_binary_noise_line_runs(&out, &mut env);
         profile_mark!("summarize_binary_noise");
+        out = summarize_long_encoded_marker_lines(&out, &mut env);
+        profile_mark!("summarize_encoded_marker_lines");
         out = summarize_nul_padding_lines(&out, &mut env);
         profile_mark!("summarize_nul_padding");
         out = summarize_high_unicode_carrier_lines(&out, &mut env);
@@ -15402,6 +15404,43 @@ fn summarize_encoded_set_carrier_line_runs(text: &str, env: &mut Environment) ->
     out
 }
 
+fn summarize_long_encoded_marker_lines(text: &str, env: &mut Environment) -> String {
+    let mut changed = false;
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+
+    for line in text.split_inclusive('\n') {
+        let (body, newline) = split_line_ending(line);
+        if summarize_long_encoded_marker_line(body, env, &mut out) {
+            out.push_str(newline);
+            changed = true;
+        } else {
+            out.push_str(line);
+        }
+    }
+
+    if changed {
+        out
+    } else {
+        text.to_string()
+    }
+}
+
+fn summarize_long_encoded_marker_line(line: &str, env: &mut Environment, out: &mut String) -> bool {
+    if !is_long_encoded_marker_line(line) {
+        return false;
+    }
+
+    rescue_truncated_urls(line, line.len(), env);
+    env.traits.push(crate::traits::Trait::LineTruncated {
+        original_len: line.len() as u64,
+    });
+    out.push_str(&format!(
+        "::==== harrington: omitted {} bytes from encoded marker carrier line ====",
+        line.len()
+    ));
+    true
+}
+
 fn summarize_nul_padding_lines(text: &str, env: &mut Environment) -> String {
     const MIN_NUL_PADDING_BYTES: usize = 1024;
 
@@ -15650,6 +15689,38 @@ fn is_encoded_set_carrier_line(line: &str) -> bool {
     total >= 256 && encoded * 100 >= total * 85 && other * 100 <= total * 5
 }
 
+fn is_long_encoded_marker_line(line: &str) -> bool {
+    const MIN_LEN: usize = 64 * 1024;
+    const MIN_MARKERS: usize = 256;
+
+    let trimmed = line.trim();
+    if trimmed.len() < MIN_LEN || trimmed.len() != line.len() {
+        return false;
+    }
+    if trimmed.bytes().any(|b| b.is_ascii_whitespace()) {
+        return false;
+    }
+
+    let mut encoded = 0usize;
+    let mut markers = 0usize;
+    let mut other = 0usize;
+    for b in trimmed.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=' | b'-' | b'_') {
+            encoded += 1;
+        } else if matches!(b, b'#' | b'@') {
+            markers += 1;
+        } else {
+            other += 1;
+        }
+    }
+
+    let total = encoded + markers + other;
+    total >= MIN_LEN
+        && markers >= MIN_MARKERS
+        && markers * 100 >= total
+        && (encoded + markers) * 100 >= total * 99
+}
+
 fn contains_rem_comment_candidate(text: &str) -> bool {
     text.as_bytes()
         .windows(4)
@@ -15895,6 +15966,12 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
         let logical = &lines[cursor];
 
         if summarize_self_read_base64_marker_line(logical, &self_read_b64_markers, env, out) {
+            cursor += 1;
+            continue;
+        }
+
+        if summarize_long_encoded_marker_line(logical, env, out) {
+            out.push_str("\r\n");
             cursor += 1;
             continue;
         }
@@ -16772,6 +16849,44 @@ mod line_cap_tests {
         let summarized = crate::summarize_encoded_set_carrier_line_runs(&text, &mut env);
 
         assert_eq!(summarized, text);
+    }
+
+    #[test]
+    fn long_encoded_marker_carrier_line_is_summarized_without_command_truncation() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        let payload = (0..70_000)
+            .map(|idx| match idx % 40 {
+                0 => '#',
+                1 => '@',
+                2 => '+',
+                _ => char::from(b'A' + (idx % 26) as u8),
+            })
+            .collect::<String>();
+        let command = format!(
+            "powershell.exe -NoProfile -Command \"Write-Output '{}'\"\r\n",
+            "A".repeat(70_000)
+        );
+        let text = format!("{payload}\r\n{command}");
+
+        let summarized = crate::summarize_long_encoded_marker_lines(&text, &mut env);
+
+        assert!(
+            summarized.contains("harrington: omitted 70000 bytes from encoded marker carrier line"),
+            "marker carrier line was not summarized:\n{}",
+            summarized
+        );
+        assert!(
+            summarized.contains(&command),
+            "long command line should not be summarized:\n{}",
+            summarized
+        );
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::LineTruncated { original_len } if *original_len == payload.len() as u64)),
+            "expected LineTruncated only for carrier line: {:?}",
+            env.traits
+        );
     }
 
     #[test]
