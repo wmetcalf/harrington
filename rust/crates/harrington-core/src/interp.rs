@@ -65,11 +65,10 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
                 }
             }
         } else {
-            result.child_cmd_to_push = inners
-                .into_iter()
-                .next()
-                .map(|inner| unescape_outer_caret_bangs(&inner));
-            result.child_cmd_delayed = false;
+            if let Some(inner) = inners.into_iter().next() {
+                result.child_cmd_delayed = crate::handlers::cmd::has_v_on_raw(&inner);
+                result.child_cmd_to_push = Some(unescape_outer_caret_bangs(&inner));
+            }
         }
     }
 

