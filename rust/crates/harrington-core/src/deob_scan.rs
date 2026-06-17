@@ -6620,6 +6620,8 @@ fn scan_copied_cmd_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
                 || token.eq_ignore_ascii_case("-c")
                 || token.eq_ignore_ascii_case("/k")
                 || token.eq_ignore_ascii_case("-k")
+                || token.eq_ignore_ascii_case("/r")
+                || token.eq_ignore_ascii_case("-r")
         }) {
             continue;
         }
