@@ -61,9 +61,11 @@ pub fn extract_from_chain(raw_input: &[u8], deob: &str, env: &mut Environment) {
     // the STAGE1_RE gate (no `'X'.Replace('Y','')` form); instead the
     // PS body holds a literal AES key+IV and the bat has a single
     // `:: <b64>\<b64>` ciphertext line. Try the simpler path first.
-    try_extract_simple_ps_aes(raw_input, deob, env);
-    try_extract_ps_high_unicode_aes(deob, env);
-    try_extract_ps_base64_aes_gzip(deob, env);
+    if simple_aes_probe_atoms_present(deob) {
+        try_extract_simple_ps_aes(raw_input, deob, env);
+        try_extract_ps_high_unicode_aes(deob, env);
+        try_extract_ps_base64_aes_gzip(deob, env);
+    }
 
     let has_gate = env
         .traits
@@ -242,6 +244,24 @@ pub fn extract_from_chain(raw_input: &[u8], deob: &str, env: &mut Environment) {
             line_hint: "aes-chain".to_string(),
         });
     }
+}
+
+fn simple_aes_probe_atoms_present(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    if lower.contains(".key") && lower.contains(".iv") && lower.contains("frombase64string") {
+        return true;
+    }
+    if !(lower.contains("aes") || lower.contains("rijndael") || lower.contains("cryptography")) {
+        return false;
+    }
+    (lower.contains(".key") && lower.contains(".iv"))
+        || lower.contains("frombase64string")
+        || lower.contains("transformfinalblock")
+        || lower.contains("createdecryptor")
+        || lower.contains("ciphermode")
+        || lower.contains("paddingmode")
+        || lower.contains("gzipstream")
+        || lower.contains("deflatestream")
 }
 
 fn decode_stage1(deob: &str) -> Option<String> {
@@ -1173,6 +1193,21 @@ mod tests {
                 .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
             "base64 AES/GZip recovered PE URL was not extracted: {:?}",
             env.traits
+        );
+    }
+
+    #[test]
+    fn simple_aes_probe_atom_gate_skips_plain_iwr_snippet() {
+        let plain = "try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'http://example.test/a.zip' -OutFile 'a.zip' }";
+        let (aes, _, _) = build_base64_aes_fixture();
+
+        assert!(
+            simple_aes_probe_atoms_present(&aes),
+            "AES fixture should pass the simple AES probe atom gate"
+        );
+        assert!(
+            !simple_aes_probe_atoms_present(plain),
+            "plain downloader PowerShell should not enter AES probes"
         );
     }
 

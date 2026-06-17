@@ -15454,6 +15454,58 @@ fn summarize_long_encoded_marker_line(line: &str, env: &mut Environment, out: &m
     true
 }
 
+fn summarize_inert_binary_noise_line(line: &str, env: &mut Environment, out: &mut String) -> bool {
+    const MIN_SUMMARY_BYTES: usize = 1024;
+
+    if line.len() < MIN_SUMMARY_BYTES {
+        return false;
+    }
+    if let Some(first_nul) = line.as_bytes().iter().position(|&b| b == 0) {
+        let tail = &line[first_nul..];
+        let nul_count = tail.as_bytes().iter().filter(|&&b| b == 0).count();
+        if tail.len() >= MIN_SUMMARY_BYTES && nul_count * 100 >= tail.len() * 90 {
+            let prefix = line[..first_nul].trim_end();
+            if !prefix.is_empty() {
+                out.push_str(prefix);
+                out.push_str("\r\n");
+            }
+            rescue_truncated_urls(tail, line.len(), env);
+            env.traits.push(crate::traits::Trait::LineTruncated {
+                original_len: line.len() as u64,
+            });
+            out.push_str(&format!(
+                "::==== harrington: omitted {} NUL padding bytes ====",
+                tail.len()
+            ));
+            return true;
+        }
+    }
+    let nul_count = line.as_bytes().iter().filter(|&&b| b == 0).count();
+    if nul_count * 100 >= line.len() * 90 {
+        rescue_truncated_urls(line, line.len(), env);
+        env.traits.push(crate::traits::Trait::LineTruncated {
+            original_len: line.len() as u64,
+        });
+        out.push_str(&format!(
+            "::==== harrington: omitted {} NUL padding bytes ====",
+            line.len()
+        ));
+        return true;
+    }
+    if is_binary_noise_line(line) {
+        rescue_truncated_urls(line, line.len(), env);
+        env.traits.push(crate::traits::Trait::LineTruncated {
+            original_len: line.len() as u64,
+        });
+        out.push_str(&format!(
+            "::==== harrington: omitted {} bytes from binary-looking line ====",
+            line.len()
+        ));
+        return true;
+    }
+    false
+}
+
 fn summarize_nul_padding_lines(text: &str, env: &mut Environment) -> String {
     const MIN_NUL_PADDING_BYTES: usize = 1024;
 
@@ -15984,6 +16036,12 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
         }
 
         if summarize_long_encoded_marker_line(logical, env, out) {
+            out.push_str("\r\n");
+            cursor += 1;
+            continue;
+        }
+
+        if summarize_inert_binary_noise_line(logical, env, out) {
             out.push_str("\r\n");
             cursor += 1;
             continue;
@@ -16892,6 +16950,35 @@ mod line_cap_tests {
                 .iter()
                 .any(|t| matches!(t, Trait::LineTruncated { original_len } if *original_len == payload.len() as u64)),
             "expected LineTruncated only for carrier line: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn inert_nul_padding_line_is_summarized_without_command_truncation() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        let mut out = String::new();
+        let padding = "\0".repeat(70_000);
+        let command = "powershell.exe -NoProfile -Command \"Write-Output keep\"";
+
+        assert!(
+            crate::summarize_inert_binary_noise_line(&padding, &mut env, &mut out),
+            "NUL padding line should be summarized"
+        );
+        assert!(
+            !crate::summarize_inert_binary_noise_line(command, &mut env, &mut out),
+            "real command line should not be summarized"
+        );
+        assert!(
+            out.contains("harrington: omitted 70000 NUL padding bytes"),
+            "NUL padding summary missing from output: {:?}",
+            out
+        );
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::LineTruncated { original_len } if *original_len == padding.len() as u64)),
+            "expected LineTruncated for NUL padding line: {:?}",
             env.traits
         );
     }
