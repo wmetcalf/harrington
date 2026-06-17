@@ -10266,11 +10266,18 @@ fn is_browser_history_cleanup_target(lower: &str) -> bool {
 }
 
 fn has_evidence_cleanup_atom(text: &str) -> bool {
+    let has_cipher_command = text.lines().any(|line| {
+        !command_starts_with_echo(line)
+            && line_has_standalone_ascii_keyword(line.as_bytes(), b"cipher")
+    });
+    if has_cipher_command {
+        return true;
+    }
+
     let lower = text.to_ascii_lowercase();
     [
         "wevtutil",
         "fsutil",
-        "cipher",
         "sdelete",
         "prefetch",
         "recent",
@@ -10310,6 +10317,7 @@ mod evidence_cleanup_prefilter_tests {
         for sample in [
             "wevtutil cl Security",
             "fsutil usn deletejournal /d c:",
+            r#"cipher /w:C:\Users\Public"#,
             r#"del /s /q C:\Windows\Prefetch\*.*"#,
             r#"del /q "%APPDATA%\Microsoft\Windows\Recent\AutomaticDestinations\*.*""#,
             r#"del /q "%APPDATA%\Microsoft\Windows\Recent\CustomDestinations\*.*""#,
@@ -10333,6 +10341,9 @@ mod evidence_cleanup_prefilter_tests {
         ));
         assert!(!has_evidence_cleanup_atom(
             r#"reg delete HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v App /f"#,
+        ));
+        assert!(!has_evidence_cleanup_atom(
+            r#"$mode=[System.Security.Cryptography.CipherMode]::CBC"#,
         ));
     }
 }
