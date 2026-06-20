@@ -704,7 +704,7 @@ fn raw_might_start_with_for(raw: &str) -> bool {
                         chars.next();
                         continue;
                     }
-                    return !next.is_ascii_alphabetic();
+                    return !(next.is_ascii_alphanumeric() || next == '_');
                 }
                 return true;
             }
@@ -732,6 +732,8 @@ mod tests {
     fn for_prefix_rejects_longer_command_names() {
         assert!(!raw_might_start_with_for("forest /q"));
         assert!(!raw_might_start_with_for("format /q"));
+        assert!(!raw_might_start_with_for("for1 /q"));
+        assert!(!raw_might_start_with_for("for_ /q"));
         assert!(raw_might_start_with_for("for /f %%A in (x) do echo hi"));
     }
 }
