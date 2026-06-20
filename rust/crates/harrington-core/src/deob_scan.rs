@@ -8,7 +8,7 @@
 #![allow(clippy::expect_used, clippy::type_complexity, clippy::unwrap_used)]
 
 use crate::env::{Config, Environment};
-use crate::handlers::util::{flag_url_value_after, split_words};
+use crate::handlers::util::{flag_url_value_after, join_windows_path, split_words};
 use crate::traits::Trait;
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -4786,14 +4786,6 @@ fn url_basename(url: &str) -> Option<String> {
         None
     } else {
         Some(name.to_string())
-    }
-}
-
-fn join_windows_path(prefix: &str, name: &str) -> String {
-    if prefix.ends_with(['\\', '/']) {
-        format!("{prefix}{name}")
-    } else {
-        format!("{prefix}\\{name}")
     }
 }
 

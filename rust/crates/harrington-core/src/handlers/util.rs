@@ -51,6 +51,14 @@ pub(crate) fn windows_basename(path: &str) -> Option<&str> {
         .filter(|name| !name.is_empty())
 }
 
+pub(crate) fn join_windows_path(prefix: &str, name: &str) -> String {
+    if prefix.ends_with(['\\', '/']) {
+        format!("{prefix}{name}")
+    } else {
+        format!("{prefix}\\{name}")
+    }
+}
+
 pub(crate) fn flag_url_value_after(
     tokens: &[String],
     start: usize,
@@ -126,7 +134,7 @@ pub(crate) fn strip_outer_quotes(s: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::windows_basename;
+    use super::{join_windows_path, windows_basename};
 
     #[test]
     fn windows_basename_strips_quotes_and_slashes() {
@@ -137,6 +145,18 @@ mod tests {
         assert_eq!(
             windows_basename(r#"'C:/Temp/payload.exe'"#),
             Some("payload.exe")
+        );
+    }
+
+    #[test]
+    fn join_windows_path_uses_backslash_separator_when_needed() {
+        assert_eq!(
+            join_windows_path(r#"C:\Temp"#, "payload.exe"),
+            r#"C:\Temp\payload.exe"#
+        );
+        assert_eq!(
+            join_windows_path(r#"C:\Temp\"#, "payload.exe"),
+            r#"C:\Temp\payload.exe"#
         );
     }
 }

@@ -1,6 +1,6 @@
 //! curl handler — extracts URL + output target. Mirrors interpret_curl.
 
-use super::util::split_words;
+use super::util::{join_windows_path, split_words};
 use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
 
@@ -253,13 +253,5 @@ fn url_basename(url: &str) -> Option<String> {
         None
     } else {
         Some(last.to_string())
-    }
-}
-
-fn join_windows_path(prefix: &str, name: &str) -> String {
-    if prefix.ends_with(['\\', '/']) {
-        format!("{prefix}{name}")
-    } else {
-        format!("{prefix}\\{name}")
     }
 }
