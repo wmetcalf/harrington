@@ -300,10 +300,10 @@ fn is_encoded_set_carrier_assignment(text: &str) -> bool {
     let Some(rest) = trimmed
         .get(..3)
         .filter(|head| head.eq_ignore_ascii_case("set"))
-        .map(|_| &trimmed[3..])
     else {
         return false;
     };
+    let rest = &trimmed[rest.len()..];
     if !rest
         .chars()
         .next()
@@ -1412,7 +1412,7 @@ mod dosfuscation_tests {
 
     #[test]
     fn encoded_set_carrier_detection_is_case_insensitive() {
-        let payload = format!("SeT Carrier= \u{8bef}{}", "A".repeat(300));
+        let payload = format!("sEt Carrier= \u{8bef}{}", "A".repeat(300));
         assert!(super::is_encoded_set_carrier_assignment(&payload));
     }
 
