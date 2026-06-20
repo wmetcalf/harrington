@@ -7,6 +7,7 @@
 #![allow(clippy::items_after_test_module)]
 
 use crate::env::{Environment, FsEntry};
+use crate::handlers::util::windows_basename;
 use crate::traits::Trait;
 use base64::Engine as _;
 use once_cell::sync::Lazy;
@@ -4601,10 +4602,6 @@ fn filesystem_content_for_path(env: &Environment, path: &str) -> Option<Vec<u8>>
                 None
             }
         })
-}
-
-fn windows_basename(path: &str) -> Option<&str> {
-    path.rsplit('\\').next().filter(|name| !name.is_empty())
 }
 
 fn grouped_echo_content_for_path(deobfuscated: &str, path: &str) -> Option<Vec<u8>> {
