@@ -123,23 +123,24 @@ pub fn strip_line(text: &str) -> String {
                     // `ell` in `Hello` + `powershell` appear at most once
                     // per enclosing word.
                     //
-                    // Dedupe runs by CONTENT — a variable name reused N
-                    // times in a script counts as one sandwich "host", not
-                    // N. Without this, `$Oversigtsbilleders173` (one var
-                    // containing `ers` twice, used N×) made `ers` qualify
-                    // as noise and got stripped from `powershell` →
-                    // `powhell`. (e5ebe4d8... Danish PS family.)
+                    // A candidate is useful only if it repeats inside at
+                    // least one alphabetic run. That covers the single-run
+                    // marker noise shape (`aXYZbXYZ...`) while still
+                    // rejecting ordinary one-off substrings like `ell` in
+                    // `powershell`.
                     let mut sandwich_run_contents: std::collections::HashSet<&str> =
                         std::collections::HashSet::new();
+                    let mut qualifying_runs = 0usize;
                     for (rid, n) in per_run.iter() {
                         if *n < 2 {
                             continue;
                         }
+                        qualifying_runs += 1;
                         if let Some(s) = run_strings.get(*rid).map(|s| s.as_str()) {
                             sandwich_run_contents.insert(s);
                         }
                     }
-                    let has_sandwich = sandwich_run_contents.len() >= 2;
+                    let has_sandwich = qualifying_runs == 1 || sandwich_run_contents.len() >= 2;
                     let qualifies = if *is_mixed {
                         has_sandwich
                             && (*embedded_count >= MIN_MIXED_CASE_COUNT
@@ -273,27 +274,6 @@ fn decoded_looks_utf16le(bytes: &[u8]) -> bool {
     nul_hi * 100 / pairs >= 50
 }
 
-fn collect_alpha_run_strings(bytes: &[u8]) -> Vec<String> {
-    let mut runs = Vec::new();
-    let mut i = 0;
-    while i < bytes.len() {
-        if !bytes[i].is_ascii_alphabetic() {
-            i += 1;
-            continue;
-        }
-        let start = i;
-        while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
-            i += 1;
-        }
-        // Safe — bytes are all ASCII alphabetic in the slice.
-        let s = std::str::from_utf8(&bytes[start..i])
-            .unwrap_or("")
-            .to_string();
-        runs.push(s);
-    }
-    runs
-}
-
 fn enclosing_alpha_run_ids(bytes: &[u8]) -> Vec<Option<usize>> {
     let mut ids = vec![None; bytes.len()];
     let mut next = 0usize;
@@ -311,6 +291,27 @@ fn enclosing_alpha_run_ids(bytes: &[u8]) -> Vec<Option<usize>> {
         }
     }
     ids
+}
+
+fn collect_alpha_run_strings(bytes: &[u8]) -> Vec<String> {
+    let mut runs = Vec::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if !bytes[i].is_ascii_alphabetic() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
+            i += 1;
+        }
+        // Safe — bytes are all ASCII alphabetic in the slice.
+        let s = std::str::from_utf8(&bytes[start..i])
+            .unwrap_or("")
+            .to_string();
+        runs.push(s);
+    }
+    runs
 }
 
 fn is_protected_marker_candidate(candidate: &str) -> bool {

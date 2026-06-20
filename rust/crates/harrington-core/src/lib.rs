@@ -223,6 +223,18 @@ mod normalize_tests {
     }
 
     #[test]
+    fn single_run_marker_noise_is_stripped_from_batch_output() {
+        let mut env = Environment::new(&Config::default());
+        let script = "echo aXYZbXYZcXYZdXYZeXYZ";
+        let normalized = normalize_to_string(&lex(script), &mut env);
+        assert!(
+            normalized.contains("echo abcde") && !normalized.contains("XYZ"),
+            "single-run marker noise not stripped from batch output:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
     fn repeated_marker_noise_is_stripped_next_to_base64_literal() {
         use base64::Engine;
 
