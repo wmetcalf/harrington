@@ -1,7 +1,7 @@
 //! cscript / wscript handlers — extract VBScript/JScript payloads.
 
 use crate::env::{Environment, FsEntry};
-use crate::handlers::util::split_words;
+use crate::handlers::util::{split_words, windows_basename};
 use crate::traits::Trait;
 
 pub fn h_cscript(raw: &str, env: &mut Environment) {
@@ -148,12 +148,6 @@ fn prior_download_url(path: &str, env: &Environment) -> Option<String> {
         }
     }
     None
-}
-
-fn windows_basename(path: &str) -> Option<&str> {
-    path.rsplit(['\\', '/'])
-        .next()
-        .filter(|name| !name.is_empty())
 }
 
 fn push_lolbas(env: &mut Environment, name: &str, raw: &str) {

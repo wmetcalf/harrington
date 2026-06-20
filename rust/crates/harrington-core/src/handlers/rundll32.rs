@@ -1,4 +1,4 @@
-use super::util::split_words;
+use super::util::{split_words, windows_basename};
 use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
 
@@ -206,12 +206,6 @@ fn contains_ascii_case_insensitive(haystack: &str, needle: &str) -> bool {
         .as_bytes()
         .windows(needle.len())
         .any(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
-}
-
-fn windows_basename(path: &str) -> Option<&str> {
-    path.rsplit(['\\', '/'])
-        .next()
-        .filter(|name| !name.is_empty())
 }
 
 fn rundll32_url_launch_export(token: &str) -> bool {

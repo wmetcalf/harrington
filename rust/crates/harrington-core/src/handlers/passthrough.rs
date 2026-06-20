@@ -174,7 +174,7 @@ fn parse_flag_value(raw: &str, start: usize) -> Option<String> {
         let mut out = String::new();
         let mut i = start + 1;
         while i < raw.len() {
-            let Some(ch) = raw[i..].chars().next() else {
+            let Some(ch) = raw.get(i..).and_then(|s| s.chars().next()) else {
                 break;
             };
             if ch == '\\'

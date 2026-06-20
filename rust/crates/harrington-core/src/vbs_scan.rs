@@ -494,11 +494,13 @@ fn vbs_line_has_continuation(trimmed_end: &str) -> bool {
 
 fn expand_vbs_static_execute(text: &str) -> String {
     const MAX_EXECUTE_EXPANSION_BYTES: usize = 1024 * 1024;
+    const MAX_EXECUTE_COUNT: usize = 100;
 
     let mut bindings: VbsStringBindings = HashMap::new();
     let mut array_bindings: VbsArrayBindings = HashMap::new();
     let mut expanded = Vec::new();
     let mut expanded_bytes = 0usize;
+    let mut execute_count = 0usize;
     let mut pending: Vec<String> = text.lines().map(str::to_string).collect();
     let mut cursor = 0usize;
 
@@ -530,14 +532,18 @@ fn expand_vbs_static_execute(text: &str) -> String {
             if decoded.trim().is_empty() {
                 continue;
             }
+            if execute_count >= MAX_EXECUTE_COUNT {
+                break;
+            }
             expanded_bytes = expanded_bytes.saturating_add(decoded.len());
             if expanded_bytes > MAX_EXECUTE_EXPANSION_BYTES {
                 break;
             }
+            execute_count += 1;
             pending.extend(decoded.lines().map(str::to_string));
             expanded.push(decoded);
         }
-        if expanded_bytes > MAX_EXECUTE_EXPANSION_BYTES {
+        if expanded_bytes > MAX_EXECUTE_EXPANSION_BYTES || execute_count >= MAX_EXECUTE_COUNT {
             break;
         }
     }
@@ -1188,6 +1194,21 @@ mod tests {
             env.all_extracted_vbs.len(),
             1,
             "deadline path dropped extracted VBS payloads"
+        );
+    }
+
+    #[test]
+    fn vbs_static_execute_expansion_is_bounded() {
+        let mut text = String::new();
+        for _ in 0..150 {
+            text.push_str("Execute \"ZZZ\"\n");
+        }
+        let expanded = expand_vbs_static_execute(&text);
+        let decoded_count = expanded.lines().filter(|line| *line == "ZZZ").count();
+        assert!(
+            decoded_count <= 100,
+            "execute expansion was not bounded: {decoded_count}\n{}",
+            expanded
         );
     }
 }

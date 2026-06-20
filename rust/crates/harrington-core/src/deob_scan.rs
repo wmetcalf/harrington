@@ -5413,9 +5413,14 @@ fn scan_curl_deob_text(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
-fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>)> {
+enum WgetDestination {
+    OutputDocument(String),
+    DirectoryPrefix(String),
+}
+
+fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<WgetDestination>)> {
     let mut url: Option<String> = None;
-    let mut dst: Option<String> = None;
+    let mut dst: Option<WgetDestination> = None;
     let mut i = 1;
     while i < tokens.len() {
         let raw_token = tokens[i].trim_matches(['"', '\'', ')']);
@@ -5423,12 +5428,14 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
         let lower = raw_token.to_ascii_lowercase();
         if let Some(rest) = short_option_cluster_output(raw_token, 'O') {
             if rest.is_empty() {
-                dst = tokens
-                    .get(i + 1)
-                    .map(|s| s.trim_matches(['"', '\'', ')']).to_string());
+                dst = tokens.get(i + 1).map(|s| {
+                    WgetDestination::OutputDocument(s.trim_matches(['"', '\'', ')']).to_string())
+                });
                 i += 2;
             } else {
-                dst = Some(rest.trim_matches(['"', '\'', ')']).to_string());
+                dst = Some(WgetDestination::OutputDocument(
+                    rest.trim_matches(['"', '\'', ')']).to_string(),
+                ));
                 i += 1;
             }
             continue;
@@ -5438,22 +5445,24 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
             continue;
         }
         if raw_token == "-O" && tokens.get(i + 1).is_some() {
-            dst = tokens
-                .get(i + 1)
-                .map(|s| s.trim_matches(['"', '\'', ')']).to_string());
+            dst = tokens.get(i + 1).map(|s| {
+                WgetDestination::OutputDocument(s.trim_matches(['"', '\'', ')']).to_string())
+            });
             i += 2;
             continue;
         }
         if lower == "--output-document" && tokens.get(i + 1).is_some() {
-            dst = tokens
-                .get(i + 1)
-                .map(|s| s.trim_matches(['"', '\'', ')']).to_string());
+            dst = tokens.get(i + 1).map(|s| {
+                WgetDestination::OutputDocument(s.trim_matches(['"', '\'', ')']).to_string())
+            });
             i += 2;
             continue;
         }
         if let Some(rest) = raw_token.strip_prefix("-O") {
             if !rest.is_empty() && !rest.starts_with('-') {
-                dst = Some(rest.trim_matches(['"', '\'', ')']).to_string());
+                dst = Some(WgetDestination::OutputDocument(
+                    rest.trim_matches(['"', '\'', ')']).to_string(),
+                ));
                 i += 1;
                 continue;
             }
@@ -5462,41 +5471,47 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
             .or_else(|| strip_ascii_case_insensitive_prefix(raw_token, "--output-document:"))
         {
             if !rest.is_empty() {
-                dst = Some(rest.trim_matches(['"', '\'', ')']).to_string());
+                dst = Some(WgetDestination::OutputDocument(
+                    rest.trim_matches(['"', '\'', ')']).to_string(),
+                ));
             }
             i += 1;
             continue;
         }
         if raw_token == "-P" && tokens.get(i + 1).is_some() {
-            dst = tokens
-                .get(i + 1)
-                .map(|s| s.trim_matches(['"', '\'', ')']).to_string());
+            dst = tokens.get(i + 1).map(|s| {
+                WgetDestination::DirectoryPrefix(s.trim_matches(['"', '\'', ')']).to_string())
+            });
             i += 2;
             continue;
         }
         if let Some(rest) = raw_token.strip_prefix("-P") {
             if !rest.is_empty() && !rest.starts_with('-') {
-                dst = Some(rest.trim_matches(['"', '\'', ')']).to_string());
+                dst = Some(WgetDestination::DirectoryPrefix(
+                    rest.trim_matches(['"', '\'', ')']).to_string(),
+                ));
                 i += 1;
                 continue;
             }
         }
         if let Some(rest) = short_option_cluster_output(raw_token, 'P') {
             if rest.is_empty() {
-                dst = tokens
-                    .get(i + 1)
-                    .map(|s| s.trim_matches(['"', '\'', ')']).to_string());
+                dst = tokens.get(i + 1).map(|s| {
+                    WgetDestination::DirectoryPrefix(s.trim_matches(['"', '\'', ')']).to_string())
+                });
                 i += 2;
             } else {
-                dst = Some(rest.trim_matches(['"', '\'', ')']).to_string());
+                dst = Some(WgetDestination::DirectoryPrefix(
+                    rest.trim_matches(['"', '\'', ')']).to_string(),
+                ));
                 i += 1;
             }
             continue;
         }
         if lower == "--directory-prefix" && tokens.get(i + 1).is_some() {
-            dst = tokens
-                .get(i + 1)
-                .map(|s| s.trim_matches(['"', '\'', ')']).to_string());
+            dst = tokens.get(i + 1).map(|s| {
+                WgetDestination::DirectoryPrefix(s.trim_matches(['"', '\'', ')']).to_string())
+            });
             i += 2;
             continue;
         }
@@ -5504,7 +5519,9 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
             .or_else(|| strip_ascii_case_insensitive_prefix(raw_token, "--directory-prefix:"))
         {
             if !rest.is_empty() {
-                dst = Some(rest.trim_matches(['"', '\'', ')']).to_string());
+                dst = Some(WgetDestination::DirectoryPrefix(
+                    rest.trim_matches(['"', '\'', ')']).to_string(),
+                ));
             }
             i += 1;
             continue;
@@ -5598,6 +5615,13 @@ fn scan_wget_deob_text(deobfuscated: &str, env: &mut Environment) {
         if !known.insert(url.clone()) {
             continue;
         }
+        let dst = match dst {
+            Some(WgetDestination::OutputDocument(path)) => Some(path),
+            Some(WgetDestination::DirectoryPrefix(prefix)) => {
+                url_basename(&url).map(|name| join_windows_path(&prefix, &name))
+            }
+            None => None,
+        };
         env.traits.push(Trait::Download {
             cmd: line.to_string(),
             src: url,

@@ -1,4 +1,4 @@
-use super::util::split_words;
+use super::util::{split_words, windows_basename};
 use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
 
@@ -163,14 +163,6 @@ fn copied_entry(src: &str, env: &Environment) -> Option<FsEntry> {
                 None
             }
         })
-}
-
-fn windows_basename(path: &str) -> Option<&str> {
-    path.trim_matches('"')
-        .trim_matches('\'')
-        .rsplit(['\\', '/'])
-        .next()
-        .filter(|name| !name.is_empty())
 }
 
 fn is_windows_util_copy(src: &str, dst: &str) -> bool {

@@ -1,7 +1,7 @@
 //! extrac32 handler — CAB extraction LOLBAS. Tracks self-extraction patterns.
 
 use crate::env::{Environment, FsEntry};
-use crate::handlers::util::split_words;
+use crate::handlers::util::{split_words, windows_basename};
 use crate::traits::Trait;
 
 pub fn h_extrac32(raw: &str, env: &mut Environment) {
@@ -52,12 +52,6 @@ fn downloaded_src_for_candidate(candidate: &str, env: &Environment) -> Option<St
         }
     }
     None
-}
-
-fn windows_basename(path: &str) -> Option<&str> {
-    path.rsplit(['\\', '/'])
-        .next()
-        .filter(|name| !name.is_empty())
 }
 
 fn parse_extrac32_paths(tokens: &[String]) -> Option<(String, String)> {

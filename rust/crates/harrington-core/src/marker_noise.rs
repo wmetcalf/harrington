@@ -189,11 +189,11 @@ pub fn strip_line(text: &str) -> String {
 
 pub(crate) fn has_repeated_sandwich_candidate_shape(text: &str) -> bool {
     // The real stripper requires the same candidate marker to appear at
-    // least twice inside at least two alphabetic runs. A 3-byte marker
-    // appearing twice needs a run of at least 8 bytes (`aXYZbXYZ`).
-    // Anything without two such runs cannot satisfy the sandwich test.
-    let min_run_len = MIN_MARKER_LEN * 2 + 2;
-    let mut qualifying_runs = 0usize;
+    // least twice inside at least one alphabetic run. We only need a cheap
+    // shape check here, so we look for any repeated 3-byte alphabetic
+    // substring inside a single run. That catches single-run marker noise
+    // like `aXYZbXYZ...` without turning normal long words into false
+    // positives.
     let bytes = text.as_bytes();
     let mut i = 0usize;
     while i < bytes.len() {
@@ -205,9 +205,16 @@ pub(crate) fn has_repeated_sandwich_candidate_shape(text: &str) -> bool {
         while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
             i += 1;
         }
-        if i - start >= min_run_len {
-            qualifying_runs += 1;
-            if qualifying_runs >= 2 {
+        let run = &bytes[start..i];
+        if run.len() < MIN_MARKER_LEN * 2 {
+            continue;
+        }
+        let mut seen: std::collections::HashSet<[u8; MIN_MARKER_LEN]> =
+            std::collections::HashSet::new();
+        for window in run.windows(MIN_MARKER_LEN) {
+            let mut key = [0u8; MIN_MARKER_LEN];
+            key.copy_from_slice(window);
+            if !seen.insert(key) {
                 return true;
             }
         }
@@ -325,8 +332,8 @@ fn candidate_has_multiple_distinct_bytes(candidate: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        candidate_has_multiple_distinct_bytes, is_protected_marker_candidate, strip_line,
-        MarkerCandidate,
+        candidate_has_multiple_distinct_bytes, has_repeated_sandwich_candidate_shape,
+        is_protected_marker_candidate, strip_line, MarkerCandidate,
     };
 
     #[test]
@@ -338,6 +345,12 @@ mod tests {
     #[test]
     fn strip_line_removes_repeated_sandwich_marker_shape() {
         assert_eq!(strip_line("aXYZbXYZcXYZ dXYZeXYZ"), "abc de");
+    }
+
+    #[test]
+    fn sandwich_shape_detects_single_valid_run() {
+        assert!(has_repeated_sandwich_candidate_shape("aXYZbXYZ"));
+        assert!(!has_repeated_sandwich_candidate_shape("aXYZb"));
     }
 
     #[test]

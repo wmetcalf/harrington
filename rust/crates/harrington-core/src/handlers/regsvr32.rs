@@ -1,6 +1,6 @@
 //! regsvr32 handler — surfaces remote scriptlet URLs and WebDAV/UNC targets.
 
-use super::util::split_words;
+use super::util::{split_words, windows_basename};
 use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
 
@@ -174,12 +174,6 @@ fn contains_ascii_case_insensitive(haystack: &str, needle: &str) -> bool {
         .as_bytes()
         .windows(needle.len())
         .any(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
-}
-
-fn windows_basename(path: &str) -> Option<&str> {
-    path.rsplit(['\\', '/'])
-        .next()
-        .filter(|name| !name.is_empty())
 }
 
 fn push_url_argument(raw: &str, url: String, env: &mut Environment) {

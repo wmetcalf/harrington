@@ -1,4 +1,4 @@
-use super::util::split_words;
+use super::util::{split_words, windows_basename};
 use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
 
@@ -169,12 +169,6 @@ fn content_from_entry(entry: Option<&FsEntry>) -> Option<Vec<u8>> {
         Some(FsEntry::Decoded { content, .. }) => Some(content.clone()),
         _ => None,
     }
-}
-
-fn windows_basename(path: &str) -> Option<&str> {
-    path.rsplit(['\\', '/'])
-        .next()
-        .filter(|name| !name.is_empty())
 }
 
 fn is_hta_target(candidate: &str) -> bool {

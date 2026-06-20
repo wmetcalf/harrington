@@ -9,10 +9,13 @@ pub fn h_wget(raw: &str, env: &mut Environment) {
     let Some((url, dst)) = parse_wget_like_download(&tokens) else {
         return;
     };
-    let dst_path = dst
-        .as_ref()
-        .map(WgetDestination::as_path)
-        .map(str::to_string);
+    let dst_path = match &dst {
+        Some(WgetDestination::OutputDocument(path)) => Some(path.clone()),
+        Some(WgetDestination::DirectoryPrefix(prefix)) => {
+            url_basename(&url).map(|name| join_windows_path(prefix, &name))
+        }
+        None => None,
+    };
 
     env.traits.push(Trait::Download {
         cmd: raw.to_string(),
@@ -25,26 +28,11 @@ pub fn h_wget(raw: &str, env: &mut Environment) {
             FsEntry::Download { src: url.clone() },
         );
     }
-    if let Some(WgetDestination::DirectoryPrefix(prefix)) = dst {
-        if let Some(name) = url_basename(&url) {
-            let path = join_windows_path(&prefix, &name);
-            env.modified_filesystem
-                .insert(path.to_ascii_lowercase(), FsEntry::Download { src: url });
-        }
-    }
 }
 
 enum WgetDestination {
     OutputDocument(String),
     DirectoryPrefix(String),
-}
-
-impl WgetDestination {
-    fn as_path(&self) -> &str {
-        match self {
-            Self::OutputDocument(path) | Self::DirectoryPrefix(path) => path,
-        }
-    }
 }
 
 fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<WgetDestination>)> {

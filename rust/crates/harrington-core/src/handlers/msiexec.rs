@@ -1,6 +1,6 @@
 //! msiexec handler — surfaces URL package arguments.
 
-use super::util::split_words;
+use super::util::{split_words, windows_basename};
 use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
 
@@ -127,12 +127,6 @@ fn msiexec_prior_download_url(tokens: &[String], env: &Environment) -> Option<St
         }
     }
     None
-}
-
-fn windows_basename(path: &str) -> Option<&str> {
-    path.rsplit(['\\', '/'])
-        .next()
-        .filter(|name| !name.is_empty())
 }
 
 fn msiexec_package_candidate<'a>(token: &'a str, next: Option<&'a String>) -> Option<String> {

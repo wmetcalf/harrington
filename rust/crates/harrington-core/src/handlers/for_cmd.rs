@@ -696,7 +696,17 @@ fn raw_might_start_with_for(raw: &str) -> bool {
             token[token_len] = c.to_ascii_lowercase() as u8;
             token_len += 1;
             if token_len == token.len() {
-                return token == *b"for";
+                if token != *b"for" {
+                    return false;
+                }
+                while let Some(&next) = chars.peek() {
+                    if next == '^' {
+                        chars.next();
+                        continue;
+                    }
+                    return !next.is_ascii_alphabetic();
+                }
+                return true;
             }
             continue;
         }
@@ -711,6 +721,19 @@ fn raw_might_start_with_for(raw: &str) -> bool {
 /// dispatch an unknown-command no-op for the normalized `for …` text.
 pub fn h_for(_raw: &str, _env: &mut Environment) {
     // Intentionally empty — all work is done by run_for_from_raw in drive().
+}
+
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+mod tests {
+    use super::raw_might_start_with_for;
+
+    #[test]
+    fn for_prefix_rejects_longer_command_names() {
+        assert!(!raw_might_start_with_for("forest /q"));
+        assert!(!raw_might_start_with_for("format /q"));
+        assert!(raw_might_start_with_for("for /f %%A in (x) do echo hi"));
+    }
 }
 
 /// Build a lazy iterator over the numeric range `start, start+step, ..., end`.
