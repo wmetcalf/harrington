@@ -257,8 +257,9 @@ fn should_preserve_normalized_text(text: &str) -> bool {
 fn is_base64_fragment_set_assignment(text: &str) -> bool {
     let trimmed = text.trim_start_matches(|c: char| c == '@' || c == '(' || c.is_whitespace());
     let Some(rest) = trimmed
-        .strip_prefix("set")
-        .or_else(|| trimmed.strip_prefix("SET"))
+        .get(..3)
+        .filter(|head| head.eq_ignore_ascii_case("set"))
+        .map(|_| &trimmed[3..])
     else {
         return false;
     };
@@ -1414,6 +1415,12 @@ mod dosfuscation_tests {
     fn encoded_set_carrier_detection_is_case_insensitive() {
         let payload = format!("sEt Carrier= \u{8bef}{}", "A".repeat(300));
         assert!(super::is_encoded_set_carrier_assignment(&payload));
+    }
+
+    #[test]
+    fn base64_fragment_set_assignment_is_case_insensitive() {
+        let payload = "sEt Carrier= QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo=";
+        assert!(super::is_base64_fragment_set_assignment(payload));
     }
 
     #[test]
