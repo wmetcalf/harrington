@@ -240,8 +240,15 @@ fn short_option_cluster_remote_name(token: &str) -> bool {
 }
 
 fn url_basename(url: &str) -> Option<String> {
-    let path_part = url.split(['?', '#']).next()?;
-    let last = path_part.rsplit('/').next()?;
+    let path_part = url
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(url)
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(url)
+        .trim_end_matches(['/', '\\']);
+    let last = path_part.rsplit(['/', '\\']).next()?.trim();
     if last.is_empty() {
         None
     } else {

