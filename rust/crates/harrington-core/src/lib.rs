@@ -1656,6 +1656,26 @@ reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "#One" /t REG_SZ
     }
 
     #[test]
+    fn reg_add_run_key_preserves_quoted_command_with_escaped_quotes() {
+        let script = br##"@echo off
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "Quoted" /t REG_SZ /d "cmd /c \"echo https://reg-escape.example/payload.exe\" & mshta.exe \"stage.hta\"" /f
+"##;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { command, .. }
+                    if command.contains("reg-escape.example/payload.exe")
+                        && command.contains("mshta.exe")
+                        && command.contains("stage.hta")
+            )),
+            "quoted Run-key payload with escaped quotes was truncated: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn reg_add_run_key_does_not_recurse_incomplete_trailing_backslash_command() {
         let script = br#"@echo off
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v Reinforce /d "mshta.exe \" /f
