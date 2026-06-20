@@ -933,6 +933,14 @@ static GZIP_B64_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static GZIP_B64_VAR_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?i)\[(?:System\.)?Convert\]::FromBase64String\s*\(\s*\(*\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)*\s*\)"#,
+    )
+    .expect("gzip b64 var regex")
+});
+
+#[allow(clippy::expect_used)]
 static PS_LONG_B64_VAR_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?is)\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*["']([A-Za-z0-9+/=]{256,})["']"#)
         .expect("ps long b64 var assign regex")
@@ -947,6 +955,12 @@ static DAMAGED_PS_B64_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
 static PS_SIMPLE_REPLACE_CALL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?is)replace\s*\(\s*['"]([^'"]{1,16})['"]\s*,\s*['"]([^'"]{0,16})['"]\s*\)"#)
         .expect("simple replace call regex")
+});
+
+#[allow(clippy::expect_used)]
+static PS_EMPTY_REPLACE_OPERATOR_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?is)-replace\s*['"]([^'"\r\n]{1,64})['"]\s*,\s*['"]\s*['"]"#)
+        .expect("empty replace operator regex")
 });
 
 #[allow(clippy::expect_used)]
@@ -1002,6 +1016,50 @@ fn expand_gzip_base64_literals(text: &str) -> String {
                     (full.start(), full.end(), stream)
                 });
             let inflated = decompress_ps_stream(&decoded, stream, 2 * 1024 * 1024)?;
+            let s = decode_payload(&inflated).into_owned().replace('\'', "''");
+            Some((start, end, format!("'{s}'")))
+        })
+        .collect();
+    let mut out = text.to_string();
+    for (start, end, replacement) in matches.into_iter().rev() {
+        out.replace_range(start..end, &replacement);
+    }
+    out
+}
+
+fn expand_gzip_base64_variable_streams(text: &str) -> String {
+    let lower = text.to_ascii_lowercase();
+    if (!lower.contains("gzipstream") && !lower.contains("deflatestream"))
+        || !lower.contains("frombase64string")
+    {
+        return text.to_string();
+    }
+
+    let bindings = ps_resolved_string_bindings(text);
+    if bindings.is_empty() {
+        return text.to_string();
+    }
+
+    let matches: Vec<(usize, usize, String)> = GZIP_B64_VAR_RE
+        .captures_iter(text)
+        .filter_map(|caps| {
+            let full = caps.get(0)?;
+            let var = caps.get(1)?.as_str().to_ascii_lowercase();
+            let b64 = bindings.get(&var)?;
+            if b64.len() > 6 * 1024 * 1024 {
+                return None;
+            }
+            let decoded = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
+            let (start, end, stream) = compression_wrapper_bounds(text, full.start(), full.end())
+                .unwrap_or_else(|| {
+                    let stream = if lower.contains("deflatestream") {
+                        PsCompressionStream::Deflate
+                    } else {
+                        PsCompressionStream::Gzip
+                    };
+                    (full.start(), full.end(), stream)
+                });
+            let inflated = decompress_ps_stream(&decoded, stream, 4 * 1024 * 1024)?;
             let s = decode_payload(&inflated).into_owned().replace('\'', "''");
             Some((start, end, format!("'{s}'")))
         })
@@ -1139,6 +1197,79 @@ fn expand_json_script_base64(text: &str) -> String {
     for (start, end, replacement) in matches.into_iter().rev() {
         out.replace_range(start..end, &replacement);
     }
+    out
+}
+
+fn expand_marker_chunk_base64_carrier(text: &str) -> String {
+    let lower = text.to_ascii_lowercase();
+    if !text.contains(":::")
+        || !lower.contains("frombase64string")
+        || !(lower.contains("rawlines") || lower.contains("substring(4)") || lower.contains("::"))
+    {
+        return text.to_string();
+    }
+
+    let mut chunks = std::collections::BTreeMap::new();
+    for line in text.lines() {
+        let mut search = line;
+        while let Some(pos) = search.find(":::") {
+            let marker_start = line.len().saturating_sub(search.len()).saturating_add(pos);
+            let after_marker = &line[marker_start + 3..];
+            let Some(marker) = after_marker.as_bytes().first().copied() else {
+                break;
+            };
+            if !marker.is_ascii_digit() {
+                search = &after_marker[1..];
+                continue;
+            }
+            let index = (marker - b'0') as usize;
+            let chunk = after_marker[1..]
+                .trim()
+                .trim_matches(['"', '\'', '`', ' ', '\t', '\r', '\n'])
+                .replace("\"\"", "\"")
+                .replace("''", "'");
+            if !chunk.is_empty() {
+                chunks.insert(index, chunk);
+            }
+            break;
+        }
+    }
+    if chunks.len() < 2 {
+        return text.to_string();
+    }
+
+    let mut joined = String::new();
+    for chunk in chunks.values() {
+        joined.push_str(chunk);
+    }
+    for caps in PS_EMPTY_REPLACE_OPERATOR_RE.captures_iter(text).take(16) {
+        let Some(marker) = caps.get(1) else { continue };
+        let marker = marker.as_str().replace("''", "'");
+        if !marker.is_empty() {
+            joined = joined.replace(marker.as_str(), "");
+        }
+    }
+    let cleaned: String = joined.chars().filter(|c| !c.is_whitespace()).collect();
+    if cleaned.len() < 40 {
+        return text.to_string();
+    }
+    let Some(decoded_bytes) = decode_ps_base64_string(&cleaned) else {
+        return text.to_string();
+    };
+    let decoded = if lower.contains("encoding]::unicode") || lower.contains("encoding.unicode") {
+        decode_utf16_lossy(&decoded_bytes, false)
+            .unwrap_or_else(|| decode_payload(&decoded_bytes).into_owned())
+    } else {
+        decode_payload(&decoded_bytes).into_owned()
+    };
+    let decoded = decoded.trim_matches('\u{feff}').trim();
+    if decoded.is_empty() || text.contains(decoded) {
+        return text.to_string();
+    }
+
+    let mut out = text.to_string();
+    out.push('\n');
+    out.push_str(decoded);
     out
 }
 
@@ -1546,6 +1677,79 @@ fn ps_string_bindings(text: &str) -> std::collections::HashMap<String, String> {
         }
     }
     insert_ps_path_combine_bindings(text, &mut bindings);
+    bindings
+}
+
+fn ps_resolved_string_bindings(text: &str) -> std::collections::HashMap<String, String> {
+    let mut bindings = ps_string_bindings(text);
+    for caps in PS_ARRAY_ASSIGN_RE.captures_iter(text) {
+        let (Some(name), Some(parts_text)) = (caps.get(1), caps.get(2)) else {
+            continue;
+        };
+        let parts: Vec<String> = JOIN_PART_RE
+            .captures_iter(parts_text.as_str())
+            .filter_map(|c| {
+                c.get(1)
+                    .or_else(|| c.get(2))
+                    .map(|m| m.as_str().to_string())
+            })
+            .collect();
+        if !parts.is_empty() {
+            bindings.insert(name.as_str().to_ascii_lowercase(), parts.join(""));
+        }
+    }
+    for caps in PS_JOIN_ASSIGN_RE.captures_iter(text) {
+        let (Some(dst), Some(src), Some(sep)) = (
+            caps.get(1),
+            caps.get(2),
+            caps.get(3).or_else(|| caps.get(4)),
+        ) else {
+            continue;
+        };
+        if let Some(value) = bindings.get(&src.as_str().to_ascii_lowercase()).cloned() {
+            let joined = if sep.as_str().is_empty() {
+                value
+            } else {
+                value
+                    .chars()
+                    .map(|c| c.to_string())
+                    .collect::<Vec<_>>()
+                    .join(sep.as_str())
+            };
+            bindings.insert(dst.as_str().to_ascii_lowercase(), joined);
+        }
+    }
+    for _ in 0..4 {
+        let mut changed = false;
+        for caps in PS_VAR_CONCAT_ASSIGN_RE.captures_iter(text) {
+            let (Some(dst), Some(rhs)) = (caps.get(1), caps.get(2)) else {
+                continue;
+            };
+            let mut joined = String::new();
+            let mut ok = false;
+            for part in PS_VAR_REF_RE.captures_iter(rhs.as_str()) {
+                let Some(name) = part.get(1).map(|m| m.as_str()) else {
+                    continue;
+                };
+                let Some(value) = bindings.get(&name.to_ascii_lowercase()) else {
+                    ok = false;
+                    break;
+                };
+                joined.push_str(value);
+                ok = true;
+            }
+            if ok && !joined.is_empty() {
+                let key = dst.as_str().to_ascii_lowercase();
+                if bindings.get(&key) != Some(&joined) {
+                    bindings.insert(key, joined);
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
     bindings
 }
 
@@ -3652,6 +3856,7 @@ fn expand_obfuscation(text: &str) -> String {
         profile_expand_step!("encoded_payloads", iter, {
             if signals.compressed_base64 {
                 out = expand_gzip_function_base64_variables(&out);
+                out = expand_gzip_base64_variable_streams(&out);
                 out = expand_gzip_base64_literals(&out);
             }
             if signals.json_script_base64 {
@@ -3664,6 +3869,7 @@ fn expand_obfuscation(text: &str) -> String {
                 out = expand_regex_replace_calls(&out);
             }
             if signals.base64_or_getstring {
+                out = expand_marker_chunk_base64_carrier(&out);
                 out = expand_base64_xor_array_function_calls(&out);
                 out = expand_getstring_base64_literals(&out);
                 out = expand_getstring_base64_variables(&out);
@@ -3720,12 +3926,14 @@ fn expand_obfuscation(text: &str) -> String {
                 }
                 if signals.compressed_base64 {
                     out = expand_gzip_function_base64_variables(&out);
+                    out = expand_gzip_base64_variable_streams(&out);
                 }
                 if signals.char_cast {
                     out = expand_string_join_char_arrays(&out);
                     out = expand_unary_join_char_arrays(&out);
                 }
                 if signals.base64_or_getstring {
+                    out = expand_marker_chunk_base64_carrier(&out);
                     out = expand_base64_xor_array_function_calls(&out);
                     out = expand_getstring_base64_literals(&out);
                     out = expand_getstring_base64_variables(&out);
@@ -5782,6 +5990,21 @@ fn inline_powershell_text_needs_global_context(text: &str) -> bool {
 
 fn inline_powershell_text_has_payload_signal(text: &str) -> bool {
     if inline_powershell_text_needs_global_context(text) {
+        return true;
+    }
+
+    if (contains_ascii_case_insensitive_bytes(text, b"gzipstream")
+        || contains_ascii_case_insensitive_bytes(text, b"deflatestream"))
+        && contains_ascii_case_insensitive_bytes(text, b"frombase64string")
+    {
+        return true;
+    }
+
+    if text.contains(":::")
+        && contains_ascii_case_insensitive_bytes(text, b"frombase64string")
+        && (contains_ascii_case_insensitive_bytes(text, b"substring(4)")
+            || contains_ascii_case_insensitive_bytes(text, b"rawlines"))
+    {
         return true;
     }
 
