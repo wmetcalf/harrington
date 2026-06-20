@@ -1201,7 +1201,7 @@ mod tests {
     fn vbs_static_execute_expansion_is_bounded() {
         let mut text = String::new();
         for _ in 0..150 {
-            text.push_str("Execute \"ZZZ\"\n");
+            text.push_str("Execute \"Execute \"\"ZZZ\"\"\"\n");
         }
         let expanded = expand_vbs_static_execute(&text);
         let decoded_count = expanded.lines().filter(|line| *line == "ZZZ").count();
