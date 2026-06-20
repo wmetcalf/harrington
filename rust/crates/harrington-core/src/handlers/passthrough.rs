@@ -172,32 +172,30 @@ fn parse_flag_value(raw: &str, start: usize) -> Option<String> {
     if quote == b'"' || quote == b'\'' {
         let quote_char = quote as char;
         let mut out = String::new();
-        let mut i = start + 1;
-        while i < raw.len() {
-            let Some(ch) = raw.get(i..).and_then(|s| s.chars().next()) else {
-                break;
-            };
+        let mut chars = raw.get(start + 1..)?.char_indices().peekable();
+        while let Some((rel, ch)) = chars.next() {
+            let abs = start + 1 + rel;
             if ch == '\\'
-                && bytes.get(i + 1) == Some(&quote)
-                && has_later_unescaped_quote(bytes, i + 2, quote)
+                && chars.peek().is_some_and(|(_, next)| *next == quote_char)
+                && has_later_unescaped_quote(bytes, abs + 2, quote)
             {
                 out.push(quote_char);
-                i += 2;
+                let _ = chars.next();
                 continue;
             }
             if ch == quote_char {
                 return Some(out);
             }
             out.push(ch);
-            i += ch.len_utf8();
         }
         return Some(out);
     }
-    let end = raw[start..]
+    let end = raw
+        .get(start..)?
         .find(char::is_whitespace)
         .map(|offset| start + offset)
         .unwrap_or(raw.len());
-    Some(raw[start..end].to_string())
+    Some(raw.get(start..end)?.to_string())
 }
 
 fn has_later_unescaped_quote(bytes: &[u8], mut start: usize, quote: u8) -> bool {
