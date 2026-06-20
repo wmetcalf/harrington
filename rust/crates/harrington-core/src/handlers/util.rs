@@ -123,3 +123,20 @@ pub(crate) fn strip_outer_quotes(s: &str) -> &str {
     }
     s
 }
+
+#[cfg(test)]
+mod tests {
+    use super::windows_basename;
+
+    #[test]
+    fn windows_basename_strips_quotes_and_slashes() {
+        assert_eq!(
+            windows_basename(r#""C:\Temp\payload.exe""#),
+            Some("payload.exe")
+        );
+        assert_eq!(
+            windows_basename(r#"'C:/Temp/payload.exe'"#),
+            Some("payload.exe")
+        );
+    }
+}
