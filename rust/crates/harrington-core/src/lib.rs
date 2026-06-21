@@ -11767,6 +11767,44 @@ mod certutil_tests {
     }
 
     #[test]
+    fn recovered_pe_us_strings_are_scanned_for_ftp_urls() {
+        let url = "ftp://dotnet-resource.example/payload.dat";
+        let pe = synthetic_dotnet_pe_with_us_string(url);
+
+        let mut env = Environment::default();
+        env.recovered_pe
+            .push(("synthetic-dotnet-pe".to_string(), pe));
+        crate::scan_recovered_artifact_strings(&mut env);
+
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
+            "recovered PE #US FTP URL was not surfaced: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn recovered_pe_us_strings_are_scanned_for_file_urls() {
+        let url = "file:///C:/Users/Public/payload.exe";
+        let pe = synthetic_dotnet_pe_with_us_string(url);
+
+        let mut env = Environment::default();
+        env.recovered_pe
+            .push(("synthetic-dotnet-pe".to_string(), pe));
+        crate::scan_recovered_artifact_strings(&mut env);
+
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
+            "recovered PE #US file URL was not surfaced: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn recovered_pe_us_strings_are_scanned_for_behavior() {
         let hint = "Set-MpPreference -DisableRealtimeMonitoring $true";
         let pe = synthetic_dotnet_pe_with_us_string(hint);
