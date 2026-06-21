@@ -15477,6 +15477,30 @@ iex $stage
     }
 
     #[test]
+    fn ps1_normalization_decodes_for_index_stride_function() {
+        fn stride_carrier(decoded: &str, start: usize, step: usize) -> String {
+            let len = start + decoded.chars().count() * step;
+            let mut chars = vec!['x'; len];
+            for (idx, c) in decoded.chars().enumerate() {
+                chars[start + idx * step] = c;
+            }
+            chars.into_iter().collect()
+        }
+
+        let decoded = "GET http://rowtechequipments.com/ud/Englobin.asi";
+        let carrier = stride_carrier(decoded, 4, 5);
+        let ps = format!(
+            "function Prenoti9($Matzas){{$Bawdine=$Matzas.Length-1;for($Brougham=4;$Brougham -lt $Bawdine;$Brougham+=5){{$Bundskjule+=$Matzas[$Brougham]}}$Bundskjule}};Prenoti9 '{carrier}'"
+        );
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+        assert!(
+            normalized.contains(decoded),
+            "for/index stride payload not decoded:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
     fn ps1_normalization_decodes_smart_quote_url_concat() {
         let ps = concat!(
             "Invoke-WebRequest -Uri (",

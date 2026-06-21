@@ -3478,7 +3478,7 @@ fn expand_skip_nth(text: &str) -> String {
     let mut out = text.to_string();
     let numeric_bindings = ps_numeric_bindings(text);
     // Collect all function definitions with their skip parameters
-    let defs: Vec<(String, usize, usize)> = SKIP_NTH_DEF_RE
+    let mut defs: Vec<(String, usize, usize)> = SKIP_NTH_DEF_RE
         .captures_iter(text)
         .filter_map(|caps| {
             // fn name: group 1 (function NAME) or group 2 (-n NAME)
@@ -3503,6 +3503,38 @@ fn expand_skip_nth(text: &str) -> String {
             Some((fn_name, start, step))
         })
         .collect();
+
+    defs.extend(
+        ps_function_bodies(text)
+            .into_iter()
+            .filter_map(|(name, body)| {
+                if !body.contains("for(")
+                    && !body.contains("for (")
+                    && !body.contains("[$")
+                    && !body.contains("+=")
+                {
+                    return None;
+                }
+                let Ok(loop_re) = Regex::new(
+                    r#"(?is)for\s*\(\s*\$(\w+)\s*=\s*(\d+)\s*;.*?;\s*\$(\w+)\s*\+=\s*(\d+)\s*\).*?\$\w+\s*\+=\s*\$\w+\[\s*\$(\w+)\s*\]"#,
+                ) else {
+                    return None;
+                };
+                let caps = loop_re.captures(&body)?;
+                let loop_var = caps.get(1)?.as_str();
+                let step: usize = caps.get(4)?.as_str().parse().ok()?;
+                if step == 0 || step > 10 {
+                    return None;
+                }
+                let fallback_start = caps.get(2)?.as_str().parse().ok().unwrap_or(1);
+                let start = skip_nth_start_index(&body, loop_var, &numeric_bindings)
+                    .unwrap_or(fallback_start);
+                if start > 512 {
+                    return None;
+                }
+                Some((name, start, step))
+            }),
+    );
 
     for (name, start, step) in defs {
         // Find call sites: NAME 'carrier' / NAME "carrier" / NAME('carrier')
@@ -4011,7 +4043,8 @@ impl PsObfuscationSignals {
             && ((lower.contains("do")
                 && (lower.contains("until") || lower.contains("while"))
                 && text.contains('['))
-                || (lower.contains("for") && lower.contains("invoke") && text.contains("'su'")));
+                || (lower.contains("for") && lower.contains("invoke") && text.contains("'su'"))
+                || (lower.contains("for") && text.contains("[$") && lower.contains(".length")));
         let char_cast = lower.contains("[char");
         let hex_split = lower.contains("-split") && lower.contains("toint16");
         let space_concat = text.contains("' ") && (text.contains(" '") || text.contains("\t'"));
