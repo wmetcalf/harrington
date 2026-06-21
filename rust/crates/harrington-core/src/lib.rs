@@ -10943,6 +10943,20 @@ mod synth_tests {
             env.traits
         );
     }
+
+    #[test]
+    fn synth_curl_file_url_reads_virtual_file() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            r#"c:\temp\payload.txt"#.to_string(),
+            FsEntry::Content {
+                content: b"alpha\r\nbeta\r\n".to_vec(),
+                append: false,
+            },
+        );
+        let lines = run_pipeline("curl file:///C:/temp/payload.txt", &mut env);
+        assert_eq!(lines, vec!["alpha".to_string(), "beta".to_string()]);
+    }
 }
 
 #[cfg(test)]

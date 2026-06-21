@@ -176,7 +176,7 @@ fn run_stage(stage: &str, input: Vec<String>, env: &mut Environment) -> Vec<Stri
         "wmic" => synth_wmic(&rest_args),
         "ping" => synth_ping(&rest_args),
         "curl" | "curl.exe" => {
-            let out = synth_curl(&rest_args);
+            let out = synth_curl(&rest_args, env);
             if out.is_empty() {
                 env.traits.push(crate::traits::Trait::ForUnresolvedSource {
                     pipeline: stage.to_string(),
@@ -1115,16 +1115,24 @@ fn synth_ping(args: &[&str]) -> Vec<String> {
     )]
 }
 
-fn synth_curl(args: &[&str]) -> Vec<String> {
+fn synth_curl(args: &[&str], env: &mut Environment) -> Vec<String> {
     let Some(url) = args
         .iter()
         .rev()
         .map(|arg| arg.trim_matches(['"', '\'']))
-        .find(|arg| arg.starts_with("http://") || arg.starts_with("https://"))
+        .find(|arg| {
+            arg.starts_with("http://") || arg.starts_with("https://") || arg.starts_with("file://")
+        })
     else {
         return Vec::new();
     };
     let lower = url.to_ascii_lowercase();
+    if lower.starts_with("file://") {
+        if let Some(path) = file_url_to_windows_path(url) {
+            return type_file(&path, env);
+        }
+        return Vec::new();
+    }
     if lower == "https://api.ipify.org"
         || lower == "http://api.ipify.org"
         || lower.starts_with("https://api.ipify.org?")
@@ -1138,4 +1146,13 @@ fn synth_curl(args: &[&str]) -> Vec<String> {
         return vec!["geoplugin_request:203.0.113.10".to_string()];
     }
     Vec::new()
+}
+
+fn file_url_to_windows_path(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("file://")?;
+    let rest = rest.trim_start_matches(['/', '\\']);
+    if rest.is_empty() {
+        return None;
+    }
+    Some(rest.replace('/', "\\"))
 }
