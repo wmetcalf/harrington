@@ -189,12 +189,11 @@ pub fn strip_line(text: &str) -> String {
 }
 
 pub(crate) fn has_repeated_sandwich_candidate_shape(text: &str) -> bool {
-    // The real stripper requires the same candidate marker to appear at
-    // least twice inside at least one alphabetic run. We only need a cheap
-    // shape check here, so we look for any repeated 3-byte alphabetic
-    // substring inside a single run. That catches single-run marker noise
-    // like `aXYZbXYZ...` without turning normal long words into false
-    // positives.
+    // The real stripper requires repeated 3-byte marker evidence inside a
+    // single alphabetic run. We only need a cheap shape check here, so we
+    // look for any repeated 3-byte alphabetic substring inside a run. That
+    // catches single-run marker noise like `aXYZbXYZ...` without turning
+    // normal long words into false positives.
     let bytes = text.as_bytes();
     let mut i = 0usize;
     while i < bytes.len() {
