@@ -19850,6 +19850,26 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
     }
 
     #[test]
+    fn deob_text_embedded_powershell_file_url_is_extracted() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"w.Run "!powershell -WindowStyle Hidden -Nologo -ExecutionPolicy Bypass -Command ""Write-Host file:///C:/Temp/payload.exe""", 0, False"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::DownloadInDeobText { src, .. } if src == "file:///C:/Temp/payload.exe"
+            )
+        });
+        assert!(
+            has,
+            "embedded PowerShell file URL not surfaced: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn telegram_bot_prefix_of_known_download_not_double_emitted() {
         let mut env = crate::env::Environment::new(&Config::default());
         env.traits.push(Trait::Download {

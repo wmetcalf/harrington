@@ -9182,7 +9182,11 @@ fn looks_like_embedded_powershell_payload(tail: &str) -> bool {
     }
     // Permissive fallbacks for cases where the gate above misses but the
     // tail still clearly contains a payload signal.
-    lower.contains("frombase64string") || lower.contains("http://") || lower.contains("https://")
+    lower.contains("frombase64string")
+        || lower.contains("http://")
+        || lower.contains("https://")
+        || lower.contains("ftp://")
+        || lower.contains("file://")
 }
 
 /// Matches PS download-verb tokens (alias or full cmdlet) at command
