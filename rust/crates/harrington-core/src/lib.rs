@@ -24721,6 +24721,24 @@ mod certutil_decoded_js_tests {
     }
 
     #[test]
+    fn damaged_ps_char_array_join_file_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let deob = "$u=([[]]@(102,105,108,101,58,47,47,47,67,58,47,84,101,109,112,47,112,97,121,108,111,97,100,46,101,120,101)-join')";
+        crate::deob_scan::scan_ps_char_concat_urls(deob, &mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::DownloadInDeobText { src, line_hint }
+                        if line_hint == "ps-char-concat"
+                        && src == "file:///C:/Temp/payload.exe"
+                )
+            }),
+            "damaged file char-array URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn winvnc_reverse_connect_emits_remote_connect_not_generic_url() {
         let mut env = Environment::new(&Config::default());
         let deob =

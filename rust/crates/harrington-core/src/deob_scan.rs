@@ -9485,6 +9485,7 @@ fn try_extract_url_from_buf(
         .find("http://")
         .or_else(|| buf.find("https://"))
         .or_else(|| buf.find("ftp://"))
+        .or_else(|| buf.find("file://"))
     {
         let tail = &buf[idx..];
         let url: String = tail
