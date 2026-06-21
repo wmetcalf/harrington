@@ -1,4 +1,4 @@
-use super::util::{split_words, windows_basename};
+use super::util::{split_words, strip_outer_quotes, windows_basename};
 use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
 
@@ -10,7 +10,7 @@ pub fn h_mshta(raw: &str, env: &mut Environment) {
 
     let tokens = split_words(raw);
     for token in tokens.iter().skip(1) {
-        let url = strip_quotes(token);
+        let url = strip_outer_quotes(token);
         if let Some(src) = crate::deob_scan::normalize_liberal_url_token(url)
             .or_else(|| crate::deob_scan::normalize_schemeless_domain_path_token(url))
         {
@@ -70,7 +70,7 @@ fn queue_inline_script_payload(raw: &str, env: &mut Environment) -> bool {
 
 fn inline_payload_after<'a>(raw: &'a str, marker: &str) -> Option<&'a str> {
     let start = find_ascii_case_insensitive(raw, marker)? + marker.len();
-    let body = raw[start..].trim().trim_matches(['"', '\'']);
+    let body = strip_outer_quotes(&raw[start..]).trim();
     (!body.is_empty()).then_some(body)
 }
 
@@ -82,19 +82,9 @@ fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
         .position(|window| window.eq_ignore_ascii_case(needle))
 }
 
-fn strip_quotes(s: &str) -> &str {
-    let s = s.trim();
-    if ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')))
-        && s.len() >= 2
-    {
-        return &s[1..s.len() - 1];
-    }
-    s
-}
-
 fn prior_download_url(tokens: &[String], env: &Environment) -> Option<String> {
     for token in tokens.iter().skip(1).take(8) {
-        let candidate = strip_quotes(token)
+        let candidate = strip_outer_quotes(token)
             .trim()
             .trim_end_matches(['"', '\'', ')', ']', '}', ';', ',']);
         if candidate.is_empty() || candidate.starts_with(['/', '-']) {
@@ -125,7 +115,7 @@ fn prior_download_url(tokens: &[String], env: &Environment) -> Option<String> {
 
 fn queue_local_hta_script_blocks(tokens: &[String], env: &mut Environment) {
     for token in tokens.iter().skip(1).take(8) {
-        let candidate = strip_quotes(token)
+        let candidate = strip_outer_quotes(token)
             .trim()
             .trim_end_matches(['"', '\'', ')', ']', '}', ';', ',']);
         if candidate.is_empty() || candidate.starts_with(['/', '-']) {

@@ -1,7 +1,7 @@
 //! bitsadmin handler — extracts /transfer URL + DST.
 
 use crate::env::{Environment, FsEntry};
-use crate::handlers::util::split_words;
+use crate::handlers::util::{split_words, strip_outer_quotes};
 use crate::traits::Trait;
 
 pub fn h_bitsadmin(raw: &str, env: &mut Environment) {
@@ -52,7 +52,7 @@ pub fn h_bitsadmin(raw: &str, env: &mut Environment) {
         }
         if let Some(url) = pending_url.take() {
             if !t.starts_with('/') {
-                downloads.push((url, strip_quotes(t).to_string()));
+                downloads.push((url, strip_outer_quotes(t).to_string()));
             } else {
                 downloads.push((url, String::new()));
             }
@@ -79,14 +79,6 @@ pub fn h_bitsadmin(raw: &str, env: &mut Environment) {
                 .insert(d.to_ascii_lowercase(), FsEntry::Download { src: u });
         }
     }
-}
-
-fn strip_quotes(s: &str) -> &str {
-    let s = s.trim();
-    if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
-        return &s[1..s.len() - 1];
-    }
-    s
 }
 
 fn normalize_bitsadmin_url_token(token: &str) -> Option<String> {

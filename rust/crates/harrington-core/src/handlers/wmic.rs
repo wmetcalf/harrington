@@ -2,6 +2,7 @@
 
 use crate::env::Environment;
 use crate::handlers::util::split_words;
+use crate::handlers::util::strip_outer_quotes;
 use crate::traits::Trait;
 
 pub fn h_wmic(raw: &str, env: &mut Environment) {
@@ -22,7 +23,7 @@ fn wmic_process_create_inner(raw: &str) -> Option<String> {
     let tokens = split_words(raw);
     let mut process_idx = None;
     for (idx, token) in tokens.iter().enumerate().skip(1) {
-        if strip_quotes(token).eq_ignore_ascii_case("process") {
+        if strip_outer_quotes(token).eq_ignore_ascii_case("process") {
             process_idx = Some(idx);
             break;
         }
@@ -31,14 +32,14 @@ fn wmic_process_create_inner(raw: &str) -> Option<String> {
     let process_idx = process_idx?;
     if !tokens
         .get(process_idx + 1)
-        .map(|token| strip_quotes(token).eq_ignore_ascii_case("call"))
+        .map(|token| strip_outer_quotes(token).eq_ignore_ascii_case("call"))
         .unwrap_or(false)
     {
         return None;
     }
     if !tokens
         .get(process_idx + 2)
-        .map(|token| strip_quotes(token).eq_ignore_ascii_case("create"))
+        .map(|token| strip_outer_quotes(token).eq_ignore_ascii_case("create"))
         .unwrap_or(false)
     {
         return None;
@@ -71,10 +72,6 @@ fn wmic_create_commandline_argument(tail: &str) -> Option<String> {
             _ => {}
         }
     }
-    let inner = strip_quotes(tail[..end].trim()).trim().to_string();
+    let inner = strip_outer_quotes(tail[..end].trim()).trim().to_string();
     (!inner.is_empty()).then_some(inner)
-}
-
-fn strip_quotes(text: &str) -> &str {
-    text.trim_matches(|c| c == '"' || c == '\'')
 }

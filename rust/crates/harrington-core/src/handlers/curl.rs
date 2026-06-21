@@ -1,6 +1,6 @@
 //! curl handler — extracts URL + output target. Mirrors interpret_curl.
 
-use super::util::{join_windows_path, split_words};
+use super::util::{join_windows_path, split_words, strip_outer_quotes};
 use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
 
@@ -16,18 +16,18 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
         if let Some(value) = short_option_cluster_output(t) {
             if value.is_empty() {
                 if let Some(v) = tokens.get(i + 1) {
-                    output = Some(strip_quotes(v).to_string());
+                    output = Some(strip_outer_quotes(v).to_string());
                 }
                 i += 2;
             } else {
-                output = Some(strip_quotes(value).to_string());
+                output = Some(strip_outer_quotes(value).to_string());
                 i += 1;
             }
             continue;
         }
         if t == "-o" || t.eq_ignore_ascii_case("--output") {
             if let Some(v) = tokens.get(i + 1) {
-                output = Some(strip_quotes(v).to_string());
+                output = Some(strip_outer_quotes(v).to_string());
             }
             i += 2;
             continue;
@@ -44,7 +44,7 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
         }
         if t.eq_ignore_ascii_case("--output-dir") {
             if let Some(v) = tokens.get(i + 1) {
-                output_dir = Some(strip_quotes(v).to_string());
+                output_dir = Some(strip_outer_quotes(v).to_string());
             }
             i += 2;
             continue;
@@ -52,7 +52,7 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
         match t.as_str() {
             _ if t.eq_ignore_ascii_case("--url") => {
                 if let Some(v) = tokens.get(i + 1) {
-                    url = normalize_curl_url(strip_quotes(v));
+                    url = normalize_curl_url(strip_outer_quotes(v));
                 }
                 i += 2;
                 continue;
@@ -65,7 +65,7 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
                     .or_else(|| strip_ascii_case_insensitive_prefix(t, "--output:"))
                     .unwrap_or_default();
                 if !value.is_empty() {
-                    output = Some(strip_quotes(value).to_string());
+                    output = Some(strip_outer_quotes(value).to_string());
                 }
                 i += 1;
                 continue;
@@ -78,7 +78,7 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
                     .or_else(|| strip_ascii_case_insensitive_prefix(t, "--output-dir:"))
                     .unwrap_or_default();
                 if !value.is_empty() {
-                    output_dir = Some(strip_quotes(value).to_string());
+                    output_dir = Some(strip_outer_quotes(value).to_string());
                 }
                 i += 1;
                 continue;
@@ -86,7 +86,7 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
             _ if t.starts_with("-o") && t.len() > 2 => {
                 let value = &t["-o".len()..];
                 if !value.starts_with('-') {
-                    output = Some(strip_quotes(value).to_string());
+                    output = Some(strip_outer_quotes(value).to_string());
                 }
                 i += 1;
                 continue;
@@ -95,7 +95,7 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
                 .or_else(|| strip_ascii_case_insensitive_prefix(t, "--url:"))
                 .is_some() =>
             {
-                let value = strip_quotes(
+                let value = strip_outer_quotes(
                     strip_ascii_case_insensitive_prefix(t, "--url=")
                         .or_else(|| strip_ascii_case_insensitive_prefix(t, "--url:"))
                         .unwrap_or_default(),
@@ -116,7 +116,7 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
                     i += 1;
                     continue;
                 }
-                let candidate = strip_quotes(t);
+                let candidate = strip_outer_quotes(t);
                 if url.is_none() {
                     url = normalize_curl_url(candidate);
                 }
@@ -148,16 +148,6 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
         env.modified_filesystem
             .insert(d.to_ascii_lowercase(), FsEntry::Download { src: url });
     }
-}
-
-fn strip_quotes(s: &str) -> &str {
-    let s = s.trim();
-    if ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')))
-        && s.len() >= 2
-    {
-        return &s[1..s.len() - 1];
-    }
-    s
 }
 
 fn strip_ascii_case_insensitive_prefix<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
