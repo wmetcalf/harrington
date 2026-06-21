@@ -7,8 +7,9 @@ use once_cell::sync::Lazy;
 use regex::bytes::Regex as ByteRegex;
 
 #[allow(clippy::expect_used)]
-static URL_UTF8_RE: Lazy<ByteRegex> =
-    Lazy::new(|| ByteRegex::new(r"(?i)https?://[\x21-\x7e]{4,300}").expect("url utf8 re"));
+static URL_UTF8_RE: Lazy<ByteRegex> = Lazy::new(|| {
+    ByteRegex::new(r"(?i)(?:https?|ftp|file)://[\x21-\x7e]{4,300}").expect("url utf8 re")
+});
 
 const NOISE: &[&str] = &[
     "digicert",
@@ -149,6 +150,30 @@ mod tests {
         assert!(
             urls.iter()
                 .any(|u| u == "http://evil.example.com/payload.dll"),
+            "got: {:?}",
+            urls
+        );
+    }
+
+    #[test]
+    fn finds_ftp_url() {
+        let bytes = b"junk ftp://evil.example.com/payload.dat more junk";
+        let urls = scan_urls(bytes, 16);
+        assert!(
+            urls.iter()
+                .any(|u| u == "ftp://evil.example.com/payload.dat"),
+            "got: {:?}",
+            urls
+        );
+    }
+
+    #[test]
+    fn finds_file_url() {
+        let bytes = b"junk file:///C:/Users/Public/payload.exe more junk";
+        let urls = scan_urls(bytes, 16);
+        assert!(
+            urls.iter()
+                .any(|u| u == "file:///C:/Users/Public/payload.exe"),
             "got: {:?}",
             urls
         );
