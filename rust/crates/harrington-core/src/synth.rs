@@ -1154,5 +1154,23 @@ fn file_url_to_windows_path(url: &str) -> Option<String> {
     if rest.is_empty() {
         return None;
     }
+    if rest.as_bytes().get(1) == Some(&b':') {
+        return Some(rest.replace('/', "\\"));
+    }
+    if let Some(local) = rest
+        .strip_prefix("localhost/")
+        .or_else(|| rest.strip_prefix("localhost\\"))
+    {
+        let local = local.trim_start_matches(['/', '\\']);
+        if local.is_empty() {
+            return None;
+        }
+        return Some(local.replace('/', "\\"));
+    }
+    if let Some((host, share)) = rest.split_once('/') {
+        if !host.is_empty() && !share.is_empty() {
+            return Some(format!(r"\\{}\{}", host, share.replace('/', "\\")));
+        }
+    }
     Some(rest.replace('/', "\\"))
 }
