@@ -1,6 +1,6 @@
 //! regsvr32 handler — surfaces remote scriptlet URLs and WebDAV/UNC targets.
 
-use super::util::{split_words, windows_basename};
+use super::util::{split_words, strip_outer_quotes, trim_url_suffix, windows_basename};
 use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
 
@@ -26,12 +26,12 @@ pub fn h_regsvr32(raw: &str, env: &mut Environment) {
 fn regsvr32_scriptlet_url_after(tokens: &[String], start: usize) -> Option<String> {
     let limit = tokens.len().min(start.saturating_add(12));
     for i in start..limit {
-        let token = strip_quotes(&tokens[i]);
+        let token = strip_outer_quotes(&tokens[i]);
         let lower = token.to_ascii_lowercase();
         let candidate = if lower.starts_with("/i:") || lower.starts_with("-i:") {
             token.get(3..)
         } else if lower == "/i" || lower == "-i" {
-            tokens.get(i + 1).map(|next| strip_quotes(next))
+            tokens.get(i + 1).map(|next| strip_outer_quotes(next))
         } else {
             None
         };
@@ -52,14 +52,14 @@ fn regsvr32_remote_unc_target_after(tokens: &[String], start: usize) -> bool {
     let limit = tokens.len().min(start.saturating_add(12));
     tokens[start..limit]
         .iter()
-        .map(|token| strip_quotes(token))
+        .map(|token| strip_outer_quotes(token))
         .any(regsvr32_unc_load_target)
 }
 
 fn regsvr32_local_target_after(tokens: &[String], start: usize) -> bool {
     let limit = tokens.len().min(start.saturating_add(12));
     tokens[start..limit].iter().any(|token| {
-        let candidate = trim_url_suffix(strip_quotes(token)).trim();
+        let candidate = trim_url_suffix(strip_outer_quotes(token)).trim();
         !candidate.is_empty() && !candidate.starts_with(['/', '-']) && !candidate.starts_with(r"\\")
     })
 }
@@ -68,12 +68,12 @@ fn regsvr32_webdav_url_after(tokens: &[String], start: usize) -> Option<String> 
     let limit = tokens.len().min(start.saturating_add(12));
     tokens[start..limit]
         .iter()
-        .map(|token| strip_quotes(token))
+        .map(|token| strip_outer_quotes(token))
         .find_map(webdav_url_for_candidate)
 }
 
 fn regsvr32_unc_load_target(token: &str) -> bool {
-    let candidate = trim_url_suffix(strip_quotes(token)).trim();
+    let candidate = trim_url_suffix(strip_outer_quotes(token)).trim();
     candidate.starts_with(r"\\") && regsvr32_loadable_target(candidate)
 }
 
@@ -87,12 +87,14 @@ fn regsvr32_loadable_target(token: &str) -> bool {
 fn regsvr32_prior_download_url(tokens: &[String], env: &Environment) -> Option<String> {
     let limit = tokens.len().min(13);
     for i in 1..limit {
-        let token = strip_quotes(&tokens[i]).trim();
+        let token = strip_outer_quotes(&tokens[i]).trim();
         let lower = token.to_ascii_lowercase();
         let candidate = if lower.starts_with("/i:") || lower.starts_with("-i:") {
             token.get(3..)
         } else if lower == "/i" || lower == "-i" {
-            tokens.get(i + 1).map(|next| strip_quotes(next).trim())
+            tokens
+                .get(i + 1)
+                .map(|next| strip_outer_quotes(next).trim())
         } else {
             None
         };
@@ -108,7 +110,7 @@ fn regsvr32_prior_download_url(tokens: &[String], env: &Environment) -> Option<S
         }
     }
     for token in tokens.iter().skip(1).take(12) {
-        let candidate = trim_url_suffix(strip_quotes(token)).trim();
+        let candidate = trim_url_suffix(strip_outer_quotes(token)).trim();
         if candidate.is_empty() || candidate.starts_with(['/', '-']) {
             continue;
         }
@@ -144,7 +146,7 @@ fn downloaded_src_for_candidate(candidate: &str, env: &Environment) -> Option<St
 }
 
 fn webdav_url_for_candidate(candidate: &str) -> Option<String> {
-    let candidate = trim_url_suffix(strip_quotes(candidate)).trim();
+    let candidate = trim_url_suffix(strip_outer_quotes(candidate)).trim();
     if !candidate.starts_with(r"\\")
         || !contains_ascii_case_insensitive(candidate, r"\davwwwroot\")
         || !candidate.contains('@')
@@ -203,18 +205,4 @@ fn push_lolbas(raw: &str, env: &mut Environment) {
             cmd: raw.to_string(),
         });
     }
-}
-
-fn strip_quotes(s: &str) -> &str {
-    let s = s.trim();
-    if ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')))
-        && s.len() >= 2
-    {
-        return &s[1..s.len() - 1];
-    }
-    s
-}
-
-fn trim_url_suffix(url: &str) -> &str {
-    url.trim_end_matches(['"', '\'', ')', ']', '}', ';', ','])
 }

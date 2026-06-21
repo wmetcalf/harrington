@@ -1,4 +1,4 @@
-use super::util::{split_words, windows_basename};
+use super::util::{split_words, strip_outer_quotes, windows_basename};
 use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
 
@@ -12,7 +12,7 @@ pub fn h_copy(raw: &str, env: &mut Environment) {
         if general_opts.contains(&lt.as_str()) || file_opts.contains(&lt.as_str()) {
             continue;
         }
-        args.push(strip_quotes(t).to_string());
+        args.push(strip_outer_quotes(t).to_string());
     }
 
     // Multi-source form: A + B + C dst  (args contain "+" separators)
@@ -82,7 +82,7 @@ pub fn h_xcopy(raw: &str, env: &mut Environment) {
     let tokens: Vec<String> = split_words(raw);
     let mut args: Vec<String> = Vec::new();
     for t in tokens.iter().skip(1) {
-        let stripped = strip_quotes(t);
+        let stripped = strip_outer_quotes(t);
         if stripped.starts_with('/') || stripped.starts_with('-') {
             continue;
         }
@@ -121,7 +121,7 @@ fn track_rename_like(raw: &str, env: &mut Environment, options: &[&str]) {
     let tokens: Vec<String> = split_words(raw);
     let mut args: Vec<String> = Vec::new();
     for t in tokens.iter().skip(1) {
-        let stripped = strip_quotes(t);
+        let stripped = strip_outer_quotes(t);
         let lower = stripped.to_ascii_lowercase();
         if options.contains(&lower.as_str()) {
             continue;
@@ -184,14 +184,6 @@ fn is_windows_util_rename(src: &str, dst: &str) -> bool {
 
 fn is_windows_system_path(path: &str) -> bool {
     path.starts_with("c:\\windows\\system32") || path.starts_with("c:\\windows\\syswow64")
-}
-
-fn strip_quotes(s: &str) -> &str {
-    let s = s.trim();
-    if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
-        return &s[1..s.len() - 1];
-    }
-    s
 }
 
 fn collapse_slashes(s: &str) -> String {

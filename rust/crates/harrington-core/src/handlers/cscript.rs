@@ -1,7 +1,7 @@
 //! cscript / wscript handlers — extract VBScript/JScript payloads.
 
 use crate::env::{Environment, FsEntry};
-use crate::handlers::util::{split_words, windows_basename};
+use crate::handlers::util::{split_words, strip_outer_quotes, windows_basename};
 use crate::traits::Trait;
 
 pub fn h_cscript(raw: &str, env: &mut Environment) {
@@ -36,7 +36,7 @@ pub fn h_wscript(raw: &str, env: &mut Environment) {
 
 fn find_script_arg(tokens: &[String]) -> Option<String> {
     for t in tokens.iter().skip(1) {
-        let unq = t.trim_matches('"');
+        let unq = strip_outer_quotes(t);
         // Skip flags starting with // (cscript host-options) or / (generic flags)
         if unq.starts_with("//") || unq.starts_with('/') {
             continue;

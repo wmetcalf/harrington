@@ -1,6 +1,6 @@
 //! msiexec handler — surfaces URL package arguments.
 
-use super::util::{split_words, windows_basename};
+use super::util::{split_words, strip_outer_quotes, trim_url_suffix, windows_basename};
 use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
 
@@ -13,7 +13,7 @@ pub fn h_msiexec(raw: &str, env: &mut Environment) {
         .iter()
         .skip(1)
         .filter_map(|token| {
-            let token = strip_quotes(token);
+            let token = strip_outer_quotes(token);
             msiexec_url_from_token(token)
         })
         .next()
@@ -53,20 +53,6 @@ fn push_lolbas(raw: &str, env: &mut Environment) {
             cmd: raw.to_string(),
         });
     }
-}
-
-fn strip_quotes(s: &str) -> &str {
-    let s = s.trim();
-    if ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')))
-        && s.len() >= 2
-    {
-        return &s[1..s.len() - 1];
-    }
-    s
-}
-
-fn trim_url_suffix(url: &str) -> &str {
-    url.trim_end_matches(['"', '\'', ')', ']', '}', ';', ','])
 }
 
 fn msiexec_url_from_token(token: &str) -> Option<String> {
@@ -130,12 +116,16 @@ fn msiexec_prior_download_url(tokens: &[String], env: &Environment) -> Option<St
 }
 
 fn msiexec_package_candidate<'a>(token: &'a str, next: Option<&'a String>) -> Option<String> {
-    let token = strip_quotes(token).trim();
+    let token = strip_outer_quotes(token).trim();
     let lower = token.to_ascii_lowercase();
     for prefix in ["/i", "-i", "/package", "-package", "/update", "-update"] {
         if lower == prefix {
             return next
-                .map(|value| trim_url_suffix(strip_quotes(value)).trim().to_string())
+                .map(|value| {
+                    trim_url_suffix(strip_outer_quotes(value))
+                        .trim()
+                        .to_string()
+                })
                 .filter(|candidate| !candidate.is_empty());
         }
         let Some(rest) = lower.strip_prefix(prefix) else {

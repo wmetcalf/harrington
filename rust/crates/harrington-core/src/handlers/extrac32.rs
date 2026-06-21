@@ -1,7 +1,7 @@
 //! extrac32 handler — CAB extraction LOLBAS. Tracks self-extraction patterns.
 
 use crate::env::{Environment, FsEntry};
-use crate::handlers::util::{split_words, windows_basename};
+use crate::handlers::util::{split_words, strip_outer_quotes, windows_basename};
 use crate::traits::Trait;
 
 pub fn h_extrac32(raw: &str, env: &mut Environment) {
@@ -59,10 +59,10 @@ fn parse_extrac32_paths(tokens: &[String]) -> Option<(String, String)> {
     let mut positional: Vec<String> = Vec::new();
     let mut i = 1usize;
     while i < tokens.len() {
-        let token = strip_quotes(&tokens[i]);
+        let token = strip_outer_quotes(&tokens[i]);
         let lower = token.to_ascii_lowercase();
         if lower == "/l" || lower == "-l" {
-            if let Some(value) = tokens.get(i + 1).map(|s| strip_quotes(s)) {
+            if let Some(value) = tokens.get(i + 1).map(|s| strip_outer_quotes(s)) {
                 output_dir = Some(collapse_slashes(value));
                 i += 2;
                 continue;
@@ -117,16 +117,6 @@ fn collapse_slashes(s: &str) -> String {
         prev = c;
     }
     out
-}
-
-fn strip_quotes(s: &str) -> &str {
-    let s = s.trim();
-    if ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')))
-        && s.len() >= 2
-    {
-        return &s[1..s.len() - 1];
-    }
-    s
 }
 
 fn push_lolbas(raw: &str, env: &mut Environment) {

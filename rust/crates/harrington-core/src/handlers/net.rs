@@ -1,4 +1,5 @@
 use crate::env::Environment;
+use crate::handlers::util::strip_outer_quotes;
 use crate::traits::{NetUseInfo, Trait};
 
 pub fn h_net(raw: &str, env: &mut Environment) {
@@ -14,7 +15,7 @@ pub fn h_net(raw: &str, env: &mut Environment) {
     let mut extras: Vec<String> = Vec::new();
     for p in tokens.iter().skip(2) {
         let pl = p.to_ascii_lowercase();
-        let p_unquoted = p.trim_matches('"').trim_matches('\'').to_string();
+        let p_unquoted = strip_outer_quotes(p).to_string();
         if pl.starts_with("/sa") {
             info.options.push("savecred".into());
             continue;
