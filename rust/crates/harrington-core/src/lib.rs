@@ -4187,6 +4187,7 @@ fn scan_recovered_artifact_strings(env: &mut Environment) {
         if !label.starts_with("disguised-") {
             scan_binary_input_urls(blob, env);
         }
+        scan_recovered_artifact_pe_strings(blob, env);
         let behavior_text = recovered_artifact_behavior_text(blob);
         if !behavior_text.is_empty() {
             deob_scan::scan_recovered_artifact_behavior_text(&behavior_text, env);
@@ -4194,6 +4195,48 @@ fn scan_recovered_artifact_strings(env: &mut Environment) {
     }
     artifacts.append(&mut env.recovered_pe);
     env.recovered_pe = artifacts;
+}
+
+fn scan_recovered_artifact_pe_strings(blob: &[u8], env: &mut Environment) {
+    if !blob.starts_with(b"MZ") {
+        return;
+    }
+
+    let Ok(us_strings) = aes_chain::dotnet::extract_us_strings(blob) else {
+        return;
+    };
+
+    let mut already_known: std::collections::HashSet<String> = env
+        .traits
+        .iter()
+        .filter_map(|t| match t {
+            Trait::Download { src, .. } => Some(src.clone()),
+            Trait::DownloadInDeobText { src, .. } => Some(src.clone()),
+            Trait::CertutilDownload { url, .. } => Some(url.clone()),
+            Trait::BitsadminDownload { url, .. } => Some(url.clone()),
+            _ => None,
+        })
+        .collect();
+
+    let mut behavior_text = String::new();
+    for s in &us_strings {
+        if !behavior_text.is_empty() {
+            behavior_text.push('\n');
+        }
+        behavior_text.push_str(s);
+        for url in aes_chain::scan::scan_urls(s.as_bytes(), 16) {
+            if already_known.insert(url.clone()) {
+                env.traits.push(Trait::DownloadInDeobText {
+                    src: url,
+                    line_hint: "recovered-pe-dotnet".to_string(),
+                });
+            }
+        }
+    }
+
+    if !behavior_text.is_empty() {
+        deob_scan::scan_recovered_artifact_behavior_text(&behavior_text, env);
+    }
 }
 
 fn has_unchanged_final_scan_candidate(text: &str) -> bool {
@@ -11633,6 +11676,93 @@ mod certutil_tests {
         assert!(
             text.contains("Set-MpPreference -DisableRealtimeMonitoring"),
             "later distinct UTF-16LE behavior string was dropped after duplicate ASCII hints: {text:?}"
+        );
+    }
+
+    fn synthetic_dotnet_pe_with_us_url(url: &str) -> Vec<u8> {
+        let mut bytes = vec![0u8; 0x600];
+
+        bytes[0..2].copy_from_slice(b"MZ");
+        bytes[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+        bytes[0x80..0x84].copy_from_slice(b"PE\0\0");
+
+        let coff = 0x84;
+        bytes[coff + 2..coff + 4].copy_from_slice(&1u16.to_le_bytes());
+        bytes[coff + 16..coff + 18].copy_from_slice(&0xe0u16.to_le_bytes());
+
+        let opt = 0x98;
+        bytes[opt..opt + 2].copy_from_slice(&0x10bu16.to_le_bytes());
+
+        let cli_dir = opt + 96 + 14 * 8;
+        bytes[cli_dir..cli_dir + 4].copy_from_slice(&0x200u32.to_le_bytes());
+        bytes[cli_dir + 4..cli_dir + 8].copy_from_slice(&0x48u32.to_le_bytes());
+
+        let sec = 0x178;
+        bytes[sec..sec + 8].copy_from_slice(b".text\0\0\0");
+        bytes[sec + 8..sec + 12].copy_from_slice(&0x300u32.to_le_bytes());
+        bytes[sec + 12..sec + 16].copy_from_slice(&0x200u32.to_le_bytes());
+        bytes[sec + 16..sec + 20].copy_from_slice(&0x300u32.to_le_bytes());
+        bytes[sec + 20..sec + 24].copy_from_slice(&0x200u32.to_le_bytes());
+
+        let cli = 0x200;
+        bytes[cli + 8..cli + 12].copy_from_slice(&0x220u32.to_le_bytes());
+        bytes[cli + 12..cli + 16].copy_from_slice(&0x200u32.to_le_bytes());
+
+        let md = 0x220;
+        bytes[md..md + 4].copy_from_slice(b"BSJB");
+        bytes[md + 4..md + 6].copy_from_slice(&1u16.to_le_bytes());
+        bytes[md + 6..md + 8].copy_from_slice(&1u16.to_le_bytes());
+        bytes[md + 8..md + 12].copy_from_slice(&0u32.to_le_bytes());
+
+        let version = b"v4.0.30319\0\0";
+        bytes[md + 12..md + 16].copy_from_slice(&(version.len() as u32).to_le_bytes());
+        bytes[md + 16..md + 16 + version.len()].copy_from_slice(version);
+
+        let after_ver = md + 16 + ((version.len() + 3) & !3);
+        bytes[after_ver..after_ver + 2].copy_from_slice(&0u16.to_le_bytes());
+        bytes[after_ver + 2..after_ver + 4].copy_from_slice(&1u16.to_le_bytes());
+
+        let stream = after_ver + 4;
+        bytes[stream..stream + 4].copy_from_slice(&0x80u32.to_le_bytes());
+
+        let mut heap = Vec::with_capacity(2 + url.len() * 2 + 1);
+        heap.push(0);
+        let body_len = url.encode_utf16().count() * 2 + 1;
+        heap.push(body_len as u8);
+        for unit in url.encode_utf16() {
+            heap.extend_from_slice(&unit.to_le_bytes());
+        }
+        heap.push(0);
+        bytes[stream + 4..stream + 8].copy_from_slice(&(heap.len() as u32).to_le_bytes());
+        bytes[stream + 8..stream + 12].copy_from_slice(b"#US\0");
+        bytes[0x2a0..0x2a0 + heap.len()].copy_from_slice(&heap);
+
+        bytes
+    }
+
+    #[test]
+    fn recovered_pe_us_strings_are_scanned_for_urls() {
+        let url = "https://dotnet-resource.example/api";
+        let pe = synthetic_dotnet_pe_with_us_url(url);
+
+        let strings = crate::aes_chain::dotnet::extract_us_strings(&pe)
+            .expect("synthetic PE should expose #US strings");
+        assert!(
+            strings.iter().any(|s| s == url),
+            "synthetic PE did not expose the expected #US URL: {strings:?}"
+        );
+
+        let mut env = Environment::default();
+        env.recovered_pe
+            .push(("synthetic-dotnet-pe".to_string(), pe));
+        crate::scan_recovered_artifact_strings(&mut env);
+
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
+            "recovered PE #US URL was not surfaced: {:?}",
+            env.traits
         );
     }
 
