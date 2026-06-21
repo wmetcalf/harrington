@@ -682,7 +682,8 @@ fn scan_decrypted_iocs(blob: &[u8], env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
     static URL_BYTES_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(?i)https?:[\x2f\x5c]+[A-Za-z0-9.\-_/?=&%#@:+\\]{6,200}").expect("blob url re")
+        Regex::new(r"(?i)(?:https?|ftp|file):[\x2f\x5c]+[A-Za-z0-9.\-_/?=&%#@:+\\]{6,200}")
+            .expect("blob url re")
     });
     // .NET PE #US (UserString) stream — accurately extracted from
     // metadata. Catches URLs that byte-level UTF-16LE scanning misses
@@ -741,6 +742,7 @@ fn scan_decrypted_iocs(blob: &[u8], env: &mut Environment) {
 mod tests {
     use super::*;
     use crate::env::Config;
+    use crate::traits::Trait;
 
     #[test]
     fn no_op_without_gate_trait() {
@@ -750,5 +752,33 @@ mod tests {
         extract_from_chain(b"", &deob, &mut env);
         // No gate trait → nothing happens.
         assert!(env.traits.is_empty());
+    }
+
+    #[test]
+    fn scan_decrypted_iocs_extracts_ftp_url() {
+        let mut env = Environment::new(&Config::default());
+        scan_decrypted_iocs(b"ftp://aes-chain.example/payload.dat", &mut env);
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::DownloadInDeobText { src, .. } if src == "ftp://aes-chain.example/payload.dat"
+            )),
+            "ftp url was not surfaced: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn scan_decrypted_iocs_extracts_file_url() {
+        let mut env = Environment::new(&Config::default());
+        scan_decrypted_iocs(b"file:///C:/aes-chain.example/payload.exe", &mut env);
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::DownloadInDeobText { src, .. } if src == "file:///C:/aes-chain.example/payload.exe"
+            )),
+            "file url was not surfaced: {:?}",
+            env.traits
+        );
     }
 }
