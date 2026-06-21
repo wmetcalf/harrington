@@ -4647,41 +4647,60 @@ fn scan_file_backed_base64_ps1(text: &str, env: &mut Environment, deobfuscated: 
             continue;
         }
 
-        let mut candidate = String::new();
+        let mut candidates: Vec<String> = Vec::new();
+        let mut grouped_candidate = String::new();
         for line in String::from_utf8_lossy(&content).lines() {
             let trimmed = line.trim();
-            let Some(rest) = trimmed.strip_prefix(":::") else {
+            if let Some(rest) = trimmed.strip_prefix(":::") {
+                if rest.len() > 1 {
+                    grouped_candidate.push_str(&rest[1..]);
+                }
                 continue;
-            };
-            if rest.len() > 1 {
-                candidate.push_str(&rest[1..]);
+            }
+            if let Some(rest) = trimmed.strip_prefix(":: ") {
+                let fragments: Vec<String> = rest
+                    .split('\\')
+                    .filter(|part| !part.is_empty())
+                    .map(|part| part.to_string())
+                    .collect();
+                if fragments.len() > 1 {
+                    candidates.extend(fragments);
+                } else if let Some(fragment) = fragments.into_iter().next() {
+                    candidates.push(fragment);
+                }
             }
         }
-        if candidate.len() < 16 {
-            continue;
+        if !grouped_candidate.is_empty() {
+            candidates.push(grouped_candidate);
         }
-        for caps in PS_EMPTY_REPLACE_OPERATOR_RE.captures_iter(text).take(16) {
-            let Some(marker) = caps.get(1) else {
+
+        for mut candidate in candidates {
+            if candidate.len() < 16 {
+                continue;
+            }
+            for caps in PS_EMPTY_REPLACE_OPERATOR_RE.captures_iter(text).take(16) {
+                let Some(marker) = caps.get(1) else {
+                    continue;
+                };
+                let marker = marker.as_str().replace("''", "'");
+                if !marker.is_empty() {
+                    candidate = candidate.replace(marker.as_str(), "");
+                }
+            }
+            let cleaned: String = candidate.chars().filter(|c| !c.is_whitespace()).collect();
+            if cleaned.len() < 16 {
+                continue;
+            }
+            let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(cleaned.as_bytes())
+            else {
                 continue;
             };
-            let marker = marker.as_str().replace("''", "'");
-            if !marker.is_empty() {
-                candidate = candidate.replace(marker.as_str(), "");
+            if decoded.len() > 12 * 1024 * 1024 || !looks_like_powershell_payload(&decoded) {
+                continue;
             }
-        }
-        let cleaned: String = candidate.chars().filter(|c| !c.is_whitespace()).collect();
-        if cleaned.len() < 16 {
-            continue;
-        }
-        let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(cleaned.as_bytes())
-        else {
-            continue;
-        };
-        if decoded.len() > 12 * 1024 * 1024 || !looks_like_powershell_payload(&decoded) {
-            continue;
-        }
-        if known.insert(decoded.clone()) {
-            decoded_payloads.push(decoded);
+            if known.insert(decoded.clone()) {
+                decoded_payloads.push(decoded);
+            }
         }
     }
 

