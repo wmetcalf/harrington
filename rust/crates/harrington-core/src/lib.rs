@@ -23703,6 +23703,22 @@ mod inline_b64_url_tests {
     }
 
     #[test]
+    fn inline_b64_file_url_in_deob_text_decoded() {
+        let url = "file:///C:/Users/Public/payload.exe";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(url.as_bytes());
+        let script = format!(
+            "set X=$z=[Convert]::FromBase64String('{}')\r\necho %X%\r\n",
+            b64
+        );
+        let report = analyze(script.as_bytes(), &AnalyzeConfig::default());
+        let has = report
+            .traits
+            .iter()
+            .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url));
+        assert!(has, "no inline file-b64 URL extracted: {:?}", report.traits);
+    }
+
+    #[test]
     fn b64_url_prefix_ignores_embedded_match_inside_long_b64_blob() {
         let url = "http://ip-api.com/line?field=1";
         let b64 = base64::engine::general_purpose::STANDARD.encode(url.as_bytes());
@@ -23739,6 +23755,21 @@ mod inline_b64_url_tests {
             "standalone b64 URL double-emitted: {:?}",
             env.traits
         );
+    }
+
+    #[test]
+    fn b64_url_prefix_extracts_file_url() {
+        let url = "file:///C:/Windows/System32/calc.exe";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(url.as_bytes());
+        let deob = format!("set encoded_url={b64}\r\n");
+        let mut env = Environment::new(&Config::default());
+        crate::deob_scan::scan_b64_url_prefix(&deob, &mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, cmd, .. } if src == url && cmd == "b64-url-prefix"
+            )
+        });
+        assert!(has, "standalone file b64 URL missed: {:?}", env.traits);
     }
 
     #[test]

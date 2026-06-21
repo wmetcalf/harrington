@@ -9190,7 +9190,8 @@ fn dedup_exec_ps1(env: &mut Environment) {
 }
 
 /// Match any run of base64 chars whose prefix decodes to "http" (`aHR0c`),
-/// "https" (`aHR0cHM`), or "ftp" (`ZnRwOi8v`). The prefix anchor stops the
+/// "https" (`aHR0cHM`), "ftp" (`ZnRwOi8v`), or "file:" (`ZmlsZTo`).
+/// The prefix anchor stops the
 /// regex from firing on random b64 noise; the {16,500} suffix keeps the
 /// runtime cost bounded.
 #[allow(clippy::expect_used)]
@@ -9199,12 +9200,14 @@ static B64_URL_PREFIX_RE: Lazy<Regex> = Lazy::new(|| {
     //   `aHR0cDov…` (http://…)
     //   `aHR0cHM6Ly…` (https://…)
     //   `ZnRwOi8v…` (ftp://…)
+    //   `ZmlsZTo…` (file://…)
     // UTF-16LE variant (common in PowerShell `[Convert]::ToBase64String(
     //   [Text.Encoding]::Unicode.GetBytes(...))`):
     //   `aAB0AHQAcAA…` (UTF-16LE "http")
     //   `aAB0AHQAcABzA…` (UTF-16LE "https")
     //   `ZgB0AHAA…` (UTF-16LE "ftp")
-    Regex::new(r"(aHR0[cd][DH]|ZnRwOi8v|aAB0AHQAcAA|aAB0AHQAcABzA|ZgB0AHAA)[A-Za-z0-9+/=]{16,500}")
+    //   `ZgBpAGwAZQA6AA…` (UTF-16LE "file:")
+    Regex::new(r"(aHR0[cd][DH]|ZnRwOi8v|ZmlsZTo|aAB0AHQAcAA|aAB0AHQAcABzA|ZgB0AHAA|ZgBpAGwAZQA6AA)[A-Za-z0-9+/=]{16,500}")
         .expect("b64 url prefix regex")
 });
 
@@ -9333,7 +9336,7 @@ fn is_download_context_line(line: &str) -> bool {
                 || lower.contains("\", '")))
 }
 
-/// Scan for free-floating `aHR0c…` (base64 `http`) tokens that the
+/// Scan for free-floating `aHR0c…` (base64 `http`/`ftp`/`file`) tokens that the
 /// existing inline/quoted scanners miss because the b64 isn't passed
 /// directly to `FromBase64String` or wrapped in its own quotes — e.g.
 /// `set "encoded_url=aHR0c…"` (b64 is part of the quoted value, not the
@@ -9387,7 +9390,8 @@ pub fn scan_b64_url_prefix(deobfuscated: &str, env: &mut Environment) {
         }
         if !(text.starts_with("http://")
             || text.starts_with("https://")
-            || text.starts_with("ftp://"))
+            || text.starts_with("ftp://")
+            || text.starts_with("file://"))
         {
             continue;
         }
@@ -10379,11 +10383,12 @@ pub fn scan_bare_b64_urls(deobfuscated: &str, env: &mut Environment) {
             }
         };
         let text = text.trim();
-        // The decoded text must START with http(s)/ftp — not just CONTAIN it
+        // The decoded text must START with http(s)/ftp/file — not just CONTAIN it
         // (since longer payloads with embedded URLs are caught by other passes)
         if !(text.starts_with("http://")
             || text.starts_with("https://")
-            || text.starts_with("ftp://"))
+            || text.starts_with("ftp://")
+            || text.starts_with("file://"))
         {
             continue;
         }
