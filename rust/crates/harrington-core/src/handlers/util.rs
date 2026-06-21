@@ -44,8 +44,7 @@ pub(crate) fn split_words(s: &str) -> Vec<String> {
 }
 
 pub(crate) fn windows_basename(path: &str) -> Option<&str> {
-    path.trim_matches('"')
-        .trim_matches('\'')
+    strip_outer_quotes(path)
         .rsplit(['\\', '/'])
         .next()
         .filter(|name| !name.is_empty())
