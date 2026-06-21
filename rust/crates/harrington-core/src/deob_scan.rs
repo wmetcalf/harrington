@@ -9092,15 +9092,19 @@ fn scan_embedded_powershell_downloads_in_deob_text(text: &str, env: &mut Environ
     crate::ps1_scan::scan_ps1_payloads(&mut payload_env);
 
     let mut known = env.known_extracted_urls();
-    for t in payload_env.traits {
-        if let Some(url) = trait_url(&t) {
-            if known.contains(url) {
-                continue;
-            }
-            known.insert(url.to_string());
-        }
-        env.traits.push(t);
-    }
+    env.traits.extend(
+        payload_env
+            .traits
+            .into_iter()
+            .filter(|t| match trait_url(t) {
+                Some(url) if known.contains(url) => false,
+                Some(url) => {
+                    known.insert(url.to_string());
+                    true
+                }
+                None => true,
+            }),
+    );
 }
 
 fn has_powershell_download_atom(text: &str) -> bool {
