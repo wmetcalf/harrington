@@ -87,7 +87,7 @@ pub fn scan_urls(bytes: &[u8], limit: usize) -> Vec<String> {
     // UTF-16LE pass: convert pairs to bytes, then scan that as a string.
     // We check both alignments because embedded user strings and appended
     // blobs do not always start on an even byte offset.
-    if bytes.len() >= 16 && has_utf16le_http_marker(bytes) {
+    if bytes.len() >= 16 && has_utf16le_url_marker(bytes) {
         let mut decoded = String::with_capacity(bytes.len() / 2);
         for offset in [0usize, 1] {
             decoded.clear();
@@ -125,17 +125,34 @@ pub fn scan_urls(bytes: &[u8], limit: usize) -> Vec<String> {
     out
 }
 
-fn has_utf16le_http_marker(bytes: &[u8]) -> bool {
-    bytes.windows(8).any(|window| {
-        window[1] == 0
-            && window[3] == 0
-            && window[5] == 0
-            && window[7] == 0
-            && window[0].eq_ignore_ascii_case(&b'h')
-            && window[2].eq_ignore_ascii_case(&b't')
-            && window[4].eq_ignore_ascii_case(&b't')
-            && window[6].eq_ignore_ascii_case(&b'p')
-    })
+fn has_utf16le_url_marker(bytes: &[u8]) -> bool {
+    [b"http" as &[u8], b"ftp", b"file"]
+        .iter()
+        .any(|prefix| has_utf16le_ascii_prefix(bytes, prefix))
+}
+
+fn has_utf16le_ascii_prefix(bytes: &[u8], prefix: &[u8]) -> bool {
+    if bytes.len() < prefix.len() * 2 {
+        return false;
+    }
+    for offset in [0usize, 1] {
+        let mut i = offset;
+        while i + prefix.len() * 2 <= bytes.len() {
+            let mut ok = true;
+            for (j, ch) in prefix.iter().enumerate() {
+                let pos = i + j * 2;
+                if !bytes[pos].eq_ignore_ascii_case(ch) || bytes[pos + 1] != 0 {
+                    ok = false;
+                    break;
+                }
+            }
+            if ok {
+                return true;
+            }
+            i += 2;
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -207,15 +224,49 @@ mod tests {
     }
 
     #[test]
+    fn finds_utf16le_ftp_url() {
+        let s = "ftp://utf16-ftp.example.org/p";
+        let mut bytes = Vec::new();
+        for c in s.chars() {
+            let cp = c as u32;
+            bytes.push((cp & 0xff) as u8);
+            bytes.push(((cp >> 8) & 0xff) as u8);
+        }
+        let urls = scan_urls(&bytes, 16);
+        assert!(urls.iter().any(|u| u == s), "got: {:?}", urls);
+    }
+
+    #[test]
+    fn finds_utf16le_file_url() {
+        let s = "file:///C:/utf16-file.example/payload.exe";
+        let mut bytes = Vec::new();
+        for c in s.chars() {
+            let cp = c as u32;
+            bytes.push((cp & 0xff) as u8);
+            bytes.push(((cp >> 8) & 0xff) as u8);
+        }
+        let urls = scan_urls(&bytes, 16);
+        assert!(urls.iter().any(|u| u == s), "got: {:?}", urls);
+    }
+
+    #[test]
     fn utf16_marker_gate_allows_both_alignments() {
         let aligned = b"h\0t\0t\0p\0:\0/\0/\0x\0";
-        assert!(has_utf16le_http_marker(aligned));
+        assert!(has_utf16le_url_marker(aligned));
         let mut unaligned = vec![0x41];
         unaligned.extend_from_slice(aligned);
-        assert!(has_utf16le_http_marker(&unaligned));
-        assert!(!has_utf16le_http_marker(
+        assert!(has_utf16le_url_marker(&unaligned));
+        assert!(!has_utf16le_url_marker(
             b"plain ascii http://example.test/p"
         ));
+    }
+
+    #[test]
+    fn utf16_marker_gate_supports_ftp_and_file() {
+        let ftp = b"f\0t\0p\0:\0/\0/\0x\0";
+        assert!(has_utf16le_url_marker(ftp));
+        let file = b"f\0i\0l\0e\0:\0/\0/\0C\0";
+        assert!(has_utf16le_url_marker(file));
     }
 
     #[test]
