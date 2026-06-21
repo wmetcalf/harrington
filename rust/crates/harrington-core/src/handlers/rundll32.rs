@@ -1,4 +1,4 @@
-use super::util::{split_words, windows_basename};
+use super::util::{split_words, strip_outer_quotes, windows_basename};
 use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
 
@@ -27,7 +27,7 @@ pub fn h_rundll32(raw: &str, env: &mut Environment) {
         push_url_argument(raw, url, env);
         matched_lolbas = true;
     }
-    let dll = strip_quotes(parts[1].split(',').next().unwrap_or(""));
+    let dll = strip_outer_quotes(parts[1].split(',').next().unwrap_or(""));
     let url = downloaded_src_for_candidate(dll, env).or_else(|| webdav_url_for_candidate(dll));
     if url.is_some() {
         matched_lolbas = true;
@@ -98,7 +98,7 @@ fn url_launch_export_argument(parts: &[String]) -> Option<String> {
         .skip(1)
         .take(4)
         .find_map(|(idx, part)| {
-            if rundll32_url_launch_export(strip_quotes(part)) {
+            if rundll32_url_launch_export(strip_outer_quotes(part)) {
                 Some(idx)
             } else {
                 None
@@ -114,7 +114,7 @@ fn download_export_argument(parts: &[String]) -> Option<String> {
         .skip(1)
         .take(4)
         .find_map(|(idx, part)| {
-            if rundll32_download_export(strip_quotes(part)) {
+            if rundll32_download_export(strip_outer_quotes(part)) {
                 Some(idx)
             } else {
                 None
@@ -130,14 +130,14 @@ fn download_export_prior_download_argument(parts: &[String], env: &Environment) 
         .skip(1)
         .take(4)
         .find_map(|(idx, part)| {
-            if rundll32_download_export(strip_quotes(part)) {
+            if rundll32_download_export(strip_outer_quotes(part)) {
                 Some(idx)
             } else {
                 None
             }
         })?;
     for token in parts.iter().skip(export_idx + 1).take(4) {
-        let candidate = trim_arg_suffix(strip_quotes(token)).trim();
+        let candidate = trim_arg_suffix(strip_outer_quotes(token)).trim();
         if candidate.is_empty() || candidate.starts_with(['/', '-']) {
             continue;
         }
@@ -170,7 +170,7 @@ fn downloaded_src_for_candidate(candidate: &str, env: &Environment) -> Option<St
 }
 
 fn webdav_url_for_candidate(candidate: &str) -> Option<String> {
-    let candidate = trim_arg_suffix(strip_quotes(candidate)).trim();
+    let candidate = trim_arg_suffix(strip_outer_quotes(candidate)).trim();
     if !candidate.starts_with(r"\\") {
         return None;
     }
@@ -227,7 +227,7 @@ fn first_url_after(parts: &[String], start: usize) -> Option<String> {
     parts
         .iter()
         .skip(start)
-        .map(|part| strip_quotes(part).trim_start_matches(['"', '\'']))
+        .map(|part| strip_outer_quotes(part).trim_start_matches(['"', '\'']))
         .find_map(|part| {
             let end = part
                 .find([')', '(', ';', ',', '"', '\'', '`'])
@@ -239,16 +239,6 @@ fn first_url_after(parts: &[String], start: usize) -> Option<String> {
 
 fn trim_arg_suffix(value: &str) -> &str {
     value.trim_end_matches(['"', '\'', ')', ']', '}', ';', ','])
-}
-
-fn strip_quotes(s: &str) -> &str {
-    let s = s.trim();
-    if ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')))
-        && s.len() >= 2
-    {
-        return &s[1..s.len() - 1];
-    }
-    s
 }
 
 fn push_url_argument(raw: &str, url: String, env: &mut Environment) {

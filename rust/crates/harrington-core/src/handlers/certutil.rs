@@ -1,7 +1,7 @@
 //! certutil handler — handles -decode, -decodehex, -urlcache for LOLBAS use.
 
 use crate::env::{DecodeKind, Environment, FsEntry};
-use crate::handlers::util::{split_words, windows_basename};
+use crate::handlers::util::{split_words, strip_outer_quotes, windows_basename};
 use crate::traits::Trait;
 use base64::Engine;
 
@@ -321,21 +321,13 @@ fn extract_pem_base64_between(text: &str, begin: &str, end: &str) -> Option<Stri
     }
 }
 
-fn strip_quotes(s: &str) -> &str {
-    let s = s.trim();
-    if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
-        return &s[1..s.len() - 1];
-    }
-    s
-}
-
 fn certutil_decode_paths_after_flag(tokens: &[String], start: usize) -> Option<(String, String)> {
     let mut positional = tokens.iter().skip(start).filter(|token| {
-        let token = strip_quotes(token);
+        let token = strip_outer_quotes(token);
         !token.starts_with('-') && !token.starts_with('/')
     });
-    let src = strip_quotes(positional.next()?).to_string();
-    let dst = strip_quotes(positional.next()?).to_string();
+    let src = strip_outer_quotes(positional.next()?).to_string();
+    let dst = strip_outer_quotes(positional.next()?).to_string();
     Some((src, dst))
 }
 
@@ -356,7 +348,7 @@ fn find_dst_after_url(tokens: &[String], url: &str) -> Option<String> {
             }
             continue;
         }
-        let t = strip_quotes(t);
+        let t = strip_outer_quotes(t);
         if !t.starts_with('-') && !t.starts_with('/') {
             return Some(t.to_string());
         }
@@ -365,7 +357,7 @@ fn find_dst_after_url(tokens: &[String], url: &str) -> Option<String> {
 }
 
 fn normalize_certutil_url(token: &str) -> Option<String> {
-    let token = strip_quotes(token);
+    let token = strip_outer_quotes(token);
     crate::deob_scan::normalize_liberal_url_token(token)
         .or_else(|| crate::deob_scan::normalize_schemeless_domain_path_token(token))
 }
