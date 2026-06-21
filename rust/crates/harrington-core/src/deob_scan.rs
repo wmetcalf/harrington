@@ -5065,7 +5065,7 @@ fn parse_glued_curl_download(text: &str) -> Option<(String, Option<String>)> {
     }
 
     let lower = text.to_ascii_lowercase();
-    let scheme_pos = ["https://", "http://", "ftp://"]
+    let scheme_pos = ["https://", "http://", "ftp://", "file://"]
         .iter()
         .filter_map(|scheme| lower.find(scheme).map(|pos| (pos, scheme.len())))
         .min_by_key(|(pos, _)| *pos)?
@@ -5141,7 +5141,7 @@ fn first_url_token_is_curl_option_value(text: &str) -> bool {
 
 fn token_contains_liberal_url_scheme(token: &str) -> bool {
     let lower = token.to_ascii_lowercase();
-    ["http://", "https://", "ftp://"]
+    ["http://", "https://", "ftp://", "file://"]
         .iter()
         .any(|scheme| lower.contains(scheme))
 }
@@ -5195,7 +5195,7 @@ fn looks_like_curl_url(url: &str) -> bool {
         let Some((scheme, rest)) = url.split_once("://") else {
             return false;
         };
-        matches!(scheme, "http" | "https" | "ftp") && !rest.is_empty()
+        matches!(scheme, "http" | "https" | "ftp" | "file") && !rest.is_empty()
     })
 }
 
@@ -5402,6 +5402,28 @@ fn scan_curl_deob_text(deobfuscated: &str, env: &mut Environment) {
             src: url,
             dst,
         });
+    }
+}
+
+#[cfg(test)]
+mod curl_file_url_tests {
+    use super::*;
+    use crate::env::{Config, Environment};
+    use crate::traits::Trait;
+
+    #[test]
+    fn scan_curl_deob_text_recovers_file_url() {
+        let mut env = Environment::new(&Config::default());
+        scan_curl_deob_text("curl file:///C:/Windows/System32/calc.exe", &mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, .. } if src == "file:///C:/Windows/System32/calc.exe"
+                )
+            }),
+            "file curl URL was not surfaced: {:?}",
+            env.traits
+        );
     }
 }
 
