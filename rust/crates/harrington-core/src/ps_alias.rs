@@ -176,6 +176,11 @@ pub fn expand_aliases(text: &str) -> String {
             continue;
         }
         if !is_cmdlet_head {
+            if matches!(lead.as_bytes().first(), Some(b'\'' | b'"' | b'`')) && tok.len() == 1 {
+                out.push_str(&text[m.start()..m.end()]);
+                last_end = m.end();
+                continue;
+            }
             if let Some(canonical) = ALIAS_MAP.get(key.as_str()) {
                 out.push_str(lead);
                 out.push_str(canonical);
