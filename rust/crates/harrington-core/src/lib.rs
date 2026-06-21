@@ -11679,7 +11679,7 @@ mod certutil_tests {
         );
     }
 
-    fn synthetic_dotnet_pe_with_us_url(url: &str) -> Vec<u8> {
+    fn synthetic_dotnet_pe_with_us_string(us_text: &str) -> Vec<u8> {
         let mut bytes = vec![0u8; 0x600];
 
         bytes[0..2].copy_from_slice(b"MZ");
@@ -11725,11 +11725,11 @@ mod certutil_tests {
         let stream = after_ver + 4;
         bytes[stream..stream + 4].copy_from_slice(&0x80u32.to_le_bytes());
 
-        let mut heap = Vec::with_capacity(2 + url.len() * 2 + 1);
+        let mut heap = Vec::with_capacity(2 + us_text.len() * 2 + 1);
         heap.push(0);
-        let body_len = url.encode_utf16().count() * 2 + 1;
+        let body_len = us_text.encode_utf16().count() * 2 + 1;
         heap.push(body_len as u8);
-        for unit in url.encode_utf16() {
+        for unit in us_text.encode_utf16() {
             heap.extend_from_slice(&unit.to_le_bytes());
         }
         heap.push(0);
@@ -11743,7 +11743,7 @@ mod certutil_tests {
     #[test]
     fn recovered_pe_us_strings_are_scanned_for_urls() {
         let url = "https://dotnet-resource.example/api";
-        let pe = synthetic_dotnet_pe_with_us_url(url);
+        let pe = synthetic_dotnet_pe_with_us_string(url);
 
         let strings = crate::aes_chain::dotnet::extract_us_strings(&pe)
             .expect("synthetic PE should expose #US strings");
@@ -11762,6 +11762,28 @@ mod certutil_tests {
                 .iter()
                 .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
             "recovered PE #US URL was not surfaced: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn recovered_pe_us_strings_are_scanned_for_behavior() {
+        let hint = "Set-MpPreference -DisableRealtimeMonitoring $true";
+        let pe = synthetic_dotnet_pe_with_us_string(hint);
+
+        let mut env = Environment::default();
+        env.recovered_pe
+            .push(("synthetic-dotnet-pe".to_string(), pe));
+        crate::scan_recovered_artifact_strings(&mut env);
+
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::DefenderEvasion { action, .. } if action == "setmp-disablerealtimemonitoring"
+                )
+            }),
+            "recovered PE behavior hint was not surfaced: {:?}",
             env.traits
         );
     }
