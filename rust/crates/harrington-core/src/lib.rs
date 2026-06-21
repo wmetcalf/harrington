@@ -23823,6 +23823,24 @@ mod rot13_url_tests {
             report.traits
         );
     }
+
+    #[test]
+    fn rot13_file_url_in_recovered_powershell_argument_is_extracted() {
+        let script =
+            br#"powershell -ExecutionPolicy Bypass -Command "[Fiber.Program]::Main('svyr:///P:/Jvaqbjf/Flfgrz32/pnyp.rkr')""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::DownloadInDeobText { src, .. }
+                    if src == "file:///C:/Windows/System32/calc.exe"
+                )
+            }),
+            "ROT13 file URL was not extracted from recovered PowerShell command: {:?}",
+            report.traits
+        );
+    }
 }
 
 #[cfg(test)]

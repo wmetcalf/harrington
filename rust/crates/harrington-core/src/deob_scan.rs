@@ -30,7 +30,7 @@ pub(crate) static URL_RE: Lazy<Regex> = Lazy::new(|| {
 
 #[allow(clippy::expect_used)]
 static ROT13_URL_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"(?i)\b(uggcf?:[\x2f\x5c]+[^\s"'<>(){}\[\]|^&;`,]+)"#)
+    Regex::new(r#"(?i)\b(uggcf?:[\x2f\x5c]+[^\s"'<>(){}\[\]|^&;`,]+|svyr:[\x2f\x5c]+[^\s"'<>(){}\[\]|^&;`,]+)"#)
         .expect("rot13 url sweep regex")
 });
 
@@ -8558,7 +8558,11 @@ fn scan_rot13_urls_in_deob_text(deobfuscated: &str, env: &mut Environment) {
         let Some(mut url) = normalize_liberal_url_token(&decoded) else {
             continue;
         };
-        if !(url.starts_with("http://") || url.starts_with("https://")) {
+        if !(url.starts_with("http://")
+            || url.starts_with("https://")
+            || url.starts_with("ftp://")
+            || url.starts_with("file://"))
+        {
             continue;
         }
         if is_noise_url(&url) {
