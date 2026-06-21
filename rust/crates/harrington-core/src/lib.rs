@@ -15490,7 +15490,7 @@ iex $stage
         let decoded = "GET http://rowtechequipments.com/ud/Englobin.asi";
         let carrier = stride_carrier(decoded, 4, 5);
         let ps = format!(
-            "function Prenoti9($Matzas){{$Bawdine=$Matzas.Length-1;for($Brougham=4;$Brougham -lt $Bawdine;$Brougham+=5){{$Bundskjule+=$Matzas[$Brougham]}}$Bundskjule}};Prenoti9 '{carrier}'"
+            "function Dekorten($Broughamnfragenual120){{$Bawdine=$Broughamnfragenual120.Length-$Tilrane;for( $Brougham=4;$Brougham -lt $Bawdine;$Brougham+=5){{$Skogrede+=$Broughamnfragenual120[$Brougham];}}$Skogrede;}};Dekorten '{carrier}'"
         );
         let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
         assert!(
