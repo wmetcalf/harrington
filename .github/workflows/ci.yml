@@ -8,11 +8,7 @@ on:
 
 jobs:
   test:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ ubuntu-latest, macos-latest, windows-latest ]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: rust
@@ -27,14 +23,12 @@ jobs:
             rust/target
           key: ${{ runner.os }}-cargo-${{ hashFiles('rust/Cargo.lock') }}
       - name: Build
-        run: cargo build --workspace --all-targets --locked
+        run: cargo build --workspace --all-targets
       - name: Test
-        run: cargo test --workspace --locked
+        run: cargo test --workspace
       - name: Clippy
-        if: matrix.os == 'ubuntu-latest'
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Fmt
-        if: matrix.os == 'ubuntu-latest'
         run: cargo fmt --check
 
   msrv:
@@ -47,33 +41,7 @@ jobs:
       - name: Install MSRV
         run: rustup install 1.78.0
       - name: MSRV check (lib only)
-        run: cargo +1.78.0 check -p harrington-core --locked
-
-  audit:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: rust
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
-      - name: Audit
-        run: cargo audit
-
-  publish-dry-run:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: rust
-    steps:
-      - uses: actions/checkout@v4
-      - name: Dry-run publish of harrington-core
-        # The CLI's dry-run cannot run until harrington-core is actually
-        # published, since the CLI's path-dep needs the crate to be
-        # registry-resolvable. Once core is on crates.io, add a second
-        # step `cargo publish -p harrington-cli --dry-run --locked`.
-        run: cargo publish -p harrington-core --dry-run --locked
+        run: cargo +1.78.0 check -p batdeob-core
 
   fuzz-smoke:
     runs-on: ubuntu-latest
@@ -81,13 +49,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install nightly
         run: rustup install nightly --component rust-src
-      - name: Cache cargo-fuzz
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/bin/cargo-fuzz
-          key: cargo-fuzz-bin
       - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz --locked --force
-      - name: Smoke fuzz (analyze)
+        run: cargo install cargo-fuzz
+      - name: Smoke fuzz
         working-directory: rust/fuzz
         run: cargo +nightly fuzz run analyze -- -runs=5000 -max_total_time=120

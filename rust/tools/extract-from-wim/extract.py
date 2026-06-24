@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-extract.py — pull harrington's synthetic Windows env data from a Windows
+extract.py — pull batdeob's synthetic Windows env data from a Windows
 install.wim, without running Windows. Output matches the schema of
 rust/tools/collect-windows-env.bat (which captures the same fields
 live from a sandbox VM).
@@ -340,7 +340,7 @@ def main() -> int:
                   f"{img['name']:<40} build={img['build']}")
         return 0
 
-    with tempfile.TemporaryDirectory(prefix="harrington-wim-") as td:
+    with tempfile.TemporaryDirectory(prefix="batdeob-wim-") as td:
         td_path = Path(td)
         print(f"[+] Extracting hives from image {args.image}...", file=sys.stderr)
         sw = extract_from_wim(args.wim,
@@ -369,7 +369,7 @@ def main() -> int:
 
         build = wim_build_for_image(args.wim, args.image)
         out = OrderedDict([
-            ("schema", "harrington-windows-env/v1"),
+            ("schema", "batdeob-windows-env/v1"),
             ("source", "extract-from-wim"),
             ("source_image_index", args.image),
             ("source_build", build),

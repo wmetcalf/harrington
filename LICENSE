@@ -1,7 +1,6 @@
 MIT License
 
-Copyright (c) 2018 Malwrologist (original Python batch_deobfuscator algorithm)
-Copyright (c) 2026 Will Metcalf (Rust port and extensions)
+Copyright (c) 2018 Malwrologist
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

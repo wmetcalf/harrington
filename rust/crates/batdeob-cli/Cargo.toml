@@ -1,0 +1,24 @@
+[package]
+name = "batdeob-cli"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "batdeob"
+path = "src/main.rs"
+
+[dependencies]
+batdeob-core = { path = "../batdeob-core" }
+clap.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+sha2 = { workspace = true }
+hex = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = { workspace = true }
+tempfile = { workspace = true }
+predicates = "3"
+base64 = { workspace = true }

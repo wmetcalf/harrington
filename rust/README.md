@@ -1,29 +1,31 @@
-# Harrington — Rust port of batch_deobfuscator
+# batdeob — Rust port of batch_deobfuscator
 
 Static-analysis deobfuscator for Windows batch scripts. Library crate
-(`harrington-core`) plus a single-binary CLI (`harrington`). Runs on Linux,
+(`batdeob-core`) plus a single-binary CLI (`batdeob`). Runs on Linux,
 macOS, and Windows; never invokes PowerShell or cmd.exe.
+
+See `docs/superpowers/specs/2026-05-18-batdeob-rust-port-design.md` for
+the full design.
 
 ## Build
 
 ```bash
 cd rust
 cargo build --workspace --release
-./target/release/harrington version
+./target/release/batdeob version
 ```
 
 ## Usage
 
 ```bash
 # deobfuscate a script, writing deobfuscated.bat + extracted children
-# (.bat, .ps1, .js, .vbs, and recovered binary blobs when present)
-harrington deob path/to/script.bat -o ./out
+batdeob deob path/to/script.bat -o ./out
 
 # JSON-only report to stdout
-harrington analyze path/to/script.bat
+batdeob analyze path/to/script.bat
 
 # stdin
-echo 'set X=hi&&echo %X%' | harrington deob -
+echo 'set X=hi&&echo %X%' | batdeob deob -
 ```
 
 ## Status

@@ -5,8 +5,8 @@ target/
 # Cargo offline cache
 .cargo/
 
-# Default output dir of `harrington deob`
-harrington-out/
+# Default output dir of `batdeob deob`
+batdeob-out/
 
 # Editor / IDE
 .idea/
@@ -27,11 +27,3 @@ rust/tools/extract-from-wim/work/
 # Fuzz corpora are kept; fuzz build artifacts are not
 rust/fuzz/target/
 rust/fuzz/artifacts/
-
-# Python helper scratch
-__pycache__/
-*.pyc
-*.pyo
-
-# Scratch pass-N outputs from corpus_iterate.py runs
-rust/pass*

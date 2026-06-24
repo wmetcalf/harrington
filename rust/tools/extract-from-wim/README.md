@@ -1,6 +1,6 @@
 # extract-from-wim
 
-Pull the synthetic Windows environment data `harrington` needs (assoc /
+Pull the synthetic Windows environment data `batdeob` needs (assoc /
 ftype / env / where) from a Windows install ISO, without booting Windows.
 
 Produces a JSON snapshot in the same shape as
@@ -43,7 +43,7 @@ mkdir -p work
 ```
 
 The result lives in `data/<winver>.json`. The Rust crate at
-`rust/crates/harrington-core/data/` loads whichever file matches the
+`rust/crates/batdeob-core/data/` loads whichever file matches the
 `--winver` CLI flag (default `win10`) and merges it onto the Python-ported
 baseline env (from `batch_deobfuscator/batch_interpreter.py:122-172`).
 
@@ -51,7 +51,7 @@ baseline env (from `batch_deobfuscator/batch_interpreter.py:122-172`).
 
 ```jsonc
 {
-  "schema": "harrington-windows-env/v1",
+  "schema": "batdeob-windows-env/v1",
   "source": "extract-from-wim",
   "source_image_index": 6,
   "source_build": "26200",

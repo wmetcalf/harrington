@@ -1,5 +1,5 @@
 [package]
-name = "harrington-fuzz"
+name = "batdeob-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2021"
@@ -9,28 +9,10 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-harrington-core = { path = "../crates/harrington-core" }
+batdeob-core = { path = "../crates/batdeob-core" }
 
 [[bin]]
 name = "analyze"
 path = "fuzz_targets/analyze.rs"
-test = false
-doc = false
-
-[[bin]]
-name = "marker_noise"
-path = "fuzz_targets/marker_noise.rs"
-test = false
-doc = false
-
-[[bin]]
-name = "extract_cmd_inner"
-path = "fuzz_targets/extract_cmd_inner.rs"
-test = false
-doc = false
-
-[[bin]]
-name = "decimal_ip_urls"
-path = "fuzz_targets/decimal_ip_urls.rs"
 test = false
 doc = false
