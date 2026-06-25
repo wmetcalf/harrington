@@ -158,7 +158,7 @@ pub fn h_schtasks(raw: &str, env: &mut Environment) {
     static TN_RE: Lazy<Regex> =
         Lazy::new(|| Regex::new(r#"(?i)/tn\s+(?:"([^"]+)"|(\S+))"#).expect("/tn regex"));
     static TR_RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r#"(?i)/tr\s+(?:"([^"]+)"|(\S+))"#).expect("/tr regex"));
+        Lazy::new(|| Regex::new(r#"(?i)/tr\s+(?:"([^"]+)"|(.+))"#).expect("/tr regex"));
     let task_name = TN_RE
         .captures(raw)
         .and_then(|c| {
@@ -174,6 +174,7 @@ pub fn h_schtasks(raw: &str, env: &mut Environment) {
                 .or_else(|| c.get(2))
                 .map(|m| m.as_str().to_string())
         })
+        .map(|s| trim_schtasks_tr_tail(&s).to_string())
         .unwrap_or_default();
     env.traits.push(Trait::Persistence {
         hive: "ScheduledTask".to_string(),
@@ -189,6 +190,23 @@ fn queue_registry_persisted_command(command: String, env: &mut Environment) {
         return;
     }
     queue_child_command(command, env);
+}
+
+fn trim_schtasks_tr_tail(command: &str) -> &str {
+    const OPTIONS: &[&str] = &[
+        "/change", "/create", "/delete", "/query", "/run", "/end", "/showsid", "/tn", "/sc", "/mo",
+        "/d", "/m", "/i", "/st", "/ri", "/du", "/k", "/sd", "/ed", "/et", "/ru", "/rp", "/rl",
+        "/it", "/np", "/z", "/xml", "/v1", "/f", "/h",
+    ];
+    let mut end = command.len();
+    let lower = command.to_ascii_lowercase();
+    for opt in OPTIONS {
+        let needle = format!(" {opt}");
+        if let Some(pos) = lower.find(&needle) {
+            end = end.min(pos);
+        }
+    }
+    command[..end].trim()
 }
 
 fn queue_child_command(command: String, env: &mut Environment) {
@@ -258,6 +276,22 @@ mod tests {
         assert!(
             env.exec_cmd.iter().any(|cmd| cmd == "echo hidden"),
             "scheduled task command was not queued: {:?}",
+            env.exec_cmd
+        );
+    }
+
+    #[test]
+    fn schtasks_unquoted_tr_command_is_queued_for_recursive_analysis() {
+        let mut env = Environment::new(&Config::default());
+
+        h_schtasks(
+            r#"schtasks /create /tn Updater /tr cmd /c echo hidden /sc minute /mo 7"#,
+            &mut env,
+        );
+
+        assert!(
+            env.exec_cmd.iter().any(|cmd| cmd == "echo hidden"),
+            "unquoted scheduled task command was not queued: {:?}",
             env.exec_cmd
         );
     }
