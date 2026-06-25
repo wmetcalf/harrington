@@ -2927,7 +2927,17 @@ fn classify_base64_pe_block(block: &[&str]) -> Option<Base64PeCarrierKind> {
         if need == 0 {
             break;
         }
-        prefix.push_str(&line[..need.min(line.len())]);
+        let cap = need.min(line.len());
+        let end = if line.is_char_boundary(cap) {
+            cap
+        } else {
+            line.char_indices()
+                .map(|(idx, _)| idx)
+                .take_while(|idx| *idx <= cap)
+                .last()
+                .unwrap_or(0)
+        };
+        prefix.push_str(&line[..end]);
     }
     let prefix_len = prefix.len() - (prefix.len() % 4);
     if prefix_len < 4 {
@@ -4332,6 +4342,12 @@ mod line_cap_tests {
             "URL hidden past line cap should be rescued by analyze; traits: {:?}",
             report.traits
         );
+    }
+
+    #[test]
+    fn base64_pe_classifier_rejects_non_ascii_without_panic() {
+        let line = format!("{}ó", "A".repeat(63));
+        assert!(crate::classify_base64_pe_block(&[&line]).is_none());
     }
 
     #[test]
