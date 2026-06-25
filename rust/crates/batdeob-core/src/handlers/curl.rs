@@ -13,7 +13,14 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
     while i < tokens.len() {
         let t = &tokens[i];
         match t.as_str() {
-            "-o" | "--output" => {
+            "-o" => {
+                if let Some(v) = tokens.get(i + 1) {
+                    output = Some(strip_outer_quotes(v).to_string());
+                }
+                i += 2;
+                continue;
+            }
+            _ if t.eq_ignore_ascii_case("--output") => {
                 if let Some(v) = tokens.get(i + 1) {
                     output = Some(strip_outer_quotes(v).to_string());
                 }
@@ -43,7 +50,12 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
                 i += 1;
                 continue;
             }
-            "-O" | "--remote-name" => {
+            "-O" => {
+                remote_name = true;
+                i += 1;
+                continue;
+            }
+            _ if t.eq_ignore_ascii_case("--remote-name") => {
                 remote_name = true;
                 i += 1;
                 continue;
