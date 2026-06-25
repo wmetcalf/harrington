@@ -2772,6 +2772,12 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
         .chain(EXCLUSION_PATH_SQ.captures_iter(deobfuscated))
         .chain(EXCLUSION_PATH_BARE.captures_iter(deobfuscated))
     {
+        if caps
+            .get(0)
+            .is_some_and(|m| defender_evasion_match_in_assignment(deobfuscated, m.start()))
+        {
+            continue;
+        }
         let Some(kind_suffix) = caps.get(1).and_then(|m| defender_evasion_label(m.as_str())) else {
             continue;
         };
@@ -2782,6 +2788,7 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
             .unwrap_or_default();
         push(&kind, target);
     }
+    push_mppreference_invoke_expression_exclusion_process(deobfuscated, &mut push);
     for caps in DISABLE_RE.captures_iter(deobfuscated) {
         let opt = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
         let val = caps.get(2).map(|m| m.as_str()).unwrap_or_default();
@@ -2813,6 +2820,57 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
     }
     if ETW_PATCH_RE.is_match(deobfuscated) {
         push("etw-patch", String::new());
+    }
+}
+
+fn defender_evasion_match_in_assignment(deobfuscated: &str, start: usize) -> bool {
+    let prefix = &deobfuscated[..start];
+    let segment_start = prefix
+        .rfind(['\r', '\n', ';', '|', '&'])
+        .map(|idx| idx + 1)
+        .unwrap_or(0);
+    let segment = prefix[segment_start..].trim_start();
+    segment.starts_with('$') && segment.contains('=')
+}
+
+fn push_mppreference_invoke_expression_exclusion_process(
+    deobfuscated: &str,
+    push: &mut impl FnMut(&str, String),
+) {
+    let lower = deobfuscated.to_ascii_lowercase();
+    if !lower.contains("invoke-expression")
+        || !lower.contains("add-mppreference")
+        || !lower.contains("-exclusionprocess")
+    {
+        return;
+    }
+
+    use once_cell::sync::Lazy;
+    use regex::Regex;
+
+    static PS_ARRAY_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?i)\$[A-Za-z_][A-Za-z0-9_]*\s*=\s*@\(([^)\r\n]{1,1024})\)"#)
+            .expect("powershell array assignment regex")
+    });
+    static QUOTED_ITEM_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#""([^"\r\n]+)"|'([^'\r\n]+)'"#).expect("powershell quoted item regex")
+    });
+
+    for caps in PS_ARRAY_ASSIGN_RE.captures_iter(deobfuscated) {
+        let Some(items) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        for item_caps in QUOTED_ITEM_RE.captures_iter(items) {
+            let item = item_caps
+                .get(1)
+                .or_else(|| item_caps.get(2))
+                .map(|m| m.as_str().trim())
+                .unwrap_or_default();
+            if item.is_empty() || item.contains(['$', '%']) {
+                continue;
+            }
+            push("exclusion-process", item.to_string());
+        }
     }
 }
 
