@@ -1711,6 +1711,11 @@ fn parse_curl_like_download(tokens: &[String]) -> Option<(String, Option<String>
             i += 1;
             continue;
         }
+        if is_compact_curl_short_remote_name_flag(raw_token) {
+            remote_name = true;
+            i += 1;
+            continue;
+        }
         if curl_flag_matches_ci(raw_token, "-o") || curl_flag_matches_ci(raw_token, "--output") {
             let Some(next) = tokens.get(i + 1) else {
                 i += 1;
@@ -1873,6 +1878,13 @@ fn compact_curl_short_output_arg(token: &str) -> Option<&str> {
     let flag = token[1..].find('o')?;
     let rest = &token[1 + flag + 1..];
     Some(rest)
+}
+
+fn is_compact_curl_short_remote_name_flag(token: &str) -> bool {
+    token.starts_with('-')
+        && !token.starts_with("--")
+        && token.len() > 2
+        && token[1..].contains('O')
 }
 
 fn parse_glued_curl_download(text: &str) -> Option<(String, Option<String>)> {
@@ -6560,6 +6572,18 @@ mod curl_redirect_parser_tests {
             parse_curl_like_download(&tokens),
             Some((
                 "https://curl-remote.example/payload.bin".to_string(),
+                Some("payload.bin".to_string())
+            ))
+        );
+    }
+
+    #[test]
+    fn parse_curl_like_download_accepts_compact_remote_name() {
+        let tokens = split_words(r#"curl -LO https://curl-compact-remote.example/payload.bin"#);
+        assert_eq!(
+            parse_curl_like_download(&tokens),
+            Some((
+                "https://curl-compact-remote.example/payload.bin".to_string(),
                 Some("payload.bin".to_string())
             ))
         );
