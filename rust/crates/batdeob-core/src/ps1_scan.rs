@@ -2414,7 +2414,10 @@ fn expand_passthrough_call_wrappers(text: &str) -> String {
 fn contains_potential_passthrough_call_wrapper(text: &str) -> bool {
     let bytes = text.as_bytes();
     let mut idx = 0usize;
-    while let Some(rel) = bytes[idx..].iter().position(|b| *b == b'&') {
+    while idx < bytes.len() {
+        let Some(rel) = bytes[idx..].iter().position(|b| *b == b'&') else {
+            break;
+        };
         let mut pos = idx + rel + 1;
         while let Some(b) = bytes.get(pos) {
             match b {
@@ -2434,7 +2437,7 @@ fn contains_potential_passthrough_call_wrapper(text: &str) -> bool {
                 _ => break,
             }
         }
-        idx = pos.saturating_add(1);
+        idx = pos.saturating_add(1).min(bytes.len());
     }
     false
 }
@@ -3694,6 +3697,12 @@ mod passthrough_prefilter_tests {
     #[test]
     fn ignores_ampersand_calls_without_quoted_target() {
         let text = "function x { &($target) ($y) }";
+        assert!(!contains_potential_passthrough_call_wrapper(text));
+    }
+
+    #[test]
+    fn trailing_ampersand_sequence_does_not_panic() {
+        let text = "invoke-expression &>&&>&>&&>&&&";
         assert!(!contains_potential_passthrough_call_wrapper(text));
     }
 }
