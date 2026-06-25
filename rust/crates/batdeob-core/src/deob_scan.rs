@@ -360,10 +360,8 @@ pub(crate) fn is_noise_url_context(line: &str, url: &str) -> bool {
     const GITHUB_PREFIX: &str = "https://github.com/";
     const GIT_SUFFIX: &str = ".git";
     if contains_ascii_case_insensitive(line, r#"<meta name="go-import""#)
-        && url.len() >= GITHUB_PREFIX.len()
-        && url[..GITHUB_PREFIX.len()].eq_ignore_ascii_case(GITHUB_PREFIX)
-        && url.len() >= GIT_SUFFIX.len()
-        && url[url.len() - GIT_SUFFIX.len()..].eq_ignore_ascii_case(GIT_SUFFIX)
+        && starts_with_ascii_case_insensitive(url, GITHUB_PREFIX)
+        && ends_with_ascii_case_insensitive(url, GIT_SUFFIX)
     {
         return true;
     }
@@ -6258,6 +6256,14 @@ mod liberal_url_scheme_tests {
         assert!(!is_noise_url_context(
             r#"<MeTa NaMe="Go-Import" Content="x"/>"#,
             "https://github.com/example/project",
+        ));
+    }
+
+    #[test]
+    fn go_import_noise_context_rejects_non_ascii_url_without_panic() {
+        assert!(!is_noise_url_context(
+            r#"<meta name="go-import" content="x"/>"#,
+            "aaaaaaaaaaaaaaaaaaó",
         ));
     }
 
