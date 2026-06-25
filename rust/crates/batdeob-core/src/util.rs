@@ -52,7 +52,10 @@ pub(crate) fn looks_like_liberal_url(s: &str) -> bool {
 
 /// ASCII case-insensitive suffix search.
 pub(crate) fn ends_with_ascii_case_insensitive(text: &str, suffix: &str) -> bool {
-    text.len() >= suffix.len() && text[text.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
+    let suffix = suffix.as_bytes();
+    text.as_bytes()
+        .get(text.len().saturating_sub(suffix.len())..)
+        .is_some_and(|tail| tail.len() == suffix.len() && tail.eq_ignore_ascii_case(suffix))
 }
 
 /// ASCII case-insensitive substring search from a given byte offset.
@@ -186,6 +189,11 @@ mod tests {
         assert!(ends_with_ascii_case_insensitive("payload.VBS", ".vbs"));
         assert!(ends_with_ascii_case_insensitive("payload.JSe", ".jse"));
         assert!(!ends_with_ascii_case_insensitive("payload.txt", ".vbs"));
+    }
+
+    #[test]
+    fn ends_with_ascii_case_insensitive_handles_non_ascii_text() {
+        assert!(!ends_with_ascii_case_insensitive("ÿü", "cmd"));
     }
 
     #[test]

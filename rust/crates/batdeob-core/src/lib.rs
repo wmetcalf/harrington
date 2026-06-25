@@ -41,6 +41,7 @@ pub(crate) mod vbs_scan;
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+    use crate::env::Config;
     use crate::traits::Trait;
 
     #[test]
@@ -53,6 +54,11 @@ mod tests {
         let j = serde_json::to_string(&t).expect("serialize");
         assert!(j.contains("\"kind\":\"Download\""), "got: {}", j);
         assert!(j.contains("\"src\":\"http://x/y\""), "got: {}", j);
+    }
+
+    #[test]
+    fn analyze_handles_short_non_utf8_fuzz_input() {
+        let _report = crate::analyze(&[0x8c, 0x0a, 0xff, 0xfc], &Config::default());
     }
 }
 
