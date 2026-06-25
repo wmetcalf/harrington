@@ -1,6 +1,7 @@
 //! `echo` handler — records redirected output into modified_filesystem.
 
 use crate::env::{Environment, FsEntry};
+use crate::handlers::util::starts_with_ascii_case_insensitive;
 use crate::redirect::extract_redirections;
 use crate::traits::Trait;
 
@@ -14,7 +15,7 @@ pub fn h_echo(raw: &str, env: &mut Environment) {
     }
     // Strip leading `echo` (case-insensitive)
     let body = cleaned.trim_start();
-    let after_echo = if body.len() >= 4 && body[..4].eq_ignore_ascii_case("echo") {
+    let after_echo = if starts_with_ascii_case_insensitive(body, "echo") {
         &body[4..]
     } else {
         &cleaned
@@ -115,4 +116,25 @@ fn extract_inline_echo_stdout_redirect(
         crate::redirect::RedirTarget::Trunc(target.to_string())
     };
     Some((before_op.to_string(), redir))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::h_echo;
+    use crate::env::{Config, Environment, FsEntry};
+
+    #[test]
+    fn echo_prefix_check_rejects_non_ascii_without_panic() {
+        let mut env = Environment::new(&Config::default());
+        h_echo("óxó>out.txt", &mut env);
+
+        let content = if let Some(FsEntry::Content { content, .. }) =
+            env.modified_filesystem.get("out.txt")
+        {
+            content.as_slice()
+        } else {
+            b""
+        };
+        assert_eq!(content, "óxó\r\n".as_bytes());
+    }
 }

@@ -171,10 +171,9 @@ fn token_end(s: &str) -> usize {
 }
 
 fn strip_kw<'a>(s: &'a str, kw: &str) -> Option<&'a str> {
-    if s.len() < kw.len() {
-        return None;
-    }
-    if !s[..kw.len()].eq_ignore_ascii_case(kw) {
+    let kw = kw.as_bytes();
+    let prefix = s.as_bytes().get(..kw.len())?;
+    if !prefix.eq_ignore_ascii_case(kw) || !s.is_char_boundary(kw.len()) {
         return None;
     }
     let rest = &s[kw.len()..];
@@ -280,12 +279,17 @@ fn skip_one_token(s: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::next_token;
+    use super::{next_token, strip_kw};
 
     #[test]
     fn next_token_keeps_quoted_unicode_content_intact() {
         assert_eq!(next_token(r#"  "héllo world" tail"#), Some("héllo world"));
         assert_eq!(next_token(r#"  'héllo world' tail"#), Some("héllo world"));
         assert_eq!(next_token(r#"  token) tail"#), Some("token"));
+    }
+
+    #[test]
+    fn strip_kw_rejects_non_ascii_without_panic() {
+        assert_eq!(strip_kw("óó", "if "), None);
     }
 }

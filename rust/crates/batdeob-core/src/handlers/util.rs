@@ -61,10 +61,9 @@ pub(crate) fn windows_basename(path: &str) -> Option<&str> {
 /// a permitted separator. Returns the slice AFTER the keyword, or None if the
 /// input doesn't start with that keyword.
 pub(crate) fn strip_keyword_ci<'a>(s: &'a str, kw: &str, allowed_follow: &[u8]) -> Option<&'a str> {
-    if s.len() < kw.len() {
-        return None;
-    }
-    if !s[..kw.len()].eq_ignore_ascii_case(kw) {
+    let kw = kw.as_bytes();
+    let prefix = s.as_bytes().get(..kw.len())?;
+    if !prefix.eq_ignore_ascii_case(kw) || !s.is_char_boundary(kw.len()) {
         return None;
     }
     let rest = &s[kw.len()..];
@@ -105,6 +104,11 @@ mod tests {
         );
         assert_eq!(strip_keyword_ci("exit /b", "exit", b"/:"), Some(" /b"));
         assert_eq!(strip_keyword_ci("gotoX", "goto", b":/;"), None);
+    }
+
+    #[test]
+    fn strip_keyword_ci_rejects_non_ascii_without_panic() {
+        assert_eq!(strip_keyword_ci("óó", "set", b":/;"), None);
     }
 
     #[test]
