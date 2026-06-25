@@ -1730,6 +1730,11 @@ fn parse_curl_like_download(tokens: &[String]) -> Option<(String, Option<String>
                 continue;
             }
         }
+        if let Some(rest) = compact_curl_short_output_arg(raw_token) {
+            dst = Some(rest.trim_matches(['"', '\'', ')']).to_string());
+            i += 1;
+            continue;
+        }
         if let Some(normalized) = normalize_liberal_url_token(token) {
             url = Some(normalized);
         }
@@ -1814,6 +1819,22 @@ fn is_curl_attached_one_arg_long_flag(token: &str) -> bool {
         };
         !tail.is_empty() && head.eq_ignore_ascii_case(flag) && tail.starts_with(['=', ':'])
     })
+}
+
+fn compact_curl_short_output_arg(token: &str) -> Option<&str> {
+    if !token.starts_with('-') || token.starts_with("--") || token.len() <= 2 {
+        return None;
+    }
+    if is_curl_attached_one_arg_short_flag(token) {
+        return None;
+    }
+    let flag = token[1..].find('o')?;
+    let rest = &token[1 + flag + 1..];
+    if rest.is_empty() {
+        None
+    } else {
+        Some(rest)
+    }
 }
 
 fn parse_glued_curl_download(text: &str) -> Option<(String, Option<String>)> {
@@ -6477,6 +6498,19 @@ mod curl_redirect_parser_tests {
             Some((
                 "https://curl-short.example/payload.bin".to_string(),
                 Some("C:\\Temp\\payload.bin".to_string())
+            ))
+        );
+    }
+
+    #[test]
+    fn parse_curl_like_download_accepts_compact_short_output_flags() {
+        let tokens =
+            split_words(r#"curl -kLoC:\Temp\compact.bin https://curl-compact.example/payload.bin"#);
+        assert_eq!(
+            parse_curl_like_download(&tokens),
+            Some((
+                "https://curl-compact.example/payload.bin".to_string(),
+                Some("C:\\Temp\\compact.bin".to_string())
             ))
         );
     }
