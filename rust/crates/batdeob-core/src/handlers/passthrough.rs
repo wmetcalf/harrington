@@ -170,9 +170,9 @@ pub fn h_schtasks(raw: &str, env: &mut Environment) {
         return;
     }
     static TN_RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r#"(?i)/tn\s+(?:"([^"]+)"|(\S+))"#).expect("/tn regex"));
+        Lazy::new(|| Regex::new(r#"(?i)/tn(?:\s+|=)(?:"([^"]+)"|(\S+))"#).expect("/tn regex"));
     static TR_RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r#"(?i)/tr\s+(?:"([^"]+)"|(.+))"#).expect("/tr regex"));
+        Lazy::new(|| Regex::new(r#"(?i)/tr(?:\s+|=)(?:"([^"]+)"|(.+))"#).expect("/tr regex"));
     let task_name = TN_RE
         .captures(raw)
         .and_then(|c| {
@@ -338,6 +338,22 @@ mod tests {
         assert!(
             env.exec_cmd.iter().any(|cmd| cmd == "echo hidden"),
             "unquoted scheduled task command was not queued: {:?}",
+            env.exec_cmd
+        );
+    }
+
+    #[test]
+    fn schtasks_equals_flags_command_is_queued_for_recursive_analysis() {
+        let mut env = Environment::new(&Config::default());
+
+        h_schtasks(
+            r#"schtasks /create /tn=Updater /tr="cmd /c echo hidden" /sc minute /mo 7"#,
+            &mut env,
+        );
+
+        assert!(
+            env.exec_cmd.iter().any(|cmd| cmd == "echo hidden"),
+            "equals-form scheduled task command was not queued: {:?}",
             env.exec_cmd
         );
     }
