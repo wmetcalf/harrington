@@ -571,15 +571,15 @@ fn emit_python_download(
     if is_noise_url(url) || !known.insert(url.to_string()) {
         return;
     }
-    let line_hint = deobfuscated
-        .lines()
-        .find(|line| line.contains(url))
+    let line = deobfuscated.lines().find(|line| line.contains(url));
+    let dst = line.and_then(|line| python_open_write_dst(line, url));
+    let line_hint = line
         .map(|line| snippet_prefix(line, 200))
         .unwrap_or_default();
     env.traits.push(Trait::Download {
         cmd: line_hint,
         src: url.to_string(),
-        dst: None,
+        dst,
     });
 }
 
@@ -741,7 +741,61 @@ fn find_matching_paren(text: &str, open: usize) -> Option<usize> {
 }
 
 fn first_url_literal(args: &str) -> Option<String> {
+    for literal in quoted_string_literals(args) {
+        let literal = trim_url_suffix(&literal);
+        if looks_like_direct_url(literal) {
+            return Some(literal.to_string());
+        }
+    }
+    None
+}
+
+fn python_open_write_dst(line: &str, url: &str) -> Option<String> {
+    let mut search_start = 0;
+    while let Some(open_start) = find_ascii_case_insensitive_from(line, "open", search_start) {
+        let open_end = open_start + "open".len();
+        if !is_callable_name_boundary(line, open_start, open_end) {
+            search_start = open_end;
+            continue;
+        }
+        let paren = skip_ascii_ws(line, open_end);
+        if line.as_bytes().get(paren) != Some(&b'(') {
+            search_start = open_end;
+            continue;
+        }
+        let Some(close) = find_matching_paren(line, paren) else {
+            search_start = paren + 1;
+            continue;
+        };
+        let after = &line[close + 1..];
+        if !after.contains(url) || !contains_ascii_case_insensitive(after, ".write") {
+            search_start = close + 1;
+            continue;
+        }
+        let literals = quoted_string_literals(&line[paren + 1..close]);
+        let Some(dst) = literals.first() else {
+            search_start = close + 1;
+            continue;
+        };
+        let Some(mode) = literals.get(1) else {
+            search_start = close + 1;
+            continue;
+        };
+        if !looks_like_direct_url(dst)
+            && mode
+                .bytes()
+                .any(|b| matches!(b.to_ascii_lowercase(), b'w' | b'a' | b'x'))
+        {
+            return Some(dst.clone());
+        }
+        search_start = close + 1;
+    }
+    None
+}
+
+fn quoted_string_literals(args: &str) -> Vec<String> {
     let bytes = args.as_bytes();
+    let mut out = Vec::new();
     let mut i = 0;
     while i < bytes.len() {
         let mut quote = bytes[i];
@@ -790,14 +844,10 @@ fn first_url_literal(args: &str) -> Option<String> {
                 break;
             }
         }
-        i += j;
-        let literal = trim_url_suffix(&literal);
-        if looks_like_direct_url(literal) {
-            return Some(literal.to_string());
-        }
-        i += 1;
+        out.push(literal);
+        i += j + 1;
     }
-    None
+    out
 }
 
 #[cfg(test)]
