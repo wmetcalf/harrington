@@ -1,4 +1,4 @@
-//! wmic handler — extracts the inner command from `wmic process call create "..."`.
+//! wmic handler — extracts the inner command from `wmic process call create ...`.
 
 use crate::env::Environment;
 use crate::traits::Trait;
@@ -7,7 +7,9 @@ use regex::Regex;
 
 #[allow(clippy::expect_used)]
 static WMIC_PROCESS_CREATE_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"(?i)^\s*wmic\s+process\s+call\s+create\s+["'](?P<cmd>.+)["']\s*$"#)
+    Regex::new(
+        r#"(?i)^\s*wmic\s+process\s+call\s+create\s+(?:"(?P<dq>[^"]+)"|'(?P<sq>[^']+)'|(?P<bare>\S.*))\s*$"#,
+    )
         .expect("wmic regex")
 });
 
@@ -16,7 +18,9 @@ pub fn h_wmic(raw: &str, env: &mut Environment) {
         return;
     };
     let inner = caps
-        .name("cmd")
+        .name("dq")
+        .or_else(|| caps.name("sq"))
+        .or_else(|| caps.name("bare"))
         .map(|m| m.as_str().to_string())
         .unwrap_or_default();
     if inner.is_empty() {
