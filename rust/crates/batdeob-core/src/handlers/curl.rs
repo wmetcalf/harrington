@@ -1,6 +1,6 @@
 //! curl handler — extracts URL + output target. Mirrors interpret_curl.
 
-use super::util::{looks_like_liberal_url, split_words, strip_outer_quotes};
+use super::util::{split_words, strip_outer_quotes};
 use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
 
@@ -35,8 +35,8 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
             }
             _ if t.starts_with("--url=") => {
                 let value = strip_outer_quotes(t.trim_start_matches("--url="));
-                if url.is_none() && looks_like_liberal_url(value) {
-                    url = Some(value.to_string());
+                if url.is_none() {
+                    url = crate::deob_scan::normalize_liberal_url_token(value);
                 }
                 i += 1;
                 continue;
@@ -61,8 +61,8 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
                     continue;
                 }
                 let candidate = strip_outer_quotes(t);
-                if url.is_none() && looks_like_liberal_url(candidate) {
-                    url = Some(candidate.to_string());
+                if url.is_none() {
+                    url = crate::deob_scan::normalize_liberal_url_token(candidate);
                 }
                 i += 1;
             }
