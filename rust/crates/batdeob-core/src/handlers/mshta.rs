@@ -1,6 +1,7 @@
 use super::util::{looks_like_liberal_url, split_words, strip_outer_quotes};
 use crate::env::Environment;
 use crate::traits::Trait;
+use crate::util::find_ascii_case_insensitive_from;
 
 pub fn h_mshta(raw: &str, env: &mut Environment) {
     env.traits.push(Trait::Mshta {
@@ -8,10 +9,7 @@ pub fn h_mshta(raw: &str, env: &mut Environment) {
     });
 
     for token in split_words(raw).iter().skip(1) {
-        let url = strip_outer_quotes(token);
-        if looks_like_liberal_url(url) {
-            let url = crate::deob_scan::normalize_liberal_url_token(url)
-                .unwrap_or_else(|| url.to_string());
+        if let Some(url) = mshta_token_url(token) {
             env.traits.push(Trait::Download {
                 cmd: raw.to_string(),
                 src: url,
@@ -20,4 +18,20 @@ pub fn h_mshta(raw: &str, env: &mut Environment) {
             break;
         }
     }
+}
+
+fn mshta_token_url(token: &str) -> Option<String> {
+    let token = strip_outer_quotes(token);
+    if looks_like_liberal_url(token) {
+        return crate::deob_scan::normalize_liberal_url_token(token);
+    }
+    for scheme in ["https:", "http:", "ftp:", "file:"] {
+        if let Some(idx) = find_ascii_case_insensitive_from(token, scheme, 0) {
+            let candidate = crate::deob_scan::trim_url_suffix(&token[idx..]);
+            if let Some(url) = crate::deob_scan::normalize_liberal_url_token(candidate) {
+                return Some(url);
+            }
+        }
+    }
+    None
 }
