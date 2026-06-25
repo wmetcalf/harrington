@@ -1622,6 +1622,22 @@ mod echo_tests {
     }
 
     #[test]
+    fn copied_cipher_alias_wipe_emits_anti_recovery_trait() {
+        let script = br#"@echo off
+copy C:\Windows\System32\cipher.exe C:\Users\Public\ci.tmp
+C:\Users\Public\ci.tmp /w:C:\Users\Public
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::AntiRecovery { action } if action == "free-space-wipe")
+            }),
+            "copied cipher wipe not detected: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn goto_with_punctuation_prefix_resolves() {
         // xeno-class goto-bytecode: `goto ,;;; 311144` resolves to
         // `goto 311144` in real CMD because `,` and `;` are token

@@ -1608,6 +1608,58 @@ pub fn scan_copied_powershell_invocations(deobfuscated: &str, env: &mut Environm
     dedup_exec_ps1(env);
 }
 
+fn scan_copied_cipher_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    let mut aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for t in &env.traits {
+        let Trait::WindowsUtilManip { src, dst, .. } = t else {
+            continue;
+        };
+        let Some(src_base) = basename_trimmed(src) else {
+            continue;
+        };
+        if !src_base.eq_ignore_ascii_case("cipher") && !src_base.eq_ignore_ascii_case("cipher.exe")
+        {
+            continue;
+        }
+        let Some(dst_base) = basename_trimmed(dst) else {
+            continue;
+        };
+        aliases.insert(dst_base.to_string());
+        if let Some(stem) = dst_base.strip_suffix(".exe") {
+            aliases.insert(stem.to_string());
+        }
+    }
+    if aliases.is_empty() {
+        return;
+    }
+
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        let Some(cmd) = tokens.first() else {
+            continue;
+        };
+        if !copied_alias_matches_command_ci(&aliases, cmd) {
+            continue;
+        }
+        if !tokens.iter().skip(1).any(|tok| {
+            tok.eq_ignore_ascii_case("/w") || tok.to_ascii_lowercase().starts_with("/w:")
+        }) {
+            continue;
+        }
+        if env.traits.iter().any(|t| {
+            matches!(
+                t,
+                crate::traits::Trait::AntiRecovery { action } if action == "free-space-wipe"
+            )
+        }) {
+            continue;
+        }
+        env.traits.push(crate::traits::Trait::AntiRecovery {
+            action: "free-space-wipe".to_string(),
+        });
+    }
+}
+
 fn url_basename(url: &str) -> Option<String> {
     let path = url
         .split_once("://")
@@ -3418,6 +3470,7 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     scan_registry_url_values(deobfuscated, env);
     scan_echoed_vbs_xmlhttp_deob_text(deobfuscated, env);
     scan_copied_curl_alias_deob_text(deobfuscated, env);
+    scan_copied_cipher_alias_deob_text(deobfuscated, env);
     scan_curl_style_compact_flags_deob_text(deobfuscated, env);
     scan_echoed_curl_deob_text(deobfuscated, env);
     scan_curl_redirect_deob_text(deobfuscated, env);
