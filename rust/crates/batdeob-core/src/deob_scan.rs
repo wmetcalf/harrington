@@ -2222,6 +2222,13 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
             i += 2;
             continue;
         }
+        if let Some(rest) = raw_token.strip_prefix("-P") {
+            if !rest.is_empty() && !rest.starts_with('-') {
+                output_dir = Some(rest.trim_matches(['"', '\'', ')']).to_string());
+                i += 1;
+                continue;
+            }
+        }
         if let Some(rest) = strip_ascii_case_insensitive_prefix(raw_token, "--directory-prefix=")
             .or_else(|| strip_ascii_case_insensitive_prefix(raw_token, "--directory-prefix:"))
         {
