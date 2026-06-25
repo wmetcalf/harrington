@@ -595,15 +595,15 @@ fn scan_typo_webclient_downloads(deobfuscated: &str, env: &mut Environment) {
         })
         .collect();
 
-    for (method, url) in find_dotted_method_url_literals(deobfuscated) {
+    for (method, url, dst) in find_dotted_method_url_literals(deobfuscated) {
         if method.eq_ignore_ascii_case("de") {
-            emit_typo_webclient_download(&url, env, &mut known);
+            emit_typo_webclient_download(&url, dst, env, &mut known);
             continue;
         }
         if !is_likely_webclient_download_method(&method) {
             continue;
         }
-        emit_typo_webclient_download(&url, env, &mut known);
+        emit_typo_webclient_download(&url, dst, env, &mut known);
     }
 }
 
@@ -635,7 +635,7 @@ fn find_call_url_literals(text: &str, names: &[&str]) -> Vec<String> {
     found
 }
 
-fn find_dotted_method_url_literals(text: &str) -> Vec<(String, String)> {
+fn find_dotted_method_url_literals(text: &str) -> Vec<(String, String, Option<String>)> {
     let mut found = Vec::new();
     let mut cursor = 0;
     while let Some(dot_rel) = text[cursor..].find('.') {
@@ -654,14 +654,31 @@ fn find_dotted_method_url_literals(text: &str) -> Vec<(String, String)> {
             cursor = open + 1;
             continue;
         };
-        if let Some(url) = first_url_literal(&text[open + 1..close]) {
+        let args = &text[open + 1..close];
+        if let Some(url) = first_url_literal(args) {
             if !method.eq_ignore_ascii_case("de") || has_short_webclient_context(text, dot) {
-                found.push((method, url));
+                let dst = webclient_downloadfile_dst(&method, args, &url);
+                found.push((method, url, dst));
             }
         }
         cursor = close + 1;
     }
     found
+}
+
+fn webclient_downloadfile_dst(method: &str, args: &str, url: &str) -> Option<String> {
+    if !is_likely_webclient_downloadfile_method(method) {
+        return None;
+    }
+    let literals = quoted_string_literals(args);
+    let url_pos = literals.iter().position(|literal| {
+        normalize_liberal_url_token(trim_url_suffix(literal)).as_deref() == Some(url)
+    })?;
+    literals
+        .iter()
+        .skip(url_pos + 1)
+        .find(|literal| normalize_liberal_url_token(literal).is_none())
+        .cloned()
 }
 
 fn is_callable_name_boundary(text: &str, start: usize, end: usize) -> bool {
@@ -870,6 +887,7 @@ fn has_short_webclient_context(text: &str, dot: usize) -> bool {
 
 fn emit_typo_webclient_download(
     url: &str,
+    dst: Option<String>,
     env: &mut Environment,
     known: &mut std::collections::HashSet<String>,
 ) {
@@ -880,7 +898,7 @@ fn emit_typo_webclient_download(
     env.traits.push(Trait::Download {
         cmd: "powershell-webclient-typo".to_string(),
         src: url,
-        dst: None,
+        dst,
     });
 }
 
@@ -904,6 +922,25 @@ fn is_likely_webclient_download_method(method: &str) -> bool {
             typo_method_distance_limit(normalized.len()),
         )
     })
+}
+
+fn is_likely_webclient_downloadfile_method(method: &str) -> bool {
+    if !method.is_ascii() {
+        return false;
+    }
+    let normalized: Vec<u8> = method
+        .bytes()
+        .filter(|b| b.is_ascii_alphabetic())
+        .map(|b| b.to_ascii_lowercase())
+        .collect();
+    if normalized.len() < 6 {
+        return false;
+    }
+    edit_distance_at_most_bytes(
+        &normalized,
+        b"downloadfile",
+        typo_method_distance_limit(normalized.len()),
+    )
 }
 
 #[cfg(test)]
