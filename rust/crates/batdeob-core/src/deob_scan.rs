@@ -1832,29 +1832,12 @@ fn parse_glued_curl_download(text: &str) -> Option<(String, Option<String>)> {
         .unwrap_or(raw.len());
     raw = &raw[..url_end];
 
-    let mut url = raw.trim_end_matches(['.', ',', ';', ':']).to_string();
+    let url = raw.trim_end_matches(['.', ',', ';', ':']).to_string();
     if url.is_empty() {
         return None;
     }
 
-    let mut dst = None;
-    if let Some(idx) = find_ascii_case_insensitive_from(&url, "--output=", 0) {
-        dst = Some(url[idx + "--output=".len()..].trim().to_string());
-        url.truncate(idx);
-    } else if let Some(idx) = find_ascii_case_insensitive_from(&url, "--output:", 0) {
-        dst = Some(url[idx + "--output:".len()..].trim().to_string());
-        url.truncate(idx);
-    } else if let Some(idx) = find_ascii_case_insensitive_from(&url, "--output", 0) {
-        dst = Some(url[idx + "--output".len()..].trim().to_string());
-        url.truncate(idx);
-    }
-
-    let url = url.trim_end_matches(['.', ',', ';', ':']).to_string();
-    if url.is_empty() {
-        None
-    } else {
-        Some((url, dst))
-    }
+    Some((url, None))
 }
 
 fn parse_curl_output_dst(text: &str) -> Option<String> {
@@ -6508,6 +6491,16 @@ mod curl_redirect_parser_tests {
                 "https://curl-long-output.example/drop.exe".to_string(),
                 None
             ))
+        );
+    }
+
+    #[test]
+    fn glued_curl_does_not_split_long_output_inside_hostname() {
+        assert_eq!(
+            parse_glued_curl_download(
+                r#"curl.exe "https://curl--output.example/drop.exe" --output out.exe"#
+            ),
+            Some(("https://curl--output.example/drop.exe".to_string(), None))
         );
     }
 }
