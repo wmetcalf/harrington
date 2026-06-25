@@ -5652,6 +5652,17 @@ mod curl_tests {
     }
 
     #[test]
+    fn curl_with_combined_short_output_flag_records_download_destination() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line("curl -sLo out.exe http://x/y.exe", &mut env);
+        let has = env.traits.iter().any(|t| matches!(t,
+            Trait::Download { src, dst: Some(d), .. } if src == "http://x/y.exe" && d == "out.exe"
+        ));
+        assert!(has, "traits: {:?}", env.traits);
+        assert!(env.modified_filesystem.contains_key("out.exe"));
+    }
+
+    #[test]
     fn curl_with_remote_name_uses_basename() {
         let mut env = Environment::new(&Config::default());
         interpret_line("CuRl -O hTtP://x/foo.exe", &mut env);

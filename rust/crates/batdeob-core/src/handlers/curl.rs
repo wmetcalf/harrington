@@ -32,6 +32,19 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
                 i += 1;
                 continue;
             }
+            _ if compact_short_output_arg(t).is_some() => {
+                let attached = compact_short_output_arg(t).unwrap_or_default();
+                if attached.is_empty() {
+                    if let Some(v) = tokens.get(i + 1) {
+                        output = Some(strip_outer_quotes(v).to_string());
+                    }
+                    i += 2;
+                } else {
+                    output = Some(strip_outer_quotes(attached).to_string());
+                    i += 1;
+                }
+                continue;
+            }
             _ if case_insensitive_value_prefix(t, "--output=").is_some() => {
                 let value = case_insensitive_value_prefix(t, "--output=").unwrap_or_default();
                 if !value.is_empty() {
@@ -106,6 +119,14 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
         env.modified_filesystem
             .insert(d.to_ascii_lowercase(), FsEntry::Download { src: url });
     }
+}
+
+fn compact_short_output_arg(token: &str) -> Option<&str> {
+    if !token.starts_with('-') || token.starts_with("--") || token.len() <= 2 {
+        return None;
+    }
+    let flag = token[1..].find('o')?;
+    Some(&token[1 + flag + 1..])
 }
 
 fn is_compact_remote_name_flag(token: &str) -> bool {
