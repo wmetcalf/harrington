@@ -10755,6 +10755,29 @@ http.send
     }
 
     #[test]
+    fn curl_data_payload_only_in_deob_text_does_not_become_download_src() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"curl --OuTpUt NUL --DaTa "http://payload.example/not-download""#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            Vec::<(&str, Option<&str>)>::new(),
+            "traits: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn curl_output_equals_in_deob_text_emits_clean_destination() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(

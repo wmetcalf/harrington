@@ -1594,6 +1594,16 @@ fn parse_curl_like_download(tokens: &[String]) -> Option<(String, Option<String>
     while i < tokens.len() {
         let raw_token = tokens[i].trim_matches(['"', '\'', ')']);
         let token = clean_command_url_token(raw_token);
+        if is_curl_one_arg_flag(raw_token) {
+            i += 2;
+            continue;
+        }
+        if is_curl_attached_one_arg_short_flag(raw_token)
+            || is_curl_attached_one_arg_long_flag(raw_token)
+        {
+            i += 1;
+            continue;
+        }
         if curl_flag_matches_ci(raw_token, "-o") || curl_flag_matches_ci(raw_token, "--output") {
             let Some(next) = tokens.get(i + 1) else {
                 i += 1;
@@ -1627,8 +1637,82 @@ fn parse_curl_like_download(tokens: &[String]) -> Option<(String, Option<String>
     url.map(|u| (u, dst))
 }
 
+fn curl_tokens_have_download_url_candidate(tokens: &[String]) -> bool {
+    let mut i = 1;
+    while i < tokens.len() {
+        let raw_token = tokens[i].trim_matches(['"', '\'', ')']);
+        if is_curl_one_arg_flag(raw_token) {
+            i += 2;
+            continue;
+        }
+        if is_curl_attached_one_arg_short_flag(raw_token)
+            || is_curl_attached_one_arg_long_flag(raw_token)
+        {
+            i += 1;
+            continue;
+        }
+        if contains_liberal_url_scheme(raw_token) {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
 pub(crate) fn curl_flag_matches_ci(token: &str, flag: &str) -> bool {
     token.eq_ignore_ascii_case(flag)
+}
+
+const CURL_ONE_ARG_SHORT_FLAGS: &[&str] = &[
+    "-d", "-H", "-X", "-A", "-e", "-b", "-c", "-u", "-m", "-T", "-F",
+];
+
+const CURL_ONE_ARG_LONG_FLAGS: &[&str] = &[
+    "--data",
+    "--data-ascii",
+    "--data-binary",
+    "--data-raw",
+    "--data-urlencode",
+    "--header",
+    "--request",
+    "--user-agent",
+    "--referer",
+    "--cookie",
+    "--cookie-jar",
+    "--user",
+    "--proxy",
+    "--connect-timeout",
+    "--max-time",
+    "--upload-file",
+    "--form",
+    "--form-string",
+    "--retry",
+    "--retry-delay",
+];
+
+fn is_curl_one_arg_flag(token: &str) -> bool {
+    CURL_ONE_ARG_SHORT_FLAGS.contains(&token)
+        || CURL_ONE_ARG_LONG_FLAGS
+            .iter()
+            .any(|flag| token.eq_ignore_ascii_case(flag))
+}
+
+fn is_curl_attached_one_arg_short_flag(token: &str) -> bool {
+    CURL_ONE_ARG_SHORT_FLAGS
+        .iter()
+        .any(|flag| token.starts_with(flag) && token.len() > flag.len())
+}
+
+fn is_curl_attached_one_arg_long_flag(token: &str) -> bool {
+    CURL_ONE_ARG_LONG_FLAGS.iter().any(|flag| {
+        let Some(head) = token.get(..flag.len()) else {
+            return false;
+        };
+        let Some(tail) = token.get(flag.len()..) else {
+            return false;
+        };
+        !tail.is_empty() && head.eq_ignore_ascii_case(flag) && tail.starts_with(['=', ':'])
+    })
 }
 
 fn parse_glued_curl_download(text: &str) -> Option<(String, Option<String>)> {
@@ -1910,7 +1994,12 @@ fn scan_curl_deob_text(deobfuscated: &str, env: &mut Environment) {
             }
         });
         let raw_curl_text = &line[curl_pos..];
-        let Some((url, dst)) = parsed.or_else(|| parse_glued_curl_download(raw_curl_text)) else {
+        let glued = if curl_tokens_have_download_url_candidate(&tokens) {
+            parse_glued_curl_download(raw_curl_text)
+        } else {
+            None
+        };
+        let Some((url, dst)) = parsed.or(glued) else {
             continue;
         };
         let dst = dst
