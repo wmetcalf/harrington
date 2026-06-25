@@ -4565,6 +4565,8 @@ pub fn scan_ps_char_index_extractor_urls(deobfuscated: &str, env: &mut Environme
         let Ok(call_re) = Regex::new(&pattern) else {
             continue;
         };
+        let mut extracted_strings = Vec::new();
+        let mut extracted_urls = Vec::new();
         for call_caps in call_re.captures_iter(deobfuscated).take(64) {
             let Some(arg) = call_caps.get(1) else {
                 continue;
@@ -4589,6 +4591,7 @@ pub fn scan_ps_char_index_extractor_urls(deobfuscated: &str, env: &mut Environme
             if extracted.len() < 8 {
                 continue;
             }
+            extracted_strings.push(extracted.clone());
             // Look for URLs in the extracted string.
             for url_caps in URL_RE.captures_iter(&extracted) {
                 let Some(m) = url_caps.get(1) else { continue };
@@ -4599,12 +4602,35 @@ pub fn scan_ps_char_index_extractor_urls(deobfuscated: &str, env: &mut Environme
                 if known.contains(url) || !seen.insert(url.to_string()) {
                     continue;
                 }
+                extracted_urls.push(url.to_string());
+            }
+        }
+        if extracted_urls.is_empty() {
+            continue;
+        }
+        let has_download_context = extracted_strings.iter().any(|s| {
+            let lower = s.to_ascii_lowercase();
+            lower.contains("downloadfile")
+                || lower.contains("downloadstring")
+                || lower.contains("invoke-webrequest")
+                || lower.contains("invoke-restmethod")
+                || lower.contains("start-bitstransfer")
+        });
+        for url in extracted_urls {
+            let cmd = format!(
+                "ps-char-index-extractor (fn={}, start={}, step={})",
+                name, start, step
+            );
+            if has_download_context {
+                env.traits.push(Trait::Download {
+                    cmd,
+                    src: url,
+                    dst: None,
+                });
+            } else {
                 env.traits.push(Trait::DownloadInDeobText {
-                    src: url.to_string(),
-                    line_hint: format!(
-                        "ps-char-index-extractor (fn={}, start={}, step={})",
-                        name, start, step
-                    ),
+                    src: url,
+                    line_hint: cmd,
                 });
             }
         }
@@ -6502,6 +6528,16 @@ mod ps_char_index_extractor_tests {
             .collect()
     }
 
+    fn traits(script: &str) -> Vec<Trait> {
+        let mut env = Environment::new(&Config::default());
+        scan_ps_char_index_extractor_urls(script, &mut env);
+        env.traits
+    }
+
+    fn pad_extracted(decoded: &str) -> String {
+        decoded.chars().flat_map(|ch| ['x', ch]).collect::<String>()
+    }
+
     #[test]
     fn musculos_style_extractor_unlocks_url() {
         // 订单列表.bat family — function takes a noise-padded string and
@@ -6522,6 +6558,44 @@ mod ps_char_index_extractor_tests {
                 .any(|u| u == "https://shalouxt.top/Bott174.mdp"),
             "expected shalouxt.top URL; got {:?}",
             extracted
+        );
+    }
+
+    #[test]
+    fn extractor_download_context_promotes_url_to_download() {
+        let url = "https://ps-char-context.example/stage.bin";
+        let download_call = "$wc.DownloadFile($url,$dst)";
+        let script = format!(
+            r#"
+            function Pick ($p){{
+                $i=1;
+                do {{ $r+=$p[$i]; $i+=2; $noise=Compare-Object alpha beta; }}
+                until (!$p[$i])
+                $r
+            }}
+            $url = Pick '{}'
+            Pick '{}'
+        "#,
+            pad_extracted(url),
+            pad_extracted(download_call)
+        );
+
+        let traits = traits(&script);
+        assert!(
+            traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == url
+            )),
+            "expected structured Download from decoded download context; got {:?}",
+            traits
+        );
+        assert!(
+            !traits.iter().any(|t| matches!(
+                t,
+                Trait::DownloadInDeobText { src, .. } if src == url
+            )),
+            "decoded download context should not leave a generic URL trait: {:?}",
+            traits
         );
     }
 
