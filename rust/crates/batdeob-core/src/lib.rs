@@ -6533,6 +6533,26 @@ mod wmic_tests {
         assert!(has, "no unquoted WmicProcessCreate: {:?}", env.traits);
         assert_eq!(env.exec_cmd, vec!["cmd /c echo hi".to_string()]);
     }
+
+    #[test]
+    fn wmic_process_call_create_accepts_global_switches() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"wmic /node:"target.example" process call create "cmd /c echo hi""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::WmicProcessCreate { inner_cmd } if inner_cmd == "cmd /c echo hi"
+            )
+        });
+        assert!(
+            has,
+            "no switched WmicProcessCreate: traits={:?}",
+            env.traits
+        );
+        assert_eq!(env.exec_cmd, vec!["cmd /c echo hi".to_string()]);
+    }
 }
 
 #[cfg(test)]
