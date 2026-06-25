@@ -131,6 +131,9 @@ fn compact_short_output_arg(token: &str) -> Option<&str> {
     if !token.starts_with('-') || token.starts_with("--") || token.len() <= 2 {
         return None;
     }
+    if is_attached_one_arg_short_flag(token) {
+        return None;
+    }
     let flag = token[1..].find('o')?;
     Some(&token[1 + flag + 1..])
 }
@@ -172,6 +175,15 @@ fn is_one_arg_flag(token: &str) -> bool {
         || LONG_FLAGS
             .iter()
             .any(|flag| token.eq_ignore_ascii_case(flag))
+}
+
+fn is_attached_one_arg_short_flag(token: &str) -> bool {
+    const SHORT_FLAGS: &[&str] = &[
+        "-d", "-H", "-X", "-A", "-e", "-b", "-c", "-u", "-m", "-T", "-F",
+    ];
+    SHORT_FLAGS
+        .iter()
+        .any(|flag| token.starts_with(flag) && token.len() > flag.len())
 }
 
 fn case_insensitive_value_prefix<'a>(token: &'a str, prefix: &str) -> Option<&'a str> {

