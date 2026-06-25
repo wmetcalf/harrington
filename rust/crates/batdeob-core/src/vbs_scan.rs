@@ -179,7 +179,48 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
                 dst,
             });
         }
+
+        for (url, dst) in extract_urldownload_expr_downloads(&text, &bindings) {
+            if !seen.insert((idx, url.clone())) {
+                continue;
+            }
+            let snippet = snippet_prefix(&text, 120);
+            env.traits.push(Trait::Download {
+                cmd: format!("(vbs #{idx}) {snippet}"),
+                src: url,
+                dst: dst.or_else(|| dst_hint.clone()),
+            });
+        }
     }
+}
+
+fn extract_urldownload_expr_downloads(
+    text: &str,
+    bindings: &std::collections::HashMap<String, String>,
+) -> Vec<(String, Option<String>)> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        if !crate::util::contains_ascii_case_insensitive(line, "urldownloadtofile") {
+            continue;
+        }
+        let args = urldownload_args(line);
+        for idx in 0..args.len() {
+            let Some(value) = eval_vbs_string_expr(args[idx].trim(), bindings) else {
+                continue;
+            };
+            let Some(url) = crate::deob_scan::normalize_liberal_url_token(&value) else {
+                continue;
+            };
+            let dst = args
+                .get(idx + 1)
+                .and_then(|arg| eval_vbs_string_expr(arg.trim(), bindings))
+                .filter(|candidate| {
+                    crate::deob_scan::normalize_liberal_url_token(candidate).is_none()
+                });
+            out.push((url, dst));
+        }
+    }
+    out
 }
 
 fn urldownload_dst_for_url(
