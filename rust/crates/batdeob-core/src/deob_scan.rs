@@ -432,7 +432,9 @@ fn scan_bitsadmin_deob_text(deobfuscated: &str, env: &mut Environment) {
 
     for line in deobfuscated.lines() {
         if (!contains_ascii_case_insensitive(line, "/transfer")
-            && !contains_ascii_case_insensitive(line, "-transfer"))
+            && !contains_ascii_case_insensitive(line, "-transfer")
+            && !contains_ascii_case_insensitive(line, "/addfile")
+            && !contains_ascii_case_insensitive(line, "-addfile"))
             || !contains_ascii_case_insensitive(line, "bitsadmin")
         {
             continue;
@@ -442,7 +444,10 @@ fn scan_bitsadmin_deob_text(deobfuscated: &str, env: &mut Environment) {
             let tail = &line[bits_match.start()..];
             let segment = tail.split('&').next().unwrap_or(tail);
             let tokens = split_words(segment);
-            if !tokens.iter().any(|t| bitsadmin_flag_eq(t, "transfer")) {
+            if !tokens
+                .iter()
+                .any(|t| bitsadmin_flag_eq(t, "transfer") || bitsadmin_flag_eq(t, "addfile"))
+            {
                 continue;
             }
 

