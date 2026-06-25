@@ -8,7 +8,7 @@ pub fn h_bitsadmin(raw: &str, env: &mut Environment) {
     let tokens = split_words(raw);
     if !tokens
         .iter()
-        .any(|t| t.eq_ignore_ascii_case("/transfer") || t.eq_ignore_ascii_case("/addfile"))
+        .any(|t| bitsadmin_flag_eq(t, "transfer") || bitsadmin_flag_eq(t, "addfile"))
     {
         return;
     }
@@ -17,20 +17,15 @@ pub fn h_bitsadmin(raw: &str, env: &mut Environment) {
     let mut url: Option<String> = None;
     let mut dst: Option<String> = None;
     let skip_flags = [
-        "/transfer",
-        "/addfile",
-        "/create",
-        "/download",
-        "/upload",
-        "/priority",
+        "transfer", "addfile", "create", "download", "upload", "priority",
     ];
-    let skip_values = ["/priority"]; // flags whose VALUE we also skip
+    let skip_values = ["priority"]; // flags whose VALUE we also skip
 
     let mut i = 1; // skip "bitsadmin"
     while i < tokens.len() {
         let t = &tokens[i];
-        if skip_flags.iter().any(|flag| t.eq_ignore_ascii_case(flag)) {
-            if skip_values.iter().any(|flag| t.eq_ignore_ascii_case(flag)) {
+        if skip_flags.iter().any(|flag| bitsadmin_flag_eq(t, flag)) {
+            if skip_values.iter().any(|flag| bitsadmin_flag_eq(t, flag)) {
                 i += 2;
             } else {
                 i += 1;
@@ -41,7 +36,7 @@ pub fn h_bitsadmin(raw: &str, env: &mut Environment) {
         // and current token doesn't look like a URL. Case-insensitive +
         // tolerate Windows-liberal slashes (`http:\\` / `http:/`).
         if url.is_none()
-            && !t.starts_with('/')
+            && !is_bitsadmin_option(t)
             && crate::deob_scan::normalize_liberal_url_token(strip_outer_quotes(t)).is_none()
         {
             // This is the job name; skip it.
@@ -57,7 +52,7 @@ pub fn h_bitsadmin(raw: &str, env: &mut Environment) {
                 continue;
             }
         }
-        if url.is_some() && dst.is_none() && !t.starts_with('/') {
+        if url.is_some() && dst.is_none() && !is_bitsadmin_option(t) {
             dst = Some(strip_outer_quotes(t).to_string());
             i += 1;
             continue;
@@ -76,4 +71,14 @@ pub fn h_bitsadmin(raw: &str, env: &mut Environment) {
                 .insert(d.to_ascii_lowercase(), FsEntry::Download { src: u });
         }
     }
+}
+
+fn bitsadmin_flag_eq(token: &str, flag: &str) -> bool {
+    token
+        .strip_prefix(['/', '-'])
+        .is_some_and(|value| value.eq_ignore_ascii_case(flag))
+}
+
+fn is_bitsadmin_option(token: &str) -> bool {
+    token.starts_with('/') || token.starts_with('-')
 }

