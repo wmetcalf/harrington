@@ -312,7 +312,7 @@ pub fn h_start(raw: &str, env: &mut Environment) {
     // Strip optional quoted title: start "" /flags cmd  OR  start "title" cmd
     // (defense-in-depth: the regex already consumes quoted titles in the prefix,
     // but handle any that slip through)
-    let inner = strip_leading_quoted_title(inner_raw);
+    let inner = strip_start_runtime_options(strip_leading_quoted_title(inner_raw));
     if inner.is_empty() {
         return;
     }
@@ -354,6 +354,50 @@ fn find_liberal_url_in_start_arg(s: &str) -> Option<String> {
             Some(raw)
         }
     })
+}
+
+fn strip_start_runtime_options(mut s: &str) -> &str {
+    loop {
+        s = s.trim_start();
+        let lower = s.to_ascii_lowercase();
+        if lower == "/d" || lower.starts_with("/d ") {
+            let after_flag = s.get(2..).unwrap_or("").trim_start();
+            let Some((_, rest)) = split_first_cmd_token(after_flag) else {
+                return "";
+            };
+            s = rest;
+            continue;
+        }
+        if lower.starts_with("/d:") {
+            let after_value = s.get(3..).unwrap_or("");
+            let Some((_, rest)) = split_first_cmd_token(after_value) else {
+                return "";
+            };
+            s = rest;
+            continue;
+        }
+        break;
+    }
+    s
+}
+
+fn split_first_cmd_token(s: &str) -> Option<(&str, &str)> {
+    let s = s.trim_start();
+    if s.is_empty() {
+        return None;
+    }
+    if let Some(after_open) = s.strip_prefix('"') {
+        if let Some(close_idx) = after_open.find('"') {
+            let end = 1 + close_idx + 1;
+            return Some((&s[..end], &s[end..]));
+        }
+    }
+    let end = s
+        .as_bytes()
+        .iter()
+        .position(|b| b.is_ascii_whitespace())
+        .unwrap_or(s.len());
+    Some((&s[..end], &s[end..]))
 }
 
 fn strip_leading_quoted_title(s: &str) -> &str {
