@@ -84,10 +84,12 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
                     continue;
                 }
                 let snippet = snippet_prefix(&text, 120);
+                let dst = urldownload_dst_for_url(&text, url_match.as_str(), &url, &bindings)
+                    .or_else(|| dst_hint.clone());
                 env.traits.push(Trait::Download {
                     cmd: format!("(vbs #{idx}) {snippet}"),
                     src: url,
-                    dst: dst_hint.clone(),
+                    dst,
                 });
             }
         }
@@ -144,13 +146,64 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
                 continue;
             }
             let snippet = snippet_prefix(&text, 120);
+            let dst = urldownload_dst_for_url(&text, var_match.as_str(), &url, &bindings)
+                .or_else(|| dst_hint.clone());
             env.traits.push(Trait::Download {
                 cmd: format!("(vbs #{idx}) {snippet}"),
                 src: url,
-                dst: dst_hint.clone(),
+                dst,
             });
         }
     }
+}
+
+fn urldownload_dst_for_url(
+    text: &str,
+    url_arg_hint: &str,
+    normalized_url: &str,
+    bindings: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    for line in text.lines() {
+        if !crate::util::contains_ascii_case_insensitive(line, "urldownloadtofile")
+            || !line.contains(url_arg_hint)
+        {
+            continue;
+        }
+        let args = urldownload_args(line);
+        for idx in 0..args.len() {
+            let Some(value) = eval_vbs_string_expr(args[idx].trim(), bindings) else {
+                continue;
+            };
+            let Some(url) = crate::deob_scan::normalize_liberal_url_token(&value) else {
+                continue;
+            };
+            if url != normalized_url {
+                continue;
+            }
+            return args
+                .get(idx + 1)
+                .and_then(|arg| eval_vbs_string_expr(arg.trim(), bindings))
+                .filter(|dst| crate::deob_scan::normalize_liberal_url_token(dst).is_none());
+        }
+    }
+    None
+}
+
+fn urldownload_args(line: &str) -> Vec<&str> {
+    let Some(start) = find_ascii_case_insensitive_from(line, "urldownloadtofile", 0) else {
+        return Vec::new();
+    };
+    let mut rest = &line[start + "urldownloadtofile".len()..];
+    rest = rest.trim_start();
+    if matches!(rest.as_bytes().first(), Some(b'A' | b'a' | b'W' | b'w')) {
+        rest = &rest[1..];
+        rest = rest.trim_start();
+    }
+    if let Some(stripped) = rest.strip_prefix('(') {
+        rest = stripped;
+    }
+    let rest = rest.trim_end().strip_suffix(')').unwrap_or(rest);
+    split_vbs_args(rest)
 }
 
 fn extract_vbs_execute_inners(env: &mut Environment) {
