@@ -508,7 +508,7 @@ fn split_vbs_concat(expr: &str) -> Vec<&str> {
                 paren_depth = paren_depth.saturating_sub(1);
                 i += 1;
             }
-            b'&' if !in_quote && paren_depth == 0 => {
+            b'&' | b'+' if !in_quote && paren_depth == 0 => {
                 parts.push(&expr[start..i]);
                 i += 1;
                 start = i;
