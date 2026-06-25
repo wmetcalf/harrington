@@ -1945,6 +1945,13 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
             i += 1;
             continue;
         }
+        if raw_token.eq_ignore_ascii_case("--output-document") && tokens.get(i + 1).is_some() {
+            dst = tokens
+                .get(i + 1)
+                .map(|s| s.trim_matches(['"', '\'', ')']).to_string());
+            i += 2;
+            continue;
+        }
         if wget_flag_matches_ci(raw_token, "-p") && tokens.get(i + 1).is_some() {
             output_dir = tokens
                 .get(i + 1)

