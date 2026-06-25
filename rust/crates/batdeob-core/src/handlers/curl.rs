@@ -89,11 +89,7 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
                 continue;
             }
             // Skip values for known one-arg flags
-            "-d" | "--data" | "--data-ascii" | "--data-binary" | "--data-raw"
-            | "--data-urlencode" | "-H" | "--header" | "-X" | "--request" | "-A"
-            | "--user-agent" | "-e" | "--referer" | "-b" | "--cookie" | "-c" | "--cookie-jar"
-            | "-u" | "--user" | "--proxy" | "--connect-timeout" | "-m" | "--max-time" | "-T"
-            | "--upload-file" | "-F" | "--form" | "--form-string" | "--retry" | "--retry-delay" => {
+            _ if is_one_arg_flag(t) => {
                 i += 2;
                 continue;
             }
@@ -144,6 +140,38 @@ fn is_compact_remote_name_flag(token: &str) -> bool {
         && !token.starts_with("--")
         && token.len() > 2
         && token[1..].contains('O')
+}
+
+fn is_one_arg_flag(token: &str) -> bool {
+    const SHORT_FLAGS: &[&str] = &[
+        "-d", "-H", "-X", "-A", "-e", "-b", "-c", "-u", "-m", "-T", "-F",
+    ];
+    const LONG_FLAGS: &[&str] = &[
+        "--data",
+        "--data-ascii",
+        "--data-binary",
+        "--data-raw",
+        "--data-urlencode",
+        "--header",
+        "--request",
+        "--user-agent",
+        "--referer",
+        "--cookie",
+        "--cookie-jar",
+        "--user",
+        "--proxy",
+        "--connect-timeout",
+        "--max-time",
+        "--upload-file",
+        "--form",
+        "--form-string",
+        "--retry",
+        "--retry-delay",
+    ];
+    SHORT_FLAGS.contains(&token)
+        || LONG_FLAGS
+            .iter()
+            .any(|flag| token.eq_ignore_ascii_case(flag))
 }
 
 fn case_insensitive_value_prefix<'a>(token: &'a str, prefix: &str) -> Option<&'a str> {
