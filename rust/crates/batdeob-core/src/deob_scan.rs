@@ -2038,6 +2038,14 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
     while i < tokens.len() {
         let raw_token = tokens[i].trim_matches(['"', '\'', ')']);
         let token = clean_command_url_token(raw_token);
+        if is_wget_one_arg_flag(raw_token) {
+            i += 2;
+            continue;
+        }
+        if is_wget_attached_one_arg_long_flag(raw_token) {
+            i += 1;
+            continue;
+        }
         if wget_flag_matches_ci(raw_token, "-o") && tokens.get(i + 1).is_some() {
             dst = tokens
                 .get(i + 1)
@@ -2122,6 +2130,38 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
 
 pub(crate) fn wget_flag_matches_ci(token: &str, flag: &str) -> bool {
     token.eq_ignore_ascii_case(flag)
+}
+
+const WGET_ONE_ARG_LONG_FLAGS: &[&str] = &[
+    "--post-data",
+    "--post-file",
+    "--method",
+    "--body-data",
+    "--body-file",
+    "--header",
+    "--user-agent",
+    "--referer",
+    "--load-cookies",
+    "--save-cookies",
+    "--keep-session-cookies",
+];
+
+fn is_wget_one_arg_flag(token: &str) -> bool {
+    WGET_ONE_ARG_LONG_FLAGS
+        .iter()
+        .any(|flag| token.eq_ignore_ascii_case(flag))
+}
+
+fn is_wget_attached_one_arg_long_flag(token: &str) -> bool {
+    WGET_ONE_ARG_LONG_FLAGS.iter().any(|flag| {
+        let Some(head) = token.get(..flag.len()) else {
+            return false;
+        };
+        let Some(tail) = token.get(flag.len()..) else {
+            return false;
+        };
+        !tail.is_empty() && head.eq_ignore_ascii_case(flag) && tail.starts_with(['=', ':'])
+    })
 }
 
 fn join_dir_and_name(dir: &str, name: &str) -> String {

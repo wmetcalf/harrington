@@ -11097,6 +11097,29 @@ http.send
     }
 
     #[test]
+    fn wget_post_data_url_in_deob_text_does_not_become_download_src() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"wget --post-data "http://payload.example/not-download""#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            Vec::<(&str, Option<&str>)>::new(),
+            "traits: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn url_variable_liberal_url_in_deob_text_emits_normalized_variable_trait() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
