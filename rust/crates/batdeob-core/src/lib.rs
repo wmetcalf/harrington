@@ -1649,6 +1649,20 @@ move "%cmdDestination%" "%startupFolder%"
     }
 
     #[test]
+    fn backup_artifact_deletion_emits_anti_recovery_trait() {
+        let script = br#"del /s /f /q d:\*.VHD d:\*.bac d:\*.bak d:\*.wbcat d:\*.bkf d:\Backup*.* d:\backup*.*"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::AntiRecovery { action } if action == "backup-artifact-delete")
+            }),
+            "backup artifact deletion was not surfaced as anti-recovery: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn copied_cipher_alias_wipe_emits_anti_recovery_trait() {
         let script = br#"@echo off
 copy C:\Windows\System32\wevtutil.exe C:\Users\Public\we.tmp

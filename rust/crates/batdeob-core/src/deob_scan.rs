@@ -3024,6 +3024,13 @@ fn scan_anti_recovery(deobfuscated: &str, env: &mut Environment) {
                 .unwrap(),
                 "wbadmin-delete",
             ),
+            (
+                Regex::new(
+                    r"(?i)\b(?:del|erase)\b[^\r\n]*(?:\*\.vhdx?|\*\.bac|\*\.bak|\*\.wbcat|\*\.bkf|\bbackup\*\.\*)",
+                )
+                .unwrap(),
+                "backup-artifact-delete",
+            ),
         ]
     });
     for (re, action) in PATTERNS.iter() {
