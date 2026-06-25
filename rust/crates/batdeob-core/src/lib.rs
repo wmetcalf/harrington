@@ -1624,17 +1624,31 @@ mod echo_tests {
     #[test]
     fn copied_cipher_alias_wipe_emits_anti_recovery_trait() {
         let script = br#"@echo off
+copy C:\Windows\System32\wevtutil.exe C:\Users\Public\we.tmp
+C:\Users\Public\we.tmp cl Security
+copy C:\Windows\System32\fsutil.exe C:\Users\Public\fs.tmp
+C:\Users\Public\fs.tmp usn deletejournal /d c:
+copy C:\Windows\System32\reg.exe C:\Users\Public\rg.tmp
+C:\Users\Public\rg.tmp delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\UserAssist" /f
 copy C:\Windows\System32\cipher.exe C:\Users\Public\ci.tmp
 C:\Users\Public\ci.tmp /w:C:\Users\Public
 "#;
         let report = analyze(script, &AnalyzeConfig::default());
-        assert!(
-            report.traits.iter().any(|t| {
-                matches!(t, Trait::AntiRecovery { action } if action == "free-space-wipe")
-            }),
-            "copied cipher wipe not detected: {:?}",
-            report.traits
-        );
+        for action in [
+            "event-log-clear",
+            "usn-journal-delete",
+            "registry-history-delete",
+            "free-space-wipe",
+        ] {
+            assert!(
+                report
+                    .traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::AntiRecovery { action: a } if a == action)),
+                "copied cleanup action {action} not detected: {:?}",
+                report.traits
+            );
+        }
     }
 
     #[test]

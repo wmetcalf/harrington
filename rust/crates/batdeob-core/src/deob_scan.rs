@@ -1608,8 +1608,9 @@ pub fn scan_copied_powershell_invocations(deobfuscated: &str, env: &mut Environm
     dedup_exec_ps1(env);
 }
 
-fn scan_copied_cipher_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
-    let mut aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
+fn scan_copied_cleanup_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    let mut aliases: std::collections::HashMap<String, &'static str> =
+        std::collections::HashMap::new();
     for t in &env.traits {
         let Trait::WindowsUtilManip { src, dst, .. } = t else {
             continue;
@@ -1617,16 +1618,29 @@ fn scan_copied_cipher_alias_deob_text(deobfuscated: &str, env: &mut Environment)
         let Some(src_base) = basename_trimmed(src) else {
             continue;
         };
-        if !src_base.eq_ignore_ascii_case("cipher") && !src_base.eq_ignore_ascii_case("cipher.exe")
+        let cleanup_cmd = if src_base.eq_ignore_ascii_case("wevtutil")
+            || src_base.eq_ignore_ascii_case("wevtutil.exe")
         {
+            "wevtutil"
+        } else if src_base.eq_ignore_ascii_case("fsutil")
+            || src_base.eq_ignore_ascii_case("fsutil.exe")
+        {
+            "fsutil"
+        } else if src_base.eq_ignore_ascii_case("reg") || src_base.eq_ignore_ascii_case("reg.exe") {
+            "reg"
+        } else if src_base.eq_ignore_ascii_case("cipher")
+            || src_base.eq_ignore_ascii_case("cipher.exe")
+        {
+            "cipher"
+        } else {
             continue;
-        }
+        };
         let Some(dst_base) = basename_trimmed(dst) else {
             continue;
         };
-        aliases.insert(dst_base.to_string());
+        aliases.insert(dst_base.to_ascii_lowercase(), cleanup_cmd);
         if let Some(stem) = dst_base.strip_suffix(".exe") {
-            aliases.insert(stem.to_string());
+            aliases.insert(stem.to_ascii_lowercase(), cleanup_cmd);
         }
     }
     if aliases.is_empty() {
@@ -1638,24 +1652,53 @@ fn scan_copied_cipher_alias_deob_text(deobfuscated: &str, env: &mut Environment)
         let Some(cmd) = tokens.first() else {
             continue;
         };
-        if !copied_alias_matches_command_ci(&aliases, cmd) {
+        let Some(cmd_base) = basename_trimmed(cmd) else {
             continue;
-        }
-        if !tokens.iter().skip(1).any(|tok| {
-            tok.eq_ignore_ascii_case("/w") || tok.to_ascii_lowercase().starts_with("/w:")
-        }) {
+        };
+        let Some(cleanup_cmd) = aliases.get(&cmd_base.to_ascii_lowercase()) else {
             continue;
-        }
+        };
+        let lower_line = line.to_ascii_lowercase();
+        let action = match *cleanup_cmd {
+            "wevtutil"
+                if tokens.get(1).is_some_and(|tok| {
+                    tok.eq_ignore_ascii_case("cl") || tok.eq_ignore_ascii_case("clear-log")
+                }) =>
+            {
+                "event-log-clear"
+            }
+            "fsutil" if lower_line.contains(" usn ") && lower_line.contains(" deletejournal") => {
+                "usn-journal-delete"
+            }
+            "reg"
+                if tokens
+                    .get(1)
+                    .is_some_and(|tok| tok.eq_ignore_ascii_case("delete"))
+                    && (lower_line.contains("userassist")
+                        || lower_line.contains("runmru")
+                        || lower_line.contains("muicache")) =>
+            {
+                "registry-history-delete"
+            }
+            "cipher"
+                if tokens.iter().skip(1).any(|tok| {
+                    tok.eq_ignore_ascii_case("/w") || tok.to_ascii_lowercase().starts_with("/w:")
+                }) =>
+            {
+                "free-space-wipe"
+            }
+            _ => continue,
+        };
         if env.traits.iter().any(|t| {
             matches!(
                 t,
-                crate::traits::Trait::AntiRecovery { action } if action == "free-space-wipe"
+                crate::traits::Trait::AntiRecovery { action: existing } if existing == action
             )
         }) {
             continue;
         }
         env.traits.push(crate::traits::Trait::AntiRecovery {
-            action: "free-space-wipe".to_string(),
+            action: action.to_string(),
         });
     }
 }
@@ -3470,7 +3513,7 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     scan_registry_url_values(deobfuscated, env);
     scan_echoed_vbs_xmlhttp_deob_text(deobfuscated, env);
     scan_copied_curl_alias_deob_text(deobfuscated, env);
-    scan_copied_cipher_alias_deob_text(deobfuscated, env);
+    scan_copied_cleanup_alias_deob_text(deobfuscated, env);
     scan_curl_style_compact_flags_deob_text(deobfuscated, env);
     scan_echoed_curl_deob_text(deobfuscated, env);
     scan_curl_redirect_deob_text(deobfuscated, env);
