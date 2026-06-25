@@ -1691,10 +1691,16 @@ fn scan_curl_style_compact_flags_deob_text(deobfuscated: &str, env: &mut Environ
 fn parse_curl_like_download(tokens: &[String]) -> Option<(String, Option<String>)> {
     let mut url: Option<String> = None;
     let mut dst: Option<String> = None;
+    let mut remote_name = false;
     let mut i = 1;
     while i < tokens.len() {
         let raw_token = tokens[i].trim_matches(['"', '\'', ')']);
         let token = clean_command_url_token(raw_token);
+        if raw_token == "-O" || raw_token.eq_ignore_ascii_case("--remote-name") {
+            remote_name = true;
+            i += 1;
+            continue;
+        }
         if is_curl_one_arg_flag(raw_token) {
             i += 2;
             continue;
@@ -1773,7 +1779,10 @@ fn parse_curl_like_download(tokens: &[String]) -> Option<(String, Option<String>
         }
         i += 1;
     }
-    url.map(|u| (u, dst))
+    url.map(|u| {
+        let dst = dst.or_else(|| remote_name.then(|| url_basename(&u)).flatten());
+        (u, dst)
+    })
 }
 
 fn curl_tokens_have_download_url_candidate(tokens: &[String]) -> bool {
@@ -6540,6 +6549,18 @@ mod curl_redirect_parser_tests {
             Some((
                 "https://curl-url-equals.example/payload.bin".to_string(),
                 Some("out.bin".to_string())
+            ))
+        );
+    }
+
+    #[test]
+    fn parse_curl_like_download_accepts_long_remote_name() {
+        let tokens = split_words(r#"curl --remote-name https://curl-remote.example/payload.bin"#);
+        assert_eq!(
+            parse_curl_like_download(&tokens),
+            Some((
+                "https://curl-remote.example/payload.bin".to_string(),
+                Some("payload.bin".to_string())
             ))
         );
     }
