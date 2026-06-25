@@ -9,7 +9,7 @@ pub fn h_certutil(raw: &str, env: &mut Environment) {
     let tokens = split_words(raw);
 
     // -urlcache -split -f URL DST
-    if tokens.iter().any(|t| t.eq_ignore_ascii_case("-urlcache")) {
+    if tokens.iter().any(|t| certutil_flag_eq(t, "urlcache")) {
         if let Some(url) = find_first_url(&tokens) {
             let dst = find_dst_after_url(&tokens, &url);
             env.traits.push(Trait::CertutilDownload {
@@ -25,15 +25,10 @@ pub fn h_certutil(raw: &str, env: &mut Environment) {
     }
 
     // -decode SRC DST  /  -decodehex SRC DST
-    let (method, flag) = if let Some(p) = tokens
-        .iter()
-        .position(|t| t.eq_ignore_ascii_case("-decode"))
+    let (method, flag) = if let Some(p) = tokens.iter().position(|t| certutil_flag_eq(t, "decode"))
     {
         (DecodeKind::Base64, p)
-    } else if let Some(p) = tokens
-        .iter()
-        .position(|t| t.eq_ignore_ascii_case("-decodehex"))
-    {
+    } else if let Some(p) = tokens.iter().position(|t| certutil_flag_eq(t, "decodehex")) {
         (DecodeKind::Hex, p)
     } else {
         return;
@@ -181,10 +176,20 @@ fn certutil_decode_paths_after_flag(tokens: &[String], start: usize) -> Option<(
     let mut positional = tokens
         .iter()
         .skip(start)
-        .filter(|token| !strip_outer_quotes(token).starts_with('-'));
+        .filter(|token| !is_certutil_option(strip_outer_quotes(token)));
     let src = strip_outer_quotes(positional.next()?).to_string();
     let dst = strip_outer_quotes(positional.next()?).to_string();
     Some((src, dst))
+}
+
+fn certutil_flag_eq(token: &str, flag: &str) -> bool {
+    token
+        .strip_prefix(['-', '/'])
+        .is_some_and(|value| value.eq_ignore_ascii_case(flag))
+}
+
+fn is_certutil_option(token: &str) -> bool {
+    token.starts_with('-') || token.starts_with('/')
 }
 
 fn is_base64_byte(b: u8) -> bool {

