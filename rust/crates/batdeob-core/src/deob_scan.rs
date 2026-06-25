@@ -12,7 +12,7 @@ use crate::handlers::util::{split_words, windows_basename};
 use crate::traits::Trait;
 use crate::util::{
     contains_ascii_case_insensitive, ends_with_ascii_case_insensitive,
-    find_ascii_case_insensitive_from, looks_like_liberal_url, snippet_prefix,
+    find_ascii_case_insensitive_from, floor_char_boundary, looks_like_liberal_url, snippet_prefix,
     starts_with_ascii_case_insensitive, strip_ascii_case_insensitive_prefix, strip_outer_quotes,
 };
 use once_cell::sync::Lazy;
@@ -4114,7 +4114,7 @@ pub fn scan_js_unescape_urls(deobfuscated: &str, env: &mut Environment) {
         }
         // Bounded scan: 16 KB is plenty for the largest unescape blob
         // in the corpus and keeps URL_RE's worst case predictable.
-        let scan = &decoded[..decoded.len().min(16 * 1024)];
+        let scan = &decoded[..floor_char_boundary(&decoded, 16 * 1024)];
         for url_caps in URL_RE.captures_iter(scan) {
             let Some(url_m) = url_caps.get(1) else {
                 continue;
@@ -4446,7 +4446,7 @@ pub fn scan_inline_b64_urls(deobfuscated: &str, env: &mut Environment) {
         // Bounded: only the first few KB of decoded text are scanned to
         // keep the regex's worst case predictable on a maxed-out 8000-char
         // b64 input.
-        let scan = &text[..text.len().min(8192)];
+        let scan = &text[..floor_char_boundary(&text, 8192)];
         for c2 in URL_RE.captures_iter(scan) {
             let Some(m) = c2.get(1) else { continue };
             let url = trim_url_suffix(m.as_str());
@@ -5541,6 +5541,13 @@ mod js_unescape_url_tests {
             pct("just some random text no URL here")
         );
         assert!(urls(&s).is_empty());
+    }
+
+    #[test]
+    fn long_non_ascii_unescape_blob_does_not_panic_at_scan_cap() {
+        let encoded = format!("A{}", "%u00e9".repeat(8192));
+        let script = format!("var s = unescape('{encoded}');");
+        assert!(urls(&script).is_empty());
     }
 }
 

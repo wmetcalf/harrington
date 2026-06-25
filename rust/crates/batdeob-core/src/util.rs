@@ -83,6 +83,15 @@ pub(crate) fn find_ascii_case_insensitive(text: &str, needle: &str) -> Option<us
     find_ascii_case_insensitive_from(text, needle, 0)
 }
 
+/// Return the largest byte index at or below `cap` that is a UTF-8 boundary.
+pub(crate) fn floor_char_boundary(text: &str, cap: usize) -> usize {
+    let mut end = cap.min(text.len());
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    end
+}
+
 /// Trim outer matching single or double quotes after trimming whitespace.
 pub(crate) fn strip_outer_quotes(s: &str) -> &str {
     let s = s.trim();
@@ -129,8 +138,8 @@ pub(crate) fn snippet_suffix(text: &str, max_chars: usize) -> String {
 mod tests {
     use super::{
         contains_ascii_case_insensitive, ends_with_ascii_case_insensitive,
-        find_ascii_case_insensitive, find_ascii_case_insensitive_from, looks_like_liberal_url,
-        snippet_prefix, snippet_suffix, starts_with_ascii_case_insensitive,
+        find_ascii_case_insensitive, find_ascii_case_insensitive_from, floor_char_boundary,
+        looks_like_liberal_url, snippet_prefix, snippet_suffix, starts_with_ascii_case_insensitive,
         strip_ascii_case_insensitive_prefix, strip_outer_quotes,
     };
 
@@ -208,6 +217,13 @@ mod tests {
         );
         assert_eq!(find_ascii_case_insensitive("abcDeFabc", "def"), Some(3));
         assert_eq!(find_ascii_case_insensitive_from("abc", "abcd", 0), None);
+    }
+
+    #[test]
+    fn floor_char_boundary_caps_to_previous_utf8_boundary() {
+        assert_eq!(floor_char_boundary("Aé", 2), 1);
+        assert_eq!(floor_char_boundary("Aé", 3), 3);
+        assert_eq!(floor_char_boundary("ABCDE", 3), 3);
     }
 
     #[test]
