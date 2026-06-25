@@ -72,7 +72,7 @@ static DOWNLOADSTRING_RE: Lazy<Regex> = Lazy::new(|| {
 
 #[allow(clippy::expect_used)]
 static DOWNLOADFILE_DST_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"(?i)\.DownloadFile\s*\(\s*["'][^"']+["']\s*,\s*(?:"([^"]+)"|'([^']+)')"#)
+    Regex::new(r#"(?i)(?:\.|\b)DownloadFile\s*\(\s*["'][^"']+["']\s*,\s*(?:"([^"]+)"|'([^']+)')"#)
         .expect("downloadfile dst")
 });
 
