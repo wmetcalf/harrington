@@ -213,7 +213,7 @@ fn find_dst_after_url(tokens: &[String], url: &str) -> Option<String> {
             }
             continue;
         }
-        if !t.starts_with('-') {
+        if !is_certutil_option(strip_outer_quotes(t)) {
             return Some(strip_outer_quotes(t).to_string());
         }
     }
