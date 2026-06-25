@@ -463,10 +463,7 @@ fn scan_bitsadmin_deob_text(deobfuscated: &str, env: &mut Environment) {
                     continue;
                 }
                 if let Some(url) = normalize_liberal_url_token(&token) {
-                    let dst = tokens
-                        .get(i + 1)
-                        .map(|s| strip_outer_quotes(s).to_string())
-                        .unwrap_or_default();
+                    let dst = bitsadmin_dst_after_url(&tokens, i + 1).unwrap_or_default();
                     if known.insert(url.clone()) {
                         env.traits.push(Trait::BitsadminDownload { url, dst });
                     }
@@ -477,6 +474,23 @@ fn scan_bitsadmin_deob_text(deobfuscated: &str, env: &mut Environment) {
             }
         }
     }
+}
+
+fn bitsadmin_dst_after_url(tokens: &[String], start: usize) -> Option<String> {
+    let mut i = start;
+    while i < tokens.len() {
+        let token = strip_outer_quotes(&tokens[i]).to_string();
+        if bitsadmin_flag_eq(&token, "priority") {
+            i += 2;
+            continue;
+        }
+        if is_bitsadmin_option(&token) || token.eq_ignore_ascii_case("foreground") {
+            i += 1;
+            continue;
+        }
+        return Some(token);
+    }
+    None
 }
 
 fn bitsadmin_flag_eq(token: &str, flag: &str) -> bool {
