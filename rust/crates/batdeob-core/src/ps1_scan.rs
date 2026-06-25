@@ -71,6 +71,12 @@ static DOWNLOADSTRING_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static DOWNLOADFILE_DST_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?i)\.DownloadFile\s*\(\s*["'][^"']+["']\s*,\s*(?:"([^"]+)"|'([^']+)')"#)
+        .expect("downloadfile dst")
+});
+
+#[allow(clippy::expect_used)]
 static BARE_DOWNLOADSTRING_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?i)\bDownload(?:String|File|Data)\s*\(\s*["']([^"']+)["']"#)
         .expect("bare downloadstring")
@@ -182,6 +188,7 @@ fn outfile_hint_from(text: &str) -> Option<String> {
         .captures(text)
         .or_else(|| CURL_OUTPUT_RE.captures(text))
         .or_else(|| BITS_DESTINATION_RE.captures(text))
+        .or_else(|| DOWNLOADFILE_DST_RE.captures(text))
         .and_then(|c| capture_first_group(&c))
         .or_else(|| bits_positional_destination_from(text))
 }

