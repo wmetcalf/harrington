@@ -5654,9 +5654,10 @@ pub fn scan_decimal_ip_urls(deobfuscated: &str, env: &mut Environment) {
             continue;
         }
         known.insert(url.clone());
-        env.traits.push(Trait::DownloadInDeobText {
+        env.traits.push(Trait::Download {
+            cmd: "decimal-ip-url".to_string(),
             src: url,
-            line_hint: "decimal-ip-url".to_string(),
+            dst: None,
         });
     }
 }
@@ -6880,10 +6881,17 @@ mod decimal_ip_url_tests {
         env.traits
             .iter()
             .filter_map(|t| match t {
+                Trait::Download { src, .. } => Some(src.clone()),
                 Trait::DownloadInDeobText { src, .. } => Some(src.clone()),
                 _ => None,
             })
             .collect()
+    }
+
+    fn run_and_collect_traits(deob: &str) -> Vec<Trait> {
+        let mut env = Environment::new(&Config::default());
+        scan_decimal_ip_urls(deob, &mut env);
+        env.traits
     }
 
     #[test]
@@ -6891,6 +6899,27 @@ mod decimal_ip_url_tests {
         // 1297338337 = 0x4D53CFE1 = 77.83.207.225
         let urls = run_and_collect_urls("Invoke-WebRequest 1297338337/x.jpg");
         assert_eq!(urls, vec!["http://77.83.207.225/x.jpg".to_string()]);
+    }
+
+    #[test]
+    fn ps_invoke_webrequest_decimal_ip_emits_structured_download() {
+        let traits = run_and_collect_traits("Invoke-WebRequest 1297338337/x.jpg");
+        assert!(
+            traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == "http://77.83.207.225/x.jpg"
+            )),
+            "decimal-IP Invoke-WebRequest should emit Download: {:?}",
+            traits
+        );
+        assert!(
+            !traits.iter().any(|t| matches!(
+                t,
+                Trait::DownloadInDeobText { src, .. } if src == "http://77.83.207.225/x.jpg"
+            )),
+            "decimal-IP Invoke-WebRequest should not stay generic: {:?}",
+            traits
+        );
     }
 
     #[test]
