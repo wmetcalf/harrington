@@ -3706,21 +3706,24 @@ fn dedup_exec_ps1(env: &mut Environment) {
 }
 
 /// Match any run of base64 chars whose prefix decodes to "http" (`aHR0c`),
-/// "https" (`aHR0cHM`), or "ftp" (`ZnRwOi8v`). The prefix anchor stops the
+/// "https" (`aHR0cHM`), "ftp" (`ZnRwOi8v`), or "file:" (`ZmlsZTo`).
+/// The prefix anchor stops the
 /// regex from firing on random b64 noise; the {16,500} suffix keeps the
 /// runtime cost bounded.
 #[allow(clippy::expect_used)]
 static B64_URL_PREFIX_RE: Lazy<Regex> = Lazy::new(|| {
-    // UTF-8 ASCII variant: http(s)/ftp directly base64-encoded.
+    // UTF-8 ASCII variant: http(s)/ftp/file directly base64-encoded.
     //   `aHR0cDov…` (http://…)
     //   `aHR0cHM6Ly…` (https://…)
     //   `ZnRwOi8v…` (ftp://…)
+    //   `ZmlsZTo…` (file://…)
     // UTF-16LE variant (common in PowerShell `[Convert]::ToBase64String(
     //   [Text.Encoding]::Unicode.GetBytes(...))`):
     //   `aAB0AHQAcAA…` (UTF-16LE "http")
     //   `aAB0AHQAcABzA…` (UTF-16LE "https")
     //   `ZgB0AHAA…` (UTF-16LE "ftp")
-    Regex::new(r"(aHR0[cd][DH]|ZnRwOi8v|aAB0AHQAcAA|aAB0AHQAcABzA|ZgB0AHAA)[A-Za-z0-9+/=]{16,500}")
+    //   `ZgBpAGwAZQA6AA…` (UTF-16LE "file:")
+    Regex::new(r"(aHR0[cd][DH]|ZnRwOi8v|ZmlsZTo|aAB0AHQAcAA|aAB0AHQAcABzA|ZgB0AHAA|ZgBpAGwAZQA6AA)[A-Za-z0-9+/=]{16,500}")
         .expect("b64 url prefix regex")
 });
 
@@ -3841,7 +3844,7 @@ fn is_download_context_line(line: &str) -> bool {
                 || contains_ascii_case_insensitive(line, "\", '")))
 }
 
-/// Scan for free-floating `aHR0c…` (base64 `http`) tokens that the
+/// Scan for free-floating `aHR0c…` (base64 `http`/`ftp`/`file`) tokens that the
 /// existing inline/quoted scanners miss because the b64 isn't passed
 /// directly to `FromBase64String` or wrapped in its own quotes — e.g.
 /// `set "encoded_url=aHR0c…"` (b64 is part of the quoted value, not the
@@ -3895,7 +3898,8 @@ pub fn scan_b64_url_prefix(deobfuscated: &str, env: &mut Environment) {
         }
         if !(text.starts_with("http://")
             || text.starts_with("https://")
-            || text.starts_with("ftp://"))
+            || text.starts_with("ftp://")
+            || text.starts_with("file://"))
         {
             continue;
         }
@@ -4829,11 +4833,12 @@ pub fn scan_bare_b64_urls(deobfuscated: &str, env: &mut Environment) {
             }
         };
         let text = text.trim();
-        // The decoded text must START with http(s)/ftp — not just CONTAIN it
+        // The decoded text must START with http(s)/ftp/file — not just CONTAIN it
         // (since longer payloads with embedded URLs are caught by other passes)
         if !(text.starts_with("http://")
             || text.starts_with("https://")
-            || text.starts_with("ftp://"))
+            || text.starts_with("ftp://")
+            || text.starts_with("file://"))
         {
             continue;
         }
@@ -6204,7 +6209,7 @@ mod ps_bare_url_download_tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod inline_b64_url_extraction_tests {
-    use super::{scan_bare_b64_urls, scan_inline_b64_urls};
+    use super::{scan_b64_url_prefix, scan_bare_b64_urls, scan_inline_b64_urls};
     use crate::env::Environment;
     use crate::traits::Trait;
     use crate::Config;
@@ -6252,6 +6257,21 @@ mod inline_b64_url_extraction_tests {
             extracted,
             vec!["https://attacker-example.org/payload.exe".to_string()]
         );
+    }
+
+    #[test]
+    fn b64_url_prefix_extracts_file_url() {
+        let url = "file:///C:/Windows/System32/calc.exe";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(url.as_bytes());
+        let deob = format!("set encoded_url={b64}\r\n");
+        let mut env = Environment::new(&Config::default());
+        scan_b64_url_prefix(&deob, &mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, cmd, .. } if src == url && cmd == "b64-url-prefix"
+            )
+        });
+        assert!(has, "standalone file b64 URL missed: {:?}", env.traits);
     }
 
     #[test]
