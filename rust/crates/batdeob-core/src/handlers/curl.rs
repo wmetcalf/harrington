@@ -45,8 +45,13 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
                 }
                 continue;
             }
-            _ if case_insensitive_value_prefix(t, "--output=").is_some() => {
-                let value = case_insensitive_value_prefix(t, "--output=").unwrap_or_default();
+            _ if case_insensitive_value_prefix(t, "--output=")
+                .or_else(|| case_insensitive_value_prefix(t, "--output:"))
+                .is_some() =>
+            {
+                let value = case_insensitive_value_prefix(t, "--output=")
+                    .or_else(|| case_insensitive_value_prefix(t, "--output:"))
+                    .unwrap_or_default();
                 if !value.is_empty() {
                     output = Some(strip_outer_quotes(value).to_string());
                 }
