@@ -1723,6 +1723,30 @@ fn parse_curl_like_download(tokens: &[String]) -> Option<(String, Option<String>
             i += 1;
             continue;
         }
+        if let Some(rest) = strip_ascii_case_insensitive_prefix(raw_token, "--url=")
+            .or_else(|| strip_ascii_case_insensitive_prefix(raw_token, "--url:"))
+        {
+            if let Some(normalized) =
+                normalize_liberal_url_token(rest.trim_matches(['"', '\'', ')']))
+            {
+                url = Some(normalized);
+            }
+            i += 1;
+            continue;
+        }
+        if raw_token.eq_ignore_ascii_case("--url") {
+            let Some(next) = tokens.get(i + 1) else {
+                i += 1;
+                continue;
+            };
+            if let Some(normalized) =
+                normalize_liberal_url_token(next.trim_matches(['"', '\'', ')']))
+            {
+                url = Some(normalized);
+            }
+            i += 2;
+            continue;
+        }
         if let Some(rest) = raw_token.strip_prefix("-o") {
             if !rest.is_empty() && !rest.starts_with('-') {
                 dst = Some(rest.trim_matches(['"', '\'', ')']).to_string());
@@ -6503,6 +6527,19 @@ mod curl_redirect_parser_tests {
             Some((
                 "https://curl-short.example/payload.bin".to_string(),
                 Some("C:\\Temp\\payload.bin".to_string())
+            ))
+        );
+    }
+
+    #[test]
+    fn parse_curl_like_download_accepts_url_equals_option() {
+        let tokens =
+            split_words(r#"curl --url=https://curl-url-equals.example/payload.bin -o out.bin"#);
+        assert_eq!(
+            parse_curl_like_download(&tokens),
+            Some((
+                "https://curl-url-equals.example/payload.bin".to_string(),
+                Some("out.bin".to_string())
             ))
         );
     }
