@@ -59,6 +59,7 @@ mod tests {
     #[test]
     fn analyze_handles_short_non_utf8_fuzz_input() {
         let _report = crate::analyze(&[0x8c, 0x0a, 0xff, 0xfc], &Config::default());
+        let _report = crate::analyze(&[0xf3, 0xf3, 0x31], &Config::default());
     }
 }
 

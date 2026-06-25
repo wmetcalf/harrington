@@ -182,7 +182,11 @@ fn basename_no_ext(name: &str) -> &str {
     let last_sep = s.rfind(['\\', '/']).map(|i| i + 1).unwrap_or(0);
     let base = &s[last_sep..];
     let base = base.trim_end_matches('.');
-    if base.len() >= 4 && base[base.len() - 4..].eq_ignore_ascii_case(".exe") {
+    if base
+        .as_bytes()
+        .get(base.len().saturating_sub(4)..)
+        .is_some_and(|tail| tail.len() == 4 && tail.eq_ignore_ascii_case(b".exe"))
+    {
         &base[..base.len() - 4]
     } else {
         base
@@ -205,6 +209,7 @@ mod basename_tests {
         assert_eq!(basename_no_ext("c:/windows/system32/cmd.exe"), "cmd");
         assert_eq!(basename_no_ext("powershell."), "powershell");
         assert_eq!(basename_no_ext("PoWeRsHeLl.ExE"), "PoWeRsHeLl");
+        assert_eq!(basename_no_ext("óó1"), "óó1");
     }
 
     #[test]
