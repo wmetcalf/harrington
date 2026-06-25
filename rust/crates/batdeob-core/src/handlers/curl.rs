@@ -25,16 +25,18 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
                 i += 1;
                 continue;
             }
-            _ if t.starts_with("--output=") => {
-                let value = t.trim_start_matches("--output=");
+            _ if case_insensitive_value_prefix(t, "--output=").is_some() => {
+                let value = case_insensitive_value_prefix(t, "--output=").unwrap_or_default();
                 if !value.is_empty() {
                     output = Some(strip_outer_quotes(value).to_string());
                 }
                 i += 1;
                 continue;
             }
-            _ if t.starts_with("--url=") => {
-                let value = strip_outer_quotes(t.trim_start_matches("--url="));
+            _ if case_insensitive_value_prefix(t, "--url=").is_some() => {
+                let value = strip_outer_quotes(
+                    case_insensitive_value_prefix(t, "--url=").unwrap_or_default(),
+                );
                 if url.is_none() {
                     url = crate::deob_scan::normalize_liberal_url_token(value);
                 }
@@ -99,6 +101,15 @@ fn is_compact_remote_name_flag(token: &str) -> bool {
         && !token.starts_with("--")
         && token.len() > 2
         && token[1..].contains('O')
+}
+
+fn case_insensitive_value_prefix<'a>(token: &'a str, prefix: &str) -> Option<&'a str> {
+    let head = token.get(..prefix.len())?;
+    if head.eq_ignore_ascii_case(prefix) {
+        Some(&token[prefix.len()..])
+    } else {
+        None
+    }
 }
 
 fn url_basename(url: &str) -> Option<String> {

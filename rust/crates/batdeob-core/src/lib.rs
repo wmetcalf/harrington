@@ -5619,6 +5619,17 @@ mod curl_tests {
     }
 
     #[test]
+    fn curl_with_mixed_case_output_equals_records_download_destination() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line("curl --OuTpUt=out.exe http://x/y.exe", &mut env);
+        let has = env.traits.iter().any(|t| matches!(t,
+            Trait::Download { src, dst: Some(d), .. } if src == "http://x/y.exe" && d == "out.exe"
+        ));
+        assert!(has, "traits: {:?}", env.traits);
+        assert!(env.modified_filesystem.contains_key("out.exe"));
+    }
+
+    #[test]
     fn curl_with_short_o_glued_records_download_destination() {
         let mut env = Environment::new(&Config::default());
         interpret_line("curl -oout.exe http://x/y.exe", &mut env);
