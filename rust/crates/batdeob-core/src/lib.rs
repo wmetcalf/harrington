@@ -6812,6 +6812,23 @@ mod extrac32_tests {
     }
 
     #[test]
+    fn extrac32_percent_f0_self_reference_records_trait() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(r#"extrac32 /y "%~f0" "%temp%\dropped.exe""#, &mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Extrac32 {
+                    src,
+                    dst,
+                    self_reference: true,
+                } if src == "%~f0" && dst == "%temp%\\dropped.exe"
+            )
+        });
+        assert!(has, "no %~f0 Extrac32 self_reference: {:?}", env.traits);
+    }
+
+    #[test]
     fn extrac32_single_quoted_self_reference_records_trait() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
