@@ -3495,6 +3495,70 @@ fn scan_service_install(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
+fn scan_startup_folder_persistence(deobfuscated: &str, env: &mut Environment) {
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        let Some(cmd) = tokens.first() else {
+            continue;
+        };
+        let Some(cmd_base) = basename_trimmed(cmd) else {
+            continue;
+        };
+        if !cmd_base.eq_ignore_ascii_case("move") && !cmd_base.eq_ignore_ascii_case("copy") {
+            continue;
+        }
+        if tokens.len() < 3 {
+            continue;
+        }
+        let src = strip_outer_quotes(&tokens[tokens.len() - 2]);
+        let dst = strip_outer_quotes(&tokens[tokens.len() - 1]);
+        if !contains_ascii_case_insensitive(
+            dst,
+            "microsoft\\windows\\start menu\\programs\\startup",
+        ) && !contains_ascii_case_insensitive(
+            dst,
+            "microsoft/windows/start menu/programs/startup",
+        ) {
+            continue;
+        }
+        let Some(value_name) = windows_basename(src) else {
+            continue;
+        };
+        let command = join_windows_path(dst, value_name);
+        if env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Persistence {
+                    hive,
+                    key,
+                    value_name: existing_name,
+                    command: existing_command,
+                } if hive == "StartupFolder"
+                    && key.eq_ignore_ascii_case(dst)
+                    && existing_name.eq_ignore_ascii_case(value_name)
+                    && existing_command.eq_ignore_ascii_case(&command)
+            )
+        }) {
+            continue;
+        }
+        env.traits.push(Trait::Persistence {
+            hive: "StartupFolder".to_string(),
+            key: dst.to_string(),
+            value_name: value_name.to_string(),
+            command,
+        });
+    }
+}
+
+fn join_windows_path(dir: &str, name: &str) -> String {
+    let trimmed = dir.trim_end_matches(['\\', '/']);
+    if trimmed.is_empty() {
+        name.to_string()
+    } else {
+        format!("{trimmed}\\{name}")
+    }
+}
+
 /// PowerShell `Start-Sleep -Seconds N` — beacon-style C2 cadence.
 fn scan_beacon_sleep(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
@@ -3602,6 +3666,7 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     scan_remote_exec(deobfuscated, env);
     scan_uac_bypass(deobfuscated, env);
     scan_service_install(deobfuscated, env);
+    scan_startup_folder_persistence(deobfuscated, env);
     scan_beacon_sleep(deobfuscated, env);
     scan_shellcode_marker(deobfuscated, env);
     scan_bitsadmin_deob_text(deobfuscated, env);

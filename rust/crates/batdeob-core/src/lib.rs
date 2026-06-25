@@ -1403,6 +1403,33 @@ mod echo_tests {
     }
 
     #[test]
+    fn move_into_startup_folder_emits_persistence_trait() {
+        let script = br#"@echo off
+set "cmdDestination=%USERPROFILE%\Downloads\startupppp.bat"
+set "startupFolder=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup"
+move "%cmdDestination%" "%startupFolder%"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence {
+                    hive,
+                    key,
+                    value_name,
+                    command,
+                } if hive == "StartupFolder"
+                    && key.ends_with(r"Microsoft\Windows\Start Menu\Programs\Startup")
+                    && value_name == "startupppp.bat"
+                    && command.ends_with(r"Microsoft\Windows\Start Menu\Programs\Startup\startupppp.bat")
+            )),
+            "Startup-folder move persistence missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn defender_evasion_traits_detected() {
         // Common AV-evasion patterns: Add-MpPreference exclusion,
         // Set-MpPreference -DisableRealtimeMonitoring $true, sc stop
