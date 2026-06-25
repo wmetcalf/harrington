@@ -10046,6 +10046,34 @@ $urlzip = "https://ps.example/stage.zip""#,
     }
 
     #[test]
+    fn wallet_extension_and_telegram_paths_emit_credential_access_traits() {
+        let script = br#"set "walletPaths[Exodus]=AppData\Roaming\Exodus\exodus.wallet"
+set "tdataPath=C:\Users\puncher\AppData\Roaming\Telegram Desktop\tdata"
+set "chrome=C:\Users\puncher\AppData\Local\Google\Chrome\User Data\Default\Local Extension Settings"
+"#;
+        let report = analyze(script, &Config::default());
+
+        for (technique, target) in [
+            ("crypto-wallet-path", r"Exodus\exodus.wallet"),
+            ("telegram-tdata", r"Telegram Desktop\tdata"),
+            (
+                "browser-extension-store",
+                r"Chrome\User Data\Default\Local Extension Settings",
+            ),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::CredentialAccess { technique: got, target: found }
+                        if got == technique && found.contains(target)
+                )),
+                "credential path {technique}/{target} not surfaced: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn mangled_short_webclient_de_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         let url = "http://tvde.m/e/pt.zp";

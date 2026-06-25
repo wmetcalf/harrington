@@ -3180,6 +3180,14 @@ fn scan_credential_access(deobfuscated: &str, env: &mut Environment) {
             // Browser credential paths
             (Regex::new(r#"(?i)\\Google\\Chrome\\User Data\\\S*Login Data|\\Mozilla\\Firefox\\Profiles\\\S*\\(?:key[34]\.db|logins\.json|cookies\.sqlite)|\\BraveSoftware\\\S*Login Data"#).unwrap(),
              "browser-cred-path", |m| snippet_prefix(m, 120)),
+            (Regex::new(r#"(?i)\\(?:Google\\Chrome|Microsoft\\Edge|BraveSoftware|Vivaldi)\\[^\r\n"']*\\Local Extension Settings\b"#).unwrap(),
+             "browser-extension-store", trim_credential_path_prefix),
+            (Regex::new(r#"(?i)\\Opera Software\\[^\r\n"']*\\Extensions\b"#).unwrap(),
+             "browser-extension-store", trim_credential_path_prefix),
+            (Regex::new(r#"(?i)(?:^|[\\="'\s])AppData\\Roaming\\(?:Bitcoin|Zcash|Armory|bytecoin|com\.liberty\.jaxx|Exodus|Ethereum|Electrum|atomic|Guarda|Coinomi|WasabiWallet|Monero|Ripple|Dogecoin|Litecoin|DashCore|BitcoinABC|Vertcoin|Namecoin|DigiByte|Qtum|Firo|PPCoin|GridcoinResearch|Feathercoin|Raven|BitcoinGold|Komodo)(?:\\[^\s"'\r\n]*)?"#).unwrap(),
+             "crypto-wallet-path", trim_credential_path_prefix),
+            (Regex::new(r#"(?i)(?:^|[\\="'\s])AppData\\Roaming\\Telegram Desktop\\tdata(?:\\[^\s"'\r\n]*)?"#).unwrap(),
+             "telegram-tdata", trim_credential_path_prefix),
             // Nirsoft tooling
             (Regex::new(r#"(?i)\b(?:nirsoft|webbrowserpassview|mailpassview|chromepass)\b"#).unwrap(),
              "nirsoft", |m| m.to_string()),
@@ -3204,6 +3212,13 @@ fn scan_credential_access(deobfuscated: &str, env: &mut Environment) {
             });
         }
     }
+}
+
+fn trim_credential_path_prefix(path: &str) -> String {
+    path.trim_start_matches(|c: char| {
+        c == '=' || c == '"' || c == '\'' || c == '\\' || c.is_whitespace()
+    })
+    .to_string()
 }
 
 /// Process injection — Win32 API names invoked from PS via Add-Type
