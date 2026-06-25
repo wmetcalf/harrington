@@ -35,6 +35,46 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
                 i += 2;
                 continue;
             }
+            "-K" => {
+                if let Some(v) = tokens.get(i + 1) {
+                    apply_config_file(
+                        strip_outer_quotes(v),
+                        env,
+                        &mut url,
+                        &mut output,
+                        &mut output_dir,
+                        &mut remote_name,
+                    );
+                }
+                i += 2;
+                continue;
+            }
+            _ if t.eq_ignore_ascii_case("--config") => {
+                if let Some(v) = tokens.get(i + 1) {
+                    apply_config_file(
+                        strip_outer_quotes(v),
+                        env,
+                        &mut url,
+                        &mut output,
+                        &mut output_dir,
+                        &mut remote_name,
+                    );
+                }
+                i += 2;
+                continue;
+            }
+            _ if t.starts_with("-K") && t.len() > 2 => {
+                apply_config_file(
+                    strip_outer_quotes(&t[2..]),
+                    env,
+                    &mut url,
+                    &mut output,
+                    &mut output_dir,
+                    &mut remote_name,
+                );
+                i += 1;
+                continue;
+            }
             _ if t.starts_with("-o") && t.len() > 2 => {
                 output = Some(strip_outer_quotes(&t[2..]).to_string());
                 i += 1;
@@ -75,6 +115,26 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
                     .unwrap_or_default();
                 if !value.is_empty() {
                     output_dir = Some(strip_outer_quotes(value).to_string());
+                }
+                i += 1;
+                continue;
+            }
+            _ if case_insensitive_value_prefix(t, "--config=")
+                .or_else(|| case_insensitive_value_prefix(t, "--config:"))
+                .is_some() =>
+            {
+                let value = case_insensitive_value_prefix(t, "--config=")
+                    .or_else(|| case_insensitive_value_prefix(t, "--config:"))
+                    .unwrap_or_default();
+                if !value.is_empty() {
+                    apply_config_file(
+                        strip_outer_quotes(value),
+                        env,
+                        &mut url,
+                        &mut output,
+                        &mut output_dir,
+                        &mut remote_name,
+                    );
                 }
                 i += 1;
                 continue;
@@ -150,6 +210,47 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
     if let Some(d) = dst {
         env.modified_filesystem
             .insert(d.to_ascii_lowercase(), FsEntry::Download { src: url });
+    }
+}
+
+fn apply_config_file(
+    path: &str,
+    env: &Environment,
+    url: &mut Option<String>,
+    output: &mut Option<String>,
+    output_dir: &mut Option<String>,
+    remote_name: &mut bool,
+) {
+    let key = path.to_ascii_lowercase();
+    let Some(FsEntry::Content { content, .. }) = env.modified_filesystem.get(&key) else {
+        return;
+    };
+    let text = String::from_utf8_lossy(content);
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((name, value)) = line.split_once('=') else {
+            continue;
+        };
+        let name = name.trim().trim_start_matches('-').to_ascii_lowercase();
+        let value = strip_outer_quotes(value.trim()).to_string();
+        match name.as_str() {
+            "url" if url.is_none() => {
+                *url = crate::deob_scan::normalize_liberal_url_token(&value);
+            }
+            "output" | "o" => {
+                *output = Some(value);
+            }
+            "output-dir" => {
+                *output_dir = Some(value);
+            }
+            "remote-name" => {
+                *remote_name = true;
+            }
+            _ => {}
+        }
     }
 }
 
