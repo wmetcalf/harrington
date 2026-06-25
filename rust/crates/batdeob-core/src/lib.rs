@@ -5918,6 +5918,7 @@ mod curl_tests {
 
 #[cfg(test)]
 mod misc_handler_tests {
+    use crate::analyze;
     use crate::env::{Config, Environment};
     use crate::interp::interpret_line;
     use crate::traits::Trait;
@@ -6034,6 +6035,29 @@ mod misc_handler_tests {
             has,
             "quoted share with spaces was not normalized: {:?}",
             env.traits
+        );
+    }
+
+    #[test]
+    fn copied_net_alias_use_emits_net_use_trait() {
+        let report = analyze(
+            br#"copy C:\Windows\System32\net.exe C:\Users\Public\nt.tmp
+C:\Users\Public\nt.tmp use Z: \\target.example\C$ /user:DOMAIN\adm pass
+"#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::NetUse { info, .. }
+                    if info.devicename.as_deref() == Some("Z:")
+                        && info.server.as_deref() == Some(r#"\\target.example\C$"#)
+                        && info.user.as_deref() == Some(r#"DOMAIN\adm"#)
+                        && info.password.as_deref() == Some("pass")
+            )),
+            "copied-net use did not emit structured NetUse: {:?}",
+            report.traits
         );
     }
 }
