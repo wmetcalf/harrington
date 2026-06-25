@@ -47,9 +47,9 @@ pub fn h_reg(raw: &str, env: &mut Environment) {
     // Separate regexes for /v and /d so each can scan the rest of the
     // line independently (a single lazy regex would skip the /d match).
     static V_RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r#"(?i)/v\s+(?:"([^"]+)"|(\S+))"#).expect("/v regex"));
+        Lazy::new(|| Regex::new(r#"(?i)/v(?:\s+|=)(?:"([^"]+)"|(\S+))"#).expect("/v regex"));
     static D_RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r#"(?i)/d\s+(?:"([^"]*)"|(.+))"#).expect("/d regex"));
+        Lazy::new(|| Regex::new(r#"(?i)/d(?:\s+|=)(?:"([^"]*)"|(.+))"#).expect("/d regex"));
     let Some(caps) = REG_ADD_RE.captures(raw) else {
         return;
     };
@@ -290,6 +290,22 @@ mod tests {
         assert!(
             env.exec_cmd.iter().any(|cmd| cmd == "echo hidden"),
             "unquoted registry persistence command was not queued: {:?}",
+            env.exec_cmd
+        );
+    }
+
+    #[test]
+    fn reg_run_equals_flags_command_is_queued_for_recursive_analysis() {
+        let mut env = Environment::new(&Config::default());
+
+        h_reg(
+            r#"reg add HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v=Updater /d="cmd /c echo hidden" /f"#,
+            &mut env,
+        );
+
+        assert!(
+            env.exec_cmd.iter().any(|cmd| cmd == "echo hidden"),
+            "equals-form registry persistence command was not queued: {:?}",
             env.exec_cmd
         );
     }
