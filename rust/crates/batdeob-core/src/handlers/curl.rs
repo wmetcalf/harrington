@@ -20,6 +20,11 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
                 i += 2;
                 continue;
             }
+            _ if t.starts_with("-o") && t.len() > 2 => {
+                output = Some(strip_outer_quotes(&t[2..]).to_string());
+                i += 1;
+                continue;
+            }
             _ if t.starts_with("--output=") => {
                 let value = t.trim_start_matches("--output=");
                 if !value.is_empty() {
