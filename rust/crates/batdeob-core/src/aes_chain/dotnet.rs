@@ -27,14 +27,20 @@ pub enum DotnetError {
 }
 
 fn rd_u16(b: &[u8], off: usize) -> Result<u16, DotnetError> {
-    b.get(off..off + 2)
+    let end = off.checked_add(2).ok_or(DotnetError::Bounds)?;
+    b.get(off..end)
         .ok_or(DotnetError::Bounds)
         .map(|s| u16::from_le_bytes([s[0], s[1]]))
 }
 fn rd_u32(b: &[u8], off: usize) -> Result<u32, DotnetError> {
-    b.get(off..off + 4)
+    let end = off.checked_add(4).ok_or(DotnetError::Bounds)?;
+    b.get(off..end)
         .ok_or(DotnetError::Bounds)
         .map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
+}
+
+fn add_off(off: usize, delta: usize) -> Result<usize, DotnetError> {
+    off.checked_add(delta).ok_or(DotnetError::Bounds)
 }
 
 struct Section {
@@ -94,12 +100,12 @@ fn read_compressed_uint(bytes: &[u8], pos: usize) -> Option<(u32, usize)> {
     if (b0 & 0x80) == 0 {
         Some((b0, 1))
     } else if (b0 & 0xc0) == 0x80 {
-        let b1 = *bytes.get(pos + 1)? as u32;
+        let b1 = *bytes.get(pos.checked_add(1)?)? as u32;
         Some((((b0 & 0x3f) << 8) | b1, 2))
     } else if (b0 & 0xe0) == 0xc0 {
-        let b1 = *bytes.get(pos + 1)? as u32;
-        let b2 = *bytes.get(pos + 2)? as u32;
-        let b3 = *bytes.get(pos + 3)? as u32;
+        let b1 = *bytes.get(pos.checked_add(1)?)? as u32;
+        let b2 = *bytes.get(pos.checked_add(2)?)? as u32;
+        let b3 = *bytes.get(pos.checked_add(3)?)? as u32;
         Some((((b0 & 0x1f) << 24) | (b1 << 16) | (b2 << 8) | b3, 4))
     } else {
         None
@@ -113,22 +119,24 @@ pub fn extract_us_strings(bytes: &[u8]) -> Result<Vec<String>, DotnetError> {
         return Err(DotnetError::NotPe);
     }
     let pe_off = rd_u32(bytes, 0x3c)? as usize;
-    if bytes.get(pe_off..pe_off + 4) != Some(b"PE\0\0") {
+    let pe_end = add_off(pe_off, 4)?;
+    if bytes.get(pe_off..pe_end) != Some(b"PE\0\0") {
         return Err(DotnetError::NotPe);
     }
-    let coff_off = pe_off + 4;
-    let num_sections = rd_u16(bytes, coff_off + 2)? as usize;
-    let opt_hdr_size = rd_u16(bytes, coff_off + 16)? as usize;
-    let opt_off = coff_off + 20;
+    let coff_off = pe_end;
+    let num_sections = rd_u16(bytes, add_off(coff_off, 2)?)? as usize;
+    let opt_hdr_size = rd_u16(bytes, add_off(coff_off, 16)?)? as usize;
+    let opt_off = add_off(coff_off, 20)?;
     let magic = rd_u16(bytes, opt_off)?;
     let data_dir_off = match magic {
-        0x10b => opt_off + 96,  // PE32
-        0x20b => opt_off + 112, // PE32+
+        0x10b => add_off(opt_off, 96)?,  // PE32
+        0x20b => add_off(opt_off, 112)?, // PE32+
         _ => return Err(DotnetError::NotPe),
     };
     // CLI header = DataDir[14]
-    let cli_rva = rd_u32(bytes, data_dir_off + 14 * 8)?;
-    let cli_size = rd_u32(bytes, data_dir_off + 14 * 8 + 4)?;
+    let cli_dir_off = add_off(data_dir_off, 14 * 8)?;
+    let cli_rva = rd_u32(bytes, cli_dir_off)?;
+    let cli_size = rd_u32(bytes, add_off(cli_dir_off, 4)?)?;
     if cli_rva == 0 || cli_size == 0 {
         return Err(DotnetError::NotClr);
     }
@@ -137,10 +145,11 @@ pub fn extract_us_strings(bytes: &[u8]) -> Result<Vec<String>, DotnetError> {
     let cli_off = rva_to_offset(cli_rva, &sections).ok_or(DotnetError::Bounds)?;
 
     // CLI header: cb (4) | major (2) | minor (2) | metadata_rva (4) | metadata_size (4) | ...
-    let metadata_rva = rd_u32(bytes, cli_off + 8)?;
-    let metadata_size = rd_u32(bytes, cli_off + 12)? as usize;
+    let metadata_rva = rd_u32(bytes, add_off(cli_off, 8)?)?;
+    let metadata_size = rd_u32(bytes, add_off(cli_off, 12)?)? as usize;
     let metadata_off = rva_to_offset(metadata_rva, &sections).ok_or(DotnetError::Bounds)?;
-    if bytes.get(metadata_off..metadata_off + 4) != Some(b"BSJB") {
+    let metadata_sig_end = add_off(metadata_off, 4)?;
+    if bytes.get(metadata_off..metadata_sig_end) != Some(b"BSJB") {
         return Err(DotnetError::NotClr);
     }
     let metadata_end = metadata_off
@@ -151,20 +160,21 @@ pub fn extract_us_strings(bytes: &[u8]) -> Result<Vec<String>, DotnetError> {
     }
 
     // After BSJB(4) + major(2) + minor(2) + reserved(4) + version_len(4) + version_str (padded to 4)
-    let version_len = rd_u32(bytes, metadata_off + 12)? as usize;
+    let version_len = rd_u32(bytes, add_off(metadata_off, 12)?)? as usize;
     let pad_aligned = version_len.checked_add(3).ok_or(DotnetError::Bounds)? & !3;
     let after_ver = metadata_off
         .checked_add(16)
         .and_then(|x| x.checked_add(pad_aligned))
         .ok_or(DotnetError::Bounds)?;
-    if after_ver.checked_add(4).ok_or(DotnetError::Bounds)? > bytes.len() {
+    let stream_headers_start = add_off(after_ver, 4)?;
+    if stream_headers_start > bytes.len() {
         return Err(DotnetError::Bounds);
     }
-    let streams_count = rd_u16(bytes, after_ver + 2)? as usize;
+    let streams_count = rd_u16(bytes, add_off(after_ver, 2)?)? as usize;
     if streams_count > MAX_STREAMS {
         return Err(DotnetError::Bounds);
     }
-    let mut stream_hdr_off = after_ver + 4;
+    let mut stream_hdr_off = stream_headers_start;
 
     let mut us_offset: Option<usize> = None;
     let mut us_size: usize = 0;
@@ -174,7 +184,7 @@ pub fn extract_us_strings(bytes: &[u8]) -> Result<Vec<String>, DotnetError> {
             return Err(DotnetError::Bounds);
         }
         let off = rd_u32(bytes, stream_hdr_off)? as usize;
-        let size = rd_u32(bytes, stream_hdr_off + 4)? as usize;
+        let size = rd_u32(bytes, add_off(stream_hdr_off, 4)?)? as usize;
         // null-terminated name, padded to 4-byte boundary
         let name_start = hdr_end;
         let mut name_end = name_start;

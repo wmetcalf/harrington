@@ -70,35 +70,37 @@ pub fn scan_urls(bytes: &[u8], limit: usize) -> Vec<String> {
     }
 
     // UTF-16LE pass: convert pairs to bytes, then scan that as a string.
-    // We do a single-pass conversion: any byte at odd index that is 0
-    // followed by an ASCII byte at the even index = a UTF-16LE ASCII char.
+    // Scan both alignments because strings embedded in PE data are not
+    // guaranteed to be even-aligned relative to this slice.
     if bytes.len() >= 16 {
-        let mut decoded = String::with_capacity(bytes.len() / 2);
-        let mut i = 0;
-        while i + 1 < bytes.len() {
-            let lo = bytes[i];
-            let hi = bytes[i + 1];
-            if hi == 0 && (0x20..=0x7e).contains(&lo) {
-                decoded.push(lo as char);
-            } else {
-                decoded.push('\0');
+        for alignment in 0..=1 {
+            let mut decoded = String::with_capacity(bytes.len() / 2);
+            let mut i = alignment;
+            while i + 1 < bytes.len() {
+                let lo = bytes[i];
+                let hi = bytes[i + 1];
+                if hi == 0 && (0x20..=0x7e).contains(&lo) {
+                    decoded.push(lo as char);
+                } else {
+                    decoded.push('\0');
+                }
+                i += 2;
             }
-            i += 2;
-        }
-        // Re-run the UTF-8 url regex on this ASCII-projected text.
-        for m in URL_UTF8_RE.find_iter(decoded.as_bytes()) {
-            if let Ok(s) = std::str::from_utf8(m.as_bytes()) {
-                let cleaned = trim_trailing(s).to_string();
-                if cleaned.len() < 8 {
-                    continue;
-                }
-                if is_noise(&cleaned) {
-                    continue;
-                }
-                if seen.insert(cleaned.clone()) {
-                    out.push(cleaned);
-                    if out.len() >= limit {
-                        return out;
+            // Re-run the UTF-8 url regex on this ASCII-projected text.
+            for m in URL_UTF8_RE.find_iter(decoded.as_bytes()) {
+                if let Ok(s) = std::str::from_utf8(m.as_bytes()) {
+                    let cleaned = trim_trailing(s).to_string();
+                    if cleaned.len() < 8 {
+                        continue;
+                    }
+                    if is_noise(&cleaned) {
+                        continue;
+                    }
+                    if seen.insert(cleaned.clone()) {
+                        out.push(cleaned);
+                        if out.len() >= limit {
+                            return out;
+                        }
                     }
                 }
             }
@@ -129,6 +131,19 @@ mod tests {
         // Encode "https://utf16.example.org/p" as UTF-16LE.
         let s = "https://utf16.example.org/p";
         let mut bytes = Vec::new();
+        for c in s.chars() {
+            let cp = c as u32;
+            bytes.push((cp & 0xff) as u8);
+            bytes.push(((cp >> 8) & 0xff) as u8);
+        }
+        let urls = scan_urls(&bytes, 16);
+        assert!(urls.iter().any(|u| u == s), "got: {:?}", urls);
+    }
+
+    #[test]
+    fn finds_unaligned_utf16le_url() {
+        let s = "https://unaligned-utf16.example.org/p";
+        let mut bytes = vec![0x90];
         for c in s.chars() {
             let cp = c as u32;
             bytes.push((cp & 0xff) as u8);

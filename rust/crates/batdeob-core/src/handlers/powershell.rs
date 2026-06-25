@@ -118,19 +118,26 @@ fn canonical_ps_flag(token: &str) -> Option<&'static str> {
     None
 }
 
+fn attached_ps_flag_value(token: &str) -> Option<(&'static str, &str)> {
+    let stripped = token
+        .strip_prefix('/')
+        .or_else(|| token.strip_prefix('-'))?;
+    let delimiter = stripped.find([':', '='])?;
+    let flag_end = token.len() - stripped.len() + delimiter;
+    let flag = canonical_ps_flag(&token[..flag_end])?;
+    let value = &stripped[delimiter + 1..];
+    if value.is_empty() || !flag_takes_value(flag) {
+        return None;
+    }
+    Some((flag, value))
+}
+
 fn flag_takes_value(flag: &str) -> bool {
-    matches!(
-        flag,
-        "PSConsoleFile"
-            | "Version"
-            | "InputFormat"
-            | "OutputFormat"
-            | "WindowStyle"
-            | "EncodedCommand"
-            | "ConfigurationName"
-            | "File"
-            | "ExecutionPolicy"
-    )
+    PS_FLAGS
+        .iter()
+        .find(|(name, _)| *name == flag)
+        .map(|(_, takes_value)| *takes_value)
+        .unwrap_or(false)
 }
 
 fn is_command_flag(flag: &str) -> bool {
@@ -151,6 +158,29 @@ pub fn h_powershell(raw: &str, env: &mut Environment) {
     let mut i = 1usize;
     while i < tokens.len() {
         let t = &tokens[i];
+        if let Some((flag, value)) = attached_ps_flag_value(t) {
+            if is_encoded_flag(flag) {
+                let s = collect_encoded_argument_with_prefix(value, &tokens[i + 1..]);
+                if !s.is_empty() {
+                    if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(s) {
+                        env.exec_ps1.push(decoded);
+                    }
+                }
+                return;
+            }
+            if is_command_flag(flag) {
+                let body = command_body_from_attached_value(value, &tokens[i + 1..]);
+                if !body.is_empty() {
+                    env.exec_ps1.push(body.as_bytes().to_vec());
+                }
+                return;
+            }
+            if is_file_flag(flag) {
+                return;
+            }
+            i += 1;
+            continue;
+        }
         match canonical_ps_flag(t) {
             Some(flag) if is_encoded_flag(flag) => {
                 let s = collect_encoded_argument(&tokens[i + 1..]);
@@ -193,6 +223,10 @@ fn skip_ps_meta_flags(tokens: &[String]) -> String {
     let mut i = 0;
     while i < tokens.len() {
         let t = &tokens[i];
+        if attached_ps_flag_value(t).is_some() {
+            i += 1;
+            continue;
+        }
         if let Some(flag) = canonical_ps_flag(t) {
             i += if flag_takes_value(flag) { 2 } else { 1 };
             continue;
@@ -201,6 +235,40 @@ fn skip_ps_meta_flags(tokens: &[String]) -> String {
         i += 1;
     }
     out.join(" ")
+}
+
+fn command_body_from_attached_value(value: &str, rest: &[String]) -> String {
+    let first = strip_quotes(value);
+    if rest.is_empty() {
+        first.to_string()
+    } else {
+        let mut body = String::from(first);
+        body.push(' ');
+        body.push_str(&rest.join(" "));
+        body.trim().trim_matches('"').trim_matches('\'').to_string()
+    }
+}
+
+fn collect_encoded_argument_with_prefix(first: &str, rest: &[String]) -> String {
+    let mut out = String::new();
+    let first = strip_quotes(first);
+    if first.bytes().all(is_base64_byte) {
+        out.push_str(first);
+    }
+    if first.ends_with('=') {
+        return out;
+    }
+    for token in rest {
+        let s = strip_quotes(token);
+        if s.is_empty() || !s.bytes().all(is_base64_byte) {
+            break;
+        }
+        out.push_str(s);
+        if s.ends_with('=') {
+            break;
+        }
+    }
+    out
 }
 
 fn collect_encoded_argument(tokens: &[String]) -> String {
@@ -230,6 +298,15 @@ fn strip_quotes(s: &str) -> &str {
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+    use base64::Engine;
+
+    fn encode_utf16le_b64(s: &str) -> String {
+        base64::engine::general_purpose::STANDARD.encode(
+            s.encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        )
+    }
 
     #[test]
     fn canonical_resolves_prefix_shorthand() {
@@ -299,5 +376,24 @@ mod tests {
         // to Command without needing the override.
         assert_eq!(canonical_ps_flag("-com"), Some("Command"));
         assert_eq!(canonical_ps_flag("-Command"), Some("Command"));
+    }
+
+    #[test]
+    fn attached_encodedcommand_value_is_decoded() {
+        let encoded = encode_utf16le_b64("Write-Host attached");
+        let mut env = Environment::new(&crate::Config::default());
+
+        h_powershell(&format!("powershell -NoP -enc:{encoded}"), &mut env);
+
+        let units = env.exec_ps1[0]
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect::<Vec<_>>();
+        let decoded = String::from_utf16_lossy(&units);
+        assert!(
+            decoded.contains("Write-Host attached"),
+            "attached encoded command was not decoded: {:?}",
+            env.exec_ps1
+        );
     }
 }
