@@ -148,16 +148,21 @@ static PS_QUOTED_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
-static OUTFILE_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r#"(?i)-OutFile\s+["']?([^"'\s]+)["']?"#).expect("outfile"));
+static OUTFILE_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?i)-OutFile\s+(?:"([^"\r\n;]+)"?|'([^'\r\n;]+)'?|([^"'\s;]+))"#)
+        .expect("outfile")
+});
 
 #[allow(clippy::expect_used)]
-static CURL_OUTPUT_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r#"(?i)(?:^|\s)-o\s+["']?([^"'\s;]+)["']?"#).expect("curl output"));
+static CURL_OUTPUT_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?i)(?:^|\s)-o\s+(?:"([^"\r\n;]+)"?|'([^'\r\n;]+)'?|([^"'\s;]+))"#)
+        .expect("curl output")
+});
 
 #[allow(clippy::expect_used)]
 static BITS_DESTINATION_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"(?i)-Destination\s+["']?([^"'\r\n;]+)["']?"#).expect("bits destination")
+    Regex::new(r#"(?i)-Destination\s+(?:"([^"\r\n;]+)"?|'([^'\r\n;]+)'?|([^"'\r\n;]+))"#)
+        .expect("bits destination")
 });
 
 // ---- PowerShell obfuscation expansion pre-pass ----
@@ -177,8 +182,17 @@ fn outfile_hint_from(text: &str) -> Option<String> {
         .captures(text)
         .or_else(|| CURL_OUTPUT_RE.captures(text))
         .or_else(|| BITS_DESTINATION_RE.captures(text))
-        .and_then(|c| c.get(1).map(|m| m.as_str().to_string()))
+        .and_then(|c| capture_first_group(&c))
         .or_else(|| bits_positional_destination_from(text))
+}
+
+fn capture_first_group(captures: &regex::Captures<'_>) -> Option<String> {
+    captures
+        .iter()
+        .skip(1)
+        .flatten()
+        .next()
+        .map(|m| m.as_str().to_string())
 }
 
 fn bits_positional_destination_from(text: &str) -> Option<String> {
