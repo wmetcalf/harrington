@@ -5630,6 +5630,20 @@ mod curl_tests {
     }
 
     #[test]
+    fn curl_compact_remote_name_flag_uses_basename() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line("curl -LO http://x/foo.exe", &mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst: Some(d), .. }
+                    if src == "http://x/foo.exe" && d == "foo.exe"
+            )
+        });
+        assert!(has, "traits: {:?}", env.traits);
+        assert!(env.modified_filesystem.contains_key("foo.exe"));
+    }
+
+    #[test]
     fn curl_direct_liberal_url_is_normalized() {
         let mut env = Environment::new(&Config::default());
         interpret_line(r#"CuRl -o out.exe "hTtP:\\x\foo.exe""#, &mut env);

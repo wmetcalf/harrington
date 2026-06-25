@@ -46,6 +46,11 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
                 i += 1;
                 continue;
             }
+            _ if is_compact_remote_name_flag(t) => {
+                remote_name = true;
+                i += 1;
+                continue;
+            }
             // Skip values for known one-arg flags
             "-d" | "--data" | "--data-ascii" | "--data-binary" | "--data-raw"
             | "--data-urlencode" | "-H" | "--header" | "-X" | "--request" | "-A"
@@ -87,6 +92,13 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
         env.modified_filesystem
             .insert(d.to_ascii_lowercase(), FsEntry::Download { src: url });
     }
+}
+
+fn is_compact_remote_name_flag(token: &str) -> bool {
+    token.starts_with('-')
+        && !token.starts_with("--")
+        && token.len() > 2
+        && token[1..].contains('O')
 }
 
 fn url_basename(url: &str) -> Option<String> {
