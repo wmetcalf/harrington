@@ -550,7 +550,15 @@ fn parse_vbs_split_index(
     let idx_start = trimmed.rfind(")(")?;
     let call = &trimmed[..idx_start + 1];
     let index = parse_vbs_integer(trimmed[idx_start + 2..trimmed.len() - 1].trim())? as usize;
-    let inner = vbs_function_args(call, "split")?;
+    let pieces = parse_vbs_split_values(call, bindings)?;
+    pieces.get(index).cloned()
+}
+
+fn parse_vbs_split_values(
+    expr: &str,
+    bindings: &std::collections::HashMap<String, String>,
+) -> Option<Vec<String>> {
+    let inner = vbs_function_args(expr, "split")?;
     let args = split_vbs_args(inner);
     if args.is_empty() {
         return None;
@@ -561,18 +569,20 @@ fn parse_vbs_split_index(
     } else {
         " ".to_string()
     };
-    let pieces: Vec<String> = if separator.is_empty() {
+    Some(if separator.is_empty() {
         source.chars().map(|c| c.to_string()).collect()
     } else {
         source.split(&separator).map(|s| s.to_string()).collect()
-    };
-    pieces.get(index).cloned()
+    })
 }
 
 fn parse_vbs_array_values(
     expr: &str,
     bindings: &std::collections::HashMap<String, String>,
 ) -> Option<Vec<String>> {
+    if let Some(values) = parse_vbs_split_values(expr, bindings) {
+        return Some(values);
+    }
     let inner = vbs_function_args(expr, "array")?;
     let mut values = Vec::new();
     for arg in split_vbs_args(inner) {
