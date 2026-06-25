@@ -49,7 +49,7 @@ pub fn h_reg(raw: &str, env: &mut Environment) {
     static V_RE: Lazy<Regex> =
         Lazy::new(|| Regex::new(r#"(?i)/v\s+(?:"([^"]+)"|(\S+))"#).expect("/v regex"));
     static D_RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r#"(?i)/d\s+(?:"([^"]*)"|(\S+))"#).expect("/d regex"));
+        Lazy::new(|| Regex::new(r#"(?i)/d\s+(?:"([^"]*)"|(.+))"#).expect("/d regex"));
     let Some(caps) = REG_ADD_RE.captures(raw) else {
         return;
     };
@@ -76,6 +76,7 @@ pub fn h_reg(raw: &str, env: &mut Environment) {
                 .or_else(|| c.get(2))
                 .map(|m| m.as_str().to_string())
         })
+        .map(|s| trim_reg_data_tail(&s).to_string())
         .unwrap_or_default();
     // Defender registry tampering — `reg add …\Windows Defender\… /v
     // Disable…` pattern. AV evasion IOC even when the key isn't a
@@ -132,6 +133,19 @@ fn defender_regset_suffix(key: &str, value_name: &str) -> Option<&'static str> {
         return None;
     }
     crate::deob_scan::defender_evasion_action_suffix(value_name)
+}
+
+fn trim_reg_data_tail(command: &str) -> &str {
+    const OPTIONS: &[&str] = &["/f", "/reg:32", "/reg:64", "/t", "/v", "/ve", "/va"];
+    let mut end = command.len();
+    let lower = command.to_ascii_lowercase();
+    for opt in OPTIONS {
+        let needle = format!(" {opt}");
+        if let Some(pos) = lower.find(&needle) {
+            end = end.min(pos);
+        }
+    }
+    command[..end].trim()
 }
 
 make_handler!(h_attrib, "attrib");
@@ -260,6 +274,22 @@ mod tests {
         assert!(
             env.exec_cmd.iter().any(|cmd| cmd == "echo hidden"),
             "registry persistence command was not queued: {:?}",
+            env.exec_cmd
+        );
+    }
+
+    #[test]
+    fn reg_run_unquoted_command_is_queued_for_recursive_analysis() {
+        let mut env = Environment::new(&Config::default());
+
+        h_reg(
+            r#"reg add HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v Updater /d cmd /c echo hidden /f"#,
+            &mut env,
+        );
+
+        assert!(
+            env.exec_cmd.iter().any(|cmd| cmd == "echo hidden"),
+            "unquoted registry persistence command was not queued: {:?}",
             env.exec_cmd
         );
     }
