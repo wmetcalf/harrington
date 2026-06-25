@@ -49,11 +49,18 @@ static URLDOWN_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("urldown variable")
 });
 
+#[allow(clippy::expect_used)]
+static RESPONSE_REDIRECT_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?i)\bResponse\.Redirect\s*\(?\s*"([^"]+)""#).expect("response redirect")
+});
+
 pub fn scan_vbs_payloads(env: &mut Environment) {
     extract_vbs_execute_inners(env);
 
     let payloads: Vec<Vec<u8>> = env.all_extracted_vbs.clone();
     let mut seen: std::collections::HashSet<(usize, String)> = std::collections::HashSet::new();
+    let mut seen_launches: std::collections::HashSet<(usize, String)> =
+        std::collections::HashSet::new();
     for (idx, payload) in payloads.iter().enumerate() {
         let raw = String::from_utf8_lossy(payload);
         let text = join_vbs_line_continuations(&raw);
@@ -92,6 +99,24 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
                     dst,
                 });
             }
+        }
+
+        for caps in RESPONSE_REDIRECT_RE.captures_iter(&text) {
+            let Some(url_match) = caps.get(1) else {
+                continue;
+            };
+            let Some(url) = crate::deob_scan::normalize_liberal_url_token(url_match.as_str())
+            else {
+                continue;
+            };
+            if !seen_launches.insert((idx, url.clone())) {
+                continue;
+            }
+            let snippet = snippet_prefix(&text, 120);
+            env.traits.push(Trait::UrlLaunch {
+                cmd: format!("(vbs #{idx}) {snippet}"),
+                url,
+            });
         }
 
         for expr in extract_xmlhttp_open_url_exprs(&text) {
