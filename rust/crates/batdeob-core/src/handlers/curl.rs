@@ -7,6 +7,7 @@ use crate::traits::Trait;
 pub fn h_curl(raw: &str, env: &mut Environment) {
     let tokens = split_words(raw);
     let mut output: Option<String> = None;
+    let mut output_dir: Option<String> = None;
     let mut remote_name = false;
     let mut url: Option<String> = None;
     let mut i = 1;
@@ -23,6 +24,13 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
             _ if t.eq_ignore_ascii_case("--output") => {
                 if let Some(v) = tokens.get(i + 1) {
                     output = Some(strip_outer_quotes(v).to_string());
+                }
+                i += 2;
+                continue;
+            }
+            _ if t.eq_ignore_ascii_case("--output-dir") => {
+                if let Some(v) = tokens.get(i + 1) {
+                    output_dir = Some(strip_outer_quotes(v).to_string());
                 }
                 i += 2;
                 continue;
@@ -54,6 +62,19 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
                     .unwrap_or_default();
                 if !value.is_empty() {
                     output = Some(strip_outer_quotes(value).to_string());
+                }
+                i += 1;
+                continue;
+            }
+            _ if case_insensitive_value_prefix(t, "--output-dir=")
+                .or_else(|| case_insensitive_value_prefix(t, "--output-dir:"))
+                .is_some() =>
+            {
+                let value = case_insensitive_value_prefix(t, "--output-dir=")
+                    .or_else(|| case_insensitive_value_prefix(t, "--output-dir:"))
+                    .unwrap_or_default();
+                if !value.is_empty() {
+                    output_dir = Some(strip_outer_quotes(value).to_string());
                 }
                 i += 1;
                 continue;
@@ -111,7 +132,12 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
     let dst = if let Some(o) = output {
         Some(o)
     } else if remote_name {
-        url_basename(&url)
+        url_basename(&url).map(|name| {
+            output_dir
+                .as_deref()
+                .map(|dir| join_dir_and_name(dir, &name))
+                .unwrap_or(name)
+        })
     } else {
         None
     };
@@ -196,11 +222,31 @@ fn case_insensitive_value_prefix<'a>(token: &'a str, prefix: &str) -> Option<&'a
 }
 
 fn url_basename(url: &str) -> Option<String> {
-    let path_part = url.split(['?', '#']).next()?;
-    let last = path_part.rsplit('/').next()?;
+    let path_part = url
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(url)
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(url)
+        .trim_end_matches(['/', '\\']);
+    let last = path_part.rsplit(['/', '\\']).next()?.trim();
     if last.is_empty() {
         None
     } else {
         Some(last.to_string())
     }
+}
+
+fn join_dir_and_name(dir: &str, name: &str) -> String {
+    let dir = dir.trim_matches(['"', '\'']);
+    if dir.is_empty() {
+        return name.to_string();
+    }
+    let sep = if dir.contains('\\') { '\\' } else { '/' };
+    let mut out = String::with_capacity(dir.len() + 1 + name.len());
+    out.push_str(dir.trim_end_matches(['\\', '/']));
+    out.push(sep);
+    out.push_str(name);
+    out
 }
