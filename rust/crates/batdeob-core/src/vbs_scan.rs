@@ -119,6 +119,17 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
             });
         }
 
+        for url in extract_shell_run_url_exprs(&text, &bindings) {
+            if !seen_launches.insert((idx, url.clone())) {
+                continue;
+            }
+            let snippet = snippet_prefix(&text, 120);
+            env.traits.push(Trait::UrlLaunch {
+                cmd: format!("(vbs #{idx}) {snippet}"),
+                url,
+            });
+        }
+
         for expr in extract_xmlhttp_open_url_exprs(&text) {
             let Some(url) = eval_vbs_string_expr(expr, &bindings)
                 .and_then(|value| crate::deob_scan::normalize_liberal_url_token(&value))
@@ -192,6 +203,32 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
             });
         }
     }
+}
+
+fn extract_shell_run_url_exprs(
+    text: &str,
+    bindings: &std::collections::HashMap<String, String>,
+) -> Vec<String> {
+    let mut urls = Vec::new();
+    for line in text.lines() {
+        let Some(run_pos) = find_ascii_case_insensitive_from(line, ".run", 0) else {
+            continue;
+        };
+        let mut args = line[run_pos + ".run".len()..].trim();
+        if let Some(stripped) = args.strip_prefix('(') {
+            args = stripped.trim_end().strip_suffix(')').unwrap_or(stripped);
+        }
+        let Some(first_arg) = split_vbs_args(args).first().copied() else {
+            continue;
+        };
+        let Some(value) = eval_vbs_string_expr(first_arg, bindings) else {
+            continue;
+        };
+        if let Some(url) = crate::deob_scan::normalize_liberal_url_token(&value) {
+            urls.push(url);
+        }
+    }
+    urls
 }
 
 fn extract_urldownload_expr_downloads(
