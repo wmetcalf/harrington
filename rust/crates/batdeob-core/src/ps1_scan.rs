@@ -178,6 +178,29 @@ fn outfile_hint_from(text: &str) -> Option<String> {
         .or_else(|| CURL_OUTPUT_RE.captures(text))
         .or_else(|| BITS_DESTINATION_RE.captures(text))
         .and_then(|c| c.get(1).map(|m| m.as_str().to_string()))
+        .or_else(|| bits_positional_destination_from(text))
+}
+
+fn bits_positional_destination_from(text: &str) -> Option<String> {
+    if !contains_ascii_case_insensitive(text, "start-bitstransfer") {
+        return None;
+    }
+    let literals: Vec<String> = PS_QUOTED_LITERAL_RE
+        .captures_iter(text)
+        .filter_map(|caps| {
+            caps.get(1)
+                .or_else(|| caps.get(2))
+                .map(|m| m.as_str().to_string())
+        })
+        .collect();
+    let url_idx = literals.iter().position(|literal| {
+        crate::deob_scan::normalize_liberal_url_token(&clean_ps_url(literal)).is_some()
+    })?;
+    literals
+        .iter()
+        .skip(url_idx + 1)
+        .find(|literal| crate::deob_scan::normalize_liberal_url_token(literal).is_none())
+        .cloned()
 }
 
 #[allow(clippy::expect_used)]

