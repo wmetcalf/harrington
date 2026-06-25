@@ -13,7 +13,7 @@ pub fn h_copy(raw: &str, env: &mut Environment) {
         {
             continue;
         }
-        args.push(strip_outer_quotes(t).to_string());
+        push_copy_arg(&mut args, strip_outer_quotes(t));
     }
 
     // Multi-source form: A + B + C dst  (args contain "+" separators)
@@ -77,6 +77,18 @@ pub fn h_copy(raw: &str, env: &mut Environment) {
     }
     env.modified_filesystem
         .insert(dst.to_ascii_lowercase(), FsEntry::Copy { src });
+}
+
+fn push_copy_arg(args: &mut Vec<String>, token: &str) {
+    let mut parts = token.split('+').peekable();
+    while let Some(part) = parts.next() {
+        if !part.is_empty() {
+            args.push(part.to_string());
+        }
+        if parts.peek().is_some() {
+            args.push("+".to_string());
+        }
+    }
 }
 
 pub fn h_xcopy(raw: &str, env: &mut Environment) {

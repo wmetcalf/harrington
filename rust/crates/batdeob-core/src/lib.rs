@@ -9444,6 +9444,43 @@ mod copy_multi_source_tests {
             _ => panic!("unexpected entry: {:?}", entry),
         }
     }
+
+    #[test]
+    fn copy_b_compact_multi_source_concat_tracked() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "a.bin".to_string(),
+            FsEntry::Content {
+                content: b"AAAA".to_vec(),
+                append: false,
+            },
+        );
+        env.modified_filesystem.insert(
+            "b.bin".to_string(),
+            FsEntry::Content {
+                content: b"BBBB".to_vec(),
+                append: false,
+            },
+        );
+        env.modified_filesystem.insert(
+            "c.bin".to_string(),
+            FsEntry::Content {
+                content: b"CCCC".to_vec(),
+                append: false,
+            },
+        );
+        interpret_line("copy /b a.bin+b.bin+c.bin out.exe", &mut env);
+        let entry = env
+            .modified_filesystem
+            .get("out.exe")
+            .expect("out.exe missing");
+        match entry {
+            FsEntry::Content { content, .. } => {
+                assert_eq!(content, b"AAAABBBBCCCC", "got: {:?}", content);
+            }
+            other => panic!("unexpected compact concat entry: {:?}", other),
+        }
+    }
 }
 
 #[cfg(test)]
