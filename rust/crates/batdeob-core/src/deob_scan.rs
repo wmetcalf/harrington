@@ -431,7 +431,8 @@ fn scan_bitsadmin_deob_text(deobfuscated: &str, env: &mut Environment) {
         .collect();
 
     for line in deobfuscated.lines() {
-        if !contains_ascii_case_insensitive(line, "/transfer")
+        if (!contains_ascii_case_insensitive(line, "/transfer")
+            && !contains_ascii_case_insensitive(line, "-transfer"))
             || !contains_ascii_case_insensitive(line, "bitsadmin")
         {
             continue;
@@ -441,18 +442,18 @@ fn scan_bitsadmin_deob_text(deobfuscated: &str, env: &mut Environment) {
             let tail = &line[bits_match.start()..];
             let segment = tail.split('&').next().unwrap_or(tail);
             let tokens = split_words(segment);
-            if !tokens.iter().any(|t| t.eq_ignore_ascii_case("/transfer")) {
+            if !tokens.iter().any(|t| bitsadmin_flag_eq(t, "transfer")) {
                 continue;
             }
 
             let mut i = 1;
             while i < tokens.len() {
                 let token = strip_outer_quotes(&tokens[i]).to_string();
-                if token.eq_ignore_ascii_case("/priority") {
+                if bitsadmin_flag_eq(&token, "priority") {
                     i += 2;
                     continue;
                 }
-                if token.starts_with('/') || token.eq_ignore_ascii_case("foreground") {
+                if is_bitsadmin_option(&token) || token.eq_ignore_ascii_case("foreground") {
                     i += 1;
                     continue;
                 }
@@ -471,6 +472,16 @@ fn scan_bitsadmin_deob_text(deobfuscated: &str, env: &mut Environment) {
             }
         }
     }
+}
+
+fn bitsadmin_flag_eq(token: &str, flag: &str) -> bool {
+    token
+        .strip_prefix(['/', '-'])
+        .is_some_and(|value| value.eq_ignore_ascii_case(flag))
+}
+
+fn is_bitsadmin_option(token: &str) -> bool {
+    token.starts_with('/') || token.starts_with('-')
 }
 
 fn scan_python_requests_get_deob_text(deobfuscated: &str, env: &mut Environment) {
