@@ -10,7 +10,7 @@ use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
 use crate::util::{
     contains_ascii_case_insensitive, find_ascii_case_insensitive, find_ascii_case_insensitive_from,
-    looks_like_liberal_url, snippet_prefix,
+    floor_char_boundary, looks_like_liberal_url, snippet_prefix,
 };
 use base64::Engine as _;
 use once_cell::sync::Lazy;
@@ -542,7 +542,9 @@ fn expand_gzip_base64_literals(text: &str) -> String {
 
 #[cfg(test)]
 mod gzip_base64_prefilter_tests {
-    use super::{expand_gzip_base64_literals, gzip_wrapper_bounds};
+    use super::{
+        expand_gzip_base64_literals, expand_gzip_function_base64_variables, gzip_wrapper_bounds,
+    };
 
     #[test]
     fn ignores_text_without_gzip_base64_shape() {
@@ -562,6 +564,23 @@ mod gzip_base64_prefilter_tests {
         let bounds = bounds.unwrap_or_default();
         assert_eq!(bounds.0, 0);
         assert!(bounds.1 > b64_end);
+    }
+
+    #[test]
+    fn long_non_ascii_tail_does_not_panic_at_scan_cap() {
+        let prefix = "New-Object System.IO.StreamReader; [Convert]::FromBase64String('QUJDRA==')";
+        let text = format!("{prefix}A{}", "é".repeat(8192));
+        assert!(gzip_wrapper_bounds(&text, prefix.len(), prefix.len()).is_none());
+    }
+
+    #[test]
+    fn long_non_ascii_function_body_does_not_panic_at_scan_cap() {
+        let b64 = "A".repeat(256);
+        let text = format!(
+            "$blob = '{b64}'; GZipStream; [Convert]::FromBase64String($blob); function Inflate {}",
+            "é".repeat(4096)
+        );
+        assert_eq!(expand_gzip_function_base64_variables(&text), text);
     }
 }
 
@@ -588,7 +607,7 @@ fn expand_gzip_function_base64_variables(text: &str) -> String {
     for caps in PS_FUNCTION_DEF_RE.captures_iter(text) {
         let Some(full) = caps.get(0) else { continue };
         let Some(name) = caps.get(1) else { continue };
-        let body_end = text.len().min(full.end().saturating_add(4096));
+        let body_end = floor_char_boundary(text, full.end().saturating_add(4096));
         if contains_ascii_case_insensitive(&text[full.end()..body_end], "gzipstream") {
             gzip_functions.insert(name.as_str().to_ascii_lowercase());
         }
@@ -624,7 +643,8 @@ fn expand_gzip_function_base64_variables(text: &str) -> String {
 fn gzip_wrapper_bounds(text: &str, b64_start: usize, b64_end: usize) -> Option<(usize, usize)> {
     let start =
         find_ascii_case_insensitive(&text[..b64_start], "new-object system.io.streamreader")?;
-    let after = &text[b64_end..text.len().min(b64_end.saturating_add(8192))];
+    let after_end = floor_char_boundary(text, b64_end.saturating_add(8192));
+    let after = &text[b64_end..after_end];
     let read_to_end = READ_TO_END_RE.find(after)?;
     let end = b64_end + read_to_end.end();
     let wrapper = &text[start..end];
