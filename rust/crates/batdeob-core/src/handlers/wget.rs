@@ -74,6 +74,14 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
             i += 1;
             continue;
         }
+        if wget_value_flag(raw_token) {
+            i += 2;
+            continue;
+        }
+        if wget_attached_value_flag(raw_token) {
+            i += 1;
+            continue;
+        }
         if let Some(normalized) = normalize_wget_url_token(raw_token) {
             url = Some(normalized);
         }
@@ -86,6 +94,45 @@ fn normalize_wget_url_token(token: &str) -> Option<String> {
     crate::deob_scan::normalize_liberal_url_token(token)
         .or_else(|| crate::deob_scan::normalize_schemeless_domain_path_token(token))
 }
+
+fn wget_value_flag(token: &str) -> bool {
+    WGET_VALUE_FLAGS
+        .iter()
+        .any(|flag| token.eq_ignore_ascii_case(flag))
+}
+
+fn wget_attached_value_flag(token: &str) -> bool {
+    WGET_VALUE_FLAGS.iter().any(|flag| {
+        let Some(head) = token.get(..flag.len()) else {
+            return false;
+        };
+        let tail = &token[flag.len()..];
+        !tail.is_empty() && head.eq_ignore_ascii_case(flag) && tail.starts_with(['=', ':'])
+    })
+}
+
+const WGET_VALUE_FLAGS: &[&str] = &[
+    "-e",
+    "-U",
+    "--execute",
+    "--header",
+    "--user-agent",
+    "--referer",
+    "--post-data",
+    "--post-file",
+    "--body-data",
+    "--body-file",
+    "--method",
+    "--load-cookies",
+    "--save-cookies",
+    "--keep-session-cookies",
+    "--proxy-user",
+    "--proxy-password",
+    "--bind-address",
+    "--ca-certificate",
+    "--certificate",
+    "--private-key",
+];
 
 fn short_option_cluster_output(token: &str) -> Option<&str> {
     let cluster = token.strip_prefix('-')?;
