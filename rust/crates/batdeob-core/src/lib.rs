@@ -5666,6 +5666,22 @@ mod powershell_tests {
     }
 
     #[test]
+    fn powershell_attached_encoded_command_extracts() {
+        let payload = "Write-Host attached";
+        let utf16: Vec<u8> = payload
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .collect();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&utf16);
+        let mut env = Environment::new(&Config::default());
+        interpret_line(&format!("powershell -EncodedCommand:{b64}"), &mut env);
+        assert_eq!(env.exec_ps1.len(), 1);
+        let stored = String::from_utf8_lossy(&env.exec_ps1[0]).into_owned();
+        let trimmed: String = stored.chars().filter(|c| *c != '\0').collect();
+        assert_eq!(trimmed, payload);
+    }
+
+    #[test]
     fn powershell_execution_policy_does_not_shadow_later_encoded_command() {
         let payload = "Write-Host hi";
         let utf16: Vec<u8> = payload
@@ -5694,6 +5710,15 @@ mod powershell_tests {
         assert_eq!(env.exec_ps1.len(), 1);
         let stored = String::from_utf8_lossy(&env.exec_ps1[0]);
         assert!(stored.contains("Get-Process"), "got: {}", stored);
+    }
+
+    #[test]
+    fn powershell_attached_command_flag_captures_raw() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(r#"powershell -Command:"Get-Process""#, &mut env);
+        assert_eq!(env.exec_ps1.len(), 1);
+        let stored = String::from_utf8_lossy(&env.exec_ps1[0]);
+        assert_eq!(stored, "Get-Process");
     }
 
     #[test]
