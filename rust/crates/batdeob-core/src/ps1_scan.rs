@@ -169,7 +169,7 @@ static CURL_OUTPUT_RE: Lazy<Regex> = Lazy::new(|| {
 
 #[allow(clippy::expect_used)]
 static BITS_DESTINATION_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"(?i)-Destination(?:\s+|:)(?:"([^"\r\n;]+)"?|'([^'\r\n;]+)'?|([^"'\r\n;]+))"#)
+    Regex::new(r#"(?i)-Dest(?:ination)?(?:\s+|:)(?:"([^"\r\n;]+)"?|'([^'\r\n;]+)'?|([^"'\s;]+))"#)
         .expect("bits destination")
 });
 
