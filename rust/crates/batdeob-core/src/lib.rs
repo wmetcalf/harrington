@@ -8484,6 +8484,24 @@ mod ps1_obfuscation_tests {
     }
 
     #[test]
+    fn ps1_normalization_decodes_unary_join_char_array() {
+        let chars = "https://unary-join-char-array.example/stage.ps1"
+            .chars()
+            .map(|ch| u32::from(ch).to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let ps = format!("iex (-join [char[]]({chars}))");
+
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+
+        assert!(
+            normalized.contains("https://unary-join-char-array.example/stage.ps1"),
+            "unary join char-array call was not decoded:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
     fn ps1_normalization_decodes_nested_gzip_format_base64() {
         use base64::Engine;
         use std::io::Write;

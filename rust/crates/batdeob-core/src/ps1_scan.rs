@@ -2345,6 +2345,14 @@ static STRING_JOIN_CHAR_ARRAY_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("string join char array")
 });
 
+#[allow(clippy::expect_used)]
+static UNARY_JOIN_CHAR_ARRAY_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?i)-join\s+\[char\[\]\]\s*@?\(\s*((?:0x[0-9a-f]+|\d+)\s*(?:,\s*(?:0x[0-9a-f]+|\d+)\s*){2,})\)\s*"#,
+    )
+    .expect("unary join char array")
+});
+
 fn decode_char_array_nums(nums_str: &str) -> Option<String> {
     if !nums_str.is_ascii() {
         return None;
@@ -2388,6 +2396,31 @@ fn expand_string_join_char_arrays(text: &str) -> String {
             let full = caps.get(0)?;
             let separator = caps.get(1)?.as_str();
             let decoded = decode_ps_char_array_nums(caps.get(2)?.as_str(), separator)?;
+            Some((
+                full.start(),
+                full.end(),
+                format!("'{}'", decoded.replace('\'', "''")),
+            ))
+        })
+        .collect();
+    let mut out = text.to_string();
+    for (start, end, replacement) in matches.into_iter().rev() {
+        out.replace_range(start..end, &replacement);
+    }
+    out
+}
+
+fn expand_unary_join_char_arrays(text: &str) -> String {
+    if !contains_ascii_case_insensitive(text, "-join")
+        || !contains_ascii_case_insensitive(text, "char[]")
+    {
+        return text.to_string();
+    }
+    let matches: Vec<(usize, usize, String)> = UNARY_JOIN_CHAR_ARRAY_RE
+        .captures_iter(text)
+        .filter_map(|caps| {
+            let full = caps.get(0)?;
+            let decoded = decode_ps_char_array_nums(caps.get(1)?.as_str(), "")?;
             Some((
                 full.start(),
                 full.end(),
@@ -3211,6 +3244,7 @@ fn expand_obfuscation(text: &str) -> String {
         out = expand_char_concat(&out);
         out = expand_char_literal_concat(&out);
         out = expand_string_join_char_arrays(&out);
+        out = expand_unary_join_char_arrays(&out);
         out = expand_char_array_concat_chunks(&out);
         out = expand_char_array_chunks(&out); // char-array chunk decoder (Pattern D)
         out = expand_hex_split_char_loop(&out);
@@ -3227,6 +3261,7 @@ fn expand_obfuscation(text: &str) -> String {
         out = expand_getstring_base64_literals(&out);
         out = expand_getstring_byte_arrays(&out);
         out = expand_string_join_char_arrays(&out);
+        out = expand_unary_join_char_arrays(&out);
         out = expand_convert_frombase64_literals(&out);
         out = append_decoded_frombase64_literals(&out);
         out = append_decoded_rc4_wrappers(&out);
