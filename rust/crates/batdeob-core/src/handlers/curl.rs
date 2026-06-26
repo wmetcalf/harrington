@@ -149,7 +149,7 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
                         .unwrap_or_default(),
                 );
                 if url.is_none() {
-                    url = crate::deob_scan::normalize_liberal_url_token(value);
+                    url = normalize_curl_url(value);
                 }
                 i += 1;
                 continue;
@@ -181,7 +181,7 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
                 }
                 let candidate = strip_outer_quotes(t);
                 if url.is_none() {
-                    url = crate::deob_scan::normalize_liberal_url_token(candidate);
+                    url = normalize_curl_url(candidate);
                 }
                 i += 1;
             }
@@ -238,7 +238,7 @@ fn apply_config_file(
         let value = strip_outer_quotes(value.trim()).to_string();
         match name.as_str() {
             "url" if url.is_none() => {
-                *url = crate::deob_scan::normalize_liberal_url_token(&value);
+                *url = normalize_curl_url(&value);
             }
             "output" | "o" => {
                 *output = Some(value);
@@ -252,6 +252,11 @@ fn apply_config_file(
             _ => {}
         }
     }
+}
+
+fn normalize_curl_url(s: &str) -> Option<String> {
+    crate::deob_scan::normalize_liberal_url_token(s)
+        .or_else(|| crate::deob_scan::normalize_schemeless_domain_path_token(s))
 }
 
 fn compact_short_output_arg(token: &str) -> Option<&str> {

