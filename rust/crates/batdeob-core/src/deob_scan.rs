@@ -2221,7 +2221,7 @@ fn scan_url_launch_deob_text(deobfuscated: &str, env: &mut Environment) {
                 {
                     url_launch_after_rundll32_fileprotocolhandler(&tokens, i + 1)
                 } else if is_url_launcher_command(&cmd) {
-                    first_url_after(&tokens, i + 1, false)
+                    first_url_after(&tokens, i + 1, false, true)
                 } else {
                     None
                 })
@@ -2266,7 +2266,7 @@ fn powershell_url_launches_in_line(line: &str) -> Vec<String> {
                 .map(|token| is_url_launcher_command(&command_name(strip_outer_quotes(token))))
                 .unwrap_or(false)
             {
-                if let Some(url) = first_url_after(&tokens, 1, false) {
+                if let Some(url) = first_url_after(&tokens, 1, false, false) {
                     found.push(url);
                 }
             }
@@ -2470,6 +2470,7 @@ fn scan_process_url_arguments(deobfuscated: &str, env: &mut Environment) {
             &tokens,
             1,
             cmd.eq_ignore_ascii_case("msiexec") || cmd.eq_ignore_ascii_case("msiexec.exe"),
+            false,
         ) else {
             continue;
         };
@@ -2526,7 +2527,7 @@ fn url_launch_after_start(tokens: &[String], mut i: usize) -> Option<String> {
             return normalize_liberal_url_token(&url);
         }
         if is_url_launcher_command(&command_name(token)) {
-            return first_url_after(tokens, i + 1, false);
+            return first_url_after(tokens, i + 1, false, true);
         }
         if !skipped_title
             && tokens
@@ -2552,13 +2553,14 @@ fn url_launch_after_rundll32_fileprotocolhandler(
             .to_ascii_lowercase()
             .contains("fileprotocolhandler")
     })?;
-    first_url_after(tokens, handler_idx + 1, false)
+    first_url_after(tokens, handler_idx + 1, false, false)
 }
 
 fn first_url_after(
     tokens: &[String],
     start: usize,
     allow_msiexec_attached: bool,
+    allow_schemeless: bool,
 ) -> Option<String> {
     tokens
         .iter()
@@ -2575,6 +2577,9 @@ fn first_url_after(
                 if normalize_schemeless_domain_path_token(token).is_some() {
                     return Some(token);
                 }
+            }
+            if allow_schemeless && normalize_schemeless_domain_path_token(token).is_some() {
+                return Some(token);
             }
             None
         })
@@ -2677,7 +2682,7 @@ mod url_argument_helper_tests {
         assert_eq!(cmd, "calc.COM");
         assert!(is_url_argument_process(&cmd));
         assert_eq!(
-            first_url_after(&tokens, 1, false),
+            first_url_after(&tokens, 1, false, false),
             Some("https://skynetx.com.br/html.html".to_string())
         );
     }
