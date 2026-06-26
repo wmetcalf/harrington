@@ -2632,6 +2632,10 @@ fn is_url_launcher_command(cmd: &str) -> bool {
 }
 
 fn is_url_argument_process(cmd: &str) -> bool {
+    if cmd.eq_ignore_ascii_case("msiexec") || cmd.eq_ignore_ascii_case("msiexec.exe") {
+        return true;
+    }
+
     // Windows file extensions are case-insensitive — `Notepad.EXE`
     // / `payload.Bat` are valid invocations. Check suffixes in place
     // so we avoid allocating a lowercase copy.
