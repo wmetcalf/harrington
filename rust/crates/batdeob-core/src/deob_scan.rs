@@ -537,34 +537,335 @@ fn scan_python_requests_get_deob_text(deobfuscated: &str, env: &mut Environment)
 }
 
 fn decoded_python_b64decode_literals(deobfuscated: &str) -> Vec<String> {
-    use base64::Engine;
-
     static PY_B64DECODE_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?is)base64\.b64decode\s*\(\s*['"]([A-Za-z0-9+/=]{32,20000})['"]\s*\)"#)
-            .expect("python b64decode literal regex")
+        Regex::new(
+            r#"(?is)(?:base64|__import__\(\s*['"]base64['"]\s*\))\.(b64decode|urlsafe_b64decode)\s*\(\s*(?:[bB])?['"]([^'"]+)['"]\s*([^)]{0,128})\)"#,
+        )
+        .expect("python b64decode literal regex")
+    });
+    static PY_B64DECODE_VAR_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?is)(?:base64|__import__\(\s*['"]base64['"]\s*\))\.(b64decode|urlsafe_b64decode)\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*([^)]{0,128})\)"#,
+        )
+        .expect("python b64decode variable regex")
+    });
+    static PY_B64DECODE_MODULE_ALIAS_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?is)\b([A-Za-z_][A-Za-z0-9_]*)\.(b64decode|urlsafe_b64decode)\s*\(\s*(?:[bB])?['"]([^'"]+)['"]\s*([^)]{0,128})\)"#,
+        )
+        .expect("python b64decode module alias literal regex")
+    });
+    static PY_B64DECODE_MODULE_ALIAS_VAR_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?is)\b([A-Za-z_][A-Za-z0-9_]*)\.(b64decode|urlsafe_b64decode)\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*([^)]{0,128})\)"#,
+        )
+        .expect("python b64decode module alias variable regex")
+    });
+    static PY_B64DECODE_ALIAS_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?is)\b([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*(?:[bB])?['"]([^'"]+)['"]\s*([^)]{0,128})\)"#,
+        )
+        .expect("python b64decode alias literal regex")
+    });
+    static PY_B64DECODE_ALIAS_VAR_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?is)\b([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*([^)]{0,128})\)"#,
+        )
+        .expect("python b64decode alias variable regex")
     });
 
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for caps in PY_B64DECODE_LITERAL_RE.captures_iter(deobfuscated).take(16) {
-        let Some(b64) = caps.get(1).map(|m| m.as_str()) else {
+        let Some(method) = caps.get(1).map(|m| m.as_str()) else {
             continue;
         };
-        if !seen.insert(b64) {
+        let Some(b64) = caps.get(2).map(|m| m.as_str()) else {
+            continue;
+        };
+        let has_urlsafe_altchars = caps
+            .get(3)
+            .is_some_and(|m| python_b64_suffix_has_urlsafe_altchars(m.as_str()));
+        decode_python_b64_payload(method, b64, has_urlsafe_altchars, &mut out, &mut seen);
+    }
+
+    let bindings = collect_python_b64_string_bindings(deobfuscated);
+    let module_aliases = collect_python_base64_module_aliases(deobfuscated);
+    let decoder_aliases = collect_python_base64_decoder_aliases(deobfuscated);
+    for caps in PY_B64DECODE_VAR_RE.captures_iter(deobfuscated).take(16) {
+        let Some(method) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(name) = caps.get(2).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(b64) = bindings.get(name).map(String::as_str) else {
+            continue;
+        };
+        let has_urlsafe_altchars = caps
+            .get(3)
+            .is_some_and(|m| python_b64_suffix_has_urlsafe_altchars(m.as_str()));
+        decode_python_b64_payload(method, b64, has_urlsafe_altchars, &mut out, &mut seen);
+    }
+
+    for caps in PY_B64DECODE_MODULE_ALIAS_LITERAL_RE
+        .captures_iter(deobfuscated)
+        .take(32)
+    {
+        let Some(module_name) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        if !module_aliases.contains(module_name) {
             continue;
         }
-        let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(b64) else {
+        let Some(method) = caps.get(2).map(|m| m.as_str()) else {
             continue;
         };
-        if decoded.len() > 64 * 1024 {
+        let Some(b64) = caps.get(3).map(|m| m.as_str()) else {
+            continue;
+        };
+        let has_urlsafe_altchars = caps
+            .get(4)
+            .is_some_and(|m| python_b64_suffix_has_urlsafe_altchars(m.as_str()));
+        decode_python_b64_payload(method, b64, has_urlsafe_altchars, &mut out, &mut seen);
+    }
+
+    for caps in PY_B64DECODE_MODULE_ALIAS_VAR_RE
+        .captures_iter(deobfuscated)
+        .take(32)
+    {
+        let Some(module_name) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        if !module_aliases.contains(module_name) {
             continue;
         }
-        let Ok(text) = String::from_utf8(decoded) else {
+        let Some(method) = caps.get(2).map(|m| m.as_str()) else {
             continue;
         };
+        let Some(var_name) = caps.get(3).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(b64) = bindings.get(var_name).map(String::as_str) else {
+            continue;
+        };
+        let has_urlsafe_altchars = caps
+            .get(4)
+            .is_some_and(|m| python_b64_suffix_has_urlsafe_altchars(m.as_str()));
+        decode_python_b64_payload(method, b64, has_urlsafe_altchars, &mut out, &mut seen);
+    }
+
+    for caps in PY_B64DECODE_ALIAS_LITERAL_RE
+        .captures_iter(deobfuscated)
+        .take(32)
+    {
+        let Some(name) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(method) = decoder_aliases.get(name).map(String::as_str) else {
+            continue;
+        };
+        let Some(b64) = caps.get(2).map(|m| m.as_str()) else {
+            continue;
+        };
+        let has_urlsafe_altchars = caps
+            .get(3)
+            .is_some_and(|m| python_b64_suffix_has_urlsafe_altchars(m.as_str()));
+        decode_python_b64_payload(method, b64, has_urlsafe_altchars, &mut out, &mut seen);
+    }
+
+    for caps in PY_B64DECODE_ALIAS_VAR_RE
+        .captures_iter(deobfuscated)
+        .take(32)
+    {
+        let Some(name) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(method) = decoder_aliases.get(name).map(String::as_str) else {
+            continue;
+        };
+        let Some(var_name) = caps.get(2).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(b64) = bindings.get(var_name).map(String::as_str) else {
+            continue;
+        };
+        let has_urlsafe_altchars = caps
+            .get(3)
+            .is_some_and(|m| python_b64_suffix_has_urlsafe_altchars(m.as_str()));
+        decode_python_b64_payload(method, b64, has_urlsafe_altchars, &mut out, &mut seen);
+    }
+    out
+}
+
+fn collect_python_base64_module_aliases(deobfuscated: &str) -> std::collections::HashSet<String> {
+    static PY_IMPORT_BASE64_ALIAS_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)\bimport\s+base64\s+as\s+([A-Za-z_][A-Za-z0-9_]*)"#)
+            .expect("python import base64 alias regex")
+    });
+
+    let mut aliases = std::collections::HashSet::new();
+    aliases.insert("base64".to_string());
+    for caps in PY_IMPORT_BASE64_ALIAS_RE
+        .captures_iter(deobfuscated)
+        .take(16)
+    {
+        let Some(alias) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        aliases.insert(alias.to_string());
+    }
+    aliases
+}
+
+fn collect_python_base64_decoder_aliases(
+    deobfuscated: &str,
+) -> std::collections::HashMap<String, String> {
+    static PY_FROM_BASE64_IMPORT_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)\bfrom\s+base64\s+import\s+([^;"'\r\n]+)"#)
+            .expect("python from base64 import regex")
+    });
+
+    let mut aliases = std::collections::HashMap::new();
+    for caps in PY_FROM_BASE64_IMPORT_RE.captures_iter(deobfuscated).take(8) {
+        let Some(imports) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        for part in imports.split(',') {
+            let part = part.trim().trim_matches(['(', ')']);
+            let words = part.split_ascii_whitespace().collect::<Vec<_>>();
+            let Some(method) = words.first().copied() else {
+                continue;
+            };
+            if !matches!(method, "b64decode" | "urlsafe_b64decode") {
+                continue;
+            }
+            let alias = if words.get(1).is_some_and(|w| w.eq_ignore_ascii_case("as")) {
+                words.get(2).copied().unwrap_or(method)
+            } else {
+                method
+            };
+            if is_python_identifier(alias) {
+                aliases.insert(alias.to_string(), method.to_string());
+            }
+        }
+    }
+    aliases
+}
+
+fn collect_python_b64_string_bindings(
+    deobfuscated: &str,
+) -> std::collections::HashMap<String, String> {
+    static PY_STRING_BINDING_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:[bB])?['"]([^'"]+)['"]"#,
+        )
+        .expect("python string binding regex")
+    });
+
+    let mut bindings = std::collections::HashMap::new();
+    for caps in PY_STRING_BINDING_RE.captures_iter(deobfuscated).take(64) {
+        let Some(name) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(value) = caps.get(2).map(|m| m.as_str()) else {
+            continue;
+        };
+        if !(32..=20_000).contains(&value.len()) || !is_python_base64_literal(value) {
+            continue;
+        }
+        bindings.insert(name.to_string(), value.to_string());
+    }
+    bindings
+}
+
+fn is_python_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first == '_' || first.is_ascii_alphabetic())
+        && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+}
+
+fn decode_python_b64_payload(
+    method: &str,
+    b64: &str,
+    has_urlsafe_altchars: bool,
+    out: &mut Vec<String>,
+    seen: &mut std::collections::HashSet<String>,
+) {
+    use base64::Engine;
+
+    if !(32..=20_000).contains(&b64.len()) || !is_python_base64_literal(b64) {
+        return;
+    }
+    if !seen.insert(b64.to_string()) {
+        return;
+    }
+    let decoded = if method.eq_ignore_ascii_case("urlsafe_b64decode") || has_urlsafe_altchars {
+        base64::engine::general_purpose::URL_SAFE
+            .decode(b64)
+            .or_else(|_| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(b64))
+    } else {
+        base64::engine::general_purpose::STANDARD.decode(b64)
+    };
+    let Ok(decoded) = decoded else {
+        return;
+    };
+    out.extend(decoded_python_literal_payloads(&decoded));
+}
+
+fn decoded_python_literal_payloads(decoded: &[u8]) -> Vec<String> {
+    let mut out = Vec::new();
+    if decoded.len() <= 64 * 1024 {
+        if let Ok(text) = std::str::from_utf8(decoded) {
+            out.push(text.to_string());
+        }
+    }
+    if let Some(text) = inflate_python_literal_zlib(decoded) {
+        out.push(text);
+    }
+    if let Some(text) = inflate_python_literal_gzip(decoded) {
         out.push(text);
     }
     out
+}
+
+fn inflate_python_literal_zlib(decoded: &[u8]) -> Option<String> {
+    python_bounded_inflate(flate2::read::ZlibDecoder::new(decoded))
+}
+
+fn inflate_python_literal_gzip(decoded: &[u8]) -> Option<String> {
+    python_bounded_inflate(flate2::read::GzDecoder::new(decoded))
+}
+
+fn python_bounded_inflate<R: std::io::Read>(reader: R) -> Option<String> {
+    use std::io::Read as _;
+
+    const MAX_DECOMPRESSED_BYTES: u64 = 64 * 1024;
+
+    let mut limited = reader.take(MAX_DECOMPRESSED_BYTES + 1);
+    let mut bytes = Vec::new();
+    limited.read_to_end(&mut bytes).ok()?;
+    if bytes.len() as u64 > MAX_DECOMPRESSED_BYTES {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
+}
+
+fn is_python_base64_literal(s: &str) -> bool {
+    s.chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '/' | '_' | '-' | '='))
+}
+
+fn python_b64_suffix_has_urlsafe_altchars(suffix: &str) -> bool {
+    static PY_B64_ALTCHARS_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)^\s*,\s*(?:altchars\s*=\s*)?(?:[bB])?['"]-_['"]\s*$"#)
+            .expect("python b64 altchars regex")
+    });
+
+    PY_B64_ALTCHARS_RE.is_match(suffix)
 }
 
 fn emit_python_download(
