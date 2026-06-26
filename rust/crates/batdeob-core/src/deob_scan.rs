@@ -1358,19 +1358,11 @@ fn collect_python_urllib_call_aliases(text: &str, target_method: &str) -> Vec<St
         )
         .expect("python urllib import regex")
     });
-    static PY_IMPORT_URLLIB_REQUEST_ALIAS_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?is)\bimport\s+urllib\.request\s+as\s+([A-Za-z_][A-Za-z0-9_]*)"#)
-            .expect("python urllib.request import alias regex")
-    });
-
     let mut aliases = Vec::new();
-    for caps in PY_IMPORT_URLLIB_REQUEST_ALIAS_RE
-        .captures_iter(text)
-        .take(8)
+    for alias in collect_python_urllib_request_module_aliases(text)
+        .into_iter()
+        .filter(|alias| alias != "urllib.request")
     {
-        let Some(alias) = caps.get(1).map(|m| m.as_str()) else {
-            continue;
-        };
         aliases.push(format!("{alias}.{target_method}"));
     }
     aliases.extend(collect_python_urllib_assigned_call_aliases(
@@ -1403,11 +1395,50 @@ fn collect_python_urllib_call_aliases(text: &str, target_method: &str) -> Vec<St
     aliases
 }
 
-fn collect_python_urllib_assigned_call_aliases(text: &str, target_method: &str) -> Vec<String> {
+fn collect_python_urllib_request_module_aliases(text: &str) -> Vec<String> {
     static PY_IMPORT_URLLIB_REQUEST_ALIAS_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?is)\bimport\s+urllib\.request\s+as\s+([A-Za-z_][A-Za-z0-9_]*)"#)
             .expect("python urllib.request import alias regex")
     });
+    static PY_FROM_URLLIB_REQUEST_MODULE_IMPORT_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)\bfrom\s+urllib\s+import\s*(?:\(([^)]{0,512})\)|([^;"'\r\n]+))"#)
+            .expect("python urllib request module import regex")
+    });
+
+    let mut aliases = vec!["urllib.request".to_string()];
+    aliases.extend(
+        PY_IMPORT_URLLIB_REQUEST_ALIAS_RE
+            .captures_iter(text)
+            .take(8)
+            .filter_map(|caps| caps.get(1).map(|m| m.as_str().to_string())),
+    );
+    for caps in PY_FROM_URLLIB_REQUEST_MODULE_IMPORT_RE
+        .captures_iter(text)
+        .take(8)
+    {
+        let Some(imports) = caps.get(1).or_else(|| caps.get(2)).map(|m| m.as_str()) else {
+            continue;
+        };
+        for part in imports.split(',') {
+            let part = part.trim().trim_matches(['(', ')']);
+            let words = part.split_ascii_whitespace().collect::<Vec<_>>();
+            if words.first().copied() != Some("request") {
+                continue;
+            }
+            let alias = if words.get(1).is_some_and(|w| w.eq_ignore_ascii_case("as")) {
+                words.get(2).copied().unwrap_or("request")
+            } else {
+                "request"
+            };
+            if is_python_identifier(alias) {
+                aliases.push(alias.to_string());
+            }
+        }
+    }
+    aliases
+}
+
+fn collect_python_urllib_assigned_call_aliases(text: &str, target_method: &str) -> Vec<String> {
     static PY_URLLIB_METHOD_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
             r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*(?:\.request)?)\.(urlopen|urlretrieve)\b"#,
@@ -1415,13 +1446,7 @@ fn collect_python_urllib_assigned_call_aliases(text: &str, target_method: &str) 
         .expect("python urllib method assignment regex")
     });
 
-    let mut modules = vec!["urllib.request".to_string()];
-    modules.extend(
-        PY_IMPORT_URLLIB_REQUEST_ALIAS_RE
-            .captures_iter(text)
-            .take(8)
-            .filter_map(|caps| caps.get(1).map(|m| m.as_str().to_string())),
-    );
+    let modules = collect_python_urllib_request_module_aliases(text);
     PY_URLLIB_METHOD_ASSIGN_RE
         .captures_iter(text)
         .take(8)
