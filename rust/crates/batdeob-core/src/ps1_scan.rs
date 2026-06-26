@@ -4469,6 +4469,7 @@ fn ps_non_download_option_before_value(before_value: &str) -> bool {
     let option = option.trim_end_matches(['=', ':']);
     option.eq_ignore_ascii_case("-body")
         || option.eq_ignore_ascii_case("-proxy")
+        || option.eq_ignore_ascii_case("-proxylist")
         || option.eq_ignore_ascii_case("-useragent")
 }
 
