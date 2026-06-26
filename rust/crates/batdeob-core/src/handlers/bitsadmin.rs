@@ -13,9 +13,9 @@ pub fn h_bitsadmin(raw: &str, env: &mut Environment) {
         return;
     }
 
-    // Skip past job-control verbs and known flags to find URL + DST.
-    let mut url: Option<String> = None;
-    let mut dst: Option<String> = None;
+    // Skip past job-control verbs and known flags to find URL + DST pairs.
+    let mut downloads: Vec<(String, String)> = Vec::new();
+    let mut pending_url: Option<String> = None;
     let skip_flags = [
         "transfer", "addfile", "create", "download", "upload", "priority",
     ];
@@ -35,7 +35,8 @@ pub fn h_bitsadmin(raw: &str, env: &mut Environment) {
         // Job name (first positional after /transfer) — skip if URL not yet seen
         // and current token doesn't look like a URL. Case-insensitive +
         // tolerate Windows-liberal slashes (`http:\\` / `http:/`).
-        if url.is_none()
+        if pending_url.is_none()
+            && downloads.is_empty()
             && !is_bitsadmin_option(t)
             && crate::deob_scan::normalize_liberal_url_token(strip_outer_quotes(t)).is_none()
         {
@@ -43,25 +44,32 @@ pub fn h_bitsadmin(raw: &str, env: &mut Environment) {
             i += 1;
             continue;
         }
-        if url.is_none() {
-            if let Some(normalized) =
-                crate::deob_scan::normalize_liberal_url_token(strip_outer_quotes(t))
-            {
-                url = Some(normalized);
-                i += 1;
-                continue;
+        if let Some(normalized) =
+            crate::deob_scan::normalize_liberal_url_token(strip_outer_quotes(t))
+        {
+            if let Some(url) = pending_url.replace(normalized) {
+                downloads.push((url, String::new()));
             }
+            i += 1;
+            continue;
         }
-        if url.is_some() && dst.is_none() && !is_bitsadmin_option(t) {
-            dst = Some(strip_outer_quotes(t).to_string());
+
+        if let Some(url) = pending_url.take() {
+            if !is_bitsadmin_option(t) {
+                downloads.push((url, strip_outer_quotes(t).to_string()));
+            } else {
+                downloads.push((url, String::new()));
+            }
             i += 1;
             continue;
         }
         i += 1;
     }
+    if let Some(url) = pending_url {
+        downloads.push((url, String::new()));
+    }
 
-    if let Some(u) = url {
-        let d = dst.unwrap_or_default();
+    for (u, d) in downloads {
         env.traits.push(Trait::BitsadminDownload {
             url: u.clone(),
             dst: d.clone(),

