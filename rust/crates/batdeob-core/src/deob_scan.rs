@@ -1333,7 +1333,8 @@ fn find_python_urlretrieve_literals(text: &str) -> Vec<(String, Option<String>)>
         "urllib.urlretrieve".to_string(),
     ];
     names.extend(collect_python_urllib_call_aliases(text, "urlretrieve"));
-    let bindings = collect_python_url_string_bindings(text);
+    let string_bindings = collect_python_string_bindings(text);
+    let url_bindings = collect_python_url_string_bindings_from(&string_bindings);
     for name in names {
         let mut search_start = 0;
         while let Some(name_start) = find_ascii_case_insensitive_from(text, &name, search_start) {
@@ -1351,9 +1352,11 @@ fn find_python_urlretrieve_literals(text: &str) -> Vec<(String, Option<String>)>
                 search_start = open + 1;
                 continue;
             };
-            if let Some((url, dst)) =
-                python_urlretrieve_download_args(&text[open + 1..close], &bindings)
-            {
+            if let Some((url, dst)) = python_urlretrieve_download_args(
+                &text[open + 1..close],
+                &url_bindings,
+                &string_bindings,
+            ) {
                 found.push((url, dst));
             }
             search_start = close + 1;
@@ -1364,31 +1367,38 @@ fn find_python_urlretrieve_literals(text: &str) -> Vec<(String, Option<String>)>
 
 fn python_urlretrieve_download_args(
     args: &str,
-    bindings: &std::collections::HashMap<String, String>,
+    url_bindings: &std::collections::HashMap<String, String>,
+    string_bindings: &std::collections::HashMap<String, String>,
 ) -> Option<(String, Option<String>)> {
-    let literals = quoted_string_literals(args);
-    if let Some((idx, url)) = literals
-        .iter()
-        .enumerate()
-        .find(|(_, literal)| looks_like_direct_url(trim_url_suffix(literal)))
-    {
-        let dst = literals
-            .iter()
-            .skip(idx + 1)
-            .find(|literal| !looks_like_direct_url(trim_url_suffix(literal)))
-            .cloned();
-        return Some((trim_url_suffix(url).to_string(), dst));
-    }
-
     let parts = split_python_top_level_args(args);
-    parts.iter().take(4).enumerate().find_map(|(idx, arg)| {
-        let url = python_url_arg_from_binding(arg, bindings)?;
+    if let Some((idx, url)) = parts
+        .iter()
+        .take(4)
+        .enumerate()
+        .find_map(|(idx, arg)| first_url_literal(arg).map(|url| (idx, url)))
+    {
         let dst = parts
             .iter()
             .skip(idx + 1)
-            .find_map(|part| python_string_literal_arg(part));
+            .find_map(|part| python_string_arg(part, string_bindings));
+        return Some((url, dst));
+    }
+
+    parts.iter().take(4).enumerate().find_map(|(idx, arg)| {
+        let url = python_url_arg_from_binding(arg, url_bindings)?;
+        let dst = parts
+            .iter()
+            .skip(idx + 1)
+            .find_map(|part| python_string_arg(part, string_bindings));
         Some((url, dst))
     })
+}
+
+fn python_string_arg(
+    arg: &str,
+    bindings: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    python_string_literal_arg(arg).or_else(|| python_string_arg_from_binding(arg, bindings))
 }
 
 fn python_string_literal_arg(arg: &str) -> Option<String> {
@@ -1404,6 +1414,30 @@ fn python_string_literal_arg(arg: &str) -> Option<String> {
     quoted_string_literals(expr)
         .into_iter()
         .find(|literal| !looks_like_direct_url(trim_url_suffix(literal)))
+}
+
+fn python_string_arg_from_binding(
+    arg: &str,
+    bindings: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    let expr = if let Some((key, value)) = arg.split_once('=') {
+        if is_python_identifier(key.trim()) {
+            value
+        } else {
+            arg
+        }
+    } else {
+        arg
+    };
+    let expr = expr.trim();
+    let (ident, ident_end) = parse_ascii_ident(expr, 0)?;
+    if skip_ascii_ws(expr, ident_end) != expr.len() {
+        return None;
+    }
+    bindings
+        .get(&ident)
+        .filter(|value| !looks_like_direct_url(trim_url_suffix(value)))
+        .cloned()
 }
 
 fn collect_python_urllib_call_aliases(text: &str, target_method: &str) -> Vec<String> {
@@ -1721,6 +1755,22 @@ fn split_python_top_level_args(args: &str) -> Vec<&str> {
 }
 
 fn collect_python_url_string_bindings(text: &str) -> std::collections::HashMap<String, String> {
+    collect_python_url_string_bindings_from(&collect_python_string_bindings(text))
+}
+
+fn collect_python_url_string_bindings_from(
+    bindings: &std::collections::HashMap<String, String>,
+) -> std::collections::HashMap<String, String> {
+    bindings
+        .iter()
+        .filter_map(|(name, value)| {
+            let url = normalize_liberal_url_token(trim_url_suffix(value))?;
+            Some((name.clone(), url))
+        })
+        .collect()
+}
+
+fn collect_python_string_bindings(text: &str) -> std::collections::HashMap<String, String> {
     static PY_STRING_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
             r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:'([^']{1,2048})'|"([^"]{1,2048})")"#,
@@ -1734,8 +1784,7 @@ fn collect_python_url_string_bindings(text: &str) -> std::collections::HashMap<S
         .filter_map(|caps| {
             let name = caps.get(1)?.as_str();
             let value = caps.get(2).or_else(|| caps.get(3))?.as_str();
-            let url = normalize_liberal_url_token(trim_url_suffix(value))?;
-            Some((name.to_string(), url))
+            Some((name.to_string(), value.to_string()))
         })
         .collect()
 }

