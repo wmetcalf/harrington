@@ -2169,6 +2169,10 @@ fn scan_url_launch_deob_text(deobfuscated: &str, env: &mut Environment) {
             let Some(url) =
                 (if cmd.eq_ignore_ascii_case("start") || cmd.eq_ignore_ascii_case("start.exe") {
                     url_launch_after_start(&tokens, i + 1)
+                } else if cmd.eq_ignore_ascii_case("rundll32")
+                    || cmd.eq_ignore_ascii_case("rundll32.exe")
+                {
+                    url_launch_after_rundll32_fileprotocolhandler(&tokens, i + 1)
                 } else if is_url_launcher_command(&cmd) {
                     first_url_after(&tokens, i + 1)
                 } else {
@@ -2403,6 +2407,18 @@ fn url_launch_after_start(tokens: &[String], mut i: usize) -> Option<String> {
         return None;
     }
     None
+}
+
+fn url_launch_after_rundll32_fileprotocolhandler(
+    tokens: &[String],
+    start: usize,
+) -> Option<String> {
+    let handler_idx = (start..tokens.len()).take(4).find(|idx| {
+        strip_outer_quotes(&tokens[*idx])
+            .to_ascii_lowercase()
+            .contains("fileprotocolhandler")
+    })?;
+    first_url_after(tokens, handler_idx + 1)
 }
 
 fn first_url_after(tokens: &[String], start: usize) -> Option<String> {
