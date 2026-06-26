@@ -10975,6 +10975,26 @@ hh https://hh-launch.example/extensionless.chm"#,
     }
 
     #[test]
+    fn direct_rundll32_fileprotocolhandler_url_emits_url_launch() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        let url = "https://rundll32-direct.example/lure.pdf";
+        crate::interp::interpret_line(
+            &format!(r#"rundll32 url.dll,FileProtocolHandler "{url}""#),
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::UrlLaunch { url: got, .. } if got == url
+            )
+        });
+        assert!(
+            has,
+            "direct rundll32 FileProtocolHandler URL launch not typed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn powershell_url_launch_cmdlets_emit_url_launch() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
