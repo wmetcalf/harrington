@@ -47,6 +47,18 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
                 continue;
             }
         }
+        if let Some(rest) = short_option_cluster_output(raw_token) {
+            if rest.is_empty() {
+                dst = tokens
+                    .get(i + 1)
+                    .map(|s| strip_outer_quotes(s.trim_matches(')')).to_string());
+                i += 2;
+            } else {
+                dst = Some(strip_outer_quotes(rest.trim_matches(')')).to_string());
+                i += 1;
+            }
+            continue;
+        }
         if let Some(rest) =
             crate::util::strip_ascii_case_insensitive_prefix(raw_token, "--output-document=")
                 .or_else(|| {
@@ -68,4 +80,13 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
         i += 1;
     }
     url.map(|u| (u, dst))
+}
+
+fn short_option_cluster_output(token: &str) -> Option<&str> {
+    let cluster = token.strip_prefix('-')?;
+    if cluster.starts_with('-') || cluster.len() <= 1 {
+        return None;
+    }
+    let idx = cluster.find('O')?;
+    Some(&cluster[idx + 1..])
 }
