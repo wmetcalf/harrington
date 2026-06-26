@@ -29,7 +29,10 @@ fn trim_url_suffix(url: &str) -> &str {
 }
 
 fn msiexec_url_from_token(token: &str) -> Option<String> {
-    if let Some(url) = crate::deob_scan::normalize_liberal_url_token(trim_url_suffix(token)) {
+    let normalized_token = trim_url_suffix(token);
+    if let Some(url) = crate::deob_scan::normalize_liberal_url_token(normalized_token)
+        .or_else(|| crate::deob_scan::normalize_schemeless_domain_path_token(normalized_token))
+    {
         return Some(url);
     }
 
@@ -44,7 +47,9 @@ fn msiexec_url_from_token(token: &str) -> Option<String> {
         if candidate.is_empty() {
             continue;
         }
-        if let Some(url) = crate::deob_scan::normalize_liberal_url_token(trim_url_suffix(candidate))
+        let candidate = trim_url_suffix(candidate);
+        if let Some(url) = crate::deob_scan::normalize_liberal_url_token(candidate)
+            .or_else(|| crate::deob_scan::normalize_schemeless_domain_path_token(candidate))
         {
             return Some(url);
         }

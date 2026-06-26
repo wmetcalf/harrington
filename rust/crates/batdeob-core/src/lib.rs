@@ -11560,6 +11560,27 @@ $urlzip = "https://ps.example/stage.zip""#,
     }
 
     #[test]
+    fn msiexec_schemeless_package_url_emits_typed_trait() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::interp::interpret_line(
+            r#"msiexec /quiet /i msiexec-schemeless.example/setup.msi"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { url, .. }
+                    if url == "http://msiexec-schemeless.example/setup.msi"
+            )
+        });
+        assert!(
+            has,
+            "msiexec schemeless package URL argument not typed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn direct_msiexec_attached_install_url_emits_typed_trait() {
         let mut env = crate::env::Environment::new(&Config::default());
         let url = "https://msiexec-attached.example/setup.msi";
