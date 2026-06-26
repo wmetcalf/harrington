@@ -63,7 +63,8 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
         std::collections::HashSet::new();
     for (idx, payload) in payloads.iter().enumerate() {
         let raw = String::from_utf8_lossy(payload);
-        let text = join_vbs_line_continuations(&raw);
+        let uncommented = strip_vbs_apostrophe_comments(&raw);
+        let text = join_vbs_line_continuations(&uncommented);
         let bindings = collect_vbs_string_bindings(&text);
         let dst_hint: Option<String> = SAVETOFILE_RE
             .captures(&text)
@@ -423,6 +424,36 @@ fn join_vbs_line_continuations(text: &str) -> String {
             out.push_str(line);
             out.push('\n');
         }
+    }
+    out
+}
+
+fn strip_vbs_apostrophe_comments(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for line in text.lines() {
+        let bytes = line.as_bytes();
+        let mut in_quote = false;
+        let mut cut = line.len();
+        let mut i = 0usize;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'"' => {
+                    if in_quote && bytes.get(i + 1) == Some(&b'"') {
+                        i += 2;
+                        continue;
+                    }
+                    in_quote = !in_quote;
+                    i += 1;
+                }
+                b'\'' if !in_quote => {
+                    cut = i;
+                    break;
+                }
+                _ => i += 1,
+            }
+        }
+        out.push_str(line[..cut].trim_end());
+        out.push('\n');
     }
     out
 }
