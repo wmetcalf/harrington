@@ -56,6 +56,7 @@ pub fn scan_js_payloads(env: &mut Environment) {
         candidates.extend(decoded_js_fromcharcode_literals(&concat_resolved));
         candidates.extend(decoded_js_atob_literals(&concat_resolved));
         candidates.extend(decoded_js_textdecoder_literals(&concat_resolved));
+        candidates.extend(decoded_js_buffer_literals(&concat_resolved));
         candidates.extend(decoded_js_variable_string_bindings(&concat_resolved));
 
         // Now scan for URLs
@@ -373,6 +374,246 @@ fn decoded_js_atob_literals(text: &str) -> Vec<String> {
         cursor = literal_end;
     }
     out
+}
+
+fn decoded_js_buffer_literals(text: &str) -> Vec<String> {
+    let byte_bindings = collect_js_byte_array_literal_byte_bindings(text);
+    let string_bindings = collect_js_string_literal_bindings(text);
+    let mut out = Vec::new();
+    let mut cursor = 0usize;
+    while let Some(rel) = text[cursor..].find("Buffer") {
+        let start = cursor + rel;
+        if let Some((end, decoded)) =
+            parse_js_buffer_from_call_at(text, start, &byte_bindings, &string_bindings)
+        {
+            out.push(decoded);
+            if out.len() >= 128 {
+                break;
+            }
+            cursor = end;
+        } else {
+            cursor = start + "Buffer".len();
+        }
+    }
+    out
+}
+
+fn collect_js_string_literal_bindings(text: &str) -> std::collections::HashMap<String, String> {
+    let mut bindings = std::collections::HashMap::new();
+    for caps in JS_STRING_ASSIGN_RE.captures_iter(text) {
+        if bindings.len() >= 256 {
+            break;
+        }
+        let Some(name) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(expr) = caps.get(2).map(|m| m.as_str().trim()) else {
+            continue;
+        };
+        let Some(value) = eval_js_string_expr(expr, &bindings) else {
+            continue;
+        };
+        if value.len() > 16384 {
+            continue;
+        }
+        bindings.insert(name.to_string(), value);
+    }
+    bindings
+}
+
+fn collect_js_byte_array_literal_byte_bindings(
+    text: &str,
+) -> std::collections::HashMap<String, Vec<u8>> {
+    let mut bindings = std::collections::HashMap::new();
+    for caps in JS_STRING_ASSIGN_RE.captures_iter(text) {
+        if bindings.len() >= 256 {
+            break;
+        }
+        let Some(name) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(expr) = caps.get(2).map(|m| m.as_str().trim()) else {
+            continue;
+        };
+        let Some((end, bytes)) = parse_js_byte_array_literal_bytes(expr, 0) else {
+            continue;
+        };
+        if skip_ascii_ws(expr, end) != expr.len() {
+            continue;
+        }
+        bindings.insert(name.to_string(), bytes);
+    }
+    bindings
+}
+
+fn parse_js_buffer_from_call_at(
+    text: &str,
+    start: usize,
+    byte_bindings: &std::collections::HashMap<String, Vec<u8>>,
+    string_bindings: &std::collections::HashMap<String, String>,
+) -> Option<(usize, String)> {
+    let (buffer_end, name) = parse_js_identifier_at(text, start)?;
+    if name != "Buffer" {
+        return None;
+    }
+    let open = consume_js_method_open(text, buffer_end, "from")?;
+    let arg_start = skip_ascii_ws(text, open + 1);
+    if let Some((arg_end, bytes)) =
+        parse_js_byte_array_literal_bytes(text, arg_start).or_else(|| {
+            let (arg_end, name) = parse_js_identifier_at(text, arg_start)?;
+            byte_bindings
+                .get(name)
+                .map(|bytes| (arg_end, bytes.clone()))
+        })
+    {
+        let close = skip_ascii_ws(text, arg_end);
+        if text.as_bytes().get(close) == Some(&b')') {
+            let (end, encoding) = consume_js_to_string_optional_encoding(text, close + 1)?;
+            return Some((end, decode_js_buffer_string_bytes(&bytes, encoding)?));
+        }
+    }
+
+    let (arg_end, encoded) = parse_js_buffer_string_arg(text, arg_start, string_bindings)?;
+    let comma = skip_ascii_ws(text, arg_end);
+    if text.as_bytes().get(comma) != Some(&b',') {
+        return None;
+    }
+    let encoding_start = skip_ascii_ws(text, comma + 1);
+    let (encoding_end, input_encoding) = parse_js_string_literal_at(text, encoding_start)?;
+    let bytes = decode_js_buffer_input_bytes(&encoded, &input_encoding)?;
+    let close = skip_ascii_ws(text, encoding_end);
+    if text.as_bytes().get(close) != Some(&b')') {
+        return None;
+    }
+    let (end, output_encoding) = consume_js_to_string_optional_encoding(text, close + 1)?;
+    Some((end, decode_js_buffer_string_bytes(&bytes, output_encoding)?))
+}
+
+fn parse_js_buffer_string_arg(
+    text: &str,
+    start: usize,
+    bindings: &std::collections::HashMap<String, String>,
+) -> Option<(usize, String)> {
+    parse_js_string_literal_at(text, start).or_else(|| {
+        let (end, name) = parse_js_identifier_at(text, start)?;
+        bindings.get(name).map(|value| (end, value.clone()))
+    })
+}
+
+#[derive(Clone, Copy)]
+enum JsBufferStringEncoding {
+    Utf8Like,
+    Utf16Le,
+}
+
+fn consume_js_to_string_optional_encoding(
+    text: &str,
+    idx: usize,
+) -> Option<(usize, JsBufferStringEncoding)> {
+    let open = consume_js_method_open(text, idx, "toString")?;
+    let cursor = skip_ascii_ws(text, open + 1);
+    if text.as_bytes().get(cursor) == Some(&b')') {
+        return Some((cursor + 1, JsBufferStringEncoding::Utf8Like));
+    }
+    let (arg_end, encoding) = parse_js_string_literal_at(text, cursor)?;
+    let encoding = match encoding.to_ascii_lowercase().as_str() {
+        "utf8" | "utf-8" | "ascii" | "latin1" | "binary" => JsBufferStringEncoding::Utf8Like,
+        "utf16le" | "utf-16le" | "ucs2" | "ucs-2" => JsBufferStringEncoding::Utf16Le,
+        _ => return None,
+    };
+    let close = skip_ascii_ws(text, arg_end);
+    if text.as_bytes().get(close) != Some(&b')') {
+        return None;
+    }
+    Some((close + 1, encoding))
+}
+
+fn parse_js_byte_array_literal_bytes(text: &str, start: usize) -> Option<(usize, Vec<u8>)> {
+    if text.as_bytes().get(start) != Some(&b'[') {
+        return None;
+    }
+    let close = find_js_byte_array_close(text, start + 1)?;
+    let bytes = decode_js_byte_array_values(&text[start + 1..close])?;
+    Some((close + 1, bytes))
+}
+
+fn decode_js_buffer_string_bytes(bytes: &[u8], encoding: JsBufferStringEncoding) -> Option<String> {
+    match encoding {
+        JsBufferStringEncoding::Utf8Like => Some(String::from_utf8_lossy(bytes).into_owned()),
+        JsBufferStringEncoding::Utf16Le => decode_js_utf16_bytes(bytes, u16::from_le_bytes),
+    }
+}
+
+fn decode_js_buffer_input_bytes(encoded: &str, encoding: &str) -> Option<Vec<u8>> {
+    match encoding.to_ascii_lowercase().as_str() {
+        "hex" => decode_js_hex_bytes(encoded),
+        "base64" => decode_js_base64_bytes(encoded),
+        "base64url" => decode_js_base64url_bytes(encoded),
+        _ => None,
+    }
+}
+
+fn decode_js_hex_bytes(encoded: &str) -> Option<Vec<u8>> {
+    if encoded.len() > 16384 {
+        return None;
+    }
+    let cleaned: String = encoded
+        .chars()
+        .filter(|c| !c.is_ascii_whitespace())
+        .collect();
+    if cleaned.len() % 2 != 0 {
+        return None;
+    }
+    let mut decoded = Vec::with_capacity(cleaned.len() / 2);
+    let mut chars = cleaned.chars();
+    while let (Some(hi), Some(lo)) = (chars.next(), chars.next()) {
+        let hi = hi.to_digit(16)?;
+        let lo = lo.to_digit(16)?;
+        decoded.push(((hi << 4) | lo) as u8);
+    }
+    (decoded.len() <= 8192).then_some(decoded)
+}
+
+fn decode_js_base64_bytes(encoded: &str) -> Option<Vec<u8>> {
+    if encoded.len() > 16384 {
+        return None;
+    }
+    let cleaned: String = encoded
+        .chars()
+        .filter(|c| !c.is_ascii_whitespace())
+        .collect();
+    let decoded = decode_base64_maybe_unpadded(&cleaned)?;
+    (decoded.len() <= 8192).then_some(decoded)
+}
+
+fn decode_js_base64url_bytes(encoded: &str) -> Option<Vec<u8>> {
+    if encoded.len() > 16384 {
+        return None;
+    }
+    let cleaned: String = encoded
+        .chars()
+        .filter(|c| !c.is_ascii_whitespace())
+        .map(|c| match c {
+            '-' => '+',
+            '_' => '/',
+            _ => c,
+        })
+        .collect();
+    let decoded = decode_base64_maybe_unpadded(&cleaned)?;
+    (decoded.len() <= 8192).then_some(decoded)
+}
+
+fn decode_base64_maybe_unpadded(cleaned: &str) -> Option<Vec<u8>> {
+    let mut padded = cleaned.to_string();
+    match padded.len() % 4 {
+        0 => {}
+        2 => padded.push_str("=="),
+        3 => padded.push('='),
+        _ => return None,
+    }
+    base64::engine::general_purpose::STANDARD
+        .decode(padded.as_bytes())
+        .ok()
 }
 
 fn decoded_js_textdecoder_literals(text: &str) -> Vec<String> {
