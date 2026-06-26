@@ -446,12 +446,41 @@ fn collect_js_byte_array_literal_byte_bindings(
     bindings
 }
 
-fn parse_js_buffer_from_call_at(
+fn collect_js_buffer_byte_bindings(
+    text: &str,
+    byte_bindings: &std::collections::HashMap<String, Vec<u8>>,
+    string_bindings: &std::collections::HashMap<String, String>,
+) -> std::collections::HashMap<String, Vec<u8>> {
+    let mut bindings = std::collections::HashMap::new();
+    for caps in JS_STRING_ASSIGN_RE.captures_iter(text) {
+        if bindings.len() >= 256 {
+            break;
+        }
+        let Some(name) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(expr) = caps.get(2).map(|m| m.as_str().trim()) else {
+            continue;
+        };
+        let Some((end, bytes)) =
+            parse_js_buffer_from_arg_bytes(expr, 0, byte_bindings, string_bindings)
+        else {
+            continue;
+        };
+        if skip_ascii_ws(expr, end) != expr.len() {
+            continue;
+        }
+        bindings.insert(name.to_string(), bytes);
+    }
+    bindings
+}
+
+fn parse_js_buffer_from_arg_bytes(
     text: &str,
     start: usize,
     byte_bindings: &std::collections::HashMap<String, Vec<u8>>,
     string_bindings: &std::collections::HashMap<String, String>,
-) -> Option<(usize, String)> {
+) -> Option<(usize, Vec<u8>)> {
     let (buffer_end, name) = parse_js_identifier_at(text, start)?;
     if name != "Buffer" {
         return None;
@@ -468,8 +497,7 @@ fn parse_js_buffer_from_call_at(
     {
         let close = skip_ascii_ws(text, arg_end);
         if text.as_bytes().get(close) == Some(&b')') {
-            let (end, encoding) = consume_js_to_string_optional_encoding(text, close + 1)?;
-            return Some((end, decode_js_buffer_string_bytes(&bytes, encoding)?));
+            return Some((close + 1, bytes));
         }
     }
 
@@ -485,7 +513,18 @@ fn parse_js_buffer_from_call_at(
     if text.as_bytes().get(close) != Some(&b')') {
         return None;
     }
-    let (end, output_encoding) = consume_js_to_string_optional_encoding(text, close + 1)?;
+    Some((close + 1, bytes))
+}
+
+fn parse_js_buffer_from_call_at(
+    text: &str,
+    start: usize,
+    byte_bindings: &std::collections::HashMap<String, Vec<u8>>,
+    string_bindings: &std::collections::HashMap<String, String>,
+) -> Option<(usize, String)> {
+    let (buffer_end, bytes) =
+        parse_js_buffer_from_arg_bytes(text, start, byte_bindings, string_bindings)?;
+    let (end, output_encoding) = consume_js_to_string_optional_encoding(text, buffer_end)?;
     Some((end, decode_js_buffer_string_bytes(&bytes, output_encoding)?))
 }
 
@@ -618,21 +657,40 @@ fn decode_base64_maybe_unpadded(cleaned: &str) -> Option<Vec<u8>> {
 
 fn decoded_js_textdecoder_literals(text: &str) -> Vec<String> {
     let mut out = Vec::new();
+    let string_bindings = collect_js_string_literal_bindings(text);
+    let decoder_bindings = collect_js_textdecoder_bindings(text, &string_bindings);
     let typed_array_bindings = collect_js_typed_byte_array_bindings(text);
     let mut cursor = 0usize;
-    while let Some(rel) = text[cursor..].find("new") {
-        let start = cursor + rel;
-        if let Some((call_end, decoded)) =
-            parse_js_textdecoder_decode_call_at(text, start, &typed_array_bindings)
-        {
+    while cursor < text.len() && out.len() < 128 {
+        let Some((ident_end, _)) = parse_js_identifier_at(text, cursor) else {
+            cursor += text[cursor..]
+                .chars()
+                .next()
+                .map(char::len_utf8)
+                .unwrap_or(1);
+            continue;
+        };
+        if let Some((call_end, decoded)) = parse_js_textdecoder_decode_call_at(
+            text,
+            cursor,
+            &typed_array_bindings,
+            &string_bindings,
+        ) {
             out.push(decoded);
-            if out.len() >= 128 {
-                break;
-            }
             cursor = call_end;
-        } else {
-            cursor = start + "new".len();
+            continue;
         }
+        if let Some((call_end, decoded)) = parse_js_textdecoder_instance_decode_call_at(
+            text,
+            cursor,
+            &typed_array_bindings,
+            &decoder_bindings,
+        ) {
+            out.push(decoded);
+            cursor = call_end;
+            continue;
+        }
+        cursor = ident_end;
     }
     out
 }
@@ -689,7 +747,30 @@ fn parse_js_textdecoder_decode_call_at(
     text: &str,
     start: usize,
     typed_array_bindings: &std::collections::HashMap<String, String>,
+    string_bindings: &std::collections::HashMap<String, String>,
 ) -> Option<(usize, String)> {
+    let (new_end, encoding) = parse_js_textdecoder_new_expr_at(text, start, string_bindings)?;
+    let decode_open = consume_js_method_open(text, new_end, "decode")?;
+    parse_js_textdecoder_decode_args_at(text, decode_open, encoding, typed_array_bindings)
+}
+
+fn parse_js_textdecoder_instance_decode_call_at(
+    text: &str,
+    start: usize,
+    typed_array_bindings: &std::collections::HashMap<String, String>,
+    decoder_bindings: &std::collections::HashMap<String, JsTextDecoderEncoding>,
+) -> Option<(usize, String)> {
+    let (ident_end, name) = parse_js_identifier_at(text, start)?;
+    let encoding = *decoder_bindings.get(name)?;
+    let decode_open = consume_js_method_open(text, ident_end, "decode")?;
+    parse_js_textdecoder_decode_args_at(text, decode_open, encoding, typed_array_bindings)
+}
+
+fn parse_js_textdecoder_new_expr_at(
+    text: &str,
+    start: usize,
+    string_bindings: &std::collections::HashMap<String, String>,
+) -> Option<(usize, JsTextDecoderEncoding)> {
     let (new_end, new_name) = parse_js_identifier_at(text, start)?;
     if new_name != "new" {
         return None;
@@ -700,28 +781,66 @@ fn parse_js_textdecoder_decode_call_at(
     if text.as_bytes().get(open) != Some(&b'(') {
         return None;
     }
-    let (close, encoding) = parse_js_textdecoder_constructor_close(text, open)?;
+    let (close, encoding) = parse_js_textdecoder_constructor_close(text, open, string_bindings)?;
     if text.as_bytes().get(close) != Some(&b')') {
         return None;
     }
-    let decode_open = consume_js_method_open(text, close + 1, "decode")?;
+    Some((close + 1, encoding))
+}
+
+fn parse_js_textdecoder_decode_args_at(
+    text: &str,
+    decode_open: usize,
+    encoding: JsTextDecoderEncoding,
+    typed_array_bindings: &std::collections::HashMap<String, String>,
+) -> Option<(usize, String)> {
     let arg_start = skip_ascii_ws(text, decode_open + 1);
     let (arg_end, decoded) = match encoding {
         JsTextDecoderEncoding::Utf8 => {
-            parse_js_typed_byte_array_arg(text, arg_start).or_else(|| {
-                let (arg_end, name) = parse_js_identifier_at(text, arg_start)?;
-                typed_array_bindings
-                    .get(name)
-                    .map(|decoded| (arg_end, decoded.clone()))
-            })?
+            let byte_bindings = collect_js_byte_array_literal_byte_bindings(text);
+            let string_bindings = collect_js_string_literal_bindings(text);
+            let buffer_bindings =
+                collect_js_buffer_byte_bindings(text, &byte_bindings, &string_bindings);
+            parse_js_typed_byte_array_arg(text, arg_start)
+                .or_else(|| {
+                    parse_js_buffer_from_arg_bytes(
+                        text,
+                        arg_start,
+                        &byte_bindings,
+                        &string_bindings,
+                    )
+                    .map(|(arg_end, bytes)| (arg_end, String::from_utf8_lossy(&bytes).into_owned()))
+                })
+                .or_else(|| {
+                    let (arg_end, name) = parse_js_identifier_at(text, arg_start)?;
+                    if let Some(decoded) = typed_array_bindings.get(name) {
+                        return Some((arg_end, decoded.clone()));
+                    }
+                    buffer_bindings
+                        .get(name)
+                        .map(|bytes| (arg_end, String::from_utf8_lossy(bytes).into_owned()))
+                })?
         }
         JsTextDecoderEncoding::Utf16Le | JsTextDecoderEncoding::Utf16Be => {
+            let byte_bindings = collect_js_byte_array_literal_byte_bindings(text);
+            let string_bindings = collect_js_string_literal_bindings(text);
+            let buffer_bindings =
+                collect_js_buffer_byte_bindings(text, &byte_bindings, &string_bindings);
             let raw_array_bindings = collect_js_typed_byte_array_byte_bindings(text);
-            let (arg_end, bytes) =
-                parse_js_typed_byte_array_arg_bytes(text, arg_start).or_else(|| {
+            let (arg_end, bytes) = parse_js_typed_byte_array_arg_bytes(text, arg_start)
+                .or_else(|| {
+                    parse_js_buffer_from_arg_bytes(
+                        text,
+                        arg_start,
+                        &byte_bindings,
+                        &string_bindings,
+                    )
+                })
+                .or_else(|| {
                     let (arg_end, name) = parse_js_identifier_at(text, arg_start)?;
                     raw_array_bindings
                         .get(name)
+                        .or_else(|| buffer_bindings.get(name))
                         .map(|bytes| (arg_end, bytes.clone()))
                 })?;
             (arg_end, decode_js_textdecoder_bytes(&bytes, encoding)?)
@@ -732,6 +851,33 @@ fn parse_js_textdecoder_decode_call_at(
         return None;
     }
     Some((decode_close + 1, decoded))
+}
+
+fn collect_js_textdecoder_bindings(
+    text: &str,
+    string_bindings: &std::collections::HashMap<String, String>,
+) -> std::collections::HashMap<String, JsTextDecoderEncoding> {
+    let mut bindings = std::collections::HashMap::new();
+    for caps in JS_STRING_ASSIGN_RE.captures_iter(text) {
+        if bindings.len() >= 256 {
+            break;
+        }
+        let Some(name) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(expr) = caps.get(2).map(|m| m.as_str().trim()) else {
+            continue;
+        };
+        let Some((end, encoding)) = parse_js_textdecoder_new_expr_at(expr, 0, string_bindings)
+        else {
+            continue;
+        };
+        if skip_ascii_ws(expr, end) != expr.len() {
+            continue;
+        }
+        bindings.insert(name.to_string(), encoding);
+    }
+    bindings
 }
 
 #[derive(Clone, Copy)]
@@ -769,13 +915,14 @@ fn parse_js_textdecoder_constructor_name_end(text: &str, start: usize) -> Option
 fn parse_js_textdecoder_constructor_close(
     text: &str,
     open: usize,
+    string_bindings: &std::collections::HashMap<String, String>,
 ) -> Option<(usize, JsTextDecoderEncoding)> {
     let mut cursor = skip_ascii_ws(text, open + 1);
     if text.as_bytes().get(cursor) == Some(&b')') {
         return Some((cursor, JsTextDecoderEncoding::Utf8));
     }
 
-    let (arg_end, encoding) = parse_js_string_literal_at(text, cursor)?;
+    let (arg_end, encoding) = parse_js_string_or_bound_arg(text, cursor, string_bindings)?;
     let encoding = parse_js_textdecoder_label(&encoding)?;
     cursor = skip_ascii_ws(text, arg_end);
     if text.as_bytes().get(cursor) == Some(&b')') {
@@ -789,6 +936,17 @@ fn parse_js_textdecoder_constructor_close(
     let options_end = consume_js_balanced_literal(text, cursor, b'{', b'}')?;
     let close = skip_ascii_ws(text, options_end);
     (text.as_bytes().get(close) == Some(&b')')).then_some((close, encoding))
+}
+
+fn parse_js_string_or_bound_arg(
+    text: &str,
+    start: usize,
+    bindings: &std::collections::HashMap<String, String>,
+) -> Option<(usize, String)> {
+    parse_js_string_literal_at(text, start).or_else(|| {
+        let (end, name) = parse_js_identifier_at(text, start)?;
+        bindings.get(name).map(|value| (end, value.clone()))
+    })
 }
 
 fn parse_js_textdecoder_label(label: &str) -> Option<JsTextDecoderEncoding> {
