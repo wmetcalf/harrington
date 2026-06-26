@@ -565,7 +565,7 @@ fn python_urlopen_call_names(text: &str) -> Vec<String> {
 
 fn collect_python_requests_get_aliases(text: &str) -> Vec<String> {
     let mut aliases = collect_python_requests_call_aliases(text, "get");
-    aliases.extend(collect_python_requests_assigned_get_aliases(text));
+    aliases.extend(collect_python_requests_assigned_method_aliases(text, "get"));
     aliases
 }
 
@@ -613,23 +613,25 @@ fn collect_python_requests_call_aliases(text: &str, target_method: &str) -> Vec<
     aliases
 }
 
-fn collect_python_requests_assigned_get_aliases(text: &str) -> Vec<String> {
-    static PY_REQUESTS_GET_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\.get\b"#)
-            .expect("python requests get assignment regex")
+fn collect_python_requests_assigned_method_aliases(text: &str, target_method: &str) -> Vec<String> {
+    static PY_REQUESTS_METHOD_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\.(get|request)\b"#)
+            .expect("python requests method assignment regex")
     });
 
     let module_aliases = collect_python_requests_module_aliases(text);
-    PY_REQUESTS_GET_ASSIGN_RE
+    PY_REQUESTS_METHOD_ASSIGN_RE
         .captures_iter(text)
         .take(8)
         .filter_map(|caps| {
             let alias = caps.get(1)?.as_str();
             let module = caps.get(2)?.as_str();
-            module_aliases
-                .iter()
-                .any(|known| known == module)
-                .then(|| alias.to_string())
+            let method = caps.get(3)?.as_str();
+            if method == target_method && module_aliases.iter().any(|known| known == module) {
+                Some(alias.to_string())
+            } else {
+                None
+            }
         })
         .collect()
 }
@@ -654,6 +656,9 @@ fn find_python_requests_request_get_literals(text: &str) -> Vec<String> {
     let mut found = Vec::new();
     let mut names = vec!["requests.request".to_string()];
     names.extend(collect_python_requests_call_aliases(text, "request"));
+    names.extend(collect_python_requests_assigned_method_aliases(
+        text, "request",
+    ));
 
     for name in names {
         let mut search_start = 0;
