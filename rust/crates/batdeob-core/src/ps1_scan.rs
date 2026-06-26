@@ -1631,14 +1631,16 @@ mod ps_dot_replace_prefilter_tests {
 
 #[allow(clippy::expect_used)]
 static JOIN_RE: Lazy<Regex> = Lazy::new(|| {
-    // (?:'a','b','c') -join 'sep'   — outer parens optional
-    Regex::new(r#"\(?\s*((?:'[^'\\]*(?:\\.[^'\\]*)*'\s*,\s*)+'[^'\\]*(?:\\.[^'\\]*)*')\s*\)?\s*-join\s*'([^'\\]*(?:\\.[^'\\]*)*)'"#)
+    // (?:'a',"b",'c') -join 'sep' or @('a',"b",'c') -join "sep".
+    // Outer parens are optional for the bare array form.
+    Regex::new(r#"@?\(?\s*((?:(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*")\s*,\s*)+(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*"))\s*\)?\s*-join\s*(?:'([^'\\]*(?:\\.[^'\\]*)*)'|"([^"\\]*(?:\\.[^"\\]*)*)")"#)
         .expect("join")
 });
 
 #[allow(clippy::expect_used)]
-static JOIN_PART_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r#"'([^'\\]*(?:\\.[^'\\]*)*)'"#).expect("join part"));
+static JOIN_PART_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"'([^'\\]*(?:\\.[^'\\]*)*)'|"([^"\\]*(?:\\.[^"\\]*)*)""#).expect("join part")
+});
 
 #[allow(clippy::expect_used)]
 static SINGLE_LITERAL_JOIN_RE: Lazy<Regex> = Lazy::new(|| {
@@ -1864,10 +1866,14 @@ fn expand_ps_join(text: &str) -> String {
         .filter_map(|caps| {
             let full = caps.get(0)?;
             let parts_text = caps.get(1)?.as_str();
-            let sep = caps.get(2)?.as_str();
+            let sep = caps.get(2).or_else(|| caps.get(3))?.as_str();
             let parts: Vec<String> = JOIN_PART_RE
                 .captures_iter(parts_text)
-                .filter_map(|c| c.get(1).map(|m| m.as_str().to_string()))
+                .filter_map(|c| {
+                    c.get(1)
+                        .or_else(|| c.get(2))
+                        .map(|m| m.as_str().to_string())
+                })
                 .collect();
             if parts.is_empty() {
                 return None;
@@ -1914,13 +1920,13 @@ static PS_VAR_APPEND_RE: Lazy<Regex> = Lazy::new(|| {
 
 #[allow(clippy::expect_used)]
 static PS_ARRAY_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*((?:'[^'\\]*(?:\\.[^'\\]*)*'\s*,\s*)+'[^'\\]*(?:\\.[^'\\]*)*')"#)
+    Regex::new(r#"\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*@?\(?\s*((?:(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*")\s*,\s*)+(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*"))\s*\)?"#)
         .expect("ps array assign")
 });
 
 #[allow(clippy::expect_used)]
 static PS_JOIN_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\(?\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*-join\s*'([^'\\]*(?:\\.[^'\\]*)*)'\s*\)?"#)
+    Regex::new(r#"\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\(?\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*-join\s*(?:'([^'\\]*(?:\\.[^'\\]*)*)'|"([^"\\]*(?:\\.[^"\\]*)*)")\s*\)?"#)
         .expect("ps join assign")
 });
 
@@ -2028,14 +2034,22 @@ fn expand_ps_variables(text: &str) -> String {
         };
         let parts: Vec<String> = JOIN_PART_RE
             .captures_iter(parts_text.as_str())
-            .filter_map(|c| c.get(1).map(|m| m.as_str().to_string()))
+            .filter_map(|c| {
+                c.get(1)
+                    .or_else(|| c.get(2))
+                    .map(|m| m.as_str().to_string())
+            })
             .collect();
         if !parts.is_empty() {
             bindings.insert(n.as_str().to_ascii_lowercase(), parts.join(""));
         }
     }
     for caps in PS_JOIN_ASSIGN_RE.captures_iter(text) {
-        let (Some(dst), Some(src), Some(sep)) = (caps.get(1), caps.get(2), caps.get(3)) else {
+        let (Some(dst), Some(src), Some(sep)) = (
+            caps.get(1),
+            caps.get(2),
+            caps.get(3).or_else(|| caps.get(4)),
+        ) else {
             continue;
         };
         if let Some(value) = bindings.get(&src.as_str().to_ascii_lowercase()).cloned() {
