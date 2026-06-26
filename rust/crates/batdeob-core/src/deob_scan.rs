@@ -3593,10 +3593,7 @@ fn scan_curl_redirect_deob_text(deobfuscated: &str, env: &mut Environment) {
         .collect();
 
     for line in deobfuscated.lines() {
-        if !contains_ascii_case_insensitive(line, "curl")
-            || !contains_liberal_url_scheme(line)
-            || !line.contains('>')
-        {
+        if !contains_ascii_case_insensitive(line, "curl") || !line.contains('>') {
             continue;
         }
         let Some(curl_pos) = find_ascii_case_insensitive_from(line, "curl", 0) else {
