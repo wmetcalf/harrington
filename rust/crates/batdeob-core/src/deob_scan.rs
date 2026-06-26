@@ -659,6 +659,13 @@ fn python_requests_request_get_url(args: &str) -> Option<String> {
 }
 
 fn collect_python_requests_session_get_aliases(text: &str) -> Vec<String> {
+    collect_python_requests_session_constructors(text)
+        .into_iter()
+        .map(|constructor| format!("{constructor}().get"))
+        .collect()
+}
+
+fn collect_python_requests_session_constructors(text: &str) -> Vec<String> {
     static PY_IMPORT_REQUESTS_ALIAS_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?is)\bimport\s+requests\s+as\s+([A-Za-z_][A-Za-z0-9_]*)"#)
             .expect("python requests import alias regex")
@@ -668,11 +675,13 @@ fn collect_python_requests_session_get_aliases(text: &str) -> Vec<String> {
             .expect("python requests from import regex")
     });
 
-    let mut aliases = PY_IMPORT_REQUESTS_ALIAS_RE
-        .captures_iter(text)
-        .take(8)
-        .filter_map(|caps| caps.get(1).map(|m| format!("{}.Session().get", m.as_str())))
-        .collect::<Vec<_>>();
+    let mut constructors = vec!["requests.Session".to_string()];
+    constructors.extend(
+        PY_IMPORT_REQUESTS_ALIAS_RE
+            .captures_iter(text)
+            .take(8)
+            .filter_map(|caps| caps.get(1).map(|m| format!("{}.Session", m.as_str()))),
+    );
     for caps in PY_FROM_REQUESTS_IMPORT_RE.captures_iter(text).take(8) {
         let Some(imports) = caps.get(1).or_else(|| caps.get(2)).map(|m| m.as_str()) else {
             continue;
@@ -692,25 +701,33 @@ fn collect_python_requests_session_get_aliases(text: &str) -> Vec<String> {
                 method
             };
             if is_python_identifier(alias) {
-                aliases.push(format!("{alias}().get"));
+                constructors.push(alias.to_string());
             }
         }
     }
-    aliases
+    constructors
 }
 
 fn collect_python_requests_bound_session_get_aliases(text: &str) -> Vec<String> {
     static PY_REQUESTS_SESSION_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*requests\.Session\s*\(\s*\)"#,
+            r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*(?:\.Session)?)\s*\(\s*\)"#,
         )
         .expect("python requests session assignment regex")
     });
 
+    let constructors = collect_python_requests_session_constructors(text);
     PY_REQUESTS_SESSION_ASSIGN_RE
         .captures_iter(text)
         .take(8)
-        .filter_map(|caps| caps.get(1).map(|m| format!("{}.get", m.as_str())))
+        .filter_map(|caps| {
+            let name = caps.get(1)?.as_str();
+            let constructor = caps.get(2)?.as_str();
+            constructors
+                .iter()
+                .any(|known| known == constructor)
+                .then(|| format!("{name}.get"))
+        })
         .collect()
 }
 
