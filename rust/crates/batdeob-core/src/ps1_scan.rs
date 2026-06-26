@@ -229,13 +229,17 @@ fn bits_positional_destination_from(text: &str) -> Option<String> {
 #[allow(clippy::expect_used)]
 static CHAR_CONCAT_RE: Lazy<Regex> = Lazy::new(|| {
     // Must have at least two + separators (3+ [char] terms) to avoid matching plain [char]N
-    Regex::new(r"(?i)(?:\[char\]\s*(?:0x[0-9a-f]+|\d+)\s*\+\s*){2,}\[char\]\s*(?:0x[0-9a-f]+|\d+)")
+    Regex::new(r"(?i)(?:\[char\]\s*\(?\s*(?:0x[0-9a-f]+|\d+)(?:\s*[+-]\s*(?:0x[0-9a-f]+|\d+))*\s*\)?\s*\+\s*){2,}\[char\]\s*\(?\s*(?:0x[0-9a-f]+|\d+)(?:\s*[+-]\s*(?:0x[0-9a-f]+|\d+))*\s*\)?")
         .expect("char concat regex")
 });
 
 #[allow(clippy::expect_used)]
-static CHAR_INNER_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?i)\[char\]\s*(0x[0-9a-f]+|\d+)").expect("inner char regex"));
+static CHAR_INNER_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"(?i)\[char\]\s*\(?\s*((?:0x[0-9a-f]+|\d+)(?:\s*[+-]\s*(?:0x[0-9a-f]+|\d+))*)\s*\)?",
+    )
+    .expect("inner char regex")
+});
 
 fn expand_char_concat(text: &str) -> String {
     if !contains_ascii_case_insensitive(text, "[char]") || !text.contains('+') {
@@ -248,15 +252,7 @@ fn expand_char_concat(text: &str) -> String {
             let mut chars = Vec::new();
             // Inner regex to extract each [char]N value
             for cap in CHAR_INNER_RE.captures_iter(s) {
-                let num_str = cap.get(1)?.as_str();
-                let n: u32 = if let Some(stripped) = num_str
-                    .strip_prefix("0x")
-                    .or_else(|| num_str.strip_prefix("0X"))
-                {
-                    u32::from_str_radix(stripped, 16).ok()?
-                } else {
-                    num_str.parse().ok()?
-                };
+                let n = parse_ps_char_codepoint(cap.get(1)?.as_str())?;
                 if let Some(c) = char::from_u32(n) {
                     chars.push(c);
                 }
@@ -271,6 +267,66 @@ fn expand_char_concat(text: &str) -> String {
         result.replace_range(start..end, &replacement);
     }
     result
+}
+
+fn parse_ps_char_codepoint(expr: &str) -> Option<u32> {
+    let expr = expr.trim();
+    if expr.is_empty() {
+        return None;
+    }
+    if let Some(value) = parse_ps_char_codepoint_atom(expr) {
+        return Some(value);
+    }
+
+    let mut acc = 0i64;
+    let mut sign = 1i64;
+    let mut start = 0usize;
+    let mut saw_operator = false;
+    let mut saw_term = false;
+    let bytes = expr.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' | b'-' => {
+                let term = expr[start..i].trim();
+                if term.is_empty() {
+                    if !saw_term {
+                        sign = if bytes[i] == b'-' { -1 } else { 1 };
+                        start = i + 1;
+                        i += 1;
+                        continue;
+                    }
+                    return None;
+                }
+                acc += sign * i64::from(parse_ps_char_codepoint_atom(term)?);
+                saw_term = true;
+                saw_operator = true;
+                sign = if bytes[i] == b'-' { -1 } else { 1 };
+                start = i + 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    let term = expr[start..].trim();
+    if term.is_empty() {
+        return None;
+    }
+    acc += sign * i64::from(parse_ps_char_codepoint_atom(term)?);
+    if saw_operator && (0..=i64::from(u32::MAX)).contains(&acc) {
+        Some(acc as u32)
+    } else {
+        None
+    }
+}
+
+fn parse_ps_char_codepoint_atom(expr: &str) -> Option<u32> {
+    let expr = expr.trim();
+    if let Some(stripped) = expr.strip_prefix("0x").or_else(|| expr.strip_prefix("0X")) {
+        u32::from_str_radix(stripped, 16).ok()
+    } else {
+        expr.parse().ok()
+    }
 }
 
 #[cfg(test)]
