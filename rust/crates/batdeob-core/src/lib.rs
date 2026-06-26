@@ -11300,12 +11300,14 @@ start msedge /max https://edge.example/lure.pdf"#,
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
             r#"msedge lure-schemeless.example/a.pdf
-explorer.exe portal-schemeless.example/privacy/"#,
+explorer.exe portal-schemeless.example/privacy/
+start "" start-schemeless.example/lure.pdf"#,
             &mut env,
         );
         for expected in [
             "http://lure-schemeless.example/a.pdf",
             "http://portal-schemeless.example/privacy/",
+            "http://start-schemeless.example/lure.pdf",
         ] {
             assert!(
                 env.traits
