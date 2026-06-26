@@ -1173,8 +1173,10 @@ fn find_python_urlretrieve_literals(text: &str) -> Vec<(String, Option<String>)>
 
 fn collect_python_urllib_call_aliases(text: &str, target_method: &str) -> Vec<String> {
     static PY_FROM_URLLIB_IMPORT_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?is)\bfrom\s+urllib(?:\.request)?\s+import\s+([^;"'\r\n]+)"#)
-            .expect("python urllib import regex")
+        Regex::new(
+            r#"(?is)\bfrom\s+urllib(?:\.request)?\s+import\s*(?:\(([^)]{0,512})\)|([^;"'\r\n]+))"#,
+        )
+        .expect("python urllib import regex")
     });
     static PY_IMPORT_URLLIB_REQUEST_ALIAS_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?is)\bimport\s+urllib\.request\s+as\s+([A-Za-z_][A-Za-z0-9_]*)"#)
@@ -1192,7 +1194,7 @@ fn collect_python_urllib_call_aliases(text: &str, target_method: &str) -> Vec<St
         aliases.push(format!("{alias}.{target_method}"));
     }
     for caps in PY_FROM_URLLIB_IMPORT_RE.captures_iter(text).take(8) {
-        let Some(imports) = caps.get(1).map(|m| m.as_str()) else {
+        let Some(imports) = caps.get(1).or_else(|| caps.get(2)).map(|m| m.as_str()) else {
             continue;
         };
         for part in imports.split(',') {
