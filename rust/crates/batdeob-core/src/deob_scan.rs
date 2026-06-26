@@ -762,6 +762,12 @@ fn collect_python_b64_string_bindings(
         )
         .expect("python string binding regex")
     });
+    static PY_STRING_CONCAT_BINDING_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*((?:(?:[bB])?['"][^'"]+['"]\s*\+\s*)+(?:[bB])?['"][^'"]+['"])"#,
+        )
+        .expect("python string concat binding regex")
+    });
 
     let mut bindings = std::collections::HashMap::new();
     for caps in PY_STRING_BINDING_RE.captures_iter(deobfuscated).take(64) {
@@ -776,7 +782,45 @@ fn collect_python_b64_string_bindings(
         }
         bindings.insert(name.to_string(), value.to_string());
     }
+    for caps in PY_STRING_CONCAT_BINDING_RE
+        .captures_iter(deobfuscated)
+        .take(32)
+    {
+        let Some(name) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(expr) = caps.get(2).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(value) = collect_python_concat_string_literals(expr) else {
+            continue;
+        };
+        if !(32..=20_000).contains(&value.len()) || !is_python_base64_literal(&value) {
+            continue;
+        }
+        bindings.insert(name.to_string(), value);
+    }
     bindings
+}
+
+fn collect_python_concat_string_literals(expr: &str) -> Option<String> {
+    static PY_STRING_LITERAL_PART_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)(?:[bB])?['"]([^'"]+)['"]"#).expect("python string literal part regex")
+    });
+
+    let mut out = String::new();
+    let mut parts = 0usize;
+    for caps in PY_STRING_LITERAL_PART_RE.captures_iter(expr).take(64) {
+        let Some(value) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        out.push_str(value);
+        parts += 1;
+        if out.len() > 20_000 {
+            return None;
+        }
+    }
+    (parts >= 2).then_some(out)
 }
 
 fn is_python_identifier(s: &str) -> bool {
