@@ -64,16 +64,7 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
     for (idx, payload) in payloads.iter().enumerate() {
         let raw = String::from_utf8_lossy(payload);
         let text = join_vbs_line_continuations(&raw);
-        let mut bindings = std::collections::HashMap::new();
-        for caps in VBS_STRING_ASSIGN_RE.captures_iter(&text) {
-            let (Some(name), Some(value)) = (caps.get(1), caps.get(2)) else {
-                continue;
-            };
-            let Some(value) = eval_vbs_string_expr(value.as_str(), &bindings) else {
-                continue;
-            };
-            bindings.insert(name.as_str().to_ascii_lowercase(), value);
-        }
+        let bindings = collect_vbs_string_bindings(&text);
         let dst_hint: Option<String> = SAVETOFILE_RE
             .captures(&text)
             .and_then(|c| c.get(1).map(|m| m.as_str().to_string()));
@@ -326,16 +317,7 @@ fn extract_vbs_execute_inners(env: &mut Environment) {
         cursor += 1;
         let raw = String::from_utf8_lossy(&payload);
         let text = join_vbs_line_continuations(&raw);
-        let mut bindings = std::collections::HashMap::new();
-        for caps in VBS_STRING_ASSIGN_RE.captures_iter(&text) {
-            let (Some(name), Some(value)) = (caps.get(1), caps.get(2)) else {
-                continue;
-            };
-            let Some(value) = eval_vbs_string_expr(value.as_str(), &bindings) else {
-                continue;
-            };
-            bindings.insert(name.as_str().to_ascii_lowercase(), value);
-        }
+        let bindings = collect_vbs_string_bindings(&text);
 
         for line in text.lines() {
             let Some(expr) = vbs_execute_expr(line) else {
@@ -365,6 +347,25 @@ fn extract_vbs_execute_inners(env: &mut Environment) {
     }
 
     env.all_extracted_vbs.extend(added);
+}
+
+fn collect_vbs_string_bindings(text: &str) -> std::collections::HashMap<String, String> {
+    let mut bindings = std::collections::HashMap::new();
+    for line in text.lines() {
+        for statement in split_vbs_statements(line) {
+            let Some(caps) = VBS_STRING_ASSIGN_RE.captures(statement) else {
+                continue;
+            };
+            let (Some(name), Some(value)) = (caps.get(1), caps.get(2)) else {
+                continue;
+            };
+            let Some(value) = eval_vbs_string_expr(value.as_str(), &bindings) else {
+                continue;
+            };
+            bindings.insert(name.as_str().to_ascii_lowercase(), value);
+        }
+    }
+    bindings
 }
 
 fn vbs_execute_expr(line: &str) -> Option<&str> {
@@ -424,6 +425,34 @@ fn join_vbs_line_continuations(text: &str) -> String {
         }
     }
     out
+}
+
+fn split_vbs_statements(line: &str) -> Vec<&str> {
+    let mut statements = Vec::new();
+    let mut start = 0usize;
+    let mut in_quote = false;
+    let bytes = line.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => {
+                if in_quote && bytes.get(i + 1) == Some(&b'"') {
+                    i += 2;
+                    continue;
+                }
+                in_quote = !in_quote;
+                i += 1;
+            }
+            b':' if !in_quote => {
+                statements.push(line[start..i].trim());
+                i += 1;
+                start = i;
+            }
+            _ => i += 1,
+        }
+    }
+    statements.push(line[start..].trim());
+    statements
 }
 
 fn eval_vbs_string_expr(

