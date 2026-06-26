@@ -134,6 +134,26 @@ static START_BITS_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static START_BITS_SCHEMELESS_SOURCE_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?ix)
+            Start-BitsTransfer \b
+            [^\n|;]*? -S(?:ource)? (?: \s+ | : )
+            (?: ['"] )?
+            (
+                (?: [a-z0-9\-]+ \. ){1,4}
+                (?: com | net | org | io | ru | cn | me | info | biz | us | co | ly | gg | tk | xyz
+                  | top | life | store | app | tools | rocks | click | stream | host | website
+                  | pw | dev | sh | space | site | live | cloud | online | tech | art | news | pro | cc | to )
+                / [^\s"'\);<>]{1,200}
+            )
+            (?: ['"] )?
+        "#,
+    )
+    .expect("bits schemeless source")
+});
+
+#[allow(clippy::expect_used)]
 static NET_REQ_RE: Lazy<Regex> = Lazy::new(|| {
     // [Net.WebRequest]::Create('url')  /  [System.Net.WebRequest]::Create('url')
     Regex::new(r#"(?i)\[(?:System\.)?Net\.WebRequest\]::Create\s*\(\s*["']([^"']+)["']"#)
@@ -4358,6 +4378,7 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
             &DOWNLOADSTRING_FRAGMENT_RE,
             &CALLBYNAME_DOWNLOADSTRING_RE,
             &START_BITS_RE,
+            &START_BITS_SCHEMELESS_SOURCE_RE,
             &NET_REQ_RE,
             &PS_GENERIC_URL_RE,
         ];

