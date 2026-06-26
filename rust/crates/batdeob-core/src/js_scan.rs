@@ -326,6 +326,7 @@ fn skip_js_call_arg(text: &str, start: usize) -> Option<usize> {
 
 fn decoded_js_atob_literals(text: &str) -> Vec<String> {
     let mut out = Vec::new();
+    let string_bindings = collect_js_string_literal_bindings(text);
     let mut cursor = 0usize;
     while let Some(rel) = find_ascii_case_insensitive(&text[cursor..], "atob") {
         let name_start = cursor + rel;
@@ -346,8 +347,10 @@ fn decoded_js_atob_literals(text: &str) -> Vec<String> {
             cursor = name_end;
             continue;
         };
-        let literal_start = skip_ascii_ws(text, open + 1);
-        let Some((literal_end, value)) = parse_js_string_literal_at(text, literal_start) else {
+        let arg_start = skip_ascii_ws(text, open + 1);
+        let Some((arg_end, value)) =
+            parse_js_string_value_arg_at(text, arg_start, &string_bindings)
+        else {
             cursor = open + 1;
             continue;
         };
@@ -370,9 +373,42 @@ fn decoded_js_atob_literals(text: &str) -> Vec<String> {
                 }
             }
         }
-        cursor = literal_end;
+        cursor = arg_end;
     }
     out
+}
+
+fn parse_js_string_value_arg_at(
+    text: &str,
+    start: usize,
+    bindings: &std::collections::HashMap<String, String>,
+) -> Option<(usize, String)> {
+    let (mut cursor, mut value) =
+        if let Some((end, literal)) = parse_js_string_literal_at(text, start) {
+            (end, literal)
+        } else {
+            let (end, name) = parse_js_identifier_at(text, start)?;
+            (end, bindings.get(name)?.clone())
+        };
+    loop {
+        if let Some(end) = consume_js_no_arg_method(text, cursor, "trim") {
+            value = value.trim().to_string();
+            cursor = end;
+            continue;
+        }
+        if let Some(end) = consume_js_no_arg_method(text, cursor, "trimStart") {
+            value = value.trim_start().to_string();
+            cursor = end;
+            continue;
+        }
+        if let Some(end) = consume_js_no_arg_method(text, cursor, "trimEnd") {
+            value = value.trim_end().to_string();
+            cursor = end;
+            continue;
+        }
+        break;
+    }
+    Some((cursor, value))
 }
 
 fn decoded_js_buffer_literals(text: &str) -> Vec<String> {
@@ -1045,18 +1081,28 @@ fn consume_js_call_open(text: &str, start: usize) -> Option<usize> {
     None
 }
 
+fn consume_js_no_arg_method(text: &str, start: usize, method: &str) -> Option<usize> {
+    let open = consume_js_method_open(text, start, method)?;
+    let close = skip_ascii_ws(text, open + 1);
+    (text.as_bytes().get(close) == Some(&b')')).then_some(close + 1)
+}
+
 fn consume_js_method_open(text: &str, start: usize, method: &str) -> Option<usize> {
     let method_end = consume_js_method_member_end(text, start, method)?;
-    let open = skip_ascii_ws(text, method_end);
-    (text.as_bytes().get(open) == Some(&b'(')).then_some(open)
+    consume_js_call_open(text, method_end)
 }
 
 fn consume_js_method_member_end(text: &str, start: usize, method: &str) -> Option<usize> {
-    let dot = skip_ascii_ws(text, start);
-    if text.as_bytes().get(dot) != Some(&b'.') {
+    let member = skip_ascii_ws(text, start);
+    let method_start = if text.as_bytes().get(member) == Some(&b'.') {
+        skip_ascii_ws(text, member + 1)
+    } else if text.as_bytes().get(member) == Some(&b'?')
+        && text.as_bytes().get(member + 1) == Some(&b'.')
+    {
+        skip_ascii_ws(text, member + 2)
+    } else {
         return None;
-    }
-    let method_start = skip_ascii_ws(text, dot + 1);
+    };
     let (method_end, name) = parse_js_identifier_at(text, method_start)?;
     if name != method {
         return None;
