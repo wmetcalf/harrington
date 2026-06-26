@@ -342,11 +342,10 @@ fn decoded_js_atob_literals(text: &str) -> Vec<String> {
             continue;
         }
 
-        let open = skip_ascii_ws(text, name_end);
-        if text.as_bytes().get(open) != Some(&b'(') {
+        let Some(open) = consume_js_call_open(text, name_end) else {
             cursor = name_end;
             continue;
-        }
+        };
         let literal_start = skip_ascii_ws(text, open + 1);
         let Some((literal_end, value)) = parse_js_string_literal_at(text, literal_start) else {
             cursor = open + 1;
@@ -1032,6 +1031,20 @@ fn consume_js_quoted_bytes(text: &str, start: usize) -> Option<usize> {
     None
 }
 
+fn consume_js_call_open(text: &str, start: usize) -> Option<usize> {
+    let open = skip_ascii_ws(text, start);
+    if text.as_bytes().get(open) == Some(&b'(') {
+        return Some(open);
+    }
+    if text.as_bytes().get(open) == Some(&b'?') && text.as_bytes().get(open + 1) == Some(&b'.') {
+        let optional_open = skip_ascii_ws(text, open + 2);
+        if text.as_bytes().get(optional_open) == Some(&b'(') {
+            return Some(optional_open);
+        }
+    }
+    None
+}
+
 fn consume_js_method_open(text: &str, start: usize, method: &str) -> Option<usize> {
     let method_end = consume_js_method_member_end(text, start, method)?;
     let open = skip_ascii_ws(text, method_end);
@@ -1343,10 +1356,11 @@ fn find_js_string_concat_matches(text: &str) -> Vec<(usize, usize, String)> {
 
 fn parse_js_string_literal_at(text: &str, start: usize) -> Option<(usize, String)> {
     let quote_byte = *text.as_bytes().get(start)?;
-    if quote_byte != b'\'' && quote_byte != b'"' {
+    if quote_byte != b'\'' && quote_byte != b'"' && quote_byte != b'`' {
         return None;
     }
     let quote_char = quote_byte as char;
+    let is_template = quote_byte == b'`';
 
     let mut value = String::new();
     let inner = &text[start + 1..];
@@ -1357,6 +1371,9 @@ fn parse_js_string_literal_at(text: &str, start: usize) -> Option<(usize, String
         // string prematurely.
         if c == quote_char {
             return Some((start + 1 + rel + c.len_utf8(), value));
+        }
+        if is_template && c == '$' && matches!(chars.peek(), Some(&(_, '{'))) {
+            return None;
         }
         if c != '\\' {
             value.push(c);
