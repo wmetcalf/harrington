@@ -8466,6 +8466,24 @@ mod ps1_obfuscation_tests {
     }
 
     #[test]
+    fn ps1_normalization_decodes_string_join_char_array() {
+        let chars = "https://string-join-char-array.example/stage.ps1"
+            .chars()
+            .map(|ch| u32::from(ch).to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let ps = format!("iex ([string]::Join('', [char[]]({chars})))");
+
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+
+        assert!(
+            normalized.contains("https://string-join-char-array.example/stage.ps1"),
+            "string Join char-array call was not decoded:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
     fn ps1_normalization_decodes_nested_gzip_format_base64() {
         use base64::Engine;
         use std::io::Write;
