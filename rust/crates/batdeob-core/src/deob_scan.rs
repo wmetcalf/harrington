@@ -2190,7 +2190,43 @@ fn scan_url_launch_deob_text(deobfuscated: &str, env: &mut Environment) {
                 url,
             });
         }
+
+        for url in powershell_url_launches_in_line(line) {
+            if is_noise_url(&url) || !known.insert(url.clone()) {
+                continue;
+            }
+            env.traits.push(Trait::UrlLaunch {
+                cmd: line.to_string(),
+                url,
+            });
+        }
     }
+}
+
+fn powershell_url_launches_in_line(line: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    for name in ["Start-Process", "saps", "Invoke-Item", "ii"] {
+        let mut search_start = 0;
+        while let Some(name_start) = find_ascii_case_insensitive_from(line, name, search_start) {
+            let name_end = name_start + name.len();
+            if !is_callable_name_boundary(line, name_start, name_end) {
+                search_start = name_end;
+                continue;
+            }
+            let tokens = split_words(&line[name_start..]);
+            if tokens
+                .first()
+                .map(|token| is_url_launcher_command(&command_name(strip_outer_quotes(token))))
+                .unwrap_or(false)
+            {
+                if let Some(url) = first_url_after(&tokens, 1) {
+                    found.push(url);
+                }
+            }
+            search_start = name_end;
+        }
+    }
+    found
 }
 
 fn scan_url_variable_assignments(deobfuscated: &str, env: &mut Environment) {
@@ -2530,6 +2566,10 @@ fn is_url_launcher_command(cmd: &str) -> bool {
     [
         "explorer",
         "explorer.exe",
+        "start-process",
+        "saps",
+        "invoke-item",
+        "ii",
         "chrome",
         "chrome.exe",
         "msedge",
