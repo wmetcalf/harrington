@@ -2601,7 +2601,9 @@ fn msiexec_attached_url_token(token: &str) -> Option<&str> {
         };
         let original_rest = &token[token.len() - rest.len()..];
         let candidate = original_rest.trim_start_matches([':', '=']);
-        if looks_like_direct_url(candidate) {
+        if looks_like_direct_url(candidate)
+            || normalize_schemeless_domain_path_token(candidate).is_some()
+        {
             return Some(candidate);
         }
     }
