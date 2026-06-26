@@ -1077,9 +1077,14 @@ fn find_call_url_literals(text: &str, names: &[&str]) -> Vec<String> {
 
 fn find_python_urlretrieve_literals(text: &str) -> Vec<(String, Option<String>)> {
     let mut found = Vec::new();
-    for name in ["urllib.request.urlretrieve", "urllib.urlretrieve"] {
+    let mut names = vec![
+        "urllib.request.urlretrieve".to_string(),
+        "urllib.urlretrieve".to_string(),
+    ];
+    names.extend(collect_python_urlretrieve_aliases(text));
+    for name in names {
         let mut search_start = 0;
-        while let Some(name_start) = find_ascii_case_insensitive_from(text, name, search_start) {
+        while let Some(name_start) = find_ascii_case_insensitive_from(text, &name, search_start) {
             let name_end = name_start + name.len();
             if !is_callable_name_boundary(text, name_start, name_end) {
                 search_start = name_end;
@@ -1111,6 +1116,39 @@ fn find_python_urlretrieve_literals(text: &str) -> Vec<(String, Option<String>)>
         }
     }
     found
+}
+
+fn collect_python_urlretrieve_aliases(text: &str) -> Vec<String> {
+    static PY_FROM_URLLIB_IMPORT_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)\bfrom\s+urllib(?:\.request)?\s+import\s+([^;"'\r\n]+)"#)
+            .expect("python urllib import regex")
+    });
+
+    let mut aliases = Vec::new();
+    for caps in PY_FROM_URLLIB_IMPORT_RE.captures_iter(text).take(8) {
+        let Some(imports) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        for part in imports.split(',') {
+            let part = part.trim().trim_matches(['(', ')']);
+            let words = part.split_ascii_whitespace().collect::<Vec<_>>();
+            let Some(method) = words.first().copied() else {
+                continue;
+            };
+            if method != "urlretrieve" {
+                continue;
+            }
+            let alias = if words.get(1).is_some_and(|w| w.eq_ignore_ascii_case("as")) {
+                words.get(2).copied().unwrap_or(method)
+            } else {
+                method
+            };
+            if is_python_identifier(alias) {
+                aliases.push(alias.to_string());
+            }
+        }
+    }
+    aliases
 }
 
 fn find_dotted_method_url_literals(text: &str) -> Vec<(String, String, Option<String>)> {
