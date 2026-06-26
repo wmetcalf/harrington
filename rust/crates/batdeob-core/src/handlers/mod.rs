@@ -15,6 +15,7 @@ pub mod for_cmd;
 pub mod goto;
 pub mod if_cmd;
 pub mod mshta;
+pub mod msiexec;
 pub mod net;
 pub mod passthrough;
 pub mod powershell;
@@ -46,6 +47,9 @@ pub fn lookup(name: &str) -> Option<Handler> {
     }
     if base.eq_ignore_ascii_case("wget") || base.eq_ignore_ascii_case("get") {
         return Some(wget::h_wget);
+    }
+    if base.eq_ignore_ascii_case("msiexec") {
+        return Some(msiexec::h_msiexec);
     }
     if base.eq_ignore_ascii_case("mshta") {
         return Some(mshta::h_mshta);
