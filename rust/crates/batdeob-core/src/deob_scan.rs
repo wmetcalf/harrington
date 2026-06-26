@@ -3299,7 +3299,7 @@ fn parse_curl_like_download(tokens: &[String]) -> Option<(String, Option<String>
             }
             continue;
         }
-        if let Some(normalized) = normalize_liberal_url_token(token) {
+        if let Some(normalized) = normalize_curl_url_token(token) {
             url = Some(normalized);
         }
         i += 1;
@@ -3308,6 +3308,10 @@ fn parse_curl_like_download(tokens: &[String]) -> Option<(String, Option<String>
         let dst = dst.or_else(|| remote_name.then(|| url_basename(&u)).flatten());
         (u, dst)
     })
+}
+
+fn normalize_curl_url_token(token: &str) -> Option<String> {
+    normalize_liberal_url_token(token).or_else(|| normalize_schemeless_domain_path_token(token))
 }
 
 fn curl_tokens_have_download_url_candidate(tokens: &[String]) -> bool {
@@ -3483,7 +3487,7 @@ fn parse_curl_output_dst(text: &str) -> Option<String> {
 }
 
 fn looks_like_curl_url(url: &str) -> bool {
-    normalize_liberal_url_token(url).is_some_and(|url| {
+    normalize_curl_url_token(url).is_some_and(|url| {
         let Some((scheme, rest)) = url.split_once("://") else {
             return false;
         };
@@ -3647,7 +3651,7 @@ fn scan_curl_deob_text(deobfuscated: &str, env: &mut Environment) {
         .collect();
 
     for line in deobfuscated.lines() {
-        if !contains_ascii_case_insensitive(line, "curl") || !contains_liberal_url_scheme(line) {
+        if !contains_ascii_case_insensitive(line, "curl") {
             continue;
         }
         let Some(curl_pos) = find_ascii_case_insensitive_from(line, "curl", 0) else {
