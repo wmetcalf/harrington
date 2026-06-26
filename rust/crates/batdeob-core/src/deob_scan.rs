@@ -789,7 +789,7 @@ fn collect_python_base64_decoder_aliases(
     module_aliases: &std::collections::HashSet<String>,
 ) -> std::collections::HashMap<String, String> {
     static PY_FROM_BASE64_IMPORT_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?is)\bfrom\s+base64\s+import\s+([^;"'\r\n]+)"#)
+        Regex::new(r#"(?is)\bfrom\s+base64\s+import\s*(?:\(([^)]{0,512})\)|([^;"'\r\n]+))"#)
             .expect("python from base64 import regex")
     });
     static PY_BASE64_DECODER_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
@@ -807,7 +807,7 @@ fn collect_python_base64_decoder_aliases(
 
     let mut aliases = std::collections::HashMap::new();
     for caps in PY_FROM_BASE64_IMPORT_RE.captures_iter(deobfuscated).take(8) {
-        let Some(imports) = caps.get(1).map(|m| m.as_str()) else {
+        let Some(imports) = caps.get(1).or_else(|| caps.get(2)).map(|m| m.as_str()) else {
             continue;
         };
         for part in imports.split(',') {
