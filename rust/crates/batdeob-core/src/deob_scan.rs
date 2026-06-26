@@ -659,6 +659,12 @@ fn find_python_requests_request_get_literals(text: &str) -> Vec<String> {
     names.extend(collect_python_requests_assigned_method_aliases(
         text, "request",
     ));
+    names.extend(collect_python_requests_session_method_aliases(
+        text, "request",
+    ));
+    names.extend(collect_python_requests_bound_session_method_aliases(
+        text, "request",
+    ));
     let string_bindings = collect_python_string_bindings(text);
     let url_bindings = collect_python_url_string_bindings_from(&string_bindings);
 
@@ -731,9 +737,13 @@ fn python_arg_is_keyword(arg: &str, keyword: &str) -> bool {
 }
 
 fn collect_python_requests_session_get_aliases(text: &str) -> Vec<String> {
+    collect_python_requests_session_method_aliases(text, "get")
+}
+
+fn collect_python_requests_session_method_aliases(text: &str, target_method: &str) -> Vec<String> {
     collect_python_requests_session_constructors(text)
         .into_iter()
-        .map(|constructor| format!("{constructor}().get"))
+        .map(|constructor| format!("{constructor}().{target_method}"))
         .collect()
 }
 
@@ -781,6 +791,13 @@ fn collect_python_requests_session_constructors(text: &str) -> Vec<String> {
 }
 
 fn collect_python_requests_bound_session_get_aliases(text: &str) -> Vec<String> {
+    collect_python_requests_bound_session_method_aliases(text, "get")
+}
+
+fn collect_python_requests_bound_session_method_aliases(
+    text: &str,
+    target_method: &str,
+) -> Vec<String> {
     static PY_REQUESTS_SESSION_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
             r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*(?:\.Session)?)\s*\(\s*\)"#,
@@ -798,7 +815,7 @@ fn collect_python_requests_bound_session_get_aliases(text: &str) -> Vec<String> 
             constructors
                 .iter()
                 .any(|known| known == constructor)
-                .then(|| format!("{name}.get"))
+                .then(|| format!("{name}.{target_method}"))
         })
         .collect()
 }
