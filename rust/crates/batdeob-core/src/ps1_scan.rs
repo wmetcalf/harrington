@@ -1751,7 +1751,7 @@ fn expand_reverse_string_slice_join(text: &str) -> String {
 #[allow(clippy::expect_used)]
 static TOCHARARRAY_REVERSE_JOIN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*'([^']*)'\s*;\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\.ToCharArray\s*\(\s*\)\s*;\s*\[array\]::Reverse\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*;\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*-join\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)"#,
+        r#"(?is)\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:'([^']*)'|"([^"]*)")\s*;\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\.ToCharArray\s*\(\s*\)\s*;\s*\[array\]::Reverse\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*;\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*-join\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)"#,
     )
     .expect("tochararray reverse join")
 });
@@ -1759,7 +1759,7 @@ static TOCHARARRAY_REVERSE_JOIN_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static LITERAL_TOCHARARRAY_REVERSE_JOIN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)\$[A-Za-z_][A-Za-z0-9_]*\s*=\s*'([^']*)'\s*;.{0,300}?\$[A-Za-z_][A-Za-z0-9_]*\s*=\s*'([^']*)'\s*\.ToCharArray\s*\(\s*\)\s*;.{0,200}?\[array\]::Reverse\s*\(\s*'([^']*)'\s*\)\s*;.{0,200}?(\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*-join\s*\(\s*'([^']*)'\s*\))"#,
+        r#"(?is)\$[A-Za-z_][A-Za-z0-9_]*\s*=\s*(?:'([^']*)'|"([^"]*)")\s*;.{0,300}?\$[A-Za-z_][A-Za-z0-9_]*\s*=\s*(?:'([^']*)'|"([^"]*)")\s*\.ToCharArray\s*\(\s*\)\s*;.{0,200}?\[array\]::Reverse\s*\(\s*(?:'([^']*)'|"([^"]*)")\s*\)\s*;.{0,200}?(\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*-join\s*\(\s*(?:'([^']*)'|"([^"]*)")\s*\))"#,
     )
     .expect("literal tochararray reverse join")
 });
@@ -1776,12 +1776,12 @@ fn expand_tochararray_reverse_join(text: &str) -> String {
         .filter_map(|caps| {
             let full = caps.get(0)?;
             let src_var = caps.get(1)?.as_str();
-            let value = caps.get(2)?.as_str();
-            let arr_var = caps.get(3)?.as_str();
-            let src_ref = caps.get(4)?.as_str();
-            let reverse_ref = caps.get(5)?.as_str();
-            let dst_var = caps.get(6)?.as_str();
-            let join_ref = caps.get(7)?.as_str();
+            let value = caps.get(2).or_else(|| caps.get(3))?.as_str();
+            let arr_var = caps.get(4)?.as_str();
+            let src_ref = caps.get(5)?.as_str();
+            let reverse_ref = caps.get(6)?.as_str();
+            let dst_var = caps.get(7)?.as_str();
+            let join_ref = caps.get(8)?.as_str();
             if src_ref != src_var || reverse_ref != arr_var || join_ref != arr_var {
                 return None;
             }
@@ -1796,12 +1796,12 @@ fn expand_tochararray_reverse_join(text: &str) -> String {
         LITERAL_TOCHARARRAY_REVERSE_JOIN_RE
             .captures_iter(text)
             .filter_map(|caps| {
-                let value = caps.get(1)?.as_str();
-                let arr_value = caps.get(2)?.as_str();
-                let reverse_value = caps.get(3)?.as_str();
-                let final_assignment = caps.get(4)?;
-                let dst_var = caps.get(5)?.as_str();
-                let join_value = caps.get(6)?.as_str();
+                let value = caps.get(1).or_else(|| caps.get(2))?.as_str();
+                let arr_value = caps.get(3).or_else(|| caps.get(4))?.as_str();
+                let reverse_value = caps.get(5).or_else(|| caps.get(6))?.as_str();
+                let final_assignment = caps.get(7)?;
+                let dst_var = caps.get(8)?.as_str();
+                let join_value = caps.get(9).or_else(|| caps.get(10))?.as_str();
                 if value != arr_value || value != reverse_value || value != join_value {
                     return None;
                 }
