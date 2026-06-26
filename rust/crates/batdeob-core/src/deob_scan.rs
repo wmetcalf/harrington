@@ -3192,7 +3192,7 @@ fn scan_curl_style_compact_flags_deob_text(deobfuscated: &str, env: &mut Environ
         }
         for token in tokens.iter().skip(1) {
             let url = token.trim_matches('"');
-            let Some(url) = normalize_liberal_url_token(url) else {
+            let Some(url) = normalize_curl_url_token(url) else {
                 continue;
             };
             if !known.insert(url.clone()) {

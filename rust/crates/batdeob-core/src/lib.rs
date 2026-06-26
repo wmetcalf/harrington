@@ -13953,6 +13953,27 @@ C:\Users\Public\cu.tmp -K curl.cfg
     }
 
     #[test]
+    fn curl_style_compact_flags_schemeless_url_emits_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#""C:\Tools\rdl.exe" -LJOk cdn-schemeless.example/files/steam.exe"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "http://cdn-schemeless.example/files/steam.exe"
+                        && dst.as_deref() == Some("steam.exe")
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from schemeless curl-style compact flags: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn echoed_curl_output_colon_mixed_case_emits_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
