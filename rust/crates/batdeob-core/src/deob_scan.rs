@@ -659,6 +659,7 @@ fn find_python_requests_request_get_literals(text: &str) -> Vec<String> {
     names.extend(collect_python_requests_assigned_method_aliases(
         text, "request",
     ));
+    let bindings = collect_python_url_string_bindings(text);
 
     for name in names {
         let mut search_start = 0;
@@ -677,7 +678,7 @@ fn find_python_requests_request_get_literals(text: &str) -> Vec<String> {
                 search_start = open + 1;
                 continue;
             };
-            if let Some(url) = python_requests_request_get_url(&text[open + 1..close]) {
+            if let Some(url) = python_requests_request_get_url(&text[open + 1..close], &bindings) {
                 found.push(url);
             }
             search_start = close + 1;
@@ -687,7 +688,10 @@ fn find_python_requests_request_get_literals(text: &str) -> Vec<String> {
     found
 }
 
-fn python_requests_request_get_url(args: &str) -> Option<String> {
+fn python_requests_request_get_url(
+    args: &str,
+    bindings: &std::collections::HashMap<String, String>,
+) -> Option<String> {
     let literals = quoted_string_literals(args);
     let method = literals
         .iter()
@@ -696,10 +700,23 @@ fn python_requests_request_get_url(args: &str) -> Option<String> {
         return None;
     }
 
-    literals.into_iter().find_map(|literal| {
-        let literal = trim_url_suffix(&literal);
-        looks_like_direct_url(literal).then(|| literal.to_string())
-    })
+    literals
+        .into_iter()
+        .find_map(|literal| {
+            let literal = trim_url_suffix(&literal);
+            looks_like_direct_url(literal).then(|| literal.to_string())
+        })
+        .or_else(|| {
+            split_python_top_level_args(args)
+                .into_iter()
+                .take(4)
+                .filter(|arg| {
+                    quoted_string_literals(arg)
+                        .into_iter()
+                        .all(|literal| !literal.eq_ignore_ascii_case("GET"))
+                })
+                .find_map(|arg| python_url_arg_from_binding(arg, bindings))
+        })
 }
 
 fn collect_python_requests_session_get_aliases(text: &str) -> Vec<String> {
