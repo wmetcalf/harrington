@@ -2266,7 +2266,7 @@ fn powershell_url_launches_in_line(line: &str) -> Vec<String> {
                 .map(|token| is_url_launcher_command(&command_name(strip_outer_quotes(token))))
                 .unwrap_or(false)
             {
-                if let Some(url) = first_url_after(&tokens, 1, false, false) {
+                if let Some(url) = first_url_after(&tokens, 1, false, true) {
                     found.push(url);
                 }
             }
