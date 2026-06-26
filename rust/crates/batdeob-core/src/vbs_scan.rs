@@ -544,6 +544,18 @@ fn parse_vbs_chr(part: &str) -> Option<char> {
 
 fn parse_vbs_integer(value: &str) -> Option<u32> {
     let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if let Some(integer) = parse_vbs_integer_atom(value) {
+        return Some(integer);
+    }
+
+    parse_vbs_integer_sum(value)
+}
+
+fn parse_vbs_integer_atom(value: &str) -> Option<u32> {
+    let value = value.trim();
     if let Some(hex) = value
         .strip_prefix("&h")
         .or_else(|| value.strip_prefix("&H"))
@@ -553,6 +565,49 @@ fn parse_vbs_integer(value: &str) -> Option<u32> {
         u32::from_str_radix(hex.trim(), 16).ok()
     } else {
         value.parse().ok()
+    }
+}
+
+fn parse_vbs_integer_sum(value: &str) -> Option<u32> {
+    let mut acc = 0i64;
+    let mut sign = 1i64;
+    let mut start = 0usize;
+    let mut saw_operator = false;
+    let mut saw_term = false;
+    let bytes = value.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' | b'-' => {
+                let term = value[start..i].trim();
+                if term.is_empty() {
+                    if !saw_term {
+                        sign = if bytes[i] == b'-' { -1 } else { 1 };
+                        start = i + 1;
+                        i += 1;
+                        continue;
+                    }
+                    return None;
+                }
+                acc += sign * i64::from(parse_vbs_integer_atom(term)?);
+                saw_term = true;
+                saw_operator = true;
+                sign = if bytes[i] == b'-' { -1 } else { 1 };
+                start = i + 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    let term = value[start..].trim();
+    if term.is_empty() {
+        return None;
+    }
+    acc += sign * i64::from(parse_vbs_integer_atom(term)?);
+    if saw_operator && (0..=i64::from(u32::MAX)).contains(&acc) {
+        Some(acc as u32)
+    } else {
+        None
     }
 }
 
