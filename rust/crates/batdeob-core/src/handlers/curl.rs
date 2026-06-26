@@ -274,7 +274,7 @@ fn is_compact_remote_name_flag(token: &str) -> bool {
 
 fn is_one_arg_flag(token: &str) -> bool {
     const SHORT_FLAGS: &[&str] = &[
-        "-d", "-H", "-X", "-A", "-e", "-b", "-c", "-u", "-m", "-T", "-F",
+        "-d", "-H", "-X", "-A", "-e", "-b", "-c", "-u", "-m", "-T", "-F", "-x",
     ];
     const LONG_FLAGS: &[&str] = &[
         "--data",
@@ -306,7 +306,7 @@ fn is_one_arg_flag(token: &str) -> bool {
 
 fn is_attached_one_arg_short_flag(token: &str) -> bool {
     const SHORT_FLAGS: &[&str] = &[
-        "-d", "-H", "-X", "-A", "-e", "-b", "-c", "-u", "-m", "-T", "-F",
+        "-d", "-H", "-X", "-A", "-e", "-b", "-c", "-u", "-m", "-T", "-F", "-x",
     ];
     SHORT_FLAGS
         .iter()

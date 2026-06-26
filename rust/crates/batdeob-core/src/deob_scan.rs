@@ -3247,7 +3247,7 @@ pub(crate) fn curl_flag_matches_ci(token: &str, flag: &str) -> bool {
 }
 
 const CURL_ONE_ARG_SHORT_FLAGS: &[&str] = &[
-    "-d", "-H", "-X", "-A", "-e", "-b", "-c", "-u", "-m", "-T", "-F",
+    "-d", "-H", "-X", "-A", "-e", "-b", "-c", "-u", "-m", "-T", "-F", "-x",
 ];
 
 const CURL_ONE_ARG_LONG_FLAGS: &[&str] = &[
