@@ -241,6 +241,14 @@ static CHAR_INNER_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("inner char regex")
 });
 
+#[allow(clippy::expect_used)]
+static CHAR_LITERAL_CONCAT_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?i)\[char\]\s*\(?\s*((?:0x[0-9a-f]+|\d+)(?:\s*[+-]\s*(?:0x[0-9a-f]+|\d+))*)\s*\)?\s*\+\s*(?:'((?:''|[^'])*)'|"([^"`$\\]*(?:\\.[^"`$\\]*)*)")"#,
+    )
+    .expect("char literal concat regex")
+});
+
 fn expand_char_concat(text: &str) -> String {
     if !contains_ascii_case_insensitive(text, "[char]") || !text.contains('+') {
         return text.to_string();
@@ -263,6 +271,30 @@ fn expand_char_concat(text: &str) -> String {
         .collect();
     let mut result = text.to_string();
     // Apply replacements in reverse so byte offsets stay valid
+    for (start, end, replacement) in matches.into_iter().rev() {
+        result.replace_range(start..end, &replacement);
+    }
+    result
+}
+
+fn expand_char_literal_concat(text: &str) -> String {
+    if !contains_ascii_case_insensitive(text, "[char]") || !text.contains('+') {
+        return text.to_string();
+    }
+    let matches: Vec<(usize, usize, String)> = CHAR_LITERAL_CONCAT_RE
+        .captures_iter(text)
+        .filter_map(|caps| {
+            let full = caps.get(0)?;
+            let ch = char::from_u32(parse_ps_char_codepoint(caps.get(1)?.as_str())?)?;
+            let literal = caps
+                .get(2)
+                .map(|m| m.as_str().replace("''", "'"))
+                .or_else(|| caps.get(3).map(|m| m.as_str().to_string()))?;
+            let value = format!("{ch}{literal}").replace('\'', "''");
+            Some((full.start(), full.end(), format!("'{value}'")))
+        })
+        .collect();
+    let mut result = text.to_string();
     for (start, end, replacement) in matches.into_iter().rev() {
         result.replace_range(start..end, &replacement);
     }
@@ -580,6 +612,14 @@ static GETSTRING_B64_VAR_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static GETSTRING_BYTE_ARRAY_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?i)\[(?:System\.)?(?:Text\.)?Encoding\]::(UTF8|ASCII|Unicode|UTF7|BigEndianUnicode|UTF32)\.GetString\s*\(\s*\[\s*byte\s*\[\]\s*\]\s*@?\(\s*((?:0x[0-9a-f]+|\d+)\s*(?:,\s*(?:0x[0-9a-f]+|\d+)\s*){3,})\)\s*\)"#,
+    )
+    .expect("getstring byte array regex")
+});
+
+#[allow(clippy::expect_used)]
 static FROMB64_LONG_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?i)FromBase64String\s*\(\s*['"]([A-Za-z0-9+/=]{40,})['"]"#)
         .expect("long frombase64 literal regex")
@@ -871,6 +911,63 @@ fn expand_getstring_base64_variables(text: &str) -> String {
     out
 }
 
+fn expand_getstring_byte_arrays(text: &str) -> String {
+    if !contains_ascii_case_insensitive(text, "getstring")
+        || !contains_ascii_case_insensitive(text, "byte")
+    {
+        return text.to_string();
+    }
+    let matches: Vec<(usize, usize, String)> = GETSTRING_BYTE_ARRAY_RE
+        .captures_iter(text)
+        .filter_map(|caps| {
+            let full = caps.get(0)?;
+            let encoding = caps.get(1)?.as_str();
+            let bytes = parse_ps_byte_array(caps.get(2)?.as_str())?;
+            if bytes.len() > 128 * 1024 {
+                return None;
+            }
+            let value = decode_ps_getstring_bytes(encoding, &bytes)?;
+            Some((
+                full.start(),
+                full.end(),
+                format!("'{}'", value.replace('\'', "''")),
+            ))
+        })
+        .collect();
+    let mut out = text.to_string();
+    for (start, end, replacement) in matches.into_iter().rev() {
+        out.replace_range(start..end, &replacement);
+    }
+    out
+}
+
+fn parse_ps_byte_array(nums: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    for part in nums.split(',') {
+        let part = part.trim();
+        let value = if let Some(hex) = part.strip_prefix("0x").or_else(|| part.strip_prefix("0X")) {
+            u16::from_str_radix(hex, 16).ok()?
+        } else {
+            part.parse::<u16>().ok()?
+        };
+        let byte = u8::try_from(value).ok()?;
+        out.push(byte);
+        if out.len() > 128 * 1024 {
+            return None;
+        }
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+fn decode_ps_getstring_bytes(encoding: &str, bytes: &[u8]) -> Option<String> {
+    match encoding.to_ascii_lowercase().as_str() {
+        "unicode" => decode_utf16_lossy(bytes, false),
+        "bigendianunicode" => decode_utf16_lossy(bytes, true),
+        "utf32" => decode_utf32_lossy(bytes, false),
+        _ => Some(String::from_utf8_lossy(bytes).into_owned()),
+    }
+}
+
 #[cfg(test)]
 mod getstring_base64_prefilter_tests {
     use super::{expand_getstring_base64_literals, expand_getstring_base64_variables};
@@ -1062,6 +1159,24 @@ fn decode_utf16_lossy(bytes: &[u8], big_endian: bool) -> Option<String> {
         })
         .collect();
     Some(String::from_utf16_lossy(&u16s))
+}
+
+fn decode_utf32_lossy(bytes: &[u8], big_endian: bool) -> Option<String> {
+    if bytes.len() % 4 != 0 {
+        return None;
+    }
+    let decoded: String = bytes
+        .chunks_exact(4)
+        .map(|chunk| {
+            let value = if big_endian {
+                u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])
+            } else {
+                u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])
+            };
+            char::from_u32(value).unwrap_or(char::REPLACEMENT_CHARACTER)
+        })
+        .collect();
+    Some(decoded)
 }
 
 fn expand_base64_literals(text: &str) -> String {
@@ -3046,6 +3161,7 @@ fn expand_obfuscation(text: &str) -> String {
             out = next;
         }
         out = expand_char_concat(&out);
+        out = expand_char_literal_concat(&out);
         out = expand_char_array_concat_chunks(&out);
         out = expand_char_array_chunks(&out); // char-array chunk decoder (Pattern D)
         out = expand_hex_split_char_loop(&out);
@@ -3060,6 +3176,7 @@ fn expand_obfuscation(text: &str) -> String {
         out = expand_regex_replace_calls(&out);
         out = expand_getstring_base64_variables(&out);
         out = expand_getstring_base64_literals(&out);
+        out = expand_getstring_byte_arrays(&out);
         out = expand_convert_frombase64_literals(&out);
         out = append_decoded_frombase64_literals(&out);
         out = append_decoded_rc4_wrappers(&out);
@@ -3076,6 +3193,7 @@ fn expand_obfuscation(text: &str) -> String {
         out = expand_regex_replace_calls(&out);
         out = expand_getstring_base64_variables(&out);
         out = expand_getstring_base64_literals(&out);
+        out = expand_getstring_byte_arrays(&out);
         out = expand_convert_frombase64_literals(&out);
         out = append_decoded_frombase64_literals(&out);
         out = append_decoded_rc4_wrappers(&out);

