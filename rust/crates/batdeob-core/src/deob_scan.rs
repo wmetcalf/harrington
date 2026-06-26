@@ -740,6 +740,14 @@ fn collect_python_base64_decoder_aliases(
         };
         for part in imports.split(',') {
             let part = part.trim().trim_matches(['(', ')']);
+            if part == "*" {
+                aliases.insert("b64decode".to_string(), "b64decode".to_string());
+                aliases.insert(
+                    "urlsafe_b64decode".to_string(),
+                    "urlsafe_b64decode".to_string(),
+                );
+                continue;
+            }
             let words = part.split_ascii_whitespace().collect::<Vec<_>>();
             let Some(method) = words.first().copied() else {
                 continue;
