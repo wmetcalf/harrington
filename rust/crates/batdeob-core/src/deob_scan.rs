@@ -1282,6 +1282,7 @@ fn scan_typo_webclient_downloads(deobfuscated: &str, env: &mut Environment) {
 
 fn find_call_url_literals(text: &str, names: &[&str]) -> Vec<String> {
     let mut found = Vec::new();
+    let bindings = collect_python_url_string_bindings(text);
     for name in names {
         let mut search_start = 0;
         while let Some(name_start) = find_ascii_case_insensitive_from(text, name, search_start) {
@@ -1299,7 +1300,7 @@ fn find_call_url_literals(text: &str, names: &[&str]) -> Vec<String> {
                 search_start = open + 1;
                 continue;
             };
-            if let Some(url) = first_url_literal(&text[open + 1..close]) {
+            if let Some(url) = first_python_url_arg(&text[open + 1..close], &bindings) {
                 found.push(url);
             }
             search_start = close + 1;
@@ -1593,6 +1594,96 @@ fn first_url_literal(args: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn first_python_url_arg(
+    args: &str,
+    bindings: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    first_url_literal(args).or_else(|| {
+        split_python_top_level_args(args)
+            .into_iter()
+            .take(4)
+            .find_map(|arg| python_url_arg_from_binding(arg, bindings))
+    })
+}
+
+fn python_url_arg_from_binding(
+    arg: &str,
+    bindings: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    let expr = if let Some((key, value)) = arg.split_once('=') {
+        if is_python_identifier(key.trim()) {
+            value
+        } else {
+            arg
+        }
+    } else {
+        arg
+    };
+    let expr = expr.trim();
+    let (ident, ident_end) = parse_ascii_ident(expr, 0)?;
+    if skip_ascii_ws(expr, ident_end) != expr.len() {
+        return None;
+    }
+    bindings.get(&ident).cloned()
+}
+
+fn split_python_top_level_args(args: &str) -> Vec<&str> {
+    let bytes = args.as_bytes();
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    let mut depth = 0usize;
+    let mut quote: Option<u8> = None;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if let Some(q) = quote {
+            if bytes[i] == b'\\' {
+                i = i.saturating_add(2);
+                continue;
+            }
+            if bytes[i] == q {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        match bytes[i] {
+            b'\'' | b'"' => quote = Some(bytes[i]),
+            b'(' | b'[' | b'{' => depth = depth.saturating_add(1),
+            b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+            b',' if depth == 0 => {
+                parts.push(args[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    if start <= args.len() {
+        parts.push(args[start..].trim());
+    }
+    parts
+}
+
+fn collect_python_url_string_bindings(text: &str) -> std::collections::HashMap<String, String> {
+    static PY_STRING_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:'([^']{1,2048})'|"([^"]{1,2048})")"#,
+        )
+        .expect("python string assignment regex")
+    });
+
+    PY_STRING_ASSIGN_RE
+        .captures_iter(text)
+        .take(64)
+        .filter_map(|caps| {
+            let name = caps.get(1)?.as_str();
+            let value = caps.get(2).or_else(|| caps.get(3))?.as_str();
+            let url = normalize_liberal_url_token(trim_url_suffix(value))?;
+            Some((name.to_string(), url))
+        })
+        .collect()
 }
 
 fn python_open_write_dst(line: &str, url: &str) -> Option<String> {
