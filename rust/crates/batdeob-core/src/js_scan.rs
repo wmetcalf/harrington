@@ -419,6 +419,31 @@ fn collect_js_typed_byte_array_bindings(text: &str) -> std::collections::HashMap
     bindings
 }
 
+fn collect_js_typed_byte_array_byte_bindings(
+    text: &str,
+) -> std::collections::HashMap<String, Vec<u8>> {
+    let mut bindings = std::collections::HashMap::new();
+    for caps in JS_STRING_ASSIGN_RE.captures_iter(text) {
+        if bindings.len() >= 256 {
+            break;
+        }
+        let Some(name) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(expr) = caps.get(2).map(|m| m.as_str().trim()) else {
+            continue;
+        };
+        let Some((end, bytes)) = parse_js_typed_byte_array_arg_bytes(expr, 0) else {
+            continue;
+        };
+        if skip_ascii_ws(expr, end) != expr.len() {
+            continue;
+        }
+        bindings.insert(name.to_string(), bytes);
+    }
+    bindings
+}
+
 fn parse_js_textdecoder_decode_call_at(
     text: &str,
     start: usize,
@@ -434,23 +459,45 @@ fn parse_js_textdecoder_decode_call_at(
     if text.as_bytes().get(open) != Some(&b'(') {
         return None;
     }
-    let close = parse_js_textdecoder_constructor_close(text, open)?;
+    let (close, encoding) = parse_js_textdecoder_constructor_close(text, open)?;
     if text.as_bytes().get(close) != Some(&b')') {
         return None;
     }
     let decode_open = consume_js_method_open(text, close + 1, "decode")?;
     let arg_start = skip_ascii_ws(text, decode_open + 1);
-    let (arg_end, decoded) = parse_js_typed_byte_array_arg(text, arg_start).or_else(|| {
-        let (arg_end, name) = parse_js_identifier_at(text, arg_start)?;
-        typed_array_bindings
-            .get(name)
-            .map(|decoded| (arg_end, decoded.clone()))
-    })?;
+    let (arg_end, decoded) = match encoding {
+        JsTextDecoderEncoding::Utf8 => {
+            parse_js_typed_byte_array_arg(text, arg_start).or_else(|| {
+                let (arg_end, name) = parse_js_identifier_at(text, arg_start)?;
+                typed_array_bindings
+                    .get(name)
+                    .map(|decoded| (arg_end, decoded.clone()))
+            })?
+        }
+        JsTextDecoderEncoding::Utf16Le | JsTextDecoderEncoding::Utf16Be => {
+            let raw_array_bindings = collect_js_typed_byte_array_byte_bindings(text);
+            let (arg_end, bytes) =
+                parse_js_typed_byte_array_arg_bytes(text, arg_start).or_else(|| {
+                    let (arg_end, name) = parse_js_identifier_at(text, arg_start)?;
+                    raw_array_bindings
+                        .get(name)
+                        .map(|bytes| (arg_end, bytes.clone()))
+                })?;
+            (arg_end, decode_js_textdecoder_bytes(&bytes, encoding)?)
+        }
+    };
     let decode_close = skip_ascii_ws(text, arg_end);
     if text.as_bytes().get(decode_close) != Some(&b')') {
         return None;
     }
     Some((decode_close + 1, decoded))
+}
+
+#[derive(Clone, Copy)]
+enum JsTextDecoderEncoding {
+    Utf8,
+    Utf16Le,
+    Utf16Be,
 }
 
 fn parse_js_textdecoder_constructor_name_end(text: &str, start: usize) -> Option<usize> {
@@ -478,19 +525,20 @@ fn parse_js_textdecoder_constructor_name_end(text: &str, start: usize) -> Option
     None
 }
 
-fn parse_js_textdecoder_constructor_close(text: &str, open: usize) -> Option<usize> {
+fn parse_js_textdecoder_constructor_close(
+    text: &str,
+    open: usize,
+) -> Option<(usize, JsTextDecoderEncoding)> {
     let mut cursor = skip_ascii_ws(text, open + 1);
     if text.as_bytes().get(cursor) == Some(&b')') {
-        return Some(cursor);
+        return Some((cursor, JsTextDecoderEncoding::Utf8));
     }
 
     let (arg_end, encoding) = parse_js_string_literal_at(text, cursor)?;
-    if !is_utf8_textdecoder_label(&encoding) {
-        return None;
-    }
+    let encoding = parse_js_textdecoder_label(&encoding)?;
     cursor = skip_ascii_ws(text, arg_end);
     if text.as_bytes().get(cursor) == Some(&b')') {
-        return Some(cursor);
+        return Some((cursor, encoding));
     }
 
     if text.as_bytes().get(cursor) != Some(&b',') {
@@ -499,13 +547,26 @@ fn parse_js_textdecoder_constructor_close(text: &str, open: usize) -> Option<usi
     cursor = skip_ascii_ws(text, cursor + 1);
     let options_end = consume_js_balanced_literal(text, cursor, b'{', b'}')?;
     let close = skip_ascii_ws(text, options_end);
-    (text.as_bytes().get(close) == Some(&b')')).then_some(close)
+    (text.as_bytes().get(close) == Some(&b')')).then_some((close, encoding))
 }
 
-fn is_utf8_textdecoder_label(label: &str) -> bool {
-    label.eq_ignore_ascii_case("utf-8")
+fn parse_js_textdecoder_label(label: &str) -> Option<JsTextDecoderEncoding> {
+    if label.eq_ignore_ascii_case("utf-8")
         || label.eq_ignore_ascii_case("utf8")
         || label.eq_ignore_ascii_case("unicode-1-1-utf-8")
+    {
+        return Some(JsTextDecoderEncoding::Utf8);
+    }
+    if label.eq_ignore_ascii_case("utf-16le")
+        || label.eq_ignore_ascii_case("utf-16")
+        || label.eq_ignore_ascii_case("unicode")
+    {
+        return Some(JsTextDecoderEncoding::Utf16Le);
+    }
+    if label.eq_ignore_ascii_case("utf-16be") {
+        return Some(JsTextDecoderEncoding::Utf16Be);
+    }
+    None
 }
 
 fn consume_js_balanced_literal(
@@ -592,6 +653,11 @@ fn consume_js_method_member_end(text: &str, start: usize, method: &str) -> Optio
 }
 
 fn parse_js_typed_byte_array_arg(text: &str, start: usize) -> Option<(usize, String)> {
+    parse_js_typed_byte_array_arg_bytes(text, start)
+        .map(|(end, bytes)| (end, String::from_utf8_lossy(&bytes).into_owned()))
+}
+
+fn parse_js_typed_byte_array_arg_bytes(text: &str, start: usize) -> Option<(usize, Vec<u8>)> {
     let (first_end, first_name) = parse_js_identifier_at(text, start)?;
     let (array_end, array_name) = if first_name == "new" {
         let array_start = skip_ascii_ws(text, first_end);
@@ -606,7 +672,7 @@ fn parse_js_typed_byte_array_arg(text: &str, start: usize) -> Option<(usize, Str
     if let Some(open) = consume_js_method_open(text, array_end, "of") {
         let close = find_js_call_close(text, open + 1)?;
         let bytes = decode_js_byte_array_values(&text[open + 1..close])?;
-        return Some((close + 1, String::from_utf8_lossy(&bytes).into_owned()));
+        return Some((close + 1, bytes));
     }
     if let Some(open) = consume_js_method_open(text, array_end, "from") {
         let bracket_open = skip_ascii_ws(text, open + 1);
@@ -619,7 +685,7 @@ fn parse_js_typed_byte_array_arg(text: &str, start: usize) -> Option<(usize, Str
         if text.as_bytes().get(close) != Some(&b')') {
             return None;
         }
-        return Some((close + 1, String::from_utf8_lossy(&bytes).into_owned()));
+        return Some((close + 1, bytes));
     }
     let open = skip_ascii_ws(text, array_end);
     if text.as_bytes().get(open) != Some(&b'(') {
@@ -635,7 +701,7 @@ fn parse_js_typed_byte_array_arg(text: &str, start: usize) -> Option<(usize, Str
     if text.as_bytes().get(close) != Some(&b')') {
         return None;
     }
-    Some((close + 1, String::from_utf8_lossy(&bytes).into_owned()))
+    Some((close + 1, bytes))
 }
 
 fn is_js_byte_array_ctor(name: &str) -> bool {
@@ -691,6 +757,31 @@ fn decode_js_byte_array_values(values: &str) -> Option<Vec<u8>> {
         }
     }
     (!out.is_empty()).then_some(out)
+}
+
+fn decode_js_textdecoder_bytes(bytes: &[u8], encoding: JsTextDecoderEncoding) -> Option<String> {
+    match encoding {
+        JsTextDecoderEncoding::Utf8 => Some(String::from_utf8_lossy(bytes).into_owned()),
+        JsTextDecoderEncoding::Utf16Le => decode_js_utf16_bytes(bytes, u16::from_le_bytes),
+        JsTextDecoderEncoding::Utf16Be => decode_js_utf16_bytes(bytes, u16::from_be_bytes),
+    }
+}
+
+fn decode_js_utf16_bytes(bytes: &[u8], read_u16: fn([u8; 2]) -> u16) -> Option<String> {
+    if bytes.is_empty() || bytes.len() % 2 != 0 {
+        return None;
+    }
+    let units = bytes
+        .chunks_exact(2)
+        .map(|chunk| read_u16([chunk[0], chunk[1]]))
+        .collect::<Vec<_>>();
+    let decoded = String::from_utf16_lossy(&units);
+    Some(
+        decoded
+            .strip_prefix('\u{feff}')
+            .unwrap_or(&decoded)
+            .to_string(),
+    )
 }
 
 fn eval_js_numeric_expr(expr: &str) -> Option<u32> {

