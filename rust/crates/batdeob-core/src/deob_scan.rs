@@ -537,9 +537,12 @@ fn scan_python_requests_get_deob_text(deobfuscated: &str, env: &mut Environment)
 }
 
 fn decoded_python_b64decode_literals(deobfuscated: &str) -> Vec<String> {
+    const PY_STRING_PREFIX_RE: &str = r#"(?:[rRuU]|[bB]|[rR][bB]|[bB][rR])?"#;
     static PY_B64DECODE_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r#"(?is)(?:base64|__import__\(\s*['"]base64['"]\s*\))\.(b64decode|urlsafe_b64decode)\s*\(\s*(?:[bB])?['"]([^'"]+)['"]\s*([^)]{0,128})\)"#,
+            &format!(
+                r#"(?is)(?:base64|__import__\(\s*['"]base64['"]\s*\))\.(b64decode|urlsafe_b64decode)\s*\(\s*{PY_STRING_PREFIX_RE}['"]([^'"]+)['"]\s*([^)]{{0,128}})\)"#
+            ),
         )
         .expect("python b64decode literal regex")
     });
@@ -551,7 +554,9 @@ fn decoded_python_b64decode_literals(deobfuscated: &str) -> Vec<String> {
     });
     static PY_B64DECODE_MODULE_ALIAS_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r#"(?is)\b([A-Za-z_][A-Za-z0-9_]*)\.(b64decode|urlsafe_b64decode)\s*\(\s*(?:[bB])?['"]([^'"]+)['"]\s*([^)]{0,128})\)"#,
+            &format!(
+                r#"(?is)\b([A-Za-z_][A-Za-z0-9_]*)\.(b64decode|urlsafe_b64decode)\s*\(\s*{PY_STRING_PREFIX_RE}['"]([^'"]+)['"]\s*([^)]{{0,128}})\)"#
+            ),
         )
         .expect("python b64decode module alias literal regex")
     });
@@ -563,7 +568,9 @@ fn decoded_python_b64decode_literals(deobfuscated: &str) -> Vec<String> {
     });
     static PY_B64DECODE_ALIAS_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r#"(?is)\b([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*(?:[bB])?['"]([^'"]+)['"]\s*([^)]{0,128})\)"#,
+            &format!(
+                r#"(?is)\b([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*{PY_STRING_PREFIX_RE}['"]([^'"]+)['"]\s*([^)]{{0,128}})\)"#
+            ),
         )
         .expect("python b64decode alias literal regex")
     });
@@ -756,15 +763,20 @@ fn collect_python_base64_decoder_aliases(
 fn collect_python_b64_string_bindings(
     deobfuscated: &str,
 ) -> std::collections::HashMap<String, String> {
+    const PY_STRING_PREFIX_RE: &str = r#"(?:[rRuU]|[bB]|[rR][bB]|[bB][rR])?"#;
     static PY_STRING_BINDING_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:[bB])?['"]([^'"]+)['"]"#,
+            &format!(
+                r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*{PY_STRING_PREFIX_RE}['"]([^'"]+)['"]"#
+            ),
         )
         .expect("python string binding regex")
     });
     static PY_STRING_CONCAT_BINDING_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*((?:[bB])?['"][^'"]+['"](?:\s*(?:\+\s*)?(?:[bB])?['"][^'"]+['"])*)"#,
+            &format!(
+                r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*({PY_STRING_PREFIX_RE}['"][^'"]+['"](?:\s*(?:\+\s*)?{PY_STRING_PREFIX_RE}['"][^'"]+['"])*)"#
+            ),
         )
         .expect("python string concat binding regex")
     });
@@ -804,8 +816,10 @@ fn collect_python_b64_string_bindings(
 }
 
 fn collect_python_concat_string_literals(expr: &str) -> Option<String> {
+    const PY_STRING_PREFIX_RE: &str = r#"(?:[rRuU]|[bB]|[rR][bB]|[bB][rR])?"#;
     static PY_STRING_LITERAL_PART_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?is)(?:[bB])?['"]([^'"]+)['"]"#).expect("python string literal part regex")
+        Regex::new(&format!(r#"(?is){PY_STRING_PREFIX_RE}['"]([^'"]+)['"]"#))
+            .expect("python string literal part regex")
     });
 
     let mut out = String::new();
