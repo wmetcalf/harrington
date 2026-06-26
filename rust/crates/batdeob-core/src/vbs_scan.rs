@@ -758,7 +758,7 @@ fn parse_vbs_mid(
         return None;
     }
     let source = eval_vbs_string_expr(args[0], bindings)?;
-    let start = args[1].trim().parse::<usize>().ok()?;
+    let start = parse_vbs_integer(args[1])? as usize;
     let skip = start.saturating_sub(1);
     let chars: Vec<char> = source.chars().collect();
     if skip >= chars.len() {
@@ -766,7 +766,7 @@ fn parse_vbs_mid(
     }
     let take = args
         .get(2)
-        .and_then(|arg| arg.trim().parse::<usize>().ok())
+        .and_then(|arg| parse_vbs_integer(arg).map(|value| value as usize))
         .unwrap_or(chars.len() - skip);
     Some(chars.into_iter().skip(skip).take(take).collect())
 }
