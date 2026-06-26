@@ -420,6 +420,53 @@ pub(crate) fn normalize_liberal_url_token(token: &str) -> Option<String> {
     None
 }
 
+pub(crate) fn normalize_schemeless_domain_path_token(token: &str) -> Option<String> {
+    let mut token = strip_outer_quotes(token);
+    let end = token
+        .as_bytes()
+        .iter()
+        .position(|b| {
+            b.is_ascii_whitespace()
+                || matches!(
+                    b,
+                    b'"' | b'\'' | b')' | b']' | b'}' | b';' | b',' | b'`' | b'<' | b'>'
+                )
+        })
+        .unwrap_or(token.len());
+    token = token[..end].trim_end_matches(['.', ',', ';', ':', '\\']);
+    if token.is_empty()
+        || token.starts_with(['/', '\\'])
+        || contains_liberal_url_scheme(token)
+        || token.contains("://")
+    {
+        return None;
+    }
+
+    let normalized = token.replace('\\', "/");
+    let (host, path) = normalized.split_once('/')?;
+    if host.is_empty() || path.is_empty() || !host.contains('.') {
+        return None;
+    }
+    if !host
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-'))
+    {
+        return None;
+    }
+    if host
+        .split('.')
+        .any(|label| label.is_empty() || label.starts_with('-') || label.ends_with('-'))
+    {
+        return None;
+    }
+    let tld = host.rsplit('.').next()?;
+    if tld.len() < 2 || !tld.bytes().all(|b| b.is_ascii_alphabetic()) {
+        return None;
+    }
+
+    normalize_liberal_url_token(&format!("http://{normalized}"))
+}
+
 fn contains_liberal_url_scheme(text: &str) -> bool {
     ["http:", "https:", "ftp:", "file:"]
         .iter()

@@ -25,6 +25,9 @@ fn mshta_token_url(token: &str) -> Option<String> {
     if looks_like_liberal_url(token) {
         return crate::deob_scan::normalize_liberal_url_token(token);
     }
+    if let Some(url) = crate::deob_scan::normalize_schemeless_domain_path_token(token) {
+        return Some(url);
+    }
     for scheme in ["https:", "http:", "ftp:", "file:"] {
         if let Some(idx) = find_ascii_case_insensitive_from(token, scheme, 0) {
             let candidate = crate::deob_scan::trim_url_suffix(&token[idx..]);
