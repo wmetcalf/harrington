@@ -45,6 +45,26 @@ static PS_SCHEMELESS_IP_CMDLET_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static PS_SCHEMELESS_DOMAIN_CMDLET_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?ix)
+            (?: Invoke-WebRequest | Invoke-RestMethod | iwr | irm | wget | curl ) \b
+            (?: [^\n|;]*? -Uri \s+ | (?: \s+ -[A-Za-z][\w-]* )* \s+ )
+            (?: ['"] )?
+            (
+                (?: [a-z0-9\-]+ \. ){1,4}
+                (?: com | net | org | io | ru | cn | me | info | biz | us | co | ly | gg | tk | xyz
+                  | top | life | store | app | tools | rocks | click | stream | host | website
+                  | pw | dev | sh | space | site | live | cloud | online | tech | art | news | pro | cc | to )
+                / [^\s"'\);<>]{1,200}
+            )
+            (?: ['"] )?
+        "#,
+    )
+    .expect("ps schemeless domain cmdlet")
+});
+
+#[allow(clippy::expect_used)]
 static CURL_EXE_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?i)(?:^|[\s;"'])[\w:./\\-]*curl\.exe\b(?:\s+-[A-Za-z][\w-]*(?:\s+["']?[^"'\s]+["']?)?)*\s+["']?((?:https?|ftp|file):[\x2f\x5c]+[^\s"'\)]+)["']?"#,
@@ -4330,6 +4350,7 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
             &IWR_RE,
             &IRM_RE,
             &PS_SCHEMELESS_IP_CMDLET_RE,
+            &PS_SCHEMELESS_DOMAIN_CMDLET_RE,
             &CURL_EXE_RE,
             &MSHTA_URL_RE,
             &DOWNLOADSTRING_RE,
@@ -4357,7 +4378,9 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
                     if is_schemeless_ip_url(&url) {
                         url = format!("http://{url}");
                     }
-                    let Some(url) = crate::deob_scan::normalize_liberal_url_token(&url) else {
+                    let Some(url) = crate::deob_scan::normalize_liberal_url_token(&url)
+                        .or_else(|| crate::deob_scan::normalize_schemeless_domain_path_token(&url))
+                    else {
                         continue;
                     };
                     if !seen.insert((idx, url.clone())) {
