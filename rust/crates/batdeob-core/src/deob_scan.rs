@@ -2360,7 +2360,9 @@ fn scan_registry_url_values(deobfuscated: &str, env: &mut Environment) {
             }
             if token.eq_ignore_ascii_case("/d") {
                 url = tokens.get(i + 1).and_then(|next| {
-                    normalize_liberal_url_token(trim_url_suffix(strip_outer_quotes(next)))
+                    let value = trim_url_suffix(strip_outer_quotes(next));
+                    normalize_liberal_url_token(value)
+                        .or_else(|| normalize_schemeless_domain_path_token(value))
                 });
                 i += 2;
                 continue;
