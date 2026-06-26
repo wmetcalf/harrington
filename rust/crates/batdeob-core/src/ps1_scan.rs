@@ -3933,10 +3933,14 @@ fn ps_literal_urls_in_download_context(text: &str) -> Vec<String> {
             literal_caps
                 .get(1)
                 .or_else(|| literal_caps.get(2))
-                .map(|m| m.as_str().to_string())
+                .map(|m| (m.start(), m.as_str().to_string()))
         })
-        .filter(|value| looks_like_liberal_url(value) && seen.insert(value.clone()))
-        .filter_map(|value| crate::deob_scan::normalize_liberal_url_token(&value))
+        .filter(|(start, value)| {
+            looks_like_liberal_url(value)
+                && !ps_url_inside_headers_hash(text, *start)
+                && seen.insert(value.clone())
+        })
+        .filter_map(|(_, value)| crate::deob_scan::normalize_liberal_url_token(&value))
         .collect()
 }
 
@@ -4342,6 +4346,9 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
                     let Some(url_match) = caps.get(1) else {
                         continue;
                     };
+                    if ps_url_inside_headers_hash(text, url_match.start()) {
+                        continue;
+                    }
                     let mut url = clean_ps_url(url_match.as_str());
                     if is_schemeless_ip_url(&url) {
                         url = format!("http://{url}");
@@ -4388,6 +4395,23 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
             }
         }
     }
+}
+
+fn ps_url_inside_headers_hash(text: &str, url_start: usize) -> bool {
+    let stmt_start = text[..url_start]
+        .rfind(['\r', '\n', ';'])
+        .map_or(0, |idx| idx + 1);
+    let before_url = &text[stmt_start..url_start];
+    let lower = before_url.to_ascii_lowercase();
+    let Some(headers_pos) = lower.rfind("-headers") else {
+        return false;
+    };
+    let after_headers = &before_url[headers_pos..];
+    let Some(hash_rel) = after_headers.rfind("@{") else {
+        return false;
+    };
+    let hash_start = stmt_start + headers_pos + hash_rel;
+    !text[hash_start..url_start].contains('}')
 }
 
 fn clean_ps_url(raw: &str) -> String {
