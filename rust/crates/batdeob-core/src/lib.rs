@@ -10674,6 +10674,38 @@ rundll32 url.dll,FileProtocolHandler https://rundll32-launch.example/extensionle
     }
 
     #[test]
+    fn html_help_url_emits_url_launch() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"hh.exe https://hh-launch.example/help.chm
+hh https://hh-launch.example/extensionless.chm"#,
+            &mut env,
+        );
+        for expected in [
+            "https://hh-launch.example/help.chm",
+            "https://hh-launch.example/extensionless.chm",
+        ] {
+            assert!(
+                env.traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::UrlLaunch { url, .. } if url == expected)),
+                "missing HTML Help UrlLaunch for {expected}: {:?}",
+                env.traits
+            );
+            assert!(
+                !env.traits.iter().any(|t| {
+                    matches!(t,
+                        Trait::DownloadInDeobText { src, .. } | Trait::UrlArgument { url: src, .. }
+                            if src == expected
+                    )
+                }),
+                "HTML Help URL double-emitted with weaker type: {:?}",
+                env.traits
+            );
+        }
+    }
+
+    #[test]
     fn powershell_url_launch_cmdlets_emit_url_launch() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(

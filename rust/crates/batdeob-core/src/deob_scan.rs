@@ -2626,6 +2626,8 @@ fn is_url_launcher_command(cmd: &str) -> bool {
         "brave.exe",
         "opera",
         "opera.exe",
+        "hh",
+        "hh.exe",
     ]
     .iter()
     .any(|launcher| cmd.eq_ignore_ascii_case(launcher))
