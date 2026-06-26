@@ -303,10 +303,13 @@ fn decoded_js_atob_literals(text: &str) -> Vec<String> {
 
 fn decoded_js_textdecoder_literals(text: &str) -> Vec<String> {
     let mut out = Vec::new();
+    let typed_array_bindings = collect_js_typed_byte_array_bindings(text);
     let mut cursor = 0usize;
     while let Some(rel) = text[cursor..].find("new") {
         let start = cursor + rel;
-        if let Some((call_end, decoded)) = parse_js_textdecoder_decode_call_at(text, start) {
+        if let Some((call_end, decoded)) =
+            parse_js_textdecoder_decode_call_at(text, start, &typed_array_bindings)
+        {
             out.push(decoded);
             if out.len() >= 128 {
                 break;
@@ -319,7 +322,34 @@ fn decoded_js_textdecoder_literals(text: &str) -> Vec<String> {
     out
 }
 
-fn parse_js_textdecoder_decode_call_at(text: &str, start: usize) -> Option<(usize, String)> {
+fn collect_js_typed_byte_array_bindings(text: &str) -> std::collections::HashMap<String, String> {
+    let mut bindings = std::collections::HashMap::new();
+    for caps in JS_STRING_ASSIGN_RE.captures_iter(text) {
+        if bindings.len() >= 256 {
+            break;
+        }
+        let Some(name) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(expr) = caps.get(2).map(|m| m.as_str().trim()) else {
+            continue;
+        };
+        let Some((end, decoded)) = parse_js_typed_byte_array_arg(expr, 0) else {
+            continue;
+        };
+        if skip_ascii_ws(expr, end) != expr.len() {
+            continue;
+        }
+        bindings.insert(name.to_string(), decoded);
+    }
+    bindings
+}
+
+fn parse_js_textdecoder_decode_call_at(
+    text: &str,
+    start: usize,
+    typed_array_bindings: &std::collections::HashMap<String, String>,
+) -> Option<(usize, String)> {
     let (new_end, new_name) = parse_js_identifier_at(text, start)?;
     if new_name != "new" {
         return None;
@@ -336,7 +366,12 @@ fn parse_js_textdecoder_decode_call_at(text: &str, start: usize) -> Option<(usiz
     }
     let decode_open = consume_js_method_open(text, close + 1, "decode")?;
     let arg_start = skip_ascii_ws(text, decode_open + 1);
-    let (arg_end, decoded) = parse_js_typed_byte_array_arg(text, arg_start)?;
+    let (arg_end, decoded) = parse_js_typed_byte_array_arg(text, arg_start).or_else(|| {
+        let (arg_end, name) = parse_js_identifier_at(text, arg_start)?;
+        typed_array_bindings
+            .get(name)
+            .map(|decoded| (arg_end, decoded.clone()))
+    })?;
     let decode_close = skip_ascii_ws(text, arg_end);
     if text.as_bytes().get(decode_close) != Some(&b')') {
         return None;
@@ -478,14 +513,34 @@ fn consume_js_method_open(text: &str, start: usize, method: &str) -> Option<usiz
 }
 
 fn parse_js_typed_byte_array_arg(text: &str, start: usize) -> Option<(usize, String)> {
-    let (new_end, new_name) = parse_js_identifier_at(text, start)?;
-    if new_name != "new" {
+    let (first_end, first_name) = parse_js_identifier_at(text, start)?;
+    let (array_end, array_name) = if first_name == "new" {
+        let array_start = skip_ascii_ws(text, first_end);
+        let (array_end, array_name) = parse_js_identifier_at(text, array_start)?;
+        (array_end, array_name)
+    } else {
+        (first_end, first_name)
+    };
+    if !is_js_byte_array_ctor(array_name) {
         return None;
     }
-    let array_start = skip_ascii_ws(text, new_end);
-    let (array_end, array_name) = parse_js_identifier_at(text, array_start)?;
-    if !matches!(array_name, "Uint8Array" | "Uint8ClampedArray" | "Int8Array") {
-        return None;
+    if let Some(open) = consume_js_method_open(text, array_end, "of") {
+        let close = find_js_call_close(text, open + 1)?;
+        let bytes = decode_js_byte_array_values(&text[open + 1..close])?;
+        return Some((close + 1, String::from_utf8_lossy(&bytes).into_owned()));
+    }
+    if let Some(open) = consume_js_method_open(text, array_end, "from") {
+        let bracket_open = skip_ascii_ws(text, open + 1);
+        if text.as_bytes().get(bracket_open) != Some(&b'[') {
+            return None;
+        }
+        let bracket_close = find_js_byte_array_close(text, bracket_open + 1)?;
+        let bytes = decode_js_byte_array_values(&text[bracket_open + 1..bracket_close])?;
+        let close = skip_ascii_ws(text, bracket_close + 1);
+        if text.as_bytes().get(close) != Some(&b')') {
+            return None;
+        }
+        return Some((close + 1, String::from_utf8_lossy(&bytes).into_owned()));
     }
     let open = skip_ascii_ws(text, array_end);
     if text.as_bytes().get(open) != Some(&b'(') {
@@ -502,6 +557,25 @@ fn parse_js_typed_byte_array_arg(text: &str, start: usize) -> Option<(usize, Str
         return None;
     }
     Some((close + 1, String::from_utf8_lossy(&bytes).into_owned()))
+}
+
+fn is_js_byte_array_ctor(name: &str) -> bool {
+    matches!(name, "Uint8Array" | "Uint8ClampedArray" | "Int8Array")
+}
+
+fn find_js_call_close(text: &str, mut cursor: usize) -> Option<usize> {
+    while cursor < text.len() {
+        match text.as_bytes()[cursor] {
+            b')' => return Some(cursor),
+            b'[' | b']' | b'(' | b'{' | b'}' => return None,
+            b'\'' | b'"' => return None,
+            byte if byte.is_ascii() => cursor += 1,
+            _ => {
+                cursor += text[cursor..].chars().next()?.len_utf8();
+            }
+        }
+    }
+    None
 }
 
 fn find_js_byte_array_close(text: &str, mut cursor: usize) -> Option<usize> {
