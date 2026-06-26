@@ -739,6 +739,12 @@ fn collect_python_base64_decoder_aliases(
         )
         .expect("python base64 decoder assignment regex")
     });
+    static PY_DUNDER_IMPORT_BASE64_DECODER_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*__import__\(\s*['"]base64['"]\s*\)\.(b64decode|urlsafe_b64decode)\b"#,
+        )
+        .expect("python __import__ base64 decoder assignment regex")
+    });
 
     let mut aliases = std::collections::HashMap::new();
     for caps in PY_FROM_BASE64_IMPORT_RE.captures_iter(deobfuscated).take(8) {
@@ -789,6 +795,21 @@ fn collect_python_base64_decoder_aliases(
             continue;
         }
         let Some(method) = caps.get(3).map(|m| m.as_str()) else {
+            continue;
+        };
+        aliases.insert(alias.to_string(), method.to_string());
+    }
+    for caps in PY_DUNDER_IMPORT_BASE64_DECODER_ASSIGN_RE
+        .captures_iter(deobfuscated)
+        .take(16)
+    {
+        let Some(alias) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        if !is_python_identifier(alias) {
+            continue;
+        }
+        let Some(method) = caps.get(2).map(|m| m.as_str()) else {
             continue;
         };
         aliases.insert(alias.to_string(), method.to_string());
