@@ -1123,8 +1123,21 @@ fn collect_python_urlretrieve_aliases(text: &str) -> Vec<String> {
         Regex::new(r#"(?is)\bfrom\s+urllib(?:\.request)?\s+import\s+([^;"'\r\n]+)"#)
             .expect("python urllib import regex")
     });
+    static PY_IMPORT_URLLIB_REQUEST_ALIAS_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)\bimport\s+urllib\.request\s+as\s+([A-Za-z_][A-Za-z0-9_]*)"#)
+            .expect("python urllib.request import alias regex")
+    });
 
     let mut aliases = Vec::new();
+    for caps in PY_IMPORT_URLLIB_REQUEST_ALIAS_RE
+        .captures_iter(text)
+        .take(8)
+    {
+        let Some(alias) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        aliases.push(format!("{alias}.urlretrieve"));
+    }
     for caps in PY_FROM_URLLIB_IMPORT_RE.captures_iter(text).take(8) {
         let Some(imports) = caps.get(1).map(|m| m.as_str()) else {
             continue;
