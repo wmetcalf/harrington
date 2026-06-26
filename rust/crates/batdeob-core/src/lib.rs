@@ -8818,6 +8818,18 @@ iex $stage
     }
 
     #[test]
+    fn ps1_normalization_decodes_double_quoted_reversed_string_slice_join() {
+        let ps = r#"[Convert]::("gnirtS46esaBmorF"[-1..-16] -join "")('AAAA');[Reflection.Assembly]::("daoL"[-1..-4] -join "")($b)"#;
+        let normalized = crate::ps1_scan::normalize_ps1_text(ps);
+        assert!(
+            normalized.contains("[Convert]::'FromBase64String'('AAAA')")
+                && normalized.contains("[Reflection.Assembly]::'Load'($b)"),
+            "double-quoted reversed string slice join not decoded:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
     fn ps1_normalization_decodes_tochararray_reverse_join() {
         let ps = r#"$p='exe.loPsaC\91303.0.4v\krowemarF\TEN.tfosorciM\swodniW\:C';$chars=$p.ToCharArray();[array]::Reverse($chars);$path=-join($chars);Start-Process $path"#;
         let normalized = crate::ps1_scan::normalize_ps1_text(ps);
