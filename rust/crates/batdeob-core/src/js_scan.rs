@@ -231,7 +231,7 @@ fn is_js_ident_continue_byte(b: u8) -> bool {
 }
 
 fn decoded_js_fromcharcode_literals(text: &str) -> Vec<String> {
-    JS_FROMCHARCODE_RE
+    let mut out: Vec<String> = JS_FROMCHARCODE_RE
         .captures_iter(text)
         .filter_map(|caps| {
             let nums = caps.get(1)?.as_str();
@@ -246,7 +246,81 @@ fn decoded_js_fromcharcode_literals(text: &str) -> Vec<String> {
             }
             (!out.is_empty()).then_some(out)
         })
-        .collect()
+        .collect();
+    out.extend(decoded_js_fromcharcode_apply_bindings(text));
+    out
+}
+
+fn decoded_js_fromcharcode_apply_bindings(text: &str) -> Vec<String> {
+    let bindings = collect_js_typed_byte_array_bindings(text);
+    let mut out = Vec::new();
+    let mut cursor = 0usize;
+    while let Some(rel) = text[cursor..].find("String") {
+        let start = cursor + rel;
+        let Some((string_end, name)) = parse_js_identifier_at(text, start) else {
+            cursor = start + "String".len();
+            continue;
+        };
+        if name != "String" {
+            cursor = string_end;
+            continue;
+        }
+        let Some(fromcharcode_end) = consume_js_method_member_end(text, string_end, "fromCharCode")
+        else {
+            cursor = string_end;
+            continue;
+        };
+        let Some(apply_open) = consume_js_method_open(text, fromcharcode_end, "apply") else {
+            cursor = fromcharcode_end;
+            continue;
+        };
+        let Some(first_arg_end) = skip_js_call_arg(text, apply_open + 1) else {
+            cursor = apply_open + 1;
+            continue;
+        };
+        let comma = skip_ascii_ws(text, first_arg_end);
+        if text.as_bytes().get(comma) != Some(&b',') {
+            cursor = apply_open + 1;
+            continue;
+        }
+        let arg_start = skip_ascii_ws(text, comma + 1);
+        if let Some((arg_end, decoded)) = parse_js_typed_byte_array_arg(text, arg_start) {
+            let close = skip_ascii_ws(text, arg_end);
+            if text.as_bytes().get(close) == Some(&b')') {
+                out.push(decoded);
+                if out.len() >= 128 {
+                    break;
+                }
+                cursor = close + 1;
+                continue;
+            }
+        }
+        let Some((var_end, var_name)) = parse_js_identifier_at(text, arg_start) else {
+            cursor = arg_start;
+            continue;
+        };
+        let close = skip_ascii_ws(text, var_end);
+        if text.as_bytes().get(close) != Some(&b')') {
+            cursor = var_end;
+            continue;
+        }
+        if let Some(decoded) = bindings.get(var_name) {
+            out.push(decoded.clone());
+            if out.len() >= 128 {
+                break;
+            }
+        }
+        cursor = close + 1;
+    }
+    out
+}
+
+fn skip_js_call_arg(text: &str, start: usize) -> Option<usize> {
+    let cursor = skip_ascii_ws(text, start);
+    if let Some((end, _)) = parse_js_identifier_at(text, cursor) {
+        return Some(end);
+    }
+    consume_js_quoted_bytes(text, cursor)
 }
 
 fn decoded_js_atob_literals(text: &str) -> Vec<String> {
@@ -499,6 +573,12 @@ fn consume_js_quoted_bytes(text: &str, start: usize) -> Option<usize> {
 }
 
 fn consume_js_method_open(text: &str, start: usize, method: &str) -> Option<usize> {
+    let method_end = consume_js_method_member_end(text, start, method)?;
+    let open = skip_ascii_ws(text, method_end);
+    (text.as_bytes().get(open) == Some(&b'(')).then_some(open)
+}
+
+fn consume_js_method_member_end(text: &str, start: usize, method: &str) -> Option<usize> {
     let dot = skip_ascii_ws(text, start);
     if text.as_bytes().get(dot) != Some(&b'.') {
         return None;
@@ -508,8 +588,7 @@ fn consume_js_method_open(text: &str, start: usize, method: &str) -> Option<usiz
     if name != method {
         return None;
     }
-    let open = skip_ascii_ws(text, method_end);
-    (text.as_bytes().get(open) == Some(&b'(')).then_some(open)
+    Some(method_end)
 }
 
 fn parse_js_typed_byte_array_arg(text: &str, start: usize) -> Option<(usize, String)> {
