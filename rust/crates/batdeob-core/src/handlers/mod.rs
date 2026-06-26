@@ -19,6 +19,7 @@ pub mod msiexec;
 pub mod net;
 pub mod passthrough;
 pub mod powershell;
+pub mod regsvr32;
 pub mod rundll32;
 pub mod set;
 pub mod setlocal;
@@ -53,6 +54,9 @@ pub fn lookup(name: &str) -> Option<Handler> {
     }
     if base.eq_ignore_ascii_case("mshta") {
         return Some(mshta::h_mshta);
+    }
+    if base.eq_ignore_ascii_case("regsvr32") {
+        return Some(regsvr32::h_regsvr32);
     }
     if base.eq_ignore_ascii_case("rundll32") {
         return Some(rundll32::h_rundll32);

