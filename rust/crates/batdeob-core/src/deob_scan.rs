@@ -1316,6 +1316,7 @@ fn find_python_urlretrieve_literals(text: &str) -> Vec<(String, Option<String>)>
         "urllib.urlretrieve".to_string(),
     ];
     names.extend(collect_python_urllib_call_aliases(text, "urlretrieve"));
+    let bindings = collect_python_url_string_bindings(text);
     for name in names {
         let mut search_start = 0;
         while let Some(name_start) = find_ascii_case_insensitive_from(text, &name, search_start) {
@@ -1333,23 +1334,59 @@ fn find_python_urlretrieve_literals(text: &str) -> Vec<(String, Option<String>)>
                 search_start = open + 1;
                 continue;
             };
-            let literals = quoted_string_literals(&text[open + 1..close]);
-            if let Some((idx, url)) = literals
-                .iter()
-                .enumerate()
-                .find(|(_, literal)| looks_like_direct_url(trim_url_suffix(literal)))
+            if let Some((url, dst)) =
+                python_urlretrieve_download_args(&text[open + 1..close], &bindings)
             {
-                let dst = literals
-                    .iter()
-                    .skip(idx + 1)
-                    .find(|literal| !looks_like_direct_url(trim_url_suffix(literal)))
-                    .cloned();
-                found.push((trim_url_suffix(url).to_string(), dst));
+                found.push((url, dst));
             }
             search_start = close + 1;
         }
     }
     found
+}
+
+fn python_urlretrieve_download_args(
+    args: &str,
+    bindings: &std::collections::HashMap<String, String>,
+) -> Option<(String, Option<String>)> {
+    let literals = quoted_string_literals(args);
+    if let Some((idx, url)) = literals
+        .iter()
+        .enumerate()
+        .find(|(_, literal)| looks_like_direct_url(trim_url_suffix(literal)))
+    {
+        let dst = literals
+            .iter()
+            .skip(idx + 1)
+            .find(|literal| !looks_like_direct_url(trim_url_suffix(literal)))
+            .cloned();
+        return Some((trim_url_suffix(url).to_string(), dst));
+    }
+
+    let parts = split_python_top_level_args(args);
+    parts.iter().take(4).enumerate().find_map(|(idx, arg)| {
+        let url = python_url_arg_from_binding(arg, bindings)?;
+        let dst = parts
+            .iter()
+            .skip(idx + 1)
+            .find_map(|part| python_string_literal_arg(part));
+        Some((url, dst))
+    })
+}
+
+fn python_string_literal_arg(arg: &str) -> Option<String> {
+    let expr = if let Some((key, value)) = arg.split_once('=') {
+        if is_python_identifier(key.trim()) {
+            value
+        } else {
+            arg
+        }
+    } else {
+        arg
+    };
+    quoted_string_literals(expr)
+        .into_iter()
+        .find(|literal| !looks_like_direct_url(trim_url_suffix(literal)))
 }
 
 fn collect_python_urllib_call_aliases(text: &str, target_method: &str) -> Vec<String> {
