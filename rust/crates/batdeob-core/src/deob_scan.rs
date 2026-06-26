@@ -3317,6 +3317,14 @@ fn is_compact_curl_short_remote_name_flag(token: &str) -> bool {
         && token[1..].contains('O')
 }
 
+fn compact_wget_short_output_arg(token: &str) -> Option<&str> {
+    if !token.starts_with('-') || token.starts_with("--") || token.len() <= 2 {
+        return None;
+    }
+    let flag = token[1..].find('O')?;
+    Some(&token[1 + flag + 1..])
+}
+
 fn parse_glued_curl_download(text: &str) -> Option<(String, Option<String>)> {
     let scheme_pos = ["https://", "http://", "ftp://"]
         .iter()
@@ -3628,6 +3636,18 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
                 i += 1;
                 continue;
             }
+        }
+        if let Some(rest) = compact_wget_short_output_arg(raw_token) {
+            if rest.is_empty() {
+                dst = tokens
+                    .get(i + 1)
+                    .map(|s| s.trim_matches(['"', '\'', ')']).to_string());
+                i += 2;
+            } else {
+                dst = Some(rest.trim_matches(['"', '\'', ')']).to_string());
+                i += 1;
+            }
+            continue;
         }
         if let Some(rest) = strip_ascii_case_insensitive_prefix(raw_token, "--output-document=")
             .or_else(|| strip_ascii_case_insensitive_prefix(raw_token, "--output-document:"))
