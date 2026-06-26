@@ -2498,7 +2498,10 @@ fn regsvr32_scriptlet_url_after(tokens: &[String], start: usize) -> Option<Strin
         let Some(candidate) = candidate else {
             continue;
         };
-        if let Some(url) = normalize_liberal_url_token(trim_url_suffix(candidate)) {
+        let candidate = trim_url_suffix(candidate);
+        if let Some(url) = normalize_liberal_url_token(candidate)
+            .or_else(|| normalize_schemeless_domain_path_token(candidate))
+        {
             return Some(url);
         }
     }
@@ -2566,7 +2569,12 @@ fn first_url_after(
                 return Some(token);
             }
             if allow_msiexec_attached {
-                return msiexec_attached_url_token(token);
+                if let Some(attached) = msiexec_attached_url_token(token) {
+                    return Some(attached);
+                }
+                if normalize_schemeless_domain_path_token(token).is_some() {
+                    return Some(token);
+                }
             }
             None
         })
@@ -2579,7 +2587,9 @@ fn first_url_after(
                 .find([')', '(', ';', ',', '"', '\'', '`'])
                 .unwrap_or(token.len());
             let url = normalize_url_obfuscation(&token[..end]);
-            normalize_liberal_url_token(&url).unwrap_or(url)
+            normalize_liberal_url_token(&url)
+                .or_else(|| normalize_schemeless_domain_path_token(&url))
+                .unwrap_or(url)
         })
 }
 
