@@ -560,7 +560,7 @@ fn collect_python_requests_get_aliases(text: &str) -> Vec<String> {
             .expect("python requests import alias regex")
     });
     static PY_FROM_REQUESTS_IMPORT_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?is)\bfrom\s+requests\s+import\s+([^;"'\r\n]+)"#)
+        Regex::new(r#"(?is)\bfrom\s+requests\s+import\s*(?:\(([^)]{0,512})\)|([^;"'\r\n]+))"#)
             .expect("python requests from import regex")
     });
 
@@ -570,7 +570,7 @@ fn collect_python_requests_get_aliases(text: &str) -> Vec<String> {
         .filter_map(|caps| caps.get(1).map(|m| format!("{}.get", m.as_str())))
         .collect::<Vec<_>>();
     for caps in PY_FROM_REQUESTS_IMPORT_RE.captures_iter(text).take(8) {
-        let Some(imports) = caps.get(1).map(|m| m.as_str()) else {
+        let Some(imports) = caps.get(1).or_else(|| caps.get(2)).map(|m| m.as_str()) else {
             continue;
         };
         for part in imports.split(',') {
