@@ -1645,7 +1645,7 @@ static JOIN_PART_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static SINGLE_LITERAL_JOIN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"\(\s*'([^'\\]*(?:\\.[^'\\]*)*)'\s*-join\s*'[^'\\]*(?:\\.[^'\\]*)*'\s*\)|'([^'\\]*(?:\\.[^'\\]*)*)'\s*-join\s*'[^'\\]*(?:\\.[^'\\]*)*'"#,
+        r#"\(\s*(?:'([^'\\]*(?:\\.[^'\\]*)*)'|"([^"\\]*(?:\\.[^"\\]*)*)")\s*-join\s*(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*")\s*\)|(?:'([^'\\]*(?:\\.[^'\\]*)*)'|"([^"\\]*(?:\\.[^"\\]*)*)")\s*-join\s*(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*")"#,
     )
     .expect("single literal join")
 });
@@ -1661,7 +1661,12 @@ fn expand_single_literal_join(text: &str) -> String {
             if previous_non_whitespace_ascii_byte(text, full.start()) == Some(b',') {
                 return None;
             }
-            let value = caps.get(1).or_else(|| caps.get(2))?.as_str();
+            let value = caps
+                .get(1)
+                .or_else(|| caps.get(2))
+                .or_else(|| caps.get(3))
+                .or_else(|| caps.get(4))?
+                .as_str();
             Some((full.start(), full.end(), format!("'{}'", value)))
         })
         .collect();
