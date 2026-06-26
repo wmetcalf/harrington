@@ -15486,6 +15486,26 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_regex_replace_case_insensitive_binding_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js =
+            br#"var u = "HXXP://js-regex-replace-i.example/stage".replace(/hxxp/ig, "http"); eval(u)"#
+                .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://js-regex-replace-i.example/stage"
+            )
+        });
+        assert!(
+            has,
+            "JS case-insensitive regex replace URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_string_hex_escape_decodes_to_url_char() {
         // Regression: parse_js_string_literal_at used to drop the backslash
         // from `\x2f`, corrupting the URL to `pathx2fp1...` and breaking

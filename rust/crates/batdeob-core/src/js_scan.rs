@@ -180,14 +180,25 @@ fn eval_js_string_expr(
             break;
         }
 
-        let (next, value) = if let Some((end, literal)) = parse_js_string_literal_at(expr, cursor) {
-            (end, literal)
-        } else if let Some((end, name)) = parse_js_identifier_at(expr, cursor) {
-            let value = vars.get(name)?.clone();
-            (end, value)
-        } else {
-            return None;
-        };
+        let (mut next, mut value) =
+            if let Some((end, literal)) = parse_js_string_literal_at(expr, cursor) {
+                (end, literal)
+            } else if let Some((end, name)) = parse_js_identifier_at(expr, cursor) {
+                let value = vars.get(name)?.clone();
+                (end, value)
+            } else {
+                return None;
+            };
+
+        let mut replacements = 0usize;
+        while let Some((end, replaced)) = consume_js_replace_call(expr, next, value.clone(), vars) {
+            value = replaced;
+            next = end;
+            replacements += 1;
+            if replacements > 16 || value.len() > 16384 {
+                return None;
+            }
+        }
 
         out.push_str(&value);
         if out.len() > 16384 {
@@ -205,6 +216,188 @@ fn eval_js_string_expr(
     }
 
     saw_term.then_some(out)
+}
+
+#[derive(Clone, Copy)]
+struct JsReplaceOptions {
+    global: bool,
+    case_insensitive: bool,
+}
+
+fn consume_js_replace_call(
+    text: &str,
+    idx: usize,
+    value: String,
+    bindings: &std::collections::HashMap<String, String>,
+) -> Option<(usize, String)> {
+    let (open, force_global) = if let Some(open) = consume_js_method_open(text, idx, "replaceAll") {
+        (open, true)
+    } else {
+        (consume_js_method_open(text, idx, "replace")?, false)
+    };
+
+    let first_start = skip_ascii_ws(text, open + 1);
+    let (first_end, needle, options) = if let Some((first_end, first)) =
+        parse_js_string_or_bound_arg(text, first_start, bindings)
+    {
+        (
+            first_end,
+            first,
+            JsReplaceOptions {
+                global: false,
+                case_insensitive: false,
+            },
+        )
+    } else {
+        let (first_end, pattern, flags) = parse_js_regex_literal_at(text, first_start)?;
+        (
+            first_end,
+            regex_literal_pattern_to_string(&pattern)?,
+            JsReplaceOptions {
+                global: flags.contains('g'),
+                case_insensitive: flags.contains('i'),
+            },
+        )
+    };
+
+    let comma = skip_ascii_ws(text, first_end);
+    if text.as_bytes().get(comma) != Some(&b',') {
+        return None;
+    }
+    let second_start = skip_ascii_ws(text, comma + 1);
+    let (second_end, replacement) = parse_js_string_or_bound_arg(text, second_start, bindings)?;
+    let close = skip_ascii_ws(text, second_end);
+    if text.as_bytes().get(close) != Some(&b')') {
+        return None;
+    }
+
+    let options = JsReplaceOptions {
+        global: force_global || options.global,
+        ..options
+    };
+    Some((
+        close + 1,
+        apply_js_string_replacement(value, &needle, &replacement, options),
+    ))
+}
+
+fn apply_js_string_replacement(
+    value: String,
+    needle: &str,
+    replacement: &str,
+    options: JsReplaceOptions,
+) -> String {
+    if needle.is_empty() {
+        return value;
+    }
+    if options.case_insensitive && needle.is_ascii() {
+        return replace_ascii_case_insensitive(value, needle, replacement, options.global);
+    }
+    if options.global {
+        value.replace(needle, replacement)
+    } else {
+        value.replacen(needle, replacement, 1)
+    }
+}
+
+fn replace_ascii_case_insensitive(
+    value: String,
+    needle: &str,
+    replacement: &str,
+    global: bool,
+) -> String {
+    let value_lower = value.to_ascii_lowercase();
+    let needle_lower = needle.to_ascii_lowercase();
+    let mut out = String::with_capacity(value.len());
+    let mut cursor = 0usize;
+    let mut replaced = false;
+
+    while let Some(rel) = value_lower[cursor..].find(&needle_lower) {
+        if replaced && !global {
+            break;
+        }
+        let start = cursor + rel;
+        out.push_str(&value[cursor..start]);
+        out.push_str(replacement);
+        cursor = start + needle.len();
+        replaced = true;
+    }
+    out.push_str(&value[cursor..]);
+    out
+}
+
+fn parse_js_regex_literal_at(text: &str, start: usize) -> Option<(usize, String, String)> {
+    if text.as_bytes().get(start) != Some(&b'/') {
+        return None;
+    }
+    let mut pattern = String::new();
+    let mut cursor = start + 1;
+    let mut escaped = false;
+    while cursor < text.len() {
+        let ch = text[cursor..].chars().next()?;
+        cursor += ch.len_utf8();
+        if escaped {
+            pattern.push('\\');
+            pattern.push(ch);
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if ch == '/' {
+            let flags_start = cursor;
+            while text
+                .as_bytes()
+                .get(cursor)
+                .is_some_and(|byte| byte.is_ascii_alphabetic())
+            {
+                cursor += 1;
+            }
+            return Some((cursor, pattern, text[flags_start..cursor].to_string()));
+        }
+        if ch == '\r' || ch == '\n' {
+            return None;
+        }
+        pattern.push(ch);
+    }
+    None
+}
+
+fn regex_literal_pattern_to_string(pattern: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut chars = pattern.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            if matches!(
+                ch,
+                '.' | '*' | '+' | '?' | '^' | '$' | '(' | ')' | '[' | ']' | '{' | '}' | '|'
+            ) {
+                return None;
+            }
+            out.push(ch);
+            continue;
+        }
+        let escaped = chars.next()?;
+        match escaped {
+            '\\' | '/' | '.' | '*' | '+' | '?' | '^' | '$' | '(' | ')' | '[' | ']' | '{' | '}'
+            | '|' => out.push(escaped),
+            'x' => {
+                let h1 = chars.next()?;
+                let h2 = chars.next()?;
+                let value = u32::from_str_radix(&format!("{h1}{h2}"), 16).ok()?;
+                out.push(char::from_u32(value)?);
+            }
+            'u' => {
+                let hex = (0..4).map(|_| chars.next()).collect::<Option<String>>()?;
+                let value = u32::from_str_radix(&hex, 16).ok()?;
+                out.push(char::from_u32(value)?);
+            }
+            _ => return None,
+        }
+    }
+    Some(out)
 }
 
 fn parse_js_identifier_at(text: &str, start: usize) -> Option<(usize, &str)> {
