@@ -525,6 +525,9 @@ fn scan_python_requests_get_deob_text(deobfuscated: &str, env: &mut Environment)
     ) {
         emit_python_download(&url, deobfuscated, env, &mut known);
     }
+    for (url, dst) in find_python_urlretrieve_literals(deobfuscated) {
+        emit_python_download_with_dst(&url, dst.as_deref(), deobfuscated, env, &mut known);
+    }
 
     for decoded in decoded_python_b64decode_literals(deobfuscated) {
         for url in find_call_url_literals(
@@ -532,6 +535,9 @@ fn scan_python_requests_get_deob_text(deobfuscated: &str, env: &mut Environment)
             &["requests.get", "urllib.request.urlopen", "urllib.urlopen"],
         ) {
             emit_python_download(&url, &decoded, env, &mut known);
+        }
+        for (url, dst) in find_python_urlretrieve_literals(&decoded) {
+            emit_python_download_with_dst(&url, dst.as_deref(), &decoded, env, &mut known);
         }
     }
 }
@@ -989,12 +995,24 @@ fn emit_python_download(
     env: &mut Environment,
     known: &mut std::collections::HashSet<String>,
 ) {
+    emit_python_download_with_dst(url, None, deobfuscated, env, known);
+}
+
+fn emit_python_download_with_dst(
+    url: &str,
+    dst: Option<&str>,
+    deobfuscated: &str,
+    env: &mut Environment,
+    known: &mut std::collections::HashSet<String>,
+) {
     let url = trim_url_suffix(url);
     if is_noise_url(url) || !known.insert(url.to_string()) {
         return;
     }
     let line = deobfuscated.lines().find(|line| line.contains(url));
-    let dst = line.and_then(|line| python_open_write_dst(line, url));
+    let dst = dst
+        .map(str::to_string)
+        .or_else(|| line.and_then(|line| python_open_write_dst(line, url)));
     let line_hint = line
         .map(|line| snippet_prefix(line, 200))
         .unwrap_or_default();
@@ -1050,6 +1068,44 @@ fn find_call_url_literals(text: &str, names: &[&str]) -> Vec<String> {
             };
             if let Some(url) = first_url_literal(&text[open + 1..close]) {
                 found.push(url);
+            }
+            search_start = close + 1;
+        }
+    }
+    found
+}
+
+fn find_python_urlretrieve_literals(text: &str) -> Vec<(String, Option<String>)> {
+    let mut found = Vec::new();
+    for name in ["urllib.request.urlretrieve", "urllib.urlretrieve"] {
+        let mut search_start = 0;
+        while let Some(name_start) = find_ascii_case_insensitive_from(text, name, search_start) {
+            let name_end = name_start + name.len();
+            if !is_callable_name_boundary(text, name_start, name_end) {
+                search_start = name_end;
+                continue;
+            }
+            let open = skip_ascii_ws(text, name_end);
+            if text.as_bytes().get(open) != Some(&b'(') {
+                search_start = name_end;
+                continue;
+            }
+            let Some(close) = find_matching_paren(text, open) else {
+                search_start = open + 1;
+                continue;
+            };
+            let literals = quoted_string_literals(&text[open + 1..close]);
+            if let Some((idx, url)) = literals
+                .iter()
+                .enumerate()
+                .find(|(_, literal)| looks_like_direct_url(trim_url_suffix(literal)))
+            {
+                let dst = literals
+                    .iter()
+                    .skip(idx + 1)
+                    .find(|literal| !looks_like_direct_url(trim_url_suffix(literal)))
+                    .cloned();
+                found.push((trim_url_suffix(url).to_string(), dst));
             }
             search_start = close + 1;
         }

