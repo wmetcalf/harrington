@@ -12511,6 +12511,66 @@ powershell -Command "x('%尔克克尔:~28,1%%德德耻克:~35,1%%尔克克尔:~4
     }
 
     #[test]
+    fn python_requests_keyword_url_ignores_header_url_literals() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import requests; requests.get(headers={'Referer': 'https://py.example/referer'}, url='https://py.example/actual')""#,
+            &mut env,
+        );
+        let has_actual = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/actual" && dst.is_none()
+            )
+        });
+        assert!(
+            has_actual,
+            "no structured Download from Python requests keyword URL: {:?}",
+            env.traits
+        );
+        let promoted_referer = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://py.example/referer"
+            )
+        });
+        assert!(
+            !promoted_referer,
+            "Python requests header URL was promoted as structured source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_requests_request_keyword_url_ignores_header_url_literals() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import requests; requests.request(method='GET', headers={'Referer': 'https://py.example/request-referer'}, url='https://py.example/request-actual')""#,
+            &mut env,
+        );
+        let has_actual = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/request-actual" && dst.is_none()
+            )
+        });
+        assert!(
+            has_actual,
+            "no structured Download from Python requests.request keyword URL: {:?}",
+            env.traits
+        );
+        let promoted_referer = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://py.example/request-referer"
+            )
+        });
+        assert!(
+            !promoted_referer,
+            "Python requests.request header URL was promoted as structured source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn typo_webclient_downloadfile_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
