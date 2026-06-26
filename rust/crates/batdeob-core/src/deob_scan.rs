@@ -1373,6 +1373,10 @@ fn collect_python_urllib_call_aliases(text: &str, target_method: &str) -> Vec<St
         };
         aliases.push(format!("{alias}.{target_method}"));
     }
+    aliases.extend(collect_python_urllib_assigned_call_aliases(
+        text,
+        target_method,
+    ));
     for caps in PY_FROM_URLLIB_IMPORT_RE.captures_iter(text).take(8) {
         let Some(imports) = caps.get(1).or_else(|| caps.get(2)).map(|m| m.as_str()) else {
             continue;
@@ -1397,6 +1401,41 @@ fn collect_python_urllib_call_aliases(text: &str, target_method: &str) -> Vec<St
         }
     }
     aliases
+}
+
+fn collect_python_urllib_assigned_call_aliases(text: &str, target_method: &str) -> Vec<String> {
+    static PY_IMPORT_URLLIB_REQUEST_ALIAS_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)\bimport\s+urllib\.request\s+as\s+([A-Za-z_][A-Za-z0-9_]*)"#)
+            .expect("python urllib.request import alias regex")
+    });
+    static PY_URLLIB_METHOD_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*(?:\.request)?)\.(urlopen|urlretrieve)\b"#,
+        )
+        .expect("python urllib method assignment regex")
+    });
+
+    let mut modules = vec!["urllib.request".to_string()];
+    modules.extend(
+        PY_IMPORT_URLLIB_REQUEST_ALIAS_RE
+            .captures_iter(text)
+            .take(8)
+            .filter_map(|caps| caps.get(1).map(|m| m.as_str().to_string())),
+    );
+    PY_URLLIB_METHOD_ASSIGN_RE
+        .captures_iter(text)
+        .take(8)
+        .filter_map(|caps| {
+            let alias = caps.get(1)?.as_str();
+            let module = caps.get(2)?.as_str();
+            let method = caps.get(3)?.as_str();
+            if method == target_method && modules.iter().any(|known| known == module) {
+                Some(alias.to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 fn find_dotted_method_url_literals(text: &str) -> Vec<(String, String, Option<String>)> {
