@@ -15430,6 +15430,23 @@ mod ps_alias_tests {
     }
 
     #[test]
+    fn gate_allows_wget_curl_alias_only_payload() {
+        use crate::ps_alias::expand_aliases_if_ps;
+        let alias_only = "wget 'http://e.example/a'; curl 'http://e.example/b'";
+        let out = expand_aliases_if_ps(alias_only);
+        assert!(
+            out.contains("Invoke-WebRequest 'http://e.example/a'"),
+            "got: {}",
+            out
+        );
+        assert!(
+            out.contains("Invoke-WebRequest 'http://e.example/b'"),
+            "got: {}",
+            out
+        );
+    }
+
+    #[test]
     fn gate_allows_verb_noun_cmdlet() {
         use crate::ps_alias::expand_aliases_if_ps;
         let with_cmdlet = "Get-Item foo; start bar";
