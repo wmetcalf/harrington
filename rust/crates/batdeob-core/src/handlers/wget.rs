@@ -74,12 +74,17 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
             i += 1;
             continue;
         }
-        if let Some(normalized) = crate::deob_scan::normalize_liberal_url_token(raw_token) {
+        if let Some(normalized) = normalize_wget_url_token(raw_token) {
             url = Some(normalized);
         }
         i += 1;
     }
     url.map(|u| (u, dst))
+}
+
+fn normalize_wget_url_token(token: &str) -> Option<String> {
+    crate::deob_scan::normalize_liberal_url_token(token)
+        .or_else(|| crate::deob_scan::normalize_schemeless_domain_path_token(token))
 }
 
 fn short_option_cluster_output(token: &str) -> Option<&str> {
