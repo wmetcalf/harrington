@@ -29,7 +29,7 @@ static U_ESCAPE_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)String\s*(?:\.\s*fromCharCode|\[\s*["']fromCharCode["']\s*\])\s*\(\s*([0-9xa-f+\-\s,]{5,8192})\s*\)"#,
+        r#"(?is)String\s*(?:\.\s*fromCharCode|\[\s*["']fromCharCode["']\s*\])\s*\(\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\)"#,
     )
         .expect("js fromCharCode")
 });
@@ -1186,42 +1186,60 @@ fn decode_js_utf16_bytes(bytes: &[u8], read_u16: fn([u8; 2]) -> u16) -> Option<S
 fn eval_js_numeric_expr(expr: &str) -> Option<u32> {
     let bytes = expr.as_bytes();
     let mut i = 0usize;
-    let mut total: i64 = 0;
-    let mut saw_term = false;
-    let mut sign: i64 = 1;
+    let mut total = eval_js_additive_numeric_expr(bytes, expr, &mut i)?;
 
-    while i < bytes.len() {
+    loop {
         while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
             i += 1;
         }
         if i >= bytes.len() {
+            return Some(total);
+        }
+        if bytes.get(i) != Some(&b'^') {
+            return None;
+        }
+        i += 1;
+        total ^= eval_js_additive_numeric_expr(bytes, expr, &mut i)?;
+    }
+}
+
+fn eval_js_additive_numeric_expr(bytes: &[u8], expr: &str, i: &mut usize) -> Option<u32> {
+    let mut total: i64 = 0;
+    let mut saw_term = false;
+    let mut sign: i64 = 1;
+
+    while *i < bytes.len() {
+        while bytes.get(*i).is_some_and(u8::is_ascii_whitespace) {
+            *i += 1;
+        }
+        if *i >= bytes.len() || bytes.get(*i) == Some(&b'^') {
             break;
         }
-        match bytes[i] {
+        match bytes[*i] {
             b'+' => {
                 sign = 1;
-                i += 1;
+                *i += 1;
                 continue;
             }
             b'-' => {
                 sign = -1;
-                i += 1;
+                *i += 1;
                 continue;
             }
             _ => {}
         }
 
-        let start = i;
-        while i < bytes.len()
-            && (bytes[i].is_ascii_hexdigit()
-                || bytes.get(i).is_some_and(|b| *b == b'x' || *b == b'X'))
+        let start = *i;
+        while *i < bytes.len()
+            && (bytes[*i].is_ascii_hexdigit()
+                || bytes.get(*i).is_some_and(|b| *b == b'x' || *b == b'X'))
         {
-            i += 1;
+            *i += 1;
         }
-        if i == start {
+        if *i == start {
             return None;
         }
-        let term = &expr[start..i];
+        let term = &expr[start..*i];
         let value = if let Some(hex) = term.strip_prefix("0x").or_else(|| term.strip_prefix("0X")) {
             i64::from(u32::from_str_radix(hex, 16).ok()?)
         } else {
