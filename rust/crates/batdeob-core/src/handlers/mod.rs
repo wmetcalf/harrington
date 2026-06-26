@@ -22,6 +22,7 @@ pub mod rundll32;
 pub mod set;
 pub mod setlocal;
 pub(crate) mod util;
+pub mod wget;
 pub mod wmic;
 
 pub type Handler = fn(raw: &str, env: &mut Environment);
@@ -42,6 +43,9 @@ pub fn lookup(name: &str) -> Option<Handler> {
     }
     if base.eq_ignore_ascii_case("curl") {
         return Some(curl::h_curl);
+    }
+    if base.eq_ignore_ascii_case("wget") || base.eq_ignore_ascii_case("get") {
+        return Some(wget::h_wget);
     }
     if base.eq_ignore_ascii_case("mshta") {
         return Some(mshta::h_mshta);
