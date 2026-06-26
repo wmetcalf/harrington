@@ -3185,7 +3185,9 @@ fn scan_curl_style_compact_flags_deob_text(deobfuscated: &str, env: &mut Environ
         let Some(cmd_base) = basename_trimmed(cmd) else {
             continue;
         };
-        if !ends_with_ascii_case_insensitive(cmd_base, ".exe") {
+        if !ends_with_ascii_case_insensitive(cmd_base, ".exe")
+            || is_known_non_curl_compact_flag_host(cmd_base)
+        {
             continue;
         }
         if !tokens
@@ -3211,6 +3213,26 @@ fn scan_curl_style_compact_flags_deob_text(deobfuscated: &str, env: &mut Environ
             });
         }
     }
+}
+
+fn is_known_non_curl_compact_flag_host(cmd_base: &str) -> bool {
+    [
+        "powershell.exe",
+        "pwsh.exe",
+        "cmd.exe",
+        "wscript.exe",
+        "cscript.exe",
+        "mshta.exe",
+        "rundll32.exe",
+        "regsvr32.exe",
+        "certutil.exe",
+        "bitsadmin.exe",
+        "msiexec.exe",
+        "explorer.exe",
+        "hh.exe",
+    ]
+    .iter()
+    .any(|known| cmd_base.eq_ignore_ascii_case(known))
 }
 
 fn parse_curl_like_download(tokens: &[String]) -> Option<(String, Option<String>)> {
@@ -3523,10 +3545,18 @@ fn normalize_curl_text(curl_text: &str) -> std::borrow::Cow<'_, str> {
     }
 
     for needle in ["http://", "https://", "ftp://", "--output", "-o"] {
-        while let Some(pos) = find_ascii_case_insensitive_from(&out, needle, 0) {
+        let mut search_start = 0;
+        while let Some(pos) = find_ascii_case_insensitive_from(&out, needle, search_start) {
             let is_scheme = matches!(needle, "http://" | "https://" | "ftp://");
-            if needle == "-o" && pos > 0 && out[..pos].ends_with('-') {
-                break;
+            if needle == "-o"
+                && pos > 0
+                && !out
+                    .as_bytes()
+                    .get(pos - 1)
+                    .is_some_and(|b| b.is_ascii_whitespace())
+            {
+                search_start = pos + needle.len();
+                continue;
             }
             if pos > 0
                 && !out

