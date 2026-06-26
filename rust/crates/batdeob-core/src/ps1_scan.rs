@@ -4422,14 +4422,29 @@ fn ps_url_is_non_download_option_value(text: &str, url_start: usize) -> bool {
     let stmt_start = text[..url_start]
         .rfind(['\r', '\n', ';'])
         .map_or(0, |idx| idx + 1);
-    let before_url = text[stmt_start..url_start]
-        .trim_end_matches([' ', '\t', '\r', '\n', '"', '\'', '(', '=', ':']);
-    let Some(option) = before_url.split_whitespace().last() else {
+    let before_url = &text[stmt_start..url_start];
+    ps_non_download_option_before_value(
+        before_url.trim_end_matches([' ', '\t', '\r', '\n', '"', '\'', '(', '=', ':']),
+    ) || ps_quoted_non_download_option_before_value(before_url)
+}
+
+fn ps_quoted_non_download_option_before_value(before_url: &str) -> bool {
+    let Some((quote_pos, _)) = before_url
+        .char_indices()
+        .rev()
+        .find(|(_, ch)| *ch == '"' || *ch == '\'')
+    else {
         return false;
     };
-    option
-        .trim_end_matches(['=', ':'])
-        .eq_ignore_ascii_case("-proxy")
+    ps_non_download_option_before_value(before_url[..quote_pos].trim_end())
+}
+
+fn ps_non_download_option_before_value(before_value: &str) -> bool {
+    let Some(option) = before_value.split_whitespace().last() else {
+        return false;
+    };
+    let option = option.trim_end_matches(['=', ':']);
+    option.eq_ignore_ascii_case("-proxy") || option.eq_ignore_ascii_case("-useragent")
 }
 
 fn clean_ps_url(raw: &str) -> String {
