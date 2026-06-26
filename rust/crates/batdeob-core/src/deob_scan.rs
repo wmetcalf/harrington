@@ -552,10 +552,12 @@ fn scan_python_requests_get_deob_text(deobfuscated: &str, env: &mut Environment)
 fn python_urlopen_call_names(text: &str) -> Vec<String> {
     let mut names = vec![
         "requests.get".to_string(),
+        "requests.Session().get".to_string(),
         "urllib.request.urlopen".to_string(),
         "urllib.urlopen".to_string(),
     ];
     names.extend(collect_python_requests_get_aliases(text));
+    names.extend(collect_python_requests_session_get_aliases(text));
     names.extend(collect_python_urllib_call_aliases(text, "urlopen"));
     names
 }
@@ -653,6 +655,47 @@ fn python_requests_request_get_url(args: &str) -> Option<String> {
         let literal = trim_url_suffix(&literal);
         looks_like_direct_url(literal).then(|| literal.to_string())
     })
+}
+
+fn collect_python_requests_session_get_aliases(text: &str) -> Vec<String> {
+    static PY_IMPORT_REQUESTS_ALIAS_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)\bimport\s+requests\s+as\s+([A-Za-z_][A-Za-z0-9_]*)"#)
+            .expect("python requests import alias regex")
+    });
+    static PY_FROM_REQUESTS_IMPORT_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)\bfrom\s+requests\s+import\s*(?:\(([^)]{0,512})\)|([^;"'\r\n]+))"#)
+            .expect("python requests from import regex")
+    });
+
+    let mut aliases = PY_IMPORT_REQUESTS_ALIAS_RE
+        .captures_iter(text)
+        .take(8)
+        .filter_map(|caps| caps.get(1).map(|m| format!("{}.Session().get", m.as_str())))
+        .collect::<Vec<_>>();
+    for caps in PY_FROM_REQUESTS_IMPORT_RE.captures_iter(text).take(8) {
+        let Some(imports) = caps.get(1).or_else(|| caps.get(2)).map(|m| m.as_str()) else {
+            continue;
+        };
+        for part in imports.split(',') {
+            let part = part.trim().trim_matches(['(', ')']);
+            let words = part.split_ascii_whitespace().collect::<Vec<_>>();
+            let Some(method) = words.first().copied() else {
+                continue;
+            };
+            if method != "Session" {
+                continue;
+            }
+            let alias = if words.get(1).is_some_and(|w| w.eq_ignore_ascii_case("as")) {
+                words.get(2).copied().unwrap_or(method)
+            } else {
+                method
+            };
+            if is_python_identifier(alias) {
+                aliases.push(format!("{alias}().get"));
+            }
+        }
+    }
+    aliases
 }
 
 fn decoded_python_b64decode_literals(deobfuscated: &str) -> Vec<String> {
