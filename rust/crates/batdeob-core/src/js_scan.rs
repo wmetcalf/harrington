@@ -35,6 +35,14 @@ static JS_FROMCHARCODE_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static JS_FROMCHARCODE_BIND_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)String\s*(?:\.\s*from(?:CharCode|CodePoint)|\[\s*["']from(?:CharCode|CodePoint)["']\s*\])\s*\.\s*bind\s*\(\s*[^)\r\n]{0,128}\)\s*\(\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\)"#,
+    )
+    .expect("js fromCharCode/fromCodePoint bind")
+});
+
+#[allow(clippy::expect_used)]
 static JS_STRING_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)(?:^|[;\r\n])\s*(?:(?:var|let|const)\s+)?([A-Za-z_$][A-Za-z0-9_$]{0,127})\s*=\s*([^;\r\n]{1,4096})"#,
@@ -427,6 +435,7 @@ fn is_js_ident_continue_byte(b: u8) -> bool {
 fn decoded_js_fromcharcode_literals(text: &str) -> Vec<String> {
     let mut out: Vec<String> = JS_FROMCHARCODE_RE
         .captures_iter(text)
+        .chain(JS_FROMCHARCODE_BIND_RE.captures_iter(text))
         .filter_map(|caps| {
             let nums = caps.get(1)?.as_str();
             let mut out = String::new();

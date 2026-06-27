@@ -17430,6 +17430,25 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_fromcharcode_bind_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let chars = "https://char-bind-js.example/p"
+            .bytes()
+            .map(|b| b.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!("var u = String.fromCharCode.bind(String)({chars}); eval(u)").into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://char-bind-js.example/p"
+            )
+        });
+        assert!(has, "JS fromCharCode.bind URL missed: {:?}", env.traits);
+    }
+
+    #[test]
     fn js_fromcharcode_apply_uint8array_variable_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let chars = "https://char-apply-uint8array-var-js.example/p"
