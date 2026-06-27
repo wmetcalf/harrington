@@ -17,6 +17,7 @@ pub mod esentutl;
 pub mod extrac32;
 pub mod for_cmd;
 pub mod goto;
+pub mod hh;
 pub mod if_cmd;
 pub mod mshta;
 pub mod msiexec;
@@ -79,6 +80,9 @@ pub fn lookup(name: &str) -> Option<Handler> {
     }
     if base.eq_ignore_ascii_case("esentutl") {
         return Some(esentutl::h_esentutl);
+    }
+    if base.eq_ignore_ascii_case("hh") {
+        return Some(hh::h_hh);
     }
     if base.eq_ignore_ascii_case("call") {
         return Some(call::h_call);

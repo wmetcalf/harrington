@@ -6488,6 +6488,33 @@ mod misc_handler_tests {
     }
 
     #[test]
+    fn html_help_direct_url_argument_emits_url_launch_and_lolbas() {
+        let raw = r#"hh.exe "https://hh-direct.example/help.chm""#;
+        let mut env = Environment::new(&Config::default());
+
+        interpret_line(raw, &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlLaunch { cmd, url }
+                        if cmd == raw && url == "https://hh-direct.example/help.chm"
+                )
+            }),
+            "HTML Help URL launch not typed: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::Lolbas { name, cmd } if name == "hh" && cmd == raw)),
+            "HTML Help URL launch not marked as LOLBAS: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn rundll32_fileprotocolhandler_schemeless_url_emits_url_launch() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
