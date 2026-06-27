@@ -1,7 +1,9 @@
 //! robocopy handler - tracks simple file copies between directories.
 
 use crate::env::{Environment, FsEntry};
-use crate::handlers::util::{split_words, strip_outer_quotes};
+use crate::handlers::util::{
+    join_windows_path_preserving_separator, split_words, strip_outer_quotes,
+};
 use crate::traits::Trait;
 
 pub fn h_robocopy(raw: &str, env: &mut Environment) {
@@ -19,8 +21,8 @@ pub fn h_robocopy(raw: &str, env: &mut Environment) {
         if file_contains_wildcard(&file) {
             continue;
         }
-        let src = join_windows_path(&src_dir, &file);
-        let dst = join_windows_path(&dst_dir, &file);
+        let src = join_windows_path_preserving_separator(&src_dir, &file);
+        let dst = join_windows_path_preserving_separator(&dst_dir, &file);
         let entry = copied_entry(
             &src,
             &file,
@@ -94,13 +96,6 @@ fn source_dir_allows_basename_fallback(src_dir: &str) -> bool {
         .trim_matches(['"', '\''])
         .trim_end_matches(['\\', '/']);
     matches!(trimmed, "." | ".\\." | "./.")
-}
-
-fn join_windows_path(dir: &str, file: &str) -> String {
-    let mut out = dir.trim_end_matches(['\\', '/']).to_string();
-    out.push('\\');
-    out.push_str(file.trim_start_matches(['\\', '/']));
-    collapse_slashes(&out)
 }
 
 fn file_contains_wildcard(file: &str) -> bool {
