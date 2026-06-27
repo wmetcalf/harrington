@@ -3156,6 +3156,68 @@ fn scan_copied_curl_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
+fn scan_copied_bitsadmin_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    let mut aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for t in &env.traits {
+        let Trait::WindowsUtilManip { src, dst, .. } = t else {
+            continue;
+        };
+        let Some(src_base) = basename_trimmed(src) else {
+            continue;
+        };
+        if !src_base.eq_ignore_ascii_case("bitsadmin")
+            && !src_base.eq_ignore_ascii_case("bitsadmin.exe")
+        {
+            continue;
+        }
+        let Some(dst_base) = basename_trimmed(dst) else {
+            continue;
+        };
+        aliases.insert(dst_base.to_string());
+        if let Some(stem) = dst_base.strip_suffix(".exe") {
+            aliases.insert(stem.to_string());
+        }
+    }
+    if aliases.is_empty() {
+        return;
+    }
+
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        let Some(cmd) = tokens.first() else {
+            continue;
+        };
+        if !copied_alias_matches_command_ci(&aliases, cmd) {
+            continue;
+        }
+        let target = strip_outer_quotes(cmd).to_string();
+        if !env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::ManipulatedExec {
+                    cmd: existing_cmd,
+                    target: existing_target
+                } if existing_cmd == line && existing_target.eq_ignore_ascii_case(&target)
+            )
+        }) {
+            env.traits.push(Trait::ManipulatedExec {
+                cmd: line.to_string(),
+                target,
+            });
+        }
+        let rest = line
+            .get(cmd.len()..)
+            .map(str::trim_start)
+            .unwrap_or_default();
+        let replay = if rest.is_empty() {
+            "bitsadmin.exe".to_string()
+        } else {
+            format!("bitsadmin.exe {rest}")
+        };
+        crate::handlers::bitsadmin::h_bitsadmin(&replay, env);
+    }
+}
+
 fn copied_curl_uses_config(tokens: &[String]) -> bool {
     let mut i = 1;
     while i < tokens.len() {
@@ -5611,6 +5673,7 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     scan_url_variable_assignments(deobfuscated, env);
     scan_registry_url_values(deobfuscated, env);
     scan_echoed_vbs_xmlhttp_deob_text(deobfuscated, env);
+    scan_copied_bitsadmin_alias_deob_text(deobfuscated, env);
     scan_copied_curl_alias_deob_text(deobfuscated, env);
     scan_copied_cleanup_alias_deob_text(deobfuscated, env);
     scan_copied_net_alias_deob_text(deobfuscated, env);
