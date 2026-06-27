@@ -200,7 +200,7 @@ pub fn lookup(name: &str) -> Option<Handler> {
         return Some(passthrough::h_md);
     }
     if base.eq_ignore_ascii_case("move") {
-        return Some(passthrough::h_move);
+        return Some(copy::h_move);
     }
     if base.eq_ignore_ascii_case("rmdir") {
         return Some(passthrough::h_rmdir);

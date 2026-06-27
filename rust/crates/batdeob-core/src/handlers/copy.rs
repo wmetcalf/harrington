@@ -117,6 +117,31 @@ pub fn h_xcopy(raw: &str, env: &mut Environment) {
     insert_copied_entry(env, &src, &dst, entry);
 }
 
+pub fn h_move(raw: &str, env: &mut Environment) {
+    env.traits.push(Trait::AdminCommand {
+        name: "move".to_string(),
+        cmd: raw.to_string(),
+    });
+
+    let tokens: Vec<String> = split_words(raw);
+    let mut args: Vec<String> = Vec::new();
+    for t in tokens.iter().skip(1) {
+        let stripped = strip_outer_quotes(t);
+        if stripped.eq_ignore_ascii_case("/y") || stripped.eq_ignore_ascii_case("/-y") {
+            continue;
+        }
+        args.push(stripped.to_string());
+    }
+    if args.len() != 2 {
+        return;
+    }
+
+    let src = collapse_slashes(&args[0]);
+    let dst = collapse_slashes(&args[1]);
+    let entry = copied_entry(&src, env).unwrap_or(FsEntry::Copy { src: src.clone() });
+    insert_copied_entry(env, &src, &dst, entry);
+}
+
 fn is_windows_util_copy(src: &str, dst: &str) -> bool {
     let src_system = starts_with_ascii_case_insensitive(src, "c:\\windows\\system32")
         || starts_with_ascii_case_insensitive(src, "c:\\windows\\syswow64");
