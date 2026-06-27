@@ -182,8 +182,8 @@ make_handler!(h_rmdir, "rmdir");
 make_handler!(h_rd, "rd");
 make_handler!(h_taskkill, "taskkill");
 make_handler!(h_tasklist, "tasklist");
-/// `schtasks` handler. Pushes AdminCommand; if the invocation creates a
-/// scheduled task (`schtasks /create /tn X /tr Y`), also emits a
+/// `schtasks` handler. Pushes AdminCommand; if the invocation creates or
+/// changes a scheduled task action (`schtasks /create|/change /tn X /tr Y`), also emits a
 /// Persistence trait — scheduled tasks are a primary autorun mechanism.
 pub fn h_schtasks(raw: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
@@ -192,7 +192,9 @@ pub fn h_schtasks(raw: &str, env: &mut Environment) {
         name: "schtasks".to_string(),
         cmd: raw.to_string(),
     });
-    if !contains_ascii_case_insensitive(raw, "/create") {
+    let is_create = contains_ascii_case_insensitive(raw, "/create");
+    let is_change = contains_ascii_case_insensitive(raw, "/change");
+    if !is_create && !is_change {
         return;
     }
     static TN_RE: Lazy<Regex> =
@@ -216,6 +218,9 @@ pub fn h_schtasks(raw: &str, env: &mut Environment) {
         })
         .map(|s| trim_schtasks_tr_tail(&s).to_string())
         .unwrap_or_default();
+    if is_change && task_run.is_empty() {
+        return;
+    }
     env.traits.push(Trait::Persistence {
         hive: "ScheduledTask".to_string(),
         key: task_name,
