@@ -3,7 +3,7 @@
 
 #![allow(clippy::expect_used)]
 
-use crate::env::Environment;
+use crate::env::{Environment, FsEntry};
 use crate::handlers::util::{contains_ascii_case_insensitive, split_words, strip_outer_quotes};
 use crate::traits::Trait;
 use crate::util::find_ascii_case_insensitive_from;
@@ -138,6 +138,42 @@ fn remove_tracked_directory(env: &mut Environment, candidate: &str) {
     env.modified_filesystem.retain(|path, _| {
         !path.eq_ignore_ascii_case(&prefix[..prefix.len() - 1]) && !path.starts_with(&prefix)
     });
+}
+
+pub fn h_mkdir(raw: &str, env: &mut Environment) {
+    h_mkdir_like(raw, env, "mkdir");
+}
+
+pub fn h_md(raw: &str, env: &mut Environment) {
+    h_mkdir_like(raw, env, "md");
+}
+
+fn h_mkdir_like(raw: &str, env: &mut Environment, name: &str) {
+    env.traits.push(Trait::AdminCommand {
+        name: name.to_string(),
+        cmd: raw.to_string(),
+    });
+    for candidate in directory_create_targets(raw) {
+        track_directory(env, &candidate);
+    }
+}
+
+fn directory_create_targets(raw: &str) -> Vec<String> {
+    split_words(raw)
+        .iter()
+        .skip(1)
+        .map(|token| strip_outer_quotes(token).trim().to_string())
+        .filter(|token| !token.is_empty())
+        .filter(|token| !token.contains(['*', '?']))
+        .collect()
+}
+
+fn track_directory(env: &mut Environment, candidate: &str) {
+    let key = candidate.trim_end_matches(['\\', '/']).to_ascii_lowercase();
+    if key.is_empty() {
+        return;
+    }
+    env.modified_filesystem.insert(key, FsEntry::Directory);
 }
 
 /// `reg add` handler. Pushes the existing AdminCommand trait for backward
@@ -292,8 +328,6 @@ fn trim_reg_data_tail(command: &str) -> &str {
 }
 
 make_handler!(h_attrib, "attrib");
-make_handler!(h_mkdir, "mkdir");
-make_handler!(h_md, "md");
 make_handler!(h_move, "move");
 make_handler!(h_taskkill, "taskkill");
 make_handler!(h_tasklist, "tasklist");

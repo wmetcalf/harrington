@@ -126,7 +126,7 @@ fn downloaded_source_for_path(env: &Environment, path: &str) -> Option<String> {
         match env.modified_filesystem.get(&key)? {
             FsEntry::Download { src } => return Some(src.clone()),
             FsEntry::Copy { src } => key = src.to_ascii_lowercase(),
-            FsEntry::Content { .. } | FsEntry::Decoded { .. } => return None,
+            FsEntry::Directory | FsEntry::Content { .. } | FsEntry::Decoded { .. } => return None,
         }
     }
     None

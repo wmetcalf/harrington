@@ -84,7 +84,9 @@ fn downloaded_source_for_path(env: &Environment, path: &str) -> Option<String> {
         match env.modified_filesystem.get(&key) {
             Some(FsEntry::Download { src }) => return Some(src.clone()),
             Some(FsEntry::Copy { src }) => key = src.to_ascii_lowercase(),
-            Some(FsEntry::Content { .. } | FsEntry::Decoded { .. }) => return None,
+            Some(FsEntry::Directory | FsEntry::Content { .. } | FsEntry::Decoded { .. }) => {
+                return None;
+            }
             None => return downloaded_source_for_current_dir_path(env, path),
         }
     }
