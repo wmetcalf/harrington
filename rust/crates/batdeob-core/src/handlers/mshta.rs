@@ -8,7 +8,7 @@ pub fn h_mshta(raw: &str, env: &mut Environment) {
         cmd: raw.to_string(),
     });
 
-    let mut matched_lolbas = false;
+    let mut matched_lolbas = queue_inline_script_payload(raw, env);
     for token in split_words(raw).iter().skip(1) {
         if let Some(url) = mshta_token_url(token) {
             env.traits.push(Trait::Download {
@@ -31,6 +31,48 @@ pub fn h_mshta(raw: &str, env: &mut Environment) {
     if matched_lolbas {
         push_lolbas(raw, env);
     }
+}
+
+fn queue_inline_script_payload(raw: &str, env: &mut Environment) -> bool {
+    const MAX_INLINE_SCRIPT_BYTES: usize = 256 * 1024;
+    let mut queued = false;
+
+    if let Some(body) = inline_payload_after(raw, "vbscript:") {
+        if body.len() <= MAX_INLINE_SCRIPT_BYTES {
+            let payload = body.as_bytes().to_vec();
+            if !env
+                .all_extracted_vbs
+                .iter()
+                .any(|existing| existing == &payload)
+            {
+                env.all_extracted_vbs.push(payload);
+            }
+            queued = true;
+        }
+    }
+    if let Some(body) =
+        inline_payload_after(raw, "javascript:").or_else(|| inline_payload_after(raw, "jscript:"))
+    {
+        if body.len() <= MAX_INLINE_SCRIPT_BYTES {
+            let payload = body.as_bytes().to_vec();
+            if !env
+                .all_extracted_jscript
+                .iter()
+                .any(|existing| existing == &payload)
+            {
+                env.all_extracted_jscript.push(payload);
+            }
+            queued = true;
+        }
+    }
+
+    queued
+}
+
+fn inline_payload_after<'a>(raw: &'a str, marker: &str) -> Option<&'a str> {
+    let start = find_ascii_case_insensitive_from(raw, marker, 0)? + marker.len();
+    let body = raw[start..].trim().trim_matches(['"', '\'']);
+    (!body.is_empty()).then_some(body)
 }
 
 fn downloaded_source_for_path(env: &Environment, path: &str) -> Option<String> {

