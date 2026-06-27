@@ -142,7 +142,7 @@ pub fn interpret_line(line: &str, env: &mut Environment) {
         return;
     }
     // Implicit script-host dispatch: when the command name is a path
-    // ending in `.jS`/`.js`/`.vbs`/`.vbe`/`.wsf`/`.wsh`/`.hta` and
+    // ending in `.jS`/`.js`/`.vbs`/`.vbe`/`.wsf`/`.wsh`/`.hta`/`.chm` and
     // there's no matching handler (which is the case for `call X.jS`
     // — the call handler re-feeds via interpret_line which lands here),
     // Windows shellexecutes wscript/cscript/mshta to run it. Surface
@@ -157,6 +157,10 @@ pub fn interpret_line(line: &str, env: &mut Environment) {
         .traits
         .iter()
         .any(|t| matches!(t, crate::traits::Trait::Lolbas { name: n, .. } if n == "mshta"));
+    let has_hh_lolbas = env
+        .traits
+        .iter()
+        .any(|t| matches!(t, crate::traits::Trait::Lolbas { name: n, .. } if n == "hh"));
     if let Some(ext) = script_host_extension(&name) {
         match ext {
             "js" | "jse" | "wsf" | "wsh" | "vbs" | "vbe" if !has_wscript_exec => {
@@ -170,6 +174,13 @@ pub fn interpret_line(line: &str, env: &mut Environment) {
                 // Mshta trait exists but takes different fields — use a Lolbas.
                 env.traits.push(crate::traits::Trait::Lolbas {
                     name: "mshta".to_string(),
+                    cmd: name.clone(),
+                });
+            }
+            "chm" if !has_hh_lolbas => {
+                push_implicit_download_source_url(&name, env);
+                env.traits.push(crate::traits::Trait::Lolbas {
+                    name: "hh".to_string(),
                     cmd: name.clone(),
                 });
             }
@@ -290,6 +301,9 @@ pub(crate) fn script_host_extension(name: &str) -> Option<&'static str> {
     }
     if ends_with_ascii_case_insensitive(basename, ".hta") {
         return Some("hta");
+    }
+    if ends_with_ascii_case_insensitive(basename, ".chm") {
+        return Some("chm");
     }
     None
 }
