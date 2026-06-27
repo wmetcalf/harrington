@@ -138,7 +138,7 @@ static START_BITS_SCHEMELESS_SOURCE_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?ix)
             Start-BitsTransfer \b
-            [^\n|;]*? -S(?:ource)? (?: \s+ | : | = )
+            [^\n|;]*? -S(?:o(?:u(?:r(?:c(?:e)?)?)?)?)? (?: \s+ | : | = )
             (?: ['"] )?
             (
                 (?: [a-z0-9\-]+ \. ){1,4}

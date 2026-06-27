@@ -511,7 +511,7 @@ fn scan_bitsadmin_deob_text(deobfuscated: &str, env: &mut Environment) {
 
         for bits_match in BITSADMIN_WORD_RE.find_iter(line) {
             let tail = &line[bits_match.start()..];
-            let segment = tail.split('&').next().unwrap_or(tail);
+            let segment = first_unquoted_ampersand_segment(tail);
             let tokens = split_words(segment);
             if !tokens
                 .iter()
@@ -543,6 +543,25 @@ fn scan_bitsadmin_deob_text(deobfuscated: &str, env: &mut Environment) {
             }
         }
     }
+}
+
+fn first_unquoted_ampersand_segment(text: &str) -> &str {
+    let mut in_dq = false;
+    let mut in_sq = false;
+    for (idx, ch) in text.char_indices() {
+        if ch == '"' && !in_sq {
+            in_dq = !in_dq;
+            continue;
+        }
+        if ch == '\'' && !in_dq {
+            in_sq = !in_sq;
+            continue;
+        }
+        if ch == '&' && !in_dq && !in_sq {
+            return &text[..idx];
+        }
+    }
+    text
 }
 
 fn bitsadmin_dst_after_url(tokens: &[String], start: usize) -> Option<String> {
