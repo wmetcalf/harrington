@@ -1,7 +1,7 @@
 //! cmd / cmd.exe / *cmd.exe handler — extracts the /c or /r body.
 #![allow(clippy::expect_used)]
 
-use crate::env::Environment;
+use crate::env::{Environment, FsEntry};
 use crate::util::find_ascii_case_insensitive_from;
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -301,6 +301,8 @@ pub fn h_start(raw: &str, env: &mut Environment) {
             dst: None,
             cmd: format!("start {}", inner_raw),
         });
+    } else if let Some(url) = start_prior_download_url(inner_raw, env) {
+        push_start_url_argument(inner_raw, url, env);
     }
     let inner = unquote_start_executable(inner_raw);
     if inner.is_empty() {
@@ -443,6 +445,62 @@ fn find_liberal_url_in_start_arg(s: &str) -> Option<String> {
             Some(raw)
         }
     })
+}
+
+fn start_prior_download_url(inner_raw: &str, env: &Environment) -> Option<String> {
+    let (first, _) = split_start_arg(inner_raw);
+    let first = strip_quotes(first.trim())
+        .trim_end_matches(['"', '\'', ')', ']', '}', ';', ','])
+        .to_string();
+    if first.is_empty() || first.starts_with(['/', '-']) {
+        return None;
+    }
+    downloaded_src_for_candidate(&first, env)
+}
+
+fn strip_quotes(token: &str) -> &str {
+    token.trim_matches(['"', '\''])
+}
+
+fn downloaded_src_for_candidate(candidate: &str, env: &Environment) -> Option<String> {
+    let key = candidate.to_ascii_lowercase();
+    if let Some(FsEntry::Download { src }) = env.modified_filesystem.get(&key) {
+        return Some(src.clone());
+    }
+    if candidate.contains(['\\', '/']) {
+        return None;
+    }
+    env.modified_filesystem
+        .iter()
+        .find_map(|(tracked_path, entry)| {
+            windows_basename(tracked_path)
+                .is_some_and(|name| name.eq_ignore_ascii_case(candidate))
+                .then_some(entry)
+        })
+        .and_then(|entry| match entry {
+            FsEntry::Download { src } => Some(src.clone()),
+            _ => None,
+        })
+}
+
+fn windows_basename(path: &str) -> Option<&str> {
+    path.rsplit(['\\', '/'])
+        .next()
+        .filter(|name| !name.is_empty())
+}
+
+fn push_start_url_argument(inner_raw: &str, url: String, env: &mut Environment) {
+    let cmd = format!("start {inner_raw}");
+    if !env.traits.iter().any(|t| {
+        matches!(
+            t,
+            crate::traits::Trait::UrlArgument { cmd: existing_cmd, url: existing_url }
+                if existing_cmd == &cmd && existing_url == &url
+        )
+    }) {
+        env.traits
+            .push(crate::traits::Trait::UrlArgument { cmd, url });
+    }
 }
 
 fn split_first_cmd_token(s: &str) -> Option<(&str, &str)> {

