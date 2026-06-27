@@ -15587,6 +15587,43 @@ C:\Users\Public\cu.tmp -K curl.cfg
     }
 
     #[test]
+    fn copied_extrac32_alias_in_deob_text_replays_copy_arguments() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::WindowsUtilManip {
+            cmd: r#"copy C:\Windows\System32\extrac32.exe C:\Users\Public\expha.pif"#.to_string(),
+            src: r#"C:\Windows\System32\extrac32.exe"#.to_string(),
+            dst: r#"C:\Users\Public\expha.pif"#.to_string(),
+        });
+        crate::deob_scan::scan_deob_text(
+            r#"C:\Users\Public\expha.pif /c /y "C:\Windows\System32\cmd.exe" "C:\Users\Public\alpha.pif""#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ManipulatedExec { target, .. }
+                        if target == r#"C:\Users\Public\expha.pif"#
+                )
+            }),
+            "copied extrac32 alias did not emit manipulated execution: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::WindowsUtilManip { src, dst, .. }
+                        if src == r#"C:\Windows\System32\cmd.exe"#
+                            && dst == r#"C:\Users\Public\alpha.pif"#
+                )
+            }),
+            "copied extrac32 alias did not replay copy arguments: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn curl_style_compact_flags_exe_in_deob_text_emits_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
