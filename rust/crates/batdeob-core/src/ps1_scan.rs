@@ -24,7 +24,7 @@ use regex::Regex;
 static IWR_RE: Lazy<Regex> = Lazy::new(|| {
     // Invoke-WebRequest / iwr / wget / curl (PS alias) — optional -Uri, quoted or unquoted URL
     Regex::new(
-        r#"(?i)(?:Invoke-WebRequest|iwr|wget|curl)\b(?:\s+-[A-Za-z][\w-]*)*\s*(?:[^\n|;]*?-Uri\s+)?\(?\s*["']?((?:https?|ftp|file):[\x2f\x5c]+[^\s"'\);]+)["']?"#
+        r#"(?i)(?:Invoke-WebRequest|iwr|wget|curl)\b(?:\s+-[A-Za-z][\w-]*)*\s*(?:[^\n|;]*?-Uri(?:\s+|:|=))?\(?\s*["']?((?:https?|ftp|file):[\x2f\x5c]+[^\s"'\);]+)["']?"#
     ).expect("iwr")
 });
 
@@ -32,14 +32,14 @@ static IWR_RE: Lazy<Regex> = Lazy::new(|| {
 static IRM_RE: Lazy<Regex> = Lazy::new(|| {
     // Invoke-RestMethod / irm — optional -Uri, quoted or unquoted URL
     Regex::new(
-        r#"(?i)(?:Invoke-RestMethod|irm)\b(?:\s+-[A-Za-z][\w-]*)*\s*(?:[^\n|;]*?-Uri\s+)?\(?\s*["']?((?:https?|ftp|file):[\x2f\x5c]+[^\s"'\);]+)["']?"#
+        r#"(?i)(?:Invoke-RestMethod|irm)\b(?:\s+-[A-Za-z][\w-]*)*\s*(?:[^\n|;]*?-Uri(?:\s+|:|=))?\(?\s*["']?((?:https?|ftp|file):[\x2f\x5c]+[^\s"'\);]+)["']?"#
     ).expect("irm")
 });
 
 #[allow(clippy::expect_used)]
 static PS_SCHEMELESS_IP_CMDLET_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?i)(?:Invoke-WebRequest|Invoke-RestMethod|iwr|irm|wget|curl)\b(?:[^\n|;]*?-(?:Uri|Ur)(?:\s+|:)|(?:\s+-[A-Za-z][\w-]*)*\s+)(?:['"])?((?:\d{1,3}\.){3}\d{1,3}(?::\d+)?(?:/[^\s"'\);]*)?)(?:['"])?"#,
+        r#"(?i)(?:Invoke-WebRequest|Invoke-RestMethod|iwr|irm|wget|curl)\b(?:[^\n|;]*?-(?:Uri|Ur)(?:\s+|:|=)|(?:\s+-[A-Za-z][\w-]*)*\s+)(?:['"])?((?:\d{1,3}\.){3}\d{1,3}(?::\d+)?(?:/[^\s"'\);]*)?)(?:['"])?"#,
     )
     .expect("ps schemeless ip cmdlet")
 });
@@ -49,7 +49,7 @@ static PS_SCHEMELESS_DOMAIN_CMDLET_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?ix)
             (?: Invoke-WebRequest | Invoke-RestMethod | iwr | irm | wget | curl ) \b
-            (?: [^\n|;]*? - (?: Uri | Ur ) (?: \s+ | : ) | (?: \s+ -[A-Za-z][\w-]* )* \s+ )
+            (?: [^\n|;]*? - (?: Uri | Ur ) (?: \s+ | : | = ) | (?: \s+ -[A-Za-z][\w-]* )* \s+ )
             (?: ['"] )?
             (
                 (?: [a-z0-9\-]+ \. ){1,4}
@@ -138,7 +138,7 @@ static START_BITS_SCHEMELESS_SOURCE_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?ix)
             Start-BitsTransfer \b
-            [^\n|;]*? -S(?:ource)? (?: \s+ | : )
+            [^\n|;]*? -S(?:ource)? (?: \s+ | : | = )
             (?: ['"] )?
             (
                 (?: [a-z0-9\-]+ \. ){1,4}
@@ -195,8 +195,10 @@ static PS_QUOTED_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
 
 #[allow(clippy::expect_used)]
 static OUTFILE_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"(?i)-Out(?:F(?:ile)?)?(?:\s+|:)(?:"([^"\r\n;]+)"?|'([^'\r\n;]+)'?|([^"'\s;]+))"#)
-        .expect("outfile")
+    Regex::new(
+        r#"(?i)-Out(?:F(?:ile)?)?(?:\s+|:|=)(?:"([^"\r\n;]+)"?|'([^'\r\n;]+)'?|([^"'\s;]+))"#,
+    )
+    .expect("outfile")
 });
 
 #[allow(clippy::expect_used)]
@@ -209,7 +211,7 @@ static CURL_OUTPUT_RE: Lazy<Regex> = Lazy::new(|| {
 
 #[allow(clippy::expect_used)]
 static BITS_DESTINATION_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"(?i)-Dest(?:ination)?(?:\s+|:)(?:"([^"\r\n;]+)"?|'([^'\r\n;]+)'?|([^"'\s;]+))"#)
+    Regex::new(r#"(?i)-Dest(?:ination)?(?:\s+|:|=)(?:"([^"\r\n;]+)"?|'([^'\r\n;]+)'?|([^"'\s;]+))"#)
         .expect("bits destination")
 });
 

