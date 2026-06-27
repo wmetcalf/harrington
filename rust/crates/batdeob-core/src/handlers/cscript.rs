@@ -1,7 +1,9 @@
 //! cscript / wscript handlers — extract VBScript/JScript payloads.
 
 use crate::env::{Environment, FsEntry};
-use crate::handlers::util::{ends_with_ascii_case_insensitive, split_words, strip_outer_quotes};
+use crate::handlers::util::{
+    ends_with_ascii_case_insensitive, normalize_url_like_token, split_words, strip_outer_quotes,
+};
 use crate::traits::Trait;
 
 pub fn h_cscript(raw: &str, env: &mut Environment) {
@@ -11,6 +13,8 @@ pub fn h_cscript(raw: &str, env: &mut Environment) {
         None => return,
     };
     extract_script(
+        raw,
+        "cscript",
         path,
         env,
         Trait::CscriptExec {
@@ -26,6 +30,8 @@ pub fn h_wscript(raw: &str, env: &mut Environment) {
         None => return,
     };
     extract_script(
+        raw,
+        "wscript",
         path,
         env,
         Trait::WscriptExec {
@@ -46,7 +52,25 @@ fn find_script_arg(tokens: &[String]) -> Option<&str> {
     None
 }
 
-fn extract_script(path: &str, env: &mut Environment, trait_evt: Trait) {
+fn extract_script(
+    raw: &str,
+    lolbas_name: &str,
+    path: &str,
+    env: &mut Environment,
+    trait_evt: Trait,
+) {
+    let mut resolved_remote_source = false;
+    if let Some(url) = normalize_url_like_token(path) {
+        push_url_argument(raw, &url, env);
+        resolved_remote_source = true;
+    }
+    if let Some(url) = downloaded_source_for_path(env, path) {
+        push_url_argument(raw, &url, env);
+        resolved_remote_source = true;
+    }
+    if resolved_remote_source {
+        push_lolbas(raw, lolbas_name, env);
+    }
     env.traits.push(trait_evt);
     let key = path.to_ascii_lowercase();
     let content: Option<Vec<u8>> = match env.modified_filesystem.get(&key) {
@@ -66,5 +90,43 @@ fn extract_script(path: &str, env: &mut Environment, trait_evt: Trait) {
             env.all_extracted_jscript.push(c.clone());
             env.exec_jscript.push(c);
         }
+    }
+}
+
+fn downloaded_source_for_path(env: &Environment, path: &str) -> Option<String> {
+    let mut key = path.to_ascii_lowercase();
+    for _ in 0..8 {
+        match env.modified_filesystem.get(&key)? {
+            FsEntry::Download { src } => return Some(src.clone()),
+            FsEntry::Copy { src } => key = src.to_ascii_lowercase(),
+            FsEntry::Content { .. } | FsEntry::Decoded { .. } => return None,
+        }
+    }
+    None
+}
+
+fn push_url_argument(raw: &str, url: &str, env: &mut Environment) {
+    if !env
+        .traits
+        .iter()
+        .any(|t| matches!(t, Trait::UrlArgument { cmd, url: got } if cmd == raw && got == url))
+    {
+        env.traits.push(Trait::UrlArgument {
+            cmd: raw.to_string(),
+            url: url.to_string(),
+        });
+    }
+}
+
+fn push_lolbas(raw: &str, name: &str, env: &mut Environment) {
+    if !env
+        .traits
+        .iter()
+        .any(|t| matches!(t, Trait::Lolbas { name: got, cmd } if got == name && cmd == raw))
+    {
+        env.traits.push(Trait::Lolbas {
+            name: name.to_string(),
+            cmd: raw.to_string(),
+        });
     }
 }

