@@ -8394,6 +8394,22 @@ mod synth_tests {
     }
 
     #[test]
+    fn synth_type_slash_equivalent_reads_tracked_content() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            r#"c:\temp\stage.txt"#.to_string(),
+            FsEntry::Content {
+                content: b"alpha\r\nbeta\r\n".to_vec(),
+                append: false,
+            },
+        );
+
+        let lines = run_pipeline("type C:/Temp/stage.txt", &mut env);
+
+        assert_eq!(lines, vec!["alpha".to_string(), "beta".to_string()]);
+    }
+
+    #[test]
     fn synth_set_preserves_windir_casing() {
         let mut env = Environment::new(&Config::default());
         env.set("windir", "C:\\WINDOWS");
