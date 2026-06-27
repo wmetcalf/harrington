@@ -49,6 +49,14 @@ fn prior_download_url(path: &str, env: &Environment) -> Option<String> {
     if let Some(FsEntry::Download { src }) = filesystem_entry_for_path(env, path) {
         return Some(src.clone());
     }
+    if let Some(stripped) = strip_current_dir_prefix(path) {
+        if stripped.contains(['\\', '/']) {
+            return match filesystem_entry_for_path(env, stripped) {
+                Some(FsEntry::Download { src }) => Some(src.clone()),
+                _ => None,
+            };
+        }
+    }
     if let Some(name) = current_dir_basename(path) {
         return prior_download_url_by_basename(name, env);
     }
@@ -80,9 +88,11 @@ fn chm_container_path(path: &str) -> &str {
 }
 
 fn current_dir_basename(path: &str) -> Option<&str> {
-    path.strip_prefix(r".\")
-        .or_else(|| path.strip_prefix("./"))
-        .and_then(windows_basename)
+    strip_current_dir_prefix(path).and_then(windows_basename)
+}
+
+fn strip_current_dir_prefix(path: &str) -> Option<&str> {
+    path.strip_prefix(r".\").or_else(|| path.strip_prefix("./"))
 }
 
 fn push_lolbas(raw: &str, env: &mut Environment) {

