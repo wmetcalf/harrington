@@ -835,28 +835,48 @@ fn sc_subcommand_and_service(raw: &str) -> Option<(String, String)> {
 }
 
 fn command_value_after_key(raw: &str, key: &str) -> Option<String> {
-    let pos = find_ascii_case_insensitive_from(raw, key, 0)?;
-    let mut value_start = pos + key.len();
-    let bytes = raw.as_bytes();
-    while bytes
-        .get(value_start)
-        .is_some_and(|b| b.is_ascii_whitespace())
-    {
-        value_start += 1;
+    let spans = split_word_spans(raw);
+    for (idx, span) in spans.iter().enumerate() {
+        let raw_token = &raw[span.clone()];
+        let token = raw_token.trim_matches(['"', '\'']);
+        if token.eq_ignore_ascii_case(key) {
+            let value_span = spans.get(idx + 1)?;
+            return sc_command_value(raw, value_span.start, &spans[idx + 1..]);
+        }
+        let Some(value_offset) = sc_attached_value_offset(token, key) else {
+            continue;
+        };
+        let raw_token_quote_offset = raw_token.len() - token.len();
+        let attached_value_start = span.start + value_offset + raw_token_quote_offset;
+        let value_start = if attached_value_start >= span.end {
+            spans.get(idx + 1)?.start
+        } else {
+            attached_value_start
+        };
+        let value_spans = if attached_value_start >= span.end {
+            &spans[idx + 1..]
+        } else {
+            &spans[idx..]
+        };
+        return sc_command_value(raw, value_start, value_spans);
     }
-    if bytes.get(value_start) == Some(&b'=') {
-        value_start += 1;
-    }
-    while bytes
-        .get(value_start)
-        .is_some_and(|b| b.is_ascii_whitespace())
-    {
-        value_start += 1;
-    }
-    parse_command_value(raw, value_start)
+    None
 }
 
-fn parse_command_value(raw: &str, start: usize) -> Option<String> {
+fn sc_attached_value_offset(token: &str, key: &str) -> Option<usize> {
+    let head = token.get(..key.len())?;
+    if !head.eq_ignore_ascii_case(key) {
+        return None;
+    }
+    let delimiter = token.as_bytes().get(key.len()).copied()?;
+    matches!(delimiter, b'=' | b':').then_some(key.len() + 1)
+}
+
+fn sc_command_value(
+    raw: &str,
+    start: usize,
+    value_spans: &[std::ops::Range<usize>],
+) -> Option<String> {
     let bytes = raw.as_bytes();
     let quote = *bytes.get(start)?;
     if quote == b'"' || quote == b'\'' {
@@ -875,11 +895,41 @@ fn parse_command_value(raw: &str, start: usize) -> Option<String> {
         }
         return Some(out);
     }
-    let end = raw[start..]
-        .find(char::is_whitespace)
-        .map(|offset| start + offset)
-        .unwrap_or(raw.len());
-    Some(raw[start..end].to_string())
+    let end = sc_unquoted_value_end(raw, value_spans);
+    Some(raw[start..end].trim_end().to_string()).filter(|value| !value.is_empty())
+}
+
+fn sc_unquoted_value_end(raw: &str, value_spans: &[std::ops::Range<usize>]) -> usize {
+    for span in value_spans.iter().skip(1) {
+        let token = raw[span.clone()].trim_matches(['"', '\'']);
+        if sc_option_token(token) {
+            return span.start;
+        }
+    }
+    value_spans.last().map_or(raw.len(), |span| span.end)
+}
+
+fn sc_option_token(token: &str) -> bool {
+    let Some((name, _)) = token.split_once(['=', ':']) else {
+        return false;
+    };
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "type"
+            | "start"
+            | "error"
+            | "binpath"
+            | "group"
+            | "tag"
+            | "depend"
+            | "obj"
+            | "displayname"
+            | "password"
+            | "reset"
+            | "reboot"
+            | "command"
+            | "actions"
+    )
 }
 
 make_handler!(h_ping, "ping");
@@ -1116,6 +1166,16 @@ mod tests {
     }
 
     #[test]
+    fn sc_create_binpath_accepts_attached_unquoted_value() {
+        let (service_name, bin_path) =
+            sc_service_binpath(r#"sc create UpdateSvc binPath=cmd.exe /c echo hi"#)
+                .expect("attached unquoted sc create binPath should parse");
+
+        assert_eq!(service_name, "UpdateSvc");
+        assert_eq!(bin_path, "cmd.exe /c echo hi");
+    }
+
+    #[test]
     fn sc_remote_failure_command_accepts_host_before_subcommand() {
         let (service_name, command) = sc_failure_command(
             r#"sc.exe \\target.example failure UpdateSvc command= "cmd.exe /c echo hi""#,
@@ -1124,5 +1184,15 @@ mod tests {
 
         assert_eq!(service_name, "UpdateSvc");
         assert_eq!(command, "cmd.exe /c echo hi");
+    }
+
+    #[test]
+    fn sc_failure_command_accepts_attached_unquoted_value() {
+        let (service_name, command) =
+            sc_failure_command(r#"sc failure UpdateSvc command=cmd.exe /c echo fail"#)
+                .expect("attached unquoted sc failure command should parse");
+
+        assert_eq!(service_name, "UpdateSvc");
+        assert_eq!(command, "cmd.exe /c echo fail");
     }
 }
