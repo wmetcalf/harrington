@@ -276,23 +276,125 @@ fn program_stem(name: &str) -> String {
 }
 
 fn command_invokes_program(command: &str, wanted_stem: &str) -> bool {
-    let tokens: Vec<&str> = command
-        .split(|ch: char| {
-            !(ch.is_ascii_alphanumeric()
-                || matches!(ch, '.' | '_' | '-' | '\\' | '/' | ':' | '"' | '\''))
-        })
-        .filter(|token| !token.is_empty())
-        .collect();
+    let tokens = lolbas_command_tokens(command);
     tokens.iter().enumerate().any(|(idx, token)| {
-        if idx > 0 && lolbas_non_exec_value_option(tokens[idx - 1]) {
+        if idx > 0 && lolbas_non_exec_value_option(tokens[idx - 1].text) {
             return false;
         }
-        if lolbas_attached_non_exec_value_option(token) {
+        if idx > 0
+            && lolbas_is_destination_separator(command, tokens[idx - 1].end, token.start)
+            && is_url_like_program_token(tokens[idx - 1].text)
+            && is_local_path_like_program_token(token.text)
+        {
             return false;
         }
-        let stem = program_stem(token);
+        if lolbas_is_certutil_file_operand(&tokens, idx) {
+            return false;
+        }
+        if lolbas_is_split_msi_log_operand(&tokens, idx) {
+            return false;
+        }
+        if lolbas_is_file_management_operand(&tokens, idx) {
+            return false;
+        }
+        if lolbas_attached_non_exec_value_option(token.text) {
+            return false;
+        }
+        if is_url_like_program_token(token.text) {
+            return false;
+        }
+        let stem = program_stem(token.text);
         !stem.is_empty() && stem == wanted_stem
     })
+}
+
+struct LolbasCommandToken<'a> {
+    text: &'a str,
+    start: usize,
+    end: usize,
+}
+
+fn lolbas_command_tokens(command: &str) -> Vec<LolbasCommandToken<'_>> {
+    let mut tokens = Vec::new();
+    let mut chars = command.char_indices().peekable();
+    while let Some((idx, ch)) = chars.next() {
+        if matches!(ch, '"' | '\'') {
+            let quote = ch;
+            let token_start = idx;
+            let mut token_end = idx + ch.len_utf8();
+            for (quoted_idx, quoted_ch) in chars.by_ref() {
+                token_end = quoted_idx + quoted_ch.len_utf8();
+                if quoted_ch == quote {
+                    break;
+                }
+            }
+            tokens.push(LolbasCommandToken {
+                text: &command[token_start..token_end],
+                start: token_start,
+                end: token_end,
+            });
+            continue;
+        }
+        if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | '\\' | '/' | ':') {
+            let token_start = idx;
+            let mut token_end = idx + ch.len_utf8();
+            while let Some(&(next_idx, next_ch)) = chars.peek() {
+                if next_ch.is_ascii_alphanumeric()
+                    || matches!(next_ch, '.' | '_' | '-' | '\\' | '/' | ':' | '"' | '\'')
+                {
+                    chars.next();
+                    token_end = next_idx + next_ch.len_utf8();
+                } else {
+                    break;
+                }
+            }
+            tokens.push(LolbasCommandToken {
+                text: &command[token_start..token_end],
+                start: token_start,
+                end: token_end,
+            });
+        }
+    }
+    tokens
+}
+
+fn lolbas_is_destination_separator(command: &str, prev_end: usize, next_start: usize) -> bool {
+    let between = &command[prev_end..next_start];
+    !between.is_empty()
+        && between
+            .chars()
+            .all(|ch| ch.is_whitespace() || matches!(ch, ','))
+}
+
+fn lolbas_is_certutil_file_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    let Some(first) = tokens.first() else {
+        return false;
+    };
+    if program_stem(first.text) != "certutil" || !is_local_path_like_program_token(tokens[idx].text)
+    {
+        return false;
+    }
+    tokens
+        .iter()
+        .take(idx)
+        .any(|token| certutil_file_transform_verb(token.text))
+}
+
+fn certutil_file_transform_verb(token: &str) -> bool {
+    matches!(
+        token
+            .trim_matches(['"', '\''])
+            .to_ascii_lowercase()
+            .as_str(),
+        "-encode"
+            | "/encode"
+            | "-encodehex"
+            | "/encodehex"
+            | "-decode"
+            | "/decode"
+            | "-decodehex"
+            | "/decodehex"
+    )
 }
 
 fn lolbas_non_exec_value_option(token: &str) -> bool {
@@ -311,7 +413,14 @@ fn lolbas_non_exec_value_option(token: &str) -> bool {
             | "/outfile"
             | "-outf"
             | "/outf"
-    )
+            | "-destination"
+            | "/destination"
+            | "-dest"
+            | "/dest"
+            | "-log"
+            | "/log"
+            | "--log"
+    ) || lolbas_msi_log_option(token)
 }
 
 fn lolbas_attached_non_exec_value_option(token: &str) -> bool {
@@ -330,9 +439,123 @@ fn lolbas_attached_non_exec_value_option(token: &str) -> bool {
         || lower.starts_with("-outf=")
         || lower.starts_with("/outf:")
         || lower.starts_with("/outf=")
+        || lower.starts_with("-destination:")
+        || lower.starts_with("-destination=")
+        || lower.starts_with("/destination:")
+        || lower.starts_with("/destination=")
+        || lower.starts_with("-dest:")
+        || lower.starts_with("-dest=")
+        || lower.starts_with("/dest:")
+        || lower.starts_with("/dest=")
+        || lower.starts_with("-log:")
+        || lower.starts_with("-log=")
+        || lower.starts_with("/log:")
+        || lower.starts_with("/log=")
+        || lower.starts_with("--log=")
         || (lower.len() > 2
             && (lower.starts_with("-o") || lower.starts_with("/o"))
             && lower[2..].contains(['\\', '/']))
+        || lolbas_attached_msi_log_option(&lower)
+}
+
+fn lolbas_msi_log_option(token: &str) -> bool {
+    let lower = token.trim_matches(['"', '\'']).to_ascii_lowercase();
+    let Some(rest) = lower.strip_prefix(['/', '-']) else {
+        return false;
+    };
+    rest.starts_with('l') && rest.len() >= 2 && rest[1..].chars().all(is_msi_log_flag_char)
+}
+
+fn lolbas_attached_msi_log_option(lower: &str) -> bool {
+    let Some(rest) = lower.strip_prefix(['/', '-']) else {
+        return false;
+    };
+    let Some(path_start) = rest.find([':', '=']) else {
+        return false;
+    };
+    path_start >= 2
+        && rest.starts_with('l')
+        && rest[1..path_start].chars().all(is_msi_log_flag_char)
+}
+
+fn lolbas_is_split_msi_log_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx < 2 || !is_local_path_like_program_token(tokens[idx].text) {
+        return false;
+    }
+    let log_prefix = tokens[idx - 2]
+        .text
+        .trim_matches(['"', '\''])
+        .to_ascii_lowercase();
+    if !matches!(log_prefix.as_str(), "/l" | "-l") {
+        return false;
+    }
+    let flags = tokens[idx - 1]
+        .text
+        .trim_matches(['"', '\''])
+        .to_ascii_lowercase();
+    !flags.is_empty() && flags.chars().all(is_msi_log_flag_char)
+}
+
+fn is_msi_log_flag_char(ch: char) -> bool {
+    matches!(
+        ch,
+        '*' | '!' | 'v' | 'o' | 'i' | 'w' | 'e' | 'a' | 'r' | 'u' | 'c' | 'm' | 'p' | 'x' | '+'
+    )
+}
+
+fn lolbas_is_file_management_operand(tokens: &[LolbasCommandToken<'_>], idx: usize) -> bool {
+    if idx == 0 || !is_local_path_like_program_token(tokens[idx].text) {
+        return false;
+    }
+    matches!(
+        tokens
+            .first()
+            .map(|token| program_stem(token.text))
+            .as_deref(),
+        Some(
+            "del"
+                | "erase"
+                | "copy"
+                | "xcopy"
+                | "move"
+                | "ren"
+                | "rename"
+                | "attrib"
+                | "mkdir"
+                | "md"
+                | "rmdir"
+                | "rd"
+        )
+    )
+}
+
+fn is_url_like_program_token(token: &str) -> bool {
+    let token = token.trim_matches(['"', '\'']).to_ascii_lowercase();
+    if token.contains("://")
+        || ["http:", "https:", "hxxp:", "hxxps:", "ftp:", "file:"]
+            .iter()
+            .any(|prefix| token.starts_with(prefix))
+    {
+        return true;
+    }
+    let Some(slash) = token.find(['/', '\\']) else {
+        return false;
+    };
+    let first_segment = &token[..slash];
+    first_segment.contains('.') && !is_drive_path(&token)
+}
+
+fn is_local_path_like_program_token(token: &str) -> bool {
+    let token = token.trim_matches(['"', '\'']);
+    is_drive_path(token) || token.contains(['\\', '/'])
+}
+
+fn is_drive_path(token: &str) -> bool {
+    let bytes = token.as_bytes();
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'/' | b'\\')
 }
 
 /// Safely join `name` onto the canonical `out_dir`, refusing if the result
