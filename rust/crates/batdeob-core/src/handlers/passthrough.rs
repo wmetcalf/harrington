@@ -102,16 +102,17 @@ fn remove_tracked_directory_wildcard(
     let Some(dir) = directory_wildcard_prefix(candidate) else {
         return false;
     };
-    let mut prefix = dir.to_ascii_lowercase();
+    let mut prefix = dir.to_ascii_lowercase().replace('/', "\\");
     if prefix.is_empty() {
         return true;
     }
     prefix.push('\\');
     env.modified_filesystem.retain(|path, entry| {
-        if matches!(entry, FsEntry::Directory) || !path.starts_with(&prefix) {
+        let comparable = path.to_ascii_lowercase().replace('/', "\\");
+        if matches!(entry, FsEntry::Directory) || !comparable.starts_with(&prefix) {
             return true;
         }
-        !recursive && path[prefix.len()..].contains(['\\', '/'])
+        !recursive && comparable[prefix.len()..].contains('\\')
     });
     true
 }
