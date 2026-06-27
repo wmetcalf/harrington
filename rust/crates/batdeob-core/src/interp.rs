@@ -160,11 +160,13 @@ pub fn interpret_line(line: &str, env: &mut Environment) {
     if let Some(ext) = script_host_extension(&name) {
         match ext {
             "js" | "jse" | "wsf" | "wsh" | "vbs" | "vbe" if !has_wscript_exec => {
+                push_implicit_download_source_url(&name, env);
                 queue_implicit_script_content(&name, ext, env);
                 env.traits
                     .push(crate::traits::Trait::WscriptExec { src: name.clone() });
             }
             "hta" if !has_mshta_lolbas => {
+                push_implicit_download_source_url(&name, env);
                 // Mshta trait exists but takes different fields — use a Lolbas.
                 env.traits.push(crate::traits::Trait::Lolbas {
                     name: "mshta".to_string(),
@@ -175,6 +177,45 @@ pub fn interpret_line(line: &str, env: &mut Environment) {
         }
     }
     capture_synthetic_stdout_redirect(line, env);
+}
+
+fn push_implicit_download_source_url(path: &str, env: &mut Environment) {
+    let Some(url) = prior_download_url(path, env) else {
+        return;
+    };
+    if !env.traits.iter().any(|t| {
+        matches!(
+            t,
+            crate::traits::Trait::UrlArgument { cmd, url: existing }
+                if cmd == path && existing == &url
+        )
+    }) {
+        env.traits.push(crate::traits::Trait::UrlArgument {
+            cmd: path.to_string(),
+            url,
+        });
+    }
+}
+
+fn prior_download_url(path: &str, env: &Environment) -> Option<String> {
+    let key = path.to_ascii_lowercase();
+    if let Some(crate::env::FsEntry::Download { src }) = env.modified_filesystem.get(&key) {
+        return Some(src.clone());
+    }
+    if path.contains(['\\', '/']) {
+        return None;
+    }
+    env.modified_filesystem
+        .iter()
+        .find_map(|(tracked_path, entry)| {
+            windows_basename(tracked_path)
+                .is_some_and(|name| name.eq_ignore_ascii_case(path))
+                .then_some(entry)
+        })
+        .and_then(|entry| match entry {
+            crate::env::FsEntry::Download { src } => Some(src.clone()),
+            _ => None,
+        })
 }
 
 fn queue_implicit_script_content(path: &str, ext: &str, env: &mut Environment) {
