@@ -55,7 +55,7 @@ pub fn h_net(raw: &str, env: &mut Environment) {
             continue;
         }
         if starts_with_ascii_case_insensitive(p, "/u") {
-            if let Some(v) = p.split(':').nth(1) {
+            if let Some((_flag, v)) = p.split_once([':', '=']) {
                 info.user = Some(v.to_string());
             }
             idx += 1;
