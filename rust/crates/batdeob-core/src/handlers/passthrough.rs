@@ -23,6 +23,18 @@ make_handler!(h_del, "del");
 make_handler!(h_cls, "cls");
 make_handler!(h_timeout, "timeout");
 
+fn command_token_basename(token: &str) -> String {
+    token
+        .trim_start_matches(|ch: char| {
+            ch.is_ascii_whitespace() || matches!(ch, '@' | '"' | '\'' | '(' | ';' | ',')
+        })
+        .trim_matches(['"', '\''])
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(token)
+        .to_ascii_lowercase()
+}
+
 /// `reg add` handler. Pushes the existing AdminCommand trait for backward
 /// compat, and additionally emits a Persistence trait when the target key
 /// is a well-known Windows autorun hive (Run / RunOnce / RunServices /
@@ -330,17 +342,8 @@ pub fn h_winrm(raw: &str, env: &mut Environment) {
 fn runas_child_command(raw: &str) -> Option<String> {
     let spans = split_word_spans(raw);
     let first = spans.first()?;
-    let command_name = strip_outer_quotes(&raw[first.clone()])
-        .trim_start_matches(['@', '('])
-        .rsplit(['\\', '/'])
-        .next()
-        .unwrap_or(&raw[first.clone()])
-        .trim_end_matches('.');
-    if !command_name
-        .strip_suffix(".exe")
-        .unwrap_or(command_name)
-        .eq_ignore_ascii_case("runas")
-    {
+    let command_name = command_token_basename(&raw[first.clone()]);
+    if command_name.strip_suffix(".exe").unwrap_or(&command_name) != "runas" {
         return None;
     }
 
@@ -380,13 +383,7 @@ fn runas_child_command(raw: &str) -> Option<String> {
 pub(crate) fn psexec_child_command(raw: &str) -> Option<(String, String)> {
     let spans = split_word_spans(raw);
     let first = spans.first()?;
-    let command_name = raw[first.clone()]
-        .trim_start_matches(['@', '"', '('])
-        .trim_matches(['"', '\''])
-        .rsplit(['\\', '/'])
-        .next()
-        .unwrap_or(&raw[first.clone()])
-        .to_ascii_lowercase();
+    let command_name = command_token_basename(&raw[first.clone()]);
     if command_name.strip_suffix(".exe").unwrap_or(&command_name) != "psexec" {
         return None;
     }
@@ -424,13 +421,7 @@ pub(crate) fn psexec_child_command(raw: &str) -> Option<(String, String)> {
 pub(crate) fn winrs_child_command(raw: &str) -> Option<(String, String)> {
     let spans = split_word_spans(raw);
     let first = spans.first()?;
-    let command_name = raw[first.clone()]
-        .trim_start_matches(['@', '"', '('])
-        .trim_matches(['"', '\''])
-        .rsplit(['\\', '/'])
-        .next()
-        .unwrap_or(&raw[first.clone()])
-        .to_ascii_lowercase();
+    let command_name = command_token_basename(&raw[first.clone()]);
     if command_name.strip_suffix(".exe").unwrap_or(&command_name) != "winrs" {
         return None;
     }
@@ -479,13 +470,7 @@ pub(crate) fn winrs_child_command(raw: &str) -> Option<(String, String)> {
 pub(crate) fn winrm_child_command(raw: &str) -> Option<(String, String)> {
     let spans = split_word_spans(raw);
     let first = spans.first()?;
-    let command_name = raw[first.clone()]
-        .trim_start_matches(['@', '"', '('])
-        .trim_matches(['"', '\''])
-        .rsplit(['\\', '/'])
-        .next()
-        .unwrap_or(&raw[first.clone()])
-        .to_ascii_lowercase();
+    let command_name = command_token_basename(&raw[first.clone()]);
     let command_name = command_name
         .strip_suffix(".cmd")
         .or_else(|| command_name.strip_suffix(".exe"))
@@ -676,17 +661,8 @@ fn command_target_and_args(command: &str) -> Option<(String, Option<String>)> {
 fn at_scheduled_command(raw: &str) -> Option<(String, String)> {
     let spans = split_word_spans(raw);
     let first = spans.first()?;
-    let command_name = strip_outer_quotes(&raw[first.clone()])
-        .trim_start_matches(['@', '('])
-        .rsplit(['\\', '/'])
-        .next()
-        .unwrap_or(&raw[first.clone()])
-        .trim_end_matches('.');
-    if !command_name
-        .strip_suffix(".exe")
-        .unwrap_or(command_name)
-        .eq_ignore_ascii_case("at")
-    {
+    let command_name = command_token_basename(&raw[first.clone()]);
+    if command_name.strip_suffix(".exe").unwrap_or(&command_name) != "at" {
         return None;
     }
 
@@ -800,17 +776,8 @@ pub(crate) fn sc_failure_command(raw: &str) -> Option<(String, String)> {
 fn sc_subcommand_and_service(raw: &str) -> Option<(String, String)> {
     let tokens = split_words(raw);
     let command = tokens.first()?;
-    let command_name = strip_outer_quotes(command)
-        .trim_start_matches(['@', '('])
-        .rsplit(['\\', '/'])
-        .next()
-        .unwrap_or(command)
-        .trim_end_matches('.');
-    if !command_name
-        .strip_suffix(".exe")
-        .unwrap_or(command_name)
-        .eq_ignore_ascii_case("sc")
-    {
+    let command_name = command_token_basename(command);
+    if command_name.strip_suffix(".exe").unwrap_or(&command_name) != "sc" {
         return None;
     }
     let subcommand_index = if tokens.get(1).is_some_and(|token| {
@@ -1103,6 +1070,16 @@ mod tests {
     }
 
     #[test]
+    fn psexec_child_command_accepts_delimiter_prefix() {
+        let (host, command) =
+            psexec_child_command(r#"@;psexec \\target.example cmd.exe /c echo remote"#)
+                .expect("delimiter-prefixed psexec child command should parse");
+
+        assert_eq!(host, "target.example");
+        assert_eq!(command, "cmd.exe /c echo remote");
+    }
+
+    #[test]
     fn winrs_child_command_accepts_attached_remote_host() {
         let (host, command) = winrs_child_command(r#"winrs -r:target.example cmd.exe /c echo hi"#)
             .expect("winrs child command should parse");
@@ -1119,6 +1096,16 @@ mod tests {
 
         assert_eq!(host, "target.example");
         assert_eq!(command, "powershell.exe -nop");
+    }
+
+    #[test]
+    fn winrs_child_command_accepts_delimiter_prefix() {
+        let (host, command) =
+            winrs_child_command(r#"@;winrs -r:target.example cmd.exe /c echo hi"#)
+                .expect("delimiter-prefixed winrs child command should parse");
+
+        assert_eq!(host, "target.example");
+        assert_eq!(command, "cmd.exe /c echo hi");
     }
 
     #[test]
@@ -1194,5 +1181,14 @@ mod tests {
 
         assert_eq!(service_name, "UpdateSvc");
         assert_eq!(command, "cmd.exe /c echo fail");
+    }
+
+    #[test]
+    fn at_scheduled_command_accepts_delimiter_prefix() {
+        let (time, command) = at_scheduled_command(r#"@;at 23:59 cmd.exe /c echo hi"#)
+            .expect("delimiter-prefixed at should parse");
+
+        assert_eq!(time, "23:59");
+        assert_eq!(command, "cmd.exe /c echo hi");
     }
 }
