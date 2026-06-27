@@ -3,6 +3,7 @@
 use crate::env::{Environment, FsEntry};
 use crate::handlers::util::{
     ends_with_ascii_case_insensitive, normalize_url_like_token, split_words, strip_outer_quotes,
+    windows_basename,
 };
 use crate::traits::Trait;
 
@@ -72,12 +73,7 @@ fn extract_script(
         push_lolbas(raw, lolbas_name, env);
     }
     env.traits.push(trait_evt);
-    let key = path.to_ascii_lowercase();
-    let content: Option<Vec<u8>> = match env.modified_filesystem.get(&key) {
-        Some(FsEntry::Content { content, .. }) => Some(content.clone()),
-        Some(FsEntry::Decoded { content, .. }) => Some(content.clone()),
-        _ => None,
-    };
+    let content = tracked_script_content(path, env);
     if let Some(c) = content {
         if ends_with_ascii_case_insensitive(path, ".vbs")
             || ends_with_ascii_case_insensitive(path, ".vbe")
@@ -91,6 +87,37 @@ fn extract_script(
             env.exec_jscript.push(c);
         }
     }
+}
+
+fn tracked_script_content(path: &str, env: &Environment) -> Option<Vec<u8>> {
+    let key = path.to_ascii_lowercase();
+    if let Some(content) = content_from_entry(env.modified_filesystem.get(&key)) {
+        return Some(content);
+    }
+    let name = current_dir_basename(path)?;
+    env.modified_filesystem
+        .iter()
+        .find_map(|(tracked_path, entry)| {
+            windows_basename(tracked_path)
+                .is_some_and(|tracked_name| tracked_name.eq_ignore_ascii_case(name))
+                .then(|| content_from_entry(Some(entry)))
+        })
+        .flatten()
+}
+
+fn content_from_entry(entry: Option<&FsEntry>) -> Option<Vec<u8>> {
+    match entry {
+        Some(FsEntry::Content { content, .. }) | Some(FsEntry::Decoded { content, .. }) => {
+            Some(content.clone())
+        }
+        _ => None,
+    }
+}
+
+fn current_dir_basename(path: &str) -> Option<&str> {
+    path.strip_prefix(r".\")
+        .or_else(|| path.strip_prefix("./"))
+        .and_then(windows_basename)
 }
 
 fn downloaded_source_for_path(env: &Environment, path: &str) -> Option<String> {
