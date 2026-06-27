@@ -6190,6 +6190,21 @@ echo %MARK%
     }
 
     #[test]
+    fn mkdir_current_dir_directory_exists_for_later_if_exist() {
+        let script = br#"mkdir .\Temp\stage
+if exist Temp\stage set MARK=created
+echo %MARK%
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo created"),
+            "mkdir current-dir directory did not resolve for if exist:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+    }
+
+    #[test]
     fn mkdir_marks_parent_directories_existing_for_later_if_exist() {
         let script = br#"mkdir C:\Temp\stage
 if exist C:\Temp set MARK=parent

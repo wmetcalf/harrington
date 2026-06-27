@@ -245,6 +245,7 @@ fn directory_create_targets(raw: &str) -> Vec<String> {
 }
 
 fn track_directory(env: &mut Environment, candidate: &str) {
+    let candidate = strip_current_dir_prefix(candidate);
     let mut key = candidate.trim_end_matches(['\\', '/']).to_ascii_lowercase();
     if key.is_empty() {
         return;
