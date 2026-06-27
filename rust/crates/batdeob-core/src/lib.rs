@@ -12641,10 +12641,8 @@ hh https://hh-launch.example/extensionless.chm"#,
     fn direct_rundll32_fileprotocolhandler_url_emits_url_launch() {
         let mut env = crate::env::Environment::new(&Config::default());
         let url = "https://rundll32-direct.example/lure.pdf";
-        crate::interp::interpret_line(
-            &format!(r#"rundll32 url.dll,FileProtocolHandler "{url}""#),
-            &mut env,
-        );
+        let raw = format!(r#"rundll32 url.dll,FileProtocolHandler "{url}""#);
+        crate::interp::interpret_line(&raw, &mut env);
         let has = env.traits.iter().any(|t| {
             matches!(t,
                 Trait::UrlLaunch { url: got, .. } if got == url
@@ -12653,6 +12651,13 @@ hh https://hh-launch.example/extensionless.chm"#,
         assert!(
             has,
             "direct rundll32 FileProtocolHandler URL launch not typed: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(
+                |t| matches!(t, Trait::Lolbas { name, cmd } if name == "rundll32" && cmd == &raw)
+            ),
+            "direct rundll32 FileProtocolHandler URL launch not marked as LOLBAS: {:?}",
             env.traits
         );
     }
