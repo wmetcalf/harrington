@@ -206,7 +206,14 @@ fn xcopy_pipeline_tail(line: &str) -> Option<&str> {
     let (_, tail) = line.split_once('|')?;
     let tail = tail.trim();
     let name = command_name(tail)?;
-    if name.eq_ignore_ascii_case("xcopy") {
+    let base = windows_basename(&name)?;
+    let base = base.trim_end_matches('.');
+    let base = if ends_with_ascii_case_insensitive(base, ".exe") {
+        &base[..base.len() - 4]
+    } else {
+        base
+    };
+    if base.eq_ignore_ascii_case("xcopy") {
         Some(tail)
     } else {
         None
