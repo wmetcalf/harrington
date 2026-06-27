@@ -15185,6 +15185,30 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
     }
 
     #[test]
+    fn regsvr32_current_dir_scriptlet_resolves_tracked_download_source() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "payload.sct".to_string(),
+            crate::env::FsEntry::Download {
+                src: "https://regsvr32-current-dir.example/payload.sct".to_string(),
+            },
+        );
+
+        crate::interp::interpret_line(r"regsvr32 /s /n /u /i:.\payload.sct scrobj.dll", &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == r"regsvr32 /s /n /u /i:.\payload.sct scrobj.dll"
+                        && url == "https://regsvr32-current-dir.example/payload.sct"
+            )),
+            "regsvr32 current-dir scriptlet did not resolve tracked download source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn msiexec_url_package_argument_emits_typed_trait() {
         let mut env = crate::env::Environment::new(&Config::default());
         let url = "https://msiexec-package.example/setup.msi";

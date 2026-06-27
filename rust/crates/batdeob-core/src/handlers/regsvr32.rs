@@ -1,12 +1,12 @@
 //! regsvr32 handler - surfaces remote scriptlet URLs passed via /i.
 
-use super::util::{split_words, strip_outer_quotes};
-use crate::env::Environment;
+use super::util::{split_words, strip_outer_quotes, windows_basename};
+use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
 
 pub fn h_regsvr32(raw: &str, env: &mut Environment) {
     let tokens = split_words(raw);
-    let Some(url) = regsvr32_scriptlet_url_after(&tokens, 1) else {
+    let Some(url) = regsvr32_scriptlet_url_after(&tokens, 1, env) else {
         return;
     };
 
@@ -16,7 +16,11 @@ pub fn h_regsvr32(raw: &str, env: &mut Environment) {
     });
 }
 
-fn regsvr32_scriptlet_url_after(tokens: &[String], start: usize) -> Option<String> {
+fn regsvr32_scriptlet_url_after(
+    tokens: &[String],
+    start: usize,
+    env: &Environment,
+) -> Option<String> {
     let limit = tokens.len().min(start.saturating_add(12));
     for i in start..limit {
         let token = strip_outer_quotes(tokens[i].trim());
@@ -39,8 +43,46 @@ fn regsvr32_scriptlet_url_after(tokens: &[String], start: usize) -> Option<Strin
         {
             return Some(url);
         }
+        if let Some(url) = downloaded_src_for_candidate(candidate, env) {
+            return Some(url);
+        }
     }
     None
+}
+
+fn downloaded_src_for_candidate(candidate: &str, env: &Environment) -> Option<String> {
+    let key = candidate.to_ascii_lowercase();
+    if let Some(FsEntry::Download { src }) = env.modified_filesystem.get(&key) {
+        return Some(src.clone());
+    }
+    if let Some(name) = current_dir_basename(candidate) {
+        return downloaded_src_by_basename(name, env);
+    }
+    if candidate.contains(['\\', '/']) {
+        return None;
+    }
+    downloaded_src_by_basename(candidate, env)
+}
+
+fn downloaded_src_by_basename(candidate: &str, env: &Environment) -> Option<String> {
+    let basename = windows_basename(candidate)?;
+    env.modified_filesystem
+        .iter()
+        .find_map(|(path, entry)| {
+            windows_basename(path)
+                .is_some_and(|name| name.eq_ignore_ascii_case(basename))
+                .then_some(entry)
+        })
+        .and_then(|entry| match entry {
+            FsEntry::Download { src } => Some(src.clone()),
+            _ => None,
+        })
+}
+
+fn current_dir_basename(path: &str) -> Option<&str> {
+    path.strip_prefix(r".\")
+        .or_else(|| path.strip_prefix("./"))
+        .and_then(windows_basename)
 }
 
 fn trim_url_suffix(url: &str) -> &str {
