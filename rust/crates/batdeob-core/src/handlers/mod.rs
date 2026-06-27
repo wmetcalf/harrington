@@ -165,6 +165,9 @@ pub fn lookup(name: &str) -> Option<Handler> {
     if base.eq_ignore_ascii_case("wmic") {
         return Some(wmic::h_wmic);
     }
+    if base.eq_ignore_ascii_case("psexec") {
+        return Some(passthrough::h_psexec);
+    }
     if base.eq_ignore_ascii_case("del") {
         return Some(passthrough::h_del);
     }
