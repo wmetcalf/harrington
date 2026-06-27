@@ -14,15 +14,7 @@ static WMIC_PROCESS_CREATE_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 pub fn h_wmic(raw: &str, env: &mut Environment) {
-    let Some(caps) = WMIC_PROCESS_CREATE_RE.captures(raw) else {
-        return;
-    };
-    let inner = caps
-        .name("dq")
-        .or_else(|| caps.name("sq"))
-        .or_else(|| caps.name("bare"))
-        .and_then(|m| wmic_create_commandline_argument(m.as_str()))
-        .unwrap_or_default();
+    let inner = wmic_process_create_inner(raw).unwrap_or_default();
     if inner.is_empty() {
         return;
     }
@@ -31,6 +23,14 @@ pub fn h_wmic(raw: &str, env: &mut Environment) {
     });
     env.exec_cmd.push(inner);
     env.exec_cmd_delayed.push(false);
+}
+
+pub(crate) fn wmic_process_create_inner(raw: &str) -> Option<String> {
+    let caps = WMIC_PROCESS_CREATE_RE.captures(raw)?;
+    caps.name("dq")
+        .or_else(|| caps.name("sq"))
+        .or_else(|| caps.name("bare"))
+        .and_then(|m| wmic_create_commandline_argument(m.as_str()))
 }
 
 fn wmic_create_commandline_argument(tail: &str) -> Option<String> {

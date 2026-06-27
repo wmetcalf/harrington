@@ -48,6 +48,18 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
         return result;
     }
 
+    if let Some(inner) = crate::handlers::wmic::wmic_process_create_inner(raw) {
+        if inner.contains('!')
+            && (crate::handlers::cmd::extract_cmd_inner(&inner).is_some()
+                || crate::handlers::cmd::start_child_command(&inner).is_some()
+                || crate::handlers::call::call_body(&inner).is_some())
+        {
+            crate::handlers::wmic::h_wmic(raw, env);
+            result.consumed = true;
+            return result;
+        }
+    }
+
     if crate::handlers::cmd::start_child_command(raw).is_some() {
         crate::handlers::cmd::h_start(raw, env);
         result.consumed = true;

