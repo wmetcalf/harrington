@@ -276,17 +276,44 @@ pub fn h_sc(raw: &str, env: &mut Environment) {
         name: "sc".to_string(),
         cmd: raw.to_string(),
     });
-    let Some((service_name, bin_path)) = sc_service_binpath(raw) else {
+    if let Some((service_name, bin_path)) = sc_service_binpath(raw) {
+        env.traits.push(Trait::ServiceInstall {
+            service_name,
+            bin_path: bin_path.clone(),
+        });
+        queue_registry_persisted_command(bin_path, env);
         return;
-    };
-    env.traits.push(Trait::ServiceInstall {
-        service_name,
-        bin_path: bin_path.clone(),
-    });
-    queue_registry_persisted_command(bin_path, env);
+    }
+    if let Some((service_name, command)) = sc_failure_command(raw) {
+        env.traits.push(Trait::Persistence {
+            hive: "ServiceFailureCommand".to_string(),
+            key: service_name,
+            value_name: "command".to_string(),
+            command: command.clone(),
+        });
+        queue_registry_persisted_command(command, env);
+    }
 }
 
 fn sc_service_binpath(raw: &str) -> Option<(String, String)> {
+    let (subcommand, service_name) = sc_subcommand_and_service(raw)?;
+    if !matches!(subcommand.as_str(), "create" | "config") {
+        return None;
+    }
+    let bin_path = command_value_after_key(raw, "binpath")?;
+    Some((service_name, bin_path))
+}
+
+fn sc_failure_command(raw: &str) -> Option<(String, String)> {
+    let (subcommand, service_name) = sc_subcommand_and_service(raw)?;
+    if subcommand != "failure" {
+        return None;
+    }
+    let command = command_value_after_key(raw, "command")?;
+    Some((service_name, command))
+}
+
+fn sc_subcommand_and_service(raw: &str) -> Option<(String, String)> {
     let tokens = split_words(raw);
     let command = tokens.first()?;
     let command_name = strip_outer_quotes(command)
@@ -302,20 +329,16 @@ fn sc_service_binpath(raw: &str) -> Option<(String, String)> {
     {
         return None;
     }
-    if !tokens.get(1).is_some_and(|token| {
-        matches!(
-            strip_outer_quotes(token).to_ascii_lowercase().as_str(),
-            "create" | "config"
-        )
-    }) {
-        return None;
-    }
+    let subcommand = tokens.get(1).map(|token| {
+        strip_outer_quotes(token)
+            .trim_matches('"')
+            .to_ascii_lowercase()
+    })?;
     let service_name = tokens
         .get(2)
         .map(|token| strip_outer_quotes(token).to_string())
         .filter(|token| !token.is_empty())?;
-    let bin_path = command_value_after_key(raw, "binpath")?;
-    Some((service_name, bin_path))
+    Some((subcommand, service_name))
 }
 
 fn command_value_after_key(raw: &str, key: &str) -> Option<String> {
