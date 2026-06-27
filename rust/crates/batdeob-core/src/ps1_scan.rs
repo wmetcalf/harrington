@@ -129,6 +129,26 @@ static FILE_B64_XOR_LOADER_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static FILE_B64_LOADER_PATH_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)(?:\bgc\b|\bGet-Content\b)\s+(?:\$([A-Za-z_][A-Za-z0-9_]*)|['"]([^'"]+)['"])"#,
+    )
+    .expect("file b64 loader path regex")
+});
+
+#[allow(clippy::expect_used)]
+static PS_ANY_STRING_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?is)\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:'([^']{1,1024})'|"([^"]{1,1024})")"#)
+        .expect("ps any string assign regex")
+});
+
+#[allow(clippy::expect_used)]
+static PS_EMPTY_REPLACE_OPERATOR_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?is)-replace\s*['"]([^'"]{1,128})['"]\s*,\s*['"]{2}"#)
+        .expect("ps empty replace operator regex")
+});
+
+#[allow(clippy::expect_used)]
 static START_BITS_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?i)Start-BitsTransfer\s+(?:[^|]*?-Source\s+)?["']([^"']+)["']"#).expect("bits")
 });
@@ -3663,6 +3683,8 @@ fn escape_binary_controls(text: &str) -> String {
 }
 
 pub fn extract_self_embedded_ps1(env: &mut Environment, deobfuscated: &str) {
+    scan_file_backed_base64_ps1(deobfuscated, env, deobfuscated);
+
     let Some(input_bytes) = env.input_bytes.clone() else {
         return;
     };
@@ -3722,6 +3744,7 @@ pub fn extract_self_embedded_ps1(env: &mut Environment, deobfuscated: &str) {
 
     env.all_extracted_ps1.extend(decoded_payloads);
     extract_file_backed_xor_ps1(env, deobfuscated);
+    scan_file_backed_base64_ps1(deobfuscated, env, deobfuscated);
 }
 
 fn looks_like_self_tail_base64_loader(text: &str) -> bool {
@@ -3900,6 +3923,150 @@ fn extract_file_backed_xor_ps1(env: &mut Environment, deobfuscated: &str) {
     }
 
     env.all_extracted_ps1.extend(decoded_payloads);
+}
+
+fn scan_file_backed_base64_ps1(text: &str, env: &mut Environment, deobfuscated: &str) {
+    if !contains_ascii_case_insensitive(text, "frombase64string")
+        || (!contains_ascii_case_insensitive(text, "get-content")
+            && !contains_ascii_case_insensitive(text, "gc "))
+    {
+        return;
+    }
+
+    let path_bindings = ps_path_bindings(text, env);
+    let markers: Vec<&str> = PS_EMPTY_REPLACE_OPERATOR_RE
+        .captures_iter(text)
+        .filter_map(|caps| caps.get(1).map(|m| m.as_str()))
+        .collect();
+    let mut known: std::collections::HashSet<Vec<u8>> =
+        env.all_extracted_ps1.iter().cloned().collect();
+    let mut decoded_payloads = Vec::new();
+
+    for caps in FILE_B64_LOADER_PATH_RE.captures_iter(text) {
+        let path = if let Some(var) = caps.get(1) {
+            path_bindings
+                .get(&var.as_str().to_ascii_lowercase())
+                .map(String::as_str)
+        } else {
+            caps.get(2).map(|m| m.as_str())
+        };
+        let Some(path) = path else { continue };
+
+        let Some(content) = filesystem_content_for_path(env, path)
+            .or_else(|| grouped_echo_content_for_path(deobfuscated, path))
+        else {
+            continue;
+        };
+        if content.len() > 16 * 1024 * 1024 {
+            continue;
+        }
+
+        for mut candidate in file_backed_base64_candidates(&content) {
+            for marker in &markers {
+                candidate = candidate.replace(marker, "");
+            }
+            candidate.retain(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '='));
+            if candidate.len() < 16 || candidate.len() > 16 * 1024 * 1024 {
+                continue;
+            }
+            let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(candidate) else {
+                continue;
+            };
+            if decoded.len() > 12 * 1024 * 1024 || !looks_like_powershell_payload(&decoded) {
+                continue;
+            }
+            if known.insert(decoded.clone()) {
+                decoded_payloads.push(decoded);
+            }
+        }
+    }
+
+    env.all_extracted_ps1.extend(decoded_payloads);
+}
+
+fn ps_path_bindings(text: &str, env: &Environment) -> std::collections::HashMap<String, String> {
+    let mut bindings = std::collections::HashMap::new();
+    for caps in PS_ANY_STRING_ASSIGN_RE.captures_iter(text) {
+        let Some(name) = caps.get(1) else { continue };
+        let Some(value) = caps.get(2).or_else(|| caps.get(3)) else {
+            continue;
+        };
+        bindings.insert(
+            name.as_str().to_ascii_lowercase(),
+            expand_ps_env_path(value.as_str(), env),
+        );
+    }
+    bindings
+}
+
+fn expand_ps_env_path(value: &str, env: &Environment) -> String {
+    let mut out = value.to_string();
+    for (name, replacement) in &env.vars {
+        let needle = format!("$env:{name}");
+        out = replace_ascii_case_insensitive(&out, &needle, replacement);
+    }
+    out
+}
+
+fn replace_ascii_case_insensitive(input: &str, needle: &str, replacement: &str) -> String {
+    if needle.is_empty() {
+        return input.to_string();
+    }
+    let mut out = String::with_capacity(input.len());
+    let mut cursor = 0usize;
+    while let Some(rel) = find_ascii_case_insensitive_from(input, needle, cursor) {
+        out.push_str(&input[cursor..rel]);
+        out.push_str(replacement);
+        cursor = rel + needle.len();
+    }
+    out.push_str(&input[cursor..]);
+    out
+}
+
+fn file_backed_base64_candidates(content: &[u8]) -> Vec<String> {
+    let mut candidates = Vec::new();
+    let mut grouped_candidate = String::new();
+    let content_text = String::from_utf8_lossy(content);
+
+    for line in content_text.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix(":::") {
+            if rest.len() > 1 {
+                grouped_candidate.push_str(&rest[1..]);
+            }
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix(":: ") {
+            let fragments: Vec<String> = rest
+                .split('\\')
+                .filter(|part| !part.is_empty())
+                .map(str::to_string)
+                .collect();
+            if fragments.len() > 1 {
+                candidates.extend(fragments);
+            } else if let Some(fragment) = fragments.into_iter().next() {
+                candidates.push(fragment);
+            }
+            continue;
+        }
+    }
+
+    if !grouped_candidate.is_empty() {
+        candidates.push(grouped_candidate);
+    }
+    if candidates.is_empty() {
+        let candidate: String = content
+            .iter()
+            .copied()
+            .filter(|b| b.is_ascii_alphanumeric() || matches!(*b, b'+' | b'/' | b'='))
+            .map(char::from)
+            .collect();
+        if !candidate.is_empty() {
+            candidates.push(candidate);
+        }
+    }
+
+    candidates
 }
 
 fn filesystem_content_for_path(env: &Environment, path: &str) -> Option<Vec<u8>> {
@@ -4544,6 +4711,12 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
     // herestring body.
     extract_herestring_replace_iex_inners(env);
     extract_rc4_wrapper_inners(env);
+    let file_backed_payloads = env.all_extracted_ps1.clone();
+    for payload in file_backed_payloads {
+        let raw_text = decode_payload(&payload);
+        let text_expanded = expand_obfuscation(&raw_text);
+        scan_file_backed_base64_ps1(&text_expanded, env, &text_expanded);
+    }
 
     // Use all_extracted_ps1 to cover every payload across the run, not just
     // the latest exec_ps1 (which gets drained).

