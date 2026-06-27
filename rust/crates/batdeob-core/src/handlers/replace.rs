@@ -2,7 +2,8 @@
 
 use crate::env::{Environment, FsEntry};
 use crate::handlers::util::{
-    join_windows_path_preserving_separator, split_words, strip_outer_quotes,
+    filesystem_entry_for_path, join_windows_path_preserving_separator, split_words,
+    strip_outer_quotes,
 };
 use crate::traits::Trait;
 
@@ -37,8 +38,7 @@ fn parse_replace_args(tokens: &[String]) -> Option<(String, String)> {
 }
 
 fn copied_entry(src: &str, env: &Environment) -> Option<FsEntry> {
-    let key = src.to_ascii_lowercase();
-    if let Some(entry) = env.modified_filesystem.get(&key) {
+    if let Some(entry) = filesystem_entry_for_path(env, src) {
         return Some(entry.clone());
     }
     if let Some(name) = current_dir_basename(src) {

