@@ -3705,7 +3705,7 @@ fn compact_wget_short_output_arg(token: &str) -> Option<&str> {
 }
 
 fn parse_glued_curl_download(text: &str) -> Option<(String, Option<String>)> {
-    let scheme_pos = ["https://", "http://", "ftp://"]
+    let scheme_pos = ["https://", "http://", "ftp://", "file://"]
         .iter()
         .filter_map(|scheme| {
             find_ascii_case_insensitive_from(text, scheme, 0).map(|pos| (pos, scheme.len()))
@@ -3776,7 +3776,7 @@ fn looks_like_curl_url(url: &str) -> bool {
         let Some((scheme, rest)) = url.split_once("://") else {
             return false;
         };
-        matches!(scheme, "http" | "https" | "ftp") && !rest.is_empty()
+        matches!(scheme, "http" | "https" | "ftp" | "file") && !rest.is_empty()
     })
 }
 
@@ -3802,10 +3802,10 @@ fn normalize_curl_text(curl_text: &str) -> std::borrow::Cow<'_, str> {
         out.insert(prefix_len, ' ');
     }
 
-    for needle in ["http://", "https://", "ftp://", "--output", "-o"] {
+    for needle in ["http://", "https://", "ftp://", "file://", "--output", "-o"] {
         let mut search_start = 0;
         while let Some(pos) = find_ascii_case_insensitive_from(&out, needle, search_start) {
-            let is_scheme = matches!(needle, "http://" | "https://" | "ftp://");
+            let is_scheme = matches!(needle, "http://" | "https://" | "ftp://" | "file://");
             if needle == "-o"
                 && pos > 0
                 && !out
@@ -6046,6 +6046,7 @@ fn try_extract_url_from_buf(
         .find("http://")
         .or_else(|| buf.find("https://"))
         .or_else(|| buf.find("ftp://"))
+        .or_else(|| buf.find("file://"))
     {
         let tail = &buf[idx..];
         let end = tail

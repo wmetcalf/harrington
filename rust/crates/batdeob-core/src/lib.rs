@@ -15856,6 +15856,39 @@ $v = 'fTp:\\var-liberal.example\stage.dat'"#,
     }
 
     #[test]
+    fn curl_file_url_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(r#"curl file:///C:/Windows/System32/calc.exe"#, &mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, .. } if src == "file:///C:/Windows/System32/calc.exe"
+                )
+            }),
+            "file curl URL was not surfaced: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn damaged_ps_char_array_join_file_url_extracted() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        let deob = "$u=([[]]@(102,105,108,101,58,47,47,47,67,58,47,84,101,109,112,47,112,97,121,108,111,97,100,46,101,120,101)-join')";
+        crate::deob_scan::scan_ps_char_concat_urls(deob, &mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::DownloadInDeobText { src, line_hint }
+                        if line_hint == "ps-char-concat"
+                            && src == "file:///C:/Temp/payload.exe"
+                )
+            }),
+            "damaged file char-array URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn get_exe_wget_style_input_list_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
