@@ -18339,6 +18339,93 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_array_join_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"var u = Array("https://", "js-array.example", "/stage").join(""); eval(u)"#
+            .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://js-array.example/stage"
+            )
+        });
+        assert!(has, "JS Array(...) join URL missed: {:?}", env.traits);
+    }
+
+    #[test]
+    fn js_array_of_join_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js =
+            br#"var u = Array.of("https://", "js-array-of.example", "/stage").join(""); eval(u)"#
+                .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://js-array-of.example/stage"
+            )
+        });
+        assert!(has, "JS Array.of(...) join URL missed: {:?}", env.traits);
+    }
+
+    #[test]
+    fn js_array_from_array_join_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js =
+            br#"var u = Array.from(["https://", "js-array-from-array.example", "/stage"]).join(""); eval(u)"#
+                .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://js-array-from-array.example/stage"
+            )
+        });
+        assert!(
+            has,
+            "JS Array.from([...]) join URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_array_concat_join_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js =
+            br#"var u = ["https://"].concat(["js-array-concat.example"], ["/stage"]).join(""); eval(u)"#
+                .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://js-array-concat.example/stage"
+            )
+        });
+        assert!(has, "JS array concat/join URL missed: {:?}", env.traits);
+    }
+
+    #[test]
+    fn js_array_join_split_reverse_join_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js =
+            br#"var u = ["egats/", "elpmaxe.ver-rts-yarra-sj", "//:sptth"].join("").split("").reverse().join(""); eval(u)"#
+                .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://js-array-str-rev.example/stage"
+            )
+        });
+        assert!(
+            has,
+            "JS array join split/reverse/join URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_variable_string_concat_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let js = br#"

@@ -102,6 +102,7 @@ pub fn scan_js_payloads(env: &mut Environment) {
         let mut candidates = vec![concat_resolved.clone()];
         candidates.extend(decoded_js_percent_literals(&concat_resolved));
         candidates.extend(decoded_js_fromcharcode_literals(&concat_resolved));
+        candidates.extend(decoded_js_array_join_literals(&concat_resolved));
         candidates.extend(decoded_js_atob_literals(&concat_resolved));
         candidates.extend(decoded_js_textdecoder_literals(&concat_resolved));
         candidates.extend(decoded_js_buffer_literals(&concat_resolved));
@@ -792,6 +793,354 @@ fn collect_js_string_literal_bindings(text: &str) -> std::collections::HashMap<S
         bindings.insert(name.to_string(), value);
     }
     bindings
+}
+
+fn decoded_js_array_join_literals(text: &str) -> Vec<String> {
+    let string_bindings = collect_js_string_literal_bindings(text);
+    let array_bindings = collect_js_string_array_bindings(text, &string_bindings);
+    let mut out = Vec::new();
+
+    let mut cursor = 0usize;
+    while cursor < text.len() {
+        if let Some((array_end, parts)) =
+            parse_js_string_array_arg_at(text, cursor, &string_bindings)
+        {
+            if let Some((join_end, joined)) = consume_js_array_join_chain(
+                text,
+                array_end,
+                parts,
+                &string_bindings,
+                &array_bindings,
+            ) {
+                out.push(joined);
+                if out.len() >= 128 {
+                    break;
+                }
+                cursor = join_end;
+                continue;
+            }
+            cursor = array_end;
+            continue;
+        }
+        cursor += text[cursor..]
+            .chars()
+            .next()
+            .map(char::len_utf8)
+            .unwrap_or(1);
+    }
+
+    let mut cursor = 0usize;
+    while cursor < text.len() {
+        let Some((ident_end, name)) = parse_js_identifier_at(text, cursor) else {
+            cursor += text[cursor..]
+                .chars()
+                .next()
+                .map(char::len_utf8)
+                .unwrap_or(1);
+            continue;
+        };
+        let Some(parts) = array_bindings.get(name) else {
+            cursor = ident_end;
+            continue;
+        };
+        if let Some((join_end, joined)) = consume_js_array_join_chain(
+            text,
+            ident_end,
+            parts.clone(),
+            &string_bindings,
+            &array_bindings,
+        ) {
+            out.push(joined);
+            if out.len() >= 128 {
+                break;
+            }
+            cursor = join_end;
+            continue;
+        }
+        cursor = ident_end;
+    }
+
+    out
+}
+
+fn collect_js_string_array_bindings(
+    text: &str,
+    string_bindings: &std::collections::HashMap<String, String>,
+) -> std::collections::HashMap<String, Vec<String>> {
+    let mut arrays = std::collections::HashMap::new();
+    for caps in JS_STRING_ASSIGN_RE.captures_iter(text) {
+        if arrays.len() >= 256 {
+            break;
+        }
+        let Some(name) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(expr) = caps.get(2).map(|m| m.as_str().trim()) else {
+            continue;
+        };
+        let Some((end, parts)) = parse_js_string_array_arg_at(expr, 0, string_bindings) else {
+            continue;
+        };
+        if skip_ascii_ws(expr, end) != expr.len()
+            || parts.len() > 128
+            || parts.iter().any(|part| part.len() > 8192)
+        {
+            continue;
+        }
+        arrays.insert(name.to_string(), parts);
+    }
+    arrays
+}
+
+fn parse_js_string_array_arg_at(
+    text: &str,
+    start: usize,
+    bindings: &std::collections::HashMap<String, String>,
+) -> Option<(usize, Vec<String>)> {
+    let start = skip_ascii_ws(text, start);
+    let (open, close_byte) = if text.as_bytes().get(start) == Some(&b'[') {
+        (start, b']')
+    } else {
+        let (open, kind) = parse_js_array_constructor_open(text, start)?;
+        if matches!(kind, JsArrayConstructorKind::From) {
+            let arg_start = skip_ascii_ws(text, open + 1);
+            if text.as_bytes().get(arg_start) != Some(&b'[') {
+                return None;
+            }
+            let (array_end, parts) = parse_js_string_array_arg_at(text, arg_start, bindings)?;
+            let close = skip_ascii_ws(text, array_end);
+            if text.as_bytes().get(close) != Some(&b')') {
+                return None;
+            }
+            return Some((close + 1, parts));
+        }
+        (open, b')')
+    };
+
+    let mut parts = Vec::new();
+    let mut cursor = skip_ascii_ws(text, open + 1);
+    if text.as_bytes().get(cursor) == Some(&close_byte) {
+        return Some((cursor + 1, parts));
+    }
+
+    loop {
+        let (part_end, value) = parse_js_string_or_bound_arg(text, cursor, bindings)?;
+        parts.push(value);
+        if parts.len() > 128 {
+            return None;
+        }
+        cursor = skip_ascii_ws(text, part_end);
+        match text.as_bytes().get(cursor) {
+            Some(b',') => cursor = skip_ascii_ws(text, cursor + 1),
+            Some(byte) if *byte == close_byte => return Some((cursor + 1, parts)),
+            _ => return None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum JsArrayConstructorKind {
+    Plain,
+    Of,
+    From,
+}
+
+fn parse_js_array_constructor_open(
+    text: &str,
+    start: usize,
+) -> Option<(usize, JsArrayConstructorKind)> {
+    let mut cursor = start;
+    if js_word_at(text, cursor, "new") {
+        cursor = skip_ascii_ws(text, cursor + "new".len());
+    }
+    if !js_word_at(text, cursor, "Array") {
+        return None;
+    }
+    cursor = skip_ascii_ws(text, cursor + "Array".len());
+    let mut kind = JsArrayConstructorKind::Plain;
+    if text.as_bytes().get(cursor) == Some(&b'.') {
+        let method_start = skip_ascii_ws(text, cursor + 1);
+        if js_word_at(text, method_start, "of") {
+            kind = JsArrayConstructorKind::Of;
+            cursor = skip_ascii_ws(text, method_start + "of".len());
+        } else if js_word_at(text, method_start, "from") {
+            kind = JsArrayConstructorKind::From;
+            cursor = skip_ascii_ws(text, method_start + "from".len());
+        } else {
+            return None;
+        }
+    }
+    let open = skip_ascii_ws(text, cursor);
+    (text.as_bytes().get(open) == Some(&b'(')).then_some((open, kind))
+}
+
+fn js_word_at(text: &str, start: usize, word: &str) -> bool {
+    let Some(end) = start.checked_add(word.len()) else {
+        return false;
+    };
+    if text.get(start..end) != Some(word) {
+        return false;
+    }
+    let prev = text[..start].chars().next_back();
+    let next = text[end..].chars().next();
+    !prev.is_some_and(is_js_ident_char) && !next.is_some_and(is_js_ident_char)
+}
+
+fn is_js_ident_char(ch: char) -> bool {
+    ch == '_' || ch == '$' || ch.is_ascii_alphanumeric()
+}
+
+fn consume_js_array_join_chain(
+    text: &str,
+    mut idx: usize,
+    mut parts: Vec<String>,
+    bindings: &std::collections::HashMap<String, String>,
+    arrays: &std::collections::HashMap<String, Vec<String>>,
+) -> Option<(usize, String)> {
+    if let Some((concat_end, concat_parts)) =
+        consume_js_concat_chain(text, idx, parts.clone(), bindings, arrays)
+    {
+        idx = concat_end;
+        parts = concat_parts;
+    }
+
+    if let Some((join_end, sep)) = consume_js_string_arg_method(text, idx, "join") {
+        let joined = join_js_string_parts(parts, &sep)?;
+        return Some(consume_js_join_string_transforms(
+            text, join_end, joined, bindings,
+        ));
+    }
+
+    let mut after_reverse = consume_js_no_arg_method(text, idx, "reverse")?;
+    parts.reverse();
+    if let Some((concat_end, concat_parts)) =
+        consume_js_concat_chain(text, after_reverse, parts.clone(), bindings, arrays)
+    {
+        after_reverse = concat_end;
+        parts = concat_parts;
+    }
+    let (join_end, sep) = consume_js_string_arg_method(text, after_reverse, "join")?;
+    let joined = join_js_string_parts(parts, &sep)?;
+    Some(consume_js_join_string_transforms(
+        text, join_end, joined, bindings,
+    ))
+}
+
+fn consume_js_concat_chain(
+    text: &str,
+    mut idx: usize,
+    mut parts: Vec<String>,
+    bindings: &std::collections::HashMap<String, String>,
+    arrays: &std::collections::HashMap<String, Vec<String>>,
+) -> Option<(usize, Vec<String>)> {
+    let mut consumed = false;
+    while let Some(open) = consume_js_method_open(text, idx, "concat") {
+        let mut cursor = skip_ascii_ws(text, open + 1);
+        if text.as_bytes().get(cursor) == Some(&b')') {
+            idx = cursor + 1;
+            consumed = true;
+            continue;
+        }
+        loop {
+            if let Some((arg_end, mut arg_parts)) =
+                parse_js_string_array_arg_at(text, cursor, bindings)
+            {
+                parts.append(&mut arg_parts);
+                cursor = skip_ascii_ws(text, arg_end);
+            } else if let Some((arg_end, value)) =
+                parse_js_string_or_bound_arg(text, cursor, bindings)
+            {
+                parts.push(value);
+                cursor = skip_ascii_ws(text, arg_end);
+            } else {
+                let (arg_end, name) = parse_js_identifier_at(text, cursor)?;
+                parts.extend(arrays.get(name)?.iter().cloned());
+                cursor = skip_ascii_ws(text, arg_end);
+            }
+            if parts.len() > 128 {
+                return None;
+            }
+            match text.as_bytes().get(cursor) {
+                Some(b',') => cursor = skip_ascii_ws(text, cursor + 1),
+                Some(b')') => {
+                    idx = cursor + 1;
+                    consumed = true;
+                    break;
+                }
+                _ => return None,
+            }
+        }
+    }
+    consumed.then_some((idx, parts))
+}
+
+fn consume_js_string_arg_method(text: &str, idx: usize, method: &str) -> Option<(usize, String)> {
+    let open = consume_js_method_open(text, idx, method)?;
+    let arg_start = skip_ascii_ws(text, open + 1);
+    let (arg_end, value) = parse_js_string_literal_at(text, arg_start)?;
+    let close = skip_ascii_ws(text, arg_end);
+    (text.as_bytes().get(close) == Some(&b')')).then_some((close + 1, value))
+}
+
+fn join_js_string_parts(parts: Vec<String>, sep: &str) -> Option<String> {
+    if parts.len() > 128 || sep.len() > 64 {
+        return None;
+    }
+    let joined = parts.join(sep);
+    (joined.len() <= 8192).then_some(joined)
+}
+
+fn consume_js_join_string_transforms(
+    text: &str,
+    idx: usize,
+    mut value: String,
+    bindings: &std::collections::HashMap<String, String>,
+) -> (usize, String) {
+    let (mut idx, replaced) = consume_js_array_replace_chain(text, idx, value, bindings);
+    value = replaced;
+    if let Some((reverse_end, reversed)) = consume_js_split_reverse_join_chain(text, idx, &value) {
+        idx = reverse_end;
+        value = reversed;
+    }
+    (idx, value)
+}
+
+fn consume_js_array_replace_chain(
+    text: &str,
+    mut idx: usize,
+    mut value: String,
+    bindings: &std::collections::HashMap<String, String>,
+) -> (usize, String) {
+    for _ in 0..16 {
+        let Some((replace_end, replaced)) =
+            consume_js_replace_call(text, idx, value.clone(), bindings)
+        else {
+            break;
+        };
+        idx = replace_end;
+        value = replaced;
+        if value.len() > 8192 {
+            break;
+        }
+    }
+    (idx, value)
+}
+
+fn consume_js_split_reverse_join_chain(
+    text: &str,
+    idx: usize,
+    value: &str,
+) -> Option<(usize, String)> {
+    let (split_end, sep) = consume_js_string_arg_method(text, idx, "split")?;
+    if !sep.is_empty() {
+        return None;
+    }
+    let reverse_end = consume_js_no_arg_method(text, split_end, "reverse")?;
+    let (join_end, join_sep) = consume_js_string_arg_method(text, reverse_end, "join")?;
+    if !join_sep.is_empty() {
+        return None;
+    }
+    Some((join_end, value.chars().rev().collect()))
 }
 
 fn collect_js_byte_array_literal_byte_bindings(
