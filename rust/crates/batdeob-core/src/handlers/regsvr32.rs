@@ -1,6 +1,6 @@
 //! regsvr32 handler - surfaces remote scriptlet URLs passed via /i.
 
-use super::util::{split_words, strip_outer_quotes, windows_basename};
+use super::util::{filesystem_entry_for_path, split_words, strip_outer_quotes, windows_basename};
 use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
 
@@ -51,8 +51,7 @@ fn regsvr32_scriptlet_url_after(
 }
 
 fn downloaded_src_for_candidate(candidate: &str, env: &Environment) -> Option<String> {
-    let key = candidate.to_ascii_lowercase();
-    if let Some(FsEntry::Download { src }) = env.modified_filesystem.get(&key) {
+    if let Some(FsEntry::Download { src }) = filesystem_entry_for_path(env, candidate) {
         return Some(src.clone());
     }
     if let Some(name) = current_dir_basename(candidate) {

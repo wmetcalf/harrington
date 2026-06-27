@@ -1,6 +1,6 @@
 //! msiexec handler - surfaces direct URL package arguments.
 
-use super::util::{split_words, strip_outer_quotes, windows_basename};
+use super::util::{filesystem_entry_for_path, split_words, strip_outer_quotes, windows_basename};
 use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
 
@@ -133,7 +133,7 @@ fn is_local_package_path(token: &str) -> bool {
 fn downloaded_source_for_path(env: &Environment, path: &str) -> Option<String> {
     let mut key = path.to_ascii_lowercase();
     for _ in 0..8 {
-        match env.modified_filesystem.get(&key) {
+        match filesystem_entry_for_path(env, &key) {
             Some(FsEntry::Download { src }) => return Some(src.clone()),
             Some(FsEntry::Copy { src }) => key = src.to_ascii_lowercase(),
             Some(FsEntry::Directory | FsEntry::Content { .. } | FsEntry::Decoded { .. }) => {

