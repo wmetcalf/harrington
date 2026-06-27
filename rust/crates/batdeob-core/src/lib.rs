@@ -5931,6 +5931,22 @@ echo %MARK%
     }
 
     #[test]
+    fn del_directory_wildcard_removes_tracked_file_for_later_if_not_exist() {
+        let script = br#"echo marker>C:\Temp\gate.txt
+del /f /q C:\Temp\*.*
+if not exist C:\Temp\gate.txt set MARK=deleted
+echo %MARK%
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo deleted"),
+            "del directory wildcard did not update tracked file state for if not exist:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+    }
+
+    #[test]
     fn rmdir_removes_tracked_directory_contents_for_later_if_not_exist() {
         let script = br#"echo marker>C:\Temp\gate.txt
 rmdir /s /q C:\Temp
