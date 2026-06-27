@@ -8090,7 +8090,7 @@ pub fn scan_unc_webdav(deobfuscated: &str, env: &mut Environment) {
         let command = deobfuscated
             .lines()
             .find(|l| l.contains(full_match))
-            .map(|l| snippet_prefix(l, 240))
+            .map(str::to_string)
             .unwrap_or_default();
 
         let http_url = unc_webdav_to_http_url(&host, &port, full_match);
