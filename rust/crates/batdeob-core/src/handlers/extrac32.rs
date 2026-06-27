@@ -10,7 +10,7 @@ pub fn h_extrac32(raw: &str, env: &mut Environment) {
         return;
     };
 
-    push_lolbas(raw, env);
+    push_lolbas("extrac32", raw, env);
     // Self-reference if the src path matches our synthetic input path.
     let self_reference = extrac32_self_reference(&src, env);
     env.traits.push(Trait::Extrac32 {
@@ -27,6 +27,33 @@ pub fn h_extrac32(raw: &str, env: &mut Environment) {
     }
     env.modified_filesystem
         .insert(dst.to_ascii_lowercase(), FsEntry::Copy { src });
+}
+
+pub fn h_expand(raw: &str, env: &mut Environment) {
+    let tokens = split_words(raw);
+    let Some((src, dst)) = parse_expand_paths(&tokens) else {
+        return;
+    };
+
+    push_lolbas("expand", raw, env);
+    let entry = match downloaded_src_for_candidate(&src, env) {
+        Some(src) => FsEntry::Download { src },
+        None => FsEntry::Copy { src },
+    };
+    env.modified_filesystem
+        .insert(dst.to_ascii_lowercase(), entry);
+}
+
+fn downloaded_src_for_candidate(candidate: &str, env: &Environment) -> Option<String> {
+    let key = candidate.to_ascii_lowercase();
+    if let Some(FsEntry::Download { src }) = env.modified_filesystem.get(&key) {
+        return Some(src.clone());
+    }
+    let base = windows_basename(candidate)?.to_ascii_lowercase();
+    match env.modified_filesystem.get(&base)? {
+        FsEntry::Download { src } => Some(src.clone()),
+        _ => None,
+    }
 }
 
 fn parse_extrac32_paths(tokens: &[String]) -> Option<(String, String)> {
@@ -74,6 +101,28 @@ fn parse_extrac32_paths(tokens: &[String]) -> Option<(String, String)> {
     Some((src, dst))
 }
 
+fn parse_expand_paths(tokens: &[String]) -> Option<(String, String)> {
+    let mut positional: Vec<String> = Vec::new();
+    let mut i = 1usize;
+    while i < tokens.len() {
+        let token = strip_outer_quotes(&tokens[i]);
+        let lower = token.to_ascii_lowercase();
+        if lower == "-f" || lower == "/f" {
+            i += 2;
+            continue;
+        }
+        if token.starts_with(['-', '/']) {
+            i += 1;
+            continue;
+        }
+        positional.push(collapse_slashes(token));
+        i += 1;
+    }
+    let src = positional.first()?.clone();
+    let dst = positional.get(1)?.clone();
+    (!dst.is_empty()).then_some((src, dst))
+}
+
 fn is_windows_util_copy(src: &str, dst: &str) -> bool {
     let src_lower = src.to_ascii_lowercase();
     let dst_lower = dst.to_ascii_lowercase();
@@ -96,14 +145,12 @@ fn collapse_slashes(s: &str) -> String {
     out
 }
 
-fn push_lolbas(raw: &str, env: &mut Environment) {
-    if !env
-        .traits
-        .iter()
-        .any(|t| matches!(t, Trait::Lolbas { name, cmd } if name == "extrac32" && cmd == raw))
-    {
+fn push_lolbas(name: &str, raw: &str, env: &mut Environment) {
+    if !env.traits.iter().any(
+        |t| matches!(t, Trait::Lolbas { name: existing, cmd } if existing == name && cmd == raw),
+    ) {
         env.traits.push(Trait::Lolbas {
-            name: "extrac32".to_string(),
+            name: name.to_string(),
             cmd: raw.to_string(),
         });
     }

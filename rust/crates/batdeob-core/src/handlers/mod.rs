@@ -171,6 +171,9 @@ pub fn lookup(name: &str) -> Option<Handler> {
     if base.eq_ignore_ascii_case("extrac32") {
         return Some(extrac32::h_extrac32);
     }
+    if base.eq_ignore_ascii_case("expand") {
+        return Some(extrac32::h_expand);
+    }
     if base.eq_ignore_ascii_case("wscript") {
         return Some(cscript::h_wscript);
     }
