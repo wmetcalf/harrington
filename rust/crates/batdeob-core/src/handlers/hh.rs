@@ -43,6 +43,7 @@ fn html_help_target(tokens: &[String]) -> Option<String> {
 }
 
 fn prior_download_url(path: &str, env: &Environment) -> Option<String> {
+    let path = chm_container_path(path);
     let key = path.to_ascii_lowercase();
     if let Some(FsEntry::Download { src }) = env.modified_filesystem.get(&key) {
         return Some(src.clone());
@@ -61,6 +62,13 @@ fn prior_download_url(path: &str, env: &Environment) -> Option<String> {
             FsEntry::Download { src } => Some(src.clone()),
             _ => None,
         })
+}
+
+fn chm_container_path(path: &str) -> &str {
+    path.split_once("::")
+        .map(|(container, _)| container)
+        .unwrap_or(path)
+        .trim_end_matches(['"', '\'', ')', ']', '}', ';', ','])
 }
 
 fn push_lolbas(raw: &str, env: &mut Environment) {
