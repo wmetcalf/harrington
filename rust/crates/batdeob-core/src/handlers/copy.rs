@@ -219,7 +219,9 @@ fn remove_renamed_source(env: &mut Environment, src: &str, dst: &str) {
     if src.eq_ignore_ascii_case(dst) {
         return;
     }
-    env.modified_filesystem.remove(&src.to_ascii_lowercase());
+    let key = normalize_wildcard_path(src);
+    env.modified_filesystem
+        .retain(|path, _| normalize_wildcard_path(path) != key);
     if let Some(name) = current_dir_basename(src) {
         env.modified_filesystem.remove(&name.to_ascii_lowercase());
     }
