@@ -6482,6 +6482,48 @@ mod misc_handler_tests {
     }
 
     #[test]
+    fn desktopimgdownldr_lockscreenurl_emits_download() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"desktopimgdownldr.exe /lockscreenurl:https://desktopimg.example/a.jpg /eventName:test"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Download { src, dst: None, .. }
+                    if src == "https://desktopimg.example/a.jpg"
+            )
+        });
+        assert!(
+            has,
+            "desktopimgdownldr lockscreen URL not typed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn desktopimgdownldr_spaced_lockscreenurl_emits_download() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"desktopimgdownldr /lockscreenurl "https://desktopimg-spaced.example/a.jpg" /eventName test"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Download { src, dst: None, .. }
+                    if src == "https://desktopimg-spaced.example/a.jpg"
+            )
+        });
+        assert!(
+            has,
+            "desktopimgdownldr spaced lockscreen URL not typed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn rundll32_records_cmd() {
         let mut env = Environment::new(&Config::default());
         interpret_line("rundll32 some.dll,EntryPoint", &mut env);
@@ -11901,6 +11943,33 @@ rundll32.exe scrobj.dll,GenerateTypeLib https://rundll32-scrobj-deob.example/pay
                 .iter()
                 .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
             "certreq attached config URL double-emitted as generic: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn desktopimgdownldr_lockscreenurl_in_deob_text_emits_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        let url = "https://desktopimg-deob.example/a.jpg";
+        crate::deob_scan::scan_deob_text(
+            &format!(r#"desktopimgdownldr.exe /lockscreenurl:{url} /eventName:test"#),
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: None, .. } if src == url
+                )
+            }),
+            "desktopimgdownldr lockscreen URL not typed in deob text: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
+            "desktopimgdownldr URL double-emitted as generic: {:?}",
             env.traits
         );
     }

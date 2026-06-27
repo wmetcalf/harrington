@@ -10,6 +10,7 @@ pub mod cmd;
 pub mod copy;
 pub mod cscript;
 pub mod curl;
+pub mod desktopimgdownldr;
 pub mod echo;
 pub mod extrac32;
 pub mod for_cmd;
@@ -67,6 +68,9 @@ pub fn lookup(name: &str) -> Option<Handler> {
     }
     if base.eq_ignore_ascii_case("certutil") {
         return Some(certutil::h_certutil);
+    }
+    if base.eq_ignore_ascii_case("desktopimgdownldr") {
+        return Some(desktopimgdownldr::h_desktopimgdownldr);
     }
     if base.eq_ignore_ascii_case("call") {
         return Some(call::h_call);
