@@ -241,10 +241,19 @@ fn insert_copied_entry(env: &mut Environment, src: &str, dst: &str, entry: FsEnt
 }
 
 fn insert_copied_directory_entry(env: &mut Environment, src: &str, dst_dir: &str, entry: FsEntry) {
-    if let Some(joined) = copy_directory_destination_path(src, &format!("{dst_dir}\\")) {
+    if let Some(joined) = copy_directory_destination_path(src, &directory_destination(dst_dir)) {
         env.modified_filesystem
             .insert(joined.to_ascii_lowercase(), entry);
     }
+}
+
+fn directory_destination(dst_dir: &str) -> String {
+    let separator = if dst_dir.contains('/') && !dst_dir.contains('\\') {
+        '/'
+    } else {
+        '\\'
+    };
+    format!("{dst_dir}{separator}")
 }
 
 fn copy_directory_destination_path(src: &str, dst: &str) -> Option<String> {

