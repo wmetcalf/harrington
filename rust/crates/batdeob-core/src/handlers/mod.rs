@@ -207,6 +207,9 @@ pub fn lookup(name: &str) -> Option<Handler> {
     if base.eq_ignore_ascii_case("sc") {
         return Some(passthrough::h_sc);
     }
+    if base.eq_ignore_ascii_case("at") {
+        return Some(passthrough::h_at);
+    }
     if base.eq_ignore_ascii_case("ping") {
         return Some(passthrough::h_ping);
     }

