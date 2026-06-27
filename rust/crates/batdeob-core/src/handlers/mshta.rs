@@ -1,5 +1,5 @@
 use super::util::{looks_like_liberal_url, split_words, strip_outer_quotes};
-use crate::env::Environment;
+use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
 use crate::util::find_ascii_case_insensitive_from;
 
@@ -17,7 +17,26 @@ pub fn h_mshta(raw: &str, env: &mut Environment) {
             });
             break;
         }
+        if let Some(url) = downloaded_source_for_path(env, strip_outer_quotes(token)) {
+            env.traits.push(Trait::UrlArgument {
+                cmd: raw.to_string(),
+                url,
+            });
+            break;
+        }
     }
+}
+
+fn downloaded_source_for_path(env: &Environment, path: &str) -> Option<String> {
+    let mut key = path.to_ascii_lowercase();
+    for _ in 0..8 {
+        match env.modified_filesystem.get(&key)? {
+            FsEntry::Download { src } => return Some(src.clone()),
+            FsEntry::Copy { src } => key = src.to_ascii_lowercase(),
+            FsEntry::Content { .. } | FsEntry::Decoded { .. } => return None,
+        }
+    }
+    None
 }
 
 fn mshta_token_url(token: &str) -> Option<String> {
