@@ -29,9 +29,9 @@ static U_ESCAPE_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)String\s*(?:\.\s*fromCharCode|\[\s*["']fromCharCode["']\s*\])\s*\(\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\)"#,
+        r#"(?is)String\s*(?:\.\s*from(?:CharCode|CodePoint)|\[\s*["']from(?:CharCode|CodePoint)["']\s*\])\s*\(\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\)"#,
     )
-        .expect("js fromCharCode")
+        .expect("js fromCharCode/fromCodePoint")
 });
 
 #[allow(clippy::expect_used)]
