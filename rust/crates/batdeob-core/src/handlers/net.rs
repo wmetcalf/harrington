@@ -3,13 +3,11 @@ use crate::handlers::util::{split_words, starts_with_ascii_case_insensitive};
 use crate::traits::{NetUseInfo, Trait};
 
 pub fn h_net(raw: &str, env: &mut Environment) {
-    if !starts_with_ascii_case_insensitive(raw, "net use")
-        || starts_with_ascii_case_insensitive(raw, "net user")
-    {
-        return;
-    }
     let tokens: Vec<String> = split_words(raw);
     if tokens.len() <= 2 {
+        return;
+    }
+    if !tokens[1].eq_ignore_ascii_case("use") {
         return;
     }
     let mut info = NetUseInfo::default();

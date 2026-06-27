@@ -7083,6 +7083,23 @@ mod misc_handler_tests {
     }
 
     #[test]
+    fn net_exe_use_dispatches_to_net_handler() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(r#"net.exe use Z: \\evil\share"#, &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::NetUse { info, .. }
+                    if info.devicename.as_deref() == Some("Z:")
+                        && info.server.as_deref() == Some(r#"\\evil\share"#)
+            )),
+            "net.exe use was not dispatched to net handler: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn copied_net_alias_use_emits_net_use_trait() {
         let report = analyze(
             br#"copy C:\Windows\System32\net.exe C:\Users\Public\nt.tmp
