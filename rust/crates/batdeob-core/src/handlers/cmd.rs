@@ -284,17 +284,10 @@ fn contains_top_level(s: &str, ops: &[char]) -> bool {
     false
 }
 
-static START_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(
-        r#"(?i)^\s*start(?:\.exe)?(?:\s+(?:/(?:min|max|wait|low|normal|abovenormal|belownormal|high|realtime|b|i|w)|"[^"]*"))*\s+(?P<cmd>.+)$"#
-    ).expect("start regex")
-});
-
 pub fn h_start(raw: &str, env: &mut Environment) {
-    let Some(caps) = START_RE.captures(raw) else {
+    let Some(inner_raw) = start_child_command(raw) else {
         return;
     };
-    let inner_raw = caps.name("cmd").map(|m| m.as_str()).unwrap_or("").trim();
     if inner_raw.is_empty() {
         return;
     }
@@ -309,15 +302,109 @@ pub fn h_start(raw: &str, env: &mut Environment) {
             cmd: format!("start {}", inner_raw),
         });
     }
-    // Strip optional quoted title: start "" /flags cmd  OR  start "title" cmd
-    // (defense-in-depth: the regex already consumes quoted titles in the prefix,
-    // but handle any that slip through)
-    let inner = strip_start_runtime_options(strip_leading_quoted_title(inner_raw));
+    let inner = unquote_start_executable(inner_raw);
     if inner.is_empty() {
         return;
     }
     // Recurse: interpret the inner command inline.
-    crate::interp::interpret_line(inner, env);
+    crate::interp::interpret_line(inner.as_ref(), env);
+}
+
+pub(crate) fn start_child_command(raw: &str) -> Option<&str> {
+    let mut rest = strip_start_command(raw)?.trim_start();
+    let mut title_consumed = false;
+    loop {
+        if rest.is_empty() {
+            return None;
+        }
+        let (arg, after_arg) = split_start_arg(rest);
+        if let Some(after_option) = start_option_remainder(arg, after_arg) {
+            rest = after_option.trim_start();
+            continue;
+        }
+        if !title_consumed && arg.starts_with('"') {
+            title_consumed = true;
+            rest = after_arg.trim_start();
+            continue;
+        }
+        return Some(rest);
+    }
+}
+
+fn strip_start_command(raw: &str) -> Option<&str> {
+    let raw = raw.trim_start();
+    let lower = raw.to_ascii_lowercase();
+    for prefix in ["start.exe", "start"] {
+        let Some(rest) = lower.strip_prefix(prefix) else {
+            continue;
+        };
+        if rest.is_empty() {
+            return Some("");
+        }
+        if rest.starts_with(char::is_whitespace) {
+            return Some(&raw[prefix.len()..]);
+        }
+    }
+    None
+}
+
+fn split_start_arg(s: &str) -> (&str, &str) {
+    let s = s.trim_start();
+    if let Some(after_open) = s.strip_prefix('"') {
+        let mut escaped = false;
+        for (idx, ch) in after_open.char_indices() {
+            if ch == '\\' && !escaped {
+                escaped = true;
+                continue;
+            }
+            if ch == '"' && !escaped {
+                let end = idx + 2;
+                return (&s[..end], &s[end..]);
+            }
+            escaped = false;
+        }
+        return (s, "");
+    }
+    let end = s
+        .char_indices()
+        .find_map(|(idx, ch)| ch.is_whitespace().then_some(idx))
+        .unwrap_or(s.len());
+    (&s[..end], &s[end..])
+}
+
+fn start_option_remainder<'a>(arg: &str, after_arg: &'a str) -> Option<&'a str> {
+    let option = arg.trim_matches('"').to_ascii_lowercase();
+    let option = option.strip_prefix(['/', '-'])?;
+    if option == "d" {
+        let (_value, after_value) = split_start_arg(after_arg);
+        return Some(after_value);
+    }
+    if option
+        .strip_prefix('d')
+        .is_some_and(|value| !value.is_empty())
+    {
+        return Some(after_arg);
+    }
+    if matches!(option, "node" | "affinity" | "machine") {
+        let (_value, after_value) = split_start_arg(after_arg);
+        return Some(after_value);
+    }
+    matches!(
+        option,
+        "min"
+            | "max"
+            | "wait"
+            | "low"
+            | "normal"
+            | "abovenormal"
+            | "belownormal"
+            | "high"
+            | "realtime"
+            | "b"
+            | "i"
+            | "w"
+    )
+    .then_some(after_arg)
 }
 
 /// Extract a URL from the start of `s`, stopping at whitespace, quotes,
@@ -356,31 +443,6 @@ fn find_liberal_url_in_start_arg(s: &str) -> Option<String> {
     })
 }
 
-fn strip_start_runtime_options(mut s: &str) -> &str {
-    loop {
-        s = s.trim_start();
-        let lower = s.to_ascii_lowercase();
-        if lower == "/d" || lower.starts_with("/d ") {
-            let after_flag = s.get(2..).unwrap_or("").trim_start();
-            let Some((_, rest)) = split_first_cmd_token(after_flag) else {
-                return "";
-            };
-            s = rest;
-            continue;
-        }
-        if lower.starts_with("/d:") {
-            let after_value = s.get(3..).unwrap_or("");
-            let Some((_, rest)) = split_first_cmd_token(after_value) else {
-                return "";
-            };
-            s = rest;
-            continue;
-        }
-        break;
-    }
-    s
-}
-
 fn split_first_cmd_token(s: &str) -> Option<(&str, &str)> {
     let s = s.trim_start();
     if s.is_empty() {
@@ -400,17 +462,21 @@ fn split_first_cmd_token(s: &str) -> Option<(&str, &str)> {
     Some((&s[..end], &s[end..]))
 }
 
-fn strip_leading_quoted_title(s: &str) -> &str {
-    let s = s.trim_start();
-    if !s.starts_with('"') {
-        return s;
+fn unquote_start_executable(s: &str) -> std::borrow::Cow<'_, str> {
+    let Some((head, rest)) = split_first_cmd_token(s) else {
+        return std::borrow::Cow::Borrowed("");
+    };
+    if head.starts_with('"') && head.ends_with('"') && head.len() >= 2 {
+        let exe = &head[1..head.len() - 1];
+        let rest = rest.trim_start();
+        if rest.is_empty() {
+            std::borrow::Cow::Owned(exe.to_string())
+        } else {
+            std::borrow::Cow::Owned(format!("{exe} {rest}"))
+        }
+    } else {
+        std::borrow::Cow::Borrowed(s)
     }
-    let after_open = &s[1..];
-    if let Some(close_idx) = after_open.find('"') {
-        let after_close = &after_open[close_idx + 1..];
-        return after_close.trim_start();
-    }
-    s
 }
 
 #[cfg(test)]
