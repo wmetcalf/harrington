@@ -751,7 +751,7 @@ fn parse_js_buffer_from_arg_bytes(
     if name != "Buffer" {
         return None;
     }
-    let open = consume_js_method_open(text, buffer_end, "from")?;
+    let open = consume_js_method_or_bound_immediate_call_open(text, buffer_end, "from")?;
     let arg_start = skip_ascii_ws(text, open + 1);
     if let Some((arg_end, bytes)) =
         parse_js_byte_array_literal_bytes(text, arg_start).or_else(|| {
@@ -1321,6 +1321,20 @@ fn consume_js_no_arg_method(text: &str, start: usize, method: &str) -> Option<us
 fn consume_js_method_open(text: &str, start: usize, method: &str) -> Option<usize> {
     let method_end = consume_js_method_member_end(text, start, method)?;
     consume_js_call_open(text, method_end)
+}
+
+fn consume_js_method_or_bound_immediate_call_open(
+    text: &str,
+    start: usize,
+    method: &str,
+) -> Option<usize> {
+    if let Some(open) = consume_js_method_open(text, start, method) {
+        return Some(open);
+    }
+    let method_end = consume_js_method_member_end(text, start, method)?;
+    let bind_open = consume_js_method_open(text, method_end, "bind")?;
+    let bind_close = find_js_call_close(text, bind_open + 1)?;
+    consume_js_call_open(text, bind_close + 1)
 }
 
 fn consume_js_method_member_end(text: &str, start: usize, method: &str) -> Option<usize> {
