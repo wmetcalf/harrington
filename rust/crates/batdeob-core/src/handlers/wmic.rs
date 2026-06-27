@@ -21,7 +21,7 @@ pub fn h_wmic(raw: &str, env: &mut Environment) {
         .name("dq")
         .or_else(|| caps.name("sq"))
         .or_else(|| caps.name("bare"))
-        .map(|m| m.as_str().to_string())
+        .and_then(|m| wmic_create_commandline_argument(m.as_str()))
         .unwrap_or_default();
     if inner.is_empty() {
         return;
@@ -31,4 +31,52 @@ pub fn h_wmic(raw: &str, env: &mut Environment) {
     });
     env.exec_cmd.push(inner);
     env.exec_cmd_delayed.push(false);
+}
+
+fn wmic_create_commandline_argument(tail: &str) -> Option<String> {
+    let tail = tail.trim();
+    if let Some(value_start) = wmic_commandline_value_start(tail) {
+        return wmic_create_commandline_argument(&tail[value_start..]);
+    }
+
+    let mut in_dq = false;
+    let mut in_sq = false;
+    let mut end = tail.len();
+    for (idx, ch) in tail.char_indices() {
+        match ch {
+            '"' if !in_sq => in_dq = !in_dq,
+            '\'' if !in_dq => in_sq = !in_sq,
+            ',' if !in_dq && !in_sq => {
+                end = idx;
+                break;
+            }
+            _ => {}
+        }
+    }
+    let inner = tail[..end].trim().trim_matches(['"', '\'']).trim();
+    (!inner.is_empty()).then(|| inner.to_string())
+}
+
+fn wmic_commandline_value_start(tail: &str) -> Option<usize> {
+    let bytes = tail.as_bytes();
+    let mut i = 0usize;
+    while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
+        i += 1;
+    }
+    let name = tail.get(i..i + "commandline".len())?;
+    if !name.eq_ignore_ascii_case("commandline") {
+        return None;
+    }
+    i += "commandline".len();
+    while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
+        i += 1;
+    }
+    if bytes.get(i) != Some(&b'=') {
+        return None;
+    }
+    i += 1;
+    while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
+        i += 1;
+    }
+    (i < tail.len()).then_some(i)
 }
