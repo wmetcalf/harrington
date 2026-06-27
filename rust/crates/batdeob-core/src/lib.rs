@@ -8961,7 +8961,8 @@ call C:\Temp\original.js"#,
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod replace_tests {
     use crate::analyze;
-    use crate::env::Config;
+    use crate::env::{Config, Environment, FsEntry};
+    use crate::interp::interpret_line;
     use crate::traits::Trait;
 
     #[test]
@@ -8983,6 +8984,33 @@ call C:\Temp\original.js"#,
             }),
             "replace copied generated JS content was not analyzed: {:?}",
             report.traits
+        );
+    }
+
+    #[test]
+    fn replace_current_dir_source_preserves_tracked_content() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "original.js".to_string(),
+            FsEntry::Content {
+                content: b"document.location='https://replace-current-dir.example/payload'"
+                    .to_vec(),
+                append: false,
+            },
+        );
+
+        interpret_line(r"replace .\original.js C:\Temp", &mut env);
+
+        let entry = env
+            .modified_filesystem
+            .get(r"c:\temp\original.js")
+            .expect("C:\\Temp\\original.js missing");
+        assert!(
+            matches!(entry, FsEntry::Content { content, .. }
+                if content.windows(b"replace-current-dir.example".len())
+                    .any(|window| window == b"replace-current-dir.example")),
+            "current-dir replace source did not preserve tracked content: {:?}",
+            entry
         );
     }
 }
@@ -9632,6 +9660,8 @@ mod extrac32_tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod esentutl_tests {
+    use crate::env::{Environment, FsEntry};
+    use crate::interp::interpret_line;
     use crate::traits::Trait;
     use crate::{analyze, Config};
 
@@ -9751,6 +9781,36 @@ call C:\Temp\renamed.js"#,
             }),
             "esentutl explicit source path reused unrelated basename content: {:?}",
             report.traits
+        );
+    }
+
+    #[test]
+    fn esentutl_current_dir_source_preserves_tracked_content() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "original.js".to_string(),
+            FsEntry::Content {
+                content: b"document.location='https://esentutl-current-dir.example/payload'"
+                    .to_vec(),
+                append: false,
+            },
+        );
+
+        interpret_line(
+            r"esentutl /y .\original.js /d C:\Temp\renamed.js /o",
+            &mut env,
+        );
+
+        let entry = env
+            .modified_filesystem
+            .get(r"c:\temp\renamed.js")
+            .expect("renamed.js missing");
+        assert!(
+            matches!(entry, FsEntry::Content { content, .. }
+                if content.windows(b"esentutl-current-dir.example".len())
+                    .any(|window| window == b"esentutl-current-dir.example")),
+            "current-dir esentutl source did not preserve tracked content: {:?}",
+            entry
         );
     }
 }

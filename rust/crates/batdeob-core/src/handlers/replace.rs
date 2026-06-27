@@ -39,10 +39,16 @@ fn copied_entry(src: &str, env: &Environment) -> Option<FsEntry> {
     if let Some(entry) = env.modified_filesystem.get(&key) {
         return Some(entry.clone());
     }
+    if let Some(name) = current_dir_basename(src) {
+        return copied_entry_by_basename(name, env);
+    }
     if src.contains(['\\', '/', ':']) {
         return None;
     }
+    copied_entry_by_basename(src, env)
+}
 
+fn copied_entry_by_basename(src: &str, env: &Environment) -> Option<FsEntry> {
     let basename = windows_basename(src)?;
     env.modified_filesystem
         .iter()
@@ -51,6 +57,12 @@ fn copied_entry(src: &str, env: &Environment) -> Option<FsEntry> {
                 .is_some_and(|tracked| tracked.eq_ignore_ascii_case(basename))
                 .then(|| entry.clone())
         })
+}
+
+fn current_dir_basename(path: &str) -> Option<&str> {
+    path.strip_prefix(r".\")
+        .or_else(|| path.strip_prefix("./"))
+        .and_then(windows_basename)
 }
 
 fn destination_path(src: &str, dst_dir: &str) -> Option<String> {
