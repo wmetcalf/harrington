@@ -332,7 +332,9 @@ pub(crate) fn start_child_command(raw: &str) -> Option<&str> {
 }
 
 fn strip_start_command(raw: &str) -> Option<&str> {
-    let raw = raw.trim_start();
+    let raw = raw.trim_start_matches(|c: char| {
+        c == '@' || c == '(' || c == ';' || c == ',' || c.is_whitespace()
+    });
     let lower = raw.to_ascii_lowercase();
     for prefix in ["start.exe", "start"] {
         let Some(rest) = lower.strip_prefix(prefix) else {
@@ -568,6 +570,18 @@ mod extract_cmd_inner_tests {
     #[test]
     fn cmd_exe_cmd_form_preserves_v_flag_state() {
         assert!(has_v_on_raw("cmd.exe cmd /V:ON /c echo hi"));
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod start_child_tests {
+    use super::start_child_command;
+
+    #[test]
+    fn start_accepts_echo_suppressed_prefix() {
+        let child = start_child_command(r#"@start "" /min cmd.exe /c echo child"#).unwrap();
+        assert_eq!(child, "cmd.exe /c echo child");
     }
 }
 
