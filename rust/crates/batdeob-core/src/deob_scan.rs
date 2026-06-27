@@ -5603,6 +5603,12 @@ fn scan_remote_exec(deobfuscated: &str, env: &mut Environment) {
             "winrm"
         } else if caps
             .get(0)
+            .map(|m| contains_ascii_case_insensitive(m.as_str(), "winrs"))
+            .unwrap_or(false)
+        {
+            "winrs"
+        } else if caps
+            .get(0)
             .map(|m| contains_ascii_case_insensitive(m.as_str(), "invoke-wmi"))
             .unwrap_or(false)
         {
