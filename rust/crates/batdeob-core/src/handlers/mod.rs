@@ -18,6 +18,7 @@ pub mod echo;
 pub mod esentutl;
 pub mod extrac32;
 pub mod for_cmd;
+pub mod ftp;
 pub mod goto;
 pub mod hh;
 pub mod if_cmd;
@@ -102,6 +103,9 @@ pub fn lookup(name: &str) -> Option<Handler> {
     }
     if base.eq_ignore_ascii_case("esentutl") {
         return Some(esentutl::h_esentutl);
+    }
+    if base.eq_ignore_ascii_case("ftp") {
+        return Some(ftp::h_ftp);
     }
     if base.eq_ignore_ascii_case("hh") {
         return Some(hh::h_hh);
