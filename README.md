@@ -49,6 +49,21 @@ samples, deob preview. No files written. **Use this first for triage.**
 batdeob summarize sample.bat
 ```
 
+Optional external LOLBAS enrichment can annotate recognized command lines
+without bundling GPL-licensed LOLBAS data:
+
+```bash
+batdeob summarize sample.bat --lolbas-json /path/to/lolbas.json
+batdeob analyze sample.bat --lolbas-json /path/to/lolbas.json
+batdeob report sample.bat --lolbas-json /path/to/lolbas.json
+batdeob deob sample.bat --json-only --lolbas-json /path/to/lolbas.json
+```
+
+When supplied, JSON output includes `lolbas_matches[]` entries with the
+matched binary name, observed command line, LOLBAS URL, categories, and
+MITRE IDs from that user-provided file. For `analyze --jsonl`, matches
+are emitted as `{"kind":"lolbas_match", ...}` events.
+
 ### `analyze` — full structured JSON
 
 Every trait, every URL, the full deobfuscated text.

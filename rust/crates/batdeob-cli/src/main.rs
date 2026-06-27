@@ -23,6 +23,9 @@ enum Command {
         json: bool,
         #[arg(long)]
         json_only: bool,
+        /// Optional path to external LOLBAS JSON for JSON enrichment.
+        #[arg(long = "lolbas-json")]
+        lolbas_json: Option<PathBuf>,
         #[arg(long, default_value_t = 12)]
         max_depth: u32,
         #[arg(long, default_value_t = 65_536)]
@@ -61,11 +64,17 @@ enum Command {
         max_traits_per_kind: u32,
         #[arg(long)]
         jsonl: bool,
+        /// Optional path to external LOLBAS JSON for JSON enrichment.
+        #[arg(long = "lolbas-json")]
+        lolbas_json: Option<PathBuf>,
     },
     /// Emit a focused JSON IOC report without raw deobfuscated text.
     Summarize {
         /// Input script (`-` for stdin).
         file: String,
+        /// Optional path to external LOLBAS JSON for JSON enrichment.
+        #[arg(long = "lolbas-json")]
+        lolbas_json: Option<PathBuf>,
     },
     /// Emit a comprehensive JSON report: summary fields + full trait list,
     /// plus optionally the JSON-escaped source and deobfuscated text.
@@ -94,6 +103,9 @@ enum Command {
         max_output_line_bytes: u64,
         #[arg(long, default_value_t = 100)]
         max_traits_per_kind: u32,
+        /// Optional path to external LOLBAS JSON for JSON enrichment.
+        #[arg(long = "lolbas-json")]
+        lolbas_json: Option<PathBuf>,
     },
     /// Print version and exit.
     Version,
@@ -163,6 +175,118 @@ fn short_sha(bytes: &[u8]) -> String {
     hex::encode(digest)[..10].to_string()
 }
 
+#[derive(Debug, Clone)]
+struct LolbasEntry {
+    name: String,
+    stem: String,
+    url: Option<String>,
+    categories: Vec<String>,
+    mitre_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct LolbasIndex {
+    entries: Vec<LolbasEntry>,
+}
+
+fn load_lolbas_index(path: &Path) -> Result<LolbasIndex> {
+    const MAX_LOLBAS_JSON_BYTES: u64 = 64 * 1024 * 1024;
+
+    let meta = fs::metadata(path).with_context(|| format!("stat {:?}", path))?;
+    if !meta.file_type().is_file() {
+        anyhow::bail!("{:?}: not a regular file", path);
+    }
+    if meta.len() > MAX_LOLBAS_JSON_BYTES {
+        anyhow::bail!(
+            "{:?}: {} bytes exceeds the {}-byte LOLBAS JSON cap",
+            path,
+            meta.len(),
+            MAX_LOLBAS_JSON_BYTES
+        );
+    }
+    let bytes = fs::read(path).with_context(|| format!("read {:?}", path))?;
+    let value: serde_json::Value =
+        serde_json::from_slice(&bytes).with_context(|| format!("parse {:?}", path))?;
+    let Some(items) = value.as_array() else {
+        anyhow::bail!("{:?}: expected top-level LOLBAS JSON array", path);
+    };
+
+    let mut entries = Vec::new();
+    for item in items {
+        let Some(obj) = item.as_object() else {
+            continue;
+        };
+        let Some(name) = obj.get("Name").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        let stem = program_stem(name);
+        if stem.is_empty() {
+            continue;
+        }
+        let url = obj
+            .get("url")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let mut categories = Vec::new();
+        let mut mitre_ids = Vec::new();
+        if let Some(commands) = obj.get("Commands").and_then(|v| v.as_array()) {
+            for command in commands {
+                if let Some(category) = command.get("Category").and_then(|v| v.as_str()) {
+                    push_unique(&mut categories, category);
+                }
+                if let Some(mitre_id) = command.get("MitreID").and_then(|v| v.as_str()) {
+                    push_unique(&mut mitre_ids, mitre_id);
+                }
+            }
+        }
+        entries.push(LolbasEntry {
+            name: name.to_string(),
+            stem,
+            url,
+            categories,
+            mitre_ids,
+        });
+    }
+
+    Ok(LolbasIndex { entries })
+}
+
+fn push_unique(values: &mut Vec<String>, value: &str) {
+    let value = value.trim();
+    if !value.is_empty() && !values.iter().any(|v| v == value) {
+        values.push(value.to_string());
+    }
+}
+
+fn program_stem(name: &str) -> String {
+    let basename = name
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(name)
+        .trim_matches(['"', '\'']);
+    let lower = basename.to_ascii_lowercase();
+    lower
+        .strip_suffix(".exe")
+        .unwrap_or(lower.as_str())
+        .to_string()
+}
+
+fn command_invokes_program(command: &str, wanted_stem: &str) -> bool {
+    command
+        .split(|ch: char| {
+            !(ch.is_ascii_alphanumeric()
+                || matches!(ch, '.' | '_' | '-' | '\\' | '/' | ':' | '"' | '\''))
+        })
+        .any(|token| {
+            let stem = program_stem(token);
+            !stem.is_empty() && stem == wanted_stem
+        })
+}
+
 /// Safely join `name` onto the canonical `out_dir`, refusing if the result
 /// would escape that directory. All `name`s in this tool are either static
 /// strings ("deobfuscated.bat", "traits.json") or `<sha10>.bat|ps1` — so a
@@ -221,6 +345,7 @@ fn build_summary(
     input_path: &str,
     input: &[u8],
     report: &batdeob_core::Report,
+    lolbas_index: Option<&LolbasIndex>,
 ) -> serde_json::Value {
     use batdeob_core::Trait;
     use std::collections::BTreeMap;
@@ -313,7 +438,7 @@ fn build_summary(
 
     let preview: String = report.deobfuscated.chars().take(1000).collect();
 
-    serde_json::json!({
+    let mut summary = serde_json::json!({
         "input": input_path,
         "input_size": input.len(),
         "deobfuscated_size": report.deobfuscated.len(),
@@ -329,17 +454,106 @@ fn build_summary(
         "windows_util_manipulation": windows_util,
         "self_extract": self_extract,
         "traits_capped": traits_capped,
-    })
+    });
+    if let Some(index) = lolbas_index {
+        if let serde_json::Value::Object(ref mut obj) = summary {
+            obj.insert(
+                "lolbas_matches".to_string(),
+                serde_json::Value::Array(lolbas_matches(report, index)),
+            );
+        }
+    }
+    summary
+}
+
+fn lolbas_matches(report: &batdeob_core::Report, index: &LolbasIndex) -> Vec<serde_json::Value> {
+    let mut matches = Vec::new();
+    let commands = command_lines_for_lolbas(report);
+    for command in commands {
+        for entry in &index.entries {
+            if !command_invokes_program(command, &entry.stem) {
+                continue;
+            }
+            let duplicate = matches.iter().any(|item: &serde_json::Value| {
+                item.get("name").and_then(|v| v.as_str()) == Some(entry.name.as_str())
+                    && item.get("command").and_then(|v| v.as_str()) == Some(command)
+            });
+            if duplicate {
+                continue;
+            }
+            matches.push(serde_json::json!({
+                "name": entry.name,
+                "command": command,
+                "lolbas_url": entry.url,
+                "categories": entry.categories,
+                "mitre_ids": entry.mitre_ids,
+            }));
+        }
+    }
+    matches
+}
+
+fn optional_lolbas_matches(
+    report: &batdeob_core::Report,
+    lolbas_json: Option<&Path>,
+) -> Result<Option<Vec<serde_json::Value>>> {
+    let Some(path) = lolbas_json else {
+        return Ok(None);
+    };
+    let index = load_lolbas_index(path)?;
+    Ok(Some(lolbas_matches(report, &index)))
+}
+
+fn command_lines_for_lolbas(report: &batdeob_core::Report) -> Vec<&str> {
+    use batdeob_core::Trait;
+
+    let mut out = Vec::new();
+    for t in &report.traits {
+        let command = match t {
+            Trait::Download { cmd, .. }
+            | Trait::UrlLaunch { cmd, .. }
+            | Trait::UrlArgument { cmd, .. }
+            | Trait::UrlVariable { cmd, .. }
+            | Trait::RegistryUrl { cmd, .. }
+            | Trait::Lolbas { cmd, .. }
+            | Trait::CommandGrouping { cmd, .. }
+            | Trait::StartWithVar { cmd, .. }
+            | Trait::VarUsed { cmd, .. }
+            | Trait::Mshta { cmd }
+            | Trait::Rundll32 { cmd, .. }
+            | Trait::WindowsUtilManip { cmd, .. }
+            | Trait::ManipulatedExec { cmd, .. }
+            | Trait::AdminCommand { cmd, .. }
+            | Trait::RemoteConnect { cmd, .. }
+            | Trait::NetUse { cmd, .. }
+            | Trait::SetpFileRedirect { cmd, .. }
+            | Trait::UncWebDavC2 { command: cmd, .. }
+            | Trait::Persistence { command: cmd, .. }
+            | Trait::Enumeration { command: cmd, .. } => Some(cmd.as_str()),
+            Trait::WmicProcessCreate { inner_cmd } => Some(inner_cmd.as_str()),
+            Trait::CscriptExec { src } | Trait::WscriptExec { src } => Some(src.as_str()),
+            Trait::SelfElevation { target, .. } => Some(target.as_str()),
+            _ => None,
+        };
+        let Some(command) = command else {
+            continue;
+        };
+        if !command.is_empty() && !out.contains(&command) {
+            out.push(command);
+        }
+    }
+    out
 }
 
 fn run() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Summarize { file } => {
+        Command::Summarize { file, lolbas_json } => {
             let input = read_input(&file)?;
             let cfg = batdeob_core::Config::default();
             let report = batdeob_core::analyze(&input, &cfg);
-            let summary = build_summary(&file, &input, &report);
+            let lolbas_index = lolbas_json.as_deref().map(load_lolbas_index).transpose()?;
+            let summary = build_summary(&file, &input, &report, lolbas_index.as_ref());
             println!("{}", serde_json::to_string_pretty(&summary)?);
         }
         Command::Report {
@@ -354,6 +568,7 @@ fn run() -> Result<()> {
             max_output_bytes,
             max_output_line_bytes,
             max_traits_per_kind,
+            lolbas_json,
         } => {
             let input = read_input(&file)?;
             let cfg = make_config(
@@ -370,7 +585,8 @@ fn run() -> Result<()> {
 
             // Start from the analyst-friendly summary, then layer the full
             // typed trait list and any opt-in raw text on top.
-            let mut value = build_summary(&file, &input, &report);
+            let lolbas_index = lolbas_json.as_deref().map(load_lolbas_index).transpose()?;
+            let mut value = build_summary(&file, &input, &report, lolbas_index.as_ref());
             if let serde_json::Value::Object(ref mut obj) = value {
                 let input_sha256 = {
                     let mut h = Sha256::new();
@@ -411,6 +627,7 @@ fn run() -> Result<()> {
             max_output_line_bytes,
             max_traits_per_kind,
             jsonl,
+            lolbas_json,
         } => {
             let input = read_input(&file)?;
             let cfg = make_config(
@@ -424,6 +641,7 @@ fn run() -> Result<()> {
                 max_traits_per_kind,
             );
             let report = batdeob_core::analyze(&input, &cfg);
+            let lolbas_matches = optional_lolbas_matches(&report, lolbas_json.as_deref())?;
             if jsonl {
                 let meta = serde_json::json!({
                     "kind": "meta",
@@ -436,14 +654,28 @@ fn run() -> Result<()> {
                     let line = serde_json::json!({"kind": "trait", "trait": t});
                     println!("{}", serde_json::to_string(&line)?);
                 }
+                if let Some(matches) = lolbas_matches {
+                    for item in matches {
+                        let line = serde_json::json!({"kind": "lolbas_match", "match": item});
+                        println!("{}", serde_json::to_string(&line)?);
+                    }
+                }
                 let deob_line =
                     serde_json::json!({"kind": "deob", "content": &report.deobfuscated});
                 println!("{}", serde_json::to_string(&deob_line)?);
             } else {
-                let json = serde_json::json!({
+                let mut json = serde_json::json!({
                     "deobfuscated": report.deobfuscated,
                     "traits": report.traits,
                 });
+                if let Some(matches) = lolbas_matches {
+                    if let serde_json::Value::Object(ref mut obj) = json {
+                        obj.insert(
+                            "lolbas_matches".to_string(),
+                            serde_json::Value::Array(matches),
+                        );
+                    }
+                }
                 println!("{}", serde_json::to_string_pretty(&json)?);
             }
         }
@@ -452,6 +684,7 @@ fn run() -> Result<()> {
             out_dir,
             json,
             json_only,
+            lolbas_json,
             max_depth,
             max_iterations,
             max_child_scripts,
@@ -477,10 +710,19 @@ fn run() -> Result<()> {
                 write_report_files(&report, &out_dir)?;
             }
             if json || json_only {
-                let val = serde_json::json!({
+                let lolbas_matches = optional_lolbas_matches(&report, lolbas_json.as_deref())?;
+                let mut val = serde_json::json!({
                     "deobfuscated": report.deobfuscated,
                     "traits": report.traits,
                 });
+                if let Some(matches) = lolbas_matches {
+                    if let serde_json::Value::Object(ref mut obj) = val {
+                        obj.insert(
+                            "lolbas_matches".to_string(),
+                            serde_json::Value::Array(matches),
+                        );
+                    }
+                }
                 println!("{}", serde_json::to_string_pretty(&val)?);
             }
         }
