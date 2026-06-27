@@ -536,15 +536,9 @@ fn decoded_js_atob_literals(text: &str) -> Vec<String> {
             continue;
         }
 
-        let Some(open) = consume_js_call_open(text, name_end) else {
-            cursor = name_end;
-            continue;
-        };
-        let arg_start = skip_ascii_ws(text, open + 1);
-        let Some((arg_end, value)) =
-            parse_js_string_value_arg_at(text, arg_start, &string_bindings)
+        let Some((arg_end, value)) = parse_js_atob_string_arg(text, name_end, &string_bindings)
         else {
-            cursor = open + 1;
+            cursor = name_end;
             continue;
         };
         if value.len() <= 16384 {
@@ -569,6 +563,50 @@ fn decoded_js_atob_literals(text: &str) -> Vec<String> {
         cursor = arg_end;
     }
     out
+}
+
+fn parse_js_atob_string_arg(
+    text: &str,
+    callee_end: usize,
+    bindings: &std::collections::HashMap<String, String>,
+) -> Option<(usize, String)> {
+    if let Some(open) = consume_js_call_open(text, callee_end) {
+        let arg_start = skip_ascii_ws(text, open + 1);
+        return parse_js_string_value_arg_at(text, arg_start, bindings);
+    }
+
+    if let Some(open) = consume_js_method_open(text, callee_end, "call") {
+        let comma = find_js_call_comma(text, skip_ascii_ws(text, open + 1))?;
+        let arg_start = skip_ascii_ws(text, comma + 1);
+        return parse_js_string_value_arg_at(text, arg_start, bindings);
+    }
+
+    if let Some(bind_open) = consume_js_method_open(text, callee_end, "bind") {
+        let bind_close = find_js_call_close(text, bind_open + 1)?;
+        let open = consume_js_call_open(text, bind_close + 1)?;
+        let arg_start = skip_ascii_ws(text, open + 1);
+        return parse_js_string_value_arg_at(text, arg_start, bindings);
+    }
+
+    None
+}
+
+fn find_js_call_comma(text: &str, mut cursor: usize) -> Option<usize> {
+    let limit = cursor.saturating_add(512).min(text.len());
+    while cursor < limit {
+        match text.as_bytes().get(cursor) {
+            Some(b',') => return Some(cursor),
+            Some(b')') => return None,
+            Some(b'\'') | Some(b'"') | Some(b'`') => {
+                let (literal_end, _) = parse_js_string_literal_at(text, cursor)?;
+                cursor = literal_end;
+            }
+            Some(byte) if byte.is_ascii() => cursor += 1,
+            Some(_) => cursor += text[cursor..].chars().next()?.len_utf8(),
+            None => return None,
+        }
+    }
+    None
 }
 
 fn parse_js_string_value_arg_at(
