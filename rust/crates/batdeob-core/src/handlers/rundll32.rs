@@ -1,5 +1,7 @@
 use crate::env::{Environment, FsEntry};
-use crate::handlers::util::{split_words, strip_outer_quotes, windows_basename};
+use crate::handlers::util::{
+    filesystem_entry_for_path, split_words, strip_outer_quotes, windows_basename,
+};
 use crate::traits::Trait;
 
 pub fn h_rundll32(raw: &str, env: &mut Environment) {
@@ -27,7 +29,7 @@ pub fn h_rundll32(raw: &str, env: &mut Environment) {
         matched_lolbas = true;
     }
     let dll = strip_outer_quotes(parts[1].split(',').next().unwrap_or(""));
-    let url = match env.modified_filesystem.get(&dll.to_ascii_lowercase()) {
+    let url = match filesystem_entry_for_path(env, dll) {
         Some(FsEntry::Download { src }) => Some(src.clone()),
         _ => None,
     };
@@ -112,8 +114,7 @@ fn prior_download_after_export(
 }
 
 fn prior_download_url(path: &str, env: &Environment) -> Option<String> {
-    let key = path.to_ascii_lowercase();
-    if let Some(FsEntry::Download { src }) = env.modified_filesystem.get(&key) {
+    if let Some(FsEntry::Download { src }) = filesystem_entry_for_path(env, path) {
         return Some(src.clone());
     }
     if let Some(name) = current_dir_basename(path) {
