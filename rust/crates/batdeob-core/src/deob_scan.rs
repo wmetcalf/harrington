@@ -3490,6 +3490,89 @@ fn scan_copied_rundll32_alias_deob_text(deobfuscated: &str, env: &mut Environmen
     }
 }
 
+fn scan_copied_certutil_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    let mut aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for t in &env.traits {
+        let Trait::WindowsUtilManip { src, dst, .. } = t else {
+            continue;
+        };
+        let Some(src_base) = basename_trimmed(src) else {
+            continue;
+        };
+        if !src_base.eq_ignore_ascii_case("certutil")
+            && !src_base.eq_ignore_ascii_case("certutil.exe")
+        {
+            continue;
+        }
+        let Some(dst_base) = basename_trimmed(dst) else {
+            continue;
+        };
+        aliases.insert(dst_base.to_string());
+        if let Some(stem) = dst_base.strip_suffix(".exe") {
+            aliases.insert(stem.to_string());
+        }
+    }
+    if aliases.is_empty() {
+        return;
+    }
+
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        for (idx, token) in tokens.iter().enumerate() {
+            if !copied_alias_matches_command_ci(&aliases, token) {
+                continue;
+            }
+            if !tokens[idx + 1..]
+                .iter()
+                .any(|arg| is_certutil_operation_flag(arg))
+            {
+                continue;
+            }
+            let target = strip_outer_quotes(token).to_string();
+            if env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ManipulatedExec {
+                        cmd: existing_cmd,
+                        target: existing_target
+                    } if existing_cmd == line && existing_target.eq_ignore_ascii_case(&target)
+                )
+            }) {
+                continue;
+            }
+            env.traits.push(Trait::ManipulatedExec {
+                cmd: line.to_string(),
+                target,
+            });
+            let replay = if let Some(start) = line.find(token) {
+                let rest = line[start + token.len()..].trim_start();
+                if rest.is_empty() {
+                    "certutil.exe".to_string()
+                } else {
+                    format!("certutil.exe {rest}")
+                }
+            } else {
+                format!("certutil.exe {}", tokens[idx + 1..].join(" "))
+            };
+            crate::handlers::certutil::h_certutil(&replay, env);
+        }
+    }
+}
+
+fn is_certutil_operation_flag(token: &str) -> bool {
+    matches!(
+        strip_outer_quotes(token).to_ascii_lowercase().as_str(),
+        "-decode"
+            | "/decode"
+            | "-decodehex"
+            | "/decodehex"
+            | "-urlcache"
+            | "/urlcache"
+            | "-verifyctl"
+            | "/verifyctl"
+    )
+}
+
 fn url_basename(url: &str) -> Option<String> {
     let path = url
         .split_once("://")
@@ -5533,6 +5616,7 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     scan_copied_net_alias_deob_text(deobfuscated, env);
     scan_copied_mshta_alias_deob_text(deobfuscated, env);
     scan_copied_rundll32_alias_deob_text(deobfuscated, env);
+    scan_copied_certutil_alias_deob_text(deobfuscated, env);
     scan_curl_style_compact_flags_deob_text(deobfuscated, env);
     scan_echoed_curl_deob_text(deobfuscated, env);
     scan_curl_redirect_deob_text(deobfuscated, env);

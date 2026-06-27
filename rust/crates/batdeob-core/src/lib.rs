@@ -15387,6 +15387,41 @@ C:\Users\Public\cu.tmp -K curl.cfg
     }
 
     #[test]
+    fn copied_certutil_alias_in_deob_text_emits_decode_trait() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::WindowsUtilManip {
+            cmd: "copy c:\\windows\\system32\\certutil.exe ghf.pif".to_string(),
+            src: "c:\\windows\\system32\\certutil.exe".to_string(),
+            dst: "ghf.pif".to_string(),
+        });
+        crate::deob_scan::scan_deob_text(
+            r#"cmd /C ghf.pif -decodehex -f "%~f0" "C:\Users\Public\HEW.3GP" 9"#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ManipulatedExec { target, .. } if target == "ghf.pif"
+                )
+            }),
+            "copied certutil alias did not emit manipulated execution: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::CertutilDecode { src, dst, .. }
+                        if src == "%~f0" && dst == r#"C:\Users\Public\HEW.3GP"#
+                )
+            }),
+            "copied certutil alias did not replay through certutil handler: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn curl_style_compact_flags_exe_in_deob_text_emits_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
