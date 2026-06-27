@@ -6,8 +6,9 @@ use regex::Regex;
 
 // Regex is a compile-time constant; .expect on a literal panic-at-startup is a developer error.
 #[allow(clippy::expect_used)]
-static IF_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?i)^\s*if\s+(?P<neg>not\s+)?(?P<rest>.*)$").expect("if regex"));
+static IF_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)^[\s@(;,]*if\s+(?P<neg>not\s+)?(?P<rest>.*)$").expect("if regex")
+});
 
 pub fn h_if(raw: &str, env: &mut Environment) {
     let Some(caps) = IF_RE.captures(raw) else {
@@ -357,7 +358,8 @@ fn dispatch_if_branch(body: &str, env: &mut Environment) {
 
 #[cfg(test)]
 mod tests {
-    use super::{next_token, strip_kw};
+    use super::{h_if, next_token, strip_kw};
+    use crate::env::Environment;
 
     #[test]
     fn next_token_keeps_quoted_unicode_content_intact() {
@@ -369,5 +371,14 @@ mod tests {
     #[test]
     fn strip_kw_rejects_non_ascii_without_panic() {
         assert_eq!(strip_kw("óó", "if "), None);
+    }
+
+    #[test]
+    fn if_accepts_echo_suppressed_prefix() {
+        let mut env = Environment::default();
+
+        h_if(r#"@if "a"=="b" echo match"#, &mut env);
+
+        assert!(env.suppress_until_eol);
     }
 }
