@@ -276,15 +276,63 @@ fn program_stem(name: &str) -> String {
 }
 
 fn command_invokes_program(command: &str, wanted_stem: &str) -> bool {
-    command
+    let tokens: Vec<&str> = command
         .split(|ch: char| {
             !(ch.is_ascii_alphanumeric()
                 || matches!(ch, '.' | '_' | '-' | '\\' | '/' | ':' | '"' | '\''))
         })
-        .any(|token| {
-            let stem = program_stem(token);
-            !stem.is_empty() && stem == wanted_stem
-        })
+        .filter(|token| !token.is_empty())
+        .collect();
+    tokens.iter().enumerate().any(|(idx, token)| {
+        if idx > 0 && lolbas_non_exec_value_option(tokens[idx - 1]) {
+            return false;
+        }
+        if lolbas_attached_non_exec_value_option(token) {
+            return false;
+        }
+        let stem = program_stem(token);
+        !stem.is_empty() && stem == wanted_stem
+    })
+}
+
+fn lolbas_non_exec_value_option(token: &str) -> bool {
+    matches!(
+        token
+            .trim_matches(['"', '\''])
+            .to_ascii_lowercase()
+            .as_str(),
+        "-o" | "/o"
+            | "--output"
+            | "--output-document"
+            | "-output"
+            | "/out"
+            | "-out"
+            | "-outfile"
+            | "/outfile"
+            | "-outf"
+            | "/outf"
+    )
+}
+
+fn lolbas_attached_non_exec_value_option(token: &str) -> bool {
+    let lower = token.trim_matches(['"', '\'']).to_ascii_lowercase();
+    lower.starts_with("--output=")
+        || lower.starts_with("--output-document=")
+        || lower.starts_with("-output:")
+        || lower.starts_with("-output=")
+        || lower.starts_with("/out:")
+        || lower.starts_with("/out=")
+        || lower.starts_with("-outfile:")
+        || lower.starts_with("-outfile=")
+        || lower.starts_with("/outfile:")
+        || lower.starts_with("/outfile=")
+        || lower.starts_with("-outf:")
+        || lower.starts_with("-outf=")
+        || lower.starts_with("/outf:")
+        || lower.starts_with("/outf=")
+        || (lower.len() > 2
+            && (lower.starts_with("-o") || lower.starts_with("/o"))
+            && lower[2..].contains(['\\', '/']))
 }
 
 /// Safely join `name` onto the canonical `out_dir`, refusing if the result
