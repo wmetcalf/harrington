@@ -8796,6 +8796,22 @@ at 23:59 cmd.exe /c curl -K curl.cfg -o payload.exe"#;
             report.traits
         );
     }
+
+    #[test]
+    fn remote_at_scheduled_cmd_emits_lateral_movement() {
+        let script = br#"at \\target.example 23:59 cmd.exe /c echo remote"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::LateralMovement { tool, target_host }
+                    if tool == "at" && target_host == "target.example"
+            )),
+            "remote at scheduled command lateral movement missing: {:?}",
+            report.traits
+        );
+    }
 }
 
 #[cfg(test)]
