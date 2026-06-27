@@ -15352,6 +15352,41 @@ C:\Users\Public\cu.tmp -K curl.cfg
     }
 
     #[test]
+    fn copied_rundll32_alias_in_deob_text_emits_rundll32_trait() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::WindowsUtilManip {
+            cmd: "copy c:\\windows\\system32\\rundll32.exe rdha.pif".to_string(),
+            src: "c:\\windows\\system32\\rundll32.exe".to_string(),
+            dst: "rdha.pif".to_string(),
+        });
+        crate::deob_scan::scan_deob_text(
+            r#"rdha.pif zipfldr.dll,RouteTheCall C:\Users\Public\ANYDESK.PIF"#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ManipulatedExec { target, .. } if target == "rdha.pif"
+                )
+            }),
+            "copied rundll32 alias did not emit manipulated execution: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Rundll32 { cmd, .. }
+                        if cmd == r#"rundll32.exe zipfldr.dll,RouteTheCall C:\Users\Public\ANYDESK.PIF"#
+                )
+            }),
+            "copied rundll32 alias did not replay through rundll32 handler: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn curl_style_compact_flags_exe_in_deob_text_emits_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
