@@ -78,6 +78,7 @@ fn rundll32_url_launch_export(token: &str) -> bool {
         || lower.contains("url.dll,openurl")
         || lower.contains("ieframe.dll,openurl")
         || lower.contains("shdocvw.dll,openurl")
+        || lower.contains("shell32.dll,shellexec_rundll")
         || lower.contains("photoviewer.dll,imageview_fullscreen")
         || lower.contains("shimgvw.dll,imageview_fullscreen")
 }

