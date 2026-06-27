@@ -770,7 +770,7 @@ pub fn h_sc(raw: &str, env: &mut Environment) {
     }
 }
 
-fn sc_service_binpath(raw: &str) -> Option<(String, String)> {
+pub(crate) fn sc_service_binpath(raw: &str) -> Option<(String, String)> {
     let (subcommand, service_name) = sc_subcommand_and_service(raw)?;
     if !matches!(subcommand.as_str(), "create" | "config") {
         return None;
@@ -779,7 +779,7 @@ fn sc_service_binpath(raw: &str) -> Option<(String, String)> {
     Some((service_name, bin_path))
 }
 
-fn sc_failure_command(raw: &str) -> Option<(String, String)> {
+pub(crate) fn sc_failure_command(raw: &str) -> Option<(String, String)> {
     let (subcommand, service_name) = sc_subcommand_and_service(raw)?;
     if subcommand != "failure" {
         return None;
@@ -804,13 +804,22 @@ fn sc_subcommand_and_service(raw: &str) -> Option<(String, String)> {
     {
         return None;
     }
-    let subcommand = tokens.get(1).map(|token| {
+    let subcommand_index = if tokens.get(1).is_some_and(|token| {
+        strip_outer_quotes(token)
+            .trim_matches('"')
+            .starts_with(r"\\")
+    }) {
+        2
+    } else {
+        1
+    };
+    let subcommand = tokens.get(subcommand_index).map(|token| {
         strip_outer_quotes(token)
             .trim_matches('"')
             .to_ascii_lowercase()
     })?;
     let service_name = tokens
-        .get(2)
+        .get(subcommand_index + 1)
         .map(|token| strip_outer_quotes(token).to_string())
         .filter(|token| !token.is_empty())?;
     Some((subcommand, service_name))
@@ -1036,5 +1045,27 @@ mod tests {
 
         assert_eq!(host, "target.example");
         assert_eq!(command, "powershell.exe -nop");
+    }
+
+    #[test]
+    fn sc_remote_create_binpath_accepts_host_before_subcommand() {
+        let (service_name, bin_path) = sc_service_binpath(
+            r#"sc \\target.example create UpdateSvc binPath= "cmd.exe /c echo hi""#,
+        )
+        .expect("remote sc create binPath should parse");
+
+        assert_eq!(service_name, "UpdateSvc");
+        assert_eq!(bin_path, "cmd.exe /c echo hi");
+    }
+
+    #[test]
+    fn sc_remote_failure_command_accepts_host_before_subcommand() {
+        let (service_name, command) = sc_failure_command(
+            r#"sc.exe \\target.example failure UpdateSvc command= "cmd.exe /c echo hi""#,
+        )
+        .expect("remote sc failure command should parse");
+
+        assert_eq!(service_name, "UpdateSvc");
+        assert_eq!(command, "cmd.exe /c echo hi");
     }
 }

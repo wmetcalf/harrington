@@ -113,6 +113,20 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
         }
     }
 
+    if let Some((_service_name, command)) = crate::handlers::passthrough::sc_service_binpath(raw)
+        .or_else(|| crate::handlers::passthrough::sc_failure_command(raw))
+    {
+        if command.contains('!')
+            && (crate::handlers::cmd::extract_cmd_inner(&command).is_some()
+                || crate::handlers::cmd::start_child_command(&command).is_some()
+                || crate::handlers::call::call_body(&command).is_some())
+        {
+            crate::handlers::passthrough::h_sc(raw, env);
+            result.consumed = true;
+            return result;
+        }
+    }
+
     result
 }
 
