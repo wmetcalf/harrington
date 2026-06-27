@@ -3992,7 +3992,10 @@ fn parse_curl_like_download(tokens: &[String]) -> Option<(String, Option<String>
     while i < tokens.len() {
         let raw_token = tokens[i].trim_matches(['"', '\'', ')']);
         let token = clean_command_url_token(raw_token);
-        if raw_token == "-O" || raw_token.eq_ignore_ascii_case("--remote-name") {
+        if raw_token == "-O"
+            || raw_token.eq_ignore_ascii_case("--remote-name")
+            || raw_token.eq_ignore_ascii_case("--remote-name-all")
+        {
             remote_name = true;
             i += 1;
             continue;
@@ -9422,6 +9425,19 @@ mod curl_redirect_parser_tests {
             parse_curl_like_download(&tokens),
             Some((
                 "https://curl-remote.example/payload.bin".to_string(),
+                Some("payload.bin".to_string())
+            ))
+        );
+    }
+
+    #[test]
+    fn parse_curl_like_download_accepts_remote_name_all() {
+        let tokens =
+            split_words(r#"curl --remote-name-all https://curl-remote-all.example/payload.bin"#);
+        assert_eq!(
+            parse_curl_like_download(&tokens),
+            Some((
+                "https://curl-remote-all.example/payload.bin".to_string(),
                 Some("payload.bin".to_string())
             ))
         );

