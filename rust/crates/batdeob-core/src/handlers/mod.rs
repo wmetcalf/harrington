@@ -4,6 +4,7 @@ use crate::env::Environment;
 
 pub mod bitsadmin;
 pub mod call;
+pub mod certreq;
 pub mod certutil;
 pub mod cmd;
 pub mod copy;
@@ -60,6 +61,9 @@ pub fn lookup(name: &str) -> Option<Handler> {
     }
     if base.eq_ignore_ascii_case("rundll32") {
         return Some(rundll32::h_rundll32);
+    }
+    if base.eq_ignore_ascii_case("certreq") {
+        return Some(certreq::h_certreq);
     }
     if base.eq_ignore_ascii_case("certutil") {
         return Some(certutil::h_certutil);
