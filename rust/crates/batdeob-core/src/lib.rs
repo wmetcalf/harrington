@@ -8257,6 +8257,32 @@ mod uac_bypass_tests {
             env.traits
         );
     }
+
+    #[test]
+    fn auto_elevate_direct_commands_emit_uac_bypass_trait() {
+        let mut env = Environment::new(&Config::default());
+
+        interpret_line("fodhelper.exe", &mut env);
+        interpret_line(r#"C:\Windows\System32\eventvwr.exe"#, &mut env);
+        interpret_line(r#"C:\Windows\System32\ComputerDefaults.ExE"#, &mut env);
+
+        for expected in ["fodhelper", "eventvwr", "computerdefaults"] {
+            assert!(
+                env.traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::UacBypass { technique } if technique == expected)),
+                "auto-elevate command {expected} was not surfaced: {:?}",
+                env.traits
+            );
+            assert!(
+                env.traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::Lolbas { name, .. } if name == expected)),
+                "auto-elevate command {expected} was not marked as LOLBAS: {:?}",
+                env.traits
+            );
+        }
+    }
 }
 
 #[cfg(test)]

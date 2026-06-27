@@ -2,6 +2,7 @@
 
 use crate::env::Environment;
 
+pub mod auto_elevate;
 pub mod bitsadmin;
 pub mod call;
 pub mod certoc;
@@ -45,6 +46,18 @@ pub fn lookup(name: &str) -> Option<Handler> {
     // detect explicitly rather than mis-dispatched to a parser that won't
     // understand it.
     let base = basename_no_ext(name);
+    if [
+        "computerdefaults",
+        "eventvwr",
+        "fodhelper",
+        "sdclt",
+        "wsreset",
+    ]
+    .iter()
+    .any(|launcher| base.eq_ignore_ascii_case(launcher))
+    {
+        return Some(auto_elevate::h_auto_elevate);
+    }
     if base.eq_ignore_ascii_case("cmd") {
         return Some(cmd::h_cmd);
     }
