@@ -1,0 +1,95 @@
+//! esentutl.exe handler - tracks `/y SRC /d DST` copy-style LOLBAS use.
+
+use crate::env::{Environment, FsEntry};
+use crate::handlers::util::{attached_flag_value, split_words, strip_outer_quotes};
+use crate::traits::Trait;
+
+pub fn h_esentutl(raw: &str, env: &mut Environment) {
+    let tokens = split_words(raw);
+    let Some((src, dst)) = parse_esentutl_copy(&tokens) else {
+        return;
+    };
+
+    push_lolbas(raw, env);
+    if is_windows_util_copy(&src, &dst) {
+        env.traits.push(Trait::WindowsUtilManip {
+            cmd: raw.to_string(),
+            src: src.clone(),
+            dst: dst.clone(),
+        });
+    }
+    env.modified_filesystem
+        .insert(dst.to_ascii_lowercase(), FsEntry::Copy { src });
+}
+
+fn parse_esentutl_copy(tokens: &[String]) -> Option<(String, String)> {
+    let mut src: Option<String> = None;
+    let mut dst: Option<String> = None;
+    let mut i = 1usize;
+    while i < tokens.len() {
+        let token = strip_outer_quotes(&tokens[i]);
+        if token.eq_ignore_ascii_case("/y") || token.eq_ignore_ascii_case("-y") {
+            src = tokens
+                .get(i + 1)
+                .map(|value| normalize_path_arg(strip_outer_quotes(value)));
+            i += 2;
+            continue;
+        }
+        if token.eq_ignore_ascii_case("/d") || token.eq_ignore_ascii_case("-d") {
+            dst = tokens
+                .get(i + 1)
+                .map(|value| normalize_path_arg(strip_outer_quotes(value)));
+            i += 2;
+            continue;
+        }
+        if let Some(value) = attached_flag_value(token, &["/y", "-y"]) {
+            src = Some(normalize_path_arg(value));
+        } else if let Some(value) = attached_flag_value(token, &["/d", "-d"]) {
+            dst = Some(normalize_path_arg(value));
+        }
+        i += 1;
+    }
+    let src = src.filter(|value| !value.is_empty())?;
+    let dst = dst.filter(|value| !value.is_empty())?;
+    Some((src, dst))
+}
+
+fn normalize_path_arg(value: &str) -> String {
+    collapse_slashes(strip_outer_quotes(value))
+}
+
+fn is_windows_util_copy(src: &str, dst: &str) -> bool {
+    let src_lower = src.to_ascii_lowercase();
+    let dst_lower = dst.to_ascii_lowercase();
+    (src_lower.starts_with("c:\\windows\\system32")
+        || src_lower.starts_with("c:\\windows\\syswow64"))
+        && !(dst_lower.starts_with("c:\\windows\\system32")
+            || dst_lower.starts_with("c:\\windows\\syswow64"))
+}
+
+fn collapse_slashes(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut previous = '\0';
+    for c in s.chars() {
+        if c == '\\' && previous == '\\' {
+            continue;
+        }
+        out.push(c);
+        previous = c;
+    }
+    out
+}
+
+fn push_lolbas(raw: &str, env: &mut Environment) {
+    if !env.traits.iter().any(|t| {
+        matches!(
+            t,
+            Trait::Lolbas { name, cmd } if name == "esentutl" && cmd == raw
+        )
+    }) {
+        env.traits.push(Trait::Lolbas {
+            name: "esentutl".to_string(),
+            cmd: raw.to_string(),
+        });
+    }
+}

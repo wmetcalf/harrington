@@ -7983,6 +7983,43 @@ mod extrac32_tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod esentutl_tests {
+    use crate::traits::Trait;
+    use crate::{analyze, Config};
+
+    #[test]
+    fn esentutl_copy_windows_util_emits_manipulation_trait() {
+        let report = analyze(
+            br#"esentutl /y C:\Windows\System32\cmd.exe /d C:\Users\Public\alpha.pif /o"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Lolbas { name, .. } if name == "esentutl"
+                )
+            }),
+            "esentutl LOLBAS use was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::WindowsUtilManip { src, dst, .. }
+                        if src == r#"C:\Windows\System32\cmd.exe"#
+                            && dst == r#"C:\Users\Public\alpha.pif"#
+                )
+            }),
+            "esentutl copied Windows utility was not surfaced: {:?}",
+            report.traits
+        );
+    }
+}
+
+#[cfg(test)]
 mod tokenizer_misc_tests {
     use crate::interp::command_name;
 
