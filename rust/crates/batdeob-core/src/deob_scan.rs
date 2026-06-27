@@ -2883,7 +2883,9 @@ fn ps_url_launch_attached_url_token(token: &str) -> Option<&str> {
 
 fn msiexec_attached_url_token(token: &str) -> Option<&str> {
     let lower = token.to_ascii_lowercase();
-    for prefix in ["/i", "-i", "/package", "-package", "/update", "-update"] {
+    for prefix in [
+        "/i", "-i", "/a", "-a", "/package", "-package", "/update", "-update",
+    ] {
         let Some(rest) = lower.strip_prefix(prefix) else {
             continue;
         };

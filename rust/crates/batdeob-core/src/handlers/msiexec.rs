@@ -6,7 +6,7 @@ use crate::traits::Trait;
 
 pub fn h_msiexec(raw: &str, env: &mut Environment) {
     let tokens = split_words(raw);
-    let Some(url) = tokens
+    if let Some(url) = tokens
         .iter()
         .skip(1)
         .filter_map(|token| {
@@ -14,14 +14,23 @@ pub fn h_msiexec(raw: &str, env: &mut Environment) {
             msiexec_url_from_token(token)
         })
         .next()
-    else {
+    {
+        env.traits.push(Trait::UrlArgument {
+            cmd: raw.to_string(),
+            url,
+        });
+        push_lolbas(raw, env);
         return;
-    };
+    }
 
-    env.traits.push(Trait::UrlArgument {
-        cmd: raw.to_string(),
-        url,
-    });
+    if tokens
+        .iter()
+        .skip(1)
+        .map(|token| strip_outer_quotes(token.trim()))
+        .any(msiexec_administrative_install_token)
+    {
+        push_lolbas(raw, env);
+    }
 }
 
 fn trim_url_suffix(url: &str) -> &str {
@@ -38,7 +47,9 @@ fn msiexec_url_from_token(token: &str) -> Option<String> {
 
     let token = token.trim();
     let lower = token.to_ascii_lowercase();
-    for prefix in ["/i", "-i", "/package", "-package", "/update", "-update"] {
+    for prefix in [
+        "/i", "-i", "/a", "-a", "/package", "-package", "/update", "-update",
+    ] {
         let Some(rest) = lower.strip_prefix(prefix) else {
             continue;
         };
@@ -55,4 +66,31 @@ fn msiexec_url_from_token(token: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn msiexec_administrative_install_token(token: &str) -> bool {
+    let lower = token.to_ascii_lowercase();
+    lower == "/a"
+        || lower == "-a"
+        || lower
+            .strip_prefix("/a")
+            .or_else(|| lower.strip_prefix("-a"))
+            .is_some_and(|rest| {
+                rest.starts_with([':', '='])
+                    || crate::deob_scan::normalize_liberal_url_token(rest).is_some()
+                    || crate::deob_scan::normalize_schemeless_domain_path_token(rest).is_some()
+            })
+}
+
+fn push_lolbas(raw: &str, env: &mut Environment) {
+    if !env
+        .traits
+        .iter()
+        .any(|t| matches!(t, Trait::Lolbas { name, cmd } if name == "msiexec" && cmd == raw))
+    {
+        env.traits.push(Trait::Lolbas {
+            name: "msiexec".to_string(),
+            cmd: raw.to_string(),
+        });
+    }
 }
