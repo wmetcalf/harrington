@@ -8,6 +8,7 @@ pub mod certoc;
 pub mod certreq;
 pub mod certutil;
 pub mod cmd;
+pub mod cmstp;
 pub mod copy;
 pub mod cscript;
 pub mod curl;
@@ -75,6 +76,9 @@ pub fn lookup(name: &str) -> Option<Handler> {
     }
     if base.eq_ignore_ascii_case("certutil") {
         return Some(certutil::h_certutil);
+    }
+    if base.eq_ignore_ascii_case("cmstp") {
+        return Some(cmstp::h_cmstp);
     }
     if base.eq_ignore_ascii_case("desktopimgdownldr") {
         return Some(desktopimgdownldr::h_desktopimgdownldr);

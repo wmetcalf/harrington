@@ -8206,6 +8206,37 @@ mod esentutl_tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod uac_bypass_tests {
+    use crate::env::{Config, Environment};
+    use crate::interp::interpret_line;
+    use crate::traits::Trait;
+
+    #[test]
+    fn cmstp_au_direct_command_emits_uac_bypass_trait() {
+        let raw = r#"cmstp.exe /s /au C:\Users\Public\stage.inf"#;
+        let mut env = Environment::new(&Config::default());
+
+        interpret_line(raw, &mut env);
+
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::UacBypass { technique } if technique == "cmstp-au")),
+            "cmstp /au direct command was not surfaced: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::Lolbas { name, cmd } if name == "cmstp" && cmd == raw)),
+            "cmstp /au direct command was not marked as LOLBAS: {:?}",
+            env.traits
+        );
+    }
+}
+
+#[cfg(test)]
 mod tokenizer_misc_tests {
     use crate::interp::command_name;
 
