@@ -6515,6 +6515,30 @@ mod misc_handler_tests {
     }
 
     #[test]
+    fn browser_url_launchers_emit_direct_url_launch() {
+        let mut env = Environment::new(&Config::default());
+
+        interpret_line(
+            "explorer.exe https://explorer-direct.example/privacy/",
+            &mut env,
+        );
+        interpret_line("msedge browser-direct.example/lure.pdf", &mut env);
+
+        for expected in [
+            "https://explorer-direct.example/privacy/",
+            "http://browser-direct.example/lure.pdf",
+        ] {
+            assert!(
+                env.traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::UrlLaunch { url, .. } if url == expected)),
+                "missing browser UrlLaunch for {expected}: {:?}",
+                env.traits
+            );
+        }
+    }
+
+    #[test]
     fn rundll32_fileprotocolhandler_schemeless_url_emits_url_launch() {
         let mut env = Environment::new(&Config::default());
         interpret_line(

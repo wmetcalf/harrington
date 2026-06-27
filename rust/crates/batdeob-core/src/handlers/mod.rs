@@ -28,6 +28,7 @@ pub mod regsvr32;
 pub mod rundll32;
 pub mod set;
 pub mod setlocal;
+pub mod url_launch;
 pub(crate) mod util;
 pub mod wget;
 pub mod wmic;
@@ -83,6 +84,14 @@ pub fn lookup(name: &str) -> Option<Handler> {
     }
     if base.eq_ignore_ascii_case("hh") {
         return Some(hh::h_hh);
+    }
+    if [
+        "brave", "chrome", "explorer", "firefox", "iexplore", "msedge", "opera",
+    ]
+    .iter()
+    .any(|launcher| base.eq_ignore_ascii_case(launcher))
+    {
+        return Some(url_launch::h_url_launch);
     }
     if base.eq_ignore_ascii_case("call") {
         return Some(call::h_call);
