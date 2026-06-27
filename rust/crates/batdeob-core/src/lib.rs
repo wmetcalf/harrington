@@ -5956,6 +5956,21 @@ echo %MARK%
     }
 
     #[test]
+    fn if_exist_slash_equivalent_path_resolves_tracked_file() {
+        let script = br#"echo marker>C:\Temp\gate.txt
+if exist C:/Temp/gate.txt set MARK=found
+echo %MARK%
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo found"),
+            "if exist slash-equivalent path did not resolve tracked file:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+    }
+
+    #[test]
     fn del_removes_tracked_file_for_later_if_not_exist() {
         let script = br#"echo marker>gate.txt
 del gate.txt
@@ -6138,6 +6153,21 @@ echo %MARK%
         assert!(
             report.deobfuscated.contains("echo created"),
             "mkdir did not update tracked directory state for if exist:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+    }
+
+    #[test]
+    fn mkdir_slash_equivalent_directory_exists_for_later_if_exist() {
+        let script = br#"mkdir C:/Temp/stage
+if exist C:\Temp\stage set MARK=created
+echo %MARK%
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo created"),
+            "mkdir slash-equivalent directory did not resolve for if exist:\n{}\ntraits={:?}",
             report.deobfuscated,
             report.traits
         );

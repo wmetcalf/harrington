@@ -1,7 +1,7 @@
 //! `if` handler — evaluates the condition and signals body suppression via env.suppress_until_eol.
 
 use crate::env::Environment;
-use crate::handlers::util::{normalize_wildcard_path, wildcard_match};
+use crate::handlers::util::{filesystem_entry_for_path, normalize_wildcard_path, wildcard_match};
 use once_cell::sync::Lazy;
 use regex::Regex;
 
@@ -177,6 +177,7 @@ fn tracked_path_exists(path: &str, key: &str, env: &Environment) -> bool {
     env.modified_filesystem
         .keys()
         .any(|tracked| tracked.len() == key.len() && tracked.eq_ignore_ascii_case(key))
+        || filesystem_entry_for_path(env, path).is_some()
         || current_dir_path_exists(path, env)
         || wildcard_path_exists(path, env)
 }
