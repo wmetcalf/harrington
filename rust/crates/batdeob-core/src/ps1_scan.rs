@@ -1010,6 +1010,86 @@ fn expand_json_script_base64(text: &str) -> String {
     out
 }
 
+fn expand_marker_chunk_base64_carrier(text: &str) -> String {
+    let Some(decoded) = decode_marker_chunk_base64_carrier(text) else {
+        return text.to_string();
+    };
+    if text.contains(&decoded) {
+        return text.to_string();
+    }
+
+    let mut out = text.to_string();
+    out.push('\n');
+    out.push_str(&decoded);
+    out
+}
+
+fn decode_marker_chunk_base64_carrier(text: &str) -> Option<String> {
+    let lower = text.to_ascii_lowercase();
+    if !text.contains(":::")
+        || !lower.contains("frombase64string")
+        || !(lower.contains("rawlines") || lower.contains("substring(4)"))
+    {
+        return None;
+    }
+
+    let mut chunks = std::collections::BTreeMap::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        let Some(rest) = trimmed.strip_prefix(":::") else {
+            continue;
+        };
+        let Some(index) = rest
+            .as_bytes()
+            .first()
+            .copied()
+            .filter(|b| b.is_ascii_digit())
+            .map(|b| usize::from(b - b'0'))
+        else {
+            continue;
+        };
+        let chunk = rest[1..]
+            .trim()
+            .trim_matches(['"', '\'', '`', ' ', '\t', '\r', '\n'])
+            .replace("\"\"", "\"")
+            .replace("''", "'");
+        if !chunk.is_empty() {
+            chunks.insert(index, chunk);
+        }
+    }
+    if chunks.len() < 2 {
+        return None;
+    }
+
+    let mut joined = String::new();
+    for chunk in chunks.values() {
+        joined.push_str(chunk);
+    }
+    for caps in PS_EMPTY_REPLACE_OPERATOR_RE.captures_iter(text).take(16) {
+        let Some(marker) = caps.get(1) else { continue };
+        let marker = marker.as_str().replace("''", "'");
+        if !marker.is_empty() {
+            joined = joined.replace(marker.as_str(), "");
+        }
+    }
+    let cleaned: String = joined.chars().filter(|c| !c.is_whitespace()).collect();
+    if cleaned.len() < 40 {
+        return None;
+    }
+    let decoded_bytes = decode_ps_base64_string(&cleaned)?;
+    let decoded = if lower.contains("encoding]::unicode") || lower.contains("encoding.unicode") {
+        decode_utf16_lossy(&decoded_bytes, false)
+            .unwrap_or_else(|| decode_payload(&decoded_bytes).into_owned())
+    } else {
+        decode_payload(&decoded_bytes).into_owned()
+    };
+    let decoded = decoded.trim_matches('\u{feff}').trim();
+    if decoded.is_empty() {
+        return None;
+    }
+    Some(decoded.to_string())
+}
+
 #[cfg(test)]
 mod json_script_base64_prefilter_tests {
     use super::expand_json_script_base64;
@@ -3546,6 +3626,7 @@ fn expand_obfuscation(text: &str) -> String {
         out = expand_json_script_base64(&out);
         out = expand_regex_replace_base64_variables(&out);
         out = expand_regex_replace_calls(&out);
+        out = expand_marker_chunk_base64_carrier(&out);
         out = expand_getstring_base64_variables(&out);
         out = expand_getstring_base64_literals(&out);
         out = expand_getstring_byte_arrays(&out);
@@ -3714,6 +3795,12 @@ pub fn extract_self_embedded_ps1(env: &mut Environment, deobfuscated: &str) {
             if known.insert(decoded.clone()) {
                 decoded_payloads.push(decoded);
             }
+        }
+    }
+    if let Some(decoded) = decode_marker_chunk_base64_carrier(&source) {
+        let bytes = decoded.into_bytes();
+        if looks_like_powershell_payload(&bytes) && known.insert(bytes.clone()) {
+            decoded_payloads.push(bytes);
         }
     }
 
