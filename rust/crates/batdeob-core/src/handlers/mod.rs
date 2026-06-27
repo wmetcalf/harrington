@@ -192,6 +192,9 @@ pub fn lookup(name: &str) -> Option<Handler> {
     if base.eq_ignore_ascii_case("del") {
         return Some(passthrough::h_del);
     }
+    if base.eq_ignore_ascii_case("erase") {
+        return Some(passthrough::h_erase);
+    }
     if base.eq_ignore_ascii_case("cls") {
         return Some(passthrough::h_cls);
     }

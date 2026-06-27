@@ -23,8 +23,16 @@ make_handler!(h_cls, "cls");
 make_handler!(h_timeout, "timeout");
 
 pub fn h_del(raw: &str, env: &mut Environment) {
+    h_delete_like(raw, env, "del");
+}
+
+pub fn h_erase(raw: &str, env: &mut Environment) {
+    h_delete_like(raw, env, "erase");
+}
+
+fn h_delete_like(raw: &str, env: &mut Environment, name: &str) {
     env.traits.push(Trait::AdminCommand {
-        name: "del".to_string(),
+        name: name.to_string(),
         cmd: raw.to_string(),
     });
     for candidate in delete_targets(raw) {
