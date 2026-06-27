@@ -3318,6 +3318,10 @@ fn parse_curl_like_download(tokens: &[String]) -> Option<(String, Option<String>
             i += 2;
             continue;
         }
+        if is_curl_empty_attached_one_arg_long_flag(raw_token) {
+            i += 2;
+            continue;
+        }
         if is_curl_attached_one_arg_short_flag(raw_token)
             || is_curl_attached_one_arg_long_flag(raw_token)
         {
@@ -3415,6 +3419,10 @@ fn curl_tokens_have_download_url_candidate(tokens: &[String]) -> bool {
             i += 2;
             continue;
         }
+        if is_curl_empty_attached_one_arg_long_flag(raw_token) {
+            i += 2;
+            continue;
+        }
         if is_curl_attached_one_arg_short_flag(raw_token)
             || is_curl_attached_one_arg_long_flag(raw_token)
         {
@@ -3483,6 +3491,15 @@ fn is_curl_attached_one_arg_long_flag(token: &str) -> bool {
         };
         !tail.is_empty() && head.eq_ignore_ascii_case(flag) && tail.starts_with(['=', ':'])
     })
+}
+
+fn is_curl_empty_attached_one_arg_long_flag(token: &str) -> bool {
+    let Some(flag) = token.strip_suffix('=').or_else(|| token.strip_suffix(':')) else {
+        return false;
+    };
+    CURL_ONE_ARG_LONG_FLAGS
+        .iter()
+        .any(|known| flag.eq_ignore_ascii_case(known))
 }
 
 fn compact_curl_short_output_arg(token: &str) -> Option<&str> {
