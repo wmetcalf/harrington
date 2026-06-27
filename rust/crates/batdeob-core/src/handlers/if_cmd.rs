@@ -45,6 +45,21 @@ pub fn h_if(raw: &str, env: &mut Environment) {
     }
 }
 
+pub(crate) fn inline_body_needs_raw_dispatch(raw: &str) -> bool {
+    let Some(caps) = IF_RE.captures(raw) else {
+        return false;
+    };
+    let rest = caps.name("rest").map(|m| m.as_str()).unwrap_or("");
+    let Some(body) = extract_inline_body(rest) else {
+        return false;
+    };
+    let body = body.trim();
+    body.contains('!')
+        && (crate::handlers::cmd::extract_cmd_inner(body).is_some()
+            || crate::handlers::cmd::start_child_command(body).is_some()
+            || crate::handlers::call::call_body(body).is_some())
+}
+
 fn evaluate(rest: &str, env: &Environment) -> Option<bool> {
     let trimmed = rest.trim_start();
 
