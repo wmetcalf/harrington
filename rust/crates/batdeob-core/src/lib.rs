@@ -6144,6 +6144,22 @@ echo %MARK%
     }
 
     #[test]
+    fn rmdir_current_dir_path_removes_tracked_directory_contents_for_later_if_not_exist() {
+        let script = br#"echo marker>Temp\gate.txt
+rmdir /s /q .\Temp
+if not exist Temp\gate.txt set MARK=removed
+echo %MARK%
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo removed"),
+            "rmdir current-dir path did not update tracked directory state for if not exist:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+    }
+
+    #[test]
     fn mkdir_marks_directory_existing_for_later_if_exist() {
         let script = br#"mkdir C:\Temp\stage
 if exist C:\Temp\stage set MARK=created
