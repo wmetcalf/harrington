@@ -8585,6 +8585,46 @@ mod wmic_tests {
             "no switched WmicProcessCreate: traits={:?}",
             env.traits
         );
+        let has_lateral = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::LateralMovement { tool, target_host }
+                    if tool == "wmic" && target_host == "target.example"
+            )
+        });
+        assert!(
+            has_lateral,
+            "no switched WMIC LateralMovement: traits={:?}",
+            env.traits
+        );
+        assert_eq!(env.exec_cmd, vec!["cmd /c echo hi".to_string()]);
+    }
+
+    #[test]
+    fn wmic_process_call_create_accepts_spaced_node_target() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"wmic -node \\target2 process call create "cmd /c echo hi""#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::WmicProcessCreate { inner_cmd } if inner_cmd == "cmd /c echo hi"
+                )
+            }),
+            "no spaced-node WmicProcessCreate: traits={:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::LateralMovement { tool, target_host }
+                        if tool == "wmic" && target_host == "target2"
+                )
+            }),
+            "no spaced-node WMIC LateralMovement: traits={:?}",
+            env.traits
+        );
         assert_eq!(env.exec_cmd, vec!["cmd /c echo hi".to_string()]);
     }
 

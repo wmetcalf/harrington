@@ -1,6 +1,7 @@
 //! wmic handler — extracts the inner command from `wmic process call create ...`.
 
 use crate::env::Environment;
+use crate::handlers::util::{split_words, strip_outer_quotes};
 use crate::traits::Trait;
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -8,7 +9,7 @@ use regex::Regex;
 #[allow(clippy::expect_used)]
 static WMIC_PROCESS_CREATE_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?i)^\s*wmic(?:\s+/[^\s]+)*\s+(?:process|path\s+win32_process)\s+call\s+create\s+(?:"(?P<dq>[^"]+)"|'(?P<sq>[^']+)'|(?P<bare>\S.*))\s*$"#,
+        r#"(?i)^\s*wmic(?:\s+\S+)*\s+(?:process|path\s+win32_process)\s+call\s+create\s+(?:"(?P<dq>[^"]+)"|'(?P<sq>[^']+)'|(?P<bare>\S.*))\s*$"#,
     )
         .expect("wmic regex")
 });
@@ -17,6 +18,12 @@ pub fn h_wmic(raw: &str, env: &mut Environment) {
     let inner = wmic_process_create_inner(raw).unwrap_or_default();
     if inner.is_empty() {
         return;
+    }
+    if let Some(target_host) = wmic_node_target(raw) {
+        env.traits.push(Trait::LateralMovement {
+            tool: "wmic".to_string(),
+            target_host,
+        });
     }
     env.traits.push(Trait::WmicProcessCreate {
         inner_cmd: inner.clone(),
@@ -79,4 +86,60 @@ fn wmic_commandline_value_start(tail: &str) -> Option<usize> {
         i += 1;
     }
     (i < tail.len()).then_some(i)
+}
+
+fn wmic_node_target(raw: &str) -> Option<String> {
+    let tokens = split_words(raw);
+    let mut i = 1usize;
+    while i < tokens.len() {
+        let token = strip_outer_quotes(&tokens[i]);
+        let value = if token.eq_ignore_ascii_case("/node") || token.eq_ignore_ascii_case("-node") {
+            tokens.get(i + 1).map(|next| strip_outer_quotes(next))
+        } else {
+            attached_node_value(token)
+        };
+        if let Some(host) = value
+            .map(normalize_node_target)
+            .filter(|host| !host.is_empty())
+        {
+            return Some(host);
+        }
+        i += 1;
+    }
+    None
+}
+
+fn attached_node_value(token: &str) -> Option<&str> {
+    let lower = token.to_ascii_lowercase();
+    for prefix in ["/node:", "/node=", "-node:", "-node="] {
+        if lower.starts_with(prefix) {
+            return token.get(prefix.len()..);
+        }
+    }
+    None
+}
+
+fn normalize_node_target(value: &str) -> String {
+    strip_outer_quotes(value)
+        .trim()
+        .trim_start_matches('\\')
+        .to_string()
+}
+
+#[cfg(test)]
+#[allow(clippy::panic)]
+mod tests {
+    use super::wmic_node_target;
+
+    #[test]
+    fn node_target_accepts_attached_and_spaced_values() {
+        assert_eq!(
+            wmic_node_target(r#"wmic /node:"target.example" process call create "cmd""#).as_deref(),
+            Some("target.example")
+        );
+        assert_eq!(
+            wmic_node_target(r#"wmic -node \\target2 process call create "cmd""#).as_deref(),
+            Some("target2")
+        );
+    }
 }
