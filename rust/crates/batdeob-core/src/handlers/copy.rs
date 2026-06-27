@@ -1,5 +1,6 @@
 use super::util::{
-    normalize_wildcard_path, split_words, starts_with_ascii_case_insensitive, strip_outer_quotes,
+    join_windows_path_preserving_separator, normalize_wildcard_path, split_words,
+    starts_with_ascii_case_insensitive, strip_outer_quotes,
 };
 use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
@@ -294,7 +295,7 @@ fn rename_destination_in_source_directory(src: &str, dst: &str) -> Option<String
     if dir.is_empty() || dst.is_empty() {
         return None;
     }
-    Some(collapse_slashes(&format!("{dir}\\{dst}")))
+    Some(join_windows_path_preserving_separator(dir, dst))
 }
 
 fn windows_basename(path: &str) -> Option<&str> {
