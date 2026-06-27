@@ -1,7 +1,9 @@
 //! certutil handler — handles -decode, -decodehex, -urlcache for LOLBAS use.
 
 use crate::env::{DecodeKind, Environment, FsEntry};
-use crate::handlers::util::{split_words, strip_outer_quotes, windows_basename};
+use crate::handlers::util::{
+    filesystem_entry_for_path, split_words, strip_outer_quotes, windows_basename,
+};
 use crate::traits::Trait;
 use base64::Engine;
 
@@ -160,8 +162,7 @@ fn resolve_self_source(src: &str, env: &Environment) -> Option<Vec<u8>> {
 }
 
 fn resolve_tracked_source(src: &str, env: &Environment) -> Option<Vec<u8>> {
-    let key = src.to_ascii_lowercase();
-    if let Some(content) = content_from_entry(env.modified_filesystem.get(&key)) {
+    if let Some(content) = content_from_entry(filesystem_entry_for_path(env, src)) {
         return Some(content);
     }
     if let Some(name) = current_dir_basename(src) {

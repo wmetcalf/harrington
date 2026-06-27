@@ -7,7 +7,7 @@
 //! decoded payload regardless of which spelling the sample used.
 #![allow(clippy::expect_used)]
 
-use super::util::{split_words, starts_with_ascii_case_insensitive};
+use super::util::{filesystem_entry_for_path, split_words, starts_with_ascii_case_insensitive};
 use crate::env::{Environment, FsEntry};
 use base64::Engine;
 
@@ -234,8 +234,7 @@ fn queue_file_payload(path: &str, env: &mut Environment) {
 }
 
 fn tracked_script_content(path: &str, env: &Environment) -> Option<Vec<u8>> {
-    let key = path.to_ascii_lowercase();
-    if let Some(content) = content_from_entry(env.modified_filesystem.get(&key)) {
+    if let Some(content) = content_from_entry(filesystem_entry_for_path(env, path)) {
         return Some(content);
     }
     if let Some(name) = current_dir_basename(path) {

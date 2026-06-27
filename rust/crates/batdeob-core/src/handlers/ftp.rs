@@ -1,7 +1,7 @@
 //! ftp.exe handler - scans tracked `-s:script` command files.
 
 use crate::env::{Environment, FsEntry};
-use crate::handlers::util::{split_words, strip_outer_quotes};
+use crate::handlers::util::{filesystem_entry_for_path, split_words, strip_outer_quotes};
 use crate::traits::Trait;
 
 pub fn h_ftp(raw: &str, env: &mut Environment) {
@@ -125,8 +125,7 @@ fn parse_ftp_script(script: &str) -> Option<FtpScript> {
 }
 
 fn tracked_script_content(path: &str, env: &Environment) -> Option<Vec<u8>> {
-    let key = path.to_ascii_lowercase();
-    if let Some(content) = content_from_entry(env.modified_filesystem.get(&key)) {
+    if let Some(content) = content_from_entry(filesystem_entry_for_path(env, path)) {
         return Some(content);
     }
     if let Some(name) = current_dir_basename(path) {
