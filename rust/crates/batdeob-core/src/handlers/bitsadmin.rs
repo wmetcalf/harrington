@@ -1,7 +1,9 @@
 //! bitsadmin handler — extracts /transfer URL + DST.
 
 use crate::env::{Environment, FsEntry};
-use crate::handlers::util::{attached_flag_value, split_words, strip_outer_quotes};
+use crate::handlers::util::{
+    attached_flag_value, filesystem_storage_key, split_words, strip_outer_quotes,
+};
 use crate::traits::Trait;
 
 pub fn h_bitsadmin(raw: &str, env: &mut Environment) {
@@ -90,7 +92,7 @@ pub fn h_bitsadmin(raw: &str, env: &mut Environment) {
         });
         if !d.is_empty() {
             env.modified_filesystem
-                .insert(d.to_ascii_lowercase(), FsEntry::Download { src: u });
+                .insert(filesystem_storage_key(&d), FsEntry::Download { src: u });
         }
     }
 }

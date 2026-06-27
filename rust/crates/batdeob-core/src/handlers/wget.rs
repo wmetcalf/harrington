@@ -1,6 +1,6 @@
 //! wget handler - extracts URL + output target for native wget/get.exe calls.
 
-use super::util::{split_words, strip_outer_quotes};
+use super::util::{filesystem_storage_key, split_words, strip_outer_quotes};
 use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
 
@@ -17,7 +17,7 @@ pub fn h_wget(raw: &str, env: &mut Environment) {
     });
     if let Some(d) = dst.as_ref() {
         env.modified_filesystem
-            .insert(d.to_ascii_lowercase(), FsEntry::Download { src: url });
+            .insert(filesystem_storage_key(d), FsEntry::Download { src: url });
     } else if let Some(name) = url_basename(&url) {
         env.modified_filesystem
             .insert(name.to_ascii_lowercase(), FsEntry::Download { src: url });

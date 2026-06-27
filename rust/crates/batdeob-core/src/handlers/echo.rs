@@ -1,7 +1,7 @@
 //! `echo` handler — records redirected output into modified_filesystem.
 
 use crate::env::{Environment, FsEntry};
-use crate::handlers::util::starts_with_ascii_case_insensitive;
+use crate::handlers::util::{filesystem_storage_key, starts_with_ascii_case_insensitive};
 use crate::redirect::extract_redirections;
 use crate::traits::Trait;
 
@@ -28,7 +28,7 @@ pub fn h_echo(raw: &str, env: &mut Environment) {
 
     let mut content = payload.into_bytes();
     content.extend_from_slice(b"\r\n");
-    let key = path.to_ascii_lowercase();
+    let key = filesystem_storage_key(&path);
     let redirected_chunk = content.clone();
     env.traits.push(Trait::EchoRedirect {
         content: redirected_chunk,

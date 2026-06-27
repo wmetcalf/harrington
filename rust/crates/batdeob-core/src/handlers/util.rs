@@ -100,6 +100,20 @@ pub(crate) fn normalize_wildcard_path(path: &str) -> String {
         .replace("*.*", "*")
 }
 
+pub(crate) fn filesystem_storage_key(path: &str) -> String {
+    normalize_filesystem_storage_path(path).to_ascii_lowercase()
+}
+
+pub(crate) fn normalize_filesystem_storage_path(path: &str) -> String {
+    collapse_repeated_separator(strip_current_dir_prefix(path), '\\')
+}
+
+fn strip_current_dir_prefix(path: &str) -> &str {
+    path.strip_prefix(r".\")
+        .or_else(|| path.strip_prefix("./"))
+        .unwrap_or(path)
+}
+
 pub(crate) fn filesystem_entry_for_path<'a>(
     env: &'a Environment,
     path: &str,

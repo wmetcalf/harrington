@@ -2,7 +2,8 @@
 
 use crate::env::{DecodeKind, Environment, FsEntry};
 use crate::handlers::util::{
-    filesystem_entry_for_path, split_words, strip_outer_quotes, windows_basename,
+    filesystem_entry_for_path, filesystem_storage_key, split_words, strip_outer_quotes,
+    windows_basename,
 };
 use crate::traits::Trait;
 use base64::Engine;
@@ -20,7 +21,7 @@ pub fn h_certutil(raw: &str, env: &mut Environment) {
             });
             if let Some(d) = dst {
                 env.modified_filesystem
-                    .insert(d.to_ascii_lowercase(), FsEntry::Download { src: url });
+                    .insert(filesystem_storage_key(&d), FsEntry::Download { src: url });
             }
         }
         return;
@@ -77,7 +78,7 @@ pub fn h_certutil(raw: &str, env: &mut Environment) {
         })();
         if let Some(d) = decoded {
             env.modified_filesystem.insert(
-                dst.to_ascii_lowercase(),
+                filesystem_storage_key(&dst),
                 FsEntry::Decoded {
                     content: d,
                     src,

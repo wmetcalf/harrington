@@ -1,6 +1,6 @@
 use super::util::{
-    filesystem_entry_for_path, join_windows_path_preserving_separator, normalize_wildcard_path,
-    split_words, starts_with_ascii_case_insensitive, strip_outer_quotes,
+    filesystem_entry_for_path, filesystem_storage_key, join_windows_path_preserving_separator,
+    normalize_wildcard_path, split_words, starts_with_ascii_case_insensitive, strip_outer_quotes,
 };
 use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
@@ -247,17 +247,7 @@ fn insert_copied_directory_entry(env: &mut Environment, src: &str, dst_dir: &str
 
 fn insert_filesystem_entry(env: &mut Environment, path: &str, entry: FsEntry) {
     env.modified_filesystem
-        .insert(storage_path(path).to_ascii_lowercase(), entry);
-}
-
-fn storage_path(path: &str) -> String {
-    collapse_slashes(strip_current_dir_prefix(path))
-}
-
-fn strip_current_dir_prefix(path: &str) -> &str {
-    path.strip_prefix(r".\")
-        .or_else(|| path.strip_prefix("./"))
-        .unwrap_or(path)
+        .insert(filesystem_storage_key(path), entry);
 }
 
 fn directory_destination(dst_dir: &str) -> String {

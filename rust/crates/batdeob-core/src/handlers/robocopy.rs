@@ -2,8 +2,8 @@
 
 use crate::env::{Environment, FsEntry};
 use crate::handlers::util::{
-    filesystem_entry_for_path, join_windows_path_preserving_separator, split_words,
-    strip_outer_quotes,
+    filesystem_entry_for_path, filesystem_storage_key, join_windows_path_preserving_separator,
+    split_words, strip_outer_quotes,
 };
 use crate::traits::Trait;
 
@@ -32,7 +32,7 @@ pub fn h_robocopy(raw: &str, env: &mut Environment) {
         )
         .unwrap_or(FsEntry::Copy { src });
         env.modified_filesystem
-            .insert(dst.to_ascii_lowercase(), entry);
+            .insert(filesystem_storage_key(&dst), entry);
     }
 }
 
