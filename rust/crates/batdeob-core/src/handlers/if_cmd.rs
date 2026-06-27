@@ -90,7 +90,8 @@ fn evaluate(rest: &str, env: &Environment) -> Option<bool> {
         return Some(
             env.modified_filesystem
                 .keys()
-                .any(|key| key.len() == path.len() && key.eq_ignore_ascii_case(path)),
+                .any(|key| key.len() == path.len() && key.eq_ignore_ascii_case(path))
+                || current_dir_path_exists(path, env),
         );
     }
 
@@ -173,6 +174,26 @@ fn evaluate(rest: &str, env: &Environment) -> Option<bool> {
     }
 
     None
+}
+
+fn current_dir_path_exists(path: &str, env: &Environment) -> bool {
+    let Some(name) = current_dir_basename(path) else {
+        return false;
+    };
+    env.modified_filesystem
+        .contains_key(&name.to_ascii_lowercase())
+}
+
+fn current_dir_basename(path: &str) -> Option<&str> {
+    path.strip_prefix(r".\")
+        .or_else(|| path.strip_prefix("./"))
+        .and_then(windows_basename)
+}
+
+fn windows_basename(path: &str) -> Option<&str> {
+    path.rsplit(['\\', '/'])
+        .next()
+        .filter(|name| !name.is_empty())
 }
 
 fn token_end(s: &str) -> usize {
