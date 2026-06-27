@@ -1,11 +1,18 @@
 //! bitsadmin handler — extracts /transfer URL + DST.
 
 use crate::env::{Environment, FsEntry};
-use crate::handlers::util::{split_words, strip_outer_quotes};
+use crate::handlers::util::{attached_flag_value, split_words, strip_outer_quotes};
 use crate::traits::Trait;
 
 pub fn h_bitsadmin(raw: &str, env: &mut Environment) {
     let tokens = split_words(raw);
+    if let Some((job, command)) = bitsadmin_notify_command(&tokens) {
+        push_lolbas(raw, env);
+        push_notify_persistence(env, job, command.clone());
+        queue_notify_child(command, env);
+        return;
+    }
+
     if !tokens
         .iter()
         .any(|t| bitsadmin_flag_eq(t, "transfer") || bitsadmin_flag_eq(t, "addfile"))
@@ -105,6 +112,85 @@ fn bitsadmin_flag_is_bare(token: &str, flag: &str) -> bool {
 
 fn is_bitsadmin_option(token: &str) -> bool {
     token.starts_with('/') || token.starts_with('-')
+}
+
+fn bitsadmin_notify_command(tokens: &[String]) -> Option<(String, String)> {
+    let mut i = 1usize;
+    while i < tokens.len() {
+        let token = strip_outer_quotes(&tokens[i]);
+        let (job, program_idx) = if token.eq_ignore_ascii_case("/setnotifycmdline")
+            || token.eq_ignore_ascii_case("-setnotifycmdline")
+        {
+            (strip_outer_quotes(tokens.get(i + 1)?).to_string(), i + 2)
+        } else if let Some(value) =
+            attached_flag_value(token, &["/setnotifycmdline", "-setnotifycmdline"])
+        {
+            (strip_outer_quotes(value).to_string(), i + 1)
+        } else {
+            i += 1;
+            continue;
+        };
+
+        let program = tokens
+            .get(program_idx)
+            .map(|value| strip_outer_quotes(value).trim())
+            .filter(|value| !value.is_empty())?;
+        if job.is_empty() || program.eq_ignore_ascii_case("none") {
+            return None;
+        }
+
+        let params = tokens
+            .get(program_idx + 1..)
+            .unwrap_or_default()
+            .iter()
+            .map(|part| strip_outer_quotes(part).trim())
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let command = if params.is_empty() {
+            program.to_string()
+        } else {
+            format!("{program} {params}")
+        };
+        return Some((job, command));
+    }
+    None
+}
+
+fn push_notify_persistence(env: &mut Environment, job: String, command: String) {
+    if env.traits.iter().any(|t| {
+        matches!(
+            t,
+            Trait::Persistence {
+                hive,
+                key,
+                value_name,
+                command: existing,
+            } if hive == "BITS"
+                && key == &job
+                && value_name == "SetNotifyCmdLine"
+                && existing == &command
+        )
+    }) {
+        return;
+    }
+    env.traits.push(Trait::Persistence {
+        hive: "BITS".to_string(),
+        key: job,
+        value_name: "SetNotifyCmdLine".to_string(),
+        command,
+    });
+}
+
+fn queue_notify_child(command: String, env: &mut Environment) {
+    if let Some(inner) = super::cmd::extract_cmd_inner(&command) {
+        env.exec_cmd.push(inner);
+        env.exec_cmd_delayed
+            .push(super::cmd::has_v_on_raw(&command));
+    } else {
+        env.exec_cmd.push(command);
+        env.exec_cmd_delayed.push(false);
+    }
 }
 
 fn push_lolbas(raw: &str, env: &mut Environment) {

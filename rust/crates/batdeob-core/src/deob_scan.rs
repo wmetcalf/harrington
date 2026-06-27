@@ -503,7 +503,9 @@ fn scan_bitsadmin_deob_text(deobfuscated: &str, env: &mut Environment) {
         if (!contains_ascii_case_insensitive(line, "/transfer")
             && !contains_ascii_case_insensitive(line, "-transfer")
             && !contains_ascii_case_insensitive(line, "/addfile")
-            && !contains_ascii_case_insensitive(line, "-addfile"))
+            && !contains_ascii_case_insensitive(line, "-addfile")
+            && !contains_ascii_case_insensitive(line, "/setnotifycmdline")
+            && !contains_ascii_case_insensitive(line, "-setnotifycmdline"))
             || !contains_ascii_case_insensitive(line, "bitsadmin")
         {
             continue;
@@ -513,6 +515,14 @@ fn scan_bitsadmin_deob_text(deobfuscated: &str, env: &mut Environment) {
             let tail = &line[bits_match.start()..];
             let segment = first_unquoted_ampersand_segment(tail);
             let tokens = split_words(segment);
+            if tokens.iter().any(|t| {
+                bitsadmin_flag_eq(t, "setnotifycmdline")
+                    || t.eq_ignore_ascii_case("/setnotifycmdline")
+                    || t.eq_ignore_ascii_case("-setnotifycmdline")
+            }) {
+                crate::handlers::bitsadmin::h_bitsadmin(segment, env);
+                continue;
+            }
             if !tokens
                 .iter()
                 .any(|t| bitsadmin_flag_eq(t, "transfer") || bitsadmin_flag_eq(t, "addfile"))

