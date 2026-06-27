@@ -315,6 +315,13 @@ pub fn h_winrs(raw: &str, env: &mut Environment) {
     queue_child_command(command, env);
 }
 
+pub fn h_winrm(raw: &str, env: &mut Environment) {
+    let Some((_host, command)) = winrm_child_command(raw) else {
+        return;
+    };
+    queue_child_command(command, env);
+}
+
 fn runas_child_command(raw: &str) -> Option<String> {
     let spans = split_word_spans(raw);
     let first = spans.first()?;
@@ -462,6 +469,98 @@ pub(crate) fn winrs_child_command(raw: &str) -> Option<(String, String)> {
     let command_start = spans.get(idx)?.start;
     let command = strip_outer_quotes(raw[command_start..].trim()).trim();
     (!command.is_empty()).then(|| (host, command.to_string()))
+}
+
+pub(crate) fn winrm_child_command(raw: &str) -> Option<(String, String)> {
+    let spans = split_word_spans(raw);
+    let first = spans.first()?;
+    let command_name = raw[first.clone()]
+        .trim_start_matches(['@', '"', '('])
+        .trim_matches(['"', '\''])
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(&raw[first.clone()])
+        .to_ascii_lowercase();
+    if command_name.strip_suffix(".cmd").unwrap_or(&command_name) != "winrm" {
+        return None;
+    }
+
+    let mut host = None;
+    for (idx, span) in spans.iter().enumerate().skip(1) {
+        let token = raw[span.clone()].trim_matches(['"', '\'']);
+        let lower = token.to_ascii_lowercase();
+        if lower == "-r" || lower == "/r" || lower == "-remote" || lower == "/remote" {
+            let host_span = spans.get(idx + 1)?;
+            host = Some(strip_outer_quotes(&raw[host_span.clone()]).to_string());
+            break;
+        }
+        if let Some(value) = lower
+            .strip_prefix("-r:")
+            .or_else(|| lower.strip_prefix("-r="))
+            .or_else(|| lower.strip_prefix("/r:"))
+            .or_else(|| lower.strip_prefix("/r="))
+            .or_else(|| lower.strip_prefix("-remote:"))
+            .or_else(|| lower.strip_prefix("-remote="))
+            .or_else(|| lower.strip_prefix("/remote:"))
+            .or_else(|| lower.strip_prefix("/remote="))
+        {
+            let value_start = span.end - value.len();
+            host = Some(strip_outer_quotes(&raw[value_start..span.end]).to_string());
+            break;
+        }
+    }
+
+    let host = host?.trim_matches(['"', '\'']).to_string();
+    if host.is_empty() {
+        return None;
+    }
+    let command = winrm_commandline_value(raw)?;
+    Some((host, command))
+}
+
+fn winrm_commandline_value(raw: &str) -> Option<String> {
+    let marker = find_ascii_case_insensitive_from(raw, "CommandLine", 0)?;
+    let mut idx = marker + "CommandLine".len();
+    let bytes = raw.as_bytes();
+    while bytes.get(idx).is_some_and(u8::is_ascii_whitespace) {
+        idx += 1;
+    }
+    if bytes.get(idx) != Some(&b'=') {
+        return None;
+    }
+    idx += 1;
+    while bytes.get(idx).is_some_and(u8::is_ascii_whitespace) {
+        idx += 1;
+    }
+    parse_winrm_flag_value(raw, idx)
+}
+
+fn parse_winrm_flag_value(raw: &str, start: usize) -> Option<String> {
+    if raw.as_bytes().get(start) == Some(&b'"') {
+        let mut idx = start + 1;
+        let mut escaped = false;
+        while idx < raw.len() {
+            let byte = raw.as_bytes()[idx];
+            if byte == b'"' && !escaped {
+                let value = raw[start + 1..idx].trim();
+                return (!value.is_empty()).then(|| value.to_string());
+            }
+            escaped = byte == b'\\' && !escaped;
+            if byte != b'\\' {
+                escaped = false;
+            }
+            idx += 1;
+        }
+        let value = raw[start + 1..].trim();
+        return (!value.is_empty()).then(|| value.to_string());
+    }
+
+    let end = raw[start..]
+        .find([';', '}'])
+        .map(|offset| start + offset)
+        .unwrap_or(raw.len());
+    let value = raw[start..end].trim().trim_matches(['"', '\'']).trim();
+    (!value.is_empty()).then(|| value.to_string())
 }
 
 fn winrs_option_span_width(token: &str, before_host: bool) -> Option<usize> {
@@ -912,6 +1011,28 @@ mod tests {
         let (host, command) =
             winrs_child_command(r#"winrs /r target.example -u admin -p pass powershell.exe -nop"#)
                 .expect("winrs child command should parse");
+
+        assert_eq!(host, "target.example");
+        assert_eq!(command, "powershell.exe -nop");
+    }
+
+    #[test]
+    fn winrm_child_command_extracts_remote_commandline() {
+        let (host, command) = winrm_child_command(
+            r#"winrm invoke Create wmicimv2/Win32_Process -r:target.example @{CommandLine="cmd.exe /c echo hi";CurrentDirectory="C:\Windows"}"#,
+        )
+        .expect("winrm child command should parse");
+
+        assert_eq!(host, "target.example");
+        assert_eq!(command, "cmd.exe /c echo hi");
+    }
+
+    #[test]
+    fn winrm_child_command_accepts_spaced_remote_host() {
+        let (host, command) = winrm_child_command(
+            r#"winrm.cmd i Create wmicimv2/Win32_Process /remote target.example @{CommandLine = "powershell.exe -nop"}"#,
+        )
+        .expect("winrm child command should parse");
 
         assert_eq!(host, "target.example");
         assert_eq!(command, "powershell.exe -nop");

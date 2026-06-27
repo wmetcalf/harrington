@@ -101,6 +101,18 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
         }
     }
 
+    if let Some((_host, command)) = crate::handlers::passthrough::winrm_child_command(raw) {
+        if command.contains('!')
+            && (crate::handlers::cmd::extract_cmd_inner(&command).is_some()
+                || crate::handlers::cmd::start_child_command(&command).is_some()
+                || crate::handlers::call::call_body(&command).is_some())
+        {
+            crate::handlers::passthrough::h_winrm(raw, env);
+            result.consumed = true;
+            return result;
+        }
+    }
+
     result
 }
 

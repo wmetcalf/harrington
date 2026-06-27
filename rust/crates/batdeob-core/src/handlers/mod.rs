@@ -168,6 +168,9 @@ pub fn lookup(name: &str) -> Option<Handler> {
     if base.eq_ignore_ascii_case("psexec") {
         return Some(passthrough::h_psexec);
     }
+    if base.eq_ignore_ascii_case("winrm") {
+        return Some(passthrough::h_winrm);
+    }
     if base.eq_ignore_ascii_case("winrs") {
         return Some(passthrough::h_winrs);
     }
