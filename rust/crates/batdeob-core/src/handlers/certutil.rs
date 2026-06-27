@@ -169,21 +169,36 @@ fn resolve_self_source(src: &str, env: &Environment) -> Option<Vec<u8>> {
 }
 
 fn extract_pem_base64(text: &str) -> Option<String> {
-    const BEGIN: &str = "-----BEGIN CERTIFICATE-----";
-    const END: &str = "-----END CERTIFICATE-----";
+    const BOUNDARIES: &[(&str, &str)] = &[
+        ("-----BEGIN CERTIFICATE-----", "-----END CERTIFICATE-----"),
+        (
+            "-----BEGIN CERTIFICATE REQUEST-----",
+            "-----END CERTIFICATE REQUEST-----",
+        ),
+        (
+            "-----BEGIN NEW CERTIFICATE REQUEST-----",
+            "-----END NEW CERTIFICATE REQUEST-----",
+        ),
+    ];
+    BOUNDARIES
+        .iter()
+        .find_map(|(begin, end)| extract_pem_base64_between(text, begin, end))
+}
+
+fn extract_pem_base64_between(text: &str, begin: &str, end: &str) -> Option<String> {
     let mut collecting = false;
     let mut out = String::new();
     for line in text.lines() {
         if !collecting {
-            if let Some(idx) = line.find(BEGIN) {
+            if let Some(idx) = line.find(begin) {
                 collecting = true;
-                let tail = &line[idx + BEGIN.len()..];
-                let tail = match tail.find(END) {
+                let tail = &line[idx + begin.len()..];
+                let tail = match tail.find(end) {
                     Some(end_idx) => &tail[..end_idx],
                     None => tail,
                 };
                 out.extend(tail.bytes().filter(|b| is_base64_byte(*b)).map(char::from));
-                if line[idx + BEGIN.len()..].contains(END) {
+                if line[idx + begin.len()..].contains(end) {
                     return if out.is_empty() { None } else { Some(out) };
                 }
             }
@@ -193,7 +208,7 @@ fn extract_pem_base64(text: &str) -> Option<String> {
         if trimmed.is_empty() {
             continue;
         }
-        if let Some(end_idx) = trimmed.find(END) {
+        if let Some(end_idx) = trimmed.find(end) {
             out.extend(
                 trimmed[..end_idx]
                     .bytes()

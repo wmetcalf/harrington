@@ -7537,6 +7537,43 @@ mod certutil_tests {
     }
 
     #[test]
+    fn certutil_decode_accepts_new_certificate_request_wrapper() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "hello request";
+        let wrapped = format!(
+            "-----BEGIN NEW CERTIFICATE REQUEST-----\r\n{}\r\n-----END NEW CERTIFICATE REQUEST-----\r\n",
+            b64(payload)
+        );
+        env.modified_filesystem.insert(
+            "src.req".to_string(),
+            FsEntry::Content {
+                content: wrapped.into_bytes(),
+                append: false,
+            },
+        );
+
+        interpret_line("certutil -decode src.req dst.bin", &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::CertutilDecode { src, dst, src_resolved }
+                    if src == "src.req" && dst == "dst.bin" && *src_resolved
+            )),
+            "certutil request wrapper decode trait missing: {:?}",
+            env.traits
+        );
+        assert!(
+            matches!(
+                env.modified_filesystem.get("dst.bin"),
+                Some(FsEntry::Decoded { content, .. }) if content == payload.as_bytes()
+            ),
+            "dst.bin was not decoded from NEW CERTIFICATE REQUEST wrapper: {:?}",
+            env.modified_filesystem.get("dst.bin")
+        );
+    }
+
+    #[test]
     fn certutil_urlcache_emits_download_trait() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
