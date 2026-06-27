@@ -15748,6 +15748,26 @@ powershell -Command "x('%尔克克尔:~28,1%%德德耻克:~35,1%%尔克克尔:~4
     }
 
     #[test]
+    fn python_download_preserves_full_command_context() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        let padding = "A".repeat(260);
+        let line = format!(
+            r#"python -c "import requests; pad='{padding}'; requests.get('https://py.example/full-context').text""#
+        );
+        crate::deob_scan::scan_deob_text(&line, &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, cmd, dst: None }
+                    if src == "https://py.example/full-context" && cmd == &line
+            )),
+            "Python Download command context was not preserved: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn python_requests_keyword_url_ignores_header_url_literals() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(

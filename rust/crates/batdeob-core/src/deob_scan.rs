@@ -1387,9 +1387,7 @@ fn emit_python_download_with_dst(
     let dst = dst
         .map(str::to_string)
         .or_else(|| line.and_then(|line| python_open_write_dst(line, url)));
-    let line_hint = line
-        .map(|line| snippet_prefix(line, 200))
-        .unwrap_or_default();
+    let line_hint = line.map(str::to_string).unwrap_or_default();
     env.traits.push(Trait::Download {
         cmd: line_hint,
         src: url.to_string(),
