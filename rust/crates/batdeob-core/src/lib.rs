@@ -15210,6 +15210,27 @@ echo %MARK%"#,
     }
 
     #[test]
+    fn current_dir_file_op_destinations_exist_for_later_if_exist() {
+        for command in [
+            r"copy original.txt .\renamed.txt",
+            r"xcopy /y original.txt .\renamed.txt",
+            r"move /y original.txt .\renamed.txt",
+            r"ren original.txt .\renamed.txt",
+        ] {
+            let script = format!(
+                "echo marker>original.txt\r\n{command}\r\nif exist renamed.txt set MARK=ok\r\necho %MARK%"
+            );
+            let report = crate::analyze(script.as_bytes(), &Config::default());
+            assert!(
+                report.deobfuscated.contains("echo ok"),
+                "current-dir destination was not visible to later if exist after {command}:\n{}\ntraits={:?}",
+                report.deobfuscated,
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn move_to_tracked_directory_preserves_generated_script_content() {
         let report = crate::analyze(
             br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8vbW92ZS10cmFja2VkLWRpci5leGFtcGxlL3BheWxvYWQn")) > original.js

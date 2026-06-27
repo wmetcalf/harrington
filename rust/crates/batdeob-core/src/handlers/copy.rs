@@ -43,16 +43,18 @@ pub fn h_copy(raw: &str, env: &mut Environment) {
             }
         }
         if all_resolved && !combined.is_empty() {
-            env.modified_filesystem.insert(
-                dst.to_ascii_lowercase(),
+            insert_filesystem_entry(
+                env,
+                &dst,
                 FsEntry::Content {
                     content: combined,
                     append: false,
                 },
             );
         } else {
-            env.modified_filesystem.insert(
-                dst.to_ascii_lowercase(),
+            insert_filesystem_entry(
+                env,
+                &dst,
                 FsEntry::Copy {
                     src: sources.join("+"),
                 },
@@ -168,11 +170,9 @@ fn track_rename_like(
     if allow_directory_dst {
         insert_copied_entry(env, &src, &dst, entry);
     } else {
-        env.modified_filesystem
-            .insert(dst.to_ascii_lowercase(), entry.clone());
+        insert_filesystem_entry(env, &dst, entry.clone());
         if let Some(joined) = rename_destination_in_source_directory(&src, &dst) {
-            env.modified_filesystem
-                .insert(joined.to_ascii_lowercase(), entry);
+            insert_filesystem_entry(env, &joined, entry);
         }
     }
     remove_renamed_source(env, &src, &dst);
@@ -230,23 +230,34 @@ fn remove_renamed_source(env: &mut Environment, src: &str, dst: &str) {
 fn insert_copied_entry(env: &mut Environment, src: &str, dst: &str, entry: FsEntry) {
     let tracked_dir_dst = copy_tracked_directory_destination_path(env, src, dst);
     if tracked_dir_dst.is_none() {
-        env.modified_filesystem
-            .insert(dst.to_ascii_lowercase(), entry.clone());
+        insert_filesystem_entry(env, dst, entry.clone());
     }
     if let Some(joined) = copy_directory_destination_path(src, dst) {
-        env.modified_filesystem
-            .insert(joined.to_ascii_lowercase(), entry);
+        insert_filesystem_entry(env, &joined, entry);
     } else if let Some(joined) = tracked_dir_dst {
-        env.modified_filesystem
-            .insert(joined.to_ascii_lowercase(), entry);
+        insert_filesystem_entry(env, &joined, entry);
     }
 }
 
 fn insert_copied_directory_entry(env: &mut Environment, src: &str, dst_dir: &str, entry: FsEntry) {
     if let Some(joined) = copy_directory_destination_path(src, &directory_destination(dst_dir)) {
-        env.modified_filesystem
-            .insert(joined.to_ascii_lowercase(), entry);
+        insert_filesystem_entry(env, &joined, entry);
     }
+}
+
+fn insert_filesystem_entry(env: &mut Environment, path: &str, entry: FsEntry) {
+    env.modified_filesystem
+        .insert(storage_path(path).to_ascii_lowercase(), entry);
+}
+
+fn storage_path(path: &str) -> String {
+    collapse_slashes(strip_current_dir_prefix(path))
+}
+
+fn strip_current_dir_prefix(path: &str) -> &str {
+    path.strip_prefix(r".\")
+        .or_else(|| path.strip_prefix("./"))
+        .unwrap_or(path)
 }
 
 fn directory_destination(dst_dir: &str) -> String {
