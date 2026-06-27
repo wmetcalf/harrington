@@ -4,7 +4,7 @@
 #![allow(clippy::expect_used)]
 
 use crate::env::Environment;
-use crate::handlers::util::contains_ascii_case_insensitive;
+use crate::handlers::util::{contains_ascii_case_insensitive, split_words, strip_outer_quotes};
 use crate::traits::Trait;
 use crate::util::find_ascii_case_insensitive_from;
 
@@ -271,7 +271,101 @@ fn persisted_command_looks_dispatchable(command: &str) -> bool {
     trimmed.bytes().any(|b| b.is_ascii_whitespace())
 }
 
-make_handler!(h_sc, "sc");
+pub fn h_sc(raw: &str, env: &mut Environment) {
+    env.traits.push(Trait::AdminCommand {
+        name: "sc".to_string(),
+        cmd: raw.to_string(),
+    });
+    let Some((service_name, bin_path)) = sc_service_binpath(raw) else {
+        return;
+    };
+    env.traits.push(Trait::ServiceInstall {
+        service_name,
+        bin_path: bin_path.clone(),
+    });
+    queue_registry_persisted_command(bin_path, env);
+}
+
+fn sc_service_binpath(raw: &str) -> Option<(String, String)> {
+    let tokens = split_words(raw);
+    let command = tokens.first()?;
+    let command_name = strip_outer_quotes(command)
+        .trim_start_matches(['@', '('])
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(command)
+        .trim_end_matches('.');
+    if !command_name
+        .strip_suffix(".exe")
+        .unwrap_or(command_name)
+        .eq_ignore_ascii_case("sc")
+    {
+        return None;
+    }
+    if !tokens.get(1).is_some_and(|token| {
+        matches!(
+            strip_outer_quotes(token).to_ascii_lowercase().as_str(),
+            "create" | "config"
+        )
+    }) {
+        return None;
+    }
+    let service_name = tokens
+        .get(2)
+        .map(|token| strip_outer_quotes(token).to_string())
+        .filter(|token| !token.is_empty())?;
+    let bin_path = command_value_after_key(raw, "binpath")?;
+    Some((service_name, bin_path))
+}
+
+fn command_value_after_key(raw: &str, key: &str) -> Option<String> {
+    let pos = find_ascii_case_insensitive_from(raw, key, 0)?;
+    let mut value_start = pos + key.len();
+    let bytes = raw.as_bytes();
+    while bytes
+        .get(value_start)
+        .is_some_and(|b| b.is_ascii_whitespace())
+    {
+        value_start += 1;
+    }
+    if bytes.get(value_start) == Some(&b'=') {
+        value_start += 1;
+    }
+    while bytes
+        .get(value_start)
+        .is_some_and(|b| b.is_ascii_whitespace())
+    {
+        value_start += 1;
+    }
+    parse_command_value(raw, value_start)
+}
+
+fn parse_command_value(raw: &str, start: usize) -> Option<String> {
+    let bytes = raw.as_bytes();
+    let quote = *bytes.get(start)?;
+    if quote == b'"' || quote == b'\'' {
+        let quote_char = quote as char;
+        let mut out = String::new();
+        let mut i = start + 1;
+        while i < raw.len() {
+            let Some(ch) = raw[i..].chars().next() else {
+                break;
+            };
+            if ch == quote_char {
+                return Some(out);
+            }
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+        return Some(out);
+    }
+    let end = raw[start..]
+        .find(char::is_whitespace)
+        .map(|offset| start + offset)
+        .unwrap_or(raw.len());
+    Some(raw[start..end].to_string())
+}
+
 make_handler!(h_ping, "ping");
 make_handler!(h_xcopy, "xcopy");
 make_handler!(h_title, "title");
