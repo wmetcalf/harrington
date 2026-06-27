@@ -16759,6 +16759,23 @@ mod ps_alias_tests {
     }
 
     #[test]
+    fn quoted_literal_does_not_expand_as_alias() {
+        use crate::ps_alias::expand_aliases_if_ps;
+        let script = r#"powershell -Command "'h'.Replace('h','x')""#;
+        let out = expand_aliases_if_ps(script);
+        assert!(
+            out.contains("'h'.Replace('h','x')"),
+            "quoted literal was rewritten as an alias: {}",
+            out
+        );
+        assert!(
+            !out.contains("Get-History"),
+            "quoted literal expanded to alias: {}",
+            out
+        );
+    }
+
+    #[test]
     fn gate_allows_alias_only_payload() {
         // Regression: looks_like_powershell required a `$var`, `::`, Verb-Noun,
         // or `powershell` literal. A decoded -EncodedCommand body that is just
