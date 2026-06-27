@@ -97,6 +97,14 @@ fn downloaded_source_for_path(env: &Environment, path: &str) -> Option<String> {
 }
 
 fn downloaded_source_for_current_dir_path(env: &Environment, path: &str) -> Option<String> {
+    if let Some(stripped) = strip_current_dir_prefix(path) {
+        if stripped.contains(['\\', '/']) {
+            return match filesystem_entry_for_path(env, stripped) {
+                Some(FsEntry::Download { src }) => Some(src.clone()),
+                _ => None,
+            };
+        }
+    }
     let name = current_dir_basename(path)?;
     env.modified_filesystem
         .iter()
@@ -154,6 +162,11 @@ fn tracked_hta_content(path: &str, env: &Environment) -> Option<Vec<u8>> {
     if let Some(content) = content_from_entry(filesystem_entry_for_path(env, path)) {
         return Some(content);
     }
+    if let Some(stripped) = strip_current_dir_prefix(path) {
+        if stripped.contains(['\\', '/']) {
+            return content_from_entry(filesystem_entry_for_path(env, stripped));
+        }
+    }
     let name = current_dir_basename(path)?;
     env.modified_filesystem
         .iter()
@@ -175,9 +188,11 @@ fn content_from_entry(entry: Option<&FsEntry>) -> Option<Vec<u8>> {
 }
 
 fn current_dir_basename(path: &str) -> Option<&str> {
-    path.strip_prefix(r".\")
-        .or_else(|| path.strip_prefix("./"))
-        .and_then(windows_basename)
+    strip_current_dir_prefix(path).and_then(windows_basename)
+}
+
+fn strip_current_dir_prefix(path: &str) -> Option<&str> {
+    path.strip_prefix(r".\").or_else(|| path.strip_prefix("./"))
 }
 
 fn mshta_token_url(token: &str) -> Option<String> {
