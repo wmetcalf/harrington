@@ -8,7 +8,7 @@
 #![allow(clippy::expect_used, clippy::type_complexity, clippy::unwrap_used)]
 
 use crate::env::Environment;
-use crate::handlers::util::{split_words, windows_basename};
+use crate::handlers::util::{flag_url_value_after, split_words, windows_basename};
 use crate::traits::Trait;
 use crate::util::{
     contains_ascii_case_insensitive, ends_with_ascii_case_insensitive,
@@ -2560,49 +2560,7 @@ fn scan_process_url_arguments(deobfuscated: &str, env: &mut Environment) {
 }
 
 fn certreq_config_url_after(tokens: &[String], start: usize) -> Option<String> {
-    let mut i = start;
-    while i < tokens.len() {
-        let token = strip_outer_quotes(&tokens[i]);
-        if token.eq_ignore_ascii_case("-config") || token.eq_ignore_ascii_case("/config") {
-            let Some(next) = tokens.get(i + 1) else {
-                i += 1;
-                continue;
-            };
-            let value = trim_url_suffix(strip_outer_quotes(next));
-            if let Some(url) = normalize_liberal_url_token(value)
-                .or_else(|| normalize_schemeless_domain_path_token(value))
-            {
-                return Some(url);
-            }
-            i += 2;
-            continue;
-        }
-        if let Some(value) = certreq_attached_config_value(token) {
-            let value = trim_url_suffix(value);
-            if let Some(url) = normalize_liberal_url_token(value)
-                .or_else(|| normalize_schemeless_domain_path_token(value))
-            {
-                return Some(url);
-            }
-        }
-        i += 1;
-    }
-    None
-}
-
-fn certreq_attached_config_value(token: &str) -> Option<&str> {
-    let lower = token.to_ascii_lowercase();
-    for prefix in ["-config:", "/config:", "-config=", "/config="] {
-        let Some(rest) = lower.strip_prefix(prefix) else {
-            continue;
-        };
-        let offset = token.len() - rest.len();
-        let value = &token[offset..];
-        if !value.is_empty() {
-            return Some(value);
-        }
-    }
-    None
+    flag_url_value_after(tokens, start, &["-config", "/config"])
 }
 
 fn regsvr32_scriptlet_url_after(tokens: &[String], start: usize) -> Option<String> {
@@ -2772,49 +2730,7 @@ fn scan_certoc_deob_text(deobfuscated: &str, env: &mut Environment) {
 }
 
 fn certoc_getcacaps_url_after(tokens: &[String], start: usize) -> Option<String> {
-    let mut i = start;
-    while i < tokens.len() {
-        let token = strip_outer_quotes(&tokens[i]);
-        if token.eq_ignore_ascii_case("-getcacaps") || token.eq_ignore_ascii_case("/getcacaps") {
-            let Some(next) = tokens.get(i + 1) else {
-                i += 1;
-                continue;
-            };
-            let value = trim_url_suffix(strip_outer_quotes(next));
-            if let Some(url) = normalize_liberal_url_token(value)
-                .or_else(|| normalize_schemeless_domain_path_token(value))
-            {
-                return Some(url);
-            }
-            i += 2;
-            continue;
-        }
-        if let Some(value) = certoc_attached_getcacaps_value(token) {
-            let value = trim_url_suffix(value);
-            if let Some(url) = normalize_liberal_url_token(value)
-                .or_else(|| normalize_schemeless_domain_path_token(value))
-            {
-                return Some(url);
-            }
-        }
-        i += 1;
-    }
-    None
-}
-
-fn certoc_attached_getcacaps_value(token: &str) -> Option<&str> {
-    let lower = token.to_ascii_lowercase();
-    for prefix in ["-getcacaps:", "/getcacaps:", "-getcacaps=", "/getcacaps="] {
-        let Some(rest) = lower.strip_prefix(prefix) else {
-            continue;
-        };
-        let offset = token.len() - rest.len();
-        let value = &token[offset..];
-        if !value.is_empty() {
-            return Some(value);
-        }
-    }
-    None
+    flag_url_value_after(tokens, start, &["-getcacaps", "/getcacaps"])
 }
 
 fn scan_desktopimgdownldr_deob_text(deobfuscated: &str, env: &mut Environment) {
@@ -2856,56 +2772,7 @@ fn scan_desktopimgdownldr_deob_text(deobfuscated: &str, env: &mut Environment) {
 }
 
 fn desktopimgdownldr_lockscreen_url_after(tokens: &[String], start: usize) -> Option<String> {
-    let mut i = start;
-    while i < tokens.len() {
-        let token = strip_outer_quotes(&tokens[i]);
-        if token.eq_ignore_ascii_case("/lockscreenurl")
-            || token.eq_ignore_ascii_case("-lockscreenurl")
-        {
-            let Some(next) = tokens.get(i + 1) else {
-                i += 1;
-                continue;
-            };
-            let value = trim_url_suffix(strip_outer_quotes(next));
-            if let Some(url) = normalize_liberal_url_token(value)
-                .or_else(|| normalize_schemeless_domain_path_token(value))
-            {
-                return Some(url);
-            }
-            i += 2;
-            continue;
-        }
-        if let Some(value) = desktopimgdownldr_attached_lockscreen_url(token) {
-            let value = trim_url_suffix(value);
-            if let Some(url) = normalize_liberal_url_token(value)
-                .or_else(|| normalize_schemeless_domain_path_token(value))
-            {
-                return Some(url);
-            }
-        }
-        i += 1;
-    }
-    None
-}
-
-fn desktopimgdownldr_attached_lockscreen_url(token: &str) -> Option<&str> {
-    let lower = token.to_ascii_lowercase();
-    for prefix in [
-        "/lockscreenurl:",
-        "-lockscreenurl:",
-        "/lockscreenurl=",
-        "-lockscreenurl=",
-    ] {
-        let Some(rest) = lower.strip_prefix(prefix) else {
-            continue;
-        };
-        let offset = token.len() - rest.len();
-        let value = &token[offset..];
-        if !value.is_empty() {
-            return Some(value);
-        }
-    }
-    None
+    flag_url_value_after(tokens, start, &["/lockscreenurl", "-lockscreenurl"])
 }
 
 fn first_url_after(

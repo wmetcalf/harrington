@@ -1,6 +1,6 @@
 //! certreq handler - surfaces remote -config endpoints.
 
-use super::util::{split_words, strip_outer_quotes};
+use super::util::{flag_url_value_after, split_words};
 use crate::env::Environment;
 use crate::traits::Trait;
 
@@ -16,49 +16,5 @@ pub fn h_certreq(raw: &str, env: &mut Environment) {
 }
 
 fn certreq_config_url(tokens: &[String]) -> Option<String> {
-    let mut i = 1usize;
-    while i < tokens.len() {
-        let token = strip_outer_quotes(&tokens[i]);
-        if is_config_flag(token) {
-            if let Some(next) = tokens.get(i + 1) {
-                if let Some(url) = normalize_certreq_url(strip_outer_quotes(next)) {
-                    return Some(url);
-                }
-            }
-            i += 2;
-            continue;
-        }
-        if let Some(value) = attached_config_value(token) {
-            if let Some(url) = normalize_certreq_url(value) {
-                return Some(url);
-            }
-        }
-        i += 1;
-    }
-    None
-}
-
-fn is_config_flag(token: &str) -> bool {
-    token.eq_ignore_ascii_case("-config") || token.eq_ignore_ascii_case("/config")
-}
-
-fn attached_config_value(token: &str) -> Option<&str> {
-    let lower = token.to_ascii_lowercase();
-    for prefix in ["-config:", "/config:", "-config=", "/config="] {
-        let Some(rest) = lower.strip_prefix(prefix) else {
-            continue;
-        };
-        let offset = token.len() - rest.len();
-        let value = &token[offset..];
-        if !value.is_empty() {
-            return Some(value);
-        }
-    }
-    None
-}
-
-fn normalize_certreq_url(token: &str) -> Option<String> {
-    let token = crate::deob_scan::trim_url_suffix(strip_outer_quotes(token));
-    crate::deob_scan::normalize_liberal_url_token(token)
-        .or_else(|| crate::deob_scan::normalize_schemeless_domain_path_token(token))
+    flag_url_value_after(tokens, 1, &["-config", "/config"])
 }

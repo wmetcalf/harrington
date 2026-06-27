@@ -1,6 +1,6 @@
 //! desktopimgdownldr handler - surfaces /lockscreenurl downloads.
 
-use super::util::{split_words, strip_outer_quotes};
+use super::util::{flag_url_value_after, split_words};
 use crate::env::Environment;
 use crate::traits::Trait;
 
@@ -17,52 +17,5 @@ pub fn h_desktopimgdownldr(raw: &str, env: &mut Environment) {
 }
 
 fn lockscreen_url(tokens: &[String]) -> Option<String> {
-    let mut i = 1usize;
-    while i < tokens.len() {
-        let token = strip_outer_quotes(&tokens[i]);
-        if token.eq_ignore_ascii_case("/lockscreenurl")
-            || token.eq_ignore_ascii_case("-lockscreenurl")
-        {
-            if let Some(next) = tokens.get(i + 1) {
-                if let Some(url) = normalize_url(strip_outer_quotes(next)) {
-                    return Some(url);
-                }
-            }
-            i += 2;
-            continue;
-        }
-        if let Some(value) = attached_lockscreen_url(token) {
-            if let Some(url) = normalize_url(value) {
-                return Some(url);
-            }
-        }
-        i += 1;
-    }
-    None
-}
-
-fn attached_lockscreen_url(token: &str) -> Option<&str> {
-    let lower = token.to_ascii_lowercase();
-    for prefix in [
-        "/lockscreenurl:",
-        "-lockscreenurl:",
-        "/lockscreenurl=",
-        "-lockscreenurl=",
-    ] {
-        let Some(rest) = lower.strip_prefix(prefix) else {
-            continue;
-        };
-        let offset = token.len() - rest.len();
-        let value = &token[offset..];
-        if !value.is_empty() {
-            return Some(value);
-        }
-    }
-    None
-}
-
-fn normalize_url(token: &str) -> Option<String> {
-    let token = crate::deob_scan::trim_url_suffix(strip_outer_quotes(token));
-    crate::deob_scan::normalize_liberal_url_token(token)
-        .or_else(|| crate::deob_scan::normalize_schemeless_domain_path_token(token))
+    flag_url_value_after(tokens, 1, &["/lockscreenurl", "-lockscreenurl"])
 }
