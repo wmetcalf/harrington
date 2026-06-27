@@ -1393,6 +1393,26 @@ mod echo_tests {
     }
 
     #[test]
+    fn reg_add_run_key_preserves_quoted_command_with_escaped_quotes() {
+        let script = br##"@echo off
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "Quoted" /t REG_SZ /d "cmd /c \"echo https://reg-escape.example/payload.exe\" & mshta.exe \"stage.hta\"" /f
+"##;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { command, .. }
+                    if command.contains("reg-escape.example/payload.exe")
+                        && command.contains("mshta.exe")
+                        && command.contains("stage.hta")
+            )),
+            "quoted Run-key payload with escaped quotes was truncated: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn schtasks_create_emits_persistence_trait() {
         // `schtasks /create /tn X /tr Y` registers a scheduled-task
         // autorun. Same Persistence trait as reg-add Run, with

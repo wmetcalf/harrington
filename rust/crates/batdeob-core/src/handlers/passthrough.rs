@@ -6,6 +6,7 @@
 use crate::env::Environment;
 use crate::handlers::util::contains_ascii_case_insensitive;
 use crate::traits::Trait;
+use crate::util::find_ascii_case_insensitive_from;
 
 macro_rules! make_handler {
     ($fn_name:ident, $cmd_name:literal) => {
@@ -48,8 +49,6 @@ pub fn h_reg(raw: &str, env: &mut Environment) {
     // line independently (a single lazy regex would skip the /d match).
     static V_RE: Lazy<Regex> =
         Lazy::new(|| Regex::new(r#"(?i)/v(?:\s+|=)(?:"([^"]+)"|(\S+))"#).expect("/v regex"));
-    static D_RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r#"(?i)/d(?:\s+|=)(?:"([^"]*)"|(.+))"#).expect("/d regex"));
     let Some(caps) = REG_ADD_RE.captures(raw) else {
         return;
     };
@@ -69,13 +68,7 @@ pub fn h_reg(raw: &str, env: &mut Environment) {
                 .map(|m| m.as_str().to_string())
         })
         .unwrap_or_default();
-    let command = D_RE
-        .captures(raw)
-        .and_then(|c| {
-            c.get(1)
-                .or_else(|| c.get(2))
-                .map(|m| m.as_str().to_string())
-        })
+    let command = reg_data_value(raw)
         .map(|s| trim_reg_data_tail(&s).to_string())
         .unwrap_or_default();
     // Defender registry tampering — `reg add …\Windows Defender\… /v
@@ -123,6 +116,39 @@ pub fn h_reg(raw: &str, env: &mut Environment) {
         command: command.clone(),
     });
     queue_registry_persisted_command(command, env);
+}
+
+fn reg_data_value(raw: &str) -> Option<String> {
+    let mut cursor = 0usize;
+    while let Some(pos) = find_ascii_case_insensitive_from(raw, "/d", cursor) {
+        let mut value_start = pos + 2;
+        let next = raw.as_bytes().get(value_start).copied()?;
+        if next != b'=' && !next.is_ascii_whitespace() {
+            cursor = value_start;
+            continue;
+        }
+        while matches!(raw.as_bytes().get(value_start), Some(b'=' | b' ' | b'\t')) {
+            value_start += 1;
+        }
+        if raw.as_bytes().get(value_start) == Some(&b'"') {
+            let mut idx = value_start + 1;
+            let mut escaped = false;
+            while idx < raw.len() {
+                let byte = raw.as_bytes()[idx];
+                if byte == b'"' && !escaped {
+                    return Some(raw[value_start + 1..idx].to_string());
+                }
+                escaped = byte == b'\\' && !escaped;
+                if byte != b'\\' {
+                    escaped = false;
+                }
+                idx += 1;
+            }
+            return Some(raw[value_start + 1..].to_string());
+        }
+        return Some(raw[value_start..].to_string());
+    }
+    None
 }
 
 fn defender_regset_suffix(key: &str, value_name: &str) -> Option<&'static str> {
