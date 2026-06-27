@@ -2,7 +2,8 @@
 
 use crate::env::{Environment, FsEntry};
 use crate::handlers::util::{
-    join_windows_path_preserving_separator, split_words, strip_outer_quotes, windows_basename,
+    filesystem_entry_for_path, join_windows_path_preserving_separator, split_words,
+    strip_outer_quotes, windows_basename,
 };
 use crate::traits::Trait;
 
@@ -51,8 +52,7 @@ pub fn h_expand(raw: &str, env: &mut Environment) {
 }
 
 fn downloaded_src_for_candidate(candidate: &str, env: &Environment) -> Option<String> {
-    let key = candidate.to_ascii_lowercase();
-    if let Some(FsEntry::Download { src }) = env.modified_filesystem.get(&key) {
+    if let Some(FsEntry::Download { src }) = filesystem_entry_for_path(env, candidate) {
         return Some(src.clone());
     }
     if let Some(name) = current_dir_basename(candidate) {

