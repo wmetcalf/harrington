@@ -15,9 +15,12 @@ pub fn h_wget(raw: &str, env: &mut Environment) {
         src: url.clone(),
         dst: dst.clone(),
     });
-    if let Some(d) = dst {
+    if let Some(d) = dst.as_ref() {
         env.modified_filesystem
             .insert(d.to_ascii_lowercase(), FsEntry::Download { src: url });
+    } else if let Some(name) = url_basename(&url) {
+        env.modified_filesystem
+            .insert(name.to_ascii_lowercase(), FsEntry::Download { src: url });
     }
 }
 
@@ -178,4 +181,21 @@ fn short_option_cluster_output(token: &str) -> Option<&str> {
     }
     let idx = cluster.find('O')?;
     Some(&cluster[idx + 1..])
+}
+
+fn url_basename(url: &str) -> Option<String> {
+    let path_part = url
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(url)
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(url)
+        .trim_end_matches(['/', '\\']);
+    let last = path_part.rsplit(['/', '\\']).next()?.trim();
+    if last.is_empty() {
+        None
+    } else {
+        Some(last.to_string())
+    }
 }
