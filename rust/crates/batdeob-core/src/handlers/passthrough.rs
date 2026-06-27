@@ -486,7 +486,11 @@ pub(crate) fn winrm_child_command(raw: &str) -> Option<(String, String)> {
         .next()
         .unwrap_or(&raw[first.clone()])
         .to_ascii_lowercase();
-    if command_name.strip_suffix(".cmd").unwrap_or(&command_name) != "winrm" {
+    let command_name = command_name
+        .strip_suffix(".cmd")
+        .or_else(|| command_name.strip_suffix(".exe"))
+        .unwrap_or(&command_name);
+    if command_name != "winrm" {
         return None;
     }
 
@@ -1087,6 +1091,17 @@ mod tests {
 
         assert_eq!(host, "target.example");
         assert_eq!(command, "powershell.exe -nop");
+    }
+
+    #[test]
+    fn winrm_child_command_accepts_exe_suffix() {
+        let (host, command) = winrm_child_command(
+            r#"winrm.exe invoke Create wmicimv2/Win32_Process -r:target.example @{CommandLine="cmd.exe /c echo winrm-exe"}"#,
+        )
+        .expect("winrm.exe child command should parse");
+
+        assert_eq!(host, "target.example");
+        assert_eq!(command, "cmd.exe /c echo winrm-exe");
     }
 
     #[test]
