@@ -2,8 +2,8 @@
 
 use crate::env::{Environment, FsEntry};
 use crate::handlers::util::{
-    ends_with_ascii_case_insensitive, normalize_url_like_token, split_words, strip_outer_quotes,
-    windows_basename,
+    ends_with_ascii_case_insensitive, filesystem_entry_for_path, normalize_url_like_token,
+    split_words, strip_outer_quotes, windows_basename,
 };
 use crate::traits::Trait;
 
@@ -90,8 +90,7 @@ fn extract_script(
 }
 
 fn tracked_script_content(path: &str, env: &Environment) -> Option<Vec<u8>> {
-    let key = path.to_ascii_lowercase();
-    if let Some(content) = content_from_entry(env.modified_filesystem.get(&key)) {
+    if let Some(content) = content_from_entry(filesystem_entry_for_path(env, path)) {
         return Some(content);
     }
     let name = current_dir_basename(path)?;
@@ -123,7 +122,7 @@ fn current_dir_basename(path: &str) -> Option<&str> {
 fn downloaded_source_for_path(env: &Environment, path: &str) -> Option<String> {
     let mut key = path.to_ascii_lowercase();
     for _ in 0..8 {
-        match env.modified_filesystem.get(&key)? {
+        match filesystem_entry_for_path(env, &key)? {
             FsEntry::Download { src } => return Some(src.clone()),
             FsEntry::Copy { src } => key = src.to_ascii_lowercase(),
             FsEntry::Directory | FsEntry::Content { .. } | FsEntry::Decoded { .. } => return None,

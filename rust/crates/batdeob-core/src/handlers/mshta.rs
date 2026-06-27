@@ -1,4 +1,7 @@
-use super::util::{looks_like_liberal_url, split_words, strip_outer_quotes, windows_basename};
+use super::util::{
+    filesystem_entry_for_path, looks_like_liberal_url, split_words, strip_outer_quotes,
+    windows_basename,
+};
 use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
 use crate::util::find_ascii_case_insensitive_from;
@@ -81,7 +84,7 @@ fn inline_payload_after<'a>(raw: &'a str, marker: &str) -> Option<&'a str> {
 fn downloaded_source_for_path(env: &Environment, path: &str) -> Option<String> {
     let mut key = path.to_ascii_lowercase();
     for _ in 0..8 {
-        match env.modified_filesystem.get(&key) {
+        match filesystem_entry_for_path(env, &key) {
             Some(FsEntry::Download { src }) => return Some(src.clone()),
             Some(FsEntry::Copy { src }) => key = src.to_ascii_lowercase(),
             Some(FsEntry::Directory | FsEntry::Content { .. } | FsEntry::Decoded { .. }) => {
@@ -148,8 +151,7 @@ fn queue_tracked_hta_content(path: &str, env: &mut Environment) -> bool {
 }
 
 fn tracked_hta_content(path: &str, env: &Environment) -> Option<Vec<u8>> {
-    let key = path.to_ascii_lowercase();
-    if let Some(content) = content_from_entry(env.modified_filesystem.get(&key)) {
+    if let Some(content) = content_from_entry(filesystem_entry_for_path(env, path)) {
         return Some(content);
     }
     let name = current_dir_basename(path)?;
