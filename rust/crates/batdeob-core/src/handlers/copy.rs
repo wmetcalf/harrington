@@ -75,8 +75,8 @@ pub fn h_copy(raw: &str, env: &mut Environment) {
             dst: dst.clone(),
         });
     }
-    env.modified_filesystem
-        .insert(dst.to_ascii_lowercase(), FsEntry::Copy { src });
+    let entry = copied_entry(&src, env).unwrap_or(FsEntry::Copy { src: src.clone() });
+    insert_copied_entry(env, &src, &dst, entry);
 }
 
 fn push_copy_arg(args: &mut Vec<String>, token: &str) {
@@ -113,8 +113,8 @@ pub fn h_xcopy(raw: &str, env: &mut Environment) {
             dst: dst.clone(),
         });
     }
-    env.modified_filesystem
-        .insert(dst.to_ascii_lowercase(), FsEntry::Copy { src });
+    let entry = copied_entry(&src, env).unwrap_or(FsEntry::Copy { src: src.clone() });
+    insert_copied_entry(env, &src, &dst, entry);
 }
 
 fn is_windows_util_copy(src: &str, dst: &str) -> bool {
@@ -123,6 +123,47 @@ fn is_windows_util_copy(src: &str, dst: &str) -> bool {
     let dst_system = starts_with_ascii_case_insensitive(dst, "c:\\windows\\system32")
         || starts_with_ascii_case_insensitive(dst, "c:\\windows\\syswow64");
     src_system && !dst_system
+}
+
+fn copied_entry(src: &str, env: &Environment) -> Option<FsEntry> {
+    env.modified_filesystem
+        .get(&src.to_ascii_lowercase())
+        .cloned()
+        .or_else(|| {
+            let basename = windows_basename(src)?;
+            env.modified_filesystem.iter().find_map(|(path, entry)| {
+                windows_basename(path)
+                    .filter(|name| name.eq_ignore_ascii_case(basename))
+                    .map(|_| entry.clone())
+            })
+        })
+}
+
+fn insert_copied_entry(env: &mut Environment, src: &str, dst: &str, entry: FsEntry) {
+    env.modified_filesystem
+        .insert(dst.to_ascii_lowercase(), entry.clone());
+    if let Some(joined) = copy_directory_destination_path(src, dst) {
+        env.modified_filesystem
+            .insert(joined.to_ascii_lowercase(), entry);
+    }
+}
+
+fn copy_directory_destination_path(src: &str, dst: &str) -> Option<String> {
+    if !dst.ends_with(['\\', '/']) {
+        return None;
+    }
+    let basename = windows_basename(src)?;
+    let mut out = dst.to_string();
+    out.push_str(basename);
+    Some(collapse_slashes(&out))
+}
+
+fn windows_basename(path: &str) -> Option<&str> {
+    path.trim_matches('"')
+        .trim_matches('\'')
+        .rsplit(['\\', '/'])
+        .next()
+        .filter(|name| !name.is_empty())
 }
 
 fn collapse_slashes(s: &str) -> String {

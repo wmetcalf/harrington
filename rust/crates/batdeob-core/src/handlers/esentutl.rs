@@ -18,8 +18,9 @@ pub fn h_esentutl(raw: &str, env: &mut Environment) {
             dst: dst.clone(),
         });
     }
+    let entry = copied_entry(&src, env).unwrap_or(FsEntry::Copy { src });
     env.modified_filesystem
-        .insert(dst.to_ascii_lowercase(), FsEntry::Copy { src });
+        .insert(dst.to_ascii_lowercase(), entry);
 }
 
 fn parse_esentutl_copy(tokens: &[String]) -> Option<(String, String)> {
@@ -65,6 +66,30 @@ fn is_windows_util_copy(src: &str, dst: &str) -> bool {
         || src_lower.starts_with("c:\\windows\\syswow64"))
         && !(dst_lower.starts_with("c:\\windows\\system32")
             || dst_lower.starts_with("c:\\windows\\syswow64"))
+}
+
+fn copied_entry(src: &str, env: &Environment) -> Option<FsEntry> {
+    let key = src.to_ascii_lowercase();
+    if let Some(entry) = env.modified_filesystem.get(&key) {
+        return Some(entry.clone());
+    }
+
+    let basename = windows_basename(src)?;
+    env.modified_filesystem
+        .iter()
+        .find_map(|(tracked_path, entry)| {
+            windows_basename(tracked_path)
+                .filter(|tracked| tracked.eq_ignore_ascii_case(basename))
+                .map(|_| entry.clone())
+        })
+}
+
+fn windows_basename(path: &str) -> Option<&str> {
+    path.trim_matches('"')
+        .trim_matches('\'')
+        .rsplit(['\\', '/'])
+        .next()
+        .filter(|name| !name.is_empty())
 }
 
 fn collapse_slashes(s: &str) -> String {
