@@ -10244,6 +10244,29 @@ mod cscript_tests {
     }
 
     #[test]
+    fn wscript_current_dir_nested_js_does_not_use_unrelated_basename_content() {
+        let mut env = Environment::new(&Config::default());
+        let js_content = b"WScript.Echo('wrong')\r\n".to_vec();
+        env.modified_filesystem.insert(
+            r#"d:\other\drop.js"#.to_string(),
+            FsEntry::Content {
+                content: js_content.clone(),
+                append: false,
+            },
+        );
+
+        interpret_line(r#"wscript .\Temp\drop.js"#, &mut env);
+
+        assert!(
+            !env.exec_jscript
+                .iter()
+                .any(|content| content == &js_content),
+            "wscript current-dir nested source queued unrelated basename content: {:?}",
+            env.exec_jscript
+        );
+    }
+
+    #[test]
     fn script_hosts_emit_url_argument_and_lolbas_for_remote_scripts() {
         let cscript_raw = r#"cscript //nologo "https://script-host.example/dropper.vbs""#;
         let wscript_raw = r#"wscript "script-host-schemeless.example/dropper.js""#;
@@ -10338,6 +10361,28 @@ mod cscript_tests {
                 )
             }),
             "wscript slash-equivalent full-path source did not resolve download source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn wscript_current_dir_nested_js_does_not_use_unrelated_basename_download() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"curl -o D:\Other\loader.js https://script-host-current-dir-wrong-basename.example/loader.js"#,
+            &mut env,
+        );
+        interpret_line(r#"wscript .\Temp\loader.js"#, &mut env);
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == r#"wscript .\Temp\loader.js"#
+                            && url == "https://script-host-current-dir-wrong-basename.example/loader.js"
+                )
+            }),
+            "wscript current-dir nested source reused unrelated basename download: {:?}",
             env.traits
         );
     }
