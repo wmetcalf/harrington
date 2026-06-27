@@ -9468,7 +9468,7 @@ mod cscript_tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod extrac32_tests {
-    use crate::env::{Config, Environment};
+    use crate::env::{Config, Environment, FsEntry};
     use crate::interp::interpret_line;
     use crate::traits::Trait;
 
@@ -9596,6 +9596,36 @@ mod extrac32_tests {
             "extrac32 copied Windows utility with doubled slashes was not surfaced: {:?}",
             env.traits
         );
+    }
+
+    #[test]
+    fn cabinet_extract_current_dir_archive_preserves_tracked_download_source() {
+        for command in [
+            r"extrac32 /y .\payload.cab dropped.hta",
+            r"expand .\payload.cab dropped.hta",
+        ] {
+            let mut env = Environment::new(&Config::default());
+            env.modified_filesystem.insert(
+                "payload.cab".to_string(),
+                FsEntry::Download {
+                    src: "https://cab-current-dir.example/payload.cab".to_string(),
+                },
+            );
+
+            interpret_line(command, &mut env);
+            interpret_line("mshta dropped.hta", &mut env);
+
+            assert!(
+                env.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "mshta dropped.hta"
+                            && url == "https://cab-current-dir.example/payload.cab"
+                )),
+                "current-dir cabinet source was not linked after {command}: {:?}",
+                env.traits
+            );
+        }
     }
 }
 

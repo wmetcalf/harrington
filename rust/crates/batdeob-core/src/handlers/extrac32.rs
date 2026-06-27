@@ -25,8 +25,12 @@ pub fn h_extrac32(raw: &str, env: &mut Environment) {
             dst: dst.clone(),
         });
     }
+    let entry = match downloaded_src_for_candidate(&src, env) {
+        Some(src) => FsEntry::Download { src },
+        None => FsEntry::Copy { src },
+    };
     env.modified_filesystem
-        .insert(dst.to_ascii_lowercase(), FsEntry::Copy { src });
+        .insert(dst.to_ascii_lowercase(), entry);
 }
 
 pub fn h_expand(raw: &str, env: &mut Environment) {
@@ -49,11 +53,34 @@ fn downloaded_src_for_candidate(candidate: &str, env: &Environment) -> Option<St
     if let Some(FsEntry::Download { src }) = env.modified_filesystem.get(&key) {
         return Some(src.clone());
     }
-    let base = windows_basename(candidate)?.to_ascii_lowercase();
-    match env.modified_filesystem.get(&base)? {
-        FsEntry::Download { src } => Some(src.clone()),
-        _ => None,
+    if let Some(name) = current_dir_basename(candidate) {
+        return downloaded_src_by_basename(name, env);
     }
+    if candidate.contains(['\\', '/']) {
+        return None;
+    }
+    downloaded_src_by_basename(candidate, env)
+}
+
+fn downloaded_src_by_basename(candidate: &str, env: &Environment) -> Option<String> {
+    let base = windows_basename(candidate)?;
+    env.modified_filesystem
+        .iter()
+        .find_map(|(path, entry)| {
+            windows_basename(path)
+                .is_some_and(|name| name.eq_ignore_ascii_case(base))
+                .then_some(entry)
+        })
+        .and_then(|entry| match entry {
+            FsEntry::Download { src } => Some(src.clone()),
+            _ => None,
+        })
+}
+
+fn current_dir_basename(path: &str) -> Option<&str> {
+    path.strip_prefix(r".\")
+        .or_else(|| path.strip_prefix("./"))
+        .and_then(windows_basename)
 }
 
 fn parse_extrac32_paths(tokens: &[String]) -> Option<(String, String)> {
