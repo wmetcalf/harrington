@@ -4,7 +4,10 @@
 #![allow(clippy::expect_used)]
 
 use crate::env::{Environment, FsEntry};
-use crate::handlers::util::{contains_ascii_case_insensitive, split_words, strip_outer_quotes};
+use crate::handlers::util::{
+    contains_ascii_case_insensitive, normalize_wildcard_path, split_words, strip_outer_quotes,
+    wildcard_match,
+};
 use crate::traits::Trait;
 use crate::util::find_ascii_case_insensitive_from;
 
@@ -140,40 +143,6 @@ fn directory_wildcard_prefix(candidate: &str) -> Option<String> {
         }
     }
     None
-}
-
-fn normalize_wildcard_path(path: &str) -> String {
-    path.to_ascii_lowercase()
-        .replace('/', "\\")
-        .replace("*.*", "*")
-}
-
-fn wildcard_match(pattern: &str, text: &str) -> bool {
-    let pattern: Vec<char> = pattern.chars().collect();
-    let text: Vec<char> = text.chars().collect();
-    let (mut pi, mut ti) = (0usize, 0usize);
-    let mut star: Option<usize> = None;
-    let mut star_text = 0usize;
-    while ti < text.len() {
-        if pi < pattern.len() && (pattern[pi] == '?' || pattern[pi] == text[ti]) {
-            pi += 1;
-            ti += 1;
-        } else if pi < pattern.len() && pattern[pi] == '*' {
-            star = Some(pi);
-            pi += 1;
-            star_text = ti;
-        } else if let Some(star_index) = star {
-            pi = star_index + 1;
-            star_text += 1;
-            ti = star_text;
-        } else {
-            return false;
-        }
-    }
-    while pi < pattern.len() && pattern[pi] == '*' {
-        pi += 1;
-    }
-    pi == pattern.len()
 }
 
 fn current_dir_basename(path: &str) -> Option<&str> {

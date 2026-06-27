@@ -92,6 +92,40 @@ pub(crate) fn attached_flag_value<'a>(token: &'a str, flags: &[&str]) -> Option<
     None
 }
 
+pub(crate) fn normalize_wildcard_path(path: &str) -> String {
+    path.to_ascii_lowercase()
+        .replace('/', "\\")
+        .replace("*.*", "*")
+}
+
+pub(crate) fn wildcard_match(pattern: &str, text: &str) -> bool {
+    let pattern: Vec<char> = pattern.chars().collect();
+    let text: Vec<char> = text.chars().collect();
+    let (mut pi, mut ti) = (0usize, 0usize);
+    let mut star: Option<usize> = None;
+    let mut star_text = 0usize;
+    while ti < text.len() {
+        if pi < pattern.len() && (pattern[pi] == '?' || pattern[pi] == text[ti]) {
+            pi += 1;
+            ti += 1;
+        } else if pi < pattern.len() && pattern[pi] == '*' {
+            star = Some(pi);
+            pi += 1;
+            star_text = ti;
+        } else if let Some(star_index) = star {
+            pi = star_index + 1;
+            star_text += 1;
+            ti = star_text;
+        } else {
+            return false;
+        }
+    }
+    while pi < pattern.len() && pattern[pi] == '*' {
+        pi += 1;
+    }
+    pi == pattern.len()
+}
+
 pub(crate) fn normalize_url_like_token(token: &str) -> Option<String> {
     let token = trim_url_suffix(strip_outer_quotes(token));
     crate::deob_scan::normalize_liberal_url_token(token)
