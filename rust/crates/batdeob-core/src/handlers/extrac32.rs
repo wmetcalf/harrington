@@ -47,11 +47,13 @@ fn parse_extrac32_paths(tokens: &[String]) -> Option<(String, String)> {
         if let Some(value) = lower
             .strip_prefix("/l:")
             .or_else(|| lower.strip_prefix("-l:"))
+            .or_else(|| lower.strip_prefix("/l="))
+            .or_else(|| lower.strip_prefix("-l="))
         {
             let offset = token.len() - value.len();
             let value = token[offset..].trim();
             if !value.is_empty() {
-                output_dir = Some(collapse_slashes(value));
+                output_dir = Some(collapse_slashes(strip_outer_quotes(value)));
             }
             i += 1;
             continue;

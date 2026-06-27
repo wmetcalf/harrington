@@ -19,13 +19,16 @@ pub fn h_bitsadmin(raw: &str, env: &mut Environment) {
     let skip_flags = [
         "transfer", "addfile", "create", "download", "upload", "priority",
     ];
-    let skip_values = ["priority"]; // flags whose VALUE we also skip
+    let skip_values = ["priority"]; // flags whose separate VALUE we also skip
 
     let mut i = 1; // skip "bitsadmin"
     while i < tokens.len() {
         let t = &tokens[i];
         if skip_flags.iter().any(|flag| bitsadmin_flag_eq(t, flag)) {
-            if skip_values.iter().any(|flag| bitsadmin_flag_eq(t, flag)) {
+            if skip_values
+                .iter()
+                .any(|flag| bitsadmin_flag_is_bare(t, flag))
+            {
                 i += 2;
             } else {
                 i += 1;
@@ -86,6 +89,15 @@ pub fn h_bitsadmin(raw: &str, env: &mut Environment) {
 }
 
 fn bitsadmin_flag_eq(token: &str, flag: &str) -> bool {
+    token.strip_prefix(['/', '-']).is_some_and(|value| {
+        value.eq_ignore_ascii_case(flag)
+            || value
+                .strip_prefix(flag)
+                .is_some_and(|rest| matches!(rest.as_bytes().first(), Some(b':' | b'=')))
+    })
+}
+
+fn bitsadmin_flag_is_bare(token: &str, flag: &str) -> bool {
     token
         .strip_prefix(['/', '-'])
         .is_some_and(|value| value.eq_ignore_ascii_case(flag))

