@@ -8234,6 +8234,29 @@ mod uac_bypass_tests {
             env.traits
         );
     }
+
+    #[test]
+    fn msconfig_4_direct_command_emits_uac_bypass_trait() {
+        let raw = "msconfig /4";
+        let mut env = Environment::new(&Config::default());
+
+        interpret_line(raw, &mut env);
+
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::UacBypass { technique } if technique == "msconfig-4")),
+            "msconfig /4 direct command was not surfaced: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(
+                |t| matches!(t, Trait::Lolbas { name, cmd } if name == "msconfig" && cmd == raw)
+            ),
+            "msconfig /4 direct command was not marked as LOLBAS: {:?}",
+            env.traits
+        );
+    }
 }
 
 #[cfg(test)]

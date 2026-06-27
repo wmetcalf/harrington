@@ -20,6 +20,7 @@ pub mod for_cmd;
 pub mod goto;
 pub mod hh;
 pub mod if_cmd;
+pub mod msconfig;
 pub mod mshta;
 pub mod msiexec;
 pub mod net;
@@ -61,6 +62,9 @@ pub fn lookup(name: &str) -> Option<Handler> {
     }
     if base.eq_ignore_ascii_case("mshta") {
         return Some(mshta::h_mshta);
+    }
+    if base.eq_ignore_ascii_case("msconfig") {
+        return Some(msconfig::h_msconfig);
     }
     if base.eq_ignore_ascii_case("regsvr32") {
         return Some(regsvr32::h_regsvr32);
