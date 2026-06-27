@@ -14,14 +14,17 @@ pub fn h_net(raw: &str, env: &mut Environment) {
     }
     let mut info = NetUseInfo::default();
     let mut extras: Vec<String> = Vec::new();
-    for p in tokens.iter().skip(2) {
+    let mut idx = 2usize;
+    while let Some(p) = tokens.get(idx) {
         let p_unquoted = p.trim_matches('"').trim_matches('\'').to_string();
         if starts_with_ascii_case_insensitive(p, "/sa") {
             info.options.push("savecred".into());
+            idx += 1;
             continue;
         }
         if starts_with_ascii_case_insensitive(p, "/sm") {
             info.options.push("smartcard".into());
+            idx += 1;
             continue;
         }
         if starts_with_ascii_case_insensitive(p, "/d") {
@@ -31,6 +34,7 @@ pub fn h_net(raw: &str, env: &mut Environment) {
                 "delete"
             };
             info.options.push(v.into());
+            idx += 1;
             continue;
         }
         if starts_with_ascii_case_insensitive(p, "/p") {
@@ -40,23 +44,37 @@ pub fn h_net(raw: &str, env: &mut Environment) {
                 "persistent"
             };
             info.options.push(v.into());
+            idx += 1;
+            continue;
+        }
+        if p.eq_ignore_ascii_case("/u") || p.eq_ignore_ascii_case("/user") {
+            if let Some(v) = tokens.get(idx + 1) {
+                info.user = Some(v.trim_matches('"').trim_matches('\'').to_string());
+                idx += 2;
+            } else {
+                idx += 1;
+            }
             continue;
         }
         if starts_with_ascii_case_insensitive(p, "/u") {
             if let Some(v) = p.split(':').nth(1) {
                 info.user = Some(v.to_string());
             }
+            idx += 1;
             continue;
         }
         if starts_with_ascii_case_insensitive(p, "/y") {
             info.options.push("auto-accept".into());
+            idx += 1;
             continue;
         }
         if starts_with_ascii_case_insensitive(p, "/n") {
             info.options.push("auto-decline".into());
+            idx += 1;
             continue;
         }
         extras.push(p_unquoted);
+        idx += 1;
     }
     if extras.is_empty() {
         return;

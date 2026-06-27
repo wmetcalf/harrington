@@ -7064,6 +7064,25 @@ mod misc_handler_tests {
     }
 
     #[test]
+    fn net_use_spaced_user_value_preserves_user_and_password() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(r#"net use Z: \\evil\share /user DOMAIN\adm pass"#, &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::NetUse { info, .. }
+                    if info.devicename.as_deref() == Some("Z:")
+                        && info.server.as_deref() == Some(r#"\\evil\share"#)
+                        && info.user.as_deref() == Some(r#"DOMAIN\adm"#)
+                        && info.password.as_deref() == Some("pass")
+            )),
+            "spaced /user value was not preserved: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn copied_net_alias_use_emits_net_use_trait() {
         let report = analyze(
             br#"copy C:\Windows\System32\net.exe C:\Users\Public\nt.tmp
