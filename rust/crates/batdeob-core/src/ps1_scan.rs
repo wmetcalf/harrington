@@ -9,8 +9,8 @@
 use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
 use crate::util::{
-    contains_ascii_case_insensitive, find_ascii_case_insensitive, find_ascii_case_insensitive_from,
-    floor_char_boundary, looks_like_liberal_url, snippet_prefix,
+    contains_ascii_case_insensitive, find_ascii_case_insensitive_from, floor_char_boundary,
+    looks_like_liberal_url, snippet_prefix,
 };
 use base64::Engine as _;
 use once_cell::sync::Lazy;
@@ -955,24 +955,38 @@ fn compression_wrapper_bounds(
     b64_start: usize,
     b64_end: usize,
 ) -> Option<(usize, usize, PsCompressionStream)> {
-    let start =
-        find_ascii_case_insensitive(&text[..b64_start], "new-object system.io.streamreader")?;
+    let lower = text.to_ascii_lowercase();
     let after_end = floor_char_boundary(text, b64_end.saturating_add(8192));
     let after = &text[b64_end..after_end];
     let read_to_end = READ_TO_END_RE.find(after)?;
     let end = b64_end + read_to_end.end();
-    let wrapper = &text[start..end];
-    if !contains_ascii_case_insensitive(wrapper, "memorystream") {
-        return None;
+    for marker in [
+        "new-object system.io.streamreader",
+        "new-object io.streamreader",
+        "[system.io.streamreader]::new",
+        "[io.streamreader]::new",
+        "new-object system.io.memorystream",
+        "new-object io.memorystream",
+        "[system.io.memorystream]::new",
+        "[io.memorystream]::new",
+    ] {
+        let Some(start) = lower[..b64_start].rfind(marker) else {
+            continue;
+        };
+        let wrapper = &lower[start..end];
+        if !wrapper.contains("memorystream") {
+            continue;
+        }
+        let stream = if wrapper.contains("gzipstream") {
+            PsCompressionStream::Gzip
+        } else if wrapper.contains("deflatestream") {
+            PsCompressionStream::Deflate
+        } else {
+            continue;
+        };
+        return Some((start, end, stream));
     }
-    let stream = if contains_ascii_case_insensitive(wrapper, "gzipstream") {
-        PsCompressionStream::Gzip
-    } else if contains_ascii_case_insensitive(wrapper, "deflatestream") {
-        PsCompressionStream::Deflate
-    } else {
-        return None;
-    };
-    Some((start, end, stream))
+    None
 }
 
 fn expand_json_script_base64(text: &str) -> String {

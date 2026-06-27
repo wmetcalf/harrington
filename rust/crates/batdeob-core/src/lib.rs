@@ -9811,6 +9811,38 @@ mod ps1_obfuscation_tests {
     }
 
     #[test]
+    fn ps1_normalization_decodes_io_streamreader_gzip_stage() {
+        use base64::Engine;
+        use std::io::Write;
+
+        let decoded = r#"$banana="$env:USERPROFILE\aoc.bat";if(Test-Path $banana){$rawLines=gc $banana|?{$_ -like ":::*"};$part1=($rawLines|?{$_ -like ":::1*"}|%{$_.Substring(4)});$part2=($rawLines|?{$_ -like ":::2*"}|%{$_.Substring(4)});$part3=($rawLines|?{$_ -like ":::3*"}|%{$_.Substring(4)});$part4=($rawLines|?{$_ -like ":::4*"}|%{$_.Substring(4)});$part5=($rawLines|?{$_ -like ":::5*"}|%{$_.Substring(4)});$kiwi=$part1+$part2+$part3+$part4+$part5;$apple=($kiwi-replace"waikikibondibeach",""-replace"npd","");if($apple){try{iex([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($apple)))}catch{}}}"#;
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(decoded.as_bytes()).unwrap();
+        let gz = encoder.finish().unwrap();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(gz);
+        let ps = format!(
+            "$c='{b64}';$ms=New-Object IO.MemoryStream(,[Convert]::FromBase64String($c));$gz=New-Object IO.Compression.GZipStream($ms,[IO.Compression.CompressionMode]::Decompress);$sr=New-Object IO.StreamReader($gz);iex($sr.ReadToEnd());$sr.Close();$gz.Close();$ms.Close();"
+        );
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+
+        assert!(
+            normalized.contains(r#"$env:USERPROFILE\aoc.bat"#),
+            "outer gzip stage was not decoded:\n{}",
+            normalized
+        );
+        assert!(
+            normalized.contains("waikikibondibeach"),
+            "inner stage body was not preserved:\n{}",
+            normalized
+        );
+        assert!(
+            !normalized.to_ascii_lowercase().contains("gzipstream"),
+            "gzip wrapper should be replaced by the decoded script:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
     fn ps1_normalization_decodes_nested_deflate_base64() {
         use base64::Engine;
         use std::io::Write;
