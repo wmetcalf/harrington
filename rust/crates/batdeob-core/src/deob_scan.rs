@@ -523,7 +523,7 @@ fn scan_bitsadmin_deob_text(deobfuscated: &str, env: &mut Environment) {
             let mut i = 1;
             while i < tokens.len() {
                 let token = strip_outer_quotes(&tokens[i]).to_string();
-                if bitsadmin_flag_eq(&token, "priority") {
+                if bitsadmin_flag_is_bare(&token, "priority") {
                     i += 2;
                     continue;
                 }
@@ -569,7 +569,7 @@ fn bitsadmin_dst_after_url(tokens: &[String], start: usize) -> Option<String> {
     let mut i = start;
     while i < tokens.len() {
         let token = strip_outer_quotes(&tokens[i]).to_string();
-        if bitsadmin_flag_eq(&token, "priority") {
+        if bitsadmin_flag_is_bare(&token, "priority") {
             i += 2;
             continue;
         }
@@ -583,6 +583,15 @@ fn bitsadmin_dst_after_url(tokens: &[String], start: usize) -> Option<String> {
 }
 
 fn bitsadmin_flag_eq(token: &str, flag: &str) -> bool {
+    token.strip_prefix(['/', '-']).is_some_and(|value| {
+        value.eq_ignore_ascii_case(flag)
+            || value
+                .strip_prefix(flag)
+                .is_some_and(|rest| matches!(rest.as_bytes().first(), Some(b':' | b'=')))
+    })
+}
+
+fn bitsadmin_flag_is_bare(token: &str, flag: &str) -> bool {
     token
         .strip_prefix(['/', '-'])
         .is_some_and(|value| value.eq_ignore_ascii_case(flag))
@@ -2591,7 +2600,7 @@ fn regsvr32_scriptlet_url_after(tokens: &[String], start: usize) -> Option<Strin
     for i in start..limit {
         let token = strip_outer_quotes(&tokens[i]);
         let lower = token.to_ascii_lowercase();
-        let candidate = if lower.starts_with("/i:") || lower.starts_with("-i:") {
+        let candidate = if regsvr32_attached_i_arg(&lower) {
             token.get(3..)
         } else if lower == "/i" || lower == "-i" {
             tokens.get(i + 1).map(|next| strip_outer_quotes(next))
@@ -2609,6 +2618,13 @@ fn regsvr32_scriptlet_url_after(tokens: &[String], start: usize) -> Option<Strin
         }
     }
     None
+}
+
+fn regsvr32_attached_i_arg(lower: &str) -> bool {
+    lower.starts_with("/i:")
+        || lower.starts_with("-i:")
+        || lower.starts_with("/i=")
+        || lower.starts_with("-i=")
 }
 
 fn url_launch_after_start(tokens: &[String], mut i: usize) -> Option<String> {
@@ -4555,6 +4571,39 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
                 .get(i + 1)
                 .map(|s| s.trim_matches(['"', '\'', ')']).to_string());
             i += 2;
+            continue;
+        }
+        if raw_token.eq_ignore_ascii_case("--input-file") && tokens.get(i + 1).is_some() {
+            let candidate = tokens
+                .get(i + 1)
+                .map(|s| clean_command_url_token(s.trim_matches(['"', '\'', ')'])))
+                .unwrap_or_default();
+            if let Some(normalized) = normalize_wget_url_token(candidate) {
+                url = Some(normalized);
+            }
+            i += 2;
+            continue;
+        }
+        if let Some(rest) = raw_token.strip_prefix("-i") {
+            if !rest.is_empty() && !rest.starts_with('-') {
+                let candidate = clean_command_url_token(rest.trim_matches(['"', '\'', ')']));
+                if let Some(normalized) = normalize_wget_url_token(candidate) {
+                    url = Some(normalized);
+                }
+                i += 1;
+                continue;
+            }
+        }
+        if let Some(rest) = strip_ascii_case_insensitive_prefix(raw_token, "--input-file=")
+            .or_else(|| strip_ascii_case_insensitive_prefix(raw_token, "--input-file:"))
+        {
+            if !rest.is_empty() {
+                let candidate = clean_command_url_token(rest.trim_matches(['"', '\'', ')']));
+                if let Some(normalized) = normalize_wget_url_token(candidate) {
+                    url = Some(normalized);
+                }
+            }
+            i += 1;
             continue;
         }
         if wget_flag_matches_ci(raw_token, "-i") && tokens.get(i + 1).is_some() {
