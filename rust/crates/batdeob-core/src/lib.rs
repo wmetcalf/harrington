@@ -7102,6 +7102,28 @@ mod misc_handler_tests {
     }
 
     #[test]
+    fn net_use_attached_quoted_user_value_strips_quotes() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"net use Z: \\evil\share /user:"DOMAIN\adm" pass"#,
+            &mut env,
+        );
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::NetUse { info, .. }
+                    if info.devicename.as_deref() == Some("Z:")
+                        && info.server.as_deref() == Some(r#"\\evil\share"#)
+                        && info.user.as_deref() == Some(r#"DOMAIN\adm"#)
+                        && info.password.as_deref() == Some("pass")
+            )),
+            "attached quoted /user value was not unquoted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn net_exe_use_dispatches_to_net_handler() {
         let mut env = Environment::new(&Config::default());
         interpret_line(r#"net.exe use Z: \\evil\share"#, &mut env);
