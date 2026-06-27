@@ -169,11 +169,22 @@ fn directory_create_targets(raw: &str) -> Vec<String> {
 }
 
 fn track_directory(env: &mut Environment, candidate: &str) {
-    let key = candidate.trim_end_matches(['\\', '/']).to_ascii_lowercase();
+    let mut key = candidate.trim_end_matches(['\\', '/']).to_ascii_lowercase();
     if key.is_empty() {
         return;
     }
-    env.modified_filesystem.insert(key, FsEntry::Directory);
+    loop {
+        env.modified_filesystem
+            .insert(key.clone(), FsEntry::Directory);
+        let Some((parent, _)) = key.rsplit_once(['\\', '/']) else {
+            break;
+        };
+        let parent = parent.trim_end_matches(['\\', '/']);
+        if parent.is_empty() || parent.ends_with(':') || parent == key {
+            break;
+        }
+        key = parent.to_string();
+    }
 }
 
 /// `reg add` handler. Pushes the existing AdminCommand trait for backward
