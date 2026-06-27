@@ -87,12 +87,8 @@ fn evaluate(rest: &str, env: &Environment) -> Option<bool> {
         if path.is_empty() {
             return None;
         }
-        return Some(
-            env.modified_filesystem
-                .keys()
-                .any(|key| key.len() == path.len() && key.eq_ignore_ascii_case(path))
-                || current_dir_path_exists(path, env),
-        );
+        let key = path.to_ascii_lowercase();
+        return Some(tracked_path_exists(path, &key, env));
     }
 
     if strip_kw(trimmed, "errorlevel").is_some() {
@@ -174,6 +170,56 @@ fn evaluate(rest: &str, env: &Environment) -> Option<bool> {
     }
 
     None
+}
+
+fn tracked_path_exists(path: &str, key: &str, env: &Environment) -> bool {
+    env.modified_filesystem
+        .keys()
+        .any(|tracked| tracked.len() == key.len() && tracked.eq_ignore_ascii_case(key))
+        || current_dir_path_exists(path, env)
+        || wildcard_path_exists(path, env)
+}
+
+fn wildcard_path_exists(pattern: &str, env: &Environment) -> bool {
+    if !pattern.contains(['*', '?']) {
+        return false;
+    }
+    let normalized_pattern = normalize_fs_match_path(pattern);
+    env.modified_filesystem
+        .keys()
+        .any(|path| wildcard_match(&normalized_pattern, &normalize_fs_match_path(path)))
+}
+
+fn normalize_fs_match_path(path: &str) -> String {
+    path.to_ascii_lowercase().replace('/', "\\")
+}
+
+fn wildcard_match(pattern: &str, text: &str) -> bool {
+    let pattern: Vec<char> = pattern.chars().collect();
+    let text: Vec<char> = text.chars().collect();
+    let (mut pi, mut ti) = (0usize, 0usize);
+    let mut star: Option<usize> = None;
+    let mut star_text = 0usize;
+    while ti < text.len() {
+        if pi < pattern.len() && (pattern[pi] == '?' || pattern[pi] == text[ti]) {
+            pi += 1;
+            ti += 1;
+        } else if pi < pattern.len() && pattern[pi] == '*' {
+            star = Some(pi);
+            pi += 1;
+            star_text = ti;
+        } else if let Some(star_index) = star {
+            pi = star_index + 1;
+            star_text += 1;
+            ti = star_text;
+        } else {
+            return false;
+        }
+    }
+    while pi < pattern.len() && pattern[pi] == '*' {
+        pi += 1;
+    }
+    pi == pattern.len()
 }
 
 fn current_dir_path_exists(path: &str, env: &Environment) -> bool {

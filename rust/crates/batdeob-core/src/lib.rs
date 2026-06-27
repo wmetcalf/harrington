@@ -5931,6 +5931,21 @@ echo %MARK%
     }
 
     #[test]
+    fn if_exist_directory_wildcard_resolves_tracked_file() {
+        let script = br#"echo marker>C:\Temp\gate.txt
+if exist C:\Temp\*.txt set MARK=found
+echo %MARK%
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo found"),
+            "if exist wildcard did not resolve tracked file:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+    }
+
+    #[test]
     fn del_directory_wildcard_removes_tracked_file_for_later_if_not_exist() {
         let script = br#"echo marker>C:\Temp\gate.txt
 del /f /q C:\Temp\*.*
