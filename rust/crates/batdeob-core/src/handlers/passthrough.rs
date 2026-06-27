@@ -196,9 +196,9 @@ pub fn h_schtasks(raw: &str, env: &mut Environment) {
         return;
     }
     static TN_RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r#"(?i)/tn(?:\s+|=)(?:"([^"]+)"|(\S+))"#).expect("/tn regex"));
+        Lazy::new(|| Regex::new(r#"(?i)/tn(?:\s+|[:=])(?:"([^"]+)"|(\S+))"#).expect("/tn regex"));
     static TR_RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r#"(?i)/tr(?:\s+|=)(?:"([^"]+)"|(.+))"#).expect("/tr regex"));
+        Lazy::new(|| Regex::new(r#"(?i)/tr(?:\s+|[:=])(?:"([^"]+)"|(.+))"#).expect("/tr regex"));
     let task_name = TN_RE
         .captures(raw)
         .and_then(|c| {
@@ -981,6 +981,32 @@ mod tests {
         assert!(
             env.exec_cmd.iter().any(|cmd| cmd == "echo hidden"),
             "equals-form scheduled task command was not queued: {:?}",
+            env.exec_cmd
+        );
+    }
+
+    #[test]
+    fn schtasks_attached_flags_are_case_insensitive() {
+        let mut env = Environment::new(&Config::default());
+        h_schtasks(
+            r#"schtasks /Create /Tn:Updater /Tr:"cmd.exe /c echo mixed-case-task" /Sc once"#,
+            &mut env,
+        );
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { hive, key, command, .. }
+                    if hive == "ScheduledTask"
+                        && key == "Updater"
+                        && command == "cmd.exe /c echo mixed-case-task"
+            )),
+            "mixed-case attached schtasks flags were not persisted: {:?}",
+            env.traits
+        );
+        assert!(
+            env.exec_cmd.iter().any(|cmd| cmd == "echo mixed-case-task"),
+            "mixed-case attached /Tr child was not queued: {:?}",
             env.exec_cmd
         );
     }
