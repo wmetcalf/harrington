@@ -39,7 +39,9 @@ pub fn h_if(raw: &str, env: &mut Environment) {
     // condition string after the operator + RHS), re-dispatch it.
     if let Some(body) = extract_inline_body(rest) {
         let body = body.trim().to_string();
-        if !body.is_empty() && !body.starts_with('(') {
+        if let Some(then_body) = parenthesized_branch_body(&body) {
+            dispatch_if_branch(then_body, env);
+        } else if !body.is_empty() {
             crate::interp::interpret_line(&body, env);
         }
     }
@@ -53,6 +55,14 @@ pub(crate) fn inline_body_needs_raw_dispatch(raw: &str) -> bool {
     let Some(body) = extract_inline_body(rest) else {
         return false;
     };
+    let body = body.trim();
+    if let Some(then_body) = parenthesized_branch_body(body) {
+        return if_body_needs_raw_dispatch(then_body);
+    }
+    if_body_needs_raw_dispatch(body)
+}
+
+fn if_body_needs_raw_dispatch(body: &str) -> bool {
     let body = body.trim();
     body.contains('!')
         && (crate::handlers::cmd::extract_cmd_inner(body).is_some()
@@ -289,6 +299,59 @@ fn skip_one_token(s: &str) -> &str {
     match s.as_bytes().iter().position(|b| b.is_ascii_whitespace()) {
         Some(p) => s[p..].trim_start(),
         None => "",
+    }
+}
+
+fn parenthesized_branch_body(body: &str) -> Option<&str> {
+    let body = body.trim();
+    let inner = body.strip_prefix('(')?;
+    let close = matching_close_paren(inner)?;
+    inner.get(..close)
+}
+
+fn matching_close_paren(s: &str) -> Option<usize> {
+    let mut depth = 1i32;
+    let mut in_dq = false;
+    let mut in_sq = false;
+    let mut escaped = false;
+    for (idx, ch) in s.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '^' {
+            escaped = true;
+            continue;
+        }
+        if ch == '"' && !in_sq {
+            in_dq = !in_dq;
+            continue;
+        }
+        if ch == '\'' && !in_dq {
+            in_sq = !in_sq;
+            continue;
+        }
+        if in_dq || in_sq {
+            continue;
+        }
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(idx);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn dispatch_if_branch(body: &str, env: &mut Environment) {
+    let body = body.trim();
+    if !body.is_empty() {
+        crate::interp::interpret_line(body, env);
     }
 }
 

