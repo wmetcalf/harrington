@@ -5971,6 +5971,21 @@ echo %MARK%
     }
 
     #[test]
+    fn if_exist_current_dir_nested_path_resolves_tracked_file() {
+        let script = br#"curl -o .\Temp\gate.txt https://if-current-dir-nested.example/gate.txt
+if exist .\Temp\gate.txt set MARK=found
+echo %MARK%
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo found"),
+            "if exist current-dir nested path suppressed reachable branch:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+    }
+
+    #[test]
     fn del_removes_tracked_file_for_later_if_not_exist() {
         let script = br#"echo marker>gate.txt
 del gate.txt
@@ -6232,6 +6247,21 @@ echo %MARK%
         assert!(
             report.deobfuscated.contains("echo created"),
             "mkdir current-dir directory did not resolve for if exist:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+    }
+
+    #[test]
+    fn mkdir_current_dir_directory_exists_for_later_current_dir_if_exist() {
+        let script = br#"mkdir .\Temp\stage
+if exist .\Temp\stage set MARK=created
+echo %MARK%
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo created"),
+            "mkdir current-dir directory did not resolve for current-dir if exist:\n{}\ntraits={:?}",
             report.deobfuscated,
             report.traits
         );
