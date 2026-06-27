@@ -48,6 +48,17 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
         return result;
     }
 
+    if let Some(body) = crate::handlers::call::call_body(raw) {
+        let raw_wrapper_needs_bang_preservation = body.contains('!')
+            && (crate::handlers::cmd::extract_cmd_inner(body).is_some()
+                || crate::handlers::cmd::start_child_command(body).is_some());
+        if raw_wrapper_needs_bang_preservation {
+            crate::handlers::call::h_call(raw, env);
+            result.consumed = true;
+            return result;
+        }
+    }
+
     result
 }
 

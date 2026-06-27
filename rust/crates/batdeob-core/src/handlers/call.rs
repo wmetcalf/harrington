@@ -5,9 +5,7 @@ use crate::handlers::util::{split_words, strip_keyword_ci};
 use crate::traits::Trait;
 
 pub fn h_call(raw: &str, env: &mut Environment) {
-    let rest = raw.trim_start();
-    let after = strip_keyword_ci(rest, "call", b":/").unwrap_or("");
-    let body = after.trim_start();
+    let body = call_body(raw).unwrap_or("");
 
     if let Some(after_colon) = body.strip_prefix(':') {
         let parts = split_words(after_colon);
@@ -44,4 +42,10 @@ pub fn h_call(raw: &str, env: &mut Environment) {
     if !body.is_empty() {
         crate::interp::interpret_line(body, env);
     }
+}
+
+pub(crate) fn call_body(raw: &str) -> Option<&str> {
+    let rest = raw.trim_start();
+    let after = strip_keyword_ci(rest, "call", b":/")?;
+    Some(after.trim_start())
 }
