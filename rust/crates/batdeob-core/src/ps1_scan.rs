@@ -548,6 +548,14 @@ static FORMAT_CONCAT_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
 static FORMAT_ARG_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"'([^']*)'|"([^"]*)""#).expect("format arg literal"));
 
+#[allow(clippy::expect_used)]
+static STRING_FORMAT_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)\[(?:System\.)?String\]::Format\s*\(\s*(?:'([^']*)'|"([^"]*)")\s*,\s*((?:(?:'[^']*'|"[^"]*")\s*,\s*)*(?:'[^']*'|"[^"]*"))\s*\)"#,
+    )
+    .expect("string format")
+});
+
 fn expand_format_literals(text: &str) -> String {
     if !contains_ascii_case_insensitive(text, "-f") {
         return text.to_string();
@@ -621,12 +629,53 @@ mod marker_noise_prefilter_tests {
     }
 }
 
-fn format_format_literal(mut template: String, args: &str) -> Option<String> {
+fn format_format_literal(template: String, args: &str) -> Option<String> {
+    let template = format_format_literal_value(template, args)?;
+    Some(format!("'{}'", template))
+}
+
+fn format_format_literal_value(mut template: String, args: &str) -> Option<String> {
+    let mut arg_count = 0usize;
     for (idx, part) in FORMAT_ARG_RE.captures_iter(args).enumerate() {
+        arg_count += 1;
+        if arg_count > 128 {
+            return None;
+        }
         let value = part.get(1).or_else(|| part.get(2))?.as_str();
         template = template.replace(&format!("{{{idx}}}"), value);
+        if template.len() > 8192 {
+            return None;
+        }
     }
-    Some(format!("'{}'", template))
+    Some(template)
+}
+
+fn expand_ps_string_format_static(text: &str) -> String {
+    if !contains_ascii_case_insensitive(text, "String]::Format") {
+        return text.to_string();
+    }
+    let matches: Vec<(usize, usize, String)> = STRING_FORMAT_RE
+        .captures_iter(text)
+        .filter_map(|caps| {
+            let full = caps.get(0)?;
+            let template = caps.get(1).or_else(|| caps.get(2))?.as_str();
+            if template.len() > 8192 {
+                return None;
+            }
+            let args = caps.get(3)?.as_str();
+            let formatted = format_format_literal_value(template.to_string(), args)?;
+            Some((
+                full.start(),
+                full.end(),
+                format!("'{}'", formatted.replace('\'', "''")),
+            ))
+        })
+        .collect();
+    let mut out = text.to_string();
+    for (start, end, replacement) in matches.into_iter().rev() {
+        out.replace_range(start..end, &replacement);
+    }
+    out
 }
 
 #[allow(clippy::expect_used)]
@@ -1870,6 +1919,22 @@ static JOIN_PART_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static STRING_JOIN_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)\[(?:System\.)?String\]::Join\s*\(\s*(?:'([^'\\]*(?:\\.[^'\\]*)*)'|"([^"\\]*(?:\\.[^"\\]*)*)")\s*,\s*@?\(\s*((?:(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*")\s*,\s*)*(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*"))\s*\)\s*\)"#,
+    )
+    .expect("string join")
+});
+
+#[allow(clippy::expect_used)]
+static STRING_CONCAT_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)\[(?:System\.)?String\]::Concat\s*\(\s*((?:(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*")\s*,\s*)*(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*"))\s*\)"#,
+    )
+    .expect("string concat")
+});
+
+#[allow(clippy::expect_used)]
 static SINGLE_LITERAL_JOIN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"\(\s*(?:'([^'\\]*(?:\\.[^'\\]*)*)'|"([^"\\]*(?:\\.[^"\\]*)*)")\s*-join\s*(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*")\s*\)|(?:'([^'\\]*(?:\\.[^'\\]*)*)'|"([^"\\]*(?:\\.[^"\\]*)*)")\s*-join\s*(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*")"#,
@@ -2116,6 +2181,83 @@ fn expand_ps_join(text: &str) -> String {
                 return None;
             }
             Some((full.start(), full.end(), format!("'{}'", parts.join(sep))))
+        })
+        .collect();
+    let mut out = text.to_string();
+    for (start, end, replacement) in matches.into_iter().rev() {
+        out.replace_range(start..end, &replacement);
+    }
+    out
+}
+
+fn expand_ps_string_join(text: &str) -> String {
+    if !contains_ascii_case_insensitive(text, "String]::Join") {
+        return text.to_string();
+    }
+    let matches: Vec<(usize, usize, String)> = STRING_JOIN_RE
+        .captures_iter(text)
+        .filter_map(|caps| {
+            let full = caps.get(0)?;
+            let sep = caps.get(1).or_else(|| caps.get(2))?.as_str();
+            let parts_text = caps.get(3)?.as_str();
+            let parts: Vec<String> = JOIN_PART_RE
+                .captures_iter(parts_text)
+                .filter_map(|c| {
+                    c.get(1)
+                        .or_else(|| c.get(2))
+                        .map(|m| m.as_str().to_string())
+                })
+                .collect();
+            if parts.is_empty() || parts.len() > 128 || sep.len() > 64 {
+                return None;
+            }
+            let joined = parts.join(sep);
+            if joined.len() > 8192 {
+                return None;
+            }
+            Some((
+                full.start(),
+                full.end(),
+                format!("'{}'", joined.replace('\'', "''")),
+            ))
+        })
+        .collect();
+    let mut out = text.to_string();
+    for (start, end, replacement) in matches.into_iter().rev() {
+        out.replace_range(start..end, &replacement);
+    }
+    out
+}
+
+fn expand_ps_string_concat_static(text: &str) -> String {
+    if !contains_ascii_case_insensitive(text, "String]::Concat") {
+        return text.to_string();
+    }
+    let matches: Vec<(usize, usize, String)> = STRING_CONCAT_RE
+        .captures_iter(text)
+        .filter_map(|caps| {
+            let full = caps.get(0)?;
+            let parts_text = caps.get(1)?.as_str();
+            let parts: Vec<String> = JOIN_PART_RE
+                .captures_iter(parts_text)
+                .filter_map(|c| {
+                    c.get(1)
+                        .or_else(|| c.get(2))
+                        .map(|m| m.as_str().to_string())
+                })
+                .collect();
+            if parts.is_empty() || parts.len() > 128 {
+                return None;
+            }
+            let joined = parts.join("");
+            if joined.len() > 8192 {
+                return None;
+            }
+            Some((
+                full.start(),
+                full.end(),
+                format!("'{}'", joined.replace('\'', "''")),
+            ))
         })
         .collect();
     let mut out = text.to_string();
@@ -3364,6 +3506,7 @@ fn expand_obfuscation(text: &str) -> String {
         out = expand_string_concat(&out);
         out = expand_double_string_concat(&out);
         out = expand_format_literals(&out);
+        out = expand_ps_string_format_static(&out);
         out = expand_gzip_function_base64_variables(&out);
         out = expand_gzip_base64_literals(&out);
         out = expand_json_script_base64(&out);
@@ -3382,6 +3525,8 @@ fn expand_obfuscation(text: &str) -> String {
         out = expand_reverse_string_slice_join(&out);
         out = expand_single_literal_join(&out);
         out = expand_tochararray_reverse_join(&out);
+        out = expand_ps_string_join(&out);
+        out = expand_ps_string_concat_static(&out);
         out = expand_ps_join(&out);
         out = expand_ps_replace(&out);
         out = expand_ps_dot_replace(&out);

