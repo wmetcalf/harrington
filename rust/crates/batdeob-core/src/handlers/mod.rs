@@ -213,6 +213,9 @@ pub fn lookup(name: &str) -> Option<Handler> {
     if base.eq_ignore_ascii_case("move") {
         return Some(copy::h_move);
     }
+    if base.eq_ignore_ascii_case("ren") || base.eq_ignore_ascii_case("rename") {
+        return Some(copy::h_ren);
+    }
     if base.eq_ignore_ascii_case("rmdir") {
         return Some(passthrough::h_rmdir);
     }

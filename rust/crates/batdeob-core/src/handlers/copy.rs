@@ -132,11 +132,25 @@ pub fn h_move(raw: &str, env: &mut Environment) {
         cmd: raw.to_string(),
     });
 
+    track_rename_like(raw, env, &["/y", "/-y"], true);
+}
+
+pub fn h_ren(raw: &str, env: &mut Environment) {
+    track_rename_like(raw, env, &[], false);
+}
+
+fn track_rename_like(
+    raw: &str,
+    env: &mut Environment,
+    options: &[&str],
+    allow_directory_dst: bool,
+) {
     let tokens: Vec<String> = split_words(raw);
     let mut args: Vec<String> = Vec::new();
     for t in tokens.iter().skip(1) {
         let stripped = strip_outer_quotes(t);
-        if stripped.eq_ignore_ascii_case("/y") || stripped.eq_ignore_ascii_case("/-y") {
+        let lower = stripped.to_ascii_lowercase();
+        if options.contains(&lower.as_str()) {
             continue;
         }
         args.push(stripped.to_string());
@@ -148,7 +162,16 @@ pub fn h_move(raw: &str, env: &mut Environment) {
     let src = collapse_slashes(&args[0]);
     let dst = collapse_slashes(&args[1]);
     let entry = copied_entry(&src, env).unwrap_or(FsEntry::Copy { src: src.clone() });
-    insert_copied_entry(env, &src, &dst, entry);
+    if allow_directory_dst {
+        insert_copied_entry(env, &src, &dst, entry);
+    } else {
+        env.modified_filesystem
+            .insert(dst.to_ascii_lowercase(), entry.clone());
+        if let Some(joined) = rename_destination_in_source_directory(&src, &dst) {
+            env.modified_filesystem
+                .insert(joined.to_ascii_lowercase(), entry);
+        }
+    }
 }
 
 fn is_windows_util_copy(src: &str, dst: &str) -> bool {
@@ -200,6 +223,17 @@ fn copy_directory_destination_path(src: &str, dst: &str) -> Option<String> {
     let mut out = dst.to_string();
     out.push_str(basename);
     Some(collapse_slashes(&out))
+}
+
+fn rename_destination_in_source_directory(src: &str, dst: &str) -> Option<String> {
+    if dst.contains(['\\', '/', ':']) {
+        return None;
+    }
+    let (dir, _) = src.rsplit_once(['\\', '/'])?;
+    if dir.is_empty() || dst.is_empty() {
+        return None;
+    }
+    Some(collapse_slashes(&format!("{dir}\\{dst}")))
 }
 
 fn windows_basename(path: &str) -> Option<&str> {

