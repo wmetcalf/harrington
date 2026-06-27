@@ -69,6 +69,10 @@ pub fn h_bitsadmin(raw: &str, env: &mut Environment) {
         downloads.push((url, String::new()));
     }
 
+    if !downloads.is_empty() {
+        push_lolbas(raw, env);
+    }
+
     for (u, d) in downloads {
         env.traits.push(Trait::BitsadminDownload {
             url: u.clone(),
@@ -89,4 +93,17 @@ fn bitsadmin_flag_eq(token: &str, flag: &str) -> bool {
 
 fn is_bitsadmin_option(token: &str) -> bool {
     token.starts_with('/') || token.starts_with('-')
+}
+
+fn push_lolbas(raw: &str, env: &mut Environment) {
+    if !env
+        .traits
+        .iter()
+        .any(|t| matches!(t, Trait::Lolbas { name, cmd } if name == "bitsadmin" && cmd == raw))
+    {
+        env.traits.push(Trait::Lolbas {
+            name: "bitsadmin".to_string(),
+            cmd: raw.to_string(),
+        });
+    }
 }

