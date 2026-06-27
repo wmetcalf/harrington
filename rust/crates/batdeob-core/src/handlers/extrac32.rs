@@ -103,12 +103,32 @@ fn parse_extrac32_paths(tokens: &[String]) -> Option<(String, String)> {
 
 fn parse_expand_paths(tokens: &[String]) -> Option<(String, String)> {
     let mut positional: Vec<String> = Vec::new();
+    let mut selected_member: Option<String> = None;
     let mut i = 1usize;
     while i < tokens.len() {
         let token = strip_outer_quotes(&tokens[i]);
         let lower = token.to_ascii_lowercase();
         if lower == "-f" || lower == "/f" {
+            if let Some(value) = tokens
+                .get(i + 1)
+                .and_then(|value| expand_member_name(value))
+            {
+                selected_member = Some(value);
+            }
             i += 2;
+            continue;
+        }
+        if let Some(value) = lower
+            .strip_prefix("-f:")
+            .or_else(|| lower.strip_prefix("/f:"))
+            .or_else(|| lower.strip_prefix("-f="))
+            .or_else(|| lower.strip_prefix("/f="))
+        {
+            let offset = token.len() - value.len();
+            if let Some(member) = expand_member_name(&token[offset..]) {
+                selected_member = Some(member);
+            }
+            i += 1;
             continue;
         }
         if token.starts_with(['-', '/']) {
@@ -119,8 +139,21 @@ fn parse_expand_paths(tokens: &[String]) -> Option<(String, String)> {
         i += 1;
     }
     let src = positional.first()?.clone();
-    let dst = positional.get(1)?.clone();
+    let mut dst = positional.get(1)?.clone();
+    if let Some(member) = selected_member {
+        if !windows_basename(&dst).is_some_and(|name| name.eq_ignore_ascii_case(&member)) {
+            dst = join_windows_path(&dst, &member);
+        }
+    }
     (!dst.is_empty()).then_some((src, dst))
+}
+
+fn expand_member_name(selector: &str) -> Option<String> {
+    let selector = strip_outer_quotes(selector).trim();
+    if selector.is_empty() || selector.contains(['*', '?']) {
+        return None;
+    }
+    windows_basename(selector).map(str::to_string)
 }
 
 fn is_windows_util_copy(src: &str, dst: &str) -> bool {
@@ -143,6 +176,14 @@ fn collapse_slashes(s: &str) -> String {
         previous = c;
     }
     out
+}
+
+fn join_windows_path(prefix: &str, name: &str) -> String {
+    if prefix.ends_with(['\\', '/']) {
+        collapse_slashes(&format!("{prefix}{name}"))
+    } else {
+        collapse_slashes(&format!("{prefix}\\{name}"))
+    }
 }
 
 fn push_lolbas(name: &str, raw: &str, env: &mut Environment) {
