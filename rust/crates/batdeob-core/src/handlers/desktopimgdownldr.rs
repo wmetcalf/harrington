@@ -14,8 +14,20 @@ pub fn h_desktopimgdownldr(raw: &str, env: &mut Environment) {
         src: url,
         dst: None,
     });
+    push_lolbas(raw, env);
 }
 
 fn lockscreen_url(tokens: &[String]) -> Option<String> {
     flag_url_value_after(tokens, 1, &["/lockscreenurl", "-lockscreenurl"])
+}
+
+fn push_lolbas(raw: &str, env: &mut Environment) {
+    if !env.traits.iter().any(
+        |t| matches!(t, Trait::Lolbas { name, cmd } if name == "desktopimgdownldr" && cmd == raw),
+    ) {
+        env.traits.push(Trait::Lolbas {
+            name: "desktopimgdownldr".to_string(),
+            cmd: raw.to_string(),
+        });
+    }
 }
