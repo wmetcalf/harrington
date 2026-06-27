@@ -706,10 +706,16 @@ static JSON_SCRIPT_B64_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("json script b64 regex")
 });
 
+#[derive(Clone, Copy)]
+enum PsCompressionStream {
+    Gzip,
+    Deflate,
+}
+
 fn expand_gzip_base64_literals(text: &str) -> String {
-    if !contains_ascii_case_insensitive(text, "gzipstream")
-        || !contains_ascii_case_insensitive(text, "frombase64string")
-    {
+    let has_gzip = contains_ascii_case_insensitive(text, "gzipstream");
+    let has_deflate = contains_ascii_case_insensitive(text, "deflatestream");
+    if (!has_gzip && !has_deflate) || !contains_ascii_case_insensitive(text, "frombase64string") {
         return text.to_string();
     }
 
@@ -719,10 +725,17 @@ fn expand_gzip_base64_literals(text: &str) -> String {
             let full = caps.get(0)?;
             let b64 = caps.get(1)?.as_str();
             let decoded = decode_ps_base64_string(b64)?;
-            let inflated = crate::aes_chain::crypto::gunzip(&decoded, 2 * 1024 * 1024).ok()?;
+            let (start, end, stream) = compression_wrapper_bounds(text, full.start(), full.end())
+                .unwrap_or_else(|| {
+                    let stream = if has_deflate {
+                        PsCompressionStream::Deflate
+                    } else {
+                        PsCompressionStream::Gzip
+                    };
+                    (full.start(), full.end(), stream)
+                });
+            let inflated = decompress_ps_stream(&decoded, stream, 2 * 1024 * 1024)?;
             let s = decode_payload(&inflated).into_owned().replace('\'', "''");
-            let (start, end) = gzip_wrapper_bounds(text, full.start(), full.end())
-                .unwrap_or((full.start(), full.end()));
             Some((start, end, format!("'{s}'")))
         })
         .collect();
@@ -731,6 +744,29 @@ fn expand_gzip_base64_literals(text: &str) -> String {
         out.replace_range(start..end, &replacement);
     }
     out
+}
+
+fn decompress_ps_stream(
+    bytes: &[u8],
+    stream: PsCompressionStream,
+    max_bytes: usize,
+) -> Option<Vec<u8>> {
+    use std::io::Read as _;
+
+    match stream {
+        PsCompressionStream::Gzip => crate::aes_chain::crypto::gunzip(bytes, max_bytes).ok(),
+        PsCompressionStream::Deflate => {
+            let mut decoder = flate2::read::DeflateDecoder::new(bytes);
+            let mut out = Vec::new();
+            std::io::Read::take(&mut decoder, max_bytes.saturating_add(1) as u64)
+                .read_to_end(&mut out)
+                .ok()?;
+            if out.len() > max_bytes {
+                return None;
+            }
+            Some(out)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -778,9 +814,9 @@ mod gzip_base64_prefilter_tests {
 }
 
 fn expand_gzip_function_base64_variables(text: &str) -> String {
-    if !contains_ascii_case_insensitive(text, "gzipstream")
-        || !contains_ascii_case_insensitive(text, "frombase64string")
-    {
+    let has_gzip = contains_ascii_case_insensitive(text, "gzipstream");
+    let has_deflate = contains_ascii_case_insensitive(text, "deflatestream");
+    if (!has_gzip && !has_deflate) || !contains_ascii_case_insensitive(text, "frombase64string") {
         return text.to_string();
     }
 
@@ -796,16 +832,25 @@ fn expand_gzip_function_base64_variables(text: &str) -> String {
         return text.to_string();
     }
 
-    let mut gzip_functions = std::collections::HashSet::new();
+    let mut compression_functions = std::collections::HashMap::new();
     for caps in PS_FUNCTION_DEF_RE.captures_iter(text) {
         let Some(full) = caps.get(0) else { continue };
         let Some(name) = caps.get(1) else { continue };
         let body_end = floor_char_boundary(text, full.end().saturating_add(4096));
-        if contains_ascii_case_insensitive(&text[full.end()..body_end], "gzipstream") {
-            gzip_functions.insert(name.as_str().to_ascii_lowercase());
+        let body = &text[full.end()..body_end];
+        if contains_ascii_case_insensitive(body, "gzipstream") {
+            compression_functions.insert(
+                name.as_str().to_ascii_lowercase(),
+                PsCompressionStream::Gzip,
+            );
+        } else if contains_ascii_case_insensitive(body, "deflatestream") {
+            compression_functions.insert(
+                name.as_str().to_ascii_lowercase(),
+                PsCompressionStream::Deflate,
+            );
         }
     }
-    if gzip_functions.is_empty() {
+    if compression_functions.is_empty() {
         return text.to_string();
     }
 
@@ -815,13 +860,11 @@ fn expand_gzip_function_base64_variables(text: &str) -> String {
             let full = caps.get(0)?;
             let out_var = caps.get(1)?.as_str();
             let function_name = caps.get(2)?.as_str().to_ascii_lowercase();
-            if !gzip_functions.contains(&function_name) {
-                return None;
-            }
+            let stream = *compression_functions.get(&function_name)?;
             let b64_var = caps.get(3)?.as_str().to_ascii_lowercase();
             let b64 = b64_vars.get(&b64_var)?;
             let decoded = decode_ps_base64_string(b64)?;
-            let inflated = crate::aes_chain::crypto::gunzip(&decoded, 4 * 1024 * 1024).ok()?;
+            let inflated = decompress_ps_stream(&decoded, stream, 4 * 1024 * 1024)?;
             let s = decode_payload(&inflated).into_owned().replace('\'', "''");
             Some((full.start(), full.end(), format!("${out_var} = '{s}'")))
         })
@@ -833,7 +876,16 @@ fn expand_gzip_function_base64_variables(text: &str) -> String {
     out
 }
 
+#[cfg(test)]
 fn gzip_wrapper_bounds(text: &str, b64_start: usize, b64_end: usize) -> Option<(usize, usize)> {
+    compression_wrapper_bounds(text, b64_start, b64_end).map(|(start, end, _)| (start, end))
+}
+
+fn compression_wrapper_bounds(
+    text: &str,
+    b64_start: usize,
+    b64_end: usize,
+) -> Option<(usize, usize, PsCompressionStream)> {
     let start =
         find_ascii_case_insensitive(&text[..b64_start], "new-object system.io.streamreader")?;
     let after_end = floor_char_boundary(text, b64_end.saturating_add(8192));
@@ -841,12 +893,17 @@ fn gzip_wrapper_bounds(text: &str, b64_start: usize, b64_end: usize) -> Option<(
     let read_to_end = READ_TO_END_RE.find(after)?;
     let end = b64_end + read_to_end.end();
     let wrapper = &text[start..end];
-    if !contains_ascii_case_insensitive(wrapper, "gzipstream")
-        || !contains_ascii_case_insensitive(wrapper, "memorystream")
-    {
+    if !contains_ascii_case_insensitive(wrapper, "memorystream") {
         return None;
     }
-    Some((start, end))
+    let stream = if contains_ascii_case_insensitive(wrapper, "gzipstream") {
+        PsCompressionStream::Gzip
+    } else if contains_ascii_case_insensitive(wrapper, "deflatestream") {
+        PsCompressionStream::Deflate
+    } else {
+        return None;
+    };
+    Some((start, end, stream))
 }
 
 fn expand_json_script_base64(text: &str) -> String {
