@@ -10,6 +10,7 @@ pub fn h_extrac32(raw: &str, env: &mut Environment) {
         return;
     };
 
+    push_lolbas(raw, env);
     // Self-reference if the src path matches our synthetic input path.
     let self_reference = extrac32_self_reference(&src, env);
     env.traits.push(Trait::Extrac32 {
@@ -91,6 +92,19 @@ fn collapse_slashes(s: &str) -> String {
         previous = c;
     }
     out
+}
+
+fn push_lolbas(raw: &str, env: &mut Environment) {
+    if !env
+        .traits
+        .iter()
+        .any(|t| matches!(t, Trait::Lolbas { name, cmd } if name == "extrac32" && cmd == raw))
+    {
+        env.traits.push(Trait::Lolbas {
+            name: "extrac32".to_string(),
+            cmd: raw.to_string(),
+        });
+    }
 }
 
 fn extrac32_self_reference(src: &str, env: &Environment) -> bool {

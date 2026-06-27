@@ -7881,11 +7881,9 @@ mod extrac32_tests {
 
     #[test]
     fn extrac32_self_reference_records_trait() {
+        let raw = r#"extrac32 /y "C:\Users\al\Downloads\script.bat" "%temp%\dropped.exe""#;
         let mut env = Environment::new(&Config::default());
-        interpret_line(
-            r#"extrac32 /y "C:\Users\al\Downloads\script.bat" "%temp%\dropped.exe""#,
-            &mut env,
-        );
+        interpret_line(raw, &mut env);
         let has = env.traits.iter().any(|t| {
             matches!(
                 t,
@@ -7896,6 +7894,13 @@ mod extrac32_tests {
             )
         });
         assert!(has, "no Extrac32 self_reference: {:?}", env.traits);
+        assert!(
+            env.traits.iter().any(
+                |t| matches!(t, Trait::Lolbas { name, cmd } if name == "extrac32" && cmd == raw)
+            ),
+            "extrac32 extraction not marked as LOLBAS: {:?}",
+            env.traits
+        );
     }
 
     #[test]
