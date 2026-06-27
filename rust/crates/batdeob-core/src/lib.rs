@@ -8317,6 +8317,39 @@ mod certutil_tests {
     }
 
     #[test]
+    fn certutil_decode_current_dir_source_resolves_tracked_content() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "current dir source";
+        env.modified_filesystem.insert(
+            "src.b64".to_string(),
+            FsEntry::Content {
+                content: b64(payload).into_bytes(),
+                append: false,
+            },
+        );
+
+        interpret_line(r"certutil -decode .\src.b64 dst.bin", &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::CertutilDecode { src, dst, src_resolved }
+                    if src == r".\src.b64" && dst == "dst.bin" && *src_resolved
+            )),
+            "certutil current-dir source was not marked resolved: {:?}",
+            env.traits
+        );
+        assert!(
+            matches!(
+                env.modified_filesystem.get("dst.bin"),
+                Some(FsEntry::Decoded { content, .. }) if content == payload.as_bytes()
+            ),
+            "dst.bin was not decoded from current-dir source content: {:?}",
+            env.modified_filesystem.get("dst.bin")
+        );
+    }
+
+    #[test]
     fn certutil_slash_decodehex_accepts_offset_dump_rows() {
         let mut env = Environment::new(&Config::default());
         env.modified_filesystem.insert(

@@ -38,16 +38,7 @@ pub fn h_certutil(raw: &str, env: &mut Environment) {
         return;
     };
 
-    let src_key = src.to_ascii_lowercase();
-    let src_content = env
-        .modified_filesystem
-        .get(&src_key)
-        .and_then(|e| match e {
-            FsEntry::Content { content, .. } => Some(content.clone()),
-            FsEntry::Decoded { content, .. } => Some(content.clone()),
-            _ => None,
-        })
-        .or_else(|| resolve_self_source(&src, env));
+    let src_content = resolve_tracked_source(&src, env).or_else(|| resolve_self_source(&src, env));
 
     let src_resolved = src_content.is_some();
     env.traits.push(Trait::CertutilDecode {
@@ -165,6 +156,49 @@ fn resolve_self_source(src: &str, env: &Environment) -> Option<Vec<u8>> {
         env.input_bytes.as_deref().map(|b| b.to_vec())
     } else {
         None
+    }
+}
+
+fn resolve_tracked_source(src: &str, env: &Environment) -> Option<Vec<u8>> {
+    let key = src.to_ascii_lowercase();
+    if let Some(content) = content_from_entry(env.modified_filesystem.get(&key)) {
+        return Some(content);
+    }
+    if let Some(name) = current_dir_basename(src) {
+        return resolve_tracked_source_by_basename(name, env);
+    }
+    if src.contains(['\\', '/']) {
+        return None;
+    }
+    resolve_tracked_source_by_basename(src, env)
+}
+
+fn resolve_tracked_source_by_basename(src: &str, env: &Environment) -> Option<Vec<u8>> {
+    for (path, entry) in &env.modified_filesystem {
+        let Some(name) = windows_basename(path) else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case(src) {
+            if let Some(content) = content_from_entry(Some(entry)) {
+                return Some(content);
+            }
+        }
+    }
+    None
+}
+
+fn current_dir_basename(path: &str) -> Option<&str> {
+    path.strip_prefix(r".\")
+        .or_else(|| path.strip_prefix("./"))
+        .and_then(windows_basename)
+}
+
+fn content_from_entry(entry: Option<&FsEntry>) -> Option<Vec<u8>> {
+    match entry {
+        Some(FsEntry::Content { content, .. }) | Some(FsEntry::Decoded { content, .. }) => {
+            Some(content.clone())
+        }
+        _ => None,
     }
 }
 
