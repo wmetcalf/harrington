@@ -1,4 +1,4 @@
-use super::util::{looks_like_liberal_url, split_words, strip_outer_quotes};
+use super::util::{looks_like_liberal_url, split_words, strip_outer_quotes, windows_basename};
 use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
 use crate::util::find_ascii_case_insensitive_from;
@@ -26,6 +26,9 @@ pub fn h_mshta(raw: &str, env: &mut Environment) {
             });
             matched_lolbas = true;
             break;
+        }
+        if queue_tracked_hta_content(strip_outer_quotes(token), env) {
+            matched_lolbas = true;
         }
     }
     if matched_lolbas {
@@ -78,13 +81,99 @@ fn inline_payload_after<'a>(raw: &'a str, marker: &str) -> Option<&'a str> {
 fn downloaded_source_for_path(env: &Environment, path: &str) -> Option<String> {
     let mut key = path.to_ascii_lowercase();
     for _ in 0..8 {
-        match env.modified_filesystem.get(&key)? {
-            FsEntry::Download { src } => return Some(src.clone()),
-            FsEntry::Copy { src } => key = src.to_ascii_lowercase(),
-            FsEntry::Content { .. } | FsEntry::Decoded { .. } => return None,
+        match env.modified_filesystem.get(&key) {
+            Some(FsEntry::Download { src }) => return Some(src.clone()),
+            Some(FsEntry::Copy { src }) => key = src.to_ascii_lowercase(),
+            Some(FsEntry::Content { .. } | FsEntry::Decoded { .. }) => return None,
+            None => return downloaded_source_for_current_dir_path(env, path),
         }
     }
     None
+}
+
+fn downloaded_source_for_current_dir_path(env: &Environment, path: &str) -> Option<String> {
+    let name = current_dir_basename(path)?;
+    env.modified_filesystem
+        .iter()
+        .find_map(|(tracked_path, _)| {
+            windows_basename(tracked_path)
+                .is_some_and(|tracked_name| tracked_name.eq_ignore_ascii_case(name))
+                .then(|| downloaded_source_for_path(env, tracked_path))
+        })
+        .flatten()
+}
+
+fn queue_tracked_hta_content(path: &str, env: &mut Environment) -> bool {
+    let Some(content) = tracked_hta_content(path, env) else {
+        return false;
+    };
+    let text = String::from_utf8_lossy(&content);
+    let mut queued = false;
+    let mut idx = 0usize;
+    while let Some(open) = find_ascii_case_insensitive_from(&text, "<script", idx) {
+        let Some(tag_end_rel) = text[open..].find('>') else {
+            break;
+        };
+        let tag_end = open + tag_end_rel;
+        let body_start = tag_end + 1;
+        let Some(close) = find_ascii_case_insensitive_from(&text, "</script>", body_start) else {
+            break;
+        };
+        let body = text[body_start..close].trim();
+        if !body.is_empty() {
+            let payload = body.as_bytes().to_vec();
+            let tag = &text[open..=tag_end];
+            if find_ascii_case_insensitive_from(tag, "vbscript", 0).is_some() {
+                if !env
+                    .all_extracted_vbs
+                    .iter()
+                    .any(|existing| existing == &payload)
+                {
+                    env.all_extracted_vbs.push(payload);
+                }
+            } else if !env
+                .all_extracted_jscript
+                .iter()
+                .any(|existing| existing == &payload)
+            {
+                env.all_extracted_jscript.push(payload);
+            }
+            queued = true;
+        }
+        idx = close + "</script>".len();
+    }
+    queued
+}
+
+fn tracked_hta_content(path: &str, env: &Environment) -> Option<Vec<u8>> {
+    let key = path.to_ascii_lowercase();
+    if let Some(content) = content_from_entry(env.modified_filesystem.get(&key)) {
+        return Some(content);
+    }
+    let name = current_dir_basename(path)?;
+    env.modified_filesystem
+        .iter()
+        .find_map(|(tracked_path, entry)| {
+            windows_basename(tracked_path)
+                .is_some_and(|tracked_name| tracked_name.eq_ignore_ascii_case(name))
+                .then(|| content_from_entry(Some(entry)))
+        })
+        .flatten()
+}
+
+fn content_from_entry(entry: Option<&FsEntry>) -> Option<Vec<u8>> {
+    match entry {
+        Some(FsEntry::Content { content, .. }) | Some(FsEntry::Decoded { content, .. }) => {
+            Some(content.clone())
+        }
+        _ => None,
+    }
+}
+
+fn current_dir_basename(path: &str) -> Option<&str> {
+    path.strip_prefix(r".\")
+        .or_else(|| path.strip_prefix("./"))
+        .and_then(windows_basename)
 }
 
 fn mshta_token_url(token: &str) -> Option<String> {

