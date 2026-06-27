@@ -8283,6 +8283,36 @@ mod uac_bypass_tests {
             );
         }
     }
+
+    #[test]
+    fn msconfig_exe_4_in_deob_text_emits_uac_bypass_trait() {
+        let mut env = Environment::new(&Config::default());
+
+        crate::deob_scan::scan_deob_text("msconfig.exe /4", &mut env);
+
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::UacBypass { technique } if technique == "msconfig-4")),
+            "msconfig.exe /4 was not surfaced in deob text: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn cmstp_au_after_other_flags_in_deob_text_emits_uac_bypass_trait() {
+        let mut env = Environment::new(&Config::default());
+
+        crate::deob_scan::scan_deob_text(r#"cmstp.exe /s /au C:\Users\Public\stage.inf"#, &mut env);
+
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::UacBypass { technique } if technique == "cmstp-au")),
+            "cmstp /au after other flags was not surfaced in deob text: {:?}",
+            env.traits
+        );
+    }
 }
 
 #[cfg(test)]
