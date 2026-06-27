@@ -43,6 +43,46 @@ static JS_FROMCHARCODE_BIND_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static JS_FROMCHARCODE_MEMBER_VAR_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)String\s*\[\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\]\s*\(\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\)"#,
+    )
+    .expect("js fromCharCode member variable")
+});
+
+#[allow(clippy::expect_used)]
+static JS_FROMCHARCODE_MEMBER_APPLY_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)String\s*\[\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\]\s*\.\s*apply\s*\(\s*[^,\r\n]{0,128},\s*\[\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\]\s*\)"#,
+    )
+    .expect("js fromCharCode member apply")
+});
+
+#[allow(clippy::expect_used)]
+static JS_FROMCHARCODE_MEMBER_CALL_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)String\s*\[\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\]\s*\.\s*call\s*\(\s*[^,\r\n]{0,128},\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\)"#,
+    )
+    .expect("js fromCharCode member call")
+});
+
+#[allow(clippy::expect_used)]
+static JS_FROMCHARCODE_MEMBER_SPREAD_ARRAY_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)String\s*\[\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\]\s*\(\s*\.\.\.\s*\[\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\]\s*\)"#,
+    )
+    .expect("js fromCharCode member spread array")
+});
+
+#[allow(clippy::expect_used)]
+static JS_FROMCHARCODE_MEMBER_BIND_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)String\s*\[\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\]\s*\.\s*bind\s*\(\s*[^)\r\n]{0,128}\)\s*\(\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\)"#,
+    )
+    .expect("js fromCharCode member bind")
+});
+
+#[allow(clippy::expect_used)]
 static JS_STRING_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)(?:^|[;\r\n])\s*(?:(?:var|let|const)\s+)?([A-Za-z_$][A-Za-z0-9_$]{0,127})\s*=\s*([^;\r\n]{1,4096})"#,
@@ -436,22 +476,80 @@ fn decoded_js_fromcharcode_literals(text: &str) -> Vec<String> {
     let mut out: Vec<String> = JS_FROMCHARCODE_RE
         .captures_iter(text)
         .chain(JS_FROMCHARCODE_BIND_RE.captures_iter(text))
-        .filter_map(|caps| {
-            let nums = caps.get(1)?.as_str();
-            let mut out = String::new();
-            for part in nums.split(',') {
-                let part = part.trim();
-                if part.is_empty() {
-                    continue;
-                }
-                let n = eval_js_numeric_expr(part)?;
-                out.push(char::from_u32(n)?);
-            }
-            (!out.is_empty()).then_some(out)
-        })
+        .filter_map(|caps| decode_js_fromcharcode_args(caps.get(1)?.as_str()))
         .collect();
+    let bindings = collect_js_string_literal_bindings(text);
+    extend_js_fromcharcode_member_matches(
+        &mut out,
+        text,
+        &bindings,
+        &JS_FROMCHARCODE_MEMBER_VAR_RE,
+    );
+    extend_js_fromcharcode_member_matches(
+        &mut out,
+        text,
+        &bindings,
+        &JS_FROMCHARCODE_MEMBER_APPLY_RE,
+    );
+    extend_js_fromcharcode_member_matches(
+        &mut out,
+        text,
+        &bindings,
+        &JS_FROMCHARCODE_MEMBER_CALL_RE,
+    );
+    extend_js_fromcharcode_member_matches(
+        &mut out,
+        text,
+        &bindings,
+        &JS_FROMCHARCODE_MEMBER_SPREAD_ARRAY_RE,
+    );
+    extend_js_fromcharcode_member_matches(
+        &mut out,
+        text,
+        &bindings,
+        &JS_FROMCHARCODE_MEMBER_BIND_RE,
+    );
     out.extend(decoded_js_fromcharcode_apply_bindings(text));
     out
+}
+
+fn extend_js_fromcharcode_member_matches(
+    out: &mut Vec<String>,
+    text: &str,
+    bindings: &std::collections::HashMap<String, String>,
+    regex: &Regex,
+) {
+    for caps in regex.captures_iter(text).take(128) {
+        let (Some(name), Some(nums)) = (caps.get(1), caps.get(2)) else {
+            continue;
+        };
+        if !bindings
+            .get(name.as_str())
+            .is_some_and(|value| is_js_string_code_decoder(value))
+        {
+            continue;
+        }
+        if let Some(decoded) = decode_js_fromcharcode_args(nums.as_str()) {
+            out.push(decoded);
+        }
+    }
+}
+
+fn decode_js_fromcharcode_args(nums: &str) -> Option<String> {
+    let mut out = String::new();
+    for part in nums.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let n = eval_js_numeric_expr(part)?;
+        out.push(char::from_u32(n)?);
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+fn is_js_string_code_decoder(value: &str) -> bool {
+    matches!(value, "fromCharCode" | "fromCodePoint")
 }
 
 fn decoded_js_fromcharcode_apply_bindings(text: &str) -> Vec<String> {
