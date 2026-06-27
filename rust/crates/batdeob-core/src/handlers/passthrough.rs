@@ -609,7 +609,7 @@ fn psexec_option_span_width(token: &str, before_host: bool) -> Option<usize> {
     if lower.is_empty() {
         return Some(1);
     }
-    let option = lower.strip_prefix('-')?;
+    let option = lower.strip_prefix(['-', '/'])?;
     if option.is_empty() {
         return None;
     }
@@ -1022,6 +1022,17 @@ mod tests {
             r#"psexec \\target.example -accepteula -u admin -p pass -s cmd.exe /c echo remote"#,
         )
         .expect("psexec child command should parse");
+
+        assert_eq!(host, "target.example");
+        assert_eq!(command, "cmd.exe /c echo remote");
+    }
+
+    #[test]
+    fn psexec_child_command_accepts_slash_options() {
+        let (host, command) = psexec_child_command(
+            r#"psexec \\target.example /accepteula /u admin /p pass /s cmd.exe /c echo remote"#,
+        )
+        .expect("psexec slash-option child command should parse");
 
         assert_eq!(host, "target.example");
         assert_eq!(command, "cmd.exe /c echo remote");
