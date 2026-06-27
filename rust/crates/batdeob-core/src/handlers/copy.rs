@@ -155,6 +155,9 @@ fn copied_entry(src: &str, env: &Environment) -> Option<FsEntry> {
         .get(&src.to_ascii_lowercase())
         .cloned()
         .or_else(|| {
+            if src.contains(['\\', '/', ':']) {
+                return None;
+            }
             let basename = windows_basename(src)?;
             env.modified_filesystem.iter().find_map(|(path, entry)| {
                 windows_basename(path)
