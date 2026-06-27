@@ -2,7 +2,9 @@
 
 use crate::env::Environment;
 use crate::handlers;
-use crate::handlers::util::{ends_with_ascii_case_insensitive, windows_basename};
+use crate::handlers::util::{
+    ends_with_ascii_case_insensitive, filesystem_entry_for_path, windows_basename,
+};
 
 /// Result of the pre-normalize dispatch hook. Some commands need to operate
 /// on the RAW (pre-normalize) command text instead of the normalized text,
@@ -209,8 +211,7 @@ fn push_implicit_download_source_url(path: &str, env: &mut Environment) {
 }
 
 fn prior_download_url(path: &str, env: &Environment) -> Option<String> {
-    let key = path.to_ascii_lowercase();
-    if let Some(crate::env::FsEntry::Download { src }) = env.modified_filesystem.get(&key) {
+    if let Some(crate::env::FsEntry::Download { src }) = filesystem_entry_for_path(env, path) {
         return Some(src.clone());
     }
     if let Some(name) = current_dir_basename(path) {
@@ -260,8 +261,7 @@ fn queue_implicit_script_content(path: &str, ext: &str, env: &mut Environment) {
 }
 
 fn tracked_script_content(path: &str, env: &Environment) -> Option<Vec<u8>> {
-    let key = path.to_ascii_lowercase();
-    if let Some(content) = content_from_entry(env.modified_filesystem.get(&key)) {
+    if let Some(content) = content_from_entry(filesystem_entry_for_path(env, path)) {
         return Some(content);
     }
     if let Some(name) = current_dir_basename(path) {
