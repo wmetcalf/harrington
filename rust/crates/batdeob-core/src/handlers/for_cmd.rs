@@ -265,8 +265,8 @@ fn resolve_f_source(src: &str, env: &mut crate::env::Environment, usebackq: bool
             return vec![inner.to_string()];
         }
         if s.starts_with('`') && s.ends_with('`') {
-            let pipeline = &s[1..s.len() - 1];
-            return crate::synth::run_pipeline(pipeline, env);
+            let pipeline = expand_percent_vars_for_source(&s[1..s.len() - 1], env);
+            return crate::synth::run_pipeline(&pipeline, env);
         }
     } else if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
         let inner = &s[1..s.len() - 1];
@@ -274,14 +274,14 @@ fn resolve_f_source(src: &str, env: &mut crate::env::Environment, usebackq: bool
     }
     // Single-quoted: `for /F ... in ('command')` — run as pipeline command.
     if s.starts_with('\'') && s.ends_with('\'') && s.len() >= 2 {
-        let pipeline = &s[1..s.len() - 1];
-        return crate::synth::run_pipeline(pipeline, env);
+        let pipeline = expand_percent_vars_for_source(&s[1..s.len() - 1], env);
+        return crate::synth::run_pipeline(&pipeline, env);
     }
     // Backticks are only command quotes under USEBACKQ. Without it they are
     // just literal characters and should not trigger pipeline execution.
     if usebackq && s.starts_with('`') && s.ends_with('`') {
-        let pipeline = &s[1..s.len() - 1];
-        return crate::synth::run_pipeline(pipeline, env);
+        let pipeline = expand_percent_vars_for_source(&s[1..s.len() - 1], env);
+        return crate::synth::run_pipeline(&pipeline, env);
     }
     let file_lines = crate::synth::run_pipeline(&format!("type {}", s), env);
     if !file_lines.is_empty() {
@@ -291,6 +291,45 @@ fn resolve_f_source(src: &str, env: &mut crate::env::Environment, usebackq: bool
         pipeline: s.to_string(),
     });
     Vec::new()
+}
+
+fn expand_percent_vars_for_source(src: &str, env: &crate::env::Environment) -> String {
+    let mut out = String::with_capacity(src.len());
+    let bytes = src.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'%' {
+            out.push(bytes[i] as char);
+            i += 1;
+            continue;
+        }
+        if i + 1 < bytes.len() && bytes[i + 1] == b'%' {
+            out.push('%');
+            out.push('%');
+            i += 2;
+            continue;
+        }
+        let Some(rel_end) = src[i + 1..].find('%') else {
+            out.push('%');
+            i += 1;
+            continue;
+        };
+        let end = i + 1 + rel_end;
+        let name = &src[i + 1..end];
+        if name.is_empty() || name.starts_with('~') || name.contains(char::is_whitespace) {
+            out.push('%');
+            i += 1;
+            continue;
+        }
+        let base = name.split(':').next().unwrap_or(name);
+        if let Some(value) = env.get(base) {
+            out.push_str(&value);
+        } else {
+            out.push_str(&src[i..=end]);
+        }
+        i = end + 1;
+    }
+    out
 }
 
 // ── public entry point ───────────────────────────────────────────────────────

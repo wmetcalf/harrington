@@ -102,14 +102,18 @@ fn run_stage(stage: &str, input: Vec<String>, env: &mut Environment) -> Vec<Stri
         "ftype" => synth_ftype(&rest_args, env),
         "reg" => synth_reg(&rest_args, env),
         "dir" => synth_dir(&rest_args, env),
-        "whoami" => synth_whoami(env),
+        "whoami" => synth_whoami(&rest_args, env),
         "chcp" => synth_chcp(&rest_args),
         "query" => synth_query(&rest_args),
         "ver" => synth_ver(),
+        "date" => synth_date(&rest_args),
+        "time" => synth_time(&rest_args),
         "ipconfig" => synth_ipconfig(),
+        "hostname" => synth_hostname(env),
         "systeminfo" => synth_systeminfo(env),
         "getmac" => synth_getmac(),
         "fsutil" => synth_fsutil(&rest_args),
+        "wmic" => synth_wmic(&rest_args),
         "powershell" | "powershell.exe" => synth_powershell(&rest_args, env),
         "tasklist" => synth_tasklist(&rest_args),
         "where" => synth_where(&rest_args, env),
@@ -170,10 +174,14 @@ fn is_supported_command(cmd: String) -> bool {
             | "chcp"
             | "query"
             | "ver"
+            | "date"
+            | "time"
             | "ipconfig"
+            | "hostname"
             | "systeminfo"
             | "getmac"
             | "fsutil"
+            | "wmic"
             | "powershell"
             | "powershell.exe"
             | "tasklist"
@@ -546,8 +554,19 @@ fn cmd_child_after_switch(rest: &str) -> Option<&str> {
             let child_start = start + 2;
             return Some(strip_wrapping_quotes(rest[child_start..].trim()));
         }
+        if let Some(switch_idx) = cmd_exec_switch_index(&lower) {
+            let child_start = start + switch_idx + 2;
+            return Some(strip_wrapping_quotes(rest[child_start..].trim()));
+        }
     }
     None
+}
+
+fn cmd_exec_switch_index(token: &str) -> Option<usize> {
+    let bytes = token.as_bytes();
+    bytes.windows(2).enumerate().find_map(|(idx, pair)| {
+        (pair[0] == b'/' && matches!(pair[1], b'c' | b'k' | b'r')).then_some(idx)
+    })
 }
 
 fn command_token_spans(s: &str) -> Vec<(usize, usize)> {
@@ -677,14 +696,44 @@ fn synth_curl(args: &[&str], env: &mut Environment) -> Vec<String> {
         .iter()
         .rev()
         .map(|arg| arg.trim_matches(['"', '\'']))
-        .find(|arg| starts_with_ascii_case_insensitive(arg, "file://"))
+        .find(|arg| {
+            starts_with_ascii_case_insensitive(arg, "file://")
+                || starts_with_ascii_case_insensitive(arg, "http://")
+                || starts_with_ascii_case_insensitive(arg, "https://")
+        })
     else {
         return Vec::new();
     };
 
-    file_url_to_windows_path(url)
-        .map(|path| type_file(&path, env))
-        .unwrap_or_default()
+    if starts_with_ascii_case_insensitive(url, "file://") {
+        return file_url_to_windows_path(url)
+            .map(|path| type_file(&path, env))
+            .unwrap_or_default();
+    }
+    if is_public_ip_endpoint(url) {
+        return vec!["203.0.113.10".to_string()];
+    }
+    Vec::new()
+}
+
+fn is_public_ip_endpoint(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    lower == "https://api.ipify.org"
+        || lower == "http://api.ipify.org"
+        || lower.starts_with("https://api.ipify.org?")
+        || lower.starts_with("http://api.ipify.org?")
+        || lower == "https://ifconfig.me"
+        || lower == "http://ifconfig.me"
+        || lower == "https://ifconfig.me/ip"
+        || lower == "http://ifconfig.me/ip"
+        || lower == "https://icanhazip.com"
+        || lower == "http://icanhazip.com"
+        || lower == "https://ipv4.icanhazip.com"
+        || lower == "http://ipv4.icanhazip.com"
+        || lower == "https://checkip.amazonaws.com"
+        || lower == "http://checkip.amazonaws.com"
+        || lower == "https://ipinfo.io/ip"
+        || lower == "http://ipinfo.io/ip"
 }
 
 fn file_url_to_windows_path(url: &str) -> Option<String> {
@@ -856,11 +905,21 @@ fn synth_ftype(args: &[&str], env: &Environment) -> Vec<String> {
         .collect()
 }
 
-fn synth_whoami(env: &Environment) -> Vec<String> {
+fn synth_whoami(args: &[&str], env: &Environment) -> Vec<String> {
     let domain = env
         .get("userdomain")
         .unwrap_or_else(|| "miscreanttears".to_string());
     let user = env.get("username").unwrap_or_else(|| "puncher".to_string());
+    if args.iter().any(|arg| arg.eq_ignore_ascii_case("/user")) {
+        return vec![
+            "User Name SID".to_string(),
+            format!(
+                "{}\\{} S-1-5-21-1000-1000-1000-1001",
+                domain.to_ascii_lowercase(),
+                user.to_ascii_lowercase()
+            ),
+        ];
+    }
     vec![format!(
         "{}\\{}",
         domain.to_ascii_lowercase(),
@@ -895,6 +954,20 @@ fn synth_ver() -> Vec<String> {
     vec!["Microsoft Windows [Version 10.0.19045.4046]".to_string()]
 }
 
+fn synth_date(args: &[&str]) -> Vec<String> {
+    if args.iter().any(|arg| arg.eq_ignore_ascii_case("/t")) {
+        return vec!["Mon 06/15/2026".to_string()];
+    }
+    vec!["The current date is: Mon 06/15/2026".to_string()]
+}
+
+fn synth_time(args: &[&str]) -> Vec<String> {
+    if args.iter().any(|arg| arg.eq_ignore_ascii_case("/t")) {
+        return vec!["12:00 PM".to_string()];
+    }
+    vec!["The current time is: 12:00:00.00".to_string()]
+}
+
 fn synth_ipconfig() -> Vec<String> {
     vec![
         String::new(),
@@ -906,6 +979,12 @@ fn synth_ipconfig() -> Vec<String> {
         "   Subnet Mask . . . . . . . . . . . : 255.255.255.0".to_string(),
         "   Default Gateway . . . . . . . . . : 192.0.2.1".to_string(),
     ]
+}
+
+fn synth_hostname(env: &Environment) -> Vec<String> {
+    vec![env
+        .get("COMPUTERNAME")
+        .unwrap_or_else(|| "MISCREANTTEARS".to_string())]
 }
 
 fn synth_systeminfo(env: &Environment) -> Vec<String> {
@@ -948,6 +1027,16 @@ fn synth_powershell(args: &[&str], env: &Environment) -> Vec<String> {
     {
         return vec!["Microsoft Defender Antivirus".to_string()];
     }
+    if lower.contains("get-process") && lower.contains("explorer") && lower.contains("processname")
+    {
+        return vec!["explorer".to_string()];
+    }
+    if lower.contains("get-date")
+        && lower.contains("uformat")
+        && (lower.contains("%h%m%s") || lower.contains("%%h%%m%%s"))
+    {
+        return vec!["120000".to_string()];
+    }
     Vec::new()
 }
 
@@ -973,8 +1062,8 @@ fn synth_tasklist(_args: &[&str]) -> Vec<String> {
 }
 
 fn synth_where(args: &[&str], env: &Environment) -> Vec<String> {
-    let bin = match args.first() {
-        Some(b) => b.trim_matches('"').to_ascii_lowercase(),
+    let bin = match where_pattern_arg(args) {
+        Some(b) => b.to_ascii_lowercase(),
         None => return Vec::new(),
     };
     if let Some(snap) = crate::snapshot::get(env.winver) {
@@ -983,6 +1072,44 @@ fn synth_where(args: &[&str], env: &Environment) -> Vec<String> {
                 return vec![path.clone()];
             }
         }
+    }
+    Vec::new()
+}
+
+fn where_pattern_arg(args: &[&str]) -> Option<String> {
+    let mut pattern = None;
+    let mut skip_next = false;
+    for arg in non_redirect_args(args) {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        let arg = arg.trim_matches('"');
+        if arg.eq_ignore_ascii_case("/r") {
+            skip_next = true;
+            continue;
+        }
+        if arg.starts_with('/') {
+            continue;
+        }
+        pattern = Some(arg.to_string());
+    }
+    pattern
+}
+
+fn synth_wmic(args: &[&str]) -> Vec<String> {
+    let filtered: Vec<String> = non_redirect_args(args)
+        .map(|arg| arg.trim_matches('"').to_ascii_lowercase())
+        .collect();
+    let joined = filtered.join(" ");
+    if filtered.first().is_some_and(|arg| arg == "os") && joined.contains("localdatetime") {
+        if joined.contains("/value") {
+            return vec!["LocalDateTime=20260615120000.000000-000".to_string()];
+        }
+        return vec![
+            "LocalDateTime".to_string(),
+            "20260615120000.000000-000".to_string(),
+        ];
     }
     Vec::new()
 }

