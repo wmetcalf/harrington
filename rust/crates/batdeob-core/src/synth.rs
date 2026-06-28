@@ -127,6 +127,7 @@ fn run_stage(stage: &str, input: Vec<String>, env: &mut Environment) -> Vec<Stri
             filter_findstr(&rest_args, effective_input)
         }
         "find" => filter_find(&rest_args, input),
+        "more" => synth_more(stage, &rest_args, input, env),
         "type" => {
             // type FILE — pull from modified_filesystem or input_bytes
             let path = rest_args.first().copied().unwrap_or("");
@@ -182,6 +183,7 @@ fn is_supported_command(cmd: String) -> bool {
         "set"
             | "findstr"
             | "find"
+            | "more"
             | "type"
             | "assoc"
             | "ftype"
@@ -422,6 +424,26 @@ fn filter_find(args: &[&str], input: Vec<String>) -> Vec<String> {
             }
         })
         .collect()
+}
+
+fn synth_more(
+    stage: &str,
+    args: &[&str],
+    input: Vec<String>,
+    env: &mut Environment,
+) -> Vec<String> {
+    if !input.is_empty() {
+        return input;
+    }
+    let (_, redirs) = crate::redirect::extract_redirections(stage);
+    if let Some(path) = redirs.stdin {
+        return type_file(&path, env);
+    }
+    args.iter()
+        .copied()
+        .find(|arg| !arg.starts_with(['/', '-']) && *arg != "<")
+        .map(|path| type_file(path, env))
+        .unwrap_or_default()
 }
 
 fn type_file(path: &str, env: &mut Environment) -> Vec<String> {
