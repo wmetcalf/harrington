@@ -5,8 +5,11 @@
 //! used by `drive()` is `run_for_from_raw`; `h_for` (called on the *normalized* line)
 //! is a no-op so that no double-execution occurs.
 
-use crate::env::Environment;
+use crate::env::{Environment, FsEntry};
 use crate::for_loop::run_body;
+use crate::handlers::util::{
+    normalize_filesystem_storage_path, normalize_wildcard_path, wildcard_match,
+};
 use crate::util::find_ascii_case_insensitive_from;
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -26,6 +29,24 @@ static FOR_L_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r"(?i)^\s*for\s*/L\s+%%?(?P<var>\S)\s+in\s*\(\s*(?P<start>[-+]?\d+)[\s,]+(?P<step>[-+]?\d+)[\s,]+(?P<end>[-+]?\d+)\s*\)\s*do\s+(?P<body>.+)$"
     ).expect("for /L regex")
+});
+
+// Regex is a compile-time constant; .expect on a literal panic-at-startup is a developer error.
+#[allow(clippy::expect_used)]
+static FOR_D_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"(?i)^\s*for\s*/D\s+%%?(?P<var>\S)\s+in\s*\(\s*(?P<set>[^)]+)\)\s*do\s+(?P<body>.+)$",
+    )
+    .expect("for /D regex")
+});
+
+// Regex is a compile-time constant; .expect on a literal panic-at-startup is a developer error.
+#[allow(clippy::expect_used)]
+static FOR_R_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"(?i)^\s*for\s*/R(?:\s+(?P<root>.+?))?\s+%%?(?P<var>\S)\s+in\s*\(\s*(?P<set>[^)]+)\)\s*do\s+(?P<body>.+)$",
+    )
+    .expect("for /R regex")
 });
 
 // Regex is a compile-time constant; .expect on a literal panic-at-startup is a developer error.
@@ -579,6 +600,45 @@ pub fn run_for_from_raw(raw: &str, env: &mut Environment) -> bool {
         return true;
     }
 
+    if let Some(caps) = FOR_R_RE.captures(trimmed) {
+        let var = caps
+            .name("var")
+            .and_then(|m| m.as_str().as_bytes().first().copied())
+            .map(char::from)
+            .unwrap_or('A');
+        let root = caps.name("root").map(|m| m.as_str());
+        let set = caps
+            .name("set")
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default();
+        let body = caps
+            .name("body")
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default();
+        let values = resolve_for_r_values(root, &set, env);
+        run_iter_body(&body, var, values.into_iter(), env);
+        return true;
+    }
+
+    if let Some(caps) = FOR_D_RE.captures(trimmed) {
+        let var = caps
+            .name("var")
+            .and_then(|m| m.as_str().as_bytes().first().copied())
+            .map(char::from)
+            .unwrap_or('A');
+        let set = caps
+            .name("set")
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default();
+        let body = caps
+            .name("body")
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default();
+        let values = resolve_for_d_values(&set, env);
+        run_iter_body(&body, var, values.into_iter(), env);
+        return true;
+    }
+
     if let Some(caps) = FOR_L_RE.captures(trimmed) {
         let var = caps
             .name("var")
@@ -771,6 +831,113 @@ fn normalize_plain_set_item(item: &str) -> String {
     } else {
         item.to_string()
     }
+}
+
+fn resolve_for_d_values(set: &str, env: &Environment) -> Vec<String> {
+    let mut values = Vec::new();
+    for pattern in split_plain_set_items(set) {
+        if pattern.contains(['*', '?']) {
+            values.extend(tracked_directories_matching(&pattern, env));
+        } else if !pattern.is_empty() {
+            values.push(normalized_loop_path(&pattern));
+        }
+    }
+    values.sort();
+    values.dedup();
+    values
+}
+
+fn tracked_directories_matching(pattern: &str, env: &Environment) -> Vec<String> {
+    let normalized_pattern = normalize_loop_pattern(pattern);
+    let mut matches = env
+        .modified_filesystem
+        .iter()
+        .filter_map(|(path, entry)| {
+            if !matches!(entry, FsEntry::Directory) {
+                return None;
+            }
+            let normalized_path = normalized_loop_path(path);
+            wildcard_match(&normalized_pattern, &normalized_path).then_some(normalized_path)
+        })
+        .collect::<Vec<_>>();
+    matches.sort();
+    matches.dedup();
+    matches
+}
+
+fn resolve_for_r_values(root: Option<&str>, set: &str, env: &Environment) -> Vec<String> {
+    let root = root.map(str::trim).filter(|root| !root.is_empty());
+    let patterns = split_plain_set_items(set);
+    let mut values = Vec::new();
+    for pattern in patterns {
+        if pattern.is_empty() {
+            continue;
+        }
+        values.extend(tracked_files_matching_recursive(root, &pattern, env));
+    }
+    values.sort();
+    values.dedup();
+    values
+}
+
+fn tracked_files_matching_recursive(
+    root: Option<&str>,
+    pattern: &str,
+    env: &Environment,
+) -> Vec<String> {
+    let normalized_root = root.map(normalized_loop_path).unwrap_or_default();
+    let normalized_pattern = normalize_loop_pattern(pattern);
+    let pattern_has_path = pattern.contains(['\\', '/', ':']);
+    let mut matches = env
+        .modified_filesystem
+        .iter()
+        .filter_map(|(path, entry)| {
+            if !matches!(entry, FsEntry::Content { .. } | FsEntry::Decoded { .. }) {
+                return None;
+            }
+            let normalized_path = normalized_loop_path(path);
+            if !recursive_file_is_under_root(&normalized_path, &normalized_root) {
+                return None;
+            }
+            let candidate = if pattern_has_path {
+                normalized_path.as_str()
+            } else {
+                windows_basename(&normalized_path).unwrap_or(normalized_path.as_str())
+            };
+            wildcard_match(&normalized_pattern, candidate).then_some(normalized_path)
+        })
+        .collect::<Vec<_>>();
+    matches.sort();
+    matches.dedup();
+    matches
+}
+
+fn recursive_file_is_under_root(path: &str, normalized_root: &str) -> bool {
+    if normalized_root.is_empty() {
+        return true;
+    }
+    let Some(rest) = path.strip_prefix(normalized_root) else {
+        return false;
+    };
+    rest.starts_with('\\') && rest.len() > 1
+}
+
+fn normalize_loop_pattern(pattern: &str) -> String {
+    normalize_wildcard_path(&normalize_filesystem_storage_path(
+        pattern.trim_matches(['"', '\'']),
+    ))
+}
+
+fn normalized_loop_path(path: &str) -> String {
+    normalize_wildcard_path(&normalize_filesystem_storage_path(
+        path.trim_matches(['"', '\'']),
+    ))
+}
+
+fn windows_basename(path: &str) -> Option<&str> {
+    path.rsplit(['\\', '/'])
+        .next()
+        .filter(|name| !name.is_empty())
 }
 
 fn substitute_loop_vars(body: &str, first_var: char, values: &[String]) -> String {

