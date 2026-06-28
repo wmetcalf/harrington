@@ -244,6 +244,10 @@ fn extract_shell_run_command_downloads(
     text: &str,
     bindings: &std::collections::HashMap<String, String>,
 ) -> Vec<String> {
+    if !crate::util::contains_ascii_case_insensitive(text, ".run") {
+        return Vec::new();
+    }
+
     let mut urls = Vec::new();
     for line in text.lines() {
         let Some(run_pos) = find_ascii_case_insensitive_from(line, ".run", 0) else {
