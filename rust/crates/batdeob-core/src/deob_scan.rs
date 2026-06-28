@@ -3346,6 +3346,39 @@ fn scan_copied_uac_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
         "msconfig.exe",
         crate::handlers::msconfig::h_msconfig,
     );
+    let commands = [
+        (&["fodhelper", "fodhelper.exe"][..], "fodhelper.exe"),
+        (&["eventvwr", "eventvwr.exe"][..], "eventvwr.exe"),
+        (&["sdclt", "sdclt.exe"][..], "sdclt.exe"),
+        (
+            &["computerdefaults", "computerdefaults.exe"][..],
+            "computerdefaults.exe",
+        ),
+        (&["wsreset", "wsreset.exe"][..], "wsreset.exe"),
+    ];
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        let Some(cmd) = tokens.first() else {
+            continue;
+        };
+        for (source_bases, replay_command) in commands {
+            let aliases = copied_aliases_for(env, source_bases);
+            if aliases.is_empty() || !copied_alias_matches_command_ci(&aliases, cmd) {
+                continue;
+            }
+            push_manipulated_exec_once(env, line, cmd);
+            let rest = line
+                .get(cmd.len()..)
+                .map(str::trim_start)
+                .unwrap_or_default();
+            let replay = if rest.is_empty() {
+                replay_command.to_string()
+            } else {
+                format!("{replay_command} {rest}")
+            };
+            scan_uac_bypass(&replay, env);
+        }
+    }
 }
 
 fn scan_copied_esentutl_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
@@ -3581,6 +3614,16 @@ fn scan_copied_reg_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
     );
 }
 
+fn scan_copied_reg_remote_access_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    scan_copied_handler_alias_deob_text(
+        deobfuscated,
+        env,
+        &["reg", "reg.exe"],
+        "reg.exe",
+        scan_remote_access,
+    );
+}
+
 fn scan_copied_netsh_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
     let aliases = copied_aliases_for(env, &["netsh", "netsh.exe"]);
     if aliases.is_empty() {
@@ -3629,6 +3672,31 @@ fn scan_copied_defender_evasion_alias_deob_text(deobfuscated: &str, env: &mut En
     }
 }
 
+fn scan_copied_network_probe_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    for (source_bases, replay_command) in [
+        (&["nslookup", "nslookup.exe"][..], "nslookup.exe"),
+        (&["ping", "ping.exe"][..], "ping.exe"),
+    ] {
+        scan_copied_handler_alias_deob_text(
+            deobfuscated,
+            env,
+            source_bases,
+            replay_command,
+            scan_network_probe,
+        );
+    }
+}
+
+fn scan_copied_attrib_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    scan_copied_handler_alias_deob_text(
+        deobfuscated,
+        env,
+        &["attrib", "attrib.exe"],
+        "attrib.exe",
+        scan_file_concealment,
+    );
+}
+
 fn scan_netsh_remote_access(command: &str, env: &mut Environment) {
     let lower = command.to_ascii_lowercase();
     if !lower.contains("netsh")
@@ -3660,6 +3728,65 @@ fn scan_netsh_remote_access(command: &str, env: &mut Environment) {
     env.traits.push(Trait::RemoteAccess {
         technique: "rdp-firewall-open".to_string(),
         target: "3389".to_string(),
+        command: command.to_string(),
+    });
+}
+
+fn scan_remote_access(command: &str, env: &mut Environment) {
+    let lower = command.to_ascii_lowercase();
+    if lower.contains("terminal server")
+        && lower.contains("allowtsconnections")
+        && lower.contains("/d 1")
+    {
+        push_remote_access(env, "rdp-enable", "Terminal Server", command);
+    }
+    if lower.contains("specialaccounts")
+        && lower.contains("userlist")
+        && lower.contains("reg")
+        && lower.contains("add")
+    {
+        let tokens = split_words(command);
+        if let Some(value) = reg_value_name(&tokens) {
+            push_remote_access(env, "hidden-user", &value, command);
+        }
+    }
+}
+
+fn reg_value_name(tokens: &[String]) -> Option<String> {
+    let mut iter = tokens.iter().peekable();
+    while let Some(token) = iter.next() {
+        let trimmed = token.trim_matches(['"', '\'']);
+        if trimmed.eq_ignore_ascii_case("/v") {
+            return iter
+                .next()
+                .map(|value| value.trim_matches(['"', '\'']).to_string());
+        }
+        if let Some(value) = trimmed
+            .strip_prefix("/v:")
+            .or_else(|| trimmed.strip_prefix("/V:"))
+        {
+            return Some(value.trim_matches(['"', '\'']).to_string());
+        }
+    }
+    None
+}
+
+fn push_remote_access(env: &mut Environment, technique: &str, target: &str, command: &str) {
+    if env.traits.iter().any(|t| {
+        matches!(
+            t,
+            Trait::RemoteAccess {
+                technique: existing_technique,
+                target: existing_target,
+                ..
+            } if existing_technique == technique && existing_target == target
+        )
+    }) {
+        return;
+    }
+    env.traits.push(Trait::RemoteAccess {
+        technique: technique.to_string(),
+        target: target.to_string(),
         command: command.to_string(),
     });
 }
@@ -4588,6 +4715,7 @@ fn scan_copied_rundll32_alias_deob_text(deobfuscated: &str, env: &mut Environmen
             format!("rundll32.exe {rest}")
         };
         crate::handlers::rundll32::h_rundll32(&replay, env);
+        scan_credential_access(&replay, env);
     }
 }
 
@@ -6296,14 +6424,115 @@ fn scan_anti_recovery(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
+fn scan_file_concealment(deobfuscated: &str, env: &mut Environment) {
+    if !contains_ascii_case_insensitive(deobfuscated, "attrib")
+        || !(deobfuscated.contains("+h")
+            || deobfuscated.contains("+H")
+            || deobfuscated.contains("+s")
+            || deobfuscated.contains("+S"))
+    {
+        return;
+    }
+
+    fn clean_token(token: &str) -> String {
+        token
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .to_string()
+    }
+
+    fn attribute_name(token: &str) -> Option<&'static str> {
+        match token.trim().to_ascii_lowercase().as_str() {
+            "+h" => Some("hidden"),
+            "+s" => Some("system"),
+            "+r" => Some("readonly"),
+            "+a" => Some("archive"),
+            _ => None,
+        }
+    }
+
+    fn is_attrib_option(token: &str) -> bool {
+        matches!(
+            token.trim().to_ascii_lowercase().as_str(),
+            "/s" | "/d" | "/l"
+        )
+    }
+
+    fn is_redirection_or_control(token: &str) -> bool {
+        let trimmed = token.trim();
+        trimmed.starts_with('>')
+            || trimmed.starts_with('<')
+            || trimmed.starts_with("2>")
+            || trimmed == "&"
+            || trimmed == "&&"
+            || trimmed == "|"
+    }
+
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        let Some(cmd_index) = tokens.iter().position(|token| {
+            basename_trimmed(&clean_token(token)).is_some_and(|base| {
+                base.eq_ignore_ascii_case("attrib") || base.eq_ignore_ascii_case("attrib.exe")
+            })
+        }) else {
+            continue;
+        };
+
+        let mut attributes = Vec::new();
+        let mut target = String::new();
+        for token in tokens.iter().skip(cmd_index + 1) {
+            if is_redirection_or_control(token) {
+                break;
+            }
+            if let Some(attribute) = attribute_name(token) {
+                if !attributes.iter().any(|existing| existing == attribute) {
+                    attributes.push(attribute.to_string());
+                }
+                continue;
+            }
+            if token.starts_with('-') || token.starts_with('+') || is_attrib_option(token) {
+                continue;
+            }
+            if target.is_empty() {
+                target = clean_token(token);
+            }
+        }
+
+        if target.is_empty()
+            || !attributes
+                .iter()
+                .any(|attribute| attribute == "hidden" || attribute == "system")
+        {
+            continue;
+        }
+
+        if env.traits.iter().any(|t| {
+            matches!(
+                t,
+                crate::traits::Trait::FileConcealment {
+                    target: existing_target,
+                    attributes: existing_attributes,
+                    ..
+                } if existing_target == &target && existing_attributes == &attributes
+            )
+        }) {
+            continue;
+        }
+
+        env.traits.push(crate::traits::Trait::FileConcealment {
+            target,
+            attributes,
+            command: line.trim().to_string(),
+        });
+    }
+}
+
 /// Network/IP discovery probes: nslookup, Resolve-DnsName, ping to
 /// non-loopback IPs, calls to ipify/checkip/ip-api.
 fn scan_network_probe(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
-    static NSLOOKUP_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?i)\bnslookup(?:\.exe)?\s+([A-Za-z0-9.\-]+)"#).expect("nslookup re")
-    });
     static RESOLVE_DNS_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
             r#"(?i)\bResolve-DnsName\s+(?:-Name\s+)?(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9.\-]+))"#,
@@ -6338,9 +6567,32 @@ fn scan_network_probe(deobfuscated: &str, env: &mut Environment) {
             target,
         });
     };
-    for c in NSLOOKUP_RE.captures_iter(deobfuscated) {
-        if let Some(m) = c.get(1) {
-            push("dns-lookup", m.as_str().to_string());
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        let Some(command) = tokens.first() else {
+            continue;
+        };
+        let Some(command_base) = basename_trimmed(command) else {
+            continue;
+        };
+        if command_base.eq_ignore_ascii_case("nslookup")
+            || command_base.eq_ignore_ascii_case("nslookup.exe")
+        {
+            if let Some(target) = tokens.iter().skip(1).find_map(|token| {
+                let token = token.trim_matches(['"', '\'']);
+                (!token.starts_with('-') && !token.starts_with('/') && !token.is_empty())
+                    .then(|| token.to_string())
+            }) {
+                push("dns-lookup", target);
+            }
+            continue;
+        }
+        if command_base.eq_ignore_ascii_case("ping")
+            || command_base.eq_ignore_ascii_case("ping.exe")
+        {
+            if let Some(target) = ping_probe_target(&tokens) {
+                push("icmp-ping", target);
+            }
         }
     }
     for c in RESOLVE_DNS_RE.captures_iter(deobfuscated) {
@@ -6357,6 +6609,70 @@ fn scan_network_probe(deobfuscated: &str, env: &mut Environment) {
             push("ip-discovery", (*host).to_string());
         }
     }
+}
+
+fn ping_probe_target(tokens: &[String]) -> Option<String> {
+    let mut skip_next = false;
+    for token in tokens.iter().skip(1) {
+        let token = token.trim_matches(['"', '\'']);
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if token.is_empty() {
+            continue;
+        }
+        let lower = token.to_ascii_lowercase();
+        if ping_option_takes_value(&lower) {
+            skip_next = true;
+            continue;
+        }
+        if lower.starts_with('-') || lower.starts_with('/') {
+            continue;
+        }
+        let target = token.trim_end_matches(['.', ',', ';']).to_string();
+        if is_loopback_ping_target(&target) {
+            return None;
+        }
+        return Some(target);
+    }
+    None
+}
+
+fn ping_option_takes_value(option: &str) -> bool {
+    matches!(
+        option,
+        "-n" | "/n"
+            | "-l"
+            | "/l"
+            | "-i"
+            | "/i"
+            | "-v"
+            | "/v"
+            | "-r"
+            | "/r"
+            | "-s"
+            | "/s"
+            | "-j"
+            | "/j"
+            | "-k"
+            | "/k"
+            | "-w"
+            | "/w"
+            | "-c"
+            | "/c"
+    )
+}
+
+fn is_loopback_ping_target(target: &str) -> bool {
+    let lower = target.trim_matches(['[', ']']).to_ascii_lowercase();
+    if matches!(lower.as_str(), "localhost" | "::1") {
+        return true;
+    }
+    lower
+        .parse::<std::net::IpAddr>()
+        .map(|addr| addr.is_loopback())
+        .unwrap_or(false)
 }
 
 /// System enumeration / account discovery. `net user`, `net group`,
@@ -6432,7 +6748,7 @@ fn scan_credential_access(deobfuscated: &str, env: &mut Environment) {
     static PATTERNS: Lazy<Vec<(Regex, &str, fn(&str) -> String)>> = Lazy::new(|| {
         vec![
             // lsass dump via comsvcs.dll / procdump / rundll32 minidumpwritedump
-            (Regex::new(r#"(?i)\b(?:rundll32\s+\S*comsvcs\.dll[^\r\n]*?MiniDump|procdump(?:64)?(?:\.exe)?[^\r\n]*?lsass|sqldumper[^\r\n]*?lsass)"#).unwrap(),
+            (Regex::new(r#"(?i)\b(?:rundll32(?:\.exe)?\s+\S*comsvcs\.dll[^\r\n]*?MiniDump|procdump(?:64)?(?:\.exe)?[^\r\n]*?lsass|sqldumper[^\r\n]*?lsass)"#).unwrap(),
              "lsass-dump", |m: &str| snippet_prefix(m, 120)),
             // Mimikatz invocations
             (Regex::new(r#"(?i)\b(?:Invoke-Mimikatz|mimikatz(?:\.exe)?\b|sekurlsa::|kerberos::|crypto::|lsadump::)"#).unwrap(),
@@ -6924,6 +7240,7 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     scan_inmem_assembly_load(deobfuscated, env);
     scan_lateral_movement(deobfuscated, env);
     scan_anti_recovery(deobfuscated, env);
+    scan_file_concealment(deobfuscated, env);
     scan_network_probe(deobfuscated, env);
     scan_enumeration(deobfuscated, env);
     scan_credential_access(deobfuscated, env);
@@ -6961,6 +7278,7 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     scan_copied_wmic_alias_deob_text(deobfuscated, env);
     scan_copied_runas_alias_deob_text(deobfuscated, env);
     scan_copied_reg_alias_deob_text(deobfuscated, env);
+    scan_copied_reg_remote_access_alias_deob_text(deobfuscated, env);
     scan_copied_psexec_alias_deob_text(deobfuscated, env);
     scan_copied_winrs_alias_deob_text(deobfuscated, env);
     scan_copied_winrm_alias_deob_text(deobfuscated, env);
@@ -6971,6 +7289,8 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     scan_copied_defender_evasion_alias_deob_text(deobfuscated, env);
     scan_copied_anti_recovery_alias_deob_text(deobfuscated, env);
     scan_copied_enumeration_alias_deob_text(deobfuscated, env);
+    scan_copied_network_probe_alias_deob_text(deobfuscated, env);
+    scan_copied_attrib_alias_deob_text(deobfuscated, env);
     scan_copied_cleanup_alias_deob_text(deobfuscated, env);
     scan_copied_net_alias_deob_text(deobfuscated, env);
     scan_copied_mshta_alias_deob_text(deobfuscated, env);

@@ -23375,6 +23375,228 @@ C:\Users\Public\wm.tmp cpu get name
     }
 
     #[test]
+    fn rundll32_exe_comsvcs_minidump_emits_credential_access_trait() {
+        let script =
+            br#"rundll32.exe C:\Windows\System32\comsvcs.dll, MiniDump 1234 C:\Users\Public\lsass.dmp full"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::CredentialAccess { technique, target }
+                    if technique == "lsass-dump"
+                        && target.contains("comsvcs.dll")
+                        && target.contains("MiniDump")
+            )),
+            "rundll32.exe comsvcs MiniDump was not surfaced as credential access: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_rundll32_alias_comsvcs_minidump_emits_credential_access_trait() {
+        let script = br#"copy C:\Windows\System32\rundll32.exe C:\Users\Public\rd.tmp
+C:\Users\Public\rd.tmp C:\Windows\System32\comsvcs.dll, MiniDump 1234 C:\Users\Public\lsass.dmp full
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\rd.tmp"#)
+            )),
+            "copied rundll32 alias was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::CredentialAccess { technique, target }
+                    if technique == "lsass-dump"
+                        && target.contains("comsvcs.dll")
+                        && target.contains("MiniDump")
+            )),
+            "copied rundll32 comsvcs MiniDump was not surfaced as credential access: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_reg_alias_emits_remote_access_traits() {
+        let script = br#"copy C:\Windows\System32\reg.exe C:\Users\Public\rg.tmp
+C:\Users\Public\rg.tmp add "HKLM\system\CurrentControlSet\Control\Terminal Server" /v "AllowTSConnections" /t REG_DWORD /d 1 /f
+C:\Users\Public\rg.tmp add "HKLM\software\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList" /v defaultuserx /t REG_DWORD /d 0 /f
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\rg.tmp"#)
+            )),
+            "copied reg alias invocation was not tied back to WindowsUtilManip: {:?}",
+            report.traits
+        );
+        for (technique, target) in [
+            ("rdp-enable", "Terminal Server"),
+            ("hidden-user", "defaultuserx"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::RemoteAccess { technique: tk, target: tg, .. }
+                        if tk == technique && tg == target
+                )),
+                "missing copied reg RemoteAccess {technique}/{target}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn copied_uac_auto_elevator_alias_is_manipulated_exec() {
+        let script = br#"copy C:\Windows\System32\fodhelper.exe C:\Users\Public\fh.tmp
+reg add HKCU\Software\Classes\ms-settings\Shell\Open\command /d calc.exe /f
+C:\Users\Public\fh.tmp
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\fh.tmp"#)
+            )),
+            "copied UAC auto-elevator alias was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::UacBypass { technique } if technique == "fodhelper"
+            )),
+            "copied fodhelper UAC bypass was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_nslookup_alias_emits_network_probe_without_path_false_positive() {
+        let script = br#"copy C:\Windows\System32\nslookup.exe C:\Users\Public\nl.tmp
+C:\Users\Public\nl.tmp malicious.example
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\nl.tmp"#)
+            )),
+            "copied nslookup alias was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::NetworkProbe { probe_kind, target }
+                    if probe_kind == "dns-lookup" && target == "malicious.example"
+            )),
+            "copied nslookup target was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::NetworkProbe { probe_kind, target }
+                    if probe_kind == "dns-lookup" && target == "C"
+            )),
+            "nslookup source path should not create a drive-letter probe: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_attrib_alias_emits_file_concealment_trait() {
+        let script = b"@echo off\r\n\
+copy C:\\Windows\\System32\\attrib.exe C:\\Users\\Public\\atb.tmp\r\n\
+C:\\Users\\Public\\atb.tmp +h +s C:\\Users\\Public\\stage.vbs\r\n";
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::FileConcealment {
+                    target,
+                    attributes,
+                    ..
+                } if target.ends_with("stage.vbs")
+                    && attributes.iter().any(|a| a == "hidden")
+                    && attributes.iter().any(|a| a == "system")
+            )),
+            "missing copied-attrib concealment trait: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ping_emits_network_probe() {
+        let report = analyze(
+            br#"ping -n 1 8.8.8.8
+ping 127.0.0.1
+"#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::NetworkProbe { probe_kind, target }
+                    if probe_kind == "icmp-ping" && target == "8.8.8.8"
+            )),
+            "ping target was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::NetworkProbe { probe_kind, target }
+                    if probe_kind == "icmp-ping" && target == "127.0.0.1"
+            )),
+            "loopback ping should not be surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_ping_alias_emits_network_probe() {
+        let script = br#"copy C:\Windows\System32\ping.exe C:\Users\Public\pg.tmp
+C:\Users\Public\pg.tmp -n 1 c2.example
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\pg.tmp"#)
+            )),
+            "copied ping alias was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::NetworkProbe { probe_kind, target }
+                    if probe_kind == "icmp-ping" && target == "c2.example"
+            )),
+            "copied ping target was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn copied_mshta_alias_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         env.traits.push(Trait::WindowsUtilManip {
