@@ -23070,6 +23070,179 @@ C:\Users\Public\ns.tmp advfirewall set allprofiles state off
     }
 
     #[test]
+    fn copied_taskkill_alias_emits_defender_evasion_trait() {
+        let script = br#"copy C:\Windows\System32\taskkill.exe C:\Users\Public\tk.tmp
+C:\Users\Public\tk.tmp /f /im MsMpEng.exe
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\tk.tmp"#)
+            )),
+            "copied taskkill alias invocation was not tied back to WindowsUtilManip: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "taskkill-security-process" && target == "MsMpEng.exe"
+            )),
+            "copied taskkill security-process termination was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_takeown_alias_emits_defender_evasion_trait() {
+        let script = br#"copy C:\Windows\System32\takeown.exe C:\Users\Public\to.tmp
+C:\Users\Public\to.tmp /f C:\Windows\System32\SecurityHealthService.exe
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\to.tmp"#)
+            )),
+            "copied takeown alias invocation was not tied back to WindowsUtilManip: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "security-binary-takeown" && target == "SecurityHealthService.exe"
+            )),
+            "copied takeown security-binary tampering was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_icacls_alias_emits_defender_evasion_trait() {
+        let script = br#"copy C:\Windows\System32\icacls.exe C:\Users\Public\ic.tmp
+C:\Users\Public\ic.tmp C:\Windows\System32\SecurityHealthService.exe /grant:r Everyone:F /c
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\ic.tmp"#)
+            )),
+            "copied icacls alias invocation was not tied back to WindowsUtilManip: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "security-binary-acl-grant" && target == "SecurityHealthService.exe"
+            )),
+            "copied icacls security-binary ACL tampering was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_sc_alias_emits_defender_evasion_traits() {
+        let script = br#"copy C:\Windows\System32\sc.exe C:\Users\Public\sc.tmp
+C:\Users\Public\sc.tmp stop WinDefend
+C:\Users\Public\sc.tmp config WinDefend start= disabled
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\sc.tmp"#)
+            )),
+            "copied sc alias invocation was not tied back to WindowsUtilManip: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "sc-stop" && target == "WinDefend"
+            )),
+            "copied sc stop was not surfaced as defender evasion: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "sc-config" && target == "WinDefend"
+            )),
+            "copied sc config was not surfaced as defender evasion: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_reg_alias_emits_service_disable_defender_evasion_trait() {
+        let script = br#"copy C:\Windows\System32\reg.exe C:\Users\Public\rg.tmp
+C:\Users\Public\rg.tmp add HKLM\SYSTEM\CurrentControlSet\Services\WinDefend /v Start /t REG_DWORD /d 4 /f
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\rg.tmp"#)
+            )),
+            "copied reg alias invocation was not tied back to WindowsUtilManip: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "service-start-disabled" && target == "WinDefend"
+            )),
+            "copied reg Defender service disable was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_schtasks_alias_emits_defender_task_disable_evasion_trait() {
+        let script = br#"copy C:\Windows\System32\schtasks.exe C:\Users\Public\st.tmp
+C:\Users\Public\st.tmp /Change /TN "\Microsoft\Windows\Windows Defender\Windows Defender Scheduled Scan" /Disable
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\st.tmp"#)
+            )),
+            "copied schtasks alias did not emit manipulated execution: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "scheduled-task-disable"
+                        && target == r#"\Microsoft\Windows\Windows Defender\Windows Defender Scheduled Scan"#
+            )),
+            "copied schtasks Defender task disable was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn copied_mshta_alias_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         env.traits.push(Trait::WindowsUtilManip {

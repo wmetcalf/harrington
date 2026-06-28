@@ -3610,6 +3610,25 @@ fn scan_copied_netsh_alias_deob_text(deobfuscated: &str, env: &mut Environment) 
     }
 }
 
+fn scan_copied_defender_evasion_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    for (source_bases, replay_command) in [
+        (&["taskkill", "taskkill.exe"][..], "taskkill.exe"),
+        (&["takeown", "takeown.exe"][..], "takeown.exe"),
+        (&["icacls", "icacls.exe"][..], "icacls.exe"),
+        (&["sc", "sc.exe"][..], "sc.exe"),
+        (&["reg", "reg.exe"][..], "reg.exe"),
+        (&["schtasks", "schtasks.exe"][..], "schtasks.exe"),
+    ] {
+        scan_copied_handler_alias_deob_text(
+            deobfuscated,
+            env,
+            source_bases,
+            replay_command,
+            scan_defender_evasion,
+        );
+    }
+}
+
 fn scan_netsh_remote_access(command: &str, env: &mut Environment) {
     let lower = command.to_ascii_lowercase();
     if !lower.contains("netsh")
@@ -5703,6 +5722,32 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
         Regex::new(r#"(?i)netsh(?:\.exe)?\s+advfirewall\s+set\s+(\w+)\s+state\s+off"#)
             .expect("fw-off")
     });
+    static TASKKILL_SECURITY_PROCESS_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?i)\btaskkill(?:\.exe)?\b[^\r\n]*?/im\s+("[^"]+"|'[^']+'|[^\s&|]+)"#)
+            .expect("taskkill-security-process")
+    });
+    static TAKEOWN_SECURITY_BINARY_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?i)\btakeown(?:\.exe)?\b[^\r\n]*?/f\s+("[^"]+"|'[^']+'|[^\s&|]+)"#)
+            .expect("takeown-security-binary")
+    });
+    static ICACLS_SECURITY_BINARY_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?i)\bicacls(?:\.exe)?\b\s+("[^"]+"|'[^']+'|[^\s&|]+)[^\r\n]*?/grant(?::r)?\b"#,
+        )
+        .expect("icacls-security-binary")
+    });
+    static REG_SERVICE_DISABLED_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?i)\breg(?:\.exe)?\s+add\s+(?:"[^"\r\n]*\\Services\\([^"\\/\s]+)[^"]*"|[^\r\n\s]*\\Services\\([^\s\\/]+))[^\r\n]*?/v\s+Start\b[^\r\n]*?/d\s+4\b"#,
+        )
+        .expect("reg-service-disabled")
+    });
+    static SCHTASKS_DEFENDER_DISABLE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?i)\bschtasks(?:\.exe)?\b[^\r\n]*?/Change\b[^\r\n]*?/TN\s+("[^"]*Windows Defender[^"]*"|'[^']*Windows Defender[^']*'|[^\r\n]*Windows Defender[^\r\n]*?)\s+/Disable\b"#,
+        )
+        .expect("schtasks-defender-disable")
+    });
     // AMSI bypass markers — Invoke-NullAMSI, AmsiInitFailed/AmsiUtils
     // memory patches, ETW patch via System.Diagnostics.Eventing
     static AMSI_BYPASS_RE: Lazy<Regex> = Lazy::new(|| {
@@ -5782,6 +5827,47 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
             .unwrap_or_default();
         push("netsh-fw-off", prof);
     }
+    for caps in TASKKILL_SECURITY_PROCESS_RE.captures_iter(deobfuscated) {
+        let Some(target) = caps.get(1).and_then(|m| security_file_basename(m.as_str())) else {
+            continue;
+        };
+        if is_security_process_name(&target) {
+            push("taskkill-security-process", target);
+        }
+    }
+    for caps in TAKEOWN_SECURITY_BINARY_RE.captures_iter(deobfuscated) {
+        let Some(target) = caps.get(1).and_then(|m| security_file_basename(m.as_str())) else {
+            continue;
+        };
+        if is_security_binary_name(&target) {
+            push("security-binary-takeown", target);
+        }
+    }
+    for caps in ICACLS_SECURITY_BINARY_RE.captures_iter(deobfuscated) {
+        let Some(target) = caps.get(1).and_then(|m| security_file_basename(m.as_str())) else {
+            continue;
+        };
+        if is_security_binary_name(&target) {
+            push("security-binary-acl-grant", target);
+        }
+    }
+    for caps in REG_SERVICE_DISABLED_RE.captures_iter(deobfuscated) {
+        let service = caps
+            .get(1)
+            .or_else(|| caps.get(2))
+            .map(|m| m.as_str().trim_matches(['"', '\'']).to_string())
+            .unwrap_or_default();
+        if is_security_service_name(&service) {
+            push("service-start-disabled", service);
+        }
+    }
+    for caps in SCHTASKS_DEFENDER_DISABLE_RE.captures_iter(deobfuscated) {
+        let task = caps
+            .get(1)
+            .map(|m| strip_outer_quotes(m.as_str()).to_string())
+            .unwrap_or_default();
+        push("scheduled-task-disable", task);
+    }
     if let Some(m) = AMSI_BYPASS_RE.find(deobfuscated) {
         push("amsi-bypass", m.as_str().to_string());
     }
@@ -5839,6 +5925,45 @@ fn push_mppreference_invoke_expression_exclusion_process(
             push("exclusion-process", item.to_string());
         }
     }
+}
+
+fn security_file_basename(path: &str) -> Option<String> {
+    windows_basename(path)
+        .map(|name| name.trim_end_matches(['.', ' ']).to_string())
+        .filter(|name| !name.is_empty())
+}
+
+fn is_security_process_name(name: &str) -> bool {
+    [
+        "MsMpEng.exe",
+        "SecurityHealthService.exe",
+        "NisSrv.exe",
+        "SenseIR.exe",
+        "SenseNdr.exe",
+        "SenseCncProxy.exe",
+        "smartscreen.exe",
+    ]
+    .iter()
+    .any(|candidate| name.eq_ignore_ascii_case(candidate))
+}
+
+fn is_security_binary_name(name: &str) -> bool {
+    is_security_process_name(name)
+        || [
+            "WinDefend",
+            "WdNisSvc",
+            "MpCmdRun.exe",
+            "MsMpEngCP.exe",
+            "SecurityHealthSystray.exe",
+        ]
+        .iter()
+        .any(|candidate| name.eq_ignore_ascii_case(candidate))
+}
+
+fn is_security_service_name(name: &str) -> bool {
+    ["WinDefend", "MsMpSvc", "wuauserv", "MpsSvc", "WdNisSvc"]
+        .iter()
+        .any(|candidate| name.eq_ignore_ascii_case(candidate))
 }
 
 pub(crate) fn defender_evasion_is_disabling_value(opt: &str, val: &str) -> bool {
@@ -6740,6 +6865,7 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     scan_copied_sc_alias_deob_text(deobfuscated, env);
     scan_copied_at_alias_deob_text(deobfuscated, env);
     scan_copied_netsh_alias_deob_text(deobfuscated, env);
+    scan_copied_defender_evasion_alias_deob_text(deobfuscated, env);
     scan_copied_cleanup_alias_deob_text(deobfuscated, env);
     scan_copied_net_alias_deob_text(deobfuscated, env);
     scan_copied_mshta_alias_deob_text(deobfuscated, env);
