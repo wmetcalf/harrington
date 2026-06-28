@@ -3,8 +3,8 @@
 //! `findstr "%~f0"` style gadgets can resolve without an actual shell.
 
 use crate::env::Environment;
+use crate::util::contains_ascii_case_insensitive;
 use crate::util::starts_with_ascii_case_insensitive;
-use crate::util::{contains_ascii_case_insensitive, ends_with_ascii_case_insensitive};
 
 pub fn run_pipeline(pipeline: &str, env: &mut Environment) -> Vec<String> {
     // Split on top-level `|` (not inside quotes) and run each stage in order
@@ -92,48 +92,12 @@ fn run_stage(stage: &str, input: Vec<String>, env: &mut Environment) -> Vec<Stri
                 .map(|(k, v)| format!("{}={}", canonical_env_name(&k), v))
                 .collect()
         }
-        "findstr" => {
-            // If input is empty and the last arg is a file path (e.g. "%~f0" or a .bat path),
-            // read that file as the input source before filtering.
-            let mut effective_input = input;
-            if effective_input.is_empty() {
-                // Expand %~f0 → synthetic path, check if last arg is a file source.
-                let expanded_args: Vec<String> = rest_args
-                    .iter()
-                    .map(|a| {
-                        let trimmed = a.trim_matches('"');
-                        if trimmed.eq_ignore_ascii_case("%~f0")
-                            || trimmed.eq_ignore_ascii_case("%0")
-                        {
-                            "C:\\Users\\al\\Downloads\\script.bat".to_string()
-                        } else {
-                            (*a).to_string()
-                        }
-                    })
-                    .collect();
-                if let Some(last) = expanded_args.last() {
-                    let candidate = last.trim_matches('"');
-                    if candidate.contains(".bat")
-                        || candidate.contains(".cmd")
-                        || candidate.contains('\\')
-                        || candidate.contains('/')
-                    {
-                        effective_input = type_file(candidate, env);
-                    }
-                }
-                let expanded_refs: Vec<&str> = expanded_args.iter().map(String::as_str).collect();
-                return filter_findstr(&expanded_refs, effective_input);
-            }
-            filter_findstr(&rest_args, effective_input)
-        }
+        "cmd" | "cmd.exe" => synth_cmd(rest_after_command(stage), input, env),
+        "findstr" => synth_findstr(&rest_args, input, env),
         "find" => synth_find(&rest_args, input, env),
         "more" => synth_more(stage, &rest_args, input, env),
         "sort" => synth_sort(stage, &rest_args, input, env),
-        "type" => {
-            // type FILE — pull from modified_filesystem or input_bytes
-            let path = rest_args.first().copied().unwrap_or("");
-            type_file(path, env)
-        }
+        "type" => synth_type(&rest_args, env),
         "assoc" => synth_assoc(&rest_args, env),
         "ftype" => synth_ftype(&rest_args, env),
         "reg" => synth_reg(&rest_args, env),
@@ -171,6 +135,15 @@ fn normalize_stage_prefix(stage: &str) -> &str {
     stage.trim_start_matches(|c: char| c == '@' || c == ';' || c.is_whitespace())
 }
 
+fn rest_after_command(stage: &str) -> &str {
+    let stage = normalize_stage_prefix(stage);
+    stage
+        .split_whitespace()
+        .next()
+        .map(|cmd| stage[cmd.len()..].trim_start())
+        .unwrap_or("")
+}
+
 fn stage_command(stage: &str) -> Option<String> {
     normalize_stage_prefix(stage)
         .split_whitespace()
@@ -182,6 +155,8 @@ fn is_supported_command(cmd: String) -> bool {
     matches!(
         cmd.as_str(),
         "set"
+            | "cmd"
+            | "cmd.exe"
             | "findstr"
             | "find"
             | "more"
@@ -268,23 +243,7 @@ fn filter_findstr(args: &[&str], input: Vec<String>) -> Vec<String> {
     let mut invert = false;
     let mut regex_mode = false;
     let mut i = 0;
-    // If the last arg looks like a file path (was consumed as the file source in run_stage),
-    // exclude it from pattern/flag parsing.
-    let skip_last = args
-        .last()
-        .map(|a| {
-            let trimmed = a.trim_matches('"');
-            trimmed.contains('\\')
-                || trimmed.contains('/')
-                || ends_with_ascii_case_insensitive(trimmed, ".bat")
-                || ends_with_ascii_case_insensitive(trimmed, ".cmd")
-        })
-        .unwrap_or(false);
-    let limit = if skip_last {
-        args.len().saturating_sub(1)
-    } else {
-        args.len()
-    };
+    let limit = args.len();
     while i < limit {
         let a = args[i];
         if let Some(flags_and_maybe_literal) = a.strip_prefix('/') {
@@ -428,6 +387,53 @@ fn filter_find(args: &[&str], input: Vec<String>) -> Vec<String> {
         .collect()
 }
 
+fn synth_findstr(args: &[&str], input: Vec<String>, env: &mut Environment) -> Vec<String> {
+    if !input.is_empty() {
+        return filter_findstr(args, input);
+    }
+    let expanded_args: Vec<String> = args
+        .iter()
+        .map(|arg| {
+            let trimmed = arg.trim_matches('"');
+            if trimmed.eq_ignore_ascii_case("%~f0") || trimmed.eq_ignore_ascii_case("%0") {
+                "C:\\Users\\al\\Downloads\\script.bat".to_string()
+            } else {
+                (*arg).to_string()
+            }
+        })
+        .collect();
+    let Some((file_idxs, lines)) = findstr_file_input_args(&expanded_args, env) else {
+        let refs: Vec<&str> = expanded_args.iter().map(String::as_str).collect();
+        return filter_findstr(&refs, Vec::new());
+    };
+    let filter_args: Vec<&str> = expanded_args
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, arg)| (!file_idxs.contains(&idx)).then_some(arg.as_str()))
+        .collect();
+    filter_findstr(&filter_args, lines)
+}
+
+fn findstr_file_input_args(
+    args: &[String],
+    env: &mut Environment,
+) -> Option<(Vec<usize>, Vec<String>)> {
+    let mut file_idxs = Vec::new();
+    let mut input = Vec::new();
+    for (idx, arg) in args.iter().enumerate() {
+        let candidate = arg.trim_matches('"');
+        if candidate.is_empty() || candidate.starts_with('/') {
+            continue;
+        }
+        let lines = type_file(candidate, env);
+        if !lines.is_empty() {
+            file_idxs.push(idx);
+            input.extend(lines);
+        }
+    }
+    (!file_idxs.is_empty()).then_some((file_idxs, input))
+}
+
 fn synth_find(args: &[&str], input: Vec<String>, env: &mut Environment) -> Vec<String> {
     if !input.is_empty() {
         return filter_find(args, input);
@@ -438,19 +444,30 @@ fn synth_find(args: &[&str], input: Vec<String>, env: &mut Environment) -> Vec<S
         .copied()
         .filter(|arg| !arg.starts_with('/'))
         .collect::<Vec<_>>();
-    let Some(path) = non_flags.get(1).copied() else {
+    let Some(paths) = non_flags.get(1..) else {
         return filter_find(args, input);
     };
-    let lines = type_file(path, env);
+    let mut lines = Vec::new();
+    for path in paths {
+        lines.extend(type_file(path, env));
+    }
     if lines.is_empty() {
         return Vec::new();
     }
     let filter_args = args
         .iter()
         .copied()
-        .filter(|arg| *arg != path)
+        .filter(|arg| !paths.contains(arg))
         .collect::<Vec<_>>();
     filter_find(&filter_args, lines)
+}
+
+fn synth_type(args: &[&str], env: &mut Environment) -> Vec<String> {
+    let mut out = Vec::new();
+    for path in non_redirect_args(args) {
+        out.extend(type_file(path, env));
+    }
+    out
 }
 
 fn synth_more(
@@ -459,18 +476,32 @@ fn synth_more(
     input: Vec<String>,
     env: &mut Environment,
 ) -> Vec<String> {
+    let skip = args
+        .iter()
+        .find_map(|arg| more_plus_start_line(arg))
+        .map(|line| line.saturating_sub(1))
+        .unwrap_or(0);
+    let apply_skip = |lines: Vec<String>| lines.into_iter().skip(skip).collect();
     if !input.is_empty() {
-        return input;
+        return apply_skip(input);
     }
     let (_, redirs) = crate::redirect::extract_redirections(stage);
     if let Some(path) = redirs.stdin {
-        return type_file(&path, env);
+        return apply_skip(type_file(&path, env));
     }
-    args.iter()
-        .copied()
-        .find(|arg| !arg.starts_with(['/', '-']) && *arg != "<")
-        .map(|path| type_file(path, env))
-        .unwrap_or_default()
+    let mut lines = Vec::new();
+    for path in args.iter().copied().filter(|arg| !is_more_option(arg)) {
+        lines.extend(type_file(path, env));
+    }
+    apply_skip(lines)
+}
+
+fn is_more_option(arg: &str) -> bool {
+    arg.starts_with(['/', '-', '+']) || arg == "<"
+}
+
+fn more_plus_start_line(arg: &str) -> Option<usize> {
+    arg.strip_prefix('+')?.parse::<usize>().ok()
 }
 
 fn synth_sort(
@@ -495,6 +526,71 @@ fn synth_sort(
     };
     lines.sort();
     lines
+}
+
+fn synth_cmd(rest: &str, input: Vec<String>, env: &mut Environment) -> Vec<String> {
+    let Some(child) = cmd_child_after_switch(rest) else {
+        return input;
+    };
+    run_pipeline(child, env)
+}
+
+fn cmd_child_after_switch(rest: &str) -> Option<&str> {
+    for (start, end) in command_token_spans(rest) {
+        let token = rest[start..end].trim_matches('"');
+        let lower = token.to_ascii_lowercase();
+        if matches!(lower.as_str(), "/c" | "/k" | "/r") {
+            return Some(strip_wrapping_quotes(rest[end..].trim()));
+        }
+        if lower.starts_with("/c") || lower.starts_with("/k") || lower.starts_with("/r") {
+            let child_start = start + 2;
+            return Some(strip_wrapping_quotes(rest[child_start..].trim()));
+        }
+    }
+    None
+}
+
+fn command_token_spans(s: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut token_start = None;
+    let mut in_dq = false;
+    for (idx, c) in s.char_indices() {
+        if token_start.is_none() && !c.is_whitespace() {
+            token_start = Some(idx);
+        }
+        if c == '"' {
+            in_dq = !in_dq;
+        }
+        if c.is_whitespace() && !in_dq {
+            if let Some(start) = token_start.take() {
+                if start < idx {
+                    spans.push((start, idx));
+                }
+            }
+        }
+    }
+    if let Some(start) = token_start {
+        if start < s.len() {
+            spans.push((start, s.len()));
+        }
+    }
+    spans
+}
+
+fn strip_wrapping_quotes(s: &str) -> &str {
+    s.strip_prefix('"')
+        .and_then(|inner| inner.strip_suffix('"'))
+        .unwrap_or(s)
+}
+
+fn non_redirect_args<'a>(args: &'a [&'a str]) -> impl Iterator<Item = &'a str> + 'a {
+    args.iter().copied().filter(|arg| {
+        !arg.starts_with(['<', '>'])
+            && *arg != "2>"
+            && *arg != "1>"
+            && !arg.starts_with("2>")
+            && !arg.starts_with("1>")
+    })
 }
 
 fn type_file(path: &str, env: &mut Environment) -> Vec<String> {

