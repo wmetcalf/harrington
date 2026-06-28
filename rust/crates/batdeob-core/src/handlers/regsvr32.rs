@@ -95,7 +95,7 @@ fn strip_current_dir_prefix(path: &str) -> Option<&str> {
 }
 
 fn trim_url_suffix(url: &str) -> &str {
-    url.trim_end_matches(['"', '\'', ')', ']', '}', ';', ','])
+    crate::deob_scan::trim_liberal_url_suffix(url)
 }
 
 fn regsvr32_attached_i_arg(lower: &str) -> bool {

