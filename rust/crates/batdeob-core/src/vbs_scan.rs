@@ -139,6 +139,18 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
             });
         }
 
+        for url in extract_shell_execute_command_downloads(&text, &bindings) {
+            if crate::deob_scan::is_noise_url(&url) || !seen.insert((idx, url.clone())) {
+                continue;
+            }
+            let snippet = snippet_prefix(&text, 120);
+            env.traits.push(Trait::Download {
+                cmd: format!("(vbs #{idx}) {snippet}"),
+                src: url,
+                dst: dst_hint.clone(),
+            });
+        }
+
         for expr in extract_xmlhttp_open_url_exprs(&text) {
             let Some(url) = eval_vbs_string_expr(expr, &bindings)
                 .and_then(|value| crate::deob_scan::normalize_liberal_url_token(&value))
@@ -244,36 +256,88 @@ fn extract_shell_run_command_downloads(
     text: &str,
     bindings: &std::collections::HashMap<String, String>,
 ) -> Vec<String> {
-    if !crate::util::contains_ascii_case_insensitive(text, ".run") {
+    if !crate::util::contains_ascii_case_insensitive(text, ".run")
+        && !crate::util::contains_ascii_case_insensitive(text, ".exec")
+    {
         return Vec::new();
     }
 
     let mut urls = Vec::new();
     for line in text.lines() {
-        let Some(run_pos) = find_ascii_case_insensitive_from(line, ".run", 0) else {
-            continue;
-        };
-        let mut args = line[run_pos + ".run".len()..].trim();
-        if let Some(stripped) = args.strip_prefix('(') {
-            args = stripped.trim_end().strip_suffix(')').unwrap_or(stripped);
-        }
-        let Some(first_arg) = split_vbs_args(args).first().copied() else {
-            continue;
-        };
-        let Some(value) = eval_vbs_string_expr(first_arg, bindings) else {
-            continue;
-        };
-        let mut parts = value.split_ascii_whitespace();
-        if parts.next().is_none() || parts.clone().next().is_none() {
-            continue;
-        }
-        for token in parts {
-            let candidate = token.trim_matches(['"', '\'', '(', ')', '[', ']', '{', '}', ',', ';']);
-            if let Some(url) = crate::deob_scan::normalize_liberal_url_token(candidate)
-                .or_else(|| crate::deob_scan::normalize_schemeless_domain_path_token(candidate))
-            {
-                urls.push(url);
+        for method in [".run", ".exec"] {
+            let mut cursor = 0usize;
+            while let Some(pos) = find_ascii_case_insensitive_from(line, method, cursor) {
+                let mut args = line[pos + method.len()..].trim();
+                if let Some(stripped) = args.strip_prefix('(') {
+                    args = stripped.trim_end().strip_suffix(')').unwrap_or(stripped);
+                }
+                let Some(first_arg) = split_vbs_args(args).first().copied() else {
+                    cursor = pos + method.len();
+                    continue;
+                };
+                if let Some(value) = eval_vbs_string_expr(first_arg, bindings) {
+                    urls.extend(command_download_urls(&value));
+                }
+                cursor = pos + method.len();
             }
+        }
+    }
+    urls
+}
+
+fn extract_shell_execute_command_downloads(
+    text: &str,
+    bindings: &std::collections::HashMap<String, String>,
+) -> Vec<String> {
+    if !crate::util::contains_ascii_case_insensitive(text, ".shellexecute") {
+        return Vec::new();
+    }
+
+    let mut urls = Vec::new();
+    for line in text.lines() {
+        let mut cursor = 0usize;
+        while let Some(pos) = find_ascii_case_insensitive_from(line, ".shellexecute", cursor) {
+            let mut args = line[pos + ".shellexecute".len()..].trim();
+            if let Some(stripped) = args.strip_prefix('(') {
+                args = stripped.trim_end().strip_suffix(')').unwrap_or(stripped);
+            }
+            let parts = split_vbs_args(args);
+            let Some(program_expr) = parts.first().copied() else {
+                cursor = pos + ".shellexecute".len();
+                continue;
+            };
+            let Some(mut command) = eval_vbs_string_expr(program_expr, bindings) else {
+                cursor = pos + ".shellexecute".len();
+                continue;
+            };
+            if let Some(args_expr) = parts.get(1).copied() {
+                if let Some(arguments) = eval_vbs_string_expr(args_expr, bindings) {
+                    if !arguments.trim().is_empty() {
+                        command.push(' ');
+                        command.push_str(&arguments);
+                    }
+                }
+            }
+            urls.extend(command_download_urls(&command));
+            cursor = pos + ".shellexecute".len();
+        }
+    }
+    urls
+}
+
+fn command_download_urls(command: &str) -> Vec<String> {
+    let mut parts = command.split_ascii_whitespace();
+    if parts.next().is_none() || parts.clone().next().is_none() {
+        return Vec::new();
+    }
+
+    let mut urls = Vec::new();
+    for token in parts {
+        let candidate = token.trim_matches(['"', '\'', '(', ')', '[', ']', '{', '}', ',', ';']);
+        if let Some(url) = crate::deob_scan::normalize_liberal_url_token(candidate)
+            .or_else(|| crate::deob_scan::normalize_schemeless_domain_path_token(candidate))
+        {
+            urls.push(url);
         }
     }
     urls

