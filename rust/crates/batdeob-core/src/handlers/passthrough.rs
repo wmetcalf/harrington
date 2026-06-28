@@ -88,6 +88,7 @@ fn remove_tracked_file(env: &mut Environment, candidate: &str, recursive: bool) 
         return;
     }
     if candidate.contains(['*', '?']) {
+        remove_tracked_file_wildcard(env, candidate, recursive);
         return;
     }
     let key = normalize_wildcard_path(strip_current_dir_prefix(candidate));
@@ -96,6 +97,37 @@ fn remove_tracked_file(env: &mut Environment, candidate: &str, recursive: bool) 
     if let Some(name) = current_dir_basename(candidate) {
         env.modified_filesystem.remove(&name.to_ascii_lowercase());
     }
+}
+
+fn remove_tracked_file_wildcard(env: &mut Environment, candidate: &str, recursive: bool) {
+    let candidate = strip_current_dir_prefix(candidate);
+    let normalized_candidate = normalize_wildcard_path(candidate);
+    let (candidate_dir, file_pattern) = split_dir_file_pattern(&normalized_candidate);
+    if file_pattern.is_empty() {
+        return;
+    }
+    env.modified_filesystem.retain(|path, entry| {
+        if matches!(entry, FsEntry::Directory) {
+            return true;
+        }
+        let normalized_path = normalize_wildcard_path(path);
+        let (path_dir, path_name) = split_dir_file_pattern(&normalized_path);
+        let dir_matches = if candidate_dir.is_empty() {
+            recursive || path_dir.is_empty()
+        } else if recursive {
+            path_dir == candidate_dir
+                || path_dir
+                    .strip_prefix(candidate_dir)
+                    .is_some_and(|tail| tail.starts_with('\\'))
+        } else {
+            path_dir == candidate_dir
+        };
+        !(dir_matches && wildcard_match(file_pattern, path_name))
+    });
+}
+
+fn split_dir_file_pattern(path: &str) -> (&str, &str) {
+    path.rsplit_once('\\').unwrap_or(("", path))
 }
 
 fn remove_tracked_directory_wildcard(
