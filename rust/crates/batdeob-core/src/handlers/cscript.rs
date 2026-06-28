@@ -129,13 +129,33 @@ fn strip_current_dir_prefix(path: &str) -> Option<&str> {
 fn downloaded_source_for_path(env: &Environment, path: &str) -> Option<String> {
     let mut key = path.to_ascii_lowercase();
     for _ in 0..8 {
-        match filesystem_entry_for_path(env, &key)? {
-            FsEntry::Download { src } => return Some(src.clone()),
-            FsEntry::Copy { src } => key = src.to_ascii_lowercase(),
-            FsEntry::Directory | FsEntry::Content { .. } | FsEntry::Decoded { .. } => return None,
+        match filesystem_entry_for_path(env, &key) {
+            Some(FsEntry::Download { src }) => return Some(src.clone()),
+            Some(FsEntry::Copy { src }) => key = src.to_ascii_lowercase(),
+            Some(FsEntry::Directory | FsEntry::Content { .. } | FsEntry::Decoded { .. }) => {
+                return None;
+            }
+            None => return downloaded_source_for_current_dir_path(env, path),
         }
     }
     None
+}
+
+fn downloaded_source_for_current_dir_path(env: &Environment, path: &str) -> Option<String> {
+    if let Some(stripped) = strip_current_dir_prefix(path) {
+        if stripped.contains(['\\', '/']) {
+            return downloaded_source_for_path(env, stripped);
+        }
+    }
+    let name = current_dir_basename(path)?;
+    env.modified_filesystem
+        .iter()
+        .find_map(|(tracked_path, _)| {
+            windows_basename(tracked_path)
+                .is_some_and(|tracked_name| tracked_name.eq_ignore_ascii_case(name))
+                .then(|| downloaded_source_for_path(env, tracked_path))
+        })
+        .flatten()
 }
 
 fn push_url_argument(raw: &str, url: &str, env: &mut Environment) {
