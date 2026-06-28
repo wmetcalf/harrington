@@ -105,6 +105,11 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
         return result;
     }
 
+    if replay_copied_filesystem_alias(raw, env) {
+        result.consumed = true;
+        return result;
+    }
+
     if let Some(body) = crate::handlers::call::call_body(raw) {
         let raw_wrapper_needs_bang_preservation = body.contains('!')
             && (crate::handlers::cmd::extract_cmd_inner(body).is_some()
@@ -167,6 +172,84 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
     }
 
     result
+}
+
+fn replay_copied_filesystem_alias(raw: &str, env: &mut Environment) -> bool {
+    let Some(name) = command_name(raw) else {
+        return false;
+    };
+    let replay_command = if command_matches_copied_alias(&name, env, &["robocopy", "robocopy.exe"])
+    {
+        "robocopy.exe"
+    } else if command_matches_copied_alias(&name, env, &["replace", "replace.exe"]) {
+        "replace.exe"
+    } else if command_matches_copied_alias(&name, env, &["xcopy", "xcopy.exe"]) {
+        "xcopy.exe"
+    } else {
+        return false;
+    };
+    let Some(rest_start) = raw.find(&name).map(|idx| idx + name.len()) else {
+        return false;
+    };
+    let rest = raw[rest_start..].trim_start();
+    if rest.is_empty() {
+        return false;
+    }
+    push_manipulated_exec_once(env, raw, &name);
+    let replay = format!("{replay_command} {rest}");
+    match replay_command {
+        "robocopy.exe" => crate::handlers::robocopy::h_robocopy(&replay, env),
+        "replace.exe" => crate::handlers::replace::h_replace(&replay, env),
+        "xcopy.exe" => crate::handlers::copy::h_xcopy(&replay, env),
+        _ => return false,
+    }
+    true
+}
+
+fn command_matches_copied_alias(name: &str, env: &Environment, source_bases: &[&str]) -> bool {
+    let name_trimmed = strip_outer_quotes(name);
+    let name_base = command_basename_lower(name_trimmed);
+    env.traits.iter().any(|t| {
+        let crate::traits::Trait::WindowsUtilManip { src, dst, .. } = t else {
+            return false;
+        };
+        let src_base = command_basename_lower(src);
+        if !source_bases
+            .iter()
+            .any(|base| src_base.eq_ignore_ascii_case(base))
+        {
+            return false;
+        }
+        let dst_trimmed = strip_outer_quotes(dst);
+        name_trimmed.eq_ignore_ascii_case(dst_trimmed)
+            || name_base.eq_ignore_ascii_case(&command_basename_lower(dst_trimmed))
+    })
+}
+
+fn push_manipulated_exec_once(env: &mut Environment, raw: &str, target: &str) {
+    let target = strip_outer_quotes(target).to_string();
+    if env.traits.iter().any(|t| {
+        matches!(
+            t,
+            crate::traits::Trait::ManipulatedExec {
+                cmd: existing_cmd,
+                target: existing_target
+            } if existing_cmd == raw && existing_target.eq_ignore_ascii_case(&target)
+        )
+    }) {
+        return;
+    }
+    env.traits.push(crate::traits::Trait::ManipulatedExec {
+        cmd: raw.to_string(),
+        target,
+    });
+}
+
+fn command_basename_lower(path: &str) -> String {
+    windows_basename(path)
+        .unwrap_or(path)
+        .trim_end_matches(['.', ' '])
+        .to_ascii_lowercase()
 }
 
 fn conhost_child_command(raw: &str) -> Option<String> {

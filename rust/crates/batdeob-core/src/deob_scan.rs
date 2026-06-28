@@ -3462,7 +3462,11 @@ fn scan_copied_queued_child_alias_deob_text(
         let before_len = env.traits.len();
         let child_start = env.exec_cmd.len();
         handler(&replay, env);
+        let queued_children = env.exec_cmd.get(child_start..).unwrap_or_default().to_vec();
         replay_queued_child_commands_from(env, child_start);
+        for child in queued_children {
+            replay_embedded_url_variable_curl(line, &child, env);
+        }
         suppress_generic_downloads_for_new_structured_urls(env, before_len);
     }
 }
@@ -3485,6 +3489,56 @@ fn scan_copied_runas_alias_deob_text(deobfuscated: &str, env: &mut Environment) 
         "runas.exe",
         crate::handlers::passthrough::h_runas,
     );
+}
+
+fn scan_copied_psexec_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    let aliases = copied_aliases_for(env, &["psexec", "psexec.exe"]);
+    if aliases.is_empty() {
+        return;
+    }
+
+    let lines: Vec<&str> = deobfuscated.lines().collect();
+    for (line_idx, line) in lines.iter().enumerate() {
+        let tokens = split_words(line);
+        let Some(cmd) = tokens.first() else {
+            continue;
+        };
+        if !copied_alias_matches_command_ci(&aliases, cmd) || tokens.len() < 2 {
+            continue;
+        }
+        push_manipulated_exec_once(env, line, cmd);
+        let rest = line
+            .get(cmd.len()..)
+            .map(str::trim_start)
+            .unwrap_or_default();
+        let replay = if rest.is_empty() {
+            "psexec.exe".to_string()
+        } else {
+            format!("psexec.exe {rest}")
+        };
+        let child = crate::handlers::passthrough::psexec_child_command(&replay);
+        let before_len = env.traits.len();
+        let child_start = env.exec_cmd.len();
+        crate::handlers::passthrough::h_psexec(&replay, env);
+        if let Some((host, inner)) = child {
+            if !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::LateralMovement { tool, target_host }
+                        if tool == "psexec" && target_host == &host
+                )
+            }) {
+                env.traits.push(Trait::LateralMovement {
+                    tool: "psexec".to_string(),
+                    target_host: host,
+                });
+            }
+            replay_embedded_url_variable_curl(line, &inner, env);
+            replay_following_url_variable_curl(line, &lines, line_idx, env);
+        }
+        replay_queued_child_commands_from(env, child_start);
+        suppress_generic_downloads_for_new_structured_urls(env, before_len);
+    }
 }
 
 fn scan_copied_schtasks_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
@@ -3515,6 +3569,80 @@ fn scan_copied_at_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
         "at.exe",
         crate::handlers::passthrough::h_at,
     );
+}
+
+fn scan_copied_reg_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    scan_copied_queued_child_alias_deob_text(
+        deobfuscated,
+        env,
+        &["reg", "reg.exe"],
+        "reg.exe",
+        crate::handlers::passthrough::h_reg,
+    );
+}
+
+fn scan_copied_netsh_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    let aliases = copied_aliases_for(env, &["netsh", "netsh.exe"]);
+    if aliases.is_empty() {
+        return;
+    }
+
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        let Some(cmd) = tokens.first() else {
+            continue;
+        };
+        if !copied_alias_matches_command_ci(&aliases, cmd) || tokens.len() < 2 {
+            continue;
+        }
+        push_manipulated_exec_once(env, line, cmd);
+        let rest = line
+            .get(cmd.len()..)
+            .map(str::trim_start)
+            .unwrap_or_default();
+        let replay = if rest.is_empty() {
+            "netsh.exe".to_string()
+        } else {
+            format!("netsh.exe {rest}")
+        };
+        scan_defender_evasion(&replay, env);
+        scan_netsh_remote_access(&replay, env);
+    }
+}
+
+fn scan_netsh_remote_access(command: &str, env: &mut Environment) {
+    let lower = command.to_ascii_lowercase();
+    if !lower.contains("netsh")
+        || !lower.contains("advfirewall")
+        || !lower.contains("firewall")
+        || !lower.contains("add")
+        || !lower.contains("rule")
+        || !lower.contains("action=allow")
+    {
+        return;
+    }
+    if !(lower.contains("remote desktop")
+        || lower.contains("localport=3389")
+        || lower.contains("localport =3389")
+        || lower.contains("localport= 3389")
+        || lower.contains("localport = 3389"))
+    {
+        return;
+    }
+    if env.traits.iter().any(|t| {
+        matches!(
+            t,
+            Trait::RemoteAccess { technique, target, .. }
+                if technique == "rdp-firewall-open" && target == "3389"
+        )
+    }) {
+        return;
+    }
+    env.traits.push(Trait::RemoteAccess {
+        technique: "rdp-firewall-open".to_string(),
+        target: "3389".to_string(),
+        command: command.to_string(),
+    });
 }
 
 fn scan_copied_winrs_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
@@ -4015,7 +4143,11 @@ fn scan_copied_net_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
         let Some(src_base) = basename_trimmed(src) else {
             continue;
         };
-        if !src_base.eq_ignore_ascii_case("net") && !src_base.eq_ignore_ascii_case("net.exe") {
+        if !src_base.eq_ignore_ascii_case("net")
+            && !src_base.eq_ignore_ascii_case("net.exe")
+            && !src_base.eq_ignore_ascii_case("net1")
+            && !src_base.eq_ignore_ascii_case("net1.exe")
+        {
             continue;
         }
         let Some(dst_base) = basename_trimmed(dst) else {
@@ -4038,6 +4170,7 @@ fn scan_copied_net_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
         if !copied_alias_matches_command_ci(&aliases, cmd) {
             continue;
         }
+        push_manipulated_exec_once(env, line, cmd);
         let rest = line
             .get(cmd.len()..)
             .map(str::trim_start)
@@ -4047,7 +4180,67 @@ fn scan_copied_net_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
         }
         let replay = format!("net {rest}");
         crate::handlers::net::h_net(&replay, env);
+        scan_copied_net_account_modification(line, &tokens, env);
     }
+}
+
+fn scan_copied_net_account_modification(line: &str, tokens: &[String], env: &mut Environment) {
+    if tokens.len() < 3 {
+        return;
+    }
+    let subcommand = strip_outer_quotes(&tokens[1]).to_ascii_lowercase();
+    let has_add = tokens
+        .iter()
+        .any(|token| strip_outer_quotes(token).eq_ignore_ascii_case("/add"));
+    match subcommand.as_str() {
+        "user" if has_add => {
+            let account = clean_account_modification_token(&tokens[2]);
+            push_account_modification_once(env, "local-user-add", account, None, line);
+        }
+        "localgroup" if has_add && tokens.len() >= 4 => {
+            let group = clean_account_modification_token(&tokens[2]);
+            let account = clean_account_modification_token(&tokens[3]);
+            push_account_modification_once(env, "localgroup-add", account, Some(group), line);
+        }
+        _ => {}
+    }
+}
+
+fn clean_account_modification_token(token: &str) -> String {
+    strip_outer_quotes(token).trim().to_string()
+}
+
+fn push_account_modification_once(
+    env: &mut Environment,
+    action: &str,
+    account: String,
+    group: Option<String>,
+    command: &str,
+) {
+    if account.is_empty() {
+        return;
+    }
+    if env.traits.iter().any(|t| {
+        matches!(
+            t,
+            Trait::AccountModification {
+                action: existing_action,
+                account: existing_account,
+                group: existing_group,
+                ..
+            } if existing_action == action
+                && existing_account == &account
+                && existing_group == &group
+        )
+    }) {
+        return;
+    }
+    env.traits.push(Trait::AccountModification {
+        action: action.to_string(),
+        account,
+        group,
+        command: command.to_string(),
+    });
 }
 
 fn scan_copied_mshta_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
@@ -5507,7 +5700,8 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
             .expect("sc-defender")
     });
     static FIREWALL_OFF_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?i)netsh\s+advfirewall\s+set\s+(\w+)\s+state\s+off"#).expect("fw-off")
+        Regex::new(r#"(?i)netsh(?:\.exe)?\s+advfirewall\s+set\s+(\w+)\s+state\s+off"#)
+            .expect("fw-off")
     });
     // AMSI bypass markers — Invoke-NullAMSI, AmsiInitFailed/AmsiUtils
     // memory patches, ETW patch via System.Diagnostics.Eventing
@@ -6538,11 +6732,14 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     scan_copied_forfiles_alias_deob_text(deobfuscated, env);
     scan_copied_wmic_alias_deob_text(deobfuscated, env);
     scan_copied_runas_alias_deob_text(deobfuscated, env);
+    scan_copied_reg_alias_deob_text(deobfuscated, env);
+    scan_copied_psexec_alias_deob_text(deobfuscated, env);
     scan_copied_winrs_alias_deob_text(deobfuscated, env);
     scan_copied_winrm_alias_deob_text(deobfuscated, env);
     scan_copied_schtasks_alias_deob_text(deobfuscated, env);
     scan_copied_sc_alias_deob_text(deobfuscated, env);
     scan_copied_at_alias_deob_text(deobfuscated, env);
+    scan_copied_netsh_alias_deob_text(deobfuscated, env);
     scan_copied_cleanup_alias_deob_text(deobfuscated, env);
     scan_copied_net_alias_deob_text(deobfuscated, env);
     scan_copied_mshta_alias_deob_text(deobfuscated, env);

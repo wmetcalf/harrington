@@ -165,6 +165,16 @@ pub enum Trait {
         name: String,
         cmd: String,
     },
+    /// Local account or group membership change. Examples:
+    /// `net user <account> <password> /add` and
+    /// `net localgroup Administrators <account> /add`.
+    AccountModification {
+        action: String,
+        account: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        group: Option<String>,
+        command: String,
+    },
     LineTruncated {
         original_len: u64,
     },
@@ -340,6 +350,13 @@ pub enum Trait {
     RemoteExec {
         tool: String,
         target_host: String,
+    },
+    /// Remote-access backdoor setup, such as opening the Remote Desktop
+    /// firewall rule or adding a user to Remote Desktop Users.
+    RemoteAccess {
+        technique: String,
+        target: String,
+        command: String,
     },
     /// Inline shellcode marker — typed as `[byte[]]` array or `\x90\x90...`
     /// NOP sled, or named `shellcode` variable. Surfaces shellcode-

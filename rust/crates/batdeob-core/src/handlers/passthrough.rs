@@ -436,7 +436,7 @@ fn defender_regset_suffix(key: &str, value_name: &str) -> Option<&'static str> {
 }
 
 fn trim_reg_data_tail(command: &str) -> &str {
-    const OPTIONS: &[&str] = &["/f", "/reg:32", "/reg:64", "/t", "/v", "/ve", "/va"];
+    const OPTIONS: &[&str] = &["/f", "/reg:32", "/reg:64", "/t"];
     let mut end = command.len();
     let lower = command.to_ascii_lowercase();
     for opt in OPTIONS {
