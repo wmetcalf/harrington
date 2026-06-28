@@ -9173,7 +9173,7 @@ fn rot13_ascii(text: &str) -> String {
 }
 
 fn scan_resolved_deob_var_fragment_urls(deobfuscated: &str, env: &mut Environment) {
-    let known = env.known_extracted_urls();
+    let mut known = env.known_extracted_urls();
     let mut scratch = env.clone();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut candidates = 0usize;
@@ -9198,6 +9198,10 @@ fn scan_resolved_deob_var_fragment_urls(deobfuscated: &str, env: &mut Environmen
         collect_resolved_var_fragment_url_inputs(line, &mut scratch, &mut expanded_inputs);
 
         for expanded in expanded_inputs {
+            let before_len = env.traits.len();
+            scan_resolved_powershell_fragment_downloads(&expanded, env, &mut known);
+            remember_url_traits(&mut known, &env.traits[before_len..]);
+
             for caps in URL_RE.captures_iter(&expanded) {
                 let Some(m) = caps.get(1) else { continue };
                 let url = trim_url_suffix(m.as_str());
@@ -9216,6 +9220,63 @@ fn scan_resolved_deob_var_fragment_urls(deobfuscated: &str, env: &mut Environmen
                     line_hint: "resolved-deob-var-fragments".to_string(),
                 });
             }
+        }
+    }
+}
+
+fn scan_resolved_powershell_fragment_downloads(
+    text: &str,
+    env: &mut Environment,
+    known: &mut std::collections::HashSet<String>,
+) {
+    if !has_resolved_powershell_download_atom(text) {
+        return;
+    }
+
+    let mut payload_env = Environment::new(&crate::env::Config {
+        max_depth: env.limits.max_depth,
+        max_iterations: env.limits.max_iterations,
+        max_child_scripts: env.limits.max_child_scripts,
+        timeout_secs: 0,
+        self_extract: false,
+        winver: env.winver,
+        max_output_bytes: env.limits.max_output_bytes,
+        max_output_line_bytes: env.limits.max_output_line_bytes,
+        max_traits_per_kind: 100,
+    });
+    payload_env.vars = env.vars.clone();
+
+    if contains_ascii_case_insensitive(text, "powershell")
+        || contains_ascii_case_insensitive(text, "pwsh")
+    {
+        scan_embedded_powershell_invocations(text, &mut payload_env);
+    } else {
+        payload_env.all_extracted_ps1.push(text.as_bytes().to_vec());
+        crate::ps1_scan::scan_ps1_payloads(&mut payload_env);
+    }
+
+    for trait_ in payload_env.traits {
+        if let Some(url) = trait_url(&trait_) {
+            if !known.insert(url.to_string()) {
+                continue;
+            }
+        }
+        env.traits.push(trait_);
+    }
+}
+
+fn has_resolved_powershell_download_atom(text: &str) -> bool {
+    contains_ascii_case_insensitive(text, "download")
+        || contains_ascii_case_insensitive(text, "webclient")
+        || contains_ascii_case_insensitive(text, "invoke-webrequest")
+        || contains_ascii_case_insensitive(text, "invoke-restmethod")
+        || contains_ascii_case_insensitive(text, "start-bitstransfer")
+}
+
+fn remember_url_traits(known: &mut std::collections::HashSet<String>, traits: &[Trait]) {
+    for trait_ in traits {
+        if let Some(url) = trait_url(trait_) {
+            known.insert(url.to_string());
         }
     }
 }
