@@ -1336,6 +1336,44 @@ mod tests {
     }
 
     #[test]
+    fn schtasks_task_run_stops_at_attached_schedule_option() {
+        let mut env = Environment::new(&Config::default());
+        h_schtasks(
+            r#"schtasks /create /tn Updater /tr cmd.exe /c echo hi /sc:once /st:00:00"#,
+            &mut env,
+        );
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { hive, key, command, .. }
+                    if hive == "ScheduledTask" && key == "Updater" && command == "cmd.exe /c echo hi"
+            )),
+            "attached schedule option leaked into task action: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn schtasks_attached_quoted_task_run_preserves_command() {
+        let mut env = Environment::new(&Config::default());
+        h_schtasks(
+            r#"schtasks /create /tn Updater /tr:"cmd.exe /c echo hi" /sc once"#,
+            &mut env,
+        );
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { hive, key, command, .. }
+                    if hive == "ScheduledTask" && key == "Updater" && command == "cmd.exe /c echo hi"
+            )),
+            "attached quoted task action was not preserved: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn psexec_child_command_skips_host_auth_and_flags() {
         let (host, command) = psexec_child_command(
             r#"psexec \\target.example -accepteula -u admin -p pass -s cmd.exe /c echo remote"#,
