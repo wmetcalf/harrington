@@ -128,6 +128,11 @@ fn tracked_script_content(path: &str, env: &Environment) -> Option<Vec<u8>> {
     if let Some(content) = content_from_entry(filesystem_entry_for_path(env, path)) {
         return Some(content);
     }
+    if let Some(stripped) = strip_current_dir_prefix(path) {
+        if stripped.contains(['\\', '/']) {
+            return content_from_entry(filesystem_entry_for_path(env, stripped));
+        }
+    }
     if let Some(name) = current_dir_basename(path) {
         return tracked_script_content_by_basename(name, env);
     }
@@ -150,9 +155,11 @@ fn tracked_script_content_by_basename(path: &str, env: &Environment) -> Option<V
 }
 
 fn current_dir_basename(path: &str) -> Option<&str> {
-    path.strip_prefix(r".\")
-        .or_else(|| path.strip_prefix("./"))
-        .and_then(windows_basename)
+    strip_current_dir_prefix(path).and_then(windows_basename)
+}
+
+fn strip_current_dir_prefix(path: &str) -> Option<&str> {
+    path.strip_prefix(r".\").or_else(|| path.strip_prefix("./"))
 }
 
 fn content_from_entry(entry: Option<&FsEntry>) -> Option<Vec<u8>> {
