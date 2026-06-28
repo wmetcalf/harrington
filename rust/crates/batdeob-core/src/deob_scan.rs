@@ -3676,6 +3676,8 @@ fn scan_copied_network_probe_alias_deob_text(deobfuscated: &str, env: &mut Envir
     for (source_bases, replay_command) in [
         (&["nslookup", "nslookup.exe"][..], "nslookup.exe"),
         (&["ping", "ping.exe"][..], "ping.exe"),
+        (&["tracert", "tracert.exe"][..], "tracert.exe"),
+        (&["pathping", "pathping.exe"][..], "pathping.exe"),
     ] {
         scan_copied_handler_alias_deob_text(
             deobfuscated,
@@ -4333,10 +4335,23 @@ fn scan_copied_enumeration_alias_deob_text(deobfuscated: &str, env: &mut Environ
     let commands = [
         (&["net", "net.exe", "net1", "net1.exe"][..], "net.exe"),
         (&["whoami", "whoami.exe"][..], "whoami.exe"),
+        (&["hostname", "hostname.exe"][..], "hostname.exe"),
         (&["quser", "quser.exe"][..], "quser.exe"),
+        (&["qwinsta", "qwinsta.exe"][..], "qwinsta.exe"),
+        (&["qprocess", "qprocess.exe"][..], "qprocess.exe"),
         (&["systeminfo", "systeminfo.exe"][..], "systeminfo.exe"),
         (&["tasklist", "tasklist.exe"][..], "tasklist.exe"),
         (&["wmic", "wmic.exe"][..], "wmic.exe"),
+        (&["ipconfig", "ipconfig.exe"][..], "ipconfig.exe"),
+        (&["getmac", "getmac.exe"][..], "getmac.exe"),
+        (&["netstat", "netstat.exe"][..], "netstat.exe"),
+        (&["arp", "arp.exe"][..], "arp.exe"),
+        (&["route", "route.exe"][..], "route.exe"),
+        (&["nltest", "nltest.exe"][..], "nltest.exe"),
+        (&["dsquery", "dsquery.exe"][..], "dsquery.exe"),
+        (&["netdom", "netdom.exe"][..], "netdom.exe"),
+        (&["klist", "klist.exe"][..], "klist.exe"),
+        (&["setspn", "setspn.exe"][..], "setspn.exe"),
     ];
     for line in deobfuscated.lines() {
         let tokens = split_words(line);
@@ -6590,8 +6605,24 @@ fn scan_network_probe(deobfuscated: &str, env: &mut Environment) {
         if command_base.eq_ignore_ascii_case("ping")
             || command_base.eq_ignore_ascii_case("ping.exe")
         {
-            if let Some(target) = ping_probe_target(&tokens) {
+            if let Some(target) = network_probe_command_target(&tokens, "ping") {
                 push("icmp-ping", target);
+            }
+            continue;
+        }
+        if command_base.eq_ignore_ascii_case("tracert")
+            || command_base.eq_ignore_ascii_case("tracert.exe")
+        {
+            if let Some(target) = network_probe_command_target(&tokens, "tracert") {
+                push("route-trace", target);
+            }
+            continue;
+        }
+        if command_base.eq_ignore_ascii_case("pathping")
+            || command_base.eq_ignore_ascii_case("pathping.exe")
+        {
+            if let Some(target) = network_probe_command_target(&tokens, "pathping") {
+                push("route-trace", target);
             }
         }
     }
@@ -6611,7 +6642,7 @@ fn scan_network_probe(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
-fn ping_probe_target(tokens: &[String]) -> Option<String> {
+fn network_probe_command_target(tokens: &[String], command: &str) -> Option<String> {
     let mut skip_next = false;
     for token in tokens.iter().skip(1) {
         let token = token.trim_matches(['"', '\'']);
@@ -6623,7 +6654,7 @@ fn ping_probe_target(tokens: &[String]) -> Option<String> {
             continue;
         }
         let lower = token.to_ascii_lowercase();
-        if ping_option_takes_value(&lower) {
+        if network_probe_option_takes_value(command, &lower) {
             skip_next = true;
             continue;
         }
@@ -6639,29 +6670,40 @@ fn ping_probe_target(tokens: &[String]) -> Option<String> {
     None
 }
 
-fn ping_option_takes_value(option: &str) -> bool {
-    matches!(
-        option,
-        "-n" | "/n"
-            | "-l"
-            | "/l"
-            | "-i"
-            | "/i"
-            | "-v"
-            | "/v"
-            | "-r"
-            | "/r"
-            | "-s"
-            | "/s"
-            | "-j"
-            | "/j"
-            | "-k"
-            | "/k"
-            | "-w"
-            | "/w"
-            | "-c"
-            | "/c"
-    )
+fn network_probe_option_takes_value(command: &str, option: &str) -> bool {
+    match command {
+        "ping" => matches!(
+            option,
+            "-n" | "/n"
+                | "-l"
+                | "/l"
+                | "-i"
+                | "/i"
+                | "-v"
+                | "/v"
+                | "-r"
+                | "/r"
+                | "-s"
+                | "/s"
+                | "-j"
+                | "/j"
+                | "-k"
+                | "/k"
+                | "-w"
+                | "/w"
+                | "-c"
+                | "/c"
+        ),
+        "tracert" => matches!(
+            option,
+            "-h" | "/h" | "-j" | "/j" | "-w" | "/w" | "-s" | "/s"
+        ),
+        "pathping" => matches!(
+            option,
+            "-h" | "/h" | "-g" | "/g" | "-p" | "/p" | "-q" | "/q" | "-w" | "/w"
+        ),
+        _ => false,
+    }
 }
 
 fn is_loopback_ping_target(target: &str) -> bool {
@@ -6681,36 +6723,48 @@ fn is_loopback_ping_target(target: &str) -> bool {
 fn scan_enumeration(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
-    static PATTERNS: Lazy<Vec<(Regex, &str)>> = Lazy::new(|| {
+    static PATTERNS: Lazy<Vec<(Regex, &str, bool)>> = Lazy::new(|| {
         vec![
             (
                 Regex::new(r"(?im)^[^\r\n]*?\bnet(?:\.exe)?\s+(?:user|group|localgroup)\b[^\r\n]*")
                     .unwrap(),
                 "net-user",
+                false,
+            ),
+            (
+                Regex::new(r"(?im)^[^\r\n]*?\bnet1?(?:\.exe)?\s+view\b[^\r\n]*").unwrap(),
+                "net-view",
+                false,
             ),
             (
                 Regex::new(r"(?i)\bwhoami(?:\.exe)?\s+/(?:priv|groups|all)\b").unwrap(),
                 "whoami-priv",
+                false,
             ),
             (
                 Regex::new(r"(?i)\b(?:query\s+session|quser)\b").unwrap(),
                 "query-session",
+                false,
             ),
             (
                 Regex::new(r"(?i)\bGet-LocalUser\b").unwrap(),
                 "get-localuser",
+                false,
             ),
             (
                 Regex::new(r"(?i)\bGet-NetUser\b|\bGet-NetGroup\b").unwrap(),
                 "powerview-get",
+                false,
             ),
             (
                 Regex::new(r"(?i)\bsysteminfo(?:\.exe)?\b").unwrap(),
                 "systeminfo",
+                false,
             ),
             (
                 Regex::new(r"(?i)\b(?:tasklist|wmic\s+process)\b").unwrap(),
                 "tasklist",
+                false,
             ),
             (
                 Regex::new(
@@ -6718,25 +6772,186 @@ fn scan_enumeration(deobfuscated: &str, env: &mut Environment) {
                 )
                 .unwrap(),
                 "wmic-enum",
+                false,
             ),
         ]
     });
-    for (re, kind) in PATTERNS.iter() {
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        let Some(command) = tokens.first() else {
+            continue;
+        };
+        let Some(kind) = command_enumeration_kind(&tokens, command) else {
+            continue;
+        };
+        push_enumeration_once(env, kind, line.trim().to_string(), true);
+    }
+    for (re, kind, command_specific) in PATTERNS.iter() {
         if let Some(m) = re.find(deobfuscated) {
             let cmd = snippet_prefix(m.as_str(), 120).trim().to_string();
-            if env.traits.iter().any(|t| {
-                matches!(
-                    t, crate::traits::Trait::Enumeration { enum_kind: k, command: _ } if k == kind
-                )
-            }) {
-                continue;
-            }
-            env.traits.push(crate::traits::Trait::Enumeration {
-                enum_kind: kind.to_string(),
-                command: cmd,
-            });
+            push_enumeration_once(env, kind, cmd, *command_specific);
         }
     }
+}
+
+fn command_enumeration_kind(tokens: &[String], command: &str) -> Option<&'static str> {
+    let command_base = basename_trimmed(command)?;
+    if command_base.eq_ignore_ascii_case("net")
+        || command_base.eq_ignore_ascii_case("net.exe")
+        || command_base.eq_ignore_ascii_case("net1")
+        || command_base.eq_ignore_ascii_case("net1.exe")
+    {
+        return tokens
+            .get(1)
+            .and_then(|token| match token.to_ascii_lowercase().as_str() {
+                "accounts" => Some("net-accounts"),
+                "config" => Some("net-config"),
+                "share" => Some("net-share"),
+                _ => None,
+            });
+    }
+    if command_base.eq_ignore_ascii_case("whoami")
+        || command_base.eq_ignore_ascii_case("whoami.exe")
+    {
+        return tokens
+            .iter()
+            .skip(1)
+            .any(|token| token.eq_ignore_ascii_case("/user"))
+            .then_some("whoami-user");
+    }
+    if command_base.eq_ignore_ascii_case("hostname")
+        || command_base.eq_ignore_ascii_case("hostname.exe")
+    {
+        return Some("hostname");
+    }
+    if command_base.eq_ignore_ascii_case("query") || command_base.eq_ignore_ascii_case("query.exe")
+    {
+        return tokens
+            .get(1)
+            .and_then(|token| match token.to_ascii_lowercase().as_str() {
+                "session" => Some("query-session"),
+                "user" => Some("query-user"),
+                "process" => Some("query-process"),
+                _ => None,
+            });
+    }
+    if command_base.eq_ignore_ascii_case("quser")
+        || command_base.eq_ignore_ascii_case("quser.exe")
+        || command_base.eq_ignore_ascii_case("qwinsta")
+        || command_base.eq_ignore_ascii_case("qwinsta.exe")
+    {
+        return Some("query-session");
+    }
+    if command_base.eq_ignore_ascii_case("qprocess")
+        || command_base.eq_ignore_ascii_case("qprocess.exe")
+    {
+        return Some("query-process");
+    }
+    if command_base.eq_ignore_ascii_case("ipconfig")
+        || command_base.eq_ignore_ascii_case("ipconfig.exe")
+    {
+        return Some("ipconfig");
+    }
+    if command_base.eq_ignore_ascii_case("getmac")
+        || command_base.eq_ignore_ascii_case("getmac.exe")
+    {
+        return Some("getmac");
+    }
+    if command_base.eq_ignore_ascii_case("netstat")
+        || command_base.eq_ignore_ascii_case("netstat.exe")
+    {
+        return Some("netstat");
+    }
+    if command_base.eq_ignore_ascii_case("arp") || command_base.eq_ignore_ascii_case("arp.exe") {
+        return tokens
+            .iter()
+            .skip(1)
+            .any(|token| matches!(token.to_ascii_lowercase().as_str(), "-a" | "/a" | "a"))
+            .then_some("arp");
+    }
+    if command_base.eq_ignore_ascii_case("route") || command_base.eq_ignore_ascii_case("route.exe")
+    {
+        return tokens
+            .get(1)
+            .is_some_and(|token| token.eq_ignore_ascii_case("print"))
+            .then_some("route");
+    }
+    if command_base.eq_ignore_ascii_case("nltest")
+        || command_base.eq_ignore_ascii_case("nltest.exe")
+    {
+        return tokens
+            .iter()
+            .skip(1)
+            .any(|token| {
+                let lower = token.to_ascii_lowercase();
+                lower.starts_with("/domain_trusts")
+                    || lower.starts_with("/dclist")
+                    || lower.starts_with("/dsgetdc")
+                    || lower.starts_with("/trusted_domains")
+            })
+            .then_some("nltest-domain");
+    }
+    if command_base.eq_ignore_ascii_case("dsquery")
+        || command_base.eq_ignore_ascii_case("dsquery.exe")
+    {
+        return tokens
+            .get(1)
+            .is_some_and(|token| {
+                matches!(
+                    token.to_ascii_lowercase().as_str(),
+                    "user" | "computer" | "group" | "ou" | "server" | "*" | "contact" | "subnet"
+                )
+            })
+            .then_some("dsquery");
+    }
+    if command_base.eq_ignore_ascii_case("netdom")
+        || command_base.eq_ignore_ascii_case("netdom.exe")
+    {
+        return tokens
+            .get(1)
+            .is_some_and(|token| token.eq_ignore_ascii_case("query"))
+            .then_some("netdom-query");
+    }
+    if command_base.eq_ignore_ascii_case("klist") || command_base.eq_ignore_ascii_case("klist.exe")
+    {
+        return Some("klist");
+    }
+    if command_base.eq_ignore_ascii_case("setspn")
+        || command_base.eq_ignore_ascii_case("setspn.exe")
+    {
+        return tokens
+            .iter()
+            .skip(1)
+            .any(|token| {
+                matches!(
+                    token.to_ascii_lowercase().as_str(),
+                    "-q" | "/q" | "-l" | "/l"
+                )
+            })
+            .then_some("setspn-query");
+    }
+    None
+}
+
+fn push_enumeration_once(
+    env: &mut Environment,
+    kind: &str,
+    command: String,
+    command_specific: bool,
+) {
+    if env.traits.iter().any(|t| {
+        matches!(
+            t,
+            crate::traits::Trait::Enumeration { enum_kind: k, command: existing_command }
+                if k == kind && (!command_specific || existing_command == &command)
+        )
+    }) {
+        return;
+    }
+    env.traits.push(crate::traits::Trait::Enumeration {
+        enum_kind: kind.to_string(),
+        command,
+    });
 }
 
 /// Credential access — lsass dumping, Mimikatz invocations, browser

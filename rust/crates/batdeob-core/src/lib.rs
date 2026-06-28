@@ -23597,6 +23597,544 @@ C:\Users\Public\pg.tmp -n 1 c2.example
     }
 
     #[test]
+    fn network_utility_enumeration_commands_emit_traits() {
+        let script = br#"ipconfig /all
+getmac
+netstat -ano
+arp -a
+route print
+"#;
+        let report = analyze(script, &Config::default());
+
+        for kind in ["ipconfig", "getmac", "netstat", "arp", "route"] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Enumeration { enum_kind, .. } if enum_kind == kind
+                )),
+                "missing network enumeration kind {kind}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn copied_network_utility_aliases_emit_enumeration_traits() {
+        let script = br#"copy C:\Windows\System32\ipconfig.exe C:\Users\Public\ip.tmp
+C:\Users\Public\ip.tmp /all
+copy C:\Windows\System32\getmac.exe C:\Users\Public\gm.tmp
+C:\Users\Public\gm.tmp
+copy C:\Windows\System32\netstat.exe C:\Users\Public\ns.tmp
+C:\Users\Public\ns.tmp -ano
+copy C:\Windows\System32\arp.exe C:\Users\Public\ap.tmp
+C:\Users\Public\ap.tmp -a
+copy C:\Windows\System32\route.exe C:\Users\Public\rt.tmp
+C:\Users\Public\rt.tmp print
+"#;
+        let report = analyze(script, &Config::default());
+
+        for target in [
+            r#"C:\Users\Public\ip.tmp"#,
+            r#"C:\Users\Public\gm.tmp"#,
+            r#"C:\Users\Public\ns.tmp"#,
+            r#"C:\Users\Public\ap.tmp"#,
+            r#"C:\Users\Public\rt.tmp"#,
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::ManipulatedExec { target: t, .. }
+                        if t.eq_ignore_ascii_case(target)
+                )),
+                "copied network enumeration alias {target} was not surfaced: {:?}",
+                report.traits
+            );
+        }
+        for kind in ["ipconfig", "getmac", "netstat", "arp", "route"] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Enumeration { enum_kind, .. } if enum_kind == kind
+                )),
+                "missing copied network enumeration kind {kind}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn net_view_emits_enumeration_trait() {
+        let report = analyze(br#"net view /domain"#, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "net-view" && command == "net view /domain"
+            )),
+            "net view enumeration was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_net_alias_view_emits_enumeration_trait() {
+        let script = br#"copy C:\Windows\System32\net.exe C:\Users\Public\nv.tmp
+C:\Users\Public\nv.tmp view \\target.example
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\nv.tmp"#)
+            )),
+            "copied net view alias was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "net-view" && command == r#"net.exe view \\target.example"#
+            )),
+            "copied net view enumeration was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn route_trace_commands_emit_network_probe_traits() {
+        let report = analyze(
+            br#"tracert -d c2.example
+pathping -n 203.0.113.10
+"#,
+            &Config::default(),
+        );
+
+        for target in ["c2.example", "203.0.113.10"] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::NetworkProbe { probe_kind, target: t }
+                        if probe_kind == "route-trace" && t == target
+                )),
+                "missing route-trace target {target}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn copied_route_trace_aliases_emit_network_probe_traits() {
+        let script = br#"copy C:\Windows\System32\tracert.exe C:\Users\Public\tr.tmp
+C:\Users\Public\tr.tmp -d c2.example
+copy C:\Windows\System32\pathping.exe C:\Users\Public\pp.tmp
+C:\Users\Public\pp.tmp -n 203.0.113.10
+"#;
+        let report = analyze(script, &Config::default());
+
+        for target in [r#"C:\Users\Public\tr.tmp"#, r#"C:\Users\Public\pp.tmp"#] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::ManipulatedExec { target: t, .. }
+                        if t.eq_ignore_ascii_case(target)
+                )),
+                "copied route-trace alias {target} was not surfaced: {:?}",
+                report.traits
+            );
+        }
+        for target in ["c2.example", "203.0.113.10"] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::NetworkProbe { probe_kind, target: t }
+                        if probe_kind == "route-trace" && t == target
+                )),
+                "missing copied route-trace target {target}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn nltest_domain_discovery_emits_enumeration_trait() {
+        let report = analyze(
+            br#"nltest /domain_trusts
+nltest /dclist:corp.example
+"#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "nltest-domain" && command == "nltest /domain_trusts"
+            )),
+            "nltest domain trusts enumeration was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "nltest-domain" && command == "nltest /dclist:corp.example"
+            )),
+            "nltest dclist enumeration was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_nltest_alias_emits_enumeration_trait() {
+        let script = br#"copy C:\Windows\System32\nltest.exe C:\Users\Public\nl.tmp
+C:\Users\Public\nl.tmp /domain_trusts
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\nl.tmp"#)
+            )),
+            "copied nltest alias was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "nltest-domain" && command == "nltest.exe /domain_trusts"
+            )),
+            "copied nltest domain enumeration was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn domain_directory_tools_emit_enumeration_traits() {
+        let report = analyze(
+            br#"dsquery user -limit 0
+netdom query dc
+"#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "dsquery" && command == "dsquery user -limit 0"
+            )),
+            "dsquery enumeration was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "netdom-query" && command == "netdom query dc"
+            )),
+            "netdom query enumeration was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_domain_directory_tool_aliases_emit_enumeration_traits() {
+        let script = br#"copy C:\Windows\System32\dsquery.exe C:\Users\Public\dq.tmp
+C:\Users\Public\dq.tmp computer
+copy C:\Windows\System32\netdom.exe C:\Users\Public\nd.tmp
+C:\Users\Public\nd.tmp query pdc
+"#;
+        let report = analyze(script, &Config::default());
+
+        for target in [r#"C:\Users\Public\dq.tmp"#, r#"C:\Users\Public\nd.tmp"#] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::ManipulatedExec { target: t, .. }
+                        if t.eq_ignore_ascii_case(target)
+                )),
+                "copied domain directory alias {target} was not surfaced: {:?}",
+                report.traits
+            );
+        }
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "dsquery" && command == "dsquery.exe computer"
+            )),
+            "copied dsquery enumeration was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "netdom-query" && command == "netdom.exe query pdc"
+            )),
+            "copied netdom query enumeration was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn host_and_user_discovery_commands_emit_enumeration_traits() {
+        let report = analyze(
+            br#"whoami /user
+hostname
+"#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "whoami-user" && command == "whoami /user"
+            )),
+            "whoami /user enumeration was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "hostname" && command == "hostname"
+            )),
+            "hostname enumeration was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_hostname_alias_emits_enumeration_trait() {
+        let script = br#"copy C:\Windows\System32\hostname.exe C:\Users\Public\hn.tmp
+C:\Users\Public\hn.tmp
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\hn.tmp"#)
+            )),
+            "copied hostname alias was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "hostname" && command == "hostname.exe"
+            )),
+            "copied hostname enumeration was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn terminal_services_discovery_commands_emit_enumeration_traits() {
+        let report = analyze(
+            br#"query user
+qwinsta
+qprocess *
+"#,
+            &Config::default(),
+        );
+
+        for (kind, command) in [
+            ("query-user", "query user"),
+            ("query-session", "qwinsta"),
+            ("query-process", "qprocess *"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Enumeration { enum_kind, command: c }
+                        if enum_kind == kind && c == command
+                )),
+                "missing terminal-services enumeration {kind}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn copied_terminal_services_aliases_emit_enumeration_traits() {
+        let script = br#"copy C:\Windows\System32\qwinsta.exe C:\Users\Public\qw.tmp
+C:\Users\Public\qw.tmp
+copy C:\Windows\System32\qprocess.exe C:\Users\Public\qp.tmp
+C:\Users\Public\qp.tmp *
+"#;
+        let report = analyze(script, &Config::default());
+
+        for target in [r#"C:\Users\Public\qw.tmp"#, r#"C:\Users\Public\qp.tmp"#] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::ManipulatedExec { target: t, .. }
+                        if t.eq_ignore_ascii_case(target)
+                )),
+                "copied terminal-services alias {target} was not surfaced: {:?}",
+                report.traits
+            );
+        }
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "query-session" && command == "qwinsta.exe"
+            )),
+            "copied qwinsta enumeration was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "query-process" && command == "qprocess.exe *"
+            )),
+            "copied qprocess enumeration was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn net_discovery_commands_emit_enumeration_traits() {
+        let report = analyze(
+            br#"net accounts
+net config workstation
+net share
+"#,
+            &Config::default(),
+        );
+
+        for (kind, command) in [
+            ("net-accounts", "net accounts"),
+            ("net-config", "net config workstation"),
+            ("net-share", "net share"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Enumeration { enum_kind, command: c }
+                        if enum_kind == kind && c == command
+                )),
+                "missing net discovery enumeration {kind}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn copied_net_alias_discovery_commands_emit_enumeration_traits() {
+        let script = br#"copy C:\Windows\System32\net.exe C:\Users\Public\net.tmp
+C:\Users\Public\net.tmp accounts
+C:\Users\Public\net.tmp config server
+C:\Users\Public\net.tmp share
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\net.tmp"#)
+            )),
+            "copied net discovery alias was not surfaced: {:?}",
+            report.traits
+        );
+        for (kind, command) in [
+            ("net-accounts", "net.exe accounts"),
+            ("net-config", "net.exe config server"),
+            ("net-share", "net.exe share"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Enumeration { enum_kind, command: c }
+                        if enum_kind == kind && c == command
+                )),
+                "missing copied net discovery enumeration {kind}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn kerberos_spn_discovery_commands_emit_enumeration_traits() {
+        let report = analyze(
+            br#"klist tickets
+setspn -Q */*
+"#,
+            &Config::default(),
+        );
+
+        for (kind, command) in [
+            ("klist", "klist tickets"),
+            ("setspn-query", "setspn -Q */*"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Enumeration { enum_kind, command: c }
+                        if enum_kind == kind && c == command
+                )),
+                "missing Kerberos/SPN enumeration {kind}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn copied_kerberos_spn_aliases_emit_enumeration_traits() {
+        let script = br#"copy C:\Windows\System32\klist.exe C:\Users\Public\kl.tmp
+C:\Users\Public\kl.tmp sessions
+copy C:\Windows\System32\setspn.exe C:\Users\Public\sp.tmp
+C:\Users\Public\sp.tmp -Q */*
+"#;
+        let report = analyze(script, &Config::default());
+
+        for target in [r#"C:\Users\Public\kl.tmp"#, r#"C:\Users\Public\sp.tmp"#] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::ManipulatedExec { target: t, .. }
+                        if t.eq_ignore_ascii_case(target)
+                )),
+                "copied Kerberos/SPN alias {target} was not surfaced: {:?}",
+                report.traits
+            );
+        }
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "klist" && command == "klist.exe sessions"
+            )),
+            "copied klist enumeration was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "setspn-query" && command == "setspn.exe -Q */*"
+            )),
+            "copied setspn query enumeration was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn copied_mshta_alias_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         env.traits.push(Trait::WindowsUtilManip {
