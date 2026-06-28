@@ -38,7 +38,7 @@ enum Command {
         no_self_extract: bool,
         #[arg(long, default_value_t = 10 * 1024 * 1024)]
         max_output_bytes: u64,
-        #[arg(long, default_value_t = 64 * 1024)]
+        #[arg(long, default_value_t = 0)]
         max_output_line_bytes: u64,
         #[arg(long, default_value_t = 100)]
         max_traits_per_kind: u32,
@@ -58,7 +58,7 @@ enum Command {
         no_self_extract: bool,
         #[arg(long, default_value_t = 10 * 1024 * 1024)]
         max_output_bytes: u64,
-        #[arg(long, default_value_t = 64 * 1024)]
+        #[arg(long, default_value_t = 0)]
         max_output_line_bytes: u64,
         #[arg(long, default_value_t = 100)]
         max_traits_per_kind: u32,
@@ -99,7 +99,7 @@ enum Command {
         no_self_extract: bool,
         #[arg(long, default_value_t = 10 * 1024 * 1024)]
         max_output_bytes: u64,
-        #[arg(long, default_value_t = 64 * 1024)]
+        #[arg(long, default_value_t = 0)]
         max_output_line_bytes: u64,
         #[arg(long, default_value_t = 100)]
         max_traits_per_kind: u32,

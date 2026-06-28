@@ -46,7 +46,7 @@ impl Default for Config {
             self_extract: true,
             winver: WinVer::Win10,
             max_output_bytes: 10 * 1024 * 1024,
-            max_output_line_bytes: 64 * 1024,
+            max_output_line_bytes: 0,
             max_traits_per_kind: 100,
         }
     }
@@ -219,7 +219,7 @@ impl Default for Limits {
             deadline: None,
             max_output_bytes: 10 * 1024 * 1024,
             output_bytes: 0,
-            max_output_line_bytes: 64 * 1024,
+            max_output_line_bytes: 0,
         }
     }
 }

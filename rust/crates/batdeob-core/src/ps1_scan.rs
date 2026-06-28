@@ -288,6 +288,65 @@ fn bits_positional_destination_from(text: &str) -> Option<String> {
         .cloned()
 }
 
+pub(crate) fn ps_download_side_effects(text: &str) -> Vec<(String, String)> {
+    let text_expanded = expand_obfuscation(text);
+    let text_aliased = crate::ps_alias::expand_aliases_if_ps(&text_expanded);
+    let candidates: Vec<String> = if text_aliased != text_expanded {
+        vec![text_expanded, text_aliased]
+    } else {
+        vec![text_expanded]
+    };
+    let regexes: &[&Lazy<Regex>] = &[
+        &IWR_RE,
+        &IRM_RE,
+        &PS_SCHEMELESS_IP_CMDLET_RE,
+        &PS_SCHEMELESS_DOMAIN_CMDLET_RE,
+        &CURL_EXE_RE,
+        &DOWNLOADSTRING_RE,
+        &BARE_DOWNLOADSTRING_RE,
+        &START_BITS_RE,
+        &START_BITS_SCHEMELESS_SOURCE_RE,
+    ];
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for text in &candidates {
+        for re in regexes {
+            for caps in re.captures_iter(text) {
+                let Some(url_match) = caps.get(1) else {
+                    continue;
+                };
+                if ps_url_inside_non_download_hash_option(text, url_match.start())
+                    || ps_url_is_non_download_option_value(text, url_match.start())
+                {
+                    continue;
+                }
+                let statement = caps
+                    .get(0)
+                    .map(|m| logical_statement_at(text, m.start()))
+                    .unwrap_or(text);
+                let Some(dst) = outfile_hint_from(statement) else {
+                    continue;
+                };
+                let mut url = clean_ps_url(url_match.as_str());
+                if is_schemeless_ip_url(&url) {
+                    url = format!("http://{url}");
+                }
+                let Some(src) = crate::deob_scan::normalize_liberal_url_token(&url)
+                    .or_else(|| crate::deob_scan::normalize_schemeless_domain_path_token(&url))
+                else {
+                    continue;
+                };
+                if seen.insert((src.clone(), dst.clone())) {
+                    out.push((src, dst));
+                }
+            }
+        }
+    }
+
+    out
+}
+
 #[allow(clippy::expect_used)]
 static CHAR_CONCAT_RE: Lazy<Regex> = Lazy::new(|| {
     // Must have at least two + separators (3+ [char] terms) to avoid matching plain [char]N

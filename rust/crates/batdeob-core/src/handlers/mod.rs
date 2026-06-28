@@ -120,7 +120,7 @@ pub fn lookup(name: &str) -> Option<Handler> {
         return Some(hh::h_hh);
     }
     if [
-        "brave", "chrome", "explorer", "firefox", "iexplore", "msedge", "opera",
+        "brave", "chrome", "edge", "explorer", "firefox", "iexplore", "msedge", "opera", "vivaldi",
     ]
     .iter()
     .any(|launcher| base.eq_ignore_ascii_case(launcher))

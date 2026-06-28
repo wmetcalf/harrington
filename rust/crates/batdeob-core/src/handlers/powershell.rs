@@ -7,7 +7,10 @@
 //! decoded payload regardless of which spelling the sample used.
 #![allow(clippy::expect_used)]
 
-use super::util::{filesystem_entry_for_path, split_words, starts_with_ascii_case_insensitive};
+use super::util::{
+    filesystem_entry_for_path, filesystem_storage_key, split_words,
+    starts_with_ascii_case_insensitive,
+};
 use crate::env::{Environment, FsEntry};
 use base64::Engine;
 
@@ -171,6 +174,7 @@ pub fn h_powershell(raw: &str, env: &mut Environment) {
             if is_command_flag(flag) {
                 let body = command_body_from_attached_value(value, &tokens[i + 1..]);
                 if !body.is_empty() {
+                    record_download_side_effects(&body, env);
                     env.exec_ps1.push(body.as_bytes().to_vec());
                 }
                 return;
@@ -197,6 +201,7 @@ pub fn h_powershell(raw: &str, env: &mut Environment) {
                 let body = body.trim();
                 let body = body.trim_matches('"').trim_matches('\'');
                 if !body.is_empty() {
+                    record_download_side_effects(body, env);
                     env.exec_ps1.push(body.as_bytes().to_vec());
                 }
                 return;
@@ -220,7 +225,15 @@ pub fn h_powershell(raw: &str, env: &mut Environment) {
     // when they take one) and push the remainder as the script body.
     let body = skip_ps_meta_flags(&tokens[1..]);
     if !body.is_empty() {
+        record_download_side_effects(&body, env);
         env.exec_ps1.push(body.as_bytes().to_vec());
+    }
+}
+
+fn record_download_side_effects(body: &str, env: &mut Environment) {
+    for (src, dst) in crate::ps1_scan::ps_download_side_effects(body) {
+        env.modified_filesystem
+            .insert(filesystem_storage_key(&dst), FsEntry::Download { src });
     }
 }
 
