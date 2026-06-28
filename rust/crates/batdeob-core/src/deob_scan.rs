@@ -1162,6 +1162,10 @@ fn collect_python_requests_bound_session_method_aliases(
 }
 
 fn collect_python_requests_bound_session_names(text: &str) -> Vec<String> {
+    if !contains_ascii_case_insensitive(text, "session") || !text.as_bytes().contains(&b'=') {
+        return Vec::new();
+    }
+
     static PY_REQUESTS_SESSION_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
             r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*(?:\.Session)?)\s*\(\s*\)"#,
