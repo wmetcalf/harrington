@@ -3774,6 +3774,13 @@ fn scan_remote_access(command: &str, env: &mut Environment) {
     if lower.contains("net") && lower.contains("start") && lower.contains("termservice") {
         push_remote_access(env, "rdp-service-enable", "TermService", command);
     }
+    if lower.contains("wmic")
+        && lower.contains("rdtoggle")
+        && lower.contains("setallowtsconnections")
+        && (lower.contains(" 1") || lower.contains("=1") || lower.contains("true"))
+    {
+        push_remote_access(env, "rdp-enable", "RDTOGGLE", command);
+    }
     for line in command.lines() {
         let lower_line = line.to_ascii_lowercase();
         if (lower_line.contains("enable-netfirewallrule")
@@ -6211,7 +6218,14 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
                 .map(|m| m.as_str())
                 .unwrap_or_default();
             if defender_evasion_is_disabling_value(opt, val) {
-                if let Some(suffix) = defender_evasion_action_suffix(opt) {
+                let suffix = defender_evasion_action_suffix(opt)
+                    .map(str::to_string)
+                    .or_else(|| {
+                        opt.to_ascii_lowercase()
+                            .starts_with("disable")
+                            .then(|| opt.to_ascii_lowercase())
+                    });
+                if let Some(suffix) = suffix {
                     push(&format!("setmp-{suffix}"), val.to_string());
                 }
             }
@@ -6410,7 +6424,8 @@ pub(crate) fn defender_evasion_is_disabling_value(opt: &str, val: &str) -> bool 
     // `2` (SubmitSamplesConsent=2 = never submit). Skip enabling
     // values like `$false` to avoid false positives in remediation
     // scripts that turn protections back on.
-    let disabling_opt = opt.eq_ignore_ascii_case("disablerealtimemonitoring")
+    let disabling_opt = opt.to_ascii_lowercase().starts_with("disable")
+        || opt.eq_ignore_ascii_case("disablerealtimemonitoring")
         || opt.eq_ignore_ascii_case("disablebehaviormonitoring")
         || opt.eq_ignore_ascii_case("disableioavprotection")
         || opt.eq_ignore_ascii_case("disableblockatfirstseen")
@@ -6523,6 +6538,10 @@ fn scan_lateral_movement(deobfuscated: &str, env: &mut Environment) {
     static SC_HOST_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?i)\bsc(?:\.exe)?\s+\\\\([A-Za-z0-9.\-]+)"#).expect("sc \\\\host re")
     });
+    static NET_USE_ADMIN_SHARE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?i)\bnet(?:\.exe)?\s+use\s+\\\\([A-Za-z0-9.\-]+)\\[A-Z]\$"#)
+            .expect("net use admin share re")
+    });
     let mut push = |tool: &str, host: String| {
         let host = host
             .trim_matches(|c: char| c == '"' || c == '\'')
@@ -6590,6 +6609,11 @@ fn scan_lateral_movement(deobfuscated: &str, env: &mut Environment) {
             push("sc", m.as_str().to_string());
         }
     }
+    for c in NET_USE_ADMIN_SHARE_RE.captures_iter(deobfuscated) {
+        if let Some(m) = c.get(1) {
+            push("net-use", m.as_str().to_string());
+        }
+    }
 }
 
 /// Anti-recovery: shadow copy delete, BCD recoveryenabled no, wbadmin
@@ -6638,6 +6662,10 @@ fn scan_anti_recovery(deobfuscated: &str, env: &mut Environment) {
                 .unwrap(),
                 "backup-artifact-delete",
             ),
+            (
+                Regex::new(r"(?i)\bDisable-ComputerRestore\b").unwrap(),
+                "powershell-computerrestore-disable",
+            ),
         ]
     });
     for (re, action) in PATTERNS.iter() {
@@ -6670,6 +6698,10 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
         Regex::new(r#"(?im)^[^\r\n]*?\b(?:Remove-Item|rm|del|erase|rd|rmdir)\b[^\r\n]*"#)
             .expect("powershell remove-item regex")
     });
+    static PS_CLEAR_RECYCLE_BIN_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?im)^[^\r\n]*?\bClear-RecycleBin\b[^\r\n]*"#)
+            .expect("powershell clear recycle bin regex")
+    });
     let mut push = |action: &str| {
         if env.traits.iter().any(|t| {
             matches!(
@@ -6692,6 +6724,9 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
         {
             push("event-log-clear");
         }
+    }
+    if PS_CLEAR_RECYCLE_BIN_RE.is_match(deobfuscated) {
+        push("recycle-bin-clear");
     }
     for caps in PS_REMOVE_ITEM_RE.captures_iter(deobfuscated) {
         let Some(command) = caps.get(0).map(|m| m.as_str()) else {
@@ -6847,6 +6882,9 @@ fn scan_network_probe(deobfuscated: &str, env: &mut Environment) {
         });
     };
     for line in deobfuscated.lines() {
+        if let Some((kind, target)) = powershell_connection_test_probe(line) {
+            push(kind, target);
+        }
         if let Some(target) = resolve_dns_name_target(line) {
             push("dns-lookup", target);
         }
@@ -6898,6 +6936,45 @@ fn scan_network_probe(deobfuscated: &str, env: &mut Environment) {
             push("ip-discovery", (*host).to_string());
         }
     }
+}
+
+fn powershell_connection_test_probe(line: &str) -> Option<(&'static str, String)> {
+    let lower = line.to_ascii_lowercase();
+    let has_tnc_alias = lower.contains(" tnc ")
+        || lower.contains("\"tnc ")
+        || lower.contains("'tnc ")
+        || lower.contains(";tnc ");
+    if lower.contains("test-netconnection") || has_tnc_alias {
+        let target = powershell_named_argument(line, "-ComputerName")
+            .or_else(|| powershell_named_argument(line, "-CN"))
+            .or_else(|| {
+                powershell_positional_arguments(line, "Test-NetConnection")
+                    .into_iter()
+                    .next()
+            })
+            .or_else(|| {
+                powershell_positional_arguments(line, "tnc")
+                    .into_iter()
+                    .next()
+            })?;
+        return Some(("tcp-connect", clean_network_probe_target(&target)));
+    }
+    if lower.contains("test-connection") {
+        let target = powershell_named_argument(line, "-ComputerName").or_else(|| {
+            powershell_positional_arguments(line, "Test-Connection")
+                .into_iter()
+                .next()
+        })?;
+        return Some(("icmp-ping", clean_network_probe_target(&target)));
+    }
+    None
+}
+
+fn clean_network_probe_target(target: &str) -> String {
+    target
+        .trim()
+        .trim_matches(['"', '\'', ',', ';', ')', '('])
+        .to_string()
 }
 
 fn resolve_dns_name_target(line: &str) -> Option<String> {
@@ -7615,7 +7692,7 @@ fn scan_input_capture(deobfuscated: &str, env: &mut Environment) {
         vec![
             (
                 Regex::new(
-                    r#"(?i)\b(?:GetAsyncKeyState|SetWindowsHookEx(?:A|W)?|GetKeyboardState)\b"#,
+                    r#"(?i)\b(?:GetAsyncKeyState|GetKeyState|SetWindowsHookEx(?:A|W)?|GetKeyboardState)\b"#,
                 )
                 .unwrap(),
                 "keylog",
@@ -7805,6 +7882,10 @@ fn scan_uac_bypass(deobfuscated: &str, env: &mut Environment) {
             (Regex::new(r"(?i)\bwsreset(?:\.exe)?\b").unwrap(), "wsreset"),
             (Regex::new(r"(?i)\bcmstp(?:\.exe)?(?:\s+[^\r\n]*)?\s+/au\b").unwrap(), "cmstp-au"),
             (Regex::new(r"(?i)\bmsconfig(?:\.exe)?\s+/4\b").unwrap(), "msconfig-4"),
+            (
+                Regex::new(r"(?i)\b(?:New|Set)-ItemProperty\b[^\r\n]*\\policies\\system\b[^\r\n]*\bEnableLUA\b[^\r\n]*(?:-Value\s+0|\b0x0\b)").unwrap(),
+                "uac-enablelua-disabled",
+            ),
             (Regex::new(r"(?i)HKCU\\Software\\Classes\\(?:ms-settings|Folder|exefile|mscfile)\\Shell\\Open\\command").unwrap(), "classes-shell-open-hijack"),
             (Regex::new(r"(?i)IColorDataProxy|ICMLuaUtil").unwrap(), "com-elevation"),
         ]
@@ -7927,6 +8008,163 @@ fn scan_startup_folder_persistence(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
+fn scan_powershell_scheduled_task_persistence(deobfuscated: &str, env: &mut Environment) {
+    use once_cell::sync::Lazy;
+    use regex::Regex;
+    static ACTION_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?im)\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*New-ScheduledTaskAction\b[^\r\n;]*"#)
+            .expect("powershell scheduled action assignment regex")
+    });
+    static REGISTER_TASK_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?im)^[^\r\n]*?\bRegister-ScheduledTask\b[^\r\n]*"#)
+            .expect("powershell register scheduled task regex")
+    });
+
+    let mut actions = std::collections::HashMap::new();
+    for caps in ACTION_ASSIGN_RE.captures_iter(deobfuscated) {
+        let Some(var) = caps.get(1).map(|m| m.as_str().to_ascii_lowercase()) else {
+            continue;
+        };
+        let command = caps.get(0).map(|m| m.as_str()).unwrap_or_default();
+        let execute = powershell_named_argument(command, "-Execute").unwrap_or_default();
+        if execute.is_empty() {
+            continue;
+        }
+        let argument = powershell_named_argument(command, "-Argument").unwrap_or_default();
+        actions.insert(var, join_powershell_command(&execute, &argument));
+    }
+
+    for m in REGISTER_TASK_RE.find_iter(deobfuscated) {
+        let command = m.as_str().trim();
+        let Some(task_name) = powershell_named_argument(command, "-TaskName") else {
+            continue;
+        };
+        let task_command = powershell_named_argument(command, "-Execute")
+            .map(|execute| {
+                join_powershell_command(
+                    &execute,
+                    &powershell_named_argument(command, "-Argument").unwrap_or_default(),
+                )
+            })
+            .or_else(|| {
+                powershell_named_argument(command, "-Action").and_then(|action| {
+                    action
+                        .strip_prefix('$')
+                        .and_then(|name| actions.get(&name.to_ascii_lowercase()).cloned())
+                })
+            })
+            .unwrap_or_default();
+        if task_command.is_empty() {
+            continue;
+        }
+        push_persistence(env, "ScheduledTask", &task_name, "", &task_command);
+    }
+}
+
+fn scan_powershell_registry_persistence(deobfuscated: &str, env: &mut Environment) {
+    use once_cell::sync::Lazy;
+    use regex::Regex;
+    static PS_ITEM_PROPERTY_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?im)^[^\r\n]*?\b(?:New|Set)-ItemProperty\b[^\r\n]*"#)
+            .expect("powershell item property regex")
+    });
+
+    for m in PS_ITEM_PROPERTY_RE.find_iter(deobfuscated) {
+        let command = m.as_str().trim();
+        let path = powershell_named_argument(command, "-Path")
+            .or_else(|| powershell_named_argument(command, "-LiteralPath"))
+            .unwrap_or_default();
+        let Some((hive, key)) = normalize_powershell_registry_path(&path) else {
+            continue;
+        };
+        if !registry_persistence_key(&key) {
+            continue;
+        }
+        let value_name = powershell_named_argument(command, "-Name").unwrap_or_default();
+        let value = powershell_named_argument(command, "-Value").unwrap_or_default();
+        if value_name.is_empty() || value.is_empty() {
+            continue;
+        }
+        push_persistence(env, &hive, &key, &value_name, &value);
+    }
+}
+
+fn normalize_powershell_registry_path(path: &str) -> Option<(String, String)> {
+    let cleaned = path
+        .trim()
+        .trim_matches(['"', '\''])
+        .replace('/', "\\")
+        .replace("::", ":");
+    let (hive, rest) = cleaned
+        .split_once(":\\")
+        .or_else(|| cleaned.split_once(':'))?;
+    let hive = match hive.to_ascii_lowercase().as_str() {
+        "hkcu" | "hkey_current_user" => "HKCU",
+        "hklm" | "hkey_local_machine" => "HKLM",
+        "hkcr" | "hkey_classes_root" => "HKCR",
+        "hku" | "hkey_users" => "HKU",
+        _ => return None,
+    };
+    let key = rest.trim_start_matches('\\').to_string();
+    (!key.is_empty()).then(|| (hive.to_string(), key))
+}
+
+fn registry_persistence_key(key: &str) -> bool {
+    const PERSISTENCE_PATHS: &[&str] = &[
+        r"\currentversion\run",
+        r"\currentversion\runonce",
+        r"\currentversion\runservices",
+        r"\currentversion\runservicesonce",
+        r"\currentversion\explorer\run",
+        r"\currentversion\policies\explorer\run",
+        r"\currentversion\shell\open\command",
+        r"\winlogon\userinit",
+        r"\winlogon\shell",
+        r"\image file execution options\",
+        r"\currentversion\app paths\",
+        r"\currentversion\winlogon\shell",
+    ];
+    let normalized = format!(r"\{}", key.to_ascii_lowercase());
+    PERSISTENCE_PATHS
+        .iter()
+        .any(|path| normalized.contains(path))
+}
+
+fn join_powershell_command(execute: &str, argument: &str) -> String {
+    let execute = execute.trim();
+    let argument = argument.trim();
+    if argument.is_empty() {
+        execute.to_string()
+    } else {
+        format!("{execute} {argument}")
+    }
+}
+
+fn push_persistence(env: &mut Environment, hive: &str, key: &str, value_name: &str, command: &str) {
+    if env.traits.iter().any(|t| {
+        matches!(
+            t,
+            Trait::Persistence {
+                hive: existing_hive,
+                key: existing_key,
+                value_name: existing_value_name,
+                command: existing_command,
+            } if existing_hive.eq_ignore_ascii_case(hive)
+                && existing_key.eq_ignore_ascii_case(key)
+                && existing_value_name.eq_ignore_ascii_case(value_name)
+                && existing_command.eq_ignore_ascii_case(command)
+        )
+    }) {
+        return;
+    }
+    env.traits.push(Trait::Persistence {
+        hive: hive.to_string(),
+        key: key.to_string(),
+        value_name: value_name.to_string(),
+        command: command.to_string(),
+    });
+}
+
 fn join_windows_path(dir: &str, name: &str) -> String {
     let trimmed = dir.trim_end_matches(['\\', '/']);
     if trimmed.is_empty() {
@@ -8047,6 +8285,8 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     scan_account_modification(deobfuscated, env);
     scan_uac_bypass(deobfuscated, env);
     scan_service_install(deobfuscated, env);
+    scan_powershell_scheduled_task_persistence(deobfuscated, env);
+    scan_powershell_registry_persistence(deobfuscated, env);
     scan_startup_folder_persistence(deobfuscated, env);
     scan_beacon_sleep(deobfuscated, env);
     scan_shellcode_marker(deobfuscated, env);

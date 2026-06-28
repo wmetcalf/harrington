@@ -24789,6 +24789,116 @@ powershell -Command "New-Service -Name UpdateSvc -BinaryPathName 'cmd.exe /c cal
     }
 
     #[test]
+    fn expanded_persistence_probe_cleanup_and_recovery_signals_emit_traits() {
+        let script = br#"powershell.exe Set-ItemProperty -Path HKLM:Software\Microsoft\Windows\CurrentVersion\policies\system -Name EnableLUA -Value 0
+powershell -Command "Test-NetConnection -ComputerName c2.example -Port 443"
+powershell -Command "Test-Connection files.example -Count 1"
+powershell -Command "Clear-RecycleBin -Force"
+powershell -Command "Add-Type '[DllImport(\"user32.dll\")] public static extern short GetKeyState(int nVirtKey);'"
+powershell -Command "$a = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/c calc.exe'; Register-ScheduledTask -TaskName Updater -Action $a -Force"
+powershell -Command "New-ItemProperty -Path HKCU:\Software\Microsoft\Windows\CurrentVersion\Run -Name Updater -Value 'cmd.exe /c calc.exe' -PropertyType String -Force"
+net use \\target.example\C$ /user:DOMAIN\adm pass
+wmic RDTOGGLE WHERE ServerName='%COMPUTERNAME%' call SetAllowTSConnections 1
+powershell -Command "Disable-ComputerRestore -Drive C:\"
+powershell -Command "Set-MpPreference -DisableArchiveScanning $true -DisableEmailScanning 1 -DisableRemovableDriveScanning:true"
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::UacBypass { technique } if technique == "uac-enablelua-disabled")),
+            "missing Set-ItemProperty EnableLUA UacBypass: {:?}",
+            report.traits
+        );
+        for (probe_kind, target) in [
+            ("tcp-connect", "c2.example"),
+            ("icmp-ping", "files.example"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::NetworkProbe { probe_kind: kind, target: existing_target }
+                        if kind == probe_kind && existing_target == target
+                )),
+                "missing PowerShell network probe {probe_kind} {target}: {:?}",
+                report.traits
+            );
+        }
+        for action in ["recycle-bin-clear", "powershell-computerrestore-disable"] {
+            assert!(
+                report
+                    .traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::AntiRecovery { action: a } if a == action)),
+                "missing AntiRecovery {action}: {:?}",
+                report.traits
+            );
+        }
+        assert!(
+            report.traits.iter().any(
+                |t| matches!(t, Trait::InputCapture { capture_kind } if capture_kind == "keylog")
+            ),
+            "GetKeyState keylogging marker was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { hive, key, command, .. }
+                    if hive == "ScheduledTask" && key == "Updater" && command == "cmd.exe /c calc.exe"
+            )),
+            "PowerShell scheduled-task persistence missing: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { hive, key, value_name, command }
+                    if hive == "HKCU"
+                        && key == r"Software\Microsoft\Windows\CurrentVersion\Run"
+                        && value_name == "Updater"
+                        && command == "cmd.exe /c calc.exe"
+            )),
+            "PowerShell Run-key persistence missing: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::LateralMovement { tool, target_host }
+                    if tool == "net-use" && target_host == "target.example"
+            )),
+            "net use admin share lateral movement missing: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-enable" && target == "RDTOGGLE"
+            )),
+            "WMIC RDTOGGLE RDP enablement missing: {:?}",
+            report.traits
+        );
+        for action in [
+            "setmp-disablearchivescanning",
+            "setmp-disableemailscanning",
+            "setmp-disableremovabledrivescanning",
+        ] {
+            assert!(
+                report
+                    .traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::DefenderEvasion { action: existing_action, .. } if existing_action == action)),
+                "missing DefenderEvasion {action}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn copied_mshta_alias_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         env.traits.push(Trait::WindowsUtilManip {
