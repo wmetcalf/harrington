@@ -3,10 +3,13 @@
 use super::util::{filesystem_entry_for_path, split_words, strip_outer_quotes, windows_basename};
 use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
+use crate::util::contains_ascii_case_insensitive;
 
 pub fn h_regsvr32(raw: &str, env: &mut Environment) {
     let tokens = split_words(raw);
-    let Some(url) = regsvr32_scriptlet_url_after(&tokens, 1, env) else {
+    let Some(url) = regsvr32_scriptlet_url_after(&tokens, 1, env)
+        .or_else(|| regsvr32_webdav_url_after(&tokens, 1))
+    else {
         return;
     };
 
@@ -48,6 +51,58 @@ fn regsvr32_scriptlet_url_after(
         }
     }
     None
+}
+
+fn regsvr32_webdav_url_after(tokens: &[String], start: usize) -> Option<String> {
+    let limit = tokens.len().min(start.saturating_add(12));
+    for token in tokens.iter().take(limit).skip(start) {
+        let token = trim_url_suffix(strip_outer_quotes(token));
+        if let Some(url) = webdav_url_for_candidate(token) {
+            return Some(url);
+        }
+    }
+    None
+}
+
+fn webdav_url_for_candidate(candidate: &str) -> Option<String> {
+    let candidate = candidate.trim();
+    if !candidate.starts_with(r"\\") || !regsvr32_loadable_target(candidate) {
+        return None;
+    }
+    let parts: Vec<&str> = candidate
+        .split('\\')
+        .filter(|part| !part.is_empty())
+        .collect();
+    let host_port = parts.first()?;
+    if let Some((host, port)) = host_port.split_once('@') {
+        if host.is_empty()
+            || port.is_empty()
+            || !contains_ascii_case_insensitive(candidate, r"\davwwwroot\")
+        {
+            return None;
+        }
+        return Some(crate::deob_scan::unc_webdav_to_http_url(
+            host, port, candidate,
+        ));
+    }
+    if parts.len() < 3 || !parts[1].eq_ignore_ascii_case("webdav") || parts[2].is_empty() {
+        return None;
+    }
+    Some(crate::deob_scan::unc_webdav_to_http_url(
+        host_port, "80", candidate,
+    ))
+}
+
+fn regsvr32_loadable_target(token: &str) -> bool {
+    windows_basename(token).is_some_and(|name| {
+        let lower = name.to_ascii_lowercase();
+        matches!(
+            lower.as_str(),
+            "scrobj.dll" | "scrobj" | "c2.dll" | "c2.sct"
+        ) || lower.ends_with(".dll")
+            || lower.ends_with(".sct")
+            || lower.ends_with(".ocx")
+    })
 }
 
 fn downloaded_src_for_candidate(candidate: &str, env: &Environment) -> Option<String> {
