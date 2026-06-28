@@ -24556,6 +24556,46 @@ Resolve-DnsName -Type A dns-positional-after-option.example
     }
 
     #[test]
+    fn archive_extraction_commands_emit_structured_traits() {
+        let report = analyze(
+            br#"powershell -Command "Expand-Archive -Path C:\Users\Public\stage.zip -DestinationPath C:\Users\Public\stage"
+powershell -Command "[System.IO.Compression.ZipFile]::ExtractToDirectory('C:/Users/Public/Document.zip', 'C:/Users/Public/Document')"
+start /b /min cmd /c C:\ProgramData\7zz.exe x -y C:\ProgramData\tempy.7z -oC:\ProgramData\
+"#,
+            &Config::default(),
+        );
+
+        for (cmd, src, dst) in [
+            (
+                "Expand-Archive",
+                r"C:\Users\Public\stage.zip",
+                r"C:\Users\Public\stage",
+            ),
+            (
+                "ExtractToDirectory",
+                "C:/Users/Public/Document.zip",
+                "C:/Users/Public/Document",
+            ),
+            ("7zz.exe", r"C:\ProgramData\tempy.7z", r"C:\ProgramData\"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::ArchiveExtraction {
+                        cmd: existing_cmd,
+                        src: existing_src,
+                        dst: existing_dst
+                    } if existing_cmd.contains(cmd)
+                        && existing_src == src
+                        && existing_dst == dst
+                )),
+                "archive extraction {cmd} {src} -> {dst} missing: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn additional_powershell_host_network_discovery_emit_enumeration_traits() {
         let report = analyze(
             br#"powershell -Command "Get-NetRoute"

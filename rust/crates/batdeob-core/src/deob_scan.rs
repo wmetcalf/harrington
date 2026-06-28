@@ -8073,6 +8073,326 @@ fn scan_startup_folder_persistence(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
+fn scan_archive_extraction(deobfuscated: &str, env: &mut Environment) {
+    if !contains_ascii_keyword(deobfuscated, "Expand-Archive")
+        && !contains_ascii_keyword(deobfuscated, "ExtractToDirectory")
+        && !contains_ascii_keyword(deobfuscated, "tar")
+        && !has_rar_archive_atom(deobfuscated)
+        && !has_seven_zip_archive_atom(deobfuscated)
+    {
+        return;
+    }
+    for line in deobfuscated.lines() {
+        if contains_ascii_keyword(line, "Expand-Archive") {
+            for segment in crate::split::split_commands(line) {
+                let segment = segment.trim();
+                if !contains_ascii_keyword(segment, "Expand-Archive") {
+                    continue;
+                }
+                let Some(src) = powershell_named_argument(segment, "-Path")
+                    .or_else(|| powershell_named_argument(segment, "-LiteralPath"))
+                else {
+                    continue;
+                };
+                let Some(dst) = powershell_named_argument(segment, "-DestinationPath") else {
+                    continue;
+                };
+                push_archive_extraction(env, segment, src, dst);
+            }
+        }
+        if contains_ascii_keyword(line, "ExtractToDirectory") {
+            for (cmd, src, dst) in parse_zipfile_extract_to_directory(line) {
+                push_archive_extraction(env, &cmd, src, dst);
+            }
+        }
+        if contains_ascii_keyword(line, "tar") {
+            for segment in crate::split::split_commands(line) {
+                let segment = segment.trim();
+                if !contains_ascii_keyword(segment, "tar") {
+                    continue;
+                }
+                let tokens = split_words(segment);
+                let Some(cmd) = tokens.first() else {
+                    continue;
+                };
+                if !matches!(
+                    command_basename_lower(strip_outer_quotes(cmd)).as_str(),
+                    "tar" | "tar.exe"
+                ) {
+                    continue;
+                }
+                let Some((src, dst)) = parse_tar_archive_extraction(&tokens) else {
+                    continue;
+                };
+                push_archive_extraction(env, segment, src, dst);
+            }
+        }
+        if has_rar_archive_atom(line) {
+            for segment in crate::split::split_commands(line) {
+                let segment = segment.trim();
+                if !has_rar_archive_atom(segment) {
+                    continue;
+                }
+                let tokens = split_words(segment);
+                let Some(cmd) = tokens.first() else {
+                    continue;
+                };
+                if !matches!(
+                    command_basename_lower(strip_outer_quotes(cmd)).as_str(),
+                    "rar" | "rar.exe" | "winrar" | "winrar.exe"
+                ) {
+                    continue;
+                }
+                let Some((src, dst)) = parse_rar_archive_extraction(&tokens) else {
+                    continue;
+                };
+                push_archive_extraction(env, segment, src, dst);
+            }
+        }
+        if !has_seven_zip_archive_atom(line) {
+            continue;
+        }
+        for segment in crate::split::split_commands(line) {
+            let segment = segment.trim();
+            if !has_seven_zip_archive_atom(segment) {
+                continue;
+            }
+            let tokens = split_words(segment);
+            for idx in 0..tokens.len() {
+                if !is_seven_zip_command(strip_outer_quotes(&tokens[idx])) {
+                    continue;
+                }
+                let Some((src, dst)) = parse_seven_zip_archive_extraction(&tokens[idx..]) else {
+                    continue;
+                };
+                push_archive_extraction(env, segment, src, dst);
+            }
+        }
+    }
+}
+
+fn has_rar_archive_atom(text: &str) -> bool {
+    contains_ascii_keyword(text, "rar") || contains_ascii_keyword(text, "WinRAR")
+}
+
+fn has_seven_zip_archive_atom(text: &str) -> bool {
+    contains_ascii_keyword(text, "7z")
+        || contains_ascii_keyword(text, "7za")
+        || contains_ascii_keyword(text, "7zz")
+}
+
+fn is_seven_zip_command(token: &str) -> bool {
+    matches!(
+        command_basename_lower(token).as_str(),
+        "7z" | "7z.exe" | "7za" | "7za.exe" | "7zz" | "7zz.exe"
+    )
+}
+
+fn command_basename_lower(token: &str) -> String {
+    windows_basename(token)
+        .unwrap_or(token)
+        .to_ascii_lowercase()
+}
+
+fn parse_zipfile_extract_to_directory(command: &str) -> Vec<(String, String, String)> {
+    static ZIPFILE_EXTRACT_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?i)(?:\[(?:System\.)?IO\.Compression\.ZipFile\]\s*::\s*)?ExtractToDirectory\s*\(\s*(?:"([^"\r\n]+)"|'([^'\r\n]+)')\s*,\s*(?:"([^"\r\n]+)"|'([^'\r\n]+)')"#,
+        )
+        .expect("zipfile extract-to-directory regex")
+    });
+    ZIPFILE_EXTRACT_RE
+        .captures_iter(command)
+        .filter_map(|caps| {
+            let cmd = caps.get(0)?.as_str().to_string();
+            let src = caps
+                .get(1)
+                .or_else(|| caps.get(2))
+                .map(|m| m.as_str().to_string())?;
+            let dst = caps
+                .get(3)
+                .or_else(|| caps.get(4))
+                .map(|m| m.as_str().to_string())?;
+            Some((cmd, src, dst))
+        })
+        .collect()
+}
+
+fn push_archive_extraction(env: &mut Environment, cmd: &str, src: String, dst: String) {
+    if archive_path_has_unresolved_percent_var(&src)
+        || archive_path_has_unresolved_percent_var(&dst)
+    {
+        return;
+    }
+    if env.traits.iter().any(|t| {
+        matches!(
+            t,
+            Trait::ArchiveExtraction {
+                src: existing_src,
+                dst: existing_dst,
+                ..
+            } if existing_src.eq_ignore_ascii_case(&src)
+                && existing_dst.eq_ignore_ascii_case(&dst)
+        )
+    }) {
+        return;
+    }
+    env.traits.push(Trait::ArchiveExtraction {
+        cmd: cmd.to_string(),
+        src,
+        dst,
+    });
+}
+
+fn parse_tar_archive_extraction(tokens: &[String]) -> Option<(String, String)> {
+    let mut extract = false;
+    let mut src = None;
+    let mut dst = None;
+    let mut expect_file = false;
+    let mut expect_destination = false;
+    for token in tokens.iter().skip(1) {
+        let token = strip_outer_quotes(token);
+        if token.is_empty() {
+            continue;
+        }
+        if expect_destination {
+            dst = Some(token.to_string());
+            expect_destination = false;
+            continue;
+        }
+        if expect_file {
+            src = Some(token.to_string());
+            expect_file = false;
+            continue;
+        }
+        if token.eq_ignore_ascii_case("-C") {
+            expect_destination = true;
+            continue;
+        }
+        if let Some(attached_destination) = token.strip_prefix("-C") {
+            if !attached_destination.is_empty() {
+                dst = Some(strip_outer_quotes(attached_destination).to_string());
+            }
+            continue;
+        }
+        let Some(flags) = token.strip_prefix('-') else {
+            if extract && src.is_none() {
+                src = Some(token.to_string());
+            }
+            continue;
+        };
+        let flags = flags.trim_start_matches('-');
+        extract |= flags.bytes().any(|b| b.eq_ignore_ascii_case(&b'x'));
+        if let Some(file_flag) = flags.find(|c: char| c.eq_ignore_ascii_case(&'f')) {
+            let attached = flags[file_flag + 1..].trim();
+            if attached.is_empty() {
+                expect_file = true;
+            } else {
+                src = Some(strip_outer_quotes(attached).to_string());
+            }
+        }
+    }
+    if !extract {
+        return None;
+    }
+    Some((src?, dst?))
+}
+
+fn parse_rar_archive_extraction(tokens: &[String]) -> Option<(String, String)> {
+    let mut mode_seen = false;
+    let mut positional = Vec::new();
+    for token in tokens.iter().skip(1) {
+        let token = strip_outer_quotes(token);
+        if token.is_empty() {
+            continue;
+        }
+        if !mode_seen {
+            if matches!(token.to_ascii_lowercase().as_str(), "x" | "e") {
+                mode_seen = true;
+            }
+            continue;
+        }
+        if token.starts_with('-') || token.starts_with('/') {
+            continue;
+        }
+        positional.push(token.to_string());
+    }
+    if !mode_seen || positional.len() < 2 {
+        return None;
+    }
+    Some((
+        positional[0].clone(),
+        positional[positional.len() - 1].clone(),
+    ))
+}
+
+fn parse_seven_zip_archive_extraction(tokens: &[String]) -> Option<(String, String)> {
+    let mut mode_seen = false;
+    let mut src = None;
+    let mut dst = None;
+    let mut expect_output = false;
+    for token in tokens.iter().skip(1) {
+        let token = strip_outer_quotes(token);
+        if token.is_empty() {
+            continue;
+        }
+        if expect_output {
+            dst = Some(token.to_string());
+            expect_output = false;
+            continue;
+        }
+        if !mode_seen {
+            if matches!(token.to_ascii_lowercase().as_str(), "x" | "e") {
+                mode_seen = true;
+            }
+            continue;
+        }
+        if token.eq_ignore_ascii_case("-o") || token.eq_ignore_ascii_case("/o") {
+            expect_output = true;
+            continue;
+        }
+        if let Some(attached_output) = token
+            .strip_prefix("-o")
+            .or_else(|| token.strip_prefix("/o"))
+        {
+            if !attached_output.is_empty() {
+                dst = Some(strip_outer_quotes(attached_output).to_string());
+            }
+            continue;
+        }
+        if token.starts_with('-') || token.starts_with('/') {
+            continue;
+        }
+        if src.is_none() {
+            src = Some(token.to_string());
+        }
+    }
+    if !mode_seen {
+        return None;
+    }
+    Some((src?, dst?))
+}
+
+fn archive_path_has_unresolved_percent_var(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    let mut idx = 0usize;
+    while idx < bytes.len() {
+        if bytes[idx] != b'%' {
+            idx += 1;
+            continue;
+        }
+        let Some(end_rel) = bytes[idx + 1..].iter().position(|b| *b == b'%') else {
+            return false;
+        };
+        let name = &path[idx + 1..idx + 1 + end_rel];
+        if !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+            return true;
+        }
+        idx += end_rel + 2;
+    }
+    false
+}
+
 fn scan_powershell_scheduled_task_persistence(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
@@ -8350,6 +8670,7 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     scan_account_modification(deobfuscated, env);
     scan_uac_bypass(deobfuscated, env);
     scan_service_install(deobfuscated, env);
+    scan_archive_extraction(deobfuscated, env);
     scan_powershell_scheduled_task_persistence(deobfuscated, env);
     scan_powershell_registry_persistence(deobfuscated, env);
     scan_startup_folder_persistence(deobfuscated, env);
