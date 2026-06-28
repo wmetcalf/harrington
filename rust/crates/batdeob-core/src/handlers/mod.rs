@@ -18,6 +18,7 @@ pub mod echo;
 pub mod esentutl;
 pub mod extrac32;
 pub mod for_cmd;
+pub mod forfiles;
 pub mod ftp;
 pub mod goto;
 pub mod hh;
@@ -161,6 +162,9 @@ pub fn lookup(name: &str) -> Option<Handler> {
     }
     if base.eq_ignore_ascii_case("for") {
         return Some(for_cmd::h_for);
+    }
+    if base.eq_ignore_ascii_case("forfiles") {
+        return Some(forfiles::h_forfiles);
     }
     if base.eq_ignore_ascii_case("bitsadmin") {
         return Some(bitsadmin::h_bitsadmin);

