@@ -6261,6 +6261,22 @@ echo %MARK%
     }
 
     #[test]
+    fn del_current_dir_nested_file_does_not_remove_unrelated_bare_basename() {
+        let script = br#"curl -o gate.txt https://nested-current-dir-del-basename.example/gate.txt
+del .\Temp\gate.txt
+if exist gate.txt set MARK=kept
+echo %MARK%
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo kept"),
+            "del current-dir nested path removed unrelated bare basename:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+    }
+
+    #[test]
     fn del_current_dir_nested_wildcard_removes_tracked_file_for_later_if_not_exist() {
         let script =
             br#"curl -o .\Temp\gate.txt https://nested-current-dir-wildcard.example/gate.txt
@@ -15774,6 +15790,23 @@ echo %MARK%"#,
     }
 
     #[test]
+    fn move_current_dir_nested_source_does_not_remove_unrelated_bare_basename() {
+        let report = crate::analyze(
+            br#"curl -o original.txt https://move-current-dir-source-basename.example/original.txt
+move /y .\Temp\original.txt renamed.txt
+if exist original.txt set MARK=kept
+echo %MARK%"#,
+            &Config::default(),
+        );
+        assert!(
+            report.deobfuscated.contains("echo kept"),
+            "current-dir nested move removed unrelated bare basename:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+    }
+
+    #[test]
     fn ren_current_dir_nested_source_removes_tracked_source_for_later_if_not_exist() {
         let report = crate::analyze(
             br#"curl -o .\Temp\original.txt https://ren-current-dir-source.example/original.txt
@@ -15785,6 +15818,23 @@ echo %MARK%"#,
         assert!(
             report.deobfuscated.contains("echo renamed"),
             "current-dir nested ren did not remove source file state for if not exist:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ren_current_dir_nested_source_does_not_remove_unrelated_bare_basename() {
+        let report = crate::analyze(
+            br#"curl -o original.txt https://ren-current-dir-source-basename.example/original.txt
+ren .\Temp\original.txt renamed.txt
+if exist original.txt set MARK=kept
+echo %MARK%"#,
+            &Config::default(),
+        );
+        assert!(
+            report.deobfuscated.contains("echo kept"),
+            "current-dir nested ren removed unrelated bare basename:\n{}\ntraits={:?}",
             report.deobfuscated,
             report.traits
         );

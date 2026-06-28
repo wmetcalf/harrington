@@ -230,9 +230,6 @@ fn remove_renamed_source(env: &mut Environment, src: &str, dst: &str) {
     let key = normalize_wildcard_path(&normalize_filesystem_storage_path(src));
     env.modified_filesystem
         .retain(|path, _| normalize_wildcard_path(path) != key);
-    if let Some(name) = current_dir_basename(src) {
-        env.modified_filesystem.remove(&name.to_ascii_lowercase());
-    }
 }
 
 fn insert_copied_entry(env: &mut Environment, src: &str, dst: &str, entry: FsEntry) {

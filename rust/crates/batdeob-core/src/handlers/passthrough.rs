@@ -94,9 +94,6 @@ fn remove_tracked_file(env: &mut Environment, candidate: &str, recursive: bool) 
     let key = normalize_wildcard_path(strip_current_dir_prefix(candidate));
     env.modified_filesystem
         .retain(|path, _| normalize_wildcard_path(path) != key);
-    if let Some(name) = current_dir_basename(candidate) {
-        env.modified_filesystem.remove(&name.to_ascii_lowercase());
-    }
 }
 
 fn remove_tracked_file_wildcard(env: &mut Environment, candidate: &str, recursive: bool) {
