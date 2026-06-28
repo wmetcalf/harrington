@@ -3752,6 +3752,35 @@ fn scan_remote_access(command: &str, env: &mut Environment) {
             push_remote_access(env, "hidden-user", &value, command);
         }
     }
+    for line in command.lines() {
+        let lower_line = line.to_ascii_lowercase();
+        if !(lower_line.contains("set-itemproperty") || lower_line.contains("new-itemproperty")) {
+            continue;
+        }
+        let path = powershell_named_argument(line, "-Path")
+            .or_else(|| powershell_named_argument(line, "-LiteralPath"))
+            .unwrap_or_default();
+        if !path
+            .to_ascii_lowercase()
+            .contains(r"control\terminal server")
+        {
+            continue;
+        }
+        let value_name = powershell_named_argument(line, "-Name")
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let value = powershell_named_argument(line, "-Value")
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let enables_rdp = match value_name.as_str() {
+            "allowtsconnections" => value == "1" || value == "0x1",
+            "fdenytsconnections" => value == "0" || value == "0x0",
+            _ => false,
+        };
+        if enables_rdp {
+            push_remote_access(env, "rdp-enable", "Terminal Server", line.trim());
+        }
+    }
 }
 
 fn reg_value_name(tokens: &[String]) -> Option<String> {
@@ -4466,6 +4495,20 @@ fn clean_account_modification_token(token: &str) -> String {
     strip_outer_quotes(token).trim().to_string()
 }
 
+fn powershell_named_argument(command: &str, name: &str) -> Option<String> {
+    let pattern = format!(
+        r#"(?i){}\s*(?::|=|\s)\s*(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^\s"';&|)]+))"#,
+        regex::escape(name)
+    );
+    let re = regex::Regex::new(&pattern).ok()?;
+    let caps = re.captures(command)?;
+    caps.get(1)
+        .or_else(|| caps.get(2))
+        .or_else(|| caps.get(3))
+        .map(|m| m.as_str().trim_matches(['"', '\'']).to_string())
+        .filter(|value| !value.is_empty())
+}
+
 fn push_account_modification_once(
     env: &mut Environment,
     action: &str,
@@ -4497,6 +4540,32 @@ fn push_account_modification_once(
         group,
         command: command.to_string(),
     });
+}
+
+fn scan_account_modification(deobfuscated: &str, env: &mut Environment) {
+    for line in deobfuscated.lines() {
+        let lower = line.to_ascii_lowercase();
+        if lower.contains("new-localuser") {
+            if let Some(account) = powershell_named_argument(line, "-Name") {
+                push_account_modification_once(env, "local-user-add", account, None, line.trim());
+            }
+        }
+        if lower.contains("add-localgroupmember") {
+            let Some(group) = powershell_named_argument(line, "-Group") else {
+                continue;
+            };
+            let Some(account) = powershell_named_argument(line, "-Member") else {
+                continue;
+            };
+            push_account_modification_once(
+                env,
+                "localgroup-add",
+                account,
+                Some(group),
+                line.trim(),
+            );
+        }
+    }
 }
 
 fn scan_copied_mshta_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
@@ -5936,17 +6005,11 @@ fn scan_self_elevation(deobfuscated: &str, env: &mut Environment) {
 fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
-    static EXCLUSION_PATH_DQ: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?i)Add-MpPreference\s+-Exclusion(Path|Extension|Process)\s+"([^"]+)""#)
-            .expect("excl-path-dq")
-    });
-    static EXCLUSION_PATH_SQ: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?i)Add-MpPreference\s+-Exclusion(Path|Extension|Process)\s+'([^']+)'"#)
-            .expect("excl-path-sq")
-    });
-    static EXCLUSION_PATH_BARE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?i)Add-MpPreference\s+-Exclusion(Path|Extension|Process)\s+([^\s'";|&)]+)"#)
-            .expect("excl-path-bare")
+    static EXCLUSION_ARG_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?i)-Exclusion(Path|Extension|Process)\s*(?::|=|\s)\s*(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^\s'";|&)]+))"#,
+        )
+        .expect("exclusion arg regex")
     });
     static DISABLE_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?i)Set-MpPreference\s+-(Disable[A-Za-z]+|MAPSReporting|SubmitSamplesConsent)\s+(\S+)"#)
@@ -5992,6 +6055,12 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
         )
         .expect("security-binary-rename")
     });
+    static SECURITY_PRODUCT_REMOVE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?im)^[^\r\n]*?\b(?:del|erase|remove-item|rm)\b[^\r\n]*(?:Trend Micro|Windows Defender|Microsoft Defender|Sophos|Kaspersky|Symantec|McAfee|Avast|AVG|ESET|Malwarebytes|CrowdStrike|SentinelOne|CarbonBlack|Cylance|Bitdefender|mbam|MsMpEng|MpCmdRun)[^\r\n]*"#,
+        )
+        .expect("security-product-remove")
+    });
     // AMSI bypass markers — Invoke-NullAMSI, AmsiInitFailed/AmsiUtils
     // memory patches, ETW patch via System.Diagnostics.Eventing
     static AMSI_BYPASS_RE: Lazy<Regex> = Lazy::new(|| {
@@ -6023,26 +6092,31 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
             target,
         });
     };
-    for caps in EXCLUSION_PATH_DQ
-        .captures_iter(deobfuscated)
-        .chain(EXCLUSION_PATH_SQ.captures_iter(deobfuscated))
-        .chain(EXCLUSION_PATH_BARE.captures_iter(deobfuscated))
-    {
-        if caps
-            .get(0)
-            .is_some_and(|m| defender_evasion_match_in_assignment(deobfuscated, m.start()))
-        {
+    for line in deobfuscated.lines() {
+        let lower_line = line.to_ascii_lowercase();
+        if !lower_line.contains("add-mppreference") && !lower_line.contains("set-mppreference") {
             continue;
         }
-        let Some(kind_suffix) = caps.get(1).and_then(|m| defender_evasion_label(m.as_str())) else {
-            continue;
-        };
-        let kind = format!("exclusion-{kind_suffix}");
-        let target = caps
-            .get(2)
-            .map(|m| m.as_str().to_string())
-            .unwrap_or_default();
-        push(&kind, target);
+        for caps in EXCLUSION_ARG_RE.captures_iter(line) {
+            if caps
+                .get(0)
+                .is_some_and(|m| defender_evasion_match_in_assignment(line, m.start()))
+            {
+                continue;
+            }
+            let Some(kind_suffix) = caps.get(1).and_then(|m| defender_evasion_label(m.as_str()))
+            else {
+                continue;
+            };
+            let kind = format!("exclusion-{kind_suffix}");
+            let target = caps
+                .get(2)
+                .or_else(|| caps.get(3))
+                .or_else(|| caps.get(4))
+                .map(|m| m.as_str().to_string())
+                .unwrap_or_default();
+            push(&kind, target);
+        }
     }
     push_mppreference_invoke_expression_exclusion_process(deobfuscated, &mut push);
     for caps in DISABLE_RE.captures_iter(deobfuscated) {
@@ -6118,6 +6192,15 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
             .map(|m| format!("{}.exe", m.as_str()))
             .unwrap_or_default();
         push("security-binary-rename", target);
+    }
+    for caps in SECURITY_PRODUCT_REMOVE_RE.captures_iter(deobfuscated) {
+        let target = caps
+            .get(0)
+            .map(|m| m.as_str().trim().to_string())
+            .unwrap_or_default();
+        if !target.is_empty() {
+            push("security-product-remove", target);
+        }
     }
     if let Some(m) = AMSI_BYPASS_RE.find(deobfuscated) {
         push("amsi-bypass", m.as_str().to_string());
@@ -6420,6 +6503,13 @@ fn scan_anti_recovery(deobfuscated: &str, env: &mut Environment) {
                 "wmic-shadowcopy-delete",
             ),
             (
+                Regex::new(
+                    r"(?i)\b(?:Get-WmiObject|Get-CimInstance)\b[^\r\n]*\bWin32_ShadowCopy\b[^\r\n]*(?:\.Delete\s*\(|Remove-CimInstance\b)",
+                )
+                .unwrap(),
+                "powershell-shadowcopy-delete",
+            ),
+            (
                 Regex::new(r"(?i)\bbcdedit(?:\.exe)?[^\r\n]*?(?:/set\s+)?recoveryenabled\s+no")
                     .unwrap(),
                 "bcdedit-recoveryenabled-no",
@@ -6459,6 +6549,60 @@ fn scan_anti_recovery(deobfuscated: &str, env: &mut Environment) {
         env.traits.push(crate::traits::Trait::AntiRecovery {
             action: action.to_string(),
         });
+    }
+}
+
+fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
+    use once_cell::sync::Lazy;
+    use regex::Regex;
+    static PS_CLEAR_EVENT_LOG_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?im)^[^\r\n]*?\bClear-EventLog\b[^\r\n]*?-LogName(?:\s*[:=]\s*|\s+)(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^\s;|&]+))[^\r\n]*"#,
+        )
+        .expect("powershell clear-eventlog regex")
+    });
+    static PS_REMOVE_ITEM_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?im)^[^\r\n]*?\b(?:Remove-Item|rm|del|erase|rd|rmdir)\b[^\r\n]*"#)
+            .expect("powershell remove-item regex")
+    });
+    let mut push = |action: &str| {
+        if env.traits.iter().any(|t| {
+            matches!(
+                t,
+                crate::traits::Trait::AntiRecovery { action: existing } if existing == action
+            )
+        }) {
+            return;
+        }
+        env.traits.push(crate::traits::Trait::AntiRecovery {
+            action: action.to_string(),
+        });
+    };
+    for caps in PS_CLEAR_EVENT_LOG_RE.captures_iter(deobfuscated) {
+        if caps
+            .get(1)
+            .or_else(|| caps.get(2))
+            .or_else(|| caps.get(3))
+            .is_some()
+        {
+            push("event-log-clear");
+        }
+    }
+    for caps in PS_REMOVE_ITEM_RE.captures_iter(deobfuscated) {
+        let Some(command) = caps.get(0).map(|m| m.as_str()) else {
+            continue;
+        };
+        let lower = command.to_ascii_lowercase();
+        if lower.contains("\\prefetch\\") || lower.contains("/prefetch/") {
+            push("prefetch-delete");
+        }
+        if lower.contains("\\recent\\")
+            || lower.contains("/recent/")
+            || lower.contains("automaticdestinations")
+            || lower.contains("customdestinations")
+        {
+            push("recent-items-delete");
+        }
     }
 }
 
@@ -6569,14 +6713,6 @@ fn scan_file_concealment(deobfuscated: &str, env: &mut Environment) {
 /// Network/IP discovery probes: nslookup, Resolve-DnsName, ping to
 /// non-loopback IPs, calls to ipify/checkip/ip-api.
 fn scan_network_probe(deobfuscated: &str, env: &mut Environment) {
-    use once_cell::sync::Lazy;
-    use regex::Regex;
-    static RESOLVE_DNS_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(
-            r#"(?i)\bResolve-DnsName\s+(?:-Name\s+)?(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9.\-]+))"#,
-        )
-        .expect("resolve-dns re")
-    });
     static IP_DISCOVERY_HOSTS: &[&str] = &[
         "api.ipify.org",
         "ipv4.icanhazip.com",
@@ -6606,6 +6742,9 @@ fn scan_network_probe(deobfuscated: &str, env: &mut Environment) {
         });
     };
     for line in deobfuscated.lines() {
+        if let Some(target) = resolve_dns_name_target(line) {
+            push("dns-lookup", target);
+        }
         let tokens = split_words(line);
         let Some(command) = tokens.first() else {
             continue;
@@ -6649,20 +6788,75 @@ fn scan_network_probe(deobfuscated: &str, env: &mut Environment) {
             }
         }
     }
-    for c in RESOLVE_DNS_RE.captures_iter(deobfuscated) {
-        let h = c
-            .get(1)
-            .or_else(|| c.get(2))
-            .or_else(|| c.get(3))
-            .map(|m| m.as_str().to_string())
-            .unwrap_or_default();
-        push("dns-lookup", h);
-    }
     for host in IP_DISCOVERY_HOSTS {
         if contains_ascii_case_insensitive(deobfuscated, host) {
             push("ip-discovery", (*host).to_string());
         }
     }
+}
+
+fn resolve_dns_name_target(line: &str) -> Option<String> {
+    let command_start = find_ascii_case_insensitive_from(line, "resolve-dnsname", 0)?;
+    let before = line.as_bytes()[..command_start].last().copied();
+    if before.is_some_and(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+        return None;
+    }
+    let after_start = command_start + "resolve-dnsname".len();
+    let after = line.get(after_start..)?;
+    let mut skip_next = false;
+    let mut name_next = false;
+    for token in split_words(after) {
+        let token = token.trim_matches(['"', '\'']);
+        if token.is_empty() {
+            continue;
+        }
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if name_next {
+            return normalize_probe_target(token);
+        }
+        let lower = token.to_ascii_lowercase();
+        if let Some(value) = attached_powershell_arg_value(&lower, token, "-name") {
+            return normalize_probe_target(value);
+        }
+        if lower == "-name" {
+            name_next = true;
+            continue;
+        }
+        if lower == "-type" || lower == "-server" || lower == "-dnssecok" {
+            skip_next = true;
+            continue;
+        }
+        if lower.starts_with('-') {
+            continue;
+        }
+        return normalize_probe_target(token);
+    }
+    None
+}
+
+fn attached_powershell_arg_value<'a>(
+    lower_token: &str,
+    original_token: &'a str,
+    name: &str,
+) -> Option<&'a str> {
+    let suffix = lower_token
+        .strip_prefix(name)
+        .filter(|suffix| suffix.starts_with(':') || suffix.starts_with('='))?;
+    let value_start = original_token.len() - suffix.len() + 1;
+    original_token
+        .get(value_start..)
+        .filter(|value| !value.is_empty())
+}
+
+fn normalize_probe_target(target: &str) -> Option<String> {
+    let target = target
+        .trim_matches(['"', '\''])
+        .trim_end_matches(['.', ',', ';'])
+        .to_string();
+    (!target.is_empty()).then_some(target)
 }
 
 fn network_probe_command_target(tokens: &[String], command: &str) -> Option<String> {
@@ -6830,6 +7024,31 @@ fn scan_enumeration(deobfuscated: &str, env: &mut Environment) {
             (
                 Regex::new(r"(?i)\bGet-NetIPAddress\b[^\r\n]*").unwrap(),
                 "ps-netipaddress",
+                false,
+            ),
+            (
+                Regex::new(r"(?i)\bGet-NetRoute\b[^\r\n]*").unwrap(),
+                "ps-netroute",
+                false,
+            ),
+            (
+                Regex::new(r"(?i)\bGet-DnsClientCache\b[^\r\n]*").unwrap(),
+                "ps-dnsclientcache",
+                false,
+            ),
+            (
+                Regex::new(r"(?i)\bGet-SmbShare\b[^\r\n]*").unwrap(),
+                "ps-smbshare",
+                false,
+            ),
+            (
+                Regex::new(r"(?i)\bGet-NetFirewallProfile\b[^\r\n]*").unwrap(),
+                "ps-netfirewallprofile",
+                false,
+            ),
+            (
+                Regex::new(r"(?i)\b(?:Get-ChildItem|gci|dir|ls)\s+Env:[^\r\n]*").unwrap(),
+                "ps-env",
                 false,
             ),
             (
@@ -7269,7 +7488,7 @@ fn scan_input_capture(deobfuscated: &str, env: &mut Environment) {
             ),
             (
                 Regex::new(
-                    r#"(?i)\b(?:Get-Clipboard|Set-Clipboard|GetClipboardData|OpenClipboard)\b"#,
+                    r#"(?i)\b(?:Get-Clipboard|Set-Clipboard|GetClipboardData|OpenClipboard)\b|\b(?:System\.)?Windows\.Forms\.Clipboard\]::(?:GetText|SetText|GetData|SetData)\b"#,
                 )
                 .unwrap(),
                 "clipboard",
@@ -7363,7 +7582,7 @@ fn scan_remote_exec(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
     static WINRM_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?i)\b(?:winrm(?:\.(?:cmd|exe))?\s+(?:invoke|i)\s+[^\r\n]*?(?:[-/]r(?:emote)?[:=]?\s*)(\S+)|winrm(?:\.(?:cmd|exe))?\s+(?:invoke|i)\s+|winrs(?:\.exe)?\s+[-/]r(?:emote)?[:=]?\s*(\S+)|Invoke-WmiMethod\b[^\r\n]*?-ComputerName\s+(\S+)|Set-WmiInstance\b[^\r\n]*?-ComputerName\s+(\S+))"#)
+        Regex::new(r#"(?i)\b(?:winrm(?:\.(?:cmd|exe))?\s+(?:invoke|i)\s+[^\r\n]*?(?:[-/]r(?:emote)?[:=]?\s*)(\S+)|winrm(?:\.(?:cmd|exe))?\s+(?:invoke|i)\s+|winrs(?:\.exe)?\s+[-/]r(?:emote)?[:=]?\s*(\S+)|Invoke-WmiMethod\b[^\r\n]*?-ComputerName(?:\s*[:=]\s*|\s+)(?:"+([^"'\s;|&}]+)"+|'([^']+)'|([^,\s;|&}]+))|Set-WmiInstance\b[^\r\n]*?-ComputerName(?:\s*[:=]\s*|\s+)(?:"+([^"'\s;|&}]+)"+|'([^']+)'|([^,\s;|&}]+)))"#)
             .expect("winrm re")
     });
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -7373,6 +7592,10 @@ fn scan_remote_exec(deobfuscated: &str, env: &mut Environment) {
             .or_else(|| caps.get(2))
             .or_else(|| caps.get(3))
             .or_else(|| caps.get(4))
+            .or_else(|| caps.get(5))
+            .or_else(|| caps.get(6))
+            .or_else(|| caps.get(7))
+            .or_else(|| caps.get(8))
             .map(|m| {
                 m.as_str()
                     .trim_matches(|c: char| c == '"' || c == '\'')
@@ -7650,9 +7873,11 @@ fn scan_shellcode_marker(deobfuscated: &str, env: &mut Environment) {
 pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     scan_self_elevation(deobfuscated, env);
     scan_defender_evasion(deobfuscated, env);
+    scan_remote_access(deobfuscated, env);
     scan_inmem_assembly_load(deobfuscated, env);
     scan_lateral_movement(deobfuscated, env);
     scan_anti_recovery(deobfuscated, env);
+    scan_evidence_cleanup(deobfuscated, env);
     scan_file_concealment(deobfuscated, env);
     scan_network_probe(deobfuscated, env);
     scan_enumeration(deobfuscated, env);
@@ -7661,6 +7886,7 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     scan_input_capture(deobfuscated, env);
     scan_ransom_ext(deobfuscated, env);
     scan_remote_exec(deobfuscated, env);
+    scan_account_modification(deobfuscated, env);
     scan_uac_bypass(deobfuscated, env);
     scan_service_install(deobfuscated, env);
     scan_startup_folder_persistence(deobfuscated, env);

@@ -24480,6 +24480,201 @@ powershell -Command "New-PSSession -ComputerName 'filesrv.example'"
     }
 
     #[test]
+    fn powershell_wmi_remoting_attached_computername_emits_remote_exec() {
+        let script = br#"powershell -Command "Invoke-WmiMethod -ComputerName:target.example -Class Win32_Process -Name Create -ArgumentList 'cmd /c hostname'"
+powershell -Command "Set-WmiInstance -ComputerName='adminbox.example' -Class Win32_Process -Arguments @{CommandLine='cmd /c whoami'}"
+"#;
+        let report = analyze(script, &Config::default());
+
+        for (tool, host) in [
+            ("Invoke-WmiMethod", "target.example"),
+            ("Set-WmiInstance", "adminbox.example"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::RemoteExec { tool: t, target_host }
+                        if t == tool && target_host == host
+                )),
+                "missing PowerShell WMI remote exec {tool} -> {host}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn security_product_remove_target_is_not_truncated() {
+        let long_marker = "tail-marker-preserved-in-security-product-remove";
+        let script = format!(
+            "del /f /q \"C:\\Program Files\\Malwarebytes\\{}\\{long_marker}\\mbam.exe\"\r\n",
+            "nested-path-segment".repeat(12)
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "security-product-remove" && target.contains(long_marker)
+            )),
+            "security product removal target was truncated: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn network_probe_attached_option_values_do_not_hide_targets() {
+        let report = analyze(
+            br#"ping /n:1 beacon.example
+tracert -w=100 c2.example
+pathping /q:2 203.0.113.10
+Resolve-DnsName -Name:dns-attached.example
+Resolve-DnsName -Name=dns-equals.example
+Resolve-DnsName -Type A dns-positional-after-option.example
+"#,
+            &Config::default(),
+        );
+
+        for (kind, target) in [
+            ("icmp-ping", "beacon.example"),
+            ("route-trace", "c2.example"),
+            ("route-trace", "203.0.113.10"),
+            ("dns-lookup", "dns-attached.example"),
+            ("dns-lookup", "dns-equals.example"),
+            ("dns-lookup", "dns-positional-after-option.example"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::NetworkProbe { probe_kind, target: t }
+                        if probe_kind == kind && t == target
+                )),
+                "missing network probe {kind} -> {target}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn additional_powershell_host_network_discovery_emit_enumeration_traits() {
+        let report = analyze(
+            br#"powershell -Command "Get-NetRoute"
+powershell -Command "Get-DnsClientCache"
+powershell -Command "Get-SmbShare"
+powershell -Command "Get-NetFirewallProfile"
+powershell -Command "Get-ChildItem Env:"
+"#,
+            &Config::default(),
+        );
+
+        for (kind, needle) in [
+            ("ps-netroute", "Get-NetRoute"),
+            ("ps-dnsclientcache", "Get-DnsClientCache"),
+            ("ps-smbshare", "Get-SmbShare"),
+            ("ps-netfirewallprofile", "Get-NetFirewallProfile"),
+            ("ps-env", "Get-ChildItem Env:"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Enumeration { enum_kind, command }
+                        if enum_kind == kind && command.contains(needle)
+                )),
+                "missing PowerShell host/network discovery enumeration {kind}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn powershell_cleanup_clipboard_shadow_account_and_rdp_signals_emit_traits() {
+        let script = br#"powershell -Command "Clear-EventLog -LogName Security"
+powershell -Command "Remove-Item -Recurse -Force C:\Windows\Prefetch\*"
+powershell -Command "Remove-Item -Force $env:APPDATA\Microsoft\Windows\Recent\CustomDestinations\*"
+powershell -Command "[System.Windows.Forms.Clipboard]::GetText()"
+powershell -Command "Get-WmiObject Win32_ShadowCopy | ForEach-Object { $_.Delete() }"
+powershell -Command "New-LocalUser -Name backdoor -Password $p"
+powershell -Command "Add-LocalGroupMember -Group Administrators -Member backdoor"
+powershell -Command "Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0"
+powershell -Command "New-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name AllowTSConnections -PropertyType DWord -Value 1 -Force"
+powershell -Command "Set-MpPreference -ExclusionPath 'C:\Users\Public' -ExclusionProcess calc.exe"
+"#;
+        let report = analyze(script, &Config::default());
+
+        for action in ["event-log-clear", "prefetch-delete", "recent-items-delete"] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::AntiRecovery { action: a } if a == action
+                )),
+                "missing PowerShell cleanup AntiRecovery {action}: {:?}",
+                report.traits
+            );
+        }
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::InputCapture { capture_kind } if capture_kind == "clipboard"
+            )),
+            "PowerShell .NET clipboard access was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AntiRecovery { action } if action == "powershell-shadowcopy-delete"
+            )),
+            "PowerShell shadow copy deletion was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, .. }
+                    if action == "local-user-add" && account == "backdoor"
+            )),
+            "missing PowerShell local-user-add: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, group, .. }
+                    if action == "localgroup-add"
+                        && account == "backdoor"
+                        && group.as_deref() == Some("Administrators")
+            )),
+            "missing PowerShell localgroup-add: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-enable" && target == "Terminal Server"
+            )),
+            "missing PowerShell Terminal Server RDP enablement: {:?}",
+            report.traits
+        );
+        for (action, target) in [
+            ("exclusion-path", r"C:\Users\Public"),
+            ("exclusion-process", "calc.exe"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::DefenderEvasion {
+                        action: existing_action,
+                        target: existing_target,
+                    } if existing_action == action && existing_target == target
+                )),
+                "missing DefenderEvasion {action}={target}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn copied_mshta_alias_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         env.traits.push(Trait::WindowsUtilManip {
