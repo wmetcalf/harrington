@@ -3167,6 +3167,238 @@ pub(crate) fn copied_alias_matches_command_ci(
     aliases.iter().any(|alias| alias.eq_ignore_ascii_case(base))
 }
 
+fn copied_aliases_for(
+    env: &Environment,
+    source_bases: &[&str],
+) -> std::collections::HashSet<String> {
+    let mut aliases = std::collections::HashSet::new();
+    for t in &env.traits {
+        let Trait::WindowsUtilManip { src, dst, .. } = t else {
+            continue;
+        };
+        let Some(src_base) = basename_trimmed(src) else {
+            continue;
+        };
+        if !source_bases
+            .iter()
+            .any(|base| src_base.eq_ignore_ascii_case(base))
+        {
+            continue;
+        }
+        let Some(dst_base) = basename_trimmed(dst) else {
+            continue;
+        };
+        aliases.insert(dst_base.to_string());
+        if let Some(stem) = dst_base.strip_suffix(".exe") {
+            aliases.insert(stem.to_string());
+        }
+    }
+    aliases
+}
+
+fn push_manipulated_exec_once(env: &mut Environment, line: &str, cmd: &str) {
+    let target = strip_outer_quotes(cmd).to_string();
+    if env.traits.iter().any(|t| {
+        matches!(
+            t,
+            Trait::ManipulatedExec {
+                cmd: existing_cmd,
+                target: existing_target
+            } if existing_cmd == line && existing_target.eq_ignore_ascii_case(&target)
+        )
+    }) {
+        return;
+    }
+    env.traits.push(Trait::ManipulatedExec {
+        cmd: line.to_string(),
+        target,
+    });
+}
+
+fn trait_url(trait_: &Trait) -> Option<&str> {
+    match trait_ {
+        Trait::Download { src, .. } => Some(src),
+        Trait::UrlLaunch { url, .. } => Some(url),
+        Trait::UrlArgument { url, .. } => Some(url),
+        Trait::CertutilDownload { url, .. } => Some(url),
+        Trait::BitsadminDownload { url, .. } => Some(url),
+        _ => None,
+    }
+}
+
+fn suppress_generic_downloads_for_new_structured_urls(env: &mut Environment, before_len: usize) {
+    let structured_urls: std::collections::HashSet<String> = env
+        .traits
+        .iter()
+        .skip(before_len)
+        .filter_map(trait_url)
+        .map(ToString::to_string)
+        .collect();
+    if structured_urls.is_empty() {
+        return;
+    }
+    env.traits.retain(|t| {
+        !matches!(
+            t,
+            Trait::DownloadInDeobText { src, .. } if structured_urls.contains(src)
+        )
+    });
+}
+
+fn scan_copied_handler_alias_deob_text(
+    deobfuscated: &str,
+    env: &mut Environment,
+    source_bases: &[&str],
+    replay_command: &str,
+    handler: fn(&str, &mut Environment),
+) {
+    let aliases = copied_aliases_for(env, source_bases);
+    if aliases.is_empty() {
+        return;
+    }
+
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        let Some(cmd) = tokens.first() else {
+            continue;
+        };
+        if !copied_alias_matches_command_ci(&aliases, cmd) || tokens.len() < 2 {
+            continue;
+        }
+        push_manipulated_exec_once(env, line, cmd);
+        let rest = line
+            .get(cmd.len()..)
+            .map(str::trim_start)
+            .unwrap_or_default();
+        let replay = if rest.is_empty() {
+            replay_command.to_string()
+        } else {
+            format!("{replay_command} {rest}")
+        };
+        let before_len = env.traits.len();
+        handler(&replay, env);
+        suppress_generic_downloads_for_new_structured_urls(env, before_len);
+    }
+}
+
+fn scan_copied_ftp_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    scan_copied_handler_alias_deob_text(
+        deobfuscated,
+        env,
+        &["ftp", "ftp.exe"],
+        "ftp.exe",
+        crate::handlers::ftp::h_ftp,
+    );
+}
+
+fn scan_copied_certreq_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    scan_copied_handler_alias_deob_text(
+        deobfuscated,
+        env,
+        &["certreq", "certreq.exe"],
+        "certreq.exe",
+        crate::handlers::certreq::h_certreq,
+    );
+}
+
+fn scan_copied_certoc_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    scan_copied_handler_alias_deob_text(
+        deobfuscated,
+        env,
+        &["certoc", "certoc.exe"],
+        "certoc.exe",
+        crate::handlers::certoc::h_certoc,
+    );
+}
+
+fn scan_copied_desktopimgdownldr_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    scan_copied_handler_alias_deob_text(
+        deobfuscated,
+        env,
+        &["desktopimgdownldr", "desktopimgdownldr.exe"],
+        "desktopimgdownldr.exe",
+        crate::handlers::desktopimgdownldr::h_desktopimgdownldr,
+    );
+}
+
+fn scan_copied_hh_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    scan_copied_handler_alias_deob_text(
+        deobfuscated,
+        env,
+        &["hh", "hh.exe"],
+        "hh.exe",
+        crate::handlers::hh::h_hh,
+    );
+}
+
+fn scan_copied_uac_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    scan_copied_handler_alias_deob_text(
+        deobfuscated,
+        env,
+        &["cmstp", "cmstp.exe"],
+        "cmstp.exe",
+        crate::handlers::cmstp::h_cmstp,
+    );
+    scan_copied_handler_alias_deob_text(
+        deobfuscated,
+        env,
+        &["msconfig", "msconfig.exe"],
+        "msconfig.exe",
+        crate::handlers::msconfig::h_msconfig,
+    );
+}
+
+fn scan_copied_esentutl_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    scan_copied_handler_alias_deob_text(
+        deobfuscated,
+        env,
+        &["esentutl", "esentutl.exe"],
+        "esentutl.exe",
+        crate::handlers::esentutl::h_esentutl,
+    );
+}
+
+fn scan_copied_forfiles_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    let aliases = copied_aliases_for(env, &["forfiles", "forfiles.exe"]);
+    if aliases.is_empty() {
+        return;
+    }
+
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        let Some(cmd) = tokens.first() else {
+            continue;
+        };
+        if !copied_alias_matches_command_ci(&aliases, cmd) || tokens.len() < 2 {
+            continue;
+        }
+        push_manipulated_exec_once(env, line, cmd);
+        let rest = line
+            .get(cmd.len()..)
+            .map(str::trim_start)
+            .unwrap_or_default();
+        let replay = if rest.is_empty() {
+            "forfiles.exe".to_string()
+        } else {
+            format!("forfiles.exe {rest}")
+        };
+        let before_len = env.traits.len();
+        crate::handlers::forfiles::h_forfiles(&replay, env);
+        if let Some(inners) =
+            crate::handlers::forfiles::extract_forfiles_inners_with_env(&replay, env)
+        {
+            for inner in inners {
+                if let Some(cmd_inner) = crate::handlers::cmd::extract_cmd_inner(&inner) {
+                    crate::interp::interpret_line(&cmd_inner, env);
+                } else {
+                    crate::interp::interpret_line(&inner, env);
+                }
+            }
+        }
+        suppress_generic_downloads_for_new_structured_urls(env, before_len);
+    }
+}
+
 fn scan_copied_curl_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
     let mut aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
     for t in &env.traits {
@@ -6049,6 +6281,14 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     scan_copied_bitsadmin_alias_deob_text(deobfuscated, env);
     scan_copied_curl_alias_deob_text(deobfuscated, env);
     scan_copied_extrac32_alias_deob_text(deobfuscated, env);
+    scan_copied_ftp_alias_deob_text(deobfuscated, env);
+    scan_copied_certreq_alias_deob_text(deobfuscated, env);
+    scan_copied_certoc_alias_deob_text(deobfuscated, env);
+    scan_copied_desktopimgdownldr_alias_deob_text(deobfuscated, env);
+    scan_copied_hh_alias_deob_text(deobfuscated, env);
+    scan_copied_uac_alias_deob_text(deobfuscated, env);
+    scan_copied_esentutl_alias_deob_text(deobfuscated, env);
+    scan_copied_forfiles_alias_deob_text(deobfuscated, env);
     scan_copied_cleanup_alias_deob_text(deobfuscated, env);
     scan_copied_net_alias_deob_text(deobfuscated, env);
     scan_copied_mshta_alias_deob_text(deobfuscated, env);
