@@ -24135,6 +24135,201 @@ C:\Users\Public\sp.tmp -Q */*
     }
 
     #[test]
+    fn expanded_wmic_discovery_classes_emit_enumeration_traits() {
+        let report = analyze(
+            br#"wmic os get Caption
+wmic qfe get HotFixID
+wmic startup get Command
+"#,
+            &Config::default(),
+        );
+
+        for command in [
+            "wmic os get Caption",
+            "wmic qfe get HotFixID",
+            "wmic startup get Command",
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Enumeration { enum_kind, command: c }
+                        if enum_kind == "wmic-enum" && c == command
+                )),
+                "missing expanded WMIC enumeration {command}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn copied_wmic_alias_expanded_classes_emit_enumeration_traits() {
+        let script = br#"copy C:\Windows\System32\wbem\wmic.exe C:\Users\Public\wm.tmp
+C:\Users\Public\wm.tmp os get Caption
+C:\Users\Public\wm.tmp qfe get HotFixID
+C:\Users\Public\wm.tmp startup get Command
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\wm.tmp"#)
+            )),
+            "copied WMIC alias was not surfaced: {:?}",
+            report.traits
+        );
+        for command in [
+            "wmic.exe os get Caption",
+            "wmic.exe qfe get HotFixID",
+            "wmic.exe startup get Command",
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Enumeration { enum_kind, command: c }
+                        if enum_kind == "wmic-enum" && c == command
+                )),
+                "missing copied expanded WMIC enumeration {command}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn additional_native_discovery_commands_emit_enumeration_traits() {
+        let report = analyze(
+            br#"schtasks /query /tn "Updater"
+gpresult /r
+driverquery /v
+auditpol /get /category:*
+dsregcmd /status
+reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Run /s
+nbtstat -n
+sc query WinDefend
+netsh advfirewall show allprofiles state
+wevtutil qe System /c:1 /f:text
+fsutil dirty query C:
+tzutil /g
+vol %SystemDrive%
+"#,
+            &Config::default(),
+        );
+
+        for (kind, command) in [
+            ("schtasks-query", r#"schtasks /query /tn "Updater""#),
+            ("gpresult", "gpresult /r"),
+            ("driverquery", "driverquery /v"),
+            ("auditpol", "auditpol /get /category:*"),
+            ("dsregcmd", "dsregcmd /status"),
+            (
+                "registry-query",
+                r#"reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Run /s"#,
+            ),
+            ("nbtstat", "nbtstat -n"),
+            ("sc-query", "sc query WinDefend"),
+            ("netsh-show", "netsh advfirewall show allprofiles state"),
+            ("event-log-query", "wevtutil qe System /c:1 /f:text"),
+            ("fsutil-query", "fsutil dirty query C:"),
+            ("tzutil", "tzutil /g"),
+            ("volume-query", "vol C:"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Enumeration { enum_kind, command: c }
+                        if enum_kind == kind && c == command
+                )),
+                "missing native discovery enumeration {kind}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn copied_additional_native_discovery_aliases_emit_enumeration_traits() {
+        let script = br#"copy C:\Windows\System32\schtasks.exe C:\Users\Public\st.tmp
+C:\Users\Public\st.tmp /query /fo LIST
+copy C:\Windows\System32\gpresult.exe C:\Users\Public\gp.tmp
+C:\Users\Public\gp.tmp /r
+copy C:\Windows\System32\driverquery.exe C:\Users\Public\dq.tmp
+C:\Users\Public\dq.tmp /v
+copy C:\Windows\System32\auditpol.exe C:\Users\Public\ap.tmp
+C:\Users\Public\ap.tmp /get /category:*
+copy C:\Windows\System32\dsregcmd.exe C:\Users\Public\dr.tmp
+C:\Users\Public\dr.tmp /status
+copy C:\Windows\System32\reg.exe C:\Users\Public\rg.tmp
+C:\Users\Public\rg.tmp query HKLM\Software\Microsoft\Windows\CurrentVersion\Run /v OneDrive
+copy C:\Windows\System32\nbtstat.exe C:\Users\Public\nb.tmp
+C:\Users\Public\nb.tmp -a target
+copy C:\Windows\System32\sc.exe C:\Users\Public\sc.tmp
+C:\Users\Public\sc.tmp query state= all
+copy C:\Windows\System32\netsh.exe C:\Users\Public\ns.tmp
+C:\Users\Public\ns.tmp wlan show profiles
+copy C:\Windows\System32\wevtutil.exe C:\Users\Public\we.tmp
+C:\Users\Public\we.tmp qe Security /c:1 /f:text
+copy C:\Windows\System32\fsutil.exe C:\Users\Public\fs.tmp
+C:\Users\Public\fs.tmp dirty query C:
+copy C:\Windows\System32\tzutil.exe C:\Users\Public\tz.tmp
+C:\Users\Public\tz.tmp /g
+"#;
+        let report = analyze(script, &Config::default());
+
+        for target in [
+            r#"C:\Users\Public\st.tmp"#,
+            r#"C:\Users\Public\gp.tmp"#,
+            r#"C:\Users\Public\dq.tmp"#,
+            r#"C:\Users\Public\ap.tmp"#,
+            r#"C:\Users\Public\dr.tmp"#,
+            r#"C:\Users\Public\rg.tmp"#,
+            r#"C:\Users\Public\nb.tmp"#,
+            r#"C:\Users\Public\sc.tmp"#,
+            r#"C:\Users\Public\ns.tmp"#,
+            r#"C:\Users\Public\we.tmp"#,
+            r#"C:\Users\Public\fs.tmp"#,
+            r#"C:\Users\Public\tz.tmp"#,
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::ManipulatedExec { target: t, .. }
+                        if t.eq_ignore_ascii_case(target)
+                )),
+                "copied native discovery alias {target} was not surfaced: {:?}",
+                report.traits
+            );
+        }
+
+        for (kind, command) in [
+            ("schtasks-query", "schtasks.exe /query /fo LIST"),
+            ("gpresult", "gpresult.exe /r"),
+            ("driverquery", "driverquery.exe /v"),
+            ("auditpol", "auditpol.exe /get /category:*"),
+            ("dsregcmd", "dsregcmd.exe /status"),
+            (
+                "registry-query",
+                r#"reg.exe query HKLM\Software\Microsoft\Windows\CurrentVersion\Run /v OneDrive"#,
+            ),
+            ("nbtstat", "nbtstat.exe -a target"),
+            ("sc-query", "sc.exe query state= all"),
+            ("netsh-show", "netsh.exe wlan show profiles"),
+            ("event-log-query", "wevtutil.exe qe Security /c:1 /f:text"),
+            ("fsutil-query", "fsutil.exe dirty query C:"),
+            ("tzutil", "tzutil.exe /g"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Enumeration { enum_kind, command: c }
+                        if enum_kind == kind && c == command
+                )),
+                "missing copied native discovery enumeration {kind}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn copied_mshta_alias_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         env.traits.push(Trait::WindowsUtilManip {

@@ -4342,11 +4342,23 @@ fn scan_copied_enumeration_alias_deob_text(deobfuscated: &str, env: &mut Environ
         (&["systeminfo", "systeminfo.exe"][..], "systeminfo.exe"),
         (&["tasklist", "tasklist.exe"][..], "tasklist.exe"),
         (&["wmic", "wmic.exe"][..], "wmic.exe"),
+        (&["schtasks", "schtasks.exe"][..], "schtasks.exe"),
+        (&["gpresult", "gpresult.exe"][..], "gpresult.exe"),
+        (&["driverquery", "driverquery.exe"][..], "driverquery.exe"),
+        (&["auditpol", "auditpol.exe"][..], "auditpol.exe"),
+        (&["dsregcmd", "dsregcmd.exe"][..], "dsregcmd.exe"),
+        (&["reg", "reg.exe"][..], "reg.exe"),
         (&["ipconfig", "ipconfig.exe"][..], "ipconfig.exe"),
         (&["getmac", "getmac.exe"][..], "getmac.exe"),
         (&["netstat", "netstat.exe"][..], "netstat.exe"),
+        (&["nbtstat", "nbtstat.exe"][..], "nbtstat.exe"),
         (&["arp", "arp.exe"][..], "arp.exe"),
         (&["route", "route.exe"][..], "route.exe"),
+        (&["sc", "sc.exe"][..], "sc.exe"),
+        (&["netsh", "netsh.exe"][..], "netsh.exe"),
+        (&["wevtutil", "wevtutil.exe"][..], "wevtutil.exe"),
+        (&["fsutil", "fsutil.exe"][..], "fsutil.exe"),
+        (&["tzutil", "tzutil.exe"][..], "tzutil.exe"),
         (&["nltest", "nltest.exe"][..], "nltest.exe"),
         (&["dsquery", "dsquery.exe"][..], "dsquery.exe"),
         (&["netdom", "netdom.exe"][..], "netdom.exe"),
@@ -6768,7 +6780,7 @@ fn scan_enumeration(deobfuscated: &str, env: &mut Environment) {
             ),
             (
                 Regex::new(
-                    r"(?i)\bwmic(?:\.exe)?\s+(?:cpu|computersystem|logicaldisk|partition|path\s+softwarelicensingservice)\b",
+                    r"(?i)\bwmic(?:\.exe)?\s+(?:cpu|computersystem|logicaldisk|os|partition|qfe|startup|path\s+softwarelicensingservice)\b",
                 )
                 .unwrap(),
                 "wmic-enum",
@@ -6809,6 +6821,113 @@ fn command_enumeration_kind(tokens: &[String], command: &str) -> Option<&'static
                 "share" => Some("net-share"),
                 _ => None,
             });
+    }
+    if command_base.eq_ignore_ascii_case("reg") || command_base.eq_ignore_ascii_case("reg.exe") {
+        return tokens
+            .get(1)
+            .is_some_and(|token| token.eq_ignore_ascii_case("query"))
+            .then_some("registry-query");
+    }
+    if command_base.eq_ignore_ascii_case("sc") || command_base.eq_ignore_ascii_case("sc.exe") {
+        return tokens
+            .get(1)
+            .is_some_and(|token| token.eq_ignore_ascii_case("query"))
+            .then_some("sc-query");
+    }
+    if command_base.eq_ignore_ascii_case("netsh") || command_base.eq_ignore_ascii_case("netsh.exe")
+    {
+        return tokens
+            .iter()
+            .skip(1)
+            .any(|token| token.eq_ignore_ascii_case("show"))
+            .then_some("netsh-show");
+    }
+    if command_base.eq_ignore_ascii_case("wevtutil")
+        || command_base.eq_ignore_ascii_case("wevtutil.exe")
+    {
+        return tokens
+            .get(1)
+            .is_some_and(|token| token.eq_ignore_ascii_case("qe"))
+            .then_some("event-log-query");
+    }
+    if command_base.eq_ignore_ascii_case("fsutil")
+        || command_base.eq_ignore_ascii_case("fsutil.exe")
+    {
+        return (tokens
+            .get(1)
+            .is_some_and(|token| token.eq_ignore_ascii_case("dirty"))
+            && tokens
+                .get(2)
+                .is_some_and(|token| token.eq_ignore_ascii_case("query")))
+        .then_some("fsutil-query");
+    }
+    if command_base.eq_ignore_ascii_case("schtasks")
+        || command_base.eq_ignore_ascii_case("schtasks.exe")
+    {
+        return tokens
+            .iter()
+            .skip(1)
+            .any(|token| token.eq_ignore_ascii_case("/query"))
+            .then_some("schtasks-query");
+    }
+    if command_base.eq_ignore_ascii_case("gpresult")
+        || command_base.eq_ignore_ascii_case("gpresult.exe")
+    {
+        return Some("gpresult");
+    }
+    if command_base.eq_ignore_ascii_case("driverquery")
+        || command_base.eq_ignore_ascii_case("driverquery.exe")
+    {
+        return Some("driverquery");
+    }
+    if command_base.eq_ignore_ascii_case("auditpol")
+        || command_base.eq_ignore_ascii_case("auditpol.exe")
+    {
+        return tokens
+            .iter()
+            .skip(1)
+            .any(|token| token.eq_ignore_ascii_case("/get"))
+            .then_some("auditpol");
+    }
+    if command_base.eq_ignore_ascii_case("dsregcmd")
+        || command_base.eq_ignore_ascii_case("dsregcmd.exe")
+    {
+        return tokens
+            .iter()
+            .skip(1)
+            .any(|token| token.eq_ignore_ascii_case("/status"))
+            .then_some("dsregcmd");
+    }
+    if command_base.eq_ignore_ascii_case("tzutil")
+        || command_base.eq_ignore_ascii_case("tzutil.exe")
+    {
+        return tokens
+            .iter()
+            .skip(1)
+            .any(|token| token.eq_ignore_ascii_case("/g"))
+            .then_some("tzutil");
+    }
+    if command_base.eq_ignore_ascii_case("vol") || command_base.eq_ignore_ascii_case("vol.exe") {
+        return Some("volume-query");
+    }
+    if command_base.eq_ignore_ascii_case("wmic") || command_base.eq_ignore_ascii_case("wmic.exe") {
+        let class = tokens.get(1).map(|token| token.to_ascii_lowercase());
+        if matches!(
+            class.as_deref(),
+            Some("cpu")
+                | Some("computersystem")
+                | Some("logicaldisk")
+                | Some("os")
+                | Some("partition")
+                | Some("qfe")
+                | Some("startup")
+        ) || (class.as_deref() == Some("path")
+            && tokens
+                .get(2)
+                .is_some_and(|token| token.eq_ignore_ascii_case("softwarelicensingservice")))
+        {
+            return Some("wmic-enum");
+        }
     }
     if command_base.eq_ignore_ascii_case("whoami")
         || command_base.eq_ignore_ascii_case("whoami.exe")
@@ -6861,6 +6980,11 @@ fn command_enumeration_kind(tokens: &[String], command: &str) -> Option<&'static
         || command_base.eq_ignore_ascii_case("netstat.exe")
     {
         return Some("netstat");
+    }
+    if command_base.eq_ignore_ascii_case("nbtstat")
+        || command_base.eq_ignore_ascii_case("nbtstat.exe")
+    {
+        return Some("nbtstat");
     }
     if command_base.eq_ignore_ascii_case("arp") || command_base.eq_ignore_ascii_case("arp.exe") {
         return tokens
