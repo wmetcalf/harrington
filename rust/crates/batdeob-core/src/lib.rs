@@ -24330,6 +24330,156 @@ C:\Users\Public\tz.tmp /g
     }
 
     #[test]
+    fn powershell_discovery_cmdlets_emit_enumeration_traits() {
+        let report = analyze(
+            br#"powershell -Command "Get-Process explorer"
+powershell -Command "Get-Service WinDefend"
+powershell -Command "Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntiVirusProduct"
+powershell -Command "Get-ComputerInfo"
+powershell -Command "Get-HotFix"
+powershell -Command "Get-LocalGroupMember Administrators"
+powershell -Command "Get-NetIPConfiguration"
+powershell -Command "Get-NetTCPConnection"
+powershell -Command "Get-NetAdapter"
+powershell -Command "Get-NetIPAddress"
+powershell -Command "Get-ADUser -Filter *"
+powershell -Command "Get-ADComputer -Filter *"
+"#,
+            &Config::default(),
+        );
+
+        for (kind, needle) in [
+            ("ps-get-process", "Get-Process explorer"),
+            ("ps-get-service", "Get-Service WinDefend"),
+            ("ps-securitycenter", "AntiVirusProduct"),
+            ("ps-computerinfo", "Get-ComputerInfo"),
+            ("ps-hotfix", "Get-HotFix"),
+            ("ps-localgroupmember", "Get-LocalGroupMember Administrators"),
+            ("ps-netipconfiguration", "Get-NetIPConfiguration"),
+            ("ps-nettcpconnection", "Get-NetTCPConnection"),
+            ("ps-netadapter", "Get-NetAdapter"),
+            ("ps-netipaddress", "Get-NetIPAddress"),
+            ("ps-aduser", "Get-ADUser -Filter *"),
+            ("ps-adcomputer", "Get-ADComputer -Filter *"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Enumeration { enum_kind, command }
+                        if enum_kind == kind && command.contains(needle)
+                )),
+                "missing PowerShell discovery enumeration {kind}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn powershell_discovery_enumeration_command_is_not_truncated() {
+        let long_marker = "tail-marker-preserved-after-a-very-long-discovery-command";
+        let script = format!(
+            r#"powershell -Command "Get-Process -Name {}""#,
+            [
+                "alpha0001",
+                "bravo0002",
+                "charlie0003",
+                "delta0004",
+                "echo0005",
+                "foxtrot0006",
+                "golf0007",
+                "hotel0008",
+                "india0009",
+                long_marker,
+            ]
+            .join(",")
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "ps-get-process" && command.contains(long_marker)
+            )),
+            "long PowerShell discovery command was truncated: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn long_lsass_dump_and_deob_url_context_are_not_truncated() {
+        let cred_marker = "tail-marker-preserved-for-long-lsass-dump-command";
+        let dump_script = format!(
+            r#"procdump64.exe -accepteula -ma -r -o -nobanner -wer -64 lsass.exe C:\Users\Public\{}\lsass-memory-dump-output-file.dmp"#,
+            [
+                "alpha0001",
+                "bravo0002",
+                "charlie0003",
+                "delta0004",
+                "echo0005",
+                "foxtrot0006",
+                cred_marker,
+            ]
+            .join(r#"\nested\"#)
+        );
+        let cred_report = analyze(dump_script.as_bytes(), &Config::default());
+
+        assert!(
+            cred_report.traits.iter().any(|t| matches!(
+                t,
+                Trait::CredentialAccess { technique, target }
+                    if technique == "lsass-dump" && target.contains(cred_marker)
+            )),
+            "long LSASS credential-access target was truncated: {:?}",
+            cred_report.traits
+        );
+
+        let url = "https://line-hint-full.example/payload";
+        let url_marker = "tail-marker-preserved-in-download-line-hint";
+        let url_script = format!(
+            "echo suspicious-line {url} {} {url_marker}\r\n",
+            "padding-token ".repeat(24)
+        );
+        let url_report = analyze(url_script.as_bytes(), &Config::default());
+
+        assert!(
+            url_report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DownloadInDeobText { src, line_hint }
+                    if src == url && line_hint.contains(url_marker)
+            )),
+            "DownloadInDeobText line hint was truncated: {:?}",
+            url_report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_remoting_alias_forms_emit_lateral_movement_traits() {
+        let script =
+            br#"powershell -Command "icm -ComputerName:target.example -ScriptBlock { hostname }"
+powershell -Command "Enter-PSSession -ComputerName ""adminbox.example"""
+powershell -Command "New-PSSession -ComputerName 'filesrv.example'"
+"#;
+        let report = analyze(script, &Config::default());
+
+        for (tool, host) in [
+            ("Invoke-Command", "target.example"),
+            ("Enter-PSSession", "adminbox.example"),
+            ("New-PSSession", "filesrv.example"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::LateralMovement { tool: t, target_host }
+                        if t == tool && target_host == host
+                )),
+                "missing PowerShell remoting lateral movement {tool} -> {host}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn copied_mshta_alias_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         env.traits.push(Trait::WindowsUtilManip {

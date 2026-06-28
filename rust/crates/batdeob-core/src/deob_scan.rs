@@ -6323,11 +6323,11 @@ fn scan_lateral_movement(deobfuscated: &str, env: &mut Environment) {
     static WMIC_NODE_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?i)\bwmic[^\r\n]*?/node:(?:"([^"]+)"|(\S+))"#).expect("wmic /node re")
     });
-    static INVOKE_CMD_RE: Lazy<Regex> = Lazy::new(|| {
+    static PS_REMOTING_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r#"(?i)\bInvoke-Command\b[^\r\n]*?-ComputerName\s+(?:"([^"]+)"|'([^']+)'|(\S+))"#,
+            r#"(?i)\b(Invoke-Command|icm|Enter-PSSession|etsn|New-PSSession|nsn)\b[^\r\n]*?-ComputerName(?:\s*[:=]\s*|\s+)(?:"+([^"'\s;|&}]+)"+|'([^']+)'|([^,\s;|&}]+))"#,
         )
-        .expect("invoke-cmd re")
+        .expect("powershell remoting re")
     });
     static SCHTASKS_S_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?i)\bschtasks[^\r\n]*?\s/s\s+(?:"([^"]+)"|(\S+))"#).expect("schtasks /s re")
@@ -6369,14 +6369,25 @@ fn scan_lateral_movement(deobfuscated: &str, env: &mut Environment) {
             .unwrap_or_default();
         push("wmic", host);
     }
-    for c in INVOKE_CMD_RE.captures_iter(deobfuscated) {
-        let host = c
+    for c in PS_REMOTING_RE.captures_iter(deobfuscated) {
+        let tool = match c
             .get(1)
-            .or_else(|| c.get(2))
+            .map(|m| m.as_str().to_ascii_lowercase())
+            .unwrap_or_default()
+            .as_str()
+        {
+            "icm" | "invoke-command" => "Invoke-Command",
+            "etsn" | "enter-pssession" => "Enter-PSSession",
+            "nsn" | "new-pssession" => "New-PSSession",
+            _ => "Invoke-Command",
+        };
+        let host = c
+            .get(2)
             .or_else(|| c.get(3))
+            .or_else(|| c.get(4))
             .map(|m| m.as_str().to_string())
             .unwrap_or_default();
-        push("Invoke-Command", host);
+        push(tool, host);
     }
     for c in SCHTASKS_S_RE.captures_iter(deobfuscated) {
         let host = c
@@ -6769,6 +6780,69 @@ fn scan_enumeration(deobfuscated: &str, env: &mut Environment) {
                 false,
             ),
             (
+                Regex::new(r"(?i)\bGet-Process\b[^\r\n]*").unwrap(),
+                "ps-get-process",
+                false,
+            ),
+            (
+                Regex::new(r"(?i)\bGet-Service\b[^\r\n]*").unwrap(),
+                "ps-get-service",
+                false,
+            ),
+            (
+                Regex::new(
+                    r"(?i)\b(?:Get-CimInstance|Get-WmiObject)\b[^\r\n]*\bAntiVirusProduct\b[^\r\n]*",
+                )
+                .unwrap(),
+                "ps-securitycenter",
+                false,
+            ),
+            (
+                Regex::new(r"(?i)\bGet-ComputerInfo\b[^\r\n]*").unwrap(),
+                "ps-computerinfo",
+                false,
+            ),
+            (
+                Regex::new(r"(?i)\bGet-HotFix\b[^\r\n]*").unwrap(),
+                "ps-hotfix",
+                false,
+            ),
+            (
+                Regex::new(r"(?i)\bGet-LocalGroupMember\b[^\r\n]*").unwrap(),
+                "ps-localgroupmember",
+                false,
+            ),
+            (
+                Regex::new(r"(?i)\bGet-NetIPConfiguration\b[^\r\n]*").unwrap(),
+                "ps-netipconfiguration",
+                false,
+            ),
+            (
+                Regex::new(r"(?i)\bGet-NetTCPConnection\b[^\r\n]*").unwrap(),
+                "ps-nettcpconnection",
+                false,
+            ),
+            (
+                Regex::new(r"(?i)\bGet-NetAdapter\b[^\r\n]*").unwrap(),
+                "ps-netadapter",
+                false,
+            ),
+            (
+                Regex::new(r"(?i)\bGet-NetIPAddress\b[^\r\n]*").unwrap(),
+                "ps-netipaddress",
+                false,
+            ),
+            (
+                Regex::new(r"(?i)\bGet-ADUser\b[^\r\n]*").unwrap(),
+                "ps-aduser",
+                false,
+            ),
+            (
+                Regex::new(r"(?i)\bGet-ADComputer\b[^\r\n]*").unwrap(),
+                "ps-adcomputer",
+                false,
+            ),
+            (
                 Regex::new(r"(?i)\bsysteminfo(?:\.exe)?\b").unwrap(),
                 "systeminfo",
                 false,
@@ -6800,7 +6874,7 @@ fn scan_enumeration(deobfuscated: &str, env: &mut Environment) {
     }
     for (re, kind, command_specific) in PATTERNS.iter() {
         if let Some(m) = re.find(deobfuscated) {
-            let cmd = snippet_prefix(m.as_str(), 120).trim().to_string();
+            let cmd = m.as_str().trim().to_string();
             push_enumeration_once(env, kind, cmd, *command_specific);
         }
     }
@@ -7087,14 +7161,14 @@ fn scan_credential_access(deobfuscated: &str, env: &mut Environment) {
     static PATTERNS: Lazy<Vec<(Regex, &str, fn(&str) -> String)>> = Lazy::new(|| {
         vec![
             // lsass dump via comsvcs.dll / procdump / rundll32 minidumpwritedump
-            (Regex::new(r#"(?i)\b(?:rundll32(?:\.exe)?\s+\S*comsvcs\.dll[^\r\n]*?MiniDump|procdump(?:64)?(?:\.exe)?[^\r\n]*?lsass|sqldumper[^\r\n]*?lsass)"#).unwrap(),
-             "lsass-dump", |m: &str| snippet_prefix(m, 120)),
+            (Regex::new(r#"(?i)\b(?:rundll32(?:\.exe)?\s+\S*comsvcs\.dll[^\r\n]*?MiniDump[^\r\n]*|procdump(?:64)?(?:\.exe)?[^\r\n]*?lsass[^\r\n]*|sqldumper[^\r\n]*?lsass[^\r\n]*)"#).unwrap(),
+             "lsass-dump", |m: &str| m.to_string()),
             // Mimikatz invocations
             (Regex::new(r#"(?i)\b(?:Invoke-Mimikatz|mimikatz(?:\.exe)?\b|sekurlsa::|kerberos::|crypto::|lsadump::)"#).unwrap(),
              "mimikatz", |m| m.to_string()),
             // Browser credential paths
             (Regex::new(r#"(?i)\\Google\\Chrome\\User Data\\\S*Login Data|\\Mozilla\\Firefox\\Profiles\\\S*\\(?:key[34]\.db|logins\.json|cookies\.sqlite)|\\BraveSoftware\\\S*Login Data"#).unwrap(),
-             "browser-cred-path", |m| snippet_prefix(m, 120)),
+             "browser-cred-path", |m| m.to_string()),
             (Regex::new(r#"(?i)\\(?:Google\\Chrome|Microsoft\\Edge|BraveSoftware|Opera Software|Vivaldi)\\[^\r\n"']*(?:Login Data|Cookies|Network\\Cookies)"#).unwrap(),
              "browser-cred-path", |m| m.to_string()),
             (Regex::new(r#"(?i)\\(?:Google\\Chrome|Microsoft\\Edge|BraveSoftware|Vivaldi)\\[^\r\n"']*\\Local Extension Settings\b"#).unwrap(),
@@ -7683,7 +7757,7 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
         let line_hint = deobfuscated
             .lines()
             .find(|l| l.contains(&url))
-            .map(|l| snippet_prefix(l, 200))
+            .map(str::to_string)
             .unwrap_or_default();
         if is_noise_url_context(&line_hint, &url) {
             continue;
