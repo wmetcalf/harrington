@@ -3,8 +3,13 @@
 //! `findstr "%~f0"` style gadgets can resolve without an actual shell.
 
 use crate::env::Environment;
+use crate::handlers::util::{
+    normalize_filesystem_storage_path, normalize_wildcard_path, wildcard_match,
+};
 use crate::util::contains_ascii_case_insensitive;
 use crate::util::starts_with_ascii_case_insensitive;
+
+type SynthFileInput = (String, Vec<String>);
 
 pub fn run_pipeline(pipeline: &str, env: &mut Environment) -> Vec<String> {
     // Split on top-level `|` (not inside quotes) and run each stage in order
@@ -410,7 +415,7 @@ fn synth_findstr(args: &[&str], input: Vec<String>, env: &mut Environment) -> Ve
             }
         })
         .collect();
-    let Some((file_idxs, lines)) = findstr_file_input_args(&expanded_args, env) else {
+    let Some((file_idxs, file_inputs)) = findstr_file_input_args(&expanded_args, env) else {
         let refs: Vec<&str> = expanded_args.iter().map(String::as_str).collect();
         return filter_findstr(&refs, Vec::new());
     };
@@ -419,27 +424,123 @@ fn synth_findstr(args: &[&str], input: Vec<String>, env: &mut Environment) -> Ve
         .enumerate()
         .filter_map(|(idx, arg)| (!file_idxs.contains(&idx)).then_some(arg.as_str()))
         .collect();
+    if findstr_outputs_matching_file_names(&expanded_args) {
+        return file_inputs
+            .into_iter()
+            .filter_map(|(name, lines)| {
+                (!filter_findstr(&filter_args, lines).is_empty()).then_some(name)
+            })
+            .collect();
+    }
+    let lines = file_inputs
+        .into_iter()
+        .flat_map(|(_, lines)| lines)
+        .collect();
     filter_findstr(&filter_args, lines)
 }
 
 fn findstr_file_input_args(
     args: &[String],
     env: &mut Environment,
-) -> Option<(Vec<usize>, Vec<String>)> {
+) -> Option<(Vec<usize>, Vec<SynthFileInput>)> {
     let mut file_idxs = Vec::new();
     let mut input = Vec::new();
+    let recursive = findstr_searches_recursively(args);
     for (idx, arg) in args.iter().enumerate() {
         let candidate = arg.trim_matches('"');
         if candidate.is_empty() || candidate.starts_with('/') {
             continue;
         }
-        let lines = type_file(candidate, env);
-        if !lines.is_empty() {
+        let files = findstr_file_inputs_for_arg(candidate, env, recursive);
+        if !files.is_empty() {
             file_idxs.push(idx);
-            input.extend(lines);
+            input.extend(files);
         }
     }
     (!file_idxs.is_empty()).then_some((file_idxs, input))
+}
+
+fn findstr_file_inputs_for_arg(
+    candidate: &str,
+    env: &mut Environment,
+    recursive: bool,
+) -> Vec<SynthFileInput> {
+    if candidate.contains(['*', '?']) {
+        let normalized_pattern =
+            normalize_wildcard_path(&normalize_filesystem_storage_path(candidate));
+        let tracked = env
+            .modified_filesystem
+            .keys()
+            .filter(|path| {
+                if recursive {
+                    recursive_wildcard_matches(candidate, &normalized_pattern, path)
+                } else {
+                    dir_wildcard_matches(candidate, &normalized_pattern, path)
+                }
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        return tracked
+            .into_iter()
+            .filter_map(|path| {
+                let lines = type_file(&path, env);
+                (!lines.is_empty())
+                    .then(|| (findstr_file_output_name(candidate, &path, recursive), lines))
+            })
+            .collect();
+    }
+    let lines = type_file(candidate, env);
+    if lines.is_empty() {
+        Vec::new()
+    } else {
+        vec![(candidate.to_string(), lines)]
+    }
+}
+
+fn findstr_file_output_name(pattern: &str, tracked_path: &str, recursive: bool) -> String {
+    if recursive || pattern.contains(['\\', '/', ':']) {
+        tracked_path.to_string()
+    } else {
+        windows_basename(tracked_path)
+            .unwrap_or(tracked_path)
+            .to_string()
+    }
+}
+
+fn recursive_wildcard_matches(pattern: &str, normalized_pattern: &str, tracked_path: &str) -> bool {
+    let normalized_path = normalize_wildcard_path(tracked_path);
+    if pattern.contains(['\\', '/', ':']) {
+        let Some((pattern_dir, pattern_name)) = normalized_pattern.rsplit_once('\\') else {
+            return wildcard_match(normalized_pattern, &normalized_path);
+        };
+        return path_is_under_root(&normalized_path, pattern_dir)
+            && windows_basename(&normalized_path)
+                .is_some_and(|name| wildcard_match(pattern_name, &normalize_wildcard_path(name)));
+    }
+    windows_basename(&normalized_path)
+        .is_some_and(|name| wildcard_match(normalized_pattern, &normalize_wildcard_path(name)))
+}
+
+fn findstr_searches_recursively(args: &[String]) -> bool {
+    args.iter().any(|arg| {
+        let flags = arg.strip_prefix('/').unwrap_or_default();
+        !flags
+            .chars()
+            .next()
+            .is_some_and(|c| c.eq_ignore_ascii_case(&'c'))
+            && flags.chars().any(|c| c.eq_ignore_ascii_case(&'s'))
+    })
+}
+
+fn findstr_outputs_matching_file_names(args: &[String]) -> bool {
+    args.iter().any(|arg| {
+        let flags = arg.strip_prefix('/').unwrap_or_default();
+        !flags
+            .chars()
+            .next()
+            .is_some_and(|c| c.eq_ignore_ascii_case(&'c'))
+            && flags.chars().any(|c| c.eq_ignore_ascii_case(&'m'))
+    })
 }
 
 fn synth_find(args: &[&str], input: Vec<String>, env: &mut Environment) -> Vec<String> {
@@ -457,7 +558,7 @@ fn synth_find(args: &[&str], input: Vec<String>, env: &mut Environment) -> Vec<S
     };
     let mut lines = Vec::new();
     for path in paths {
-        lines.extend(type_file(path, env));
+        lines.extend(find_file_input_lines(path, env));
     }
     if lines.is_empty() {
         return Vec::new();
@@ -468,6 +569,24 @@ fn synth_find(args: &[&str], input: Vec<String>, env: &mut Environment) -> Vec<S
         .filter(|arg| !paths.contains(arg))
         .collect::<Vec<_>>();
     filter_find(&filter_args, lines)
+}
+
+fn find_file_input_lines(path: &str, env: &mut Environment) -> Vec<String> {
+    let path = path.trim_matches('"');
+    if path.contains(['*', '?']) {
+        let normalized_pattern = normalize_wildcard_path(&normalize_filesystem_storage_path(path));
+        let tracked = env
+            .modified_filesystem
+            .keys()
+            .filter(|tracked| dir_wildcard_matches(path, &normalized_pattern, tracked))
+            .cloned()
+            .collect::<Vec<_>>();
+        return tracked
+            .into_iter()
+            .flat_map(|tracked| type_file(&tracked, env))
+            .collect();
+    }
+    type_file(path, env)
 }
 
 fn synth_type(args: &[&str], env: &mut Environment) -> Vec<String> {
@@ -846,9 +965,100 @@ fn synth_dir(args: &[&str], env: &mut Environment) -> Vec<String> {
             path = a.trim_matches('"').to_string();
         }
     }
+    let out = if flags.iter().any(|flag| dir_has_switch(flag, 'b')) {
+        let recursive = flags.iter().any(|flag| dir_has_switch(flag, 's'));
+        dir_tracked_file_names(&path, env, recursive)
+    } else {
+        Vec::new()
+    };
     env.traits
         .push(crate::traits::Trait::DirListing { path, flags });
+    out
+}
+
+fn dir_has_switch(flag: &str, switch: char) -> bool {
+    flag.trim_start_matches('/').split('/').any(|part| {
+        part.chars()
+            .next()
+            .is_some_and(|c| c.eq_ignore_ascii_case(&switch))
+    })
+}
+
+fn dir_tracked_file_names(path: &str, env: &Environment, recursive: bool) -> Vec<String> {
+    let path = path.trim_matches('"');
+    if path.is_empty() || is_current_dir_listing_path(path) {
+        return dir_current_file_names(env, recursive);
+    }
+    if path.contains(['*', '?']) {
+        let normalized_pattern = normalize_wildcard_path(&normalize_filesystem_storage_path(path));
+        let mut names = env
+            .modified_filesystem
+            .keys()
+            .filter(|tracked| {
+                if recursive {
+                    recursive_wildcard_matches(path, &normalized_pattern, tracked)
+                } else {
+                    dir_wildcard_matches(path, &normalized_pattern, tracked)
+                }
+            })
+            .map(|tracked| dir_listing_name(tracked, recursive))
+            .collect::<Vec<_>>();
+        names.sort();
+        names.dedup();
+        return names;
+    }
+    let key = path.to_ascii_lowercase();
+    if env.modified_filesystem.contains_key(&key) {
+        return vec![dir_listing_name(path, recursive)];
+    }
+    if let Some(stripped) = strip_current_dir_prefix(path) {
+        let key = stripped.to_ascii_lowercase();
+        if env.modified_filesystem.contains_key(&key) {
+            return vec![dir_listing_name(stripped, recursive)];
+        }
+    }
     Vec::new()
+}
+
+fn is_current_dir_listing_path(path: &str) -> bool {
+    matches!(path, "." | r".\" | "./")
+}
+
+fn dir_current_file_names(env: &Environment, recursive: bool) -> Vec<String> {
+    let mut names = env
+        .modified_filesystem
+        .keys()
+        .filter(|path| recursive || !path.contains(['\\', '/', ':']))
+        .map(|path| dir_listing_name(path, recursive))
+        .collect::<Vec<_>>();
+    names.sort();
+    names.dedup();
+    names
+}
+
+fn dir_listing_name(path: &str, recursive: bool) -> String {
+    if recursive {
+        path.to_string()
+    } else {
+        windows_basename(path).unwrap_or(path).to_string()
+    }
+}
+
+fn dir_wildcard_matches(pattern: &str, normalized_pattern: &str, tracked_path: &str) -> bool {
+    let normalized_path = normalize_wildcard_path(tracked_path);
+    if pattern.contains(['\\', '/', ':']) {
+        let Some((pattern_dir, pattern_name)) = normalized_pattern.rsplit_once('\\') else {
+            return wildcard_match(normalized_pattern, &normalized_path);
+        };
+        let Some((tracked_dir, tracked_name)) = normalized_path.rsplit_once('\\') else {
+            return false;
+        };
+        return pattern_dir == tracked_dir && wildcard_match(pattern_name, tracked_name);
+    }
+    windows_basename(tracked_path).is_some_and(|name| {
+        !tracked_path.contains(['\\', '/', ':'])
+            && wildcard_match(normalized_pattern, &normalize_wildcard_path(name))
+    })
 }
 
 fn synth_ftype(args: &[&str], env: &Environment) -> Vec<String> {
@@ -1062,6 +1272,19 @@ fn synth_tasklist(_args: &[&str]) -> Vec<String> {
 }
 
 fn synth_where(args: &[&str], env: &Environment) -> Vec<String> {
+    if let Some((root, pattern)) = where_recursive_args(args) {
+        let mut out = env
+            .modified_filesystem
+            .keys()
+            .filter(|path| where_recursive_matches(&root, &pattern, path))
+            .cloned()
+            .collect::<Vec<_>>();
+        out.sort();
+        out.dedup();
+        if !out.is_empty() {
+            return out;
+        }
+    }
     let bin = match where_pattern_arg(args) {
         Some(b) => b.to_ascii_lowercase(),
         None => return Vec::new(),
@@ -1074,6 +1297,42 @@ fn synth_where(args: &[&str], env: &Environment) -> Vec<String> {
         }
     }
     Vec::new()
+}
+
+fn where_recursive_args(args: &[&str]) -> Option<(String, String)> {
+    let mut iter = non_redirect_args(args).map(|arg| arg.trim_matches('"'));
+    while let Some(arg) = iter.next() {
+        if arg.eq_ignore_ascii_case("/r") {
+            let root = iter.next()?.to_string();
+            let pattern = iter
+                .find(|candidate| !candidate.is_empty() && !candidate.starts_with('/'))?
+                .to_string();
+            return Some((root, pattern));
+        }
+    }
+    None
+}
+
+fn where_recursive_matches(root: &str, pattern: &str, tracked_path: &str) -> bool {
+    let root = normalize_wildcard_path(&normalize_filesystem_storage_path(root));
+    let root = root.trim_end_matches('\\');
+    let path = normalize_wildcard_path(tracked_path);
+    if !path_is_under_root(&path, root) {
+        return false;
+    }
+    let suffix = &path[root.len()..];
+    let rest = suffix.trim_start_matches('\\');
+    !rest.is_empty()
+        && windows_basename(&path).is_some_and(|name| {
+            wildcard_match(
+                &normalize_wildcard_path(pattern),
+                &normalize_wildcard_path(name),
+            )
+        })
+}
+
+fn path_is_under_root(path: &str, root: &str) -> bool {
+    path.starts_with(root) && path[root.len()..].starts_with('\\')
 }
 
 fn where_pattern_arg(args: &[&str]) -> Option<String> {
