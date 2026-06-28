@@ -12,6 +12,7 @@ const ALIAS_TABLE: &[(&str, &str)] = &[
     ("irm", "Invoke-RestMethod"),
     ("wget", "Invoke-WebRequest"),
     ("curl", "Invoke-WebRequest"),
+    ("tnc", "Test-NetConnection"),
     // Execution
     ("iex", "Invoke-Expression"),
     ("icm", "Invoke-Command"),
@@ -104,7 +105,7 @@ const ALIAS_TABLE: &[(&str, &str)] = &[
 /// `powershell`/`pwsh` invocation literal, a PS-distinctive Verb-Noun
 /// cmdlet, a `$`-sigil variable, a `::` static-member access, or a
 /// networking-alias invocation at command position (`iex`, `iwr`, `irm`,
-/// `wget`, `curl`). Used to gate alias expansion so we don't rewrite
+/// `wget`, `curl`, `tnc`). Used to gate alias expansion so we don't rewrite
 /// CMD/batch tokens that share names with PS aliases (`start`, `cd`,
 /// `dir`, `copy`, `del`, `cls`, ...). The alias-at-cmd-position case is
 /// load-bearing for modern droppers — they often build a pure-alias
@@ -123,7 +124,7 @@ pub fn looks_like_powershell(text: &str) -> bool {
                   |Import|Export|ConvertTo|ConvertFrom|Start|Stop|Enter|Exit
                   |Write|Read|Test|Format) - [A-Z][A-Za-z]+ \b
             | :: [A-Za-z_]
-            | (?:^|[\s;|&(]) (?:iex|iwr|irm|wget|curl) (?:\s|$|[\(\;\&\|])
+            | (?:^|[\s;|&(]) (?:iex|iwr|irm|wget|curl|tnc) (?:\s|$|[\(\;\&\|])
             ",
         )
         .expect("ps marker re")

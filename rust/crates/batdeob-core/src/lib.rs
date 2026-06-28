@@ -24562,6 +24562,9 @@ Resolve-DnsName -Type A dns-positional-after-option.example
 powershell -Command "Get-DnsClientCache"
 powershell -Command "Get-SmbShare"
 powershell -Command "Get-NetFirewallProfile"
+powershell -Command "Get-ScheduledTask"
+powershell -Command "Get-PSDrive"
+powershell -Command "Get-LocalGroup"
 powershell -Command "Get-ChildItem Env:"
 "#,
             &Config::default(),
@@ -24572,6 +24575,9 @@ powershell -Command "Get-ChildItem Env:"
             ("ps-dnsclientcache", "Get-DnsClientCache"),
             ("ps-smbshare", "Get-SmbShare"),
             ("ps-netfirewallprofile", "Get-NetFirewallProfile"),
+            ("ps-scheduledtask", "Get-ScheduledTask"),
+            ("ps-psdrive", "Get-PSDrive"),
+            ("ps-localgroup", "Get-LocalGroup"),
             ("ps-env", "Get-ChildItem Env:"),
         ] {
             assert!(
@@ -24581,6 +24587,37 @@ powershell -Command "Get-ChildItem Env:"
                         if enum_kind == kind && command.contains(needle)
                 )),
                 "missing PowerShell host/network discovery enumeration {kind}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn powershell_wrapped_probe_commands_emit_network_probe_traits() {
+        let report = analyze(
+            br#"powershell -Command "tnc -ComputerName c2-alias.example -Port 443"
+powershell -Command "ping c2-ping.example -n 1"
+powershell -Command "nslookup -type=A dns-option-wrapper.example"
+powershell -Command "tracert route-wrapper.example"
+powershell -Command "pathping -n path-wrapper.example"
+"#,
+            &Config::default(),
+        );
+
+        for (kind, target) in [
+            ("tcp-connect", "c2-alias.example"),
+            ("icmp-ping", "c2-ping.example"),
+            ("dns-lookup", "dns-option-wrapper.example"),
+            ("route-trace", "route-wrapper.example"),
+            ("route-trace", "path-wrapper.example"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::NetworkProbe { probe_kind, target: existing_target }
+                        if probe_kind == kind && existing_target == target
+                )),
+                "missing PowerShell-wrapped network probe {kind} {target}: {:?}",
                 report.traits
             );
         }
@@ -27099,6 +27136,13 @@ mod ps_alias_tests {
             "got: {}",
             out
         );
+    }
+
+    #[test]
+    fn gate_allows_tnc_alias_only_payload() {
+        use crate::ps_alias::expand_aliases_if_ps;
+        let out = expand_aliases_if_ps("tnc c2.example -Port 443");
+        assert!(out.contains("Test-NetConnection"), "got: {}", out);
     }
 
     #[test]

@@ -6885,6 +6885,9 @@ fn scan_network_probe(deobfuscated: &str, env: &mut Environment) {
         if let Some((kind, target)) = powershell_connection_test_probe(line) {
             push(kind, target);
         }
+        if let Some((kind, target)) = powershell_wrapped_native_probe(line) {
+            push(kind, target);
+        }
         if let Some(target) = resolve_dns_name_target(line) {
             push("dns-lookup", target);
         }
@@ -6940,11 +6943,7 @@ fn scan_network_probe(deobfuscated: &str, env: &mut Environment) {
 
 fn powershell_connection_test_probe(line: &str) -> Option<(&'static str, String)> {
     let lower = line.to_ascii_lowercase();
-    let has_tnc_alias = lower.contains(" tnc ")
-        || lower.contains("\"tnc ")
-        || lower.contains("'tnc ")
-        || lower.contains(";tnc ");
-    if lower.contains("test-netconnection") || has_tnc_alias {
+    if lower.contains("test-netconnection") || contains_ascii_keyword(line, "tnc") {
         let target = powershell_named_argument(line, "-ComputerName")
             .or_else(|| powershell_named_argument(line, "-CN"))
             .or_else(|| {
@@ -6968,6 +6967,62 @@ fn powershell_connection_test_probe(line: &str) -> Option<(&'static str, String)
         return Some(("icmp-ping", clean_network_probe_target(&target)));
     }
     None
+}
+
+fn powershell_wrapped_native_probe(line: &str) -> Option<(&'static str, String)> {
+    let lower = line.to_ascii_lowercase();
+    if !lower.contains("powershell") {
+        return None;
+    }
+    for (keyword, kind, option_family) in [
+        ("ping", "icmp-ping", "ping"),
+        ("nslookup", "dns-lookup", "nslookup"),
+        ("tracert", "route-trace", "tracert"),
+        ("pathping", "route-trace", "pathping"),
+    ] {
+        let Some(start) = find_ascii_keyword(line, keyword) else {
+            continue;
+        };
+        let tokens = split_words(&line[start..]);
+        let target = if keyword == "nslookup" {
+            tokens
+                .iter()
+                .skip(1)
+                .find(|token| {
+                    let token = token.trim_matches(['"', '\'']);
+                    !token.starts_with('-') && !token.starts_with('/') && !token.is_empty()
+                })
+                .map(|token| token.trim_matches(['"', '\'']).to_string())
+        } else {
+            network_probe_command_target(&tokens, option_family)
+        }?;
+        return normalize_probe_target(&target).map(|target| (kind, target));
+    }
+    None
+}
+
+fn contains_ascii_keyword(text: &str, keyword: &str) -> bool {
+    find_ascii_keyword(text, keyword).is_some()
+}
+
+fn find_ascii_keyword(text: &str, keyword: &str) -> Option<usize> {
+    let mut cursor = 0;
+    while let Some(start) = find_ascii_case_insensitive_from(text, keyword, cursor) {
+        let end = start + keyword.len();
+        let before = text.as_bytes().get(start.wrapping_sub(1)).copied();
+        let after = text.as_bytes().get(end).copied();
+        let left_ok = before.map(|b| !is_ascii_keyword_byte(b)).unwrap_or(true);
+        let right_ok = after.map(|b| !is_ascii_keyword_byte(b)).unwrap_or(true);
+        if left_ok && right_ok {
+            return Some(start);
+        }
+        cursor = end;
+    }
+    None
+}
+
+fn is_ascii_keyword_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')
 }
 
 fn clean_network_probe_target(target: &str) -> String {
@@ -7231,6 +7286,16 @@ fn scan_enumeration(deobfuscated: &str, env: &mut Environment) {
             (
                 Regex::new(r"(?i)\bGet-NetFirewallProfile\b[^\r\n]*").unwrap(),
                 "ps-netfirewallprofile",
+                false,
+            ),
+            (
+                Regex::new(r"(?i)\bGet-ScheduledTask\b[^\r\n]*").unwrap(),
+                "ps-scheduledtask",
+                false,
+            ),
+            (
+                Regex::new(r"(?i)\bGet-PSDrive\b[^\r\n]*").unwrap(),
+                "ps-psdrive",
                 false,
             ),
             (
