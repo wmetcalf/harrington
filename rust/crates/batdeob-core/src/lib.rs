@@ -5960,6 +5960,29 @@ mod if_tests {
     }
 
     #[test]
+    fn if_quoted_string_with_spaces_eq_runs_body() {
+        let script = b"if \"two words\"==\"two words\" set MARK=value\r\necho %MARK%\r\n";
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo value"),
+            "quoted comparison with spaces did not run inline body:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    crate::traits::Trait::IfNotResolved { condition }
+                        if condition.contains("two words")
+                )
+            }),
+            "quoted comparison with spaces should fold cleanly: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn if_exist_with_quoted_path_containing_spaces_runs_body() {
         let mut env = Environment::new(&Config::default());
         env.modified_filesystem.insert(
@@ -6469,6 +6492,27 @@ mod if_constant_fold_tests {
             .iter()
             .any(|t| matches!(t, crate::traits::Trait::IfNotResolved { .. }));
         assert!(!has_unresolved, "0 equ 0 should constant-fold to true");
+    }
+
+    #[test]
+    fn if_equ_quoted_string_with_spaces_runs_body() {
+        let script = b"if \"two words\" EQU \"two words\" set MARK=value\r\necho %MARK%\r\n";
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo value"),
+            "quoted EQU comparison with spaces did not run inline body:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+        let has_unresolved = report
+            .traits
+            .iter()
+            .any(|t| matches!(t, crate::traits::Trait::IfNotResolved { .. }));
+        assert!(
+            !has_unresolved,
+            "quoted EQU comparison with spaces should fold cleanly: {:?}",
+            report.traits
+        );
     }
 
     #[test]
