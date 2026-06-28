@@ -9,7 +9,7 @@ use regex::Regex;
 #[allow(clippy::expect_used)]
 static WMIC_PROCESS_CREATE_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?i)^\s*wmic(?:\s+\S+)*\s+(?:process|path\s+win32_process)\s+call\s+create\s+(?:"(?P<dq>[^"]+)"|'(?P<sq>[^']+)'|(?P<bare>\S.*))\s*$"#,
+        r#"(?i)^\s*wmic(?:\.exe)?(?:\s+\S+)*\s+(?:process|path\s+win32_process)\s+call\s+create\s+(?:"(?P<dq>[^"]+)"|'(?P<sq>[^']+)'|(?P<bare>\S.*))\s*$"#,
     )
         .expect("wmic regex")
 });

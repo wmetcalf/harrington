@@ -55,7 +55,7 @@ static BITSADMIN_WORD_RE: Lazy<Regex> =
 #[allow(clippy::expect_used)]
 static CMD_URL_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?i)\bset\s+"?([A-Za-z_][A-Za-z0-9_.$-]*)\s*=\s*['"]?((?:https?|ftp|file):[\x2f\x5c]+[^"'\s]+)"#,
+        r#"(?i)\bset\s+"?([A-Za-z_][A-Za-z0-9_.$-]*)\s*=\s*['"]?((?:https?|ftp|file):[\x2f\x5c]+[^\s"'<>(){}|^&;`,]+)"#,
     )
     .expect("cmd URL variable regex")
 });
@@ -63,7 +63,7 @@ static CMD_URL_VAR_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static CMD_SCHEMELESS_URL_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?i)\bset\s+"?([A-Za-z_][A-Za-z0-9_.$-]*url[A-Za-z0-9_.$-]*)\s*=\s*['"]?([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/[^\s"']+)"#,
+        r#"(?i)\bset\s+"?([A-Za-z_][A-Za-z0-9_.$-]*url[A-Za-z0-9_.$-]*)\s*=\s*['"]?([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/[^\s"'<>(){}|^&;`,]+)"#,
     )
     .expect("cmd schemeless URL variable regex")
 });
@@ -3399,6 +3399,253 @@ fn scan_copied_forfiles_alias_deob_text(deobfuscated: &str, env: &mut Environmen
     }
 }
 
+fn replay_child_command(command: &str, delayed: bool, env: &mut Environment) {
+    let saved_delayed = env.delayed_expansion;
+    if delayed {
+        env.delayed_expansion = true;
+    }
+    for segment in crate::split::split_commands(command) {
+        let toks = crate::lex::lex(&segment);
+        let normalized = crate::normalize::normalize_to_string(&toks, env);
+        crate::interp::interpret_line(&normalized, env);
+    }
+    env.delayed_expansion = saved_delayed;
+}
+
+fn replay_queued_child_commands_from(env: &mut Environment, start: usize) {
+    let commands = env.exec_cmd.get(start..).unwrap_or_default().to_vec();
+    let delayed = env
+        .exec_cmd_delayed
+        .get(start..)
+        .unwrap_or_default()
+        .to_vec();
+    env.exec_cmd.truncate(start);
+    env.exec_cmd_delayed.truncate(start);
+    for (command, delayed) in commands
+        .into_iter()
+        .zip(delayed.into_iter().chain(std::iter::repeat(false)))
+    {
+        replay_child_command(&command, delayed, env);
+    }
+}
+
+fn scan_copied_queued_child_alias_deob_text(
+    deobfuscated: &str,
+    env: &mut Environment,
+    source_bases: &[&str],
+    replay_command: &str,
+    handler: fn(&str, &mut Environment),
+) {
+    let aliases = copied_aliases_for(env, source_bases);
+    if aliases.is_empty() {
+        return;
+    }
+
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        let Some(cmd) = tokens.first() else {
+            continue;
+        };
+        if !copied_alias_matches_command_ci(&aliases, cmd) || tokens.len() < 2 {
+            continue;
+        }
+        push_manipulated_exec_once(env, line, cmd);
+        let rest = line
+            .get(cmd.len()..)
+            .map(str::trim_start)
+            .unwrap_or_default();
+        let replay = if rest.is_empty() {
+            replay_command.to_string()
+        } else {
+            format!("{replay_command} {rest}")
+        };
+        let before_len = env.traits.len();
+        let child_start = env.exec_cmd.len();
+        handler(&replay, env);
+        replay_queued_child_commands_from(env, child_start);
+        suppress_generic_downloads_for_new_structured_urls(env, before_len);
+    }
+}
+
+fn scan_copied_wmic_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    scan_copied_queued_child_alias_deob_text(
+        deobfuscated,
+        env,
+        &["wmic", "wmic.exe"],
+        "wmic.exe",
+        crate::handlers::wmic::h_wmic,
+    );
+}
+
+fn scan_copied_runas_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    scan_copied_queued_child_alias_deob_text(
+        deobfuscated,
+        env,
+        &["runas", "runas.exe"],
+        "runas.exe",
+        crate::handlers::passthrough::h_runas,
+    );
+}
+
+fn scan_copied_schtasks_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    scan_copied_queued_child_alias_deob_text(
+        deobfuscated,
+        env,
+        &["schtasks", "schtasks.exe"],
+        "schtasks.exe",
+        crate::handlers::passthrough::h_schtasks,
+    );
+}
+
+fn scan_copied_sc_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    scan_copied_queued_child_alias_deob_text(
+        deobfuscated,
+        env,
+        &["sc", "sc.exe"],
+        "sc.exe",
+        crate::handlers::passthrough::h_sc,
+    );
+}
+
+fn scan_copied_at_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    scan_copied_queued_child_alias_deob_text(
+        deobfuscated,
+        env,
+        &["at", "at.exe"],
+        "at.exe",
+        crate::handlers::passthrough::h_at,
+    );
+}
+
+fn scan_copied_winrs_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    scan_copied_remote_alias_deob_text(
+        deobfuscated,
+        env,
+        &["winrs", "winrs.exe"],
+        "winrs.exe",
+        "winrs",
+        crate::handlers::passthrough::h_winrs,
+        crate::handlers::passthrough::winrs_child_command,
+    );
+}
+
+fn scan_copied_winrm_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    scan_copied_remote_alias_deob_text(
+        deobfuscated,
+        env,
+        &["winrm", "winrm.exe"],
+        "winrm.exe",
+        "winrm",
+        crate::handlers::passthrough::h_winrm,
+        crate::handlers::passthrough::winrm_child_command,
+    );
+}
+
+fn scan_copied_remote_alias_deob_text(
+    deobfuscated: &str,
+    env: &mut Environment,
+    source_bases: &[&str],
+    replay_command: &str,
+    tool: &str,
+    handler: fn(&str, &mut Environment),
+    child_command: fn(&str) -> Option<(String, String)>,
+) {
+    let aliases = copied_aliases_for(env, source_bases);
+    if aliases.is_empty() {
+        return;
+    }
+
+    let lines: Vec<&str> = deobfuscated.lines().collect();
+    for (line_idx, line) in lines.iter().enumerate() {
+        let tokens = split_words(line);
+        let Some(cmd) = tokens.first() else {
+            continue;
+        };
+        if !copied_alias_matches_command_ci(&aliases, cmd) || tokens.len() < 2 {
+            continue;
+        }
+        push_manipulated_exec_once(env, line, cmd);
+        let rest = line
+            .get(cmd.len()..)
+            .map(str::trim_start)
+            .unwrap_or_default();
+        let replay = if rest.is_empty() {
+            replay_command.to_string()
+        } else {
+            format!("{replay_command} {rest}")
+        };
+        let child = child_command(&replay);
+        let host = child.as_ref().map(|(host, _)| host.clone());
+        let before_len = env.traits.len();
+        let child_start = env.exec_cmd.len();
+        handler(&replay, env);
+        if let Some(host) = host {
+            if !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::RemoteExec {
+                        tool: existing_tool,
+                        target_host
+                    } if existing_tool == tool && target_host == &host
+                )
+            }) {
+                env.traits.push(Trait::RemoteExec {
+                    tool: tool.to_string(),
+                    target_host: host,
+                });
+            }
+        }
+        replay_queued_child_commands_from(env, child_start);
+        if let Some((_, inner)) = child {
+            replay_embedded_url_variable_curl(line, &inner, env);
+        }
+        replay_following_url_variable_curl(line, &lines, line_idx, env);
+        suppress_generic_downloads_for_new_structured_urls(env, before_len);
+    }
+}
+
+fn replay_embedded_url_variable_curl(source_line: &str, command: &str, env: &mut Environment) {
+    let child =
+        crate::handlers::cmd::extract_cmd_inner(command).unwrap_or_else(|| command.to_string());
+    for segment in crate::split::split_commands(&child) {
+        replay_url_variable_curl(source_line, &segment, env);
+    }
+}
+
+fn replay_following_url_variable_curl(
+    source_line: &str,
+    lines: &[&str],
+    line_idx: usize,
+    env: &mut Environment,
+) {
+    let Some(next_line) = lines.get(line_idx + 1).map(|line| line.trim()) else {
+        return;
+    };
+    replay_url_variable_curl(source_line, next_line, env);
+}
+
+fn replay_url_variable_curl(source_line: &str, curl_line: &str, env: &mut Environment) {
+    let Some(url) = env.traits.iter().rev().find_map(|t| match t {
+        Trait::UrlVariable { cmd, url, .. } if cmd == source_line => Some(url.clone()),
+        _ => None,
+    }) else {
+        return;
+    };
+    if curl_line.contains("://") {
+        return;
+    }
+    let tokens = split_words(curl_line);
+    let Some(first) = tokens.first() else {
+        return;
+    };
+    let tool = command_name(strip_outer_quotes(first));
+    if tool != "curl" && tool != "curl.exe" {
+        return;
+    }
+    let replay = format!("{} {}", curl_line.trim_end(), url);
+    crate::handlers::curl::h_curl(&replay, env);
+}
+
 fn scan_copied_curl_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
     let mut aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
     for t in &env.traits {
@@ -5965,7 +6212,7 @@ fn scan_remote_exec(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
     static WINRM_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?i)\b(?:winrm(?:\.cmd)?\s+(?:invoke|i)\s+[^\r\n]*?(?:[-/]r(?:emote)?[:=]?\s*)(\S+)|winrm(?:\.cmd)?\s+(?:invoke|i)\s+|winrs\s+[-/]r(?:emote)?[:=]?\s*(\S+)|Invoke-WmiMethod\b[^\r\n]*?-ComputerName\s+(\S+)|Set-WmiInstance\b[^\r\n]*?-ComputerName\s+(\S+))"#)
+        Regex::new(r#"(?i)\b(?:winrm(?:\.(?:cmd|exe))?\s+(?:invoke|i)\s+[^\r\n]*?(?:[-/]r(?:emote)?[:=]?\s*)(\S+)|winrm(?:\.(?:cmd|exe))?\s+(?:invoke|i)\s+|winrs(?:\.exe)?\s+[-/]r(?:emote)?[:=]?\s*(\S+)|Invoke-WmiMethod\b[^\r\n]*?-ComputerName\s+(\S+)|Set-WmiInstance\b[^\r\n]*?-ComputerName\s+(\S+))"#)
             .expect("winrm re")
     });
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -6289,6 +6536,13 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     scan_copied_uac_alias_deob_text(deobfuscated, env);
     scan_copied_esentutl_alias_deob_text(deobfuscated, env);
     scan_copied_forfiles_alias_deob_text(deobfuscated, env);
+    scan_copied_wmic_alias_deob_text(deobfuscated, env);
+    scan_copied_runas_alias_deob_text(deobfuscated, env);
+    scan_copied_winrs_alias_deob_text(deobfuscated, env);
+    scan_copied_winrm_alias_deob_text(deobfuscated, env);
+    scan_copied_schtasks_alias_deob_text(deobfuscated, env);
+    scan_copied_sc_alias_deob_text(deobfuscated, env);
+    scan_copied_at_alias_deob_text(deobfuscated, env);
     scan_copied_cleanup_alias_deob_text(deobfuscated, env);
     scan_copied_net_alias_deob_text(deobfuscated, env);
     scan_copied_mshta_alias_deob_text(deobfuscated, env);

