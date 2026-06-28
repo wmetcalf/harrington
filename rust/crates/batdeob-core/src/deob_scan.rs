@@ -910,6 +910,8 @@ fn collect_python_requests_method_aliases(text: &str, target_method: &str) -> Ve
         target_method,
     ));
     aliases
+        .extend(collect_python_requests_bound_session_assigned_method_aliases(text, target_method));
+    aliases
 }
 
 fn collect_python_requests_call_aliases(text: &str, target_method: &str) -> Vec<String> {
@@ -1153,6 +1155,13 @@ fn collect_python_requests_bound_session_method_aliases(
     text: &str,
     target_method: &str,
 ) -> Vec<String> {
+    collect_python_requests_bound_session_names(text)
+        .into_iter()
+        .map(|name| format!("{name}.{target_method}"))
+        .collect()
+}
+
+fn collect_python_requests_bound_session_names(text: &str) -> Vec<String> {
     static PY_REQUESTS_SESSION_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
             r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*(?:\.Session)?)\s*\(\s*\)"#,
@@ -1170,7 +1179,37 @@ fn collect_python_requests_bound_session_method_aliases(
             constructors
                 .iter()
                 .any(|known| known == constructor)
-                .then(|| format!("{name}.{target_method}"))
+                .then(|| name.to_string())
+        })
+        .collect()
+}
+
+fn collect_python_requests_bound_session_assigned_method_aliases(
+    text: &str,
+    target_method: &str,
+) -> Vec<String> {
+    if !text.as_bytes().contains(&b'=') {
+        return Vec::new();
+    }
+
+    static PY_REQUESTS_BOUND_SESSION_METHOD_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\.(get|post|put|patch|delete|head|options|request)\b"#)
+            .expect("python bound requests session method assignment regex")
+    });
+
+    let sessions = collect_python_requests_bound_session_names(text);
+    PY_REQUESTS_BOUND_SESSION_METHOD_ASSIGN_RE
+        .captures_iter(text)
+        .take(8)
+        .filter_map(|caps| {
+            let alias = caps.get(1)?.as_str();
+            let session = caps.get(2)?.as_str();
+            let method = caps.get(3)?.as_str();
+            if method == target_method && sessions.iter().any(|known| known == session) {
+                Some(alias.to_string())
+            } else {
+                None
+            }
         })
         .collect()
 }
