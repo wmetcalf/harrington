@@ -146,6 +146,11 @@ fn downloaded_source_for_path(env: &Environment, path: &str) -> Option<String> {
 }
 
 fn downloaded_source_for_current_dir_path(env: &Environment, path: &str) -> Option<String> {
+    if let Some(stripped) = strip_current_dir_prefix(path) {
+        if stripped.contains(['\\', '/']) {
+            return downloaded_source_for_path(env, stripped);
+        }
+    }
     let name = current_dir_basename(path)?;
     env.modified_filesystem
         .iter()
@@ -158,9 +163,11 @@ fn downloaded_source_for_current_dir_path(env: &Environment, path: &str) -> Opti
 }
 
 fn current_dir_basename(path: &str) -> Option<&str> {
-    path.strip_prefix(r".\")
-        .or_else(|| path.strip_prefix("./"))
-        .and_then(windows_basename)
+    strip_current_dir_prefix(path).and_then(windows_basename)
+}
+
+fn strip_current_dir_prefix(path: &str) -> Option<&str> {
+    path.strip_prefix(r".\").or_else(|| path.strip_prefix("./"))
 }
 
 fn msiexec_administrative_install_token(token: &str) -> bool {
