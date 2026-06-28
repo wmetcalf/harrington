@@ -477,17 +477,31 @@ pub fn command_name(line: &str) -> Option<String> {
         return None;
     }
     let mut name = String::new();
-    for c in s.chars() {
-        if c.is_whitespace()
-            || (c == '/' && !name.ends_with(':') && !name.contains(":/"))
-            || c == '<'
-            || c == '>'
-            || c == '&'
-            || c == '|'
-        {
-            break;
+    if let Some(quote @ ('"' | '\'')) = s.chars().next() {
+        let rest = &s[quote.len_utf8()..];
+        if let Some(end) = rest.find(quote) {
+            name.push_str(&rest[..end]);
+        } else {
+            for c in rest.chars() {
+                if c == '<' || c == '>' || c == '&' || c == '|' {
+                    break;
+                }
+                name.push(c);
+            }
         }
-        name.push(c);
+    } else {
+        for c in s.chars() {
+            if c.is_whitespace()
+                || (c == '/' && !name.ends_with(':') && !name.contains(":/"))
+                || c == '<'
+                || c == '>'
+                || c == '&'
+                || c == '|'
+            {
+                break;
+            }
+            name.push(c);
+        }
     }
     if name.is_empty() {
         return None;

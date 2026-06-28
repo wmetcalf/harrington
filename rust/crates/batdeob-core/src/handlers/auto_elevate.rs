@@ -1,6 +1,7 @@
 //! Auto-elevate LOLBin handlers used in UAC bypass chains.
 
 use crate::env::Environment;
+use crate::handlers::util::split_words;
 use crate::traits::Trait;
 
 pub fn h_auto_elevate(raw: &str, env: &mut Environment) {
@@ -20,7 +21,8 @@ pub fn h_auto_elevate(raw: &str, env: &mut Environment) {
 }
 
 fn auto_elevate_name(raw: &str) -> Option<&'static str> {
-    let first = raw.split_whitespace().next()?.trim_matches(['"', '\'']);
+    let tokens = split_words(raw);
+    let first = tokens.first()?.trim_matches(['"', '\'']);
     let base = first
         .rsplit(['\\', '/'])
         .next()

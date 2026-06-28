@@ -11349,6 +11349,19 @@ mod uac_bypass_tests {
     }
 
     #[test]
+    fn auto_elevate_quoted_path_with_spaces_emits_uac_bypass_trait() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(r#""C:\Program Files\fodhelper.exe""#, &mut env);
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::UacBypass { technique } if technique == "fodhelper")),
+            "quoted auto-elevate path with spaces was not surfaced: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn msconfig_exe_4_in_deob_text_emits_uac_bypass_trait() {
         let mut env = Environment::new(&Config::default());
 
