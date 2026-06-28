@@ -126,8 +126,9 @@ fn run_stage(stage: &str, input: Vec<String>, env: &mut Environment) -> Vec<Stri
             }
             filter_findstr(&rest_args, effective_input)
         }
-        "find" => filter_find(&rest_args, input),
+        "find" => synth_find(&rest_args, input, env),
         "more" => synth_more(stage, &rest_args, input, env),
+        "sort" => synth_sort(stage, &rest_args, input, env),
         "type" => {
             // type FILE — pull from modified_filesystem or input_bytes
             let path = rest_args.first().copied().unwrap_or("");
@@ -184,6 +185,7 @@ fn is_supported_command(cmd: String) -> bool {
             | "findstr"
             | "find"
             | "more"
+            | "sort"
             | "type"
             | "assoc"
             | "ftype"
@@ -426,6 +428,31 @@ fn filter_find(args: &[&str], input: Vec<String>) -> Vec<String> {
         .collect()
 }
 
+fn synth_find(args: &[&str], input: Vec<String>, env: &mut Environment) -> Vec<String> {
+    if !input.is_empty() {
+        return filter_find(args, input);
+    }
+
+    let non_flags = args
+        .iter()
+        .copied()
+        .filter(|arg| !arg.starts_with('/'))
+        .collect::<Vec<_>>();
+    let Some(path) = non_flags.get(1).copied() else {
+        return filter_find(args, input);
+    };
+    let lines = type_file(path, env);
+    if lines.is_empty() {
+        return Vec::new();
+    }
+    let filter_args = args
+        .iter()
+        .copied()
+        .filter(|arg| *arg != path)
+        .collect::<Vec<_>>();
+    filter_find(&filter_args, lines)
+}
+
 fn synth_more(
     stage: &str,
     args: &[&str],
@@ -444,6 +471,30 @@ fn synth_more(
         .find(|arg| !arg.starts_with(['/', '-']) && *arg != "<")
         .map(|path| type_file(path, env))
         .unwrap_or_default()
+}
+
+fn synth_sort(
+    stage: &str,
+    args: &[&str],
+    input: Vec<String>,
+    env: &mut Environment,
+) -> Vec<String> {
+    let mut lines = if !input.is_empty() {
+        input
+    } else {
+        let (_, redirs) = crate::redirect::extract_redirections(stage);
+        if let Some(path) = redirs.stdin {
+            type_file(&path, env)
+        } else {
+            args.iter()
+                .copied()
+                .find(|arg| !arg.starts_with(['/', '-']) && *arg != "<")
+                .map(|path| type_file(path, env))
+                .unwrap_or_default()
+        }
+    };
+    lines.sort();
+    lines
 }
 
 fn type_file(path: &str, env: &mut Environment) -> Vec<String> {
