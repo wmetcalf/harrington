@@ -454,6 +454,14 @@ fn type_file(path: &str, env: &mut Environment) -> Vec<String> {
     {
         return lines;
     }
+    if let Some(stripped) = strip_current_dir_prefix(path) {
+        if stripped.contains(['\\', '/']) {
+            return type_lines_from_entry(crate::handlers::util::filesystem_entry_for_path(
+                env, stripped,
+            ))
+            .unwrap_or_default();
+        }
+    }
     if let Some(name) = current_dir_basename(path) {
         let key = name.to_ascii_lowercase();
         if let Some(lines) = type_lines_from_entry(env.modified_filesystem.get(&key)) {
@@ -482,9 +490,11 @@ fn bytes_to_type_lines(content: &[u8]) -> Vec<String> {
 }
 
 fn current_dir_basename(path: &str) -> Option<&str> {
-    path.strip_prefix(r".\")
-        .or_else(|| path.strip_prefix("./"))
-        .and_then(windows_basename)
+    strip_current_dir_prefix(path).and_then(windows_basename)
+}
+
+fn strip_current_dir_prefix(path: &str) -> Option<&str> {
+    path.strip_prefix(r".\").or_else(|| path.strip_prefix("./"))
 }
 
 fn windows_basename(path: &str) -> Option<&str> {
