@@ -379,7 +379,7 @@ fn capture_synthetic_stdout_redirect(line: &str, env: &mut Environment) {
     }
     let mut content = lines.join("\r\n").into_bytes();
     content.extend_from_slice(b"\r\n");
-    let key = stdout.path().to_ascii_lowercase();
+    let key = crate::handlers::util::filesystem_storage_key(stdout.path());
     let cap = env.limits.max_output_bytes as usize;
     if stdout.append() {
         if let Some(crate::env::FsEntry::Content {
