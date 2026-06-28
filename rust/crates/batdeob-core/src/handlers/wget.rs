@@ -1,14 +1,15 @@
 //! wget handler - extracts URL + output target for native wget/get.exe calls.
 
 use super::util::{
-    filesystem_storage_key, join_windows_path_preserving_separator, split_words, strip_outer_quotes,
+    filesystem_entry_for_path, filesystem_storage_key, join_windows_path_preserving_separator,
+    split_words, strip_outer_quotes,
 };
 use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
 
 pub fn h_wget(raw: &str, env: &mut Environment) {
     let tokens = split_words(raw);
-    let Some((url, dst)) = parse_wget_like_download(&tokens) else {
+    let Some((url, dst)) = parse_wget_like_download(&tokens, env) else {
         return;
     };
 
@@ -26,7 +27,10 @@ pub fn h_wget(raw: &str, env: &mut Environment) {
     }
 }
 
-fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>)> {
+fn parse_wget_like_download(
+    tokens: &[String],
+    env: &Environment,
+) -> Option<(String, Option<String>)> {
     let mut url: Option<String> = None;
     let mut dst: Option<String> = None;
     let mut output_dir: Option<String> = None;
@@ -122,7 +126,19 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
                 .get(i + 1)
                 .map(|s| strip_outer_quotes(s.trim_matches(')')))
                 .unwrap_or_default();
-            if let Some(normalized) = normalize_wget_url_token(candidate) {
+            if let Some(normalized) = normalize_wget_input_source(candidate, env) {
+                url = Some(normalized);
+                url_from_input_file = true;
+            }
+            i += 2;
+            continue;
+        }
+        if crate::deob_scan::wget_flag_matches_ci(raw_token, "-i") && tokens.get(i + 1).is_some() {
+            let candidate = tokens
+                .get(i + 1)
+                .map(|s| strip_outer_quotes(s.trim_matches(')')))
+                .unwrap_or_default();
+            if let Some(normalized) = normalize_wget_input_source(candidate, env) {
                 url = Some(normalized);
                 url_from_input_file = true;
             }
@@ -132,7 +148,7 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
         if let Some(rest) = raw_token.strip_prefix("-i") {
             if !rest.is_empty() && !rest.starts_with('-') {
                 if let Some(normalized) =
-                    normalize_wget_url_token(strip_outer_quotes(rest.trim_matches(')')))
+                    normalize_wget_input_source(strip_outer_quotes(rest.trim_matches(')')), env)
                 {
                     url = Some(normalized);
                     url_from_input_file = true;
@@ -148,7 +164,7 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
         {
             if !rest.is_empty() {
                 if let Some(normalized) =
-                    normalize_wget_url_token(strip_outer_quotes(rest.trim_matches(')')))
+                    normalize_wget_input_source(strip_outer_quotes(rest.trim_matches(')')), env)
                 {
                     url = Some(normalized);
                     url_from_input_file = true;
@@ -184,6 +200,22 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
 fn normalize_wget_url_token(token: &str) -> Option<String> {
     crate::deob_scan::normalize_liberal_url_token(token)
         .or_else(|| crate::deob_scan::normalize_schemeless_domain_path_token(token))
+}
+
+fn normalize_wget_input_source(candidate: &str, env: &Environment) -> Option<String> {
+    normalize_wget_url_token(candidate).or_else(|| {
+        filesystem_entry_for_path(env, candidate).and_then(|entry| match entry {
+            FsEntry::Content { content, .. } | FsEntry::Decoded { content, .. } => {
+                first_wget_url_in_content(content)
+            }
+            _ => None,
+        })
+    })
+}
+
+fn first_wget_url_in_content(content: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(content);
+    text.split_whitespace().find_map(normalize_wget_url_token)
 }
 
 fn wget_value_flag(token: &str) -> bool {

