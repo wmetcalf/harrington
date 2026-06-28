@@ -175,6 +175,9 @@ fn track_rename_like(
 
     let src = collapse_slashes(&args[0]);
     let dst = collapse_slashes(&args[1]);
+    if allow_directory_dst && src.contains(['*', '?']) && move_wildcard_sources(env, &src, &dst) {
+        return;
+    }
     let entry = copied_entry(&src, env).unwrap_or(FsEntry::Copy { src: src.clone() });
     if allow_directory_dst {
         insert_copied_entry(env, &src, &dst, entry);
@@ -185,6 +188,40 @@ fn track_rename_like(
         }
     }
     remove_renamed_source(env, &src, &dst);
+}
+
+fn move_wildcard_sources(env: &mut Environment, src_pattern: &str, dst: &str) -> bool {
+    let Some(dst_dir) = wildcard_copy_destination_dir(env, dst, false) else {
+        return false;
+    };
+    let matched = env
+        .modified_filesystem
+        .iter()
+        .filter_map(|(tracked_path, entry)| {
+            if matches!(entry, FsEntry::Directory)
+                || !wildcard_source_matches(src_pattern, tracked_path)
+            {
+                return None;
+            }
+            let filename = windows_basename(tracked_path)?;
+            let dst_path = join_windows_path_preserving_separator(&dst_dir, filename);
+            Some((
+                tracked_path.clone(),
+                filesystem_storage_key(&dst_path),
+                entry.clone(),
+            ))
+        })
+        .collect::<Vec<_>>();
+    if matched.is_empty() {
+        return false;
+    }
+    for (_, dst_path, entry) in &matched {
+        env.modified_filesystem
+            .insert(dst_path.clone(), entry.clone());
+    }
+    env.modified_filesystem
+        .retain(|path, _| !matched.iter().any(|(src_path, _, _)| src_path == path));
+    true
 }
 
 fn is_windows_util_copy(src: &str, dst: &str) -> bool {
