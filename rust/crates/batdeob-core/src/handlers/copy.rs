@@ -100,12 +100,31 @@ fn push_copy_arg(args: &mut Vec<String>, token: &str) {
     let mut parts = token.split('+').peekable();
     while let Some(part) = parts.next() {
         if !part.is_empty() {
-            args.push(part.to_string());
+            args.push(strip_copy_file_mode_suffix(part).to_string());
         }
         if parts.peek().is_some() {
             args.push("+".to_string());
         }
     }
+}
+
+fn strip_copy_file_mode_suffix(s: &str) -> &str {
+    let s = strip_outer_quotes(s);
+    let lower = s.to_ascii_lowercase();
+    if lower.ends_with("/a") || lower.ends_with("/b") {
+        let without_suffix = &s[..s.len().saturating_sub(2)];
+        if !without_suffix.is_empty() && copy_file_mode_suffix_is_unambiguous(without_suffix) {
+            return without_suffix;
+        }
+    }
+    s
+}
+
+fn copy_file_mode_suffix_is_unambiguous(stem: &str) -> bool {
+    if !stem.contains(['\\', '/']) {
+        return true;
+    }
+    windows_basename(stem).is_some_and(|basename| basename.contains('.'))
 }
 
 pub fn h_xcopy(raw: &str, env: &mut Environment) {

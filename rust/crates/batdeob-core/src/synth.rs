@@ -69,7 +69,17 @@ fn split_pipeline(p: &str) -> Vec<String> {
 
 fn run_stage(stage: &str, input: Vec<String>, env: &mut Environment) -> Vec<String> {
     // First token is the command
-    let stage = normalize_stage_prefix(stage);
+    let (redir_cleaned, redirs) = crate::redirect::extract_redirections(stage);
+    let input = if input.is_empty() {
+        redirs
+            .stdin
+            .as_deref()
+            .map(|path| type_file(path, env))
+            .unwrap_or(input)
+    } else {
+        input
+    };
+    let stage = normalize_stage_prefix(&redir_cleaned);
     let Some(cmd) = stage_command(stage) else {
         return Vec::new();
     };
@@ -102,7 +112,7 @@ fn run_stage(stage: &str, input: Vec<String>, env: &mut Environment) -> Vec<Stri
         "find" => synth_find(&rest_args, input, env),
         "more" => synth_more(stage, &rest_args, input, env),
         "sort" => synth_sort(stage, &rest_args, input, env),
-        "type" => synth_type(&rest_args, env),
+        "type" => synth_type(&rest_args, input, env),
         "assoc" => synth_assoc(&rest_args, env),
         "ftype" => synth_ftype(&rest_args, env),
         "reg" => synth_reg(&rest_args, env),
@@ -154,6 +164,13 @@ fn rest_after_command(stage: &str) -> &str {
 }
 
 fn stage_command(stage: &str) -> Option<String> {
+    let cleaned;
+    let stage = if stage.contains('<') || stage.contains('>') {
+        cleaned = crate::redirect::extract_redirections(stage).0;
+        cleaned.as_str()
+    } else {
+        stage
+    };
     normalize_stage_prefix(stage)
         .split_whitespace()
         .next()
@@ -292,21 +309,24 @@ fn filter_findstr(args: &[&str], input: Vec<String>) -> Vec<String> {
                     patterns.push(literal);
                 }
             } else {
-                for f in flags_and_maybe_literal.chars() {
-                    match f.to_ascii_lowercase() {
-                        'i' => case_insensitive = true,
-                        'v' => invert = true,
-                        'r' => {
-                            regex_mode = true;
-                            literal_mode = false;
+                let flags_lower = flags_and_maybe_literal.to_ascii_lowercase();
+                if !flags_lower.starts_with("off") {
+                    for f in flags_lower.chars() {
+                        match f {
+                            'i' => case_insensitive = true,
+                            'v' => invert = true,
+                            'r' => {
+                                regex_mode = true;
+                                literal_mode = false;
+                            }
+                            'l' => literal_mode = true,
+                            'b' => match_begin = true,
+                            'e' => match_end = true,
+                            'x' => match_exact = true,
+                            'n' => line_numbers = true,
+                            'o' => offsets = true,
+                            _ => {}
                         }
-                        'l' => literal_mode = true,
-                        'b' => match_begin = true,
-                        'e' => match_end = true,
-                        'x' => match_exact = true,
-                        'n' => line_numbers = true,
-                        'o' => offsets = true,
-                        _ => {}
                     }
                 }
             }
@@ -748,10 +768,13 @@ fn find_file_input_lines(path: &str, env: &mut Environment) -> Vec<String> {
     type_file(path, env)
 }
 
-fn synth_type(args: &[&str], env: &mut Environment) -> Vec<String> {
+fn synth_type(args: &[&str], input: Vec<String>, env: &mut Environment) -> Vec<String> {
     let mut out = Vec::new();
     for path in non_redirect_args(args) {
         out.extend(type_file(path, env));
+    }
+    if out.is_empty() && !input.is_empty() {
+        return input;
     }
     out
 }
