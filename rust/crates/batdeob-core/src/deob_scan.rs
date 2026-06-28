@@ -4033,6 +4033,37 @@ pub fn scan_copied_powershell_invocations(deobfuscated: &str, env: &mut Environm
             aliases.insert(stem.to_string());
         }
     }
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        let Some(cmd) = tokens.first() else {
+            continue;
+        };
+        let Some(cmd_base) = basename_trimmed(cmd) else {
+            continue;
+        };
+        if !cmd_base.eq_ignore_ascii_case("copy") || tokens.len() < 3 {
+            continue;
+        }
+        let Some(src_base) = tokens.get(1).and_then(|src| basename_trimmed(src)) else {
+            continue;
+        };
+        if !matches!(
+            src_base,
+            s if s.eq_ignore_ascii_case("powershell.exe")
+                || s.eq_ignore_ascii_case("powershell")
+                || s.eq_ignore_ascii_case("pwsh.exe")
+                || s.eq_ignore_ascii_case("pwsh")
+        ) {
+            continue;
+        }
+        let Some(dst_base) = tokens.last().and_then(|dst| basename_trimmed(dst)) else {
+            continue;
+        };
+        aliases.insert(dst_base.to_string());
+        if let Some(stem) = dst_base.strip_suffix(".exe") {
+            aliases.insert(stem.to_string());
+        }
+    }
     if aliases.is_empty() {
         return;
     }
@@ -4045,6 +4076,7 @@ pub fn scan_copied_powershell_invocations(deobfuscated: &str, env: &mut Environm
         if !copied_alias_matches_command_ci(&aliases, cmd) {
             continue;
         }
+        push_manipulated_exec_once(env, line, cmd);
         let Some(cmd_pos) = line.find(cmd) else {
             continue;
         };
@@ -4056,6 +4088,23 @@ pub fn scan_copied_powershell_invocations(deobfuscated: &str, env: &mut Environm
         crate::handlers::powershell::h_powershell(&synthetic, env);
     }
     dedup_exec_ps1(env);
+}
+
+fn scan_copied_anti_recovery_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    for (source_bases, replay_command) in [
+        (&["vssadmin", "vssadmin.exe"][..], "vssadmin.exe"),
+        (&["bcdedit", "bcdedit.exe"][..], "bcdedit.exe"),
+        (&["wbadmin", "wbadmin.exe"][..], "wbadmin.exe"),
+        (&["wmic", "wmic.exe"][..], "wmic.exe"),
+    ] {
+        scan_copied_handler_alias_deob_text(
+            deobfuscated,
+            env,
+            source_bases,
+            replay_command,
+            scan_anti_recovery,
+        );
+    }
 }
 
 fn scan_copied_cleanup_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
@@ -4150,6 +4199,40 @@ fn scan_copied_cleanup_alias_deob_text(deobfuscated: &str, env: &mut Environment
         env.traits.push(crate::traits::Trait::AntiRecovery {
             action: action.to_string(),
         });
+    }
+}
+
+fn scan_copied_enumeration_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    let commands = [
+        (&["net", "net.exe", "net1", "net1.exe"][..], "net.exe"),
+        (&["whoami", "whoami.exe"][..], "whoami.exe"),
+        (&["quser", "quser.exe"][..], "quser.exe"),
+        (&["systeminfo", "systeminfo.exe"][..], "systeminfo.exe"),
+        (&["tasklist", "tasklist.exe"][..], "tasklist.exe"),
+        (&["wmic", "wmic.exe"][..], "wmic.exe"),
+    ];
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        let Some(cmd) = tokens.first() else {
+            continue;
+        };
+        for (source_bases, replay_command) in commands {
+            let aliases = copied_aliases_for(env, source_bases);
+            if aliases.is_empty() || !copied_alias_matches_command_ci(&aliases, cmd) {
+                continue;
+            }
+            push_manipulated_exec_once(env, line, cmd);
+            let rest = line
+                .get(cmd.len()..)
+                .map(str::trim_start)
+                .unwrap_or_default();
+            let replay = if rest.is_empty() {
+                replay_command.to_string()
+            } else {
+                format!("{replay_command} {rest}")
+            };
+            scan_enumeration(&replay, env);
+        }
     }
 }
 
@@ -5748,6 +5831,12 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
         )
         .expect("schtasks-defender-disable")
     });
+    static SECURITY_BINARY_RENAME_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?i)\b(?:ren(?:ame)?|move)(?:\.exe)?\b[^\r\n]*(SecurityHealthService|SecurityHealthSystray|MsMpEng|NisSrv|MpCmdRun)\.exe\b[^\r\n]*"#,
+        )
+        .expect("security-binary-rename")
+    });
     // AMSI bypass markers — Invoke-NullAMSI, AmsiInitFailed/AmsiUtils
     // memory patches, ETW patch via System.Diagnostics.Eventing
     static AMSI_BYPASS_RE: Lazy<Regex> = Lazy::new(|| {
@@ -5867,6 +5956,13 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
             .map(|m| strip_outer_quotes(m.as_str()).to_string())
             .unwrap_or_default();
         push("scheduled-task-disable", task);
+    }
+    for caps in SECURITY_BINARY_RENAME_RE.captures_iter(deobfuscated) {
+        let target = caps
+            .get(1)
+            .map(|m| format!("{}.exe", m.as_str()))
+            .unwrap_or_default();
+        push("security-binary-rename", target);
     }
     if let Some(m) = AMSI_BYPASS_RE.find(deobfuscated) {
         push("amsi-bypass", m.as_str().to_string());
@@ -6299,6 +6395,13 @@ fn scan_enumeration(deobfuscated: &str, env: &mut Environment) {
             (
                 Regex::new(r"(?i)\b(?:tasklist|wmic\s+process)\b").unwrap(),
                 "tasklist",
+            ),
+            (
+                Regex::new(
+                    r"(?i)\bwmic(?:\.exe)?\s+(?:cpu|computersystem|logicaldisk|partition|path\s+softwarelicensingservice)\b",
+                )
+                .unwrap(),
+                "wmic-enum",
             ),
         ]
     });
@@ -6866,6 +6969,8 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     scan_copied_at_alias_deob_text(deobfuscated, env);
     scan_copied_netsh_alias_deob_text(deobfuscated, env);
     scan_copied_defender_evasion_alias_deob_text(deobfuscated, env);
+    scan_copied_anti_recovery_alias_deob_text(deobfuscated, env);
+    scan_copied_enumeration_alias_deob_text(deobfuscated, env);
     scan_copied_cleanup_alias_deob_text(deobfuscated, env);
     scan_copied_net_alias_deob_text(deobfuscated, env);
     scan_copied_mshta_alias_deob_text(deobfuscated, env);

