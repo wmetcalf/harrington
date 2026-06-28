@@ -127,6 +127,18 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
             });
         }
 
+        for url in extract_shell_run_command_downloads(&text, &bindings) {
+            if crate::deob_scan::is_noise_url(&url) || !seen.insert((idx, url.clone())) {
+                continue;
+            }
+            let snippet = snippet_prefix(&text, 120);
+            env.traits.push(Trait::Download {
+                cmd: format!("(vbs #{idx}) {snippet}"),
+                src: url,
+                dst: dst_hint.clone(),
+            });
+        }
+
         for expr in extract_xmlhttp_open_url_exprs(&text) {
             let Some(url) = eval_vbs_string_expr(expr, &bindings)
                 .and_then(|value| crate::deob_scan::normalize_liberal_url_token(&value))
@@ -223,6 +235,41 @@ fn extract_shell_run_url_exprs(
         };
         if let Some(url) = crate::deob_scan::normalize_liberal_url_token(&value) {
             urls.push(url);
+        }
+    }
+    urls
+}
+
+fn extract_shell_run_command_downloads(
+    text: &str,
+    bindings: &std::collections::HashMap<String, String>,
+) -> Vec<String> {
+    let mut urls = Vec::new();
+    for line in text.lines() {
+        let Some(run_pos) = find_ascii_case_insensitive_from(line, ".run", 0) else {
+            continue;
+        };
+        let mut args = line[run_pos + ".run".len()..].trim();
+        if let Some(stripped) = args.strip_prefix('(') {
+            args = stripped.trim_end().strip_suffix(')').unwrap_or(stripped);
+        }
+        let Some(first_arg) = split_vbs_args(args).first().copied() else {
+            continue;
+        };
+        let Some(value) = eval_vbs_string_expr(first_arg, bindings) else {
+            continue;
+        };
+        let mut parts = value.split_ascii_whitespace();
+        if parts.next().is_none() || parts.clone().next().is_none() {
+            continue;
+        }
+        for token in parts {
+            let candidate = token.trim_matches(['"', '\'', '(', ')', '[', ']', '{', '}', ',', ';']);
+            if let Some(url) = crate::deob_scan::normalize_liberal_url_token(candidate)
+                .or_else(|| crate::deob_scan::normalize_schemeless_domain_path_token(candidate))
+            {
+                urls.push(url);
+            }
         }
     }
     urls
