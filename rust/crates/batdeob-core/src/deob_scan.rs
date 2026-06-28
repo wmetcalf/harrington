@@ -690,6 +690,7 @@ fn python_urlopen_call_names(text: &str) -> Vec<String> {
             text, method,
         ));
     }
+    names.extend(collect_python_requests_bound_session_assigned_method_aliases(text));
     names.extend(collect_python_urllib_call_aliases(text, "urlopen"));
     names
 }
@@ -909,8 +910,6 @@ fn collect_python_requests_method_aliases(text: &str, target_method: &str) -> Ve
         text,
         target_method,
     ));
-    aliases
-        .extend(collect_python_requests_bound_session_assigned_method_aliases(text, target_method));
     aliases
 }
 
@@ -1188,28 +1187,28 @@ fn collect_python_requests_bound_session_names(text: &str) -> Vec<String> {
         .collect()
 }
 
-fn collect_python_requests_bound_session_assigned_method_aliases(
-    text: &str,
-    target_method: &str,
-) -> Vec<String> {
+fn collect_python_requests_bound_session_assigned_method_aliases(text: &str) -> Vec<String> {
     if !text.as_bytes().contains(&b'=') {
         return Vec::new();
     }
 
     static PY_REQUESTS_BOUND_SESSION_METHOD_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\.(get|post|put|patch|delete|head|options|request)\b"#)
+        Regex::new(r#"(?is)(?:^|[;"'\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\.(get|post|put|patch|delete|head|options)\b"#)
             .expect("python bound requests session method assignment regex")
     });
 
     let sessions = collect_python_requests_bound_session_names(text);
+    if sessions.is_empty() {
+        return Vec::new();
+    }
+
     PY_REQUESTS_BOUND_SESSION_METHOD_ASSIGN_RE
         .captures_iter(text)
         .take(8)
         .filter_map(|caps| {
             let alias = caps.get(1)?.as_str();
             let session = caps.get(2)?.as_str();
-            let method = caps.get(3)?.as_str();
-            if method == target_method && sessions.iter().any(|known| known == session) {
+            if sessions.iter().any(|known| known == session) {
                 Some(alias.to_string())
             } else {
                 None
