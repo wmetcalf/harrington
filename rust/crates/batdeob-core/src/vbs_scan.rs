@@ -151,6 +151,10 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
             });
         }
 
+        for (target, args) in extract_shell_execute_self_elevations(&text, &bindings) {
+            env.traits.push(Trait::SelfElevation { target, args });
+        }
+
         for expr in extract_xmlhttp_open_url_exprs(&text) {
             let Some(url) = eval_vbs_string_expr(expr, &bindings)
                 .and_then(|value| crate::deob_scan::normalize_liberal_url_token(&value))
@@ -323,6 +327,54 @@ fn extract_shell_execute_command_downloads(
         }
     }
     urls
+}
+
+fn extract_shell_execute_self_elevations(
+    text: &str,
+    bindings: &std::collections::HashMap<String, String>,
+) -> Vec<(String, Option<String>)> {
+    if !crate::util::contains_ascii_case_insensitive(text, ".shellexecute")
+        || !crate::util::contains_ascii_case_insensitive(text, "runas")
+    {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let mut cursor = 0usize;
+        while let Some(pos) = find_ascii_case_insensitive_from(line, ".shellexecute", cursor) {
+            let mut args = line[pos + ".shellexecute".len()..].trim();
+            if let Some(stripped) = args.strip_prefix('(') {
+                args = stripped.trim_end().strip_suffix(')').unwrap_or(stripped);
+            }
+            let parts = split_vbs_args(args);
+            let Some(program_expr) = parts.first().copied() else {
+                cursor = pos + ".shellexecute".len();
+                continue;
+            };
+            let Some(verb_expr) = parts.get(3).copied() else {
+                cursor = pos + ".shellexecute".len();
+                continue;
+            };
+            let Some(verb) = eval_vbs_string_expr(verb_expr, bindings) else {
+                cursor = pos + ".shellexecute".len();
+                continue;
+            };
+            if !verb.trim().eq_ignore_ascii_case("runas") {
+                cursor = pos + ".shellexecute".len();
+                continue;
+            }
+            if let Some(target) = eval_vbs_string_expr(program_expr, bindings) {
+                let args = parts
+                    .get(1)
+                    .and_then(|expr| eval_vbs_string_expr(expr, bindings))
+                    .filter(|value| !value.trim().is_empty());
+                out.push((target, args));
+            }
+            cursor = pos + ".shellexecute".len();
+        }
+    }
+    out
 }
 
 fn command_download_urls(command: &str) -> Vec<String> {

