@@ -255,6 +255,11 @@ fn filter_findstr(args: &[&str], input: Vec<String>) -> Vec<String> {
     let mut case_insensitive = false;
     let mut invert = false;
     let mut regex_mode = false;
+    let mut match_begin = false;
+    let mut match_end = false;
+    let mut match_exact = false;
+    let mut line_numbers = false;
+    let mut offsets = false;
     let mut i = 0;
     let limit = args.len();
     while i < limit {
@@ -291,6 +296,11 @@ fn filter_findstr(args: &[&str], input: Vec<String>) -> Vec<String> {
                         'i' => case_insensitive = true,
                         'v' => invert = true,
                         'r' => regex_mode = true,
+                        'b' => match_begin = true,
+                        'e' => match_end = true,
+                        'x' => match_exact = true,
+                        'n' => line_numbers = true,
+                        'o' => offsets = true,
                         _ => {}
                     }
                 }
@@ -314,57 +324,197 @@ fn filter_findstr(args: &[&str], input: Vec<String>) -> Vec<String> {
         let compiled: Vec<regex::Regex> = patterns
             .iter()
             .filter_map(|p| {
-                let pat = if case_insensitive {
-                    format!("(?i){p}")
+                let anchored = if match_exact {
+                    format!("^(?:{p})$")
+                } else if match_begin {
+                    format!("^(?:{p})")
+                } else if match_end {
+                    format!("(?:{p})$")
                 } else {
                     p.clone()
+                };
+                let pat = if case_insensitive {
+                    format!("(?i){anchored}")
+                } else {
+                    anchored
                 };
                 regex::Regex::new(&pat).ok()
             })
             .collect();
         return input
             .into_iter()
+            .enumerate()
             .filter(|line| {
+                let line = &line.1;
                 let hit = if compiled.is_empty() {
-                    true
+                    Some(0)
                 } else {
-                    compiled.iter().any(|re| re.is_match(line))
+                    compiled
+                        .iter()
+                        .find_map(|re| re.find(line).map(|match_| match_.start()))
                 };
                 if invert {
-                    !hit
+                    hit.is_none()
                 } else {
-                    hit
+                    hit.is_some()
                 }
+            })
+            .map(|(idx, line)| {
+                let offset = compiled
+                    .iter()
+                    .find_map(|re| re.find(&line).map(|match_| match_.start()));
+                format_findstr_output_line(
+                    line,
+                    line_numbers.then_some(idx + 1),
+                    offsets.then_some(offset.unwrap_or(0)),
+                )
             })
             .collect();
     }
     input
         .into_iter()
-        .filter(|line| {
+        .enumerate()
+        .filter_map(|(idx, line)| {
             let hit = if patterns.is_empty() {
-                true
+                Some(0)
             } else {
-                patterns.iter().any(|p| {
-                    if case_insensitive {
-                        contains_ascii_case_insensitive(line, p)
-                    } else {
-                        line.contains(p)
-                    }
+                patterns.iter().find_map(|p| {
+                    findstr_literal_match_offset(
+                        &line,
+                        p,
+                        case_insensitive,
+                        match_begin,
+                        match_end,
+                        match_exact,
+                    )
                 })
             };
-            if invert {
-                !hit
-            } else {
-                hit
-            }
+            let include = if invert { hit.is_none() } else { hit.is_some() };
+            include.then(|| {
+                format_findstr_output_line(
+                    line,
+                    line_numbers.then_some(idx + 1),
+                    offsets.then_some(hit.unwrap_or(0)),
+                )
+            })
         })
         .collect()
 }
 
+fn findstr_literal_match_offset(
+    line: &str,
+    pattern: &str,
+    case_insensitive: bool,
+    match_begin: bool,
+    match_end: bool,
+    match_exact: bool,
+) -> Option<usize> {
+    let line_cmp;
+    let pattern_cmp;
+    let (line, pattern) = if case_insensitive {
+        line_cmp = line.to_ascii_lowercase();
+        pattern_cmp = pattern.to_ascii_lowercase();
+        (line_cmp.as_str(), pattern_cmp.as_str())
+    } else {
+        (line, pattern)
+    };
+    if match_exact {
+        return (line == pattern).then_some(0);
+    }
+    if match_begin && match_end {
+        return (line == pattern).then_some(0);
+    }
+    if match_begin {
+        return line.starts_with(pattern).then_some(0);
+    }
+    if match_end {
+        return line
+            .ends_with(pattern)
+            .then_some(line.len().saturating_sub(pattern.len()));
+    }
+    line.find(pattern)
+}
+
+fn format_findstr_output_line(
+    line: String,
+    line_number: Option<usize>,
+    offset: Option<usize>,
+) -> String {
+    let mut out = String::new();
+    if let Some(line_number) = line_number {
+        out.push_str(&format!("{line_number}:"));
+    }
+    if let Some(offset) = offset {
+        out.push_str(&format!("{offset}:"));
+    }
+    out.push_str(&line);
+    out
+}
+
+fn format_find_output_line(line: String, line_number: Option<usize>) -> String {
+    if let Some(line_number) = line_number {
+        format!("[{line_number}]{line}")
+    } else {
+        line
+    }
+}
+
+fn find_option_file_value(arg: &str, flag: char) -> Option<&str> {
+    let flags = arg.strip_prefix('/')?;
+    let mut chars = flags.chars();
+    let first = chars.next()?;
+    if !first.eq_ignore_ascii_case(&flag) {
+        return None;
+    }
+    let rest = chars.as_str();
+    if rest.is_empty() {
+        None
+    } else {
+        rest.strip_prefix(':').or(Some(rest))
+    }
+}
+
+fn expand_findstr_indirect_args(args: Vec<String>, env: &mut Environment) -> Vec<String> {
+    let mut expanded = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        let arg = args[i].trim_matches('"');
+        if arg.eq_ignore_ascii_case("/g") || arg.eq_ignore_ascii_case("/f") {
+            if let Some(path) = args.get(i + 1) {
+                let lines = type_file(path.trim_matches('"'), env);
+                if lines.is_empty() {
+                    expanded.push(args[i].clone());
+                    expanded.push(path.clone());
+                } else {
+                    expanded.extend(lines);
+                }
+                i += 2;
+                continue;
+            }
+        }
+        if let Some(path) =
+            find_option_file_value(arg, 'g').or_else(|| find_option_file_value(arg, 'f'))
+        {
+            let lines = type_file(path.trim_matches('"'), env);
+            if lines.is_empty() {
+                expanded.push(args[i].clone());
+            } else {
+                expanded.extend(lines);
+            }
+            i += 1;
+            continue;
+        }
+        expanded.push(args[i].clone());
+        i += 1;
+    }
+    expanded
+}
+
 fn filter_find(args: &[&str], input: Vec<String>) -> Vec<String> {
-    // find "literal"  — supports /i and /v
+    // find "literal"  — supports /i, /v, and /n
     let mut case_insensitive = false;
     let mut invert = false;
+    let mut line_numbers = false;
     let mut pattern = String::new();
     for a in args {
         if let Some(flags) = a.strip_prefix('/') {
@@ -372,6 +522,7 @@ fn filter_find(args: &[&str], input: Vec<String>) -> Vec<String> {
                 match f.to_ascii_lowercase() {
                     'i' => case_insensitive = true,
                     'v' => invert = true,
+                    'n' => line_numbers = true,
                     _ => {}
                 }
             }
@@ -385,24 +536,25 @@ fn filter_find(args: &[&str], input: Vec<String>) -> Vec<String> {
     let p = pattern;
     input
         .into_iter()
-        .filter(|line| {
+        .enumerate()
+        .filter_map(|(idx, line)| {
             let hit = if case_insensitive {
-                contains_ascii_case_insensitive(line, &p)
+                contains_ascii_case_insensitive(&line, &p)
             } else {
                 line.contains(&p)
             };
-            if invert {
-                !hit
-            } else {
-                hit
-            }
+            let include = if invert { !hit } else { hit };
+            include.then(|| format_find_output_line(line, line_numbers.then_some(idx + 1)))
         })
         .collect()
 }
 
 fn synth_findstr(args: &[&str], input: Vec<String>, env: &mut Environment) -> Vec<String> {
     if !input.is_empty() {
-        return filter_findstr(args, input);
+        let expanded_args =
+            expand_findstr_indirect_args(args.iter().map(|arg| (*arg).to_string()).collect(), env);
+        let refs: Vec<&str> = expanded_args.iter().map(String::as_str).collect();
+        return filter_findstr(&refs, input);
     }
     let expanded_args: Vec<String> = args
         .iter()
@@ -415,6 +567,7 @@ fn synth_findstr(args: &[&str], input: Vec<String>, env: &mut Environment) -> Ve
             }
         })
         .collect();
+    let expanded_args = expand_findstr_indirect_args(expanded_args, env);
     let Some((file_idxs, file_inputs)) = findstr_file_input_args(&expanded_args, env) else {
         let refs: Vec<&str> = expanded_args.iter().map(String::as_str).collect();
         return filter_findstr(&refs, Vec::new());
@@ -733,6 +886,21 @@ fn non_redirect_args<'a>(args: &'a [&'a str]) -> impl Iterator<Item = &'a str> +
 
 fn type_file(path: &str, env: &mut Environment) -> Vec<String> {
     let path = path.trim_matches('"');
+
+    if path.contains(['*', '?']) {
+        let normalized_pattern = normalize_wildcard_path(&normalize_filesystem_storage_path(path));
+        let mut tracked = env
+            .modified_filesystem
+            .keys()
+            .filter(|tracked| dir_wildcard_matches(path, &normalized_pattern, tracked))
+            .cloned()
+            .collect::<Vec<_>>();
+        tracked.sort();
+        return tracked
+            .into_iter()
+            .flat_map(|tracked| type_file(&tracked, env))
+            .collect();
+    }
 
     // %~f0 / explicit input path → read input bytes
     let is_self = path.contains("script.bat")

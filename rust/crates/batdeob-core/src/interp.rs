@@ -3,7 +3,8 @@
 use crate::env::Environment;
 use crate::handlers;
 use crate::handlers::util::{
-    ends_with_ascii_case_insensitive, filesystem_entry_for_path, windows_basename,
+    ends_with_ascii_case_insensitive, filesystem_entry_for_path, filesystem_storage_key,
+    split_words, strip_outer_quotes, windows_basename,
 };
 
 /// Result of the pre-normalize dispatch hook. Some commands need to operate
@@ -212,6 +213,7 @@ pub fn interpret_line(line: &str, env: &mut Environment) {
         }
     }
     capture_synthetic_stdout_redirect(line, env);
+    capture_synthetic_option_output(line, env);
 }
 
 fn push_implicit_download_source_url(path: &str, env: &mut Environment) {
@@ -399,11 +401,69 @@ fn capture_synthetic_stdout_redirect(line: &str, env: &mut Environment) {
     if lines.is_empty() {
         return;
     }
+    write_synthetic_lines(stdout.path(), stdout.append(), lines, env);
+}
+
+fn capture_synthetic_option_output(line: &str, env: &mut Environment) {
+    let Some((command, output_path)) = sort_output_file_command(line) else {
+        return;
+    };
+    if !crate::synth::can_run_pipeline(&command) {
+        return;
+    }
+    let lines = crate::synth::run_pipeline(&command, env);
+    if lines.is_empty() {
+        return;
+    }
+    write_synthetic_lines(&output_path, false, lines, env);
+}
+
+fn sort_output_file_command(line: &str) -> Option<(String, String)> {
+    let (cleaned, redir) = crate::redirect::extract_redirections(line);
+    if redir.stdout.is_some() {
+        return None;
+    }
+    let tokens = split_words(cleaned.trim());
+    let cmd = tokens.first()?;
+    if !sort_command_name(cmd) {
+        return None;
+    }
+    let mut output_path = None;
+    let mut kept = vec!["sort".to_string()];
+    let mut i = 1;
+    while i < tokens.len() {
+        let stripped = strip_outer_quotes(&tokens[i]);
+        if stripped.eq_ignore_ascii_case("/o") {
+            if let Some(path) = tokens.get(i + 1) {
+                output_path = Some(strip_outer_quotes(path).to_string());
+                i += 2;
+                continue;
+            }
+        }
+        if stripped.len() >= 3 && stripped[..3].eq_ignore_ascii_case("/o:") {
+            output_path = Some(strip_outer_quotes(&stripped[3..]).to_string());
+            i += 1;
+            continue;
+        }
+        kept.push(tokens[i].clone());
+        i += 1;
+    }
+    output_path.map(|path| (kept.join(" "), path))
+}
+
+fn sort_command_name(cmd: &str) -> bool {
+    let trimmed = strip_outer_quotes(cmd);
+    let basename = windows_basename(trimmed).unwrap_or(trimmed);
+    let lower = basename.to_ascii_lowercase();
+    lower.strip_suffix(".exe").unwrap_or(&lower) == "sort"
+}
+
+fn write_synthetic_lines(path: &str, append: bool, lines: Vec<String>, env: &mut Environment) {
     let mut content = lines.join("\r\n").into_bytes();
     content.extend_from_slice(b"\r\n");
-    let key = crate::handlers::util::filesystem_storage_key(stdout.path());
+    let key = filesystem_storage_key(path);
     let cap = env.limits.max_output_bytes as usize;
-    if stdout.append() {
+    if append {
         if let Some(crate::env::FsEntry::Content {
             content: existing,
             append,
@@ -428,7 +488,7 @@ fn capture_synthetic_stdout_redirect(line: &str, env: &mut Environment) {
         key,
         crate::env::FsEntry::Content {
             content: bounded,
-            append: stdout.append(),
+            append,
         },
     );
 }

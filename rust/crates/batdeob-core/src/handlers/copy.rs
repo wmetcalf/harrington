@@ -11,10 +11,15 @@ pub fn h_copy(raw: &str, env: &mut Environment) {
     let general_opts = ["/v", "/n", "/l", "/y", "/-y", "/z"];
     let file_opts = ["/a", "/b", "/d"];
     let mut args: Vec<String> = Vec::new();
+    let mut binary_mode = false;
     for t in tokens.iter().skip(1) {
-        if general_opts.iter().any(|opt| t.eq_ignore_ascii_case(opt))
-            || file_opts.iter().any(|opt| t.eq_ignore_ascii_case(opt))
-        {
+        if general_opts.iter().any(|opt| t.eq_ignore_ascii_case(opt)) {
+            continue;
+        }
+        if file_opts.iter().any(|opt| t.eq_ignore_ascii_case(opt)) {
+            if t.eq_ignore_ascii_case("/b") {
+                binary_mode = true;
+            }
             continue;
         }
         push_copy_arg(&mut args, strip_outer_quotes(t));
@@ -74,6 +79,9 @@ pub fn h_copy(raw: &str, env: &mut Environment) {
     }
     let src = collapse_slashes(&args[0]);
     let dst = collapse_slashes(&args[1]);
+    if binary_mode && src.contains(['*', '?']) && copy_wildcard_sources_as_concat(env, &src, &dst) {
+        return;
+    }
     if src.contains(['*', '?']) && copy_wildcard_sources(env, &src, &dst, false) {
         return;
     }
@@ -293,6 +301,46 @@ fn insert_copied_directory_entry(env: &mut Environment, src: &str, dst_dir: &str
     if let Some(joined) = copy_directory_destination_path(src, &directory_destination(dst_dir)) {
         insert_filesystem_entry(env, &joined, entry);
     }
+}
+
+fn copy_wildcard_sources_as_concat(env: &mut Environment, src_pattern: &str, dst: &str) -> bool {
+    if wildcard_copy_destination_dir(env, dst, false).is_some() {
+        return false;
+    }
+    let mut matched = env
+        .modified_filesystem
+        .iter()
+        .filter_map(|(tracked_path, entry)| {
+            if matches!(entry, FsEntry::Directory)
+                || !wildcard_source_matches(src_pattern, tracked_path)
+            {
+                return None;
+            }
+            Some((tracked_path.clone(), entry.clone()))
+        })
+        .collect::<Vec<_>>();
+    if matched.is_empty() {
+        return false;
+    }
+    matched.sort_by(|(left, _), (right, _)| left.cmp(right));
+    let mut combined = Vec::new();
+    for (_, entry) in matched {
+        match entry {
+            FsEntry::Content { content, .. } | FsEntry::Decoded { content, .. } => {
+                combined.extend_from_slice(&content);
+            }
+            _ => return false,
+        }
+    }
+    insert_filesystem_entry(
+        env,
+        dst,
+        FsEntry::Content {
+            content: combined,
+            append: false,
+        },
+    );
+    true
 }
 
 fn copy_wildcard_sources(
