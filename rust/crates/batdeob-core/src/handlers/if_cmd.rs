@@ -189,6 +189,9 @@ fn current_dir_nested_path_exists(path: &str, env: &Environment) -> Option<bool>
     if !stripped.contains(['\\', '/']) {
         return None;
     }
+    if stripped.contains(['*', '?']) {
+        return None;
+    }
     Some(
         env.modified_filesystem
             .contains_key(&stripped.to_ascii_lowercase())
