@@ -2607,6 +2607,44 @@ for /F "tokens=1,* delims==" %%A in (config.ini) do echo key=%%A value=%%B
     }
 
     #[test]
+    fn for_f_skips_default_eol_comment_lines() {
+        let script = br#"echo ;ignored>config.ini
+echo alpha>>config.ini
+for /F "tokens=* delims=" %%A in (config.ini) do echo got=%%A
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            !report.deobfuscated.contains("echo got=;ignored"),
+            "default eol comment line should not be iterated:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.contains("echo got=alpha"),
+            "non-comment line should still be iterated:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn for_f_honors_custom_eol_comment_marker() {
+        let script = br#"echo #ignored>config.ini
+echo alpha>>config.ini
+for /F "eol=# tokens=* delims=" %%A in (config.ini) do echo got=%%A
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            !report.deobfuscated.contains("echo got=#ignored"),
+            "custom eol comment line should not be iterated:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.contains("echo got=alpha"),
+            "non-comment line should still be iterated:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn for_f_tokens_star_without_indexes_preserves_entire_line() {
         let script = br#"for /f "tokens=*" %%a in ("alpha,beta,gamma") do echo got=%%a"#;
         let report = analyze(script, &Config::default());
