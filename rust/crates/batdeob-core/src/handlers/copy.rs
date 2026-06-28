@@ -1,7 +1,7 @@
 use super::util::{
     filesystem_entry_for_path, filesystem_storage_key, join_windows_path_preserving_separator,
     normalize_filesystem_storage_path, normalize_wildcard_path, split_words,
-    starts_with_ascii_case_insensitive, strip_outer_quotes,
+    starts_with_ascii_case_insensitive, strip_outer_quotes, wildcard_match,
 };
 use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
@@ -74,6 +74,9 @@ pub fn h_copy(raw: &str, env: &mut Environment) {
     }
     let src = collapse_slashes(&args[0]);
     let dst = collapse_slashes(&args[1]);
+    if src.contains(['*', '?']) && copy_wildcard_sources(env, &src, &dst, false) {
+        return;
+    }
     if is_windows_util_copy(&src, &dst) {
         env.traits.push(Trait::WindowsUtilManip {
             cmd: raw.to_string(),
@@ -117,6 +120,11 @@ pub fn h_xcopy(raw: &str, env: &mut Environment) {
     }
     let src = collapse_slashes(&args[args.len() - 2]);
     let dst = collapse_slashes(&args[args.len() - 1]);
+    let wildcard_dst_is_directory = assume_directory_dst && xcopy_dst_looks_like_directory(&dst);
+    if src.contains(['*', '?']) && copy_wildcard_sources(env, &src, &dst, wildcard_dst_is_directory)
+    {
+        return;
+    }
     if is_windows_util_copy(&src, &dst) {
         env.traits.push(Trait::WindowsUtilManip {
             cmd: raw.to_string(),
@@ -248,6 +256,67 @@ fn insert_copied_directory_entry(env: &mut Environment, src: &str, dst_dir: &str
     if let Some(joined) = copy_directory_destination_path(src, &directory_destination(dst_dir)) {
         insert_filesystem_entry(env, &joined, entry);
     }
+}
+
+fn copy_wildcard_sources(
+    env: &mut Environment,
+    src_pattern: &str,
+    dst: &str,
+    assume_directory_dst: bool,
+) -> bool {
+    let Some(dst_dir) = wildcard_copy_destination_dir(env, dst, assume_directory_dst) else {
+        return false;
+    };
+    let copied = env
+        .modified_filesystem
+        .iter()
+        .filter_map(|(tracked_path, entry)| {
+            if matches!(entry, FsEntry::Directory)
+                || !wildcard_source_matches(src_pattern, tracked_path)
+            {
+                return None;
+            }
+            let filename = windows_basename(tracked_path)?;
+            let dst_path = join_windows_path_preserving_separator(&dst_dir, filename);
+            Some((filesystem_storage_key(&dst_path), entry.clone()))
+        })
+        .collect::<Vec<_>>();
+    if copied.is_empty() {
+        return false;
+    }
+    for (dst_path, entry) in copied {
+        env.modified_filesystem.insert(dst_path, entry);
+    }
+    true
+}
+
+fn wildcard_copy_destination_dir(
+    env: &Environment,
+    dst: &str,
+    assume_directory_dst: bool,
+) -> Option<String> {
+    if assume_directory_dst || dst.ends_with(['\\', '/']) {
+        return Some(dst.to_string());
+    }
+    let key = normalize_wildcard_path(dst.trim_end_matches(['\\', '/']));
+    env.modified_filesystem
+        .iter()
+        .any(|(path, entry)| {
+            matches!(entry, FsEntry::Directory) && normalize_wildcard_path(path) == key
+        })
+        .then(|| dst.to_string())
+}
+
+fn wildcard_source_matches(pattern: &str, tracked_path: &str) -> bool {
+    let normalized_pattern = normalize_wildcard_path(&normalize_filesystem_storage_path(pattern));
+    let normalized_path = normalize_wildcard_path(tracked_path);
+    if pattern.contains(['\\', '/', ':']) {
+        return wildcard_match(&normalized_pattern, &normalized_path);
+    }
+    windows_basename(tracked_path).is_some_and(|name| {
+        !tracked_path.contains(['\\', '/', ':'])
+            && wildcard_match(&normalized_pattern, &normalize_wildcard_path(name))
+    })
 }
 
 fn insert_filesystem_entry(env: &mut Environment, path: &str, entry: FsEntry) {
