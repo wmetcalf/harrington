@@ -4,7 +4,8 @@
 use crate::env::Environment;
 use crate::traits::Trait;
 use crate::util::{
-    find_ascii_case_insensitive, snippet_prefix, starts_with_ascii_case_insensitive,
+    find_ascii_case_insensitive, find_ascii_case_insensitive_from, snippet_prefix,
+    starts_with_ascii_case_insensitive,
 };
 use base64::Engine as _;
 use once_cell::sync::Lazy;
@@ -110,6 +111,22 @@ pub fn scan_js_payloads(env: &mut Environment) {
 
         // Now scan for URLs
         for candidate in candidates {
+            if find_ascii_case_insensitive_from(&candidate, ".run", 0).is_some()
+                || find_ascii_case_insensitive_from(&candidate, ".exec", 0).is_some()
+                || find_js_bracket_shell_command_method_from(&candidate, 0).is_some()
+            {
+                let bindings = collect_js_string_literal_bindings(&candidate);
+                let arrays = collect_js_string_array_bindings(&candidate, &bindings);
+                push_downloads_from_js_shell_command_calls(
+                    env,
+                    idx,
+                    &concat_resolved,
+                    &candidate,
+                    &bindings,
+                    &arrays,
+                    &mut seen,
+                );
+            }
             for caps in URL_IN_JS_RE.captures_iter(&candidate) {
                 let Some(m) = caps.get(1) else { continue };
                 let mut url = m.as_str().to_string();
@@ -139,6 +156,146 @@ pub fn scan_js_payloads(env: &mut Environment) {
             }
         }
     }
+}
+
+fn push_downloads_from_js_shell_command_calls(
+    env: &mut Environment,
+    idx: usize,
+    snippet_source: &str,
+    text: &str,
+    bindings: &std::collections::HashMap<String, String>,
+    arrays: &std::collections::HashMap<String, Vec<String>>,
+    seen: &mut std::collections::HashSet<(usize, String)>,
+) {
+    for (method, requires_shell_context) in [(".run", false), (".exec", true)] {
+        let mut cursor = 0usize;
+        while let Some(method_start) = find_ascii_case_insensitive_from(text, method, cursor) {
+            let method_end = method_start + method.len();
+            if requires_shell_context && !has_nearby_wscript_shell_context(text, method_start) {
+                cursor = method_end;
+                continue;
+            }
+            let Some(open) = consume_js_call_open(text, method_end) else {
+                cursor = method_end;
+                continue;
+            };
+            let arg_start = skip_ascii_ws(text, open + 1);
+            let Some((_, command)) = parse_js_command_arg_at(text, arg_start, bindings, arrays)
+            else {
+                cursor = open + 1;
+                continue;
+            };
+            push_downloads_from_js_command(env, idx, snippet_source, &command, seen);
+            cursor = open + 1;
+        }
+    }
+
+    let mut cursor = 0usize;
+    while let Some((method_start, method_end, requires_shell_context)) =
+        find_js_bracket_shell_command_method_from(text, cursor)
+    {
+        if requires_shell_context && !has_nearby_wscript_shell_context(text, method_start) {
+            cursor = method_end;
+            continue;
+        }
+        let Some(open) = consume_js_call_open(text, method_end) else {
+            cursor = method_end;
+            continue;
+        };
+        let arg_start = skip_ascii_ws(text, open + 1);
+        let Some((_, command)) = parse_js_command_arg_at(text, arg_start, bindings, arrays) else {
+            cursor = open + 1;
+            continue;
+        };
+        push_downloads_from_js_command(env, idx, snippet_source, &command, seen);
+        cursor = open + 1;
+    }
+}
+
+fn parse_js_command_arg_at(
+    text: &str,
+    start: usize,
+    bindings: &std::collections::HashMap<String, String>,
+    arrays: &std::collections::HashMap<String, Vec<String>>,
+) -> Option<(usize, String)> {
+    if let Some(value) = parse_js_string_value_arg_at(text, start, bindings) {
+        return Some(value);
+    }
+
+    let (array_end, parts) = parse_js_string_array_arg_at(text, start, bindings)?;
+    consume_js_array_join_chain(text, array_end, parts, bindings, arrays)
+}
+
+fn find_js_bracket_shell_command_method_from(
+    text: &str,
+    start: usize,
+) -> Option<(usize, usize, bool)> {
+    let bytes = text.as_bytes();
+    let mut cursor = start.min(bytes.len());
+    while cursor < bytes.len() {
+        let rel = bytes[cursor..].iter().position(|byte| *byte == b'[')?;
+        let member_start = cursor + rel;
+        let literal_start = skip_ascii_ws(text, member_start + 1);
+        let Some((literal_end, property)) = parse_js_string_literal_at(text, literal_start) else {
+            cursor = member_start + 1;
+            continue;
+        };
+        let close = skip_ascii_ws(text, literal_end);
+        if bytes.get(close) != Some(&b']') {
+            cursor = member_start + 1;
+            continue;
+        }
+        if property.eq_ignore_ascii_case("run") || property.eq_ignore_ascii_case("exec") {
+            return Some((member_start, close + 1, true));
+        }
+        cursor = member_start + 1;
+    }
+    None
+}
+
+fn has_nearby_wscript_shell_context(text: &str, idx: usize) -> bool {
+    let start = idx.saturating_sub(256);
+    let prefix = &text[start..idx];
+    crate::util::contains_ascii_case_insensitive(prefix, "wscript.shell")
+        || crate::util::contains_ascii_case_insensitive(prefix, "activexobject")
+}
+
+fn push_downloads_from_js_command(
+    env: &mut Environment,
+    idx: usize,
+    snippet_source: &str,
+    command: &str,
+    seen: &mut std::collections::HashSet<(usize, String)>,
+) {
+    for url in js_command_download_urls(command) {
+        if crate::deob_scan::is_noise_url(&url) || !seen.insert((idx, url.clone())) {
+            continue;
+        }
+        let snippet = snippet_prefix(snippet_source, 120);
+        env.traits.push(Trait::Download {
+            cmd: format!("(js #{idx}) {snippet}"),
+            src: url,
+            dst: None,
+        });
+    }
+}
+
+fn js_command_download_urls(command: &str) -> Vec<String> {
+    let mut parts = command.split_ascii_whitespace();
+    if parts.next().is_none() || parts.clone().next().is_none() {
+        return Vec::new();
+    }
+
+    let mut urls = Vec::new();
+    for token in parts {
+        let candidate = token.trim_matches(['"', '\'', '(', ')', '[', ']', '{', '}', ',', ';']);
+        if let Some(url) = crate::deob_scan::normalize_liberal_url_token(candidate)
+            .or_else(|| crate::deob_scan::normalize_schemeless_domain_path_token(candidate))
+        {
+            urls.push(url);
+        }
+    }
+    urls
 }
 
 fn decoded_js_percent_literals(text: &str) -> Vec<String> {
