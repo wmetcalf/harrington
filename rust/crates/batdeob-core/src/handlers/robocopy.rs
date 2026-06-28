@@ -3,7 +3,7 @@
 use crate::env::{Environment, FsEntry};
 use crate::handlers::util::{
     filesystem_entry_for_path, filesystem_storage_key, join_windows_path_preserving_separator,
-    split_words, strip_outer_quotes,
+    normalize_wildcard_path, split_words, strip_outer_quotes,
 };
 use crate::traits::Trait;
 
@@ -17,6 +17,11 @@ pub fn h_robocopy(raw: &str, env: &mut Environment) {
         name: "robocopy".to_string(),
         cmd: raw.to_string(),
     });
+
+    if files.is_empty() {
+        copy_default_file_set(&src_dir, &dst_dir, env);
+        return;
+    }
 
     for file in files {
         if file_contains_wildcard(&file) {
@@ -53,9 +58,6 @@ fn parse_robocopy_args(tokens: &[String]) -> Option<(String, String, Vec<String>
     let src_dir = args.first()?.clone();
     let dst_dir = args.get(1)?.clone();
     let files = args.into_iter().skip(2).collect::<Vec<_>>();
-    if files.is_empty() {
-        return None;
-    }
     Some((src_dir, dst_dir, files))
 }
 
@@ -89,6 +91,41 @@ fn copied_entry(
                 .is_some_and(|tracked| tracked.eq_ignore_ascii_case(filename))
                 .then(|| entry.clone())
         })
+}
+
+fn copy_default_file_set(src_dir: &str, dst_dir: &str, env: &mut Environment) {
+    let Some(src_prefix) = normalized_dir_prefix(src_dir) else {
+        return;
+    };
+    let copied = env
+        .modified_filesystem
+        .iter()
+        .filter_map(|(tracked_path, entry)| {
+            if matches!(entry, FsEntry::Directory) {
+                return None;
+            }
+            let comparable = normalize_wildcard_path(tracked_path);
+            let relative = comparable.strip_prefix(&src_prefix)?;
+            if relative.is_empty() || relative.contains('\\') {
+                return None;
+            }
+            let filename = windows_basename(tracked_path)?;
+            let dst = join_windows_path_preserving_separator(dst_dir, filename);
+            Some((filesystem_storage_key(&dst), entry.clone()))
+        })
+        .collect::<Vec<_>>();
+    for (dst, entry) in copied {
+        env.modified_filesystem.insert(dst, entry);
+    }
+}
+
+fn normalized_dir_prefix(dir: &str) -> Option<String> {
+    let normalized = normalize_wildcard_path(dir.trim_matches(['"', '\'']));
+    let normalized = normalized.trim_end_matches('\\');
+    if normalized.is_empty() {
+        return None;
+    }
+    Some(format!("{normalized}\\"))
 }
 
 fn source_dir_allows_basename_fallback(src_dir: &str) -> bool {
