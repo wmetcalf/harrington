@@ -3752,8 +3752,47 @@ fn scan_remote_access(command: &str, env: &mut Environment) {
             push_remote_access(env, "hidden-user", &value, command);
         }
     }
+    if lower.contains("netsh")
+        && lower.contains("advfirewall")
+        && lower.contains("firewall")
+        && lower.contains("set")
+        && lower.contains("rule")
+        && lower.contains("remote desktop")
+        && lower.contains("enable")
+        && lower.contains("yes")
+    {
+        push_remote_access(env, "rdp-firewall-open", "Remote Desktop", command);
+    }
+    if lower.contains("sc")
+        && lower.contains("config")
+        && lower.contains("termservice")
+        && lower.contains("start")
+        && (lower.contains("auto") || lower.contains("demand"))
+    {
+        push_remote_access(env, "rdp-service-enable", "TermService", command);
+    }
+    if lower.contains("net") && lower.contains("start") && lower.contains("termservice") {
+        push_remote_access(env, "rdp-service-enable", "TermService", command);
+    }
     for line in command.lines() {
         let lower_line = line.to_ascii_lowercase();
+        if (lower_line.contains("enable-netfirewallrule")
+            || lower_line.contains("set-netfirewallrule"))
+            && (powershell_named_argument(line, "-DisplayGroup")
+                .or_else(|| powershell_named_argument(line, "-Group"))
+                .is_some_and(|group| group.eq_ignore_ascii_case("Remote Desktop")))
+        {
+            let enabled = if lower_line.contains("set-netfirewallrule") {
+                powershell_named_argument(line, "-Enabled").is_some_and(|value| {
+                    matches!(value.to_ascii_lowercase().as_str(), "true" | "$true" | "1")
+                })
+            } else {
+                true
+            };
+            if enabled {
+                push_remote_access(env, "rdp-firewall-open", "Remote Desktop", line.trim());
+            }
+        }
         if !(lower_line.contains("set-itemproperty") || lower_line.contains("new-itemproperty")) {
             continue;
         }
@@ -4509,6 +4548,31 @@ fn powershell_named_argument(command: &str, name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+fn powershell_positional_arguments(command: &str, keyword: &str) -> Vec<String> {
+    let Some(start) = find_ascii_case_insensitive_from(command, keyword, 0) else {
+        return Vec::new();
+    };
+    let tokens = split_words(&command[start..]);
+    let mut args = Vec::new();
+    let mut skip_next = false;
+    for token in tokens.iter().skip(1) {
+        let token = strip_outer_quotes(token).trim_matches(['"', '\'']);
+        if token.is_empty() {
+            continue;
+        }
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if token.starts_with('-') {
+            skip_next = true;
+            continue;
+        }
+        args.push(token.to_string());
+    }
+    args
+}
+
 fn push_account_modification_once(
     env: &mut Environment,
     action: &str,
@@ -4546,15 +4610,24 @@ fn scan_account_modification(deobfuscated: &str, env: &mut Environment) {
     for line in deobfuscated.lines() {
         let lower = line.to_ascii_lowercase();
         if lower.contains("new-localuser") {
-            if let Some(account) = powershell_named_argument(line, "-Name") {
+            if let Some(account) = powershell_named_argument(line, "-Name").or_else(|| {
+                powershell_positional_arguments(line, "New-LocalUser")
+                    .into_iter()
+                    .next()
+            }) {
                 push_account_modification_once(env, "local-user-add", account, None, line.trim());
             }
         }
         if lower.contains("add-localgroupmember") {
-            let Some(group) = powershell_named_argument(line, "-Group") else {
+            let positional = powershell_positional_arguments(line, "Add-LocalGroupMember");
+            let Some(group) =
+                powershell_named_argument(line, "-Group").or_else(|| positional.first().cloned())
+            else {
                 continue;
             };
-            let Some(account) = powershell_named_argument(line, "-Member") else {
+            let Some(account) =
+                powershell_named_argument(line, "-Member").or_else(|| positional.get(1).cloned())
+            else {
                 continue;
             };
             push_account_modification_once(
@@ -6011,9 +6084,11 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
         )
         .expect("exclusion arg regex")
     });
-    static DISABLE_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?i)Set-MpPreference\s+-(Disable[A-Za-z]+|MAPSReporting|SubmitSamplesConsent)\s+(\S+)"#)
-            .expect("set-mp-disable")
+    static DISABLE_ARG_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?i)-(Disable[A-Za-z]+|MAPSReporting|SubmitSamplesConsent)\s*(?::|=|\s)\s*(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^\s'";|&)]+))"#,
+        )
+        .expect("set-mp-disable")
     });
     static SC_DEFENDER_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?i)sc(?:\.exe)?\s+(stop|config|delete)\s+(WinDefend|MsMpSvc|wuauserv|MpsSvc|WdNisSvc)"#)
@@ -6022,6 +6097,10 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
     static FIREWALL_OFF_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?i)netsh(?:\.exe)?\s+advfirewall\s+set\s+(\w+)\s+state\s+off"#)
             .expect("fw-off")
+    });
+    static PS_FIREWALL_PROFILE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?im)^[^\r\n]*?\bSet-NetFirewallProfile\b[^\r\n]*"#)
+            .expect("powershell firewall profile regex")
     });
     static TASKKILL_SECURITY_PROCESS_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?i)\btaskkill(?:\.exe)?\b[^\r\n]*?/im\s+("[^"]+"|'[^']+'|[^\s&|]+)"#)
@@ -6119,12 +6198,22 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
         }
     }
     push_mppreference_invoke_expression_exclusion_process(deobfuscated, &mut push);
-    for caps in DISABLE_RE.captures_iter(deobfuscated) {
-        let opt = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
-        let val = caps.get(2).map(|m| m.as_str()).unwrap_or_default();
-        if defender_evasion_is_disabling_value(opt, val) {
-            if let Some(suffix) = defender_evasion_action_suffix(opt) {
-                push(&format!("setmp-{suffix}"), val.to_string());
+    for line in deobfuscated.lines() {
+        if !line.to_ascii_lowercase().contains("set-mppreference") {
+            continue;
+        }
+        for caps in DISABLE_ARG_RE.captures_iter(line) {
+            let opt = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
+            let val = caps
+                .get(2)
+                .or_else(|| caps.get(3))
+                .or_else(|| caps.get(4))
+                .map(|m| m.as_str())
+                .unwrap_or_default();
+            if defender_evasion_is_disabling_value(opt, val) {
+                if let Some(suffix) = defender_evasion_action_suffix(opt) {
+                    push(&format!("setmp-{suffix}"), val.to_string());
+                }
             }
         }
     }
@@ -6144,6 +6233,22 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
             .map(|m| m.as_str().to_string())
             .unwrap_or_default();
         push("netsh-fw-off", prof);
+    }
+    for m in PS_FIREWALL_PROFILE_RE.find_iter(deobfuscated) {
+        let command = m.as_str().trim();
+        let disabled = powershell_named_argument(command, "-Enabled")
+            .map(|value| {
+                matches!(
+                    value.to_ascii_lowercase().as_str(),
+                    "false" | "$false" | "0"
+                )
+            })
+            .unwrap_or(false);
+        if disabled {
+            let target =
+                powershell_named_argument(command, "-Profile").unwrap_or_else(|| "profile".into());
+            push("firewall-profile-disabled", target);
+        }
     }
     for caps in TASKKILL_SECURITY_PROCESS_RE.captures_iter(deobfuscated) {
         let Some(target) = caps.get(1).and_then(|m| security_file_basename(m.as_str())) else {
@@ -6499,7 +6604,7 @@ fn scan_anti_recovery(deobfuscated: &str, env: &mut Environment) {
                 "vssadmin-delete-shadows",
             ),
             (
-                Regex::new(r"(?i)\bwmic[^\r\n]*?shadowcopy\s+delete").unwrap(),
+                Regex::new(r"(?i)\bwmic[^\r\n]*?shadowcopy\b[^\r\n]*\bdelete\b").unwrap(),
                 "wmic-shadowcopy-delete",
             ),
             (
@@ -7002,6 +7107,11 @@ fn scan_enumeration(deobfuscated: &str, env: &mut Environment) {
                 false,
             ),
             (
+                Regex::new(r"(?i)\bGet-LocalGroup\b[^\r\n]*").unwrap(),
+                "ps-localgroup",
+                false,
+            ),
+            (
                 Regex::new(r"(?i)\bGet-LocalGroupMember\b[^\r\n]*").unwrap(),
                 "ps-localgroupmember",
                 false,
@@ -7410,6 +7520,12 @@ fn scan_credential_access(deobfuscated: &str, env: &mut Environment) {
              "wdigest-creds", |m| m.to_string()),
         ]
     });
+    static REG_HIVE_SAVE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?im)^[^\r\n]*?\breg(?:\.exe)?\s+save\s+["']?HKLM\\(?:SAM|SYSTEM|SECURITY)["']?\b[^\r\n]*"#,
+        )
+        .expect("registry hive save regex")
+    });
     for (re, tech, fmt) in PATTERNS.iter() {
         if let Some(m) = re.find(deobfuscated) {
             let target = fmt(m.as_str());
@@ -7425,6 +7541,24 @@ fn scan_credential_access(deobfuscated: &str, env: &mut Environment) {
                 target,
             });
         }
+    }
+    let hive_saves: Vec<String> = REG_HIVE_SAVE_RE
+        .find_iter(deobfuscated)
+        .map(|m| m.as_str().trim().to_string())
+        .collect();
+    if !hive_saves.is_empty()
+        && !env.traits.iter().any(|t| {
+            matches!(
+                t,
+                crate::traits::Trait::CredentialAccess { technique, .. }
+                    if technique == "registry-hive-save"
+            )
+        })
+    {
+        env.traits.push(crate::traits::Trait::CredentialAccess {
+            technique: "registry-hive-save".to_string(),
+            target: hive_saves.join("\n"),
+        });
     }
 }
 
@@ -7582,7 +7716,7 @@ fn scan_remote_exec(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
     static WINRM_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?i)\b(?:winrm(?:\.(?:cmd|exe))?\s+(?:invoke|i)\s+[^\r\n]*?(?:[-/]r(?:emote)?[:=]?\s*)(\S+)|winrm(?:\.(?:cmd|exe))?\s+(?:invoke|i)\s+|winrs(?:\.exe)?\s+[-/]r(?:emote)?[:=]?\s*(\S+)|Invoke-WmiMethod\b[^\r\n]*?-ComputerName(?:\s*[:=]\s*|\s+)(?:"+([^"'\s;|&}]+)"+|'([^']+)'|([^,\s;|&}]+))|Set-WmiInstance\b[^\r\n]*?-ComputerName(?:\s*[:=]\s*|\s+)(?:"+([^"'\s;|&}]+)"+|'([^']+)'|([^,\s;|&}]+)))"#)
+        Regex::new(r#"(?i)\b(?:winrm(?:\.(?:cmd|exe))?\s+(?:invoke|i)\s+[^\r\n]*?(?:[-/]r(?:emote)?[:=]?\s*)(\S+)|winrm(?:\.(?:cmd|exe))?\s+(?:invoke|i)\s+|winrs(?:\.exe)?\s+[-/]r(?:emote)?[:=]?\s*(\S+)|Invoke-WmiMethod\b[^\r\n]*?-ComputerName(?:\s*[:=]\s*|\s+)(?:"+([^"'\s;|&}]+)"+|'([^']+)'|([^,\s;|&}]+))|Set-WmiInstance\b[^\r\n]*?-ComputerName(?:\s*[:=]\s*|\s+)(?:"+([^"'\s;|&}]+)"+|'([^']+)'|([^,\s;|&}]+))|Invoke-CimMethod\b[^\r\n]*?-ComputerName(?:\s*[:=]\s*|\s+)(?:"+([^"'\s;|&}]+)"+|'([^']+)'|([^,\s;|&}]+)))"#)
             .expect("winrm re")
     });
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -7596,6 +7730,9 @@ fn scan_remote_exec(deobfuscated: &str, env: &mut Environment) {
             .or_else(|| caps.get(6))
             .or_else(|| caps.get(7))
             .or_else(|| caps.get(8))
+            .or_else(|| caps.get(9))
+            .or_else(|| caps.get(10))
+            .or_else(|| caps.get(11))
             .map(|m| {
                 m.as_str()
                     .trim_matches(|c: char| c == '"' || c == '\'')
@@ -7620,6 +7757,12 @@ fn scan_remote_exec(deobfuscated: &str, env: &mut Environment) {
             .unwrap_or(false)
         {
             "Invoke-WmiMethod"
+        } else if caps
+            .get(0)
+            .map(|m| contains_ascii_case_insensitive(m.as_str(), "invoke-cim"))
+            .unwrap_or(false)
+        {
+            "Invoke-CimMethod"
         } else {
             "Set-WmiInstance"
         };
@@ -7690,6 +7833,23 @@ fn scan_service_install(deobfuscated: &str, env: &mut Environment) {
         Regex::new(r#"(?i)\bsc(?:\.exe)?\s+create\s+(\S+)(?:\s+[^\r\n]*?\bbinPath=\s*(?:"([^"]+)"|(\S+)))?"#)
             .expect("sc create re")
     });
+    static PS_NEW_SERVICE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?im)^[^\r\n]*?\bNew-Service\b[^\r\n]*"#)
+            .expect("powershell new-service regex")
+    });
+    let mut push = |name: String, path: String| {
+        if env.traits.iter().any(|t| {
+            matches!(
+                t, crate::traits::Trait::ServiceInstall { service_name: n, .. } if n == &name
+            )
+        }) {
+            return;
+        }
+        env.traits.push(crate::traits::Trait::ServiceInstall {
+            service_name: name,
+            bin_path: path,
+        });
+    };
     for caps in SC_CREATE_RE.captures_iter(deobfuscated) {
         let name = caps
             .get(1)
@@ -7700,17 +7860,15 @@ fn scan_service_install(deobfuscated: &str, env: &mut Environment) {
             .or_else(|| caps.get(3))
             .map(|m| m.as_str().to_string())
             .unwrap_or_default();
-        if env.traits.iter().any(|t| {
-            matches!(
-                t, crate::traits::Trait::ServiceInstall { service_name: n, .. } if n == &name
-            )
-        }) {
+        push(name, path);
+    }
+    for m in PS_NEW_SERVICE_RE.find_iter(deobfuscated) {
+        let command = m.as_str().trim();
+        let Some(name) = powershell_named_argument(command, "-Name") else {
             continue;
-        }
-        env.traits.push(crate::traits::Trait::ServiceInstall {
-            service_name: name,
-            bin_path: path,
-        });
+        };
+        let path = powershell_named_argument(command, "-BinaryPathName").unwrap_or_default();
+        push(name, path);
     }
 }
 

@@ -24675,6 +24675,120 @@ powershell -Command "Set-MpPreference -ExclusionPath 'C:\Users\Public' -Exclusio
     }
 
     #[test]
+    fn expanded_security_remote_account_and_persistence_signals_emit_traits() {
+        let script = br#"powershell -Command "Set-MpPreference -DisableRealtimeMonitoring:$true -SubmitSamplesConsent=2"
+netsh advfirewall firewall set rule group="remote desktop" new enable=yes
+powershell -Command "New-LocalUser positionaluser -Password $p"
+powershell -Command "Add-LocalGroupMember Administrators positionaluser"
+powershell -Command "Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'"
+powershell -Command "Set-NetFirewallRule -DisplayGroup 'Remote Desktop' -Enabled True"
+sc config TermService start= auto
+net start TermService
+powershell -Command "Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False"
+wmic shadowcopy where "ClientAccessible='TRUE'" delete
+powershell -Command "Invoke-CimMethod -ComputerName target.example -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine='cmd /c whoami'}"
+powershell -Command "Get-LocalGroup"
+reg save HKLM\SAM C:\Users\Public\sam.save /y
+reg save HKLM\SYSTEM C:\Users\Public\system.save /y
+reg save HKLM\SECURITY C:\Users\Public\security.save /y
+powershell -Command "New-Service -Name UpdateSvc -BinaryPathName 'cmd.exe /c calc.exe' -StartupType Automatic"
+"#;
+        let report = analyze(script, &Config::default());
+
+        for action in [
+            "setmp-disablerealtimemonitoring",
+            "setmp-submitsamplesconsent",
+            "firewall-profile-disabled",
+        ] {
+            assert!(
+                report
+                    .traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::DefenderEvasion { action: a, .. } if a == action)),
+                "missing DefenderEvasion {action}: {:?}",
+                report.traits
+            );
+        }
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, .. }
+                    if action == "local-user-add" && account == "positionaluser"
+            )),
+            "missing positional PowerShell local-user-add: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, group, .. }
+                    if action == "localgroup-add"
+                        && account == "positionaluser"
+                        && group.as_deref() == Some("Administrators")
+            )),
+            "missing positional PowerShell localgroup-add: {:?}",
+            report.traits
+        );
+        for target in ["Remote Desktop", "TermService"] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::RemoteAccess { target: t, .. } if t == target
+                )),
+                "missing remote access target {target}: {:?}",
+                report.traits
+            );
+        }
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AntiRecovery { action } if action == "wmic-shadowcopy-delete"
+            )),
+            "filtered WMIC shadowcopy deletion was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteExec { tool, target_host }
+                    if tool == "Invoke-CimMethod" && target_host == "target.example"
+            )),
+            "missing PowerShell CIM remote exec: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "ps-localgroup" && command.contains("Get-LocalGroup")
+            )),
+            "missing PowerShell local group enumeration: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::CredentialAccess { technique, target }
+                    if technique == "registry-hive-save"
+                        && target.contains(r"HKLM\SAM")
+                        && target.contains(r"HKLM\SYSTEM")
+                        && target.contains(r"HKLM\SECURITY")
+            )),
+            "registry hive saves were not surfaced as credential access: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ServiceInstall { service_name, bin_path }
+                    if service_name == "UpdateSvc" && bin_path == "cmd.exe /c calc.exe"
+            )),
+            "PowerShell New-Service install trait missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn copied_mshta_alias_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         env.traits.push(Trait::WindowsUtilManip {
