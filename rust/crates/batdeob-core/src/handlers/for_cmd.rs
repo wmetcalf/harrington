@@ -15,7 +15,7 @@ use regex::Regex;
 #[allow(clippy::expect_used)]
 static FOR_F_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)^\s*for\s+/F\s*(?:"(?P<opts>[^"]*)")?\s*%%?(?P<var>[A-Za-z])\s+in\s*\(\s*(?P<src>.+?)\s*\)\s*do\s+(?P<body>.+)$"#
+        r#"(?is)^\s*for\s*/F\s*(?:"(?P<opts>[^"]*)")?\s*%%?(?P<var>\S)\s+in\s*\(\s*(?P<src>.+?)\s*\)\s*do\s+(?P<body>.+)$"#
     ).expect("for /F regex")
 });
 
@@ -24,7 +24,7 @@ static FOR_F_RE: Lazy<Regex> = Lazy::new(|| {
 static FOR_L_RE: Lazy<Regex> = Lazy::new(|| {
     // Accept both comma-separated "(11,-1,0)" and space-separated "(11 -1 0)" forms.
     Regex::new(
-        r"(?i)^\s*for\s+/L\s+%%?(?P<var>[A-Za-z])\s+in\s*\(\s*(?P<start>[-+]?\d+)[\s,]+(?P<step>[-+]?\d+)[\s,]+(?P<end>[-+]?\d+)\s*\)\s*do\s+(?P<body>.+)$"
+        r"(?i)^\s*for\s*/L\s+%%?(?P<var>\S)\s+in\s*\(\s*(?P<start>[-+]?\d+)[\s,]+(?P<step>[-+]?\d+)[\s,]+(?P<end>[-+]?\d+)\s*\)\s*do\s+(?P<body>.+)$"
     ).expect("for /L regex")
 });
 
@@ -33,10 +33,8 @@ static FOR_L_RE: Lazy<Regex> = Lazy::new(|| {
 static FOR_PLAIN_RE: Lazy<Regex> = Lazy::new(|| {
     // CMD accepts both `)do command` and `) do command`; `\s*do\s*` covers
     // either, plus the obfuscator-friendly `)do(` block form.
-    Regex::new(
-        r"(?i)^\s*for\s+%%?(?P<var>[A-Za-z])\s+in\s*\(\s*(?P<set>[^)]+)\)\s*do\s+(?P<body>.+)$",
-    )
-    .expect("for plain regex")
+    Regex::new(r"(?i)^\s*for\s+%%?(?P<var>\S)\s+in\s*\(\s*(?P<set>[^)]+)\)\s*do\s+(?P<body>.+)$")
+        .expect("for plain regex")
 });
 
 // ── /F helpers ──────────────────────────────────────────────────────────────

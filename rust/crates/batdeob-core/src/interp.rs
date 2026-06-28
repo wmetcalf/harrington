@@ -516,43 +516,31 @@ pub fn command_name(line: &str) -> Option<String> {
 
     // Skip leading redirections and their targets
     let mut s = trimmed;
-    loop {
-        if s.starts_with('>') || s.starts_with('<') || s.starts_with("2>") {
-            // Skip the redirection operator
-            if s.starts_with("2>") {
-                s = &s[2..];
-            } else {
-                s = &s[1..];
-            }
-            // Skip additional > if it's >>
-            if s.starts_with('>') {
-                s = &s[1..];
-            }
-            // Skip whitespace
-            s = s.trim_start();
-            // Skip the target (quoted or unquoted)
-            let mut in_quotes = false;
-            let mut found_space = false;
-            let mut target_end = 0;
-            for (i, c) in s.char_indices() {
-                if c == '"' {
-                    in_quotes = !in_quotes;
-                } else if !in_quotes
-                    && (c.is_whitespace() || c == '<' || c == '>' || c == '&' || c == '|')
-                {
-                    target_end = i;
-                    found_space = true;
-                    break;
-                }
-            }
-            if !found_space {
-                target_end = s.len();
-            }
-            s = &s[target_end..];
-            s = s.trim_start();
-        } else {
-            break;
+    while let Some((op_start, op_len)) = leading_redirection_operator(s) {
+        s = &s[op_start + op_len..];
+        if s.starts_with('>') {
+            s = &s[1..];
         }
+        s = s.trim_start();
+        let mut in_quotes = false;
+        let mut found_space = false;
+        let mut target_end = 0;
+        for (i, c) in s.char_indices() {
+            if c == '"' {
+                in_quotes = !in_quotes;
+            } else if !in_quotes
+                && (c.is_whitespace() || c == '<' || c == '>' || c == '&' || c == '|')
+            {
+                target_end = i;
+                found_space = true;
+                break;
+            }
+        }
+        if !found_space {
+            target_end = s.len();
+        }
+        s = &s[target_end..];
+        s = s.trim_start();
     }
 
     if s.is_empty() {
@@ -589,6 +577,16 @@ pub fn command_name(line: &str) -> Option<String> {
         return None;
     }
     let name = name.trim_matches(['"', '\'']).to_string();
+    if name
+        .get(..4)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("echo"))
+        && name[4..]
+            .chars()
+            .next()
+            .is_some_and(|ch| matches!(ch, '.' | ':' | '/' | '('))
+    {
+        return Some("echo".to_string());
+    }
     // `echo.` (and `echo..` etc.) is a common obfuscation for empty echo output.
     // Strip trailing dots and normalise to "echo" if that's what remains.
     let name_trimmed = name.trim_end_matches('.');
@@ -596,4 +594,17 @@ pub fn command_name(line: &str) -> Option<String> {
         return Some("echo".to_string());
     }
     Some(name)
+}
+
+fn leading_redirection_operator(s: &str) -> Option<(usize, usize)> {
+    let mut chars = s.char_indices().peekable();
+    while matches!(chars.peek(), Some((_, ch)) if ch.is_ascii_digit()) {
+        chars.next();
+    }
+    let (idx, ch) = chars.peek().copied()?;
+    if matches!(ch, '<' | '>') {
+        Some((idx, ch.len_utf8()))
+    } else {
+        None
+    }
 }

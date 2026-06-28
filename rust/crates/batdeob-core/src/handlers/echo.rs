@@ -1,7 +1,7 @@
 //! `echo` handler — records redirected output into modified_filesystem.
 
 use crate::env::{Environment, FsEntry};
-use crate::handlers::util::{filesystem_storage_key, starts_with_ascii_case_insensitive};
+use crate::handlers::util::filesystem_storage_key;
 use crate::redirect::extract_redirections;
 use crate::traits::Trait;
 
@@ -13,13 +13,8 @@ pub fn h_echo(raw: &str, env: &mut Environment) {
             redir.stdout = Some(target);
         }
     }
-    // Strip leading `echo` (case-insensitive)
     let body = cleaned.trim_start();
-    let after_echo = if starts_with_ascii_case_insensitive(body, "echo") {
-        &body[4..]
-    } else {
-        &cleaned
-    };
+    let after_echo = strip_echo_prefix(body).unwrap_or(&cleaned);
     let payload = after_echo.trim_start().to_string();
 
     let Some(target) = redir.stdout else { return };
@@ -64,6 +59,24 @@ pub fn h_echo(raw: &str, env: &mut Environment) {
             append,
         },
     );
+}
+
+fn strip_echo_prefix(raw: &str) -> Option<&str> {
+    let trimmed = raw.trim_start();
+    let trimmed = trimmed.strip_prefix('@').unwrap_or(trimmed).trim_start();
+    if trimmed
+        .get(..4)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("echo"))
+    {
+        let body = &trimmed[4..];
+        if let Some(separator) = body.chars().next() {
+            if matches!(separator, '.' | ':' | '/' | '(') {
+                return Some(&body[separator.len_utf8()..]);
+            }
+        }
+        return Some(body);
+    }
+    None
 }
 
 fn extract_inline_echo_stdout_redirect(
