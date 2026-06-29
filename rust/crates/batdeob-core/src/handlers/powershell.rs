@@ -174,13 +174,13 @@ pub fn h_powershell(raw: &str, env: &mut Environment) {
             if is_command_flag(flag) {
                 let body = command_body_from_attached_value(value, &tokens[i + 1..]);
                 if !body.is_empty() {
-                    record_download_side_effects(&body, env);
+                    record_powershell_side_effects(&body, env);
                     env.exec_ps1.push(body.as_bytes().to_vec());
                 }
                 return;
             }
             if is_file_flag(flag) {
-                queue_file_payload(value, env);
+                queue_file_payload_or_url(raw, value, env);
                 return;
             }
             i += 1;
@@ -201,14 +201,14 @@ pub fn h_powershell(raw: &str, env: &mut Environment) {
                 let body = body.trim();
                 let body = body.trim_matches('"').trim_matches('\'');
                 if !body.is_empty() {
-                    record_download_side_effects(body, env);
+                    record_powershell_side_effects(body, env);
                     env.exec_ps1.push(body.as_bytes().to_vec());
                 }
                 return;
             }
             Some(flag) if is_file_flag(flag) => {
                 if let Some(path) = tokens.get(i + 1) {
-                    queue_file_payload(path, env);
+                    queue_file_payload_or_url(raw, path, env);
                 }
                 return;
             }
@@ -225,9 +225,14 @@ pub fn h_powershell(raw: &str, env: &mut Environment) {
     // when they take one) and push the remainder as the script body.
     let body = skip_ps_meta_flags(&tokens[1..]);
     if !body.is_empty() {
-        record_download_side_effects(&body, env);
+        record_powershell_side_effects(&body, env);
         env.exec_ps1.push(body.as_bytes().to_vec());
     }
+}
+
+fn record_powershell_side_effects(body: &str, env: &mut Environment) {
+    record_download_side_effects(body, env);
+    record_get_content_set_content_side_effects(body, env);
 }
 
 fn record_download_side_effects(body: &str, env: &mut Environment) {
@@ -237,12 +242,62 @@ fn record_download_side_effects(body: &str, env: &mut Environment) {
     }
 }
 
-fn queue_file_payload(path: &str, env: &mut Environment) {
-    let Some(content) = tracked_script_content(strip_quotes(path), env) else {
-        return;
-    };
-    if !env.exec_ps1.iter().any(|existing| existing == &content) {
-        env.exec_ps1.push(content);
+fn record_get_content_set_content_side_effects(body: &str, env: &mut Environment) {
+    let tokens = split_words(body);
+    for i in 0..tokens.len() {
+        if !is_get_content_token(&tokens[i]) {
+            continue;
+        }
+        let Some((src, src_idx)) = powershell_content_path_arg(&tokens, i + 1) else {
+            continue;
+        };
+        if let Some(dst) = powershell_stdout_redirect_destination(&tokens, src_idx + 1) {
+            let Some(entry) = tracked_transfer_entry(&src, env) else {
+                continue;
+            };
+            env.modified_filesystem
+                .insert(filesystem_storage_key(&dst), entry);
+            continue;
+        }
+        let Some(set_idx) = tokens
+            .iter()
+            .enumerate()
+            .skip(src_idx + 1)
+            .find_map(|(idx, token)| is_content_write_token(token).then_some(idx))
+        else {
+            continue;
+        };
+        let Some((dst, _)) = powershell_content_path_arg(&tokens, set_idx + 1) else {
+            continue;
+        };
+        let Some(entry) = tracked_transfer_entry(&src, env) else {
+            continue;
+        };
+        env.modified_filesystem
+            .insert(filesystem_storage_key(&dst), entry);
+    }
+}
+
+fn queue_file_payload_or_url(raw: &str, path: &str, env: &mut Environment) {
+    let path = strip_quotes(path);
+    if let Some(content) = tracked_script_content(path, env) {
+        if !env.exec_ps1.iter().any(|existing| existing == &content) {
+            env.exec_ps1.push(content);
+        }
+    }
+    if let Some(url) = tracked_download_url(path, env) {
+        if !env.traits.iter().any(|t| {
+            matches!(
+                t,
+                crate::traits::Trait::UrlArgument { cmd, url: existing }
+                    if cmd == raw && existing == &url
+            )
+        }) {
+            env.traits.push(crate::traits::Trait::UrlArgument {
+                cmd: raw.to_string(),
+                url,
+            });
+        }
     }
 }
 
@@ -271,6 +326,121 @@ fn tracked_script_content_by_basename(path: &str, env: &Environment) -> Option<V
         };
         if name.eq_ignore_ascii_case(path) {
             return content_from_entry(Some(entry));
+        }
+    }
+    None
+}
+
+fn tracked_download_url(path: &str, env: &Environment) -> Option<String> {
+    if let Some(FsEntry::Download { src }) = filesystem_entry_for_path(env, path) {
+        return Some(src.clone());
+    }
+    if let Some(stripped) = strip_current_dir_prefix(path) {
+        if stripped.contains(['\\', '/']) {
+            return match filesystem_entry_for_path(env, stripped) {
+                Some(FsEntry::Download { src }) => Some(src.clone()),
+                _ => None,
+            };
+        }
+    }
+    if let Some(name) = current_dir_basename(path) {
+        return tracked_download_url_by_basename(name, env);
+    }
+    if path.contains(['\\', '/']) {
+        return None;
+    }
+    tracked_download_url_by_basename(path, env)
+}
+
+fn tracked_download_url_by_basename(path: &str, env: &Environment) -> Option<String> {
+    for (tracked_path, entry) in &env.modified_filesystem {
+        let Some(name) = windows_basename(tracked_path) else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case(path) {
+            if let FsEntry::Download { src } = entry {
+                return Some(src.clone());
+            }
+        }
+    }
+    None
+}
+
+fn tracked_transfer_entry(path: &str, env: &Environment) -> Option<FsEntry> {
+    let entry = filesystem_entry_for_path(env, path)?;
+    match entry {
+        FsEntry::Content { .. }
+        | FsEntry::Decoded { .. }
+        | FsEntry::Download { .. }
+        | FsEntry::Copy { .. } => Some(entry.clone()),
+        FsEntry::Directory => None,
+    }
+}
+
+fn is_get_content_token(token: &str) -> bool {
+    matches!(
+        strip_quotes(token).to_ascii_lowercase().as_str(),
+        "get-content" | "gc" | "cat" | "type"
+    )
+}
+
+fn is_content_write_token(token: &str) -> bool {
+    matches!(
+        strip_quotes(token).to_ascii_lowercase().as_str(),
+        "set-content" | "sc" | "out-file"
+    )
+}
+
+fn powershell_stdout_redirect_destination(tokens: &[String], start: usize) -> Option<String> {
+    let token = strip_quotes(tokens.get(start)?);
+    for op in [">>", "1>>", ">", "1>"] {
+        if token == op {
+            return tokens
+                .get(start + 1)
+                .map(|value| strip_quotes(value).to_string());
+        }
+        if let Some(dst) = token.strip_prefix(op) {
+            if !dst.is_empty() {
+                return Some(strip_quotes(dst).to_string());
+            }
+        }
+    }
+    None
+}
+
+fn powershell_content_path_arg(tokens: &[String], start: usize) -> Option<(String, usize)> {
+    let mut i = start;
+    while i < tokens.len() {
+        let token = strip_quotes(&tokens[i]);
+        if token == "|" || token == ";" || token.starts_with('>') || token.starts_with("1>") {
+            return None;
+        }
+        let lower = token.to_ascii_lowercase();
+        if lower == "-path" || lower == "-literalpath" || lower == "-filepath" {
+            let value = strip_quotes(tokens.get(i + 1)?).to_string();
+            return Some((value, i + 1));
+        }
+        if let Some(value) = attached_ps_path_value(token) {
+            return Some((value.to_string(), i));
+        }
+        if !token.starts_with('-') {
+            return Some((token.to_string(), i));
+        }
+        i += 1;
+    }
+    None
+}
+
+fn attached_ps_path_value(token: &str) -> Option<&str> {
+    let lower = token.to_ascii_lowercase();
+    for flag in ["-path", "-literalpath", "-filepath"] {
+        let Some(rest) = lower.strip_prefix(flag) else {
+            continue;
+        };
+        let original_rest = &token[token.len() - rest.len()..];
+        let value = original_rest.trim_start_matches([':', '=']);
+        if !value.is_empty() {
+            return Some(strip_quotes(value));
         }
     }
     None
