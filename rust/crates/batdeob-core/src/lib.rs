@@ -2082,6 +2082,20 @@ move "%cmdDestination%" "%startupFolder%"
         );
     }
 
+    fn assert_powershell_stop_service(script: &[u8], expected: &str, label: &str) {
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "powershell-stop-service" && target == expected
+            )),
+            "{label}: {:?}",
+            report.traits
+        );
+    }
+
     fn assert_powershell_termservice_enablement(script: &[u8], label: &str) {
         let report = analyze(script, &AnalyzeConfig::default());
 
@@ -2093,6 +2107,51 @@ move "%cmdDestination%" "%startupFolder%"
             )),
             "{label}: {:?}",
             report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_stop_service_windefend_emits_defender_evasion_trait() {
+        assert_powershell_stop_service(
+            br#"powershell -Command "Stop-Service WinDefend -Force""#,
+            "WinDefend",
+            "PowerShell Stop-Service WinDefend was not surfaced",
+        );
+    }
+
+    #[test]
+    fn powershell_stop_service_name_list_emits_each_defender_evasion_trait() {
+        let script = br#"powershell -Command "Stop-Service -Name WinDefend, WdNisSvc -Force""#;
+
+        for service in ["WinDefend", "WdNisSvc"] {
+            assert_powershell_stop_service(
+                script,
+                service,
+                "PowerShell Stop-Service list target was not surfaced",
+            );
+        }
+    }
+
+    #[test]
+    fn powershell_stop_service_array_name_list_emits_each_defender_evasion_trait() {
+        let script =
+            br#"powershell -Command "Stop-Service -Name @('WinDefend','WdNisSvc') -Force""#;
+
+        for service in ["WinDefend", "WdNisSvc"] {
+            assert_powershell_stop_service(
+                script,
+                service,
+                "PowerShell Stop-Service array target was not surfaced",
+            );
+        }
+    }
+
+    #[test]
+    fn powershell_stop_service_alias_emits_defender_evasion_trait() {
+        assert_powershell_stop_service(
+            br#"powershell -Command "spsv -Name WinDefend -Force""#,
+            "WinDefend",
+            "PowerShell spsv WinDefend was not surfaced",
         );
     }
 

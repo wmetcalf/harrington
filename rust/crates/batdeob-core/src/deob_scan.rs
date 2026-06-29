@@ -5182,11 +5182,18 @@ fn powershell_positional_arguments(command: &str, keyword: &str) -> Vec<String> 
 }
 
 fn split_powershell_value_list(value: &str) -> Vec<String> {
+    let value = value
+        .trim()
+        .strip_prefix("@(")
+        .unwrap_or_else(|| value.trim())
+        .trim_end_matches(')');
     value
         .split(',')
         .map(|part| {
             strip_outer_quotes(part)
                 .trim()
+                .trim_start_matches("@(")
+                .trim_end_matches(')')
                 .trim_matches(['"', '\''])
                 .to_string()
         })
@@ -7504,6 +7511,36 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
         for service in services {
             if is_security_service_name(&service) {
                 push("powershell-service-disabled", service);
+            }
+        }
+    }
+    for command in deobfuscated.lines() {
+        if command_starts_with_echo(command) {
+            continue;
+        }
+        let has_stop_service = contains_callable_ascii_case_insensitive(command, "Stop-Service");
+        let has_spsv = contains_callable_ascii_case_insensitive(command, "spsv");
+        if !has_stop_service && !has_spsv {
+            continue;
+        }
+        let mut services = powershell_named_argument_list(command, "-Name");
+        if services.is_empty() {
+            if has_stop_service {
+                let positional = powershell_positional_arguments(command, "Stop-Service");
+                if let Some(service) = positional.first() {
+                    services.extend(split_powershell_value_list(service));
+                }
+            }
+            if has_spsv {
+                let positional = powershell_positional_arguments(command, "spsv");
+                if let Some(service) = positional.first() {
+                    services.extend(split_powershell_value_list(service));
+                }
+            }
+        }
+        for service in services {
+            if is_security_service_name(&service) {
+                push("powershell-stop-service", service);
             }
         }
     }
