@@ -29807,6 +29807,49 @@ start /b /min cmd /c C:\ProgramData\7zz.exe x -y C:\ProgramData\tempy.7z -oC:\Pr
     }
 
     #[test]
+    fn powershell_expand_archive_emits_archive_extraction_trait() {
+        let report = analyze(
+            br#"@echo off
+set "destination=%USERPROFILE%\Pictures"
+powershell -command "Expand-Archive -Path '%destination%\fresh.zip' -DestinationPath '%destination%'"
+"#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ArchiveExtraction { cmd, src, dst }
+                    if cmd.contains("Expand-Archive")
+                        && src == r"C:\Users\puncher\Pictures\fresh.zip"
+                        && dst == r"C:\Users\puncher\Pictures"
+            )),
+            "Expand-Archive extraction trait missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_expand_archive_skips_unresolved_percent_paths() {
+        let report = analyze(
+            br#"@echo off
+powershell -command "Expand-Archive -Path '%destination%\fresh.zip' -DestinationPath '%destination%'"
+"#,
+            &Config::default(),
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ArchiveExtraction { src, dst, .. }
+                    if src.contains("%destination%") || dst.contains("%destination%")
+            )),
+            "unresolved Expand-Archive extraction should be skipped: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn additional_powershell_host_network_discovery_emit_enumeration_traits() {
         let report = analyze(
             br#"powershell -Command "Get-NetRoute"
