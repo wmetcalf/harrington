@@ -2339,6 +2339,35 @@ move "%cmdDestination%" "%startupFolder%"
     }
 
     #[test]
+    fn net_user_add_and_localgroup_add_emit_account_modification_traits() {
+        let script = b"@echo off\r\n\
+            net user WDAGUtilltyAccount \"qv69t4p#Z0kE3\" /add\r\n\
+            net localgroup Administrators WDAGUtilltyAccount /ADD\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, .. }
+                    if action == "local-user-add" && account == "WDAGUtilltyAccount"
+            )),
+            "missing local-user-add: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, group, .. }
+                    if action == "localgroup-add"
+                        && account == "WDAGUtilltyAccount"
+                        && group.as_deref() == Some("Administrators")
+            )),
+            "missing localgroup-add: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn net_user_active_yes_emits_account_modification_trait() {
         let script = br#"net user defaultuserx /active:yes"#;
         let report = analyze(script, &AnalyzeConfig::default());
