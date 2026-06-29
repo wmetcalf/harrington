@@ -621,6 +621,20 @@ fn expand_doubled_quote_literals(text: &str) -> String {
     out
 }
 
+#[cfg(test)]
+mod doubled_quote_literal_tests {
+    use super::expand_doubled_quote_literals;
+
+    #[test]
+    fn doubled_quote_expansion_preserves_empty_single_quoted_argument() {
+        let text = "Clean 'abc' '~' ''";
+
+        let out = expand_doubled_quote_literals(text);
+
+        assert_eq!(out, text);
+    }
+}
+
 #[allow(clippy::expect_used)]
 static FORMAT_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
