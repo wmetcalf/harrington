@@ -7082,6 +7082,12 @@ fn scan_inmem_assembly_load(deobfuscated: &str, env: &mut Environment) {
     });
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for caps in REFLECT_RE.captures_iter(deobfuscated) {
+        if caps
+            .get(0)
+            .is_some_and(|m| match_line_starts_with_echo(deobfuscated, m.start()))
+        {
+            continue;
+        }
         let variant = caps
             .get(1)
             .map(|m| m.as_str().to_string())
@@ -7286,19 +7292,22 @@ fn scan_anti_recovery(deobfuscated: &str, env: &mut Environment) {
         ]
     });
     for (re, action) in PATTERNS.iter() {
-        if !re.is_match(deobfuscated) {
-            continue;
+        for m in re.find_iter(deobfuscated) {
+            if match_line_starts_with_echo(deobfuscated, m.start()) {
+                continue;
+            }
+            if env.traits.iter().any(|t| {
+                matches!(
+                    t, crate::traits::Trait::AntiRecovery { action: a } if a == action
+                )
+            }) {
+                continue;
+            }
+            env.traits.push(crate::traits::Trait::AntiRecovery {
+                action: action.to_string(),
+            });
+            break;
         }
-        if env.traits.iter().any(|t| {
-            matches!(
-                t, crate::traits::Trait::AntiRecovery { action: a } if a == action
-            )
-        }) {
-            continue;
-        }
-        env.traits.push(crate::traits::Trait::AntiRecovery {
-            action: action.to_string(),
-        });
     }
 }
 
@@ -7334,6 +7343,12 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
     };
     for caps in PS_CLEAR_EVENT_LOG_RE.captures_iter(deobfuscated) {
         if caps
+            .get(0)
+            .is_some_and(|m| match_line_starts_with_echo(deobfuscated, m.start()))
+        {
+            continue;
+        }
+        if caps
             .get(1)
             .or_else(|| caps.get(2))
             .or_else(|| caps.get(3))
@@ -7342,10 +7357,19 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
             push("event-log-clear");
         }
     }
-    if PS_CLEAR_RECYCLE_BIN_RE.is_match(deobfuscated) {
+    if PS_CLEAR_RECYCLE_BIN_RE
+        .find_iter(deobfuscated)
+        .any(|m| !match_line_starts_with_echo(deobfuscated, m.start()))
+    {
         push("recycle-bin-clear");
     }
     for caps in PS_REMOVE_ITEM_RE.captures_iter(deobfuscated) {
+        if caps
+            .get(0)
+            .is_some_and(|m| match_line_starts_with_echo(deobfuscated, m.start()))
+        {
+            continue;
+        }
         let Some(command) = caps.get(0).map(|m| m.as_str()) else {
             continue;
         };
@@ -8367,7 +8391,10 @@ fn scan_credential_access(deobfuscated: &str, env: &mut Environment) {
         .expect("registry hive save regex")
     });
     for (re, tech, fmt) in PATTERNS.iter() {
-        if let Some(m) = re.find(deobfuscated) {
+        if let Some(m) = re
+            .find_iter(deobfuscated)
+            .find(|m| !match_line_starts_with_echo(deobfuscated, m.start()))
+        {
             let target = fmt(m.as_str());
             if env.traits.iter().any(|t| {
                 matches!(
@@ -8384,6 +8411,7 @@ fn scan_credential_access(deobfuscated: &str, env: &mut Environment) {
     }
     let hive_saves: Vec<String> = REG_HIVE_SAVE_RE
         .find_iter(deobfuscated)
+        .filter(|m| !match_line_starts_with_echo(deobfuscated, m.start()))
         .map(|m| m.as_str().trim().to_string())
         .collect();
     if !hive_saves.is_empty()
@@ -8477,7 +8505,10 @@ fn scan_input_capture(deobfuscated: &str, env: &mut Environment) {
         ]
     });
     for (re, kind) in PATTERNS.iter() {
-        if re.is_match(deobfuscated) {
+        if re
+            .find_iter(deobfuscated)
+            .any(|m| !match_line_starts_with_echo(deobfuscated, m.start()))
+        {
             if env.traits.iter().any(|t| {
                 matches!(
                     t, crate::traits::Trait::InputCapture { capture_kind: c } if c == kind
@@ -8503,6 +8534,9 @@ fn scan_ransom_ext(deobfuscated: &str, env: &mut Environment) {
     });
     let mut seen: u32 = 0;
     for m in EXT_RE.find_iter(deobfuscated) {
+        if match_line_starts_with_echo(deobfuscated, m.start()) {
+            continue;
+        }
         let Some((idx, ext)) = canonical_ransom_extension(m.as_str()) else {
             continue;
         };
@@ -9332,7 +9366,10 @@ fn scan_shellcode_marker(deobfuscated: &str, env: &mut Environment) {
         Regex::new(r#"(?i)\[\s*Byte\s*\[\s*\]\s*\]\s*\$\w+\s*=\s*0xfc\s*,\s*0xe8"#)
             .expect("msf x86 prologue")
     });
-    if let Some(m) = SHELLCODE_VAR_RE.find(deobfuscated) {
+    for m in SHELLCODE_VAR_RE
+        .find_iter(deobfuscated)
+        .filter(|m| !match_line_starts_with_echo(deobfuscated, m.start()))
+    {
         let evidence = m.as_str().to_string();
         if !env.traits.iter().any(|t| {
             matches!(
@@ -9343,7 +9380,9 @@ fn scan_shellcode_marker(deobfuscated: &str, env: &mut Environment) {
                 .push(crate::traits::Trait::ShellcodeMarker { evidence });
         }
     }
-    if NOP_SLED_RE.find(deobfuscated).is_some()
+    if NOP_SLED_RE
+        .find_iter(deobfuscated)
+        .any(|m| !match_line_starts_with_echo(deobfuscated, m.start()))
         && !env.traits.iter().any(|t| matches!(t, crate::traits::Trait::ShellcodeMarker { evidence } if evidence == "nop-sled"))
     {
         env.traits.push(crate::traits::Trait::ShellcodeMarker {
@@ -9354,7 +9393,9 @@ fn scan_shellcode_marker(deobfuscated: &str, env: &mut Environment) {
         (&*MSF_X64_PROLOGUE_RE, "msf-x64-prologue"),
         (&*MSF_X86_PROLOGUE_RE, "msf-x86-prologue"),
     ] {
-        if re.find(deobfuscated).is_some()
+        if re
+            .find_iter(deobfuscated)
+            .any(|m| !match_line_starts_with_echo(deobfuscated, m.start()))
             && !env.traits.iter().any(|t| {
                 matches!(
                     t, crate::traits::Trait::ShellcodeMarker { evidence } if evidence == label

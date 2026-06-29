@@ -2249,6 +2249,211 @@ move "%cmdDestination%" "%startupFolder%"
     }
 
     #[test]
+    fn escaped_ampersand_inmem_load_text_does_not_emit_assembly_load_trait() {
+        let script = br#"echo keep ^& powershell [System.Reflection.Assembly]::Load($bytes)"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::InMemoryAssemblyLoad { variant } if variant == "Load"
+            )),
+            "escaped echo in-memory assembly load text emitted trait: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn escaped_ampersand_lsass_dump_text_does_not_emit_credential_access() {
+        for script in [
+            br#"echo keep ^& procdump.exe -ma lsass.exe C:\Users\Public\lsass.dmp"#.as_slice(),
+            br#"echo keep ^& rundll32.exe C:\Windows\System32\comsvcs.dll, MiniDump 500 C:\Users\Public\lsass.dmp full"#.as_slice(),
+        ] {
+            let report = analyze(script, &AnalyzeConfig::default());
+
+            assert!(
+                !report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::CredentialAccess { technique, .. } if technique == "lsass-dump"
+                )),
+                "escaped echo LSASS dump text emitted CredentialAccess: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn escaped_ampersand_registry_hive_save_text_does_not_emit_credential_access() {
+        let script = br#"echo keep ^& reg save HKLM\SAM C:\Users\Public\sam.save /y"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::CredentialAccess { technique, target }
+                    if technique == "registry-hive-save" && target.contains(r"HKLM\SAM")
+            )),
+            "escaped ampersand echo text was misread as registry hive save: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn escaped_ampersand_clipboard_text_does_not_emit_input_capture() {
+        for script in [
+            br#"echo keep ^& powershell Get-Clipboard"#.as_slice(),
+            br#"echo keep ^& powershell Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Clipboard]::GetText()"#.as_slice(),
+        ] {
+            let report = analyze(script, &AnalyzeConfig::default());
+
+            assert!(
+                !report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::InputCapture { capture_kind } if capture_kind == "clipboard"
+                )),
+                "escaped echo clipboard text emitted InputCapture: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn escaped_ampersand_shellcode_text_does_not_emit_shellcode_marker() {
+        for (script, unexpected_evidence) in [
+            (
+                br#"echo keep ^& powershell $shellcode = @(0xfc,0x48,0x83,0xe4,0xf0)"#.as_slice(),
+                "$shellcode =",
+            ),
+            (
+                br#"echo keep ^& powershell [Byte[]] $buf = 0xfc,0x48,0x83,0xe4,0xf0"#.as_slice(),
+                "msf-x64-prologue",
+            ),
+        ] {
+            let report = analyze(script, &AnalyzeConfig::default());
+
+            assert!(
+                !report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::ShellcodeMarker { evidence } if evidence == unexpected_evidence
+                )),
+                "escaped echo shellcode text emitted ShellcodeMarker: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn shellcode_marker_detects_real_assignment_after_echoed_text() {
+        let script = br#"echo keep ^& powershell $shellcode = @(0xfc,0x48,0x83,0xe4,0xf0)
+powershell $shellcode = @(0xfc,0x48,0x83,0xe4,0xf0)"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ShellcodeMarker { evidence } if evidence == "$shellcode ="
+            )),
+            "real shellcode assignment after echoed text was not detected: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn escaped_ampersand_ransom_extension_text_does_not_emit_marker() {
+        let script = br#"echo keep ^& copy C:\Users\Public\foo.locked C:\Users\Public\bar.locked"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RansomFileExtension { extension } if extension == ".locked"
+            )),
+            "escaped echo ransomware extension text emitted RansomFileExtension: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn escaped_ampersand_wevtutil_text_does_not_emit_evidence_cleanup() {
+        let script = br#"echo keep ^& wevtutil cl Security"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AntiRecovery { action } if action == "event-log-clear"
+            )),
+            "escaped ampersand echo text was misread as wevtutil cleanup: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn escaped_ampersand_secure_delete_text_does_not_emit_evidence_cleanup() {
+        for (script, unexpected_action) in [
+            (
+                br#"echo keep ^& cipher /w:C:\Users\Public"#.as_slice(),
+                "free-space-wipe",
+            ),
+            (
+                br#"echo keep ^& sdelete.exe -accepteula C:\Users\Public\file.txt"#.as_slice(),
+                "secure-delete",
+            ),
+        ] {
+            let report = analyze(script, &AnalyzeConfig::default());
+
+            assert!(
+                !report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::AntiRecovery { action } if action == unexpected_action
+                )),
+                "escaped echo cleanup text emitted {unexpected_action}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn escaped_ampersand_powershell_cleanup_text_does_not_emit_evidence_cleanup() {
+        for (script, unexpected_action) in [
+            (
+                br#"echo keep ^& powershell Clear-EventLog -LogName Security"#.as_slice(),
+                "event-log-clear",
+            ),
+            (
+                br#"echo keep ^& powershell Clear-RecycleBin -Force"#.as_slice(),
+                "recycle-bin-clear",
+            ),
+        ] {
+            let report = analyze(script, &AnalyzeConfig::default());
+
+            assert!(
+                !report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::AntiRecovery { action } if action == unexpected_action
+                )),
+                "escaped echo cleanup text emitted {unexpected_action}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn escaped_ampersand_vssadmin_text_does_not_emit_anti_recovery() {
+        let script = br#"echo keep ^& vssadmin delete shadows /all /quiet"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AntiRecovery { action } if action == "vssadmin-delete-shadows"
+            )),
+            "escaped ampersand echo text was misread as vssadmin anti-recovery: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn lateral_movement_anti_recovery_probe_enum_traits() {
         let script = b"@echo off\r\n\
             psexec \\\\target.example -u admin -p pass cmd\r\n\
