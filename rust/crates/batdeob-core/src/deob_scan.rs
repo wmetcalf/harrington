@@ -3227,6 +3227,9 @@ fn first_url_after(
         .skip(start)
         .map(|token| strip_outer_quotes(token).trim_matches(['(', ')', ';', ',', '"', '\'', '`']))
         .find_map(|token| {
+            if token.contains("%%") {
+                return None;
+            }
             if looks_like_direct_url(token) {
                 return Some(token);
             }
@@ -5751,6 +5754,10 @@ fn parse_curl_like_download(tokens: &[String]) -> Option<(String, Option<String>
     while i < tokens.len() {
         let raw_token = tokens[i].trim_matches(['"', '\'', ')']);
         let token = clean_command_url_token(raw_token);
+        if raw_token.contains("%%") || token.contains("%%") {
+            i += 1;
+            continue;
+        }
         if raw_token == "-O"
             || raw_token.eq_ignore_ascii_case("--remote-name")
             || raw_token.eq_ignore_ascii_case("--remote-name-all")
@@ -5883,6 +5890,155 @@ fn parse_curl_like_download(tokens: &[String]) -> Option<(String, Option<String>
     })
 }
 
+fn parse_curl_like_downloads(tokens: &[String]) -> Vec<(String, Option<String>)> {
+    let mut urls = Vec::new();
+    let mut dst: Option<String> = None;
+    let mut output_dir: Option<String> = None;
+    let mut remote_name = false;
+    let mut i = 1;
+    while i < tokens.len() {
+        let raw_token = tokens[i].trim_matches(['"', '\'', ')']);
+        let token = clean_command_url_token(raw_token);
+        if raw_token.contains("%%") || token.contains("%%") {
+            i += 1;
+            continue;
+        }
+        if raw_token == "-O"
+            || raw_token.eq_ignore_ascii_case("--remote-name")
+            || raw_token.eq_ignore_ascii_case("--remote-name-all")
+        {
+            remote_name = true;
+            i += 1;
+            continue;
+        }
+        if is_curl_one_arg_flag(raw_token) {
+            i += 2;
+            continue;
+        }
+        if is_curl_empty_attached_one_arg_long_flag(raw_token) {
+            i += 2;
+            continue;
+        }
+        if is_curl_attached_one_arg_short_flag(raw_token)
+            || is_curl_attached_one_arg_long_flag(raw_token)
+        {
+            i += 1;
+            continue;
+        }
+        if is_compact_curl_short_remote_name_flag(raw_token) {
+            remote_name = true;
+            i += 1;
+            continue;
+        }
+        if curl_flag_matches_ci(raw_token, "-o") || curl_flag_matches_ci(raw_token, "--output") {
+            let Some(next) = tokens.get(i + 1) else {
+                i += 1;
+                continue;
+            };
+            dst = Some(next.trim_matches(['"', '\'', ')']).to_string());
+            i += 2;
+            continue;
+        }
+        if curl_flag_matches_ci(raw_token, "--output-dir") {
+            let Some(next) = tokens.get(i + 1) else {
+                i += 1;
+                continue;
+            };
+            output_dir = Some(next.trim_matches(['"', '\'', ')']).to_string());
+            i += 2;
+            continue;
+        }
+        if let Some(rest) = strip_ascii_case_insensitive_prefix(raw_token, "--output=")
+            .or_else(|| strip_ascii_case_insensitive_prefix(raw_token, "--output:"))
+        {
+            if !rest.is_empty() {
+                dst = Some(rest.trim_matches(['"', '\'', ')']).to_string());
+            }
+            i += 1;
+            continue;
+        }
+        if let Some(rest) = strip_ascii_case_insensitive_prefix(raw_token, "--output-dir=")
+            .or_else(|| strip_ascii_case_insensitive_prefix(raw_token, "--output-dir:"))
+        {
+            if !rest.is_empty() {
+                output_dir = Some(rest.trim_matches(['"', '\'', ')']).to_string());
+            }
+            i += 1;
+            continue;
+        }
+        if let Some(rest) = strip_ascii_case_insensitive_prefix(raw_token, "--url=")
+            .or_else(|| strip_ascii_case_insensitive_prefix(raw_token, "--url:"))
+        {
+            if let Some(normalized) = normalize_curl_url_token(clean_command_url_token(
+                rest.trim_matches(['"', '\'', ')']),
+            )) {
+                urls.push(normalized);
+            }
+            i += 1;
+            continue;
+        }
+        if raw_token.eq_ignore_ascii_case("--url") {
+            let Some(next) = tokens.get(i + 1) else {
+                i += 1;
+                continue;
+            };
+            if let Some(normalized) = normalize_curl_url_token(clean_command_url_token(
+                next.trim_matches(['"', '\'', ')']),
+            )) {
+                urls.push(normalized);
+            }
+            i += 2;
+            continue;
+        }
+        if let Some(rest) = raw_token.strip_prefix("-o") {
+            if !rest.is_empty() && !rest.starts_with('-') {
+                dst = Some(rest.trim_matches(['"', '\'', ')']).to_string());
+                i += 1;
+                continue;
+            }
+        }
+        if let Some(rest) = compact_curl_short_output_arg(raw_token) {
+            if rest.is_empty() {
+                let Some(next) = tokens.get(i + 1) else {
+                    i += 1;
+                    continue;
+                };
+                dst = Some(next.trim_matches(['"', '\'', ')']).to_string());
+                i += 2;
+            } else {
+                dst = Some(rest.trim_matches(['"', '\'', ')']).to_string());
+                i += 1;
+            }
+            continue;
+        }
+        if let Some(normalized) = normalize_curl_url_token(token) {
+            urls.push(normalized);
+        }
+        i += 1;
+    }
+
+    urls.into_iter()
+        .map(|url| {
+            let dst = dst
+                .clone()
+                .map(|path| resolve_curl_output_path(output_dir.as_deref(), path))
+                .or_else(|| {
+                    remote_name
+                        .then(|| {
+                            url_basename(&url).map(|name| {
+                                output_dir
+                                    .as_deref()
+                                    .map(|dir| join_windows_path(dir, &name))
+                                    .unwrap_or(name)
+                            })
+                        })
+                        .flatten()
+                });
+            (url, dst)
+        })
+        .collect()
+}
+
 fn resolve_curl_output_path(output_dir: Option<&str>, output: String) -> String {
     output_dir
         .filter(|_| !is_windows_rooted_path(&output))
@@ -5899,6 +6055,9 @@ fn is_windows_rooted_path(path: &str) -> bool {
 }
 
 fn normalize_curl_url_token(token: &str) -> Option<String> {
+    if token.contains("%%") {
+        return None;
+    }
     normalize_liberal_url_token(token).or_else(|| normalize_schemeless_domain_path_token(token))
 }
 
@@ -6037,6 +6196,9 @@ fn parse_glued_curl_download(text: &str) -> Option<(String, Option<String>)> {
     raw = &raw[..url_end];
 
     let url = raw.trim_end_matches(['.', ',', ';', ':']).to_string();
+    if url.contains("%%") {
+        return None;
+    }
     if url.is_empty() {
         return None;
     }
@@ -6177,6 +6339,42 @@ fn normalize_curl_text(curl_text: &str) -> std::borrow::Cow<'_, str> {
     std::borrow::Cow::Owned(out)
 }
 
+fn find_curl_command_position(line: &str) -> Option<usize> {
+    let mut search_start = 0;
+    while let Some(pos) = find_ascii_case_insensitive_from(line, "curl", search_start) {
+        let rest = &line[pos + "curl".len()..];
+        let command_boundary = rest.is_empty()
+            || rest
+                .as_bytes()
+                .first()
+                .is_some_and(|b| b.is_ascii_whitespace() || matches!(*b, b'"' | b'\'' | b'-'))
+            || strip_ascii_case_insensitive_prefix(rest, ".exe").is_some_and(|after| {
+                after.is_empty()
+                    || after
+                        .as_bytes()
+                        .first()
+                        .is_some_and(|b| b.is_ascii_whitespace() || matches!(*b, b'"' | b'\''))
+            });
+        if !command_boundary {
+            search_start = pos + "curl".len();
+            continue;
+        }
+        let curl_text = normalize_curl_text(&line[pos..]);
+        let tokens = split_words(&curl_text);
+        let is_command = tokens
+            .first()
+            .and_then(|cmd| basename_trimmed(cmd))
+            .is_some_and(|cmd_base| {
+                cmd_base.eq_ignore_ascii_case("curl") || cmd_base.eq_ignore_ascii_case("curl.exe")
+            });
+        if is_command {
+            return Some(pos);
+        }
+        search_start = pos + "curl".len();
+    }
+    None
+}
+
 fn parse_redirect_dst(segment: &str) -> Option<String> {
     let mut search_from = 0;
     while let Some(rel) = segment[search_from..].find('>') {
@@ -6225,7 +6423,7 @@ fn scan_curl_redirect_deob_text(deobfuscated: &str, env: &mut Environment) {
         if !contains_ascii_case_insensitive(line, "curl") || !line.contains('>') {
             continue;
         }
-        let Some(curl_pos) = find_ascii_case_insensitive_from(line, "curl", 0) else {
+        let Some(curl_pos) = find_curl_command_position(line) else {
             continue;
         };
         let curl_text = normalize_curl_text(&line[curl_pos..]);
@@ -6283,7 +6481,7 @@ fn scan_curl_deob_text(deobfuscated: &str, env: &mut Environment) {
         if !contains_ascii_case_insensitive(line, "curl") {
             continue;
         }
-        let Some(curl_pos) = find_ascii_case_insensitive_from(line, "curl", 0) else {
+        let Some(curl_pos) = find_curl_command_position(line) else {
             continue;
         };
         let curl_text = normalize_curl_text(&line[curl_pos..]);
@@ -6297,20 +6495,36 @@ fn scan_curl_deob_text(deobfuscated: &str, env: &mut Environment) {
         if !cmd_base.eq_ignore_ascii_case("curl") && !cmd_base.eq_ignore_ascii_case("curl.exe") {
             continue;
         }
-        let parsed = parse_curl_like_download(&tokens).and_then(|(url, dst)| {
-            if looks_like_curl_url(&url) {
-                Some((url, dst))
-            } else {
-                None
-            }
-        });
+        if replay_curl_stdin_config_pipeline(line, curl_pos, &tokens, env) {
+            continue;
+        }
         let raw_curl_text = &line[curl_pos..];
+        let downloads = parse_curl_like_downloads(&tokens)
+            .into_iter()
+            .filter(|(url, _)| looks_like_curl_url(url))
+            .collect::<Vec<_>>();
+        if !downloads.is_empty() {
+            for (url, dst) in downloads {
+                let dst = dst
+                    .or_else(|| parse_glued_curl_download(raw_curl_text).and_then(|(_, dst)| dst))
+                    .or_else(|| parse_curl_output_dst(raw_curl_text));
+                if !known.insert(url.clone()) {
+                    continue;
+                }
+                env.traits.push(Trait::Download {
+                    cmd: line.to_string(),
+                    src: url,
+                    dst,
+                });
+            }
+            continue;
+        }
         let glued = if curl_tokens_have_download_url_candidate(&tokens) {
             parse_glued_curl_download(raw_curl_text)
         } else {
             None
         };
-        let Some((url, dst)) = parsed.or(glued) else {
+        let Some((url, dst)) = glued else {
             continue;
         };
         let dst = dst
@@ -6325,6 +6539,48 @@ fn scan_curl_deob_text(deobfuscated: &str, env: &mut Environment) {
             dst,
         });
     }
+}
+
+fn replay_curl_stdin_config_pipeline(
+    line: &str,
+    curl_pos: usize,
+    tokens: &[String],
+    env: &mut Environment,
+) -> bool {
+    let uses_stdin_config = tokens
+        .windows(2)
+        .any(|pair| pair[0].eq_ignore_ascii_case("-K") && pair[1].trim_matches(['"', '\'']) == "-")
+        || tokens.iter().any(|token| {
+            token.eq_ignore_ascii_case("--config=-")
+                || token.eq_ignore_ascii_case("--config:-")
+                || token == "-K-"
+        });
+    if !uses_stdin_config {
+        return false;
+    }
+    let prefix = &line[..curl_pos];
+    let Some(left_stage) = prefix
+        .rsplit('|')
+        .map(str::trim)
+        .find(|stage| !stage.is_empty())
+    else {
+        return false;
+    };
+    let left_tokens = split_words(left_stage);
+    let Some(cmd) = left_tokens.first() else {
+        return false;
+    };
+    let Some(cmd_base) = basename_trimmed(cmd) else {
+        return false;
+    };
+    if !cmd_base.eq_ignore_ascii_case("type") {
+        return false;
+    }
+    let Some(path) = left_tokens.get(1) else {
+        return false;
+    };
+    crate::handlers::curl::h_curl(&format!("curl -K {path}"), env);
+    true
 }
 
 fn scan_aria2_deob_text(deobfuscated: &str, env: &mut Environment) {

@@ -9,7 +9,7 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
     let mut output: Option<String> = None;
     let mut output_dir: Option<String> = None;
     let mut remote_name = false;
-    let mut url: Option<String> = None;
+    let mut urls: Vec<String> = Vec::new();
     let mut i = 1;
     while i < tokens.len() {
         let t = &tokens[i];
@@ -40,7 +40,7 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
                     apply_config_file(
                         strip_outer_quotes(v),
                         env,
-                        &mut url,
+                        &mut urls,
                         &mut output,
                         &mut output_dir,
                         &mut remote_name,
@@ -54,7 +54,7 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
                     apply_config_file(
                         strip_outer_quotes(v),
                         env,
-                        &mut url,
+                        &mut urls,
                         &mut output,
                         &mut output_dir,
                         &mut remote_name,
@@ -67,7 +67,7 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
                 apply_config_file(
                     strip_outer_quotes(&t[2..]),
                     env,
-                    &mut url,
+                    &mut urls,
                     &mut output,
                     &mut output_dir,
                     &mut remote_name,
@@ -130,7 +130,7 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
                     apply_config_file(
                         strip_outer_quotes(value),
                         env,
-                        &mut url,
+                        &mut urls,
                         &mut output,
                         &mut output_dir,
                         &mut remote_name,
@@ -148,8 +148,8 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
                         .or_else(|| case_insensitive_value_prefix(t, "--url:"))
                         .unwrap_or_default(),
                 );
-                if url.is_none() {
-                    url = normalize_curl_url(value);
+                if let Some(url) = normalize_curl_url(value) {
+                    urls.push(url);
                 }
                 i += 1;
                 continue;
@@ -182,43 +182,47 @@ pub fn h_curl(raw: &str, env: &mut Environment) {
                     continue;
                 }
                 let candidate = strip_outer_quotes(t);
-                if url.is_none() {
-                    url = normalize_curl_url(candidate);
+                if let Some(url) = normalize_curl_url(candidate) {
+                    urls.push(url);
                 }
                 i += 1;
             }
         }
     }
-    let Some(url) = url else { return };
+    if urls.is_empty() {
+        return;
+    }
 
-    let dst = if let Some(o) = output {
-        Some(resolve_output_path(output_dir.as_deref(), o))
-    } else if remote_name {
-        url_basename(&url).map(|name| {
-            output_dir
-                .as_deref()
-                .map(|dir| join_dir_and_name(dir, &name))
-                .unwrap_or(name)
-        })
-    } else {
-        None
-    };
+    for url in urls {
+        let dst = if let Some(o) = output.clone() {
+            Some(resolve_output_path(output_dir.as_deref(), o))
+        } else if remote_name {
+            url_basename(&url).map(|name| {
+                output_dir
+                    .as_deref()
+                    .map(|dir| join_dir_and_name(dir, &name))
+                    .unwrap_or(name)
+            })
+        } else {
+            None
+        };
 
-    env.traits.push(Trait::Download {
-        cmd: raw.to_string(),
-        src: url.clone(),
-        dst: dst.clone(),
-    });
-    if let Some(d) = dst {
-        env.modified_filesystem
-            .insert(filesystem_storage_key(&d), FsEntry::Download { src: url });
+        env.traits.push(Trait::Download {
+            cmd: raw.to_string(),
+            src: url.clone(),
+            dst: dst.clone(),
+        });
+        if let Some(d) = dst {
+            env.modified_filesystem
+                .insert(filesystem_storage_key(&d), FsEntry::Download { src: url });
+        }
     }
 }
 
 fn apply_config_file(
     path: &str,
     env: &Environment,
-    url: &mut Option<String>,
+    urls: &mut Vec<String>,
     output: &mut Option<String>,
     output_dir: &mut Option<String>,
     remote_name: &mut bool,
@@ -239,8 +243,10 @@ fn apply_config_file(
         let name = name.trim().trim_start_matches('-').to_ascii_lowercase();
         let value = strip_outer_quotes(value.trim()).to_string();
         match name.as_str() {
-            "url" if url.is_none() => {
-                *url = normalize_curl_url(&value);
+            "url" => {
+                if let Some(url) = normalize_curl_url(&value) {
+                    urls.push(url);
+                }
             }
             "output" | "o" => {
                 *output = Some(value);
@@ -257,6 +263,9 @@ fn apply_config_file(
 }
 
 fn normalize_curl_url(s: &str) -> Option<String> {
+    if s.contains("%%") {
+        return None;
+    }
     crate::deob_scan::normalize_liberal_url_token(s)
         .or_else(|| crate::deob_scan::normalize_schemeless_domain_path_token(s))
 }
