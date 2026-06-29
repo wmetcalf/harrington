@@ -1036,6 +1036,7 @@ fn type_lines_from_entry(entry: Option<&crate::env::FsEntry>) -> Option<Vec<Stri
         Some(FsEntry::Content { content, .. }) | Some(FsEntry::Decoded { content, .. }) => {
             Some(bytes_to_type_lines(content))
         }
+        Some(FsEntry::Download { src }) => Some(synth_downloaded_file_lines(src)),
         _ => None,
     }
 }
@@ -1059,6 +1060,17 @@ fn windows_basename(path: &str) -> Option<&str> {
     path.rsplit(['\\', '/'])
         .next()
         .filter(|name| !name.is_empty())
+}
+
+fn synth_downloaded_file_lines(src: &str) -> Vec<String> {
+    let lower = src.to_ascii_lowercase();
+    if lower.contains("ip-api.com/csv") {
+        return vec![
+            "success,Exampleland,EX,CA,ExampleState,Metropolis,00000,0,0,UTC,ExampleISP,ExampleOrg,AS64500,203.0.113.10"
+                .to_string(),
+        ];
+    }
+    Vec::new()
 }
 
 fn synth_curl(args: &[&str], env: &mut Environment) -> Vec<String> {

