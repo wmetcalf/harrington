@@ -1161,6 +1161,42 @@ Start-Process powershell -ArgumentList \"-NoProfile -ExecutionPolicy Bypass -Win
     }
 
     #[test]
+    fn echo_redirect_prescan_gate_allows_materialization_shapes() {
+        assert!(crate::has_echo_redirect_prescan_shape(
+            b"(\r\necho SGVsbG8=\r\n) > out.b64\r\n"
+        ));
+        assert!(crate::has_echo_redirect_prescan_shape(
+            b"echo SGVsbG8=>>out.b64\r\necho V29ybGQ=>>out.b64\r\n"
+        ));
+        assert!(!crate::has_echo_redirect_prescan_shape(
+            b"set X=SGVsbG8=\r\necho %X%>out.b64\r\n"
+        ));
+    }
+
+    #[test]
+    fn echo_redirect_prescan_shapes_distinguish_block_from_run() {
+        let block = crate::echo_redirect_prescan_shapes(b"(\r\necho SGVsbG8=\r\n) > out.b64\r\n");
+        assert!(block.grouped_block);
+        assert!(!block.top_level_run);
+
+        let run = crate::echo_redirect_prescan_shapes(
+            b"echo SGVsbG8=>>out.b64\r\necho V29ybGQ=>>out.b64\r\nrem unrelated ( )\r\n",
+        );
+        assert!(!run.grouped_block);
+        assert!(run.top_level_run);
+    }
+
+    #[test]
+    fn echo_redirect_prescan_gate_blocks_unrelated_echo_text() {
+        assert!(!crate::has_echo_redirect_prescan_shape(
+            b"echo URL is https://example.test/a > con\r\n"
+        ));
+        assert!(!crate::has_echo_redirect_prescan_shape(
+            b"rem echo and > and ( ) appear in a comment\r\n"
+        ));
+    }
+
+    #[test]
     fn start_quoted_url_is_extracted() {
         // `start "" "URL"` opens the URL in the default handler.
         let script = b"StArT \"\" \"https://opened.example/doc.pdf\"\r\n";
@@ -8671,9 +8707,6 @@ fn looks_like_batch(content: &[u8]) -> bool {
         .any(|m| crate::util::contains_ascii_case_insensitive(&text, m))
 }
 
-/// After `drive()` returns, walk the modified filesystem for decoded/content
-/// entries that look like batch scripts and recurse into them.
-#[allow(clippy::only_used_in_recursion)]
 /// Pre-scan for the grouped-output-redirect idiom that base64-blob droppers
 /// use to materialize a payload file:
 ///
@@ -8691,6 +8724,82 @@ fn looks_like_batch(content: &[u8]) -> bool {
 /// can resolve the file. Only blocks whose body is entirely `echo` lines are
 /// captured — any other command makes the combined output ambiguous, so we
 /// bail rather than guess.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct EchoRedirectPrescanShapes {
+    grouped_block: bool,
+    top_level_run: bool,
+}
+
+fn echo_redirect_prescan_shapes(input: &[u8]) -> EchoRedirectPrescanShapes {
+    if !contains_ascii_case_insensitive_bytes(input, b"echo") || !input.contains(&b'>') {
+        return EchoRedirectPrescanShapes::default();
+    }
+
+    let text = String::from_utf8_lossy(input);
+    let mut saw_group_open = false;
+    let mut saw_redirected_group_open = false;
+    let mut echo_redirect_lines = 0usize;
+    let mut shapes = EchoRedirectPrescanShapes::default();
+    for raw_line in text.lines() {
+        let trimmed = raw_line.trim_start_matches(['@', ' ', '\t']);
+        if trimmed.is_empty() {
+            continue;
+        }
+        let lower = trimmed.to_ascii_lowercase();
+        if lower.starts_with("rem ") || lower == "rem" || lower.starts_with("::") {
+            continue;
+        }
+
+        let (opens_group, redirected_group_open) = if trimmed.trim_end() == "(" {
+            (true, false)
+        } else if trimmed.trim_end().ends_with('(') && trimmed.contains('>') {
+            let (cleaned, redir) = crate::redirect::extract_redirections(trimmed.trim_end());
+            let redirected = cleaned.trim() == "(" && redir.stdout.is_some();
+            (redirected, redirected)
+        } else {
+            (false, false)
+        };
+        if opens_group {
+            saw_group_open = true;
+            saw_redirected_group_open = redirected_group_open;
+            continue;
+        }
+
+        if saw_group_open
+            && trimmed.trim_start().starts_with(')')
+            && (trimmed.contains('>') || saw_redirected_group_open)
+        {
+            shapes.grouped_block = true;
+            if shapes.grouped_block && shapes.top_level_run {
+                return shapes;
+            }
+            saw_group_open = false;
+            saw_redirected_group_open = false;
+        }
+
+        if block_echo_payload(trimmed).is_some() && trimmed.contains('>') {
+            echo_redirect_lines += 1;
+            if echo_redirect_lines >= 2 {
+                shapes.top_level_run = true;
+                if shapes.grouped_block && shapes.top_level_run {
+                    return shapes;
+                }
+            }
+            continue;
+        }
+        if block_echo_payload(trimmed).is_none() {
+            echo_redirect_lines = 0;
+        }
+    }
+    shapes
+}
+
+#[cfg(test)]
+fn has_echo_redirect_prescan_shape(input: &[u8]) -> bool {
+    let shapes = echo_redirect_prescan_shapes(input);
+    shapes.grouped_block || shapes.top_level_run
+}
+
 fn capture_block_echo_redirects(lines: &[String], env: &mut Environment) {
     // Pre-scan runs BEFORE the main interpreter, so env doesn't yet have
     // any `set _t=…` definitions from preceding lines. We need those so
@@ -9304,7 +9413,10 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
     // never populated. Capturing it up front lets certutil -decode / call
     // resolve the written file. Safe to run before the main loop: the close
     // `)` redirect line is a block delimiter and never re-writes the file.
-    capture_block_echo_redirects(&lines, env);
+    let echo_redirect_shapes = echo_redirect_prescan_shapes(input);
+    if echo_redirect_shapes.grouped_block {
+        capture_block_echo_redirects(&lines, env);
+    }
     // Save the caller's label_index and install one for this script frame.
     let prior_labels = std::mem::take(&mut env.label_index);
     env.label_index = labels::build_label_index(&lines);
