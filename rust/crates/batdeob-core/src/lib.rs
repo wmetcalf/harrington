@@ -6859,6 +6859,35 @@ for /f "tokens=* delims=" %%U in ('type first.txt second.txt ^| find "https://"'
     }
 
     #[test]
+    fn for_f_resolves_percent_tilde_path_search_powershell() {
+        let script = concat!(
+            "call :find.powershell powershell.exe\r\n",
+            "if defined POSH (\r\n",
+            "  for /f %%d in ( '%POSH% -Command \"Get-Date -UFormat '%%H%%M%%S'\" ^<nul' ) do echo time=%%d\r\n",
+            ")\r\n",
+            "goto :EOF\r\n",
+            ":find.powershell\r\n",
+            "set \"POSH=%~$PATH:1\"\r\n",
+            "goto :EOF\r\n",
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo time=120000"),
+            "deobf:\n{}\ntraits: {:?}",
+            report.deobfuscated,
+            report.traits
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::ForUnresolvedSource { pipeline } if pipeline.contains("Get-Date"))),
+            "resolved PATH powershell should run synthetic Get-Date: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn for_f_reads_wmic_localdatetime_output() {
         let script = concat!(
             "for /f \"tokens=2 delims==.\" %%T in ('wmic os get LocalDateTime /value') do set TS=%%T\r\n",
