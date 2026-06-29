@@ -30162,6 +30162,50 @@ powershell -Command "New-Service -Name UpdateSvc -BinaryPathName 'cmd.exe /c cal
     }
 
     #[test]
+    fn set_mppreference_padded_disable_value_emits_defender_evasion_trait() {
+        let report = analyze(
+            br#"powershell -Command "Set-MpPreference -DisableRealtimeMonitoring 0x00000001""#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "setmp-disablerealtimemonitoring"
+                        && target == "0x00000001"
+            )),
+            "padded Set-MpPreference disable value was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn set_mppreference_padded_reporting_values_emit_defender_evasion_traits() {
+        let report = analyze(
+            br#"powershell -Command "Set-MpPreference -MAPSReporting 0x00000000 -SubmitSamplesConsent 0x00000002""#,
+            &Config::default(),
+        );
+
+        for (action, target) in [
+            ("setmp-mapsreporting", "0x00000000"),
+            ("setmp-submitsamplesconsent", "0x00000002"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::DefenderEvasion {
+                        action: existing_action,
+                        target: existing_target,
+                    } if existing_action == action && existing_target == target
+                )),
+                "padded Set-MpPreference reporting value was not surfaced for {action}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn wmic_security_process_delete_emits_defender_evasion_trait() {
         let script = br#"wmic process where "name='MsMpEng.exe'" delete"#;
         let report = analyze(script, &Config::default());

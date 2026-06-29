@@ -8062,6 +8062,7 @@ pub(crate) fn defender_evasion_is_disabling_value(opt: &str, val: &str) -> bool 
     // `2` (SubmitSamplesConsent=2 = never submit). Skip enabling
     // values like `$false` to avoid false positives in remediation
     // scripts that turn protections back on.
+    let numeric = parse_defender_evasion_numeric_value(val);
     let disabling_opt = opt.to_ascii_lowercase().starts_with("disable")
         || opt.eq_ignore_ascii_case("disablerealtimemonitoring")
         || opt.eq_ignore_ascii_case("disablebehaviormonitoring")
@@ -8070,11 +8071,22 @@ pub(crate) fn defender_evasion_is_disabling_value(opt: &str, val: &str) -> bool 
         || opt.eq_ignore_ascii_case("disableprivacymode")
         || opt.eq_ignore_ascii_case("disablescriptscanning");
     (disabling_opt
-        && (val.eq_ignore_ascii_case("$true") || val == "1" || val.eq_ignore_ascii_case("true")))
+        && (val.eq_ignore_ascii_case("$true")
+            || numeric == Some(1)
+            || val.eq_ignore_ascii_case("true")))
         || (opt.eq_ignore_ascii_case("mapsreporting")
-            && (val.eq_ignore_ascii_case("disabled") || val == "0"))
+            && (val.eq_ignore_ascii_case("disabled") || numeric == Some(0)))
         || (opt.eq_ignore_ascii_case("submitsamplesconsent")
-            && (val == "2" || val.eq_ignore_ascii_case("never")))
+            && (numeric == Some(2) || val.eq_ignore_ascii_case("never")))
+}
+
+fn parse_defender_evasion_numeric_value(val: &str) -> Option<u64> {
+    let val = val.trim();
+    if let Some(hex) = val.strip_prefix("0x").or_else(|| val.strip_prefix("0X")) {
+        u64::from_str_radix(hex, 16).ok()
+    } else {
+        val.parse::<u64>().ok()
+    }
 }
 
 pub(crate) fn defender_evasion_action_suffix(opt: &str) -> Option<&'static str> {
