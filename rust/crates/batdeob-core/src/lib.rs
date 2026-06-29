@@ -26131,6 +26131,87 @@ C:\Users\Public\tk.tmp /f /im MsMpEng.exe
     }
 
     #[test]
+    fn generic_taskkill_does_not_emit_defender_evasion_trait() {
+        let script = b"@echo off\r\ntaskkill /f /im WINWORD.EXE\r\n";
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, .. } if action == "taskkill-security-process"
+            )),
+            "generic taskkill should not be DefenderEvasion: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn taskkill_filter_security_process_emits_defender_evasion_trait() {
+        let script = br#"taskkill /f /fi "IMAGENAME eq MsMpEng.exe""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "taskkill-security-process" && target == "MsMpEng.exe"
+            )),
+            "taskkill image-name filter for security process was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_stop_process_security_process_emits_defender_evasion_trait() {
+        let script = br#"powershell -Command "Stop-Process -Name MsMpEng -Force""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "powershell-stop-process" && target == "MsMpEng.exe"
+            )),
+            "PowerShell Stop-Process security process was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_kill_alias_security_process_emits_defender_evasion_trait() {
+        let script = br#"powershell -Command "kill -Name MsMpEng -Force""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "powershell-stop-process" && target == "MsMpEng.exe"
+            )),
+            "PowerShell kill alias security process was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_positional_stop_process_alias_security_process_emits_defender_evasion_trait() {
+        let script = br#"powershell -Command "spps MsMpEng -Force; kill SecurityHealthSystray""#;
+        let report = analyze(script, &Config::default());
+
+        for expected in ["MsMpEng.exe", "SecurityHealthSystray.exe"] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::DefenderEvasion { action, target }
+                        if action == "powershell-stop-process" && target == expected
+                )),
+                "PowerShell positional stop-process alias missed {expected}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn copied_takeown_alias_emits_defender_evasion_trait() {
         let script = br#"copy C:\Windows\System32\takeown.exe C:\Users\Public\to.tmp
 C:\Users\Public\to.tmp /f C:\Windows\System32\SecurityHealthService.exe

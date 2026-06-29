@@ -6689,11 +6689,21 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
         Regex::new(r#"(?i)\btaskkill(?:\.exe)?\b[^\r\n]*?/im\s+("[^"]+"|'[^']+'|[^\s&|]+)"#)
             .expect("taskkill-security-process")
     });
+    static TASKKILL_FILTER_SECURITY_PROCESS_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?i)\btaskkill(?:\.exe)?\b[^\r\n]*?/fi\s+("[^"\r\n]*\bIMAGENAME\s+eq\s+([^"\s]+)[^"]*"|'[^'\r\n]*\bIMAGENAME\s+eq\s+([^'\s]+)[^']*'|[^\r\n&|]*\bIMAGENAME\s+eq\s+([^\s&|]+))"#,
+        )
+        .expect("taskkill-filter-security-process")
+    });
     static WMIC_SECURITY_PROCESS_DELETE_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
             r#"(?i)\bwmic(?:\.exe)?\s+process\b[^\r\n]*?\bname\s*=\s*['"]([^'"\r\n]+)['"][^\r\n]*\bdelete\b"#,
         )
         .expect("wmic-security-process-delete")
+    });
+    static POWERSHELL_STOP_PROCESS_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?im)^[^\r\n]*?\b(?:Stop-Process|spps|kill)\b[^\r\n]*"#)
+            .expect("powershell-stop-process")
     });
     static TAKEOWN_SECURITY_BINARY_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?i)\btakeown(?:\.exe)?\b[^\r\n]*?/f\s+("[^"]+"|'[^']+'|[^\s&|]+)"#)
@@ -6900,6 +6910,44 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
         };
         if is_security_process_name(&target) {
             push("taskkill-security-process", target);
+        }
+    }
+    for caps in TASKKILL_FILTER_SECURITY_PROCESS_RE.captures_iter(deobfuscated) {
+        if caps
+            .get(0)
+            .is_some_and(|m| match_line_starts_with_echo(deobfuscated, m.start()))
+        {
+            continue;
+        }
+        let Some(target) = caps
+            .get(2)
+            .or_else(|| caps.get(3))
+            .or_else(|| caps.get(4))
+            .and_then(|m| security_file_basename(m.as_str()))
+        else {
+            continue;
+        };
+        if is_security_process_name(&target) {
+            push("taskkill-security-process", target);
+        }
+    }
+    for m in POWERSHELL_STOP_PROCESS_RE.find_iter(deobfuscated) {
+        if match_line_starts_with_echo(deobfuscated, m.start()) {
+            continue;
+        }
+        let command = m.as_str();
+        let candidates = powershell_named_argument(command, "-Name")
+            .into_iter()
+            .chain(powershell_positional_arguments(command, "Stop-Process"))
+            .chain(powershell_positional_arguments(command, "spps"))
+            .chain(powershell_positional_arguments(command, "kill"));
+        for candidate in candidates {
+            let Some(target) = normalize_security_process_target(&candidate) else {
+                continue;
+            };
+            if is_security_binary_name(&target) {
+                push("powershell-stop-process", target);
+            }
         }
     }
     for caps in WMIC_SECURITY_PROCESS_DELETE_RE.captures_iter(deobfuscated) {
@@ -7115,6 +7163,14 @@ fn security_file_basename(path: &str) -> Option<String> {
     windows_basename(path)
         .map(|name| name.trim_end_matches(['.', ' ']).to_string())
         .filter(|name| !name.is_empty())
+}
+
+fn normalize_security_process_target(target: &str) -> Option<String> {
+    let mut name = security_file_basename(target)?;
+    if !name.contains('.') {
+        name.push_str(".exe");
+    }
+    Some(name)
 }
 
 fn is_security_process_name(name: &str) -> bool {
