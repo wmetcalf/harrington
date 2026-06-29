@@ -232,6 +232,7 @@ pub fn h_powershell(raw: &str, env: &mut Environment) {
 
 fn record_powershell_side_effects(body: &str, env: &mut Environment) {
     record_download_side_effects(body, env);
+    record_copy_item_side_effects(body, env);
     record_set_content_value_side_effects(body, env);
     record_get_content_set_content_side_effects(body, env);
 }
@@ -269,6 +270,23 @@ fn record_get_content_set_content_side_effects(body: &str, env: &mut Environment
             continue;
         };
         let Some((dst, _)) = powershell_content_path_arg(&tokens, set_idx + 1) else {
+            continue;
+        };
+        let Some(entry) = tracked_transfer_entry(&src, env) else {
+            continue;
+        };
+        env.modified_filesystem
+            .insert(filesystem_storage_key(&dst), entry);
+    }
+}
+
+fn record_copy_item_side_effects(body: &str, env: &mut Environment) {
+    let tokens = split_words(body);
+    for i in 0..tokens.len() {
+        if !is_copy_item_token(&tokens[i]) {
+            continue;
+        }
+        let Some((src, dst)) = powershell_copy_item_paths(&tokens, i + 1) else {
             continue;
         };
         let Some(entry) = tracked_transfer_entry(&src, env) else {
@@ -422,6 +440,13 @@ fn is_content_write_token(token: &str) -> bool {
     )
 }
 
+fn is_copy_item_token(token: &str) -> bool {
+    matches!(
+        strip_quotes(token).to_ascii_lowercase().as_str(),
+        "copy-item" | "copy" | "cp" | "cpi"
+    )
+}
+
 fn direct_content_write_append_mode(tokens: &[String], idx: usize) -> Option<bool> {
     match strip_quotes(tokens.get(idx)?).to_ascii_lowercase().as_str() {
         "set-content" | "sc" => Some(false),
@@ -533,6 +558,47 @@ fn powershell_content_path_arg(tokens: &[String], start: usize) -> Option<(Strin
     None
 }
 
+fn powershell_copy_item_paths(tokens: &[String], start: usize) -> Option<(String, String)> {
+    let mut src: Option<String> = None;
+    let mut dst: Option<String> = None;
+    let mut positional: Vec<String> = Vec::new();
+    let mut i = start;
+    while i < tokens.len() {
+        let token = strip_quotes(&tokens[i]);
+        if token == "|" || token == ";" {
+            break;
+        }
+        let lower = token.to_ascii_lowercase();
+        if lower == "-path" || lower == "-literalpath" {
+            src = Some(strip_quotes(tokens.get(i + 1)?).to_string());
+            i += 2;
+            continue;
+        }
+        if let Some(value) = attached_ps_path_value(token) {
+            src = Some(value.to_string());
+            i += 1;
+            continue;
+        }
+        if lower == "-destination" || lower == "-dest" {
+            dst = Some(strip_quotes(tokens.get(i + 1)?).to_string());
+            i += 2;
+            continue;
+        }
+        if let Some(value) = attached_ps_destination_value(token) {
+            dst = Some(value.to_string());
+            i += 1;
+            continue;
+        }
+        if !token.starts_with('-') {
+            positional.push(token.to_string());
+        }
+        i += 1;
+    }
+    let src = src.or_else(|| positional.first().cloned())?;
+    let dst = dst.or_else(|| positional.get(1).cloned())?;
+    Some((src, dst))
+}
+
 fn attached_ps_value_value(token: &str) -> Option<&str> {
     let lower = token.to_ascii_lowercase();
     let rest = lower.strip_prefix("-value")?;
@@ -552,6 +618,21 @@ fn attached_ps_input_object_value(token: &str) -> Option<&str> {
 fn attached_ps_path_value(token: &str) -> Option<&str> {
     let lower = token.to_ascii_lowercase();
     for flag in ["-path", "-literalpath", "-filepath"] {
+        let Some(rest) = lower.strip_prefix(flag) else {
+            continue;
+        };
+        let original_rest = &token[token.len() - rest.len()..];
+        let value = original_rest.trim_start_matches([':', '=']);
+        if !value.is_empty() {
+            return Some(strip_quotes(value));
+        }
+    }
+    None
+}
+
+fn attached_ps_destination_value(token: &str) -> Option<&str> {
+    let lower = token.to_ascii_lowercase();
+    for flag in ["-destination", "-dest"] {
         let Some(rest) = lower.strip_prefix(flag) else {
             continue;
         };

