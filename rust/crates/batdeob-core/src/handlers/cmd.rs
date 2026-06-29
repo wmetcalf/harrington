@@ -46,7 +46,7 @@ fn find_cmd_executable_end(raw: &str) -> Option<usize> {
 
 fn is_comspec_token(tok: &str) -> bool {
     let tok = tok.trim_matches(['"', '\'', '\\']);
-    if tok.eq_ignore_ascii_case("%comspec%") {
+    if tok.eq_ignore_ascii_case("%comspec%") || tok.eq_ignore_ascii_case("!comspec!") {
         return true;
     }
     comspec_expanded_token(tok)
@@ -58,10 +58,19 @@ fn comspec_expanded_token(tok: &str) -> Option<String> {
     comspec_substring_token(tok).or_else(|| comspec_substitute_token(tok))
 }
 
+fn delimited_comspec_inner(tok: &str) -> Option<&str> {
+    let first = tok.as_bytes().first().copied()?;
+    if !matches!(first, b'%' | b'!') || tok.as_bytes().last().copied()? != first {
+        return None;
+    }
+    tok.get(1..tok.len() - 1)
+}
+
 fn comspec_substring_token(tok: &str) -> Option<String> {
     const COMSPEC: &str = r"C:\WINDOWS\system32\cmd.exe";
-    let lower = tok.to_ascii_lowercase();
-    let body = lower.strip_prefix("%comspec:~")?.strip_suffix('%')?;
+    let inner = delimited_comspec_inner(tok)?;
+    let lower = inner.to_ascii_lowercase();
+    let body = lower.strip_prefix("comspec:~")?;
     let (start_text, len_text) = body.split_once(',').map_or((body, None), |(start, len)| {
         (start.trim(), Some(len.trim()))
     });
@@ -82,11 +91,14 @@ fn comspec_substring_token(tok: &str) -> Option<String> {
 
 fn comspec_substitute_token(tok: &str) -> Option<String> {
     const COMSPEC: &str = r"C:\WINDOWS\system32\cmd.exe";
-    let lower = tok.to_ascii_lowercase();
-    if !lower.starts_with("%comspec:") || !tok.ends_with('%') {
+    let inner = delimited_comspec_inner(tok)?;
+    if !inner
+        .get(.."comspec:".len())?
+        .eq_ignore_ascii_case("comspec:")
+    {
         return None;
     }
-    let body = &tok["%comspec:".len()..tok.len() - 1];
+    let body = &inner["comspec:".len()..];
     let (needle, replacement) = body.split_once('=')?;
     let (wildcard, needle) = needle
         .strip_prefix('*')
@@ -784,6 +796,19 @@ mod extract_cmd_inner_tests {
     fn slash_c_attached_quoted_body() {
         let r = extract_cmd_inner("cmd.exe /d /c\"echo attached-body\"").unwrap();
         assert_eq!(r, "echo attached-body");
+    }
+
+    #[test]
+    fn bang_comspec_substring_extracts_body() {
+        let r = extract_cmd_inner("!COMSPEC:~-7! /V:ON /c echo bang-substring").unwrap();
+        assert_eq!(r, "echo bang-substring");
+    }
+
+    #[test]
+    fn bang_comspec_substitution_extracts_body() {
+        let r =
+            extract_cmd_inner("!COMSPEC:*System32\\=! /V:ON /c echo bang-substitution").unwrap();
+        assert_eq!(r, "echo bang-substitution");
     }
 }
 
