@@ -3604,6 +3604,18 @@ fn command_starts_with_echo(line: &str) -> bool {
     })
 }
 
+fn match_line_starts_with_echo(text: &str, match_start: usize) -> bool {
+    let line_start = text[..match_start]
+        .rfind(['\r', '\n'])
+        .map(|idx| idx + 1)
+        .unwrap_or(0);
+    let line_end = text[match_start..]
+        .find(['\r', '\n'])
+        .map(|idx| match_start + idx)
+        .unwrap_or(text.len());
+    command_starts_with_echo(&text[line_start..line_end])
+}
+
 fn scan_copied_handler_alias_deob_text(
     deobfuscated: &str,
     env: &mut Environment,
@@ -6711,6 +6723,12 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
         }
     }
     for caps in SC_DEFENDER_RE.captures_iter(deobfuscated) {
+        if caps
+            .get(0)
+            .is_some_and(|m| match_line_starts_with_echo(deobfuscated, m.start()))
+        {
+            continue;
+        }
         let Some(verb) = caps.get(1).and_then(|m| defender_evasion_label(m.as_str())) else {
             continue;
         };
@@ -6744,6 +6762,12 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
         }
     }
     for caps in TASKKILL_SECURITY_PROCESS_RE.captures_iter(deobfuscated) {
+        if caps
+            .get(0)
+            .is_some_and(|m| match_line_starts_with_echo(deobfuscated, m.start()))
+        {
+            continue;
+        }
         let Some(target) = caps.get(1).and_then(|m| security_file_basename(m.as_str())) else {
             continue;
         };
@@ -7813,6 +7837,9 @@ fn scan_enumeration(deobfuscated: &str, env: &mut Environment) {
         ]
     });
     for line in deobfuscated.lines() {
+        if command_starts_with_echo(line) {
+            continue;
+        }
         let tokens = split_words(line);
         let Some(command) = tokens.first() else {
             continue;
@@ -7823,9 +7850,14 @@ fn scan_enumeration(deobfuscated: &str, env: &mut Environment) {
         push_enumeration_once(env, kind, line.trim().to_string(), true);
     }
     for (re, kind, command_specific) in PATTERNS.iter() {
-        if let Some(m) = re.find(deobfuscated) {
-            let cmd = m.as_str().trim().to_string();
-            push_enumeration_once(env, kind, cmd, *command_specific);
+        for line in deobfuscated
+            .lines()
+            .filter(|line| !command_starts_with_echo(line))
+        {
+            if let Some(m) = re.find(line) {
+                let cmd = m.as_str().trim().to_string();
+                push_enumeration_once(env, kind, cmd, *command_specific);
+            }
         }
     }
 }

@@ -27978,6 +27978,54 @@ $v = 'fTp:\\var-liberal.example\stage.dat'"#,
     }
 
     #[test]
+    fn escaped_ampersand_whoami_text_does_not_emit_enumeration() {
+        let report = analyze(br#"echo keep ^& whoami /priv"#, &Config::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "whoami-priv" && command == "whoami /priv"
+            )),
+            "escaped ampersand echo text was misread as whoami enumeration: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn escaped_ampersand_sc_text_does_not_emit_defender_evasion() {
+        let report = analyze(br#"echo keep ^& sc stop WinDefend"#, &Config::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "sc-stop" && target == "WinDefend"
+            )),
+            "escaped ampersand echo text was misread as sc Defender evasion: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn escaped_ampersand_taskkill_text_does_not_emit_defender_evasion() {
+        let report = analyze(
+            br#"echo keep ^& taskkill /im MsMpEng.exe /f"#,
+            &Config::default(),
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "taskkill-security-process" && target == "MsMpEng.exe"
+            )),
+            "escaped ampersand echo text was misread as taskkill Defender evasion: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn certutil_implicit_basename_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
