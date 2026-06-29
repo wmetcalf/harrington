@@ -34970,6 +34970,34 @@ mod deob_scan_noise_filter_tests {
     }
 
     #[test]
+    fn cmd_url_variable_stops_at_command_operator() {
+        let script = br#"set U=https://operator-stop.example/payload.exe&&echo done"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlVariable { name, url, .. }
+                        if name == "U" && url == "https://operator-stop.example/payload.exe"
+                )
+            }),
+            "URL variable did not stop before command operator: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlVariable { url, .. } if url.contains("&&")
+                )
+            }),
+            "command operator leaked into URL variable: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn massgrave_help_documentation_filtered_out() {
         let script = b"echo Help - https://massgrave.dev/troubleshoot\r\n";
         let report = analyze(script, &Config::default());
