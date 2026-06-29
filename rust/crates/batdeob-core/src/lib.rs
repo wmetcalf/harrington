@@ -2981,6 +2981,42 @@ powershell -Command "Add-LocalGroupMember Administrators backdoor"
     }
 
     #[test]
+    fn attrib_hidden_system_emits_file_concealment_trait() {
+        let script = b"@echo off\r\n\
+attrib +h +s \"C:\\Users\\Public\\stage.vbs\" >nul 2>&1\r\n\
+attrib \"C:\\Users\\Public\\payload.exe\" +r +a +s +h\r\n";
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::FileConcealment {
+                    target,
+                    attributes,
+                    ..
+                } if target.ends_with("stage.vbs")
+                    && attributes.iter().any(|a| a == "hidden")
+                    && attributes.iter().any(|a| a == "system")
+            )),
+            "missing leading-attribute concealment trait: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::FileConcealment {
+                    target,
+                    attributes,
+                    ..
+                } if target.ends_with("payload.exe")
+                    && attributes.iter().any(|a| a == "hidden")
+                    && attributes.iter().any(|a| a == "system")
+            )),
+            "missing trailing-attribute concealment trait: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn escaped_ampersand_registry_hive_save_text_does_not_emit_credential_access() {
         let script = br#"echo keep ^& reg save HKLM\SAM C:\Users\Public\sam.save /y"#;
         let report = analyze(script, &AnalyzeConfig::default());
