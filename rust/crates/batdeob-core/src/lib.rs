@@ -61,6 +61,49 @@ mod tests {
         let _report = crate::analyze(&[0x8c, 0x0a, 0xff, 0xfc], &Config::default());
         let _report = crate::analyze(&[0xf3, 0xf3, 0x31], &Config::default());
     }
+
+    #[test]
+    fn binary_noise_tail_is_summarized_and_url_rescued() {
+        let url = "https://binary-tail.attacker.example/payload.bin";
+        let mut script = String::from("@echo off\r\necho ready\r\n");
+        for idx in 0..80 {
+            for _ in 0..8 {
+                script.push('\u{0001}');
+                script.push('\u{0080}');
+                script.push('\u{0091}');
+            }
+            script.push_str("noise");
+            if idx == 50 {
+                script.push(' ');
+                script.push_str(url);
+            }
+            script.push_str("\r\n");
+        }
+
+        let report = crate::analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report
+                .deobfuscated
+                .contains("harrington: omitted 80 binary-looking lines"),
+            "binary-looking tail should be summarized, got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report
+                .deobfuscated
+                .contains("\u{0001}\u{0080}\u{0091}noise"),
+            "binary-looking lines should not remain verbatim:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
+            "URL hidden in summarized binary-looking tail should be rescued: {:?}",
+            report.traits
+        );
+    }
 }
 
 #[cfg(test)]
@@ -7169,6 +7212,7 @@ fn analyze_inner(
         } else {
             drive(input, &mut env, &mut out);
         }
+        out = summarize_binary_noise_line_runs(&out, &mut env);
         let raw_text = String::from_utf8_lossy(input);
         deob_scan::scan_embedded_powershell_invocations(&raw_text, &mut env);
         deob_scan::scan_embedded_powershell_invocations(&out, &mut env);
@@ -8540,6 +8584,71 @@ fn summarize_base64_pe_carrier_line(line: &str) -> Option<String> {
 
 fn is_base64_carrier_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=')
+}
+
+fn split_line_ending(line: &str) -> (&str, &str) {
+    if let Some(body) = line.strip_suffix("\r\n") {
+        (body, "\r\n")
+    } else if let Some(body) = line.strip_suffix('\n') {
+        (body, "\n")
+    } else {
+        (line, "")
+    }
+}
+
+fn summarize_binary_noise_line_runs(text: &str, env: &mut Environment) -> String {
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+    let mut pending = String::new();
+    let mut pending_lines = 0usize;
+
+    for line in text.split_inclusive('\n') {
+        let (body, _) = split_line_ending(line);
+        if is_binary_noise_line(body) {
+            pending.push_str(line);
+            pending_lines += 1;
+            continue;
+        }
+        flush_binary_noise_run(&mut out, &mut pending, &mut pending_lines, env);
+        out.push_str(line);
+    }
+    flush_binary_noise_run(&mut out, &mut pending, &mut pending_lines, env);
+    out
+}
+
+fn flush_binary_noise_run(
+    out: &mut String,
+    pending: &mut String,
+    pending_lines: &mut usize,
+    env: &mut Environment,
+) {
+    if pending.is_empty() {
+        return;
+    }
+    if *pending_lines >= 32 && pending.len() >= 1024 {
+        rescue_truncated_urls(pending, pending.len(), env);
+        out.push_str(&format!(
+            "::==== harrington: omitted {} binary-looking lines ({} bytes) ====\r\n",
+            *pending_lines,
+            pending.len()
+        ));
+    } else {
+        out.push_str(pending);
+    }
+    pending.clear();
+    *pending_lines = 0;
+}
+
+fn is_binary_noise_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.len() < 4 {
+        return false;
+    }
+    let bytes = trimmed.as_bytes();
+    let suspicious = bytes
+        .iter()
+        .filter(|&&b| (b < 0x20 && b != b'\t') || b >= 0x7f)
+        .count();
+    suspicious * 3 >= bytes.len()
 }
 
 /// Extract `http(s)/ftp/file` URLs from a fragment that's about to be

@@ -1161,6 +1161,12 @@ mod dosfuscation_tests {
     }
 
     #[test]
+    fn base64_fragment_set_assignment_is_case_insensitive() {
+        let payload = "sEt Carrier= QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo=";
+        assert!(super::is_base64_fragment_set_assignment(payload));
+    }
+
+    #[test]
     fn wildcard_substitute_skips_ascii_haystack_for_unicode_needle() {
         assert_eq!(apply_substitute("cmd/CMD", "é", "x", true), "cmd/CMD");
     }
