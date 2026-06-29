@@ -3310,6 +3310,69 @@ fn scan_rundll32_download_exports_deob_text(deobfuscated: &str, env: &mut Enviro
     }
 }
 
+fn scan_glued_rundll32_downloaded_dll_deob_text(deobfuscated: &str, env: &mut Environment) {
+    let downloads: Vec<(String, String)> = env
+        .traits
+        .iter()
+        .filter_map(|t| match t {
+            Trait::Download {
+                src,
+                dst: Some(dst),
+                ..
+            } => {
+                let basename = windows_basename(dst)?.to_string();
+                Some((basename, src.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+    if downloads.is_empty() {
+        return;
+    }
+
+    for line in deobfuscated.lines() {
+        if command_starts_with_echo(line) {
+            continue;
+        }
+        let command = line.trim();
+        if !starts_with_ascii_case_insensitive(command, "rundll32") {
+            continue;
+        }
+        let Some(rest) = command.get("rundll32".len()..) else {
+            continue;
+        };
+        if rest.is_empty() || rest.starts_with(['.', ' ', '\t', '/', '\\', ':']) {
+            continue;
+        }
+        let target = rest
+            .split([',', ' ', '\t', '"', '\''])
+            .next()
+            .unwrap_or_default();
+        if target.is_empty() || target.contains(['\\', '/', ':']) {
+            continue;
+        }
+        let Some((_, src)) = downloads
+            .iter()
+            .find(|(basename, _)| basename.eq_ignore_ascii_case(target))
+        else {
+            continue;
+        };
+        if env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Rundll32 { cmd, url: Some(existing) }
+                    if cmd == command && existing == src
+            )
+        }) {
+            continue;
+        }
+        env.traits.push(Trait::Rundll32 {
+            cmd: command.to_string(),
+            url: Some(src.clone()),
+        });
+    }
+}
+
 fn scan_certoc_deob_text(deobfuscated: &str, env: &mut Environment) {
     let mut known: std::collections::HashSet<String> = env
         .traits
@@ -8999,6 +9062,7 @@ static IP_DISCOVERY_HOSTS: &[&str] = &[
     "ip-api.com",
     "ipinfo.io",
     "reallyfreegeoip.org",
+    "www.geoplugin.net",
 ];
 
 pub(crate) fn ip_discovery_host_from_url(url: &str) -> Option<&'static str> {
@@ -11131,6 +11195,7 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     scan_typo_webclient_downloads(deobfuscated, env);
     scan_url_launch_deob_text(deobfuscated, env);
     scan_rundll32_download_exports_deob_text(deobfuscated, env);
+    scan_glued_rundll32_downloaded_dll_deob_text(deobfuscated, env);
     scan_certoc_deob_text(deobfuscated, env);
     scan_desktopimgdownldr_deob_text(deobfuscated, env);
     scan_process_url_arguments(deobfuscated, env);

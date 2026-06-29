@@ -1116,6 +1116,8 @@ fn is_public_ip_endpoint(url: &str) -> bool {
         || lower == "http://checkip.amazonaws.com"
         || lower == "https://ipinfo.io/ip"
         || lower == "http://ipinfo.io/ip"
+        || lower.starts_with("https://www.geoplugin.net/php.gp")
+        || lower.starts_with("http://www.geoplugin.net/php.gp")
 }
 
 fn file_url_to_windows_path(url: &str) -> Option<String> {
