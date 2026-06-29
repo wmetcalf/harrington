@@ -25,6 +25,24 @@ static STAGE1_RE: Lazy<Regex> = Lazy::new(|| {
         .expect("stage1 re")
 });
 
+#[allow(clippy::expect_used)]
+static PS_KEY_BYTES_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?is)\.Key\s*=\s*(?:\[\s*byte\s*\[\s*\]\s*\]\s*@?\(\s*([^)]+)\)|\[\s*(by[0-9A-Za-z]{2}\s*,[^)]+)\))")
+        .expect("ps key bytes re")
+});
+
+#[allow(clippy::expect_used)]
+static PS_IV_BYTES_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?is)\.IV\s*=\s*(?:\[\s*byte\s*\[\s*\]\s*\]\s*@?\(\s*([^)]+)\)|\[\s*(by[0-9A-Za-z]{2}\s*,[^)]+)\))")
+        .expect("ps iv bytes re")
+});
+
+#[allow(clippy::expect_used)]
+static PS_B64_ASSIGNMENT_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?is)\$[A-Za-z_][A-Za-z0-9_]*\s*=\s*\(?\s*['"]([A-Za-z0-9+/=]{80,})['"]\s*\)?"#)
+        .expect("ps b64 assignment re")
+});
+
 /// Top-level entry. Run after `scan_multistage_encrypted_dropper` so the
 /// gate trait is in place. No-op when the gate trait is absent.
 pub fn extract_from_chain(raw_input: &[u8], deob: &str, env: &mut Environment) {
@@ -35,6 +53,8 @@ pub fn extract_from_chain(raw_input: &[u8], deob: &str, env: &mut Environment) {
     if !has_gate {
         return;
     }
+
+    try_extract_ps_base64_aes_gzip(deob, env);
 
     // ---- Stage 1: find 'b64'.Replace('marker','') with long b64. ----
     let stage2_ps = match decode_stage1(deob) {
@@ -188,6 +208,152 @@ pub fn extract_from_chain(raw_input: &[u8], deob: &str, env: &mut Environment) {
     }
 }
 
+fn try_extract_ps_base64_aes_gzip(deob: &str, env: &mut Environment) {
+    if !has_ps_base64_aes_gzip_indicators(deob) {
+        return;
+    }
+
+    let key = match PS_KEY_BYTES_RE.captures(deob).and_then(|caps| {
+        caps.get(1)
+            .or_else(|| caps.get(2))
+            .and_then(|m| parse_ps_byte_array(m.as_str()))
+    }) {
+        Some(key) => key,
+        None => return,
+    };
+    let iv = match PS_IV_BYTES_RE.captures(deob).and_then(|caps| {
+        caps.get(1)
+            .or_else(|| caps.get(2))
+            .and_then(|m| parse_ps_byte_array(m.as_str()))
+    }) {
+        Some(iv) => iv,
+        None => return,
+    };
+
+    for caps in PS_B64_ASSIGNMENT_RE.captures_iter(deob).take(16) {
+        let Some(encoded) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Ok(ciphertext) = base64::engine::general_purpose::STANDARD.decode(encoded) else {
+            continue;
+        };
+        if ciphertext.len() > super::crypto::MAX_CIPHERTEXT {
+            continue;
+        }
+        let Ok(plaintext) = aes_cbc_decrypt(&key, &iv, &ciphertext) else {
+            continue;
+        };
+        let Ok(decompressed) = gunzip(&plaintext, MAX_STAGE_OUTPUT) else {
+            continue;
+        };
+        if !decompressed.starts_with(b"MZ") {
+            continue;
+        }
+        if env
+            .recovered_pe
+            .iter()
+            .any(|(_, existing)| existing == &decompressed)
+        {
+            scan_decrypted_iocs(&decompressed, env);
+            continue;
+        }
+        let label = format!("ps-b64-aes-asm{}", env.recovered_pe.len() + 1);
+        env.recovered_pe.push((label, decompressed.clone()));
+        scan_decrypted_iocs(&decompressed, env);
+    }
+}
+
+fn has_ps_base64_aes_gzip_indicators(deob: &str) -> bool {
+    let lower = deob.to_ascii_lowercase();
+    lower.contains("aesmanaged")
+        && lower.contains("frombase64string")
+        && lower.contains("transformfinalblock")
+        && lower.contains("gzip")
+}
+
+fn parse_ps_byte_array(nums: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut parts = nums.split(',');
+    let first = parts.next()?.trim();
+    if let Some((b0, b1)) = parse_damaged_byte_array_head(first) {
+        out.push(b0);
+        out.push(b1);
+    } else {
+        out.push(parse_ps_byte(first)?);
+    }
+    for part in parts {
+        let token = part.trim();
+        if token.is_empty() {
+            continue;
+        }
+        out.push(parse_ps_byte(token)?);
+    }
+    Some(out)
+}
+
+fn parse_ps_byte(token: &str) -> Option<u8> {
+    let cleaned = token
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .trim();
+    if let Some(hex) = cleaned
+        .strip_prefix("0x")
+        .or_else(|| cleaned.strip_prefix("0X"))
+    {
+        u8::from_str_radix(hex, 16).ok()
+    } else {
+        cleaned.parse::<u8>().ok()
+    }
+}
+
+fn parse_damaged_byte_array_head(token: &str) -> Option<(u8, u8)> {
+    let head = token.trim();
+    let rest = head.strip_prefix("by")?;
+    if rest.len() != 2 {
+        return None;
+    }
+    let bytes = rest.as_bytes();
+    Some((bytes[0], bytes[1]))
+}
+
+fn scan_decrypted_iocs(blob: &[u8], env: &mut Environment) {
+    let already_known = env.known_extracted_urls();
+    let mut seen = std::collections::HashSet::new();
+
+    if blob.starts_with(b"MZ") {
+        if let Ok(us_strings) = super::dotnet::extract_us_strings(blob) {
+            for s in &us_strings {
+                for url in scan::scan_urls(s.as_bytes(), MAX_URLS_PER_SAMPLE) {
+                    if already_known.contains(&url) || !seen.insert(url.clone()) {
+                        continue;
+                    }
+                    env.traits.push(Trait::DownloadInDeobText {
+                        src: url,
+                        line_hint: "aes-chain".to_string(),
+                    });
+                    if seen.len() >= MAX_URLS_PER_SAMPLE {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    for url in scan::scan_urls(blob, MAX_URLS_PER_SAMPLE) {
+        if already_known.contains(&url) || !seen.insert(url.clone()) {
+            continue;
+        }
+        env.traits.push(Trait::DownloadInDeobText {
+            src: url,
+            line_hint: "aes-chain".to_string(),
+        });
+        if seen.len() >= MAX_URLS_PER_SAMPLE {
+            return;
+        }
+    }
+}
+
 fn decode_stage1(deob: &str) -> Option<String> {
     for caps in STAGE1_RE.captures_iter(deob) {
         let raw = caps.get(1)?.as_str();
@@ -256,6 +422,57 @@ fn split_and_decode_envelope(payload: &[u8]) -> Vec<Vec<u8>> {
 mod tests {
     use super::*;
     use crate::env::Config;
+    use aes::cipher::{block_padding::Pkcs7, BlockEncryptMut, KeyIvInit};
+    use std::io::Write;
+
+    type Aes128CbcEnc = cbc::Encryptor<aes::Aes128>;
+
+    fn fake_pe_with_url(url: &str) -> Vec<u8> {
+        let mut pe = vec![0u8; 0x200];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        pe.extend_from_slice(url.as_bytes());
+        pe
+    }
+
+    fn aes_gzip_b64(pe: &[u8], key: &[u8; 16], iv: &[u8; 16]) -> String {
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(pe).unwrap();
+        let gzipped = gz.finish().unwrap();
+        let mut enc_buf = gzipped.clone();
+        enc_buf.resize(gzipped.len() + 16, 0);
+        let cipher = Aes128CbcEnc::new_from_slices(key, iv).unwrap();
+        let ciphertext = cipher
+            .encrypt_padded_mut::<Pkcs7>(&mut enc_buf, gzipped.len())
+            .unwrap()
+            .to_vec();
+        base64::engine::general_purpose::STANDARD.encode(ciphertext)
+    }
+
+    fn byte_array(bytes: &[u8]) -> String {
+        bytes
+            .iter()
+            .map(|b| format!("0x{b:02x}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    fn gated_env(b64_len: usize) -> Environment {
+        let mut env = Environment::new(&Config::default());
+        env.traits.push(Trait::MultiStageEncryptedDropper {
+            marker: String::new(),
+            b64_length: b64_len as u32,
+            has_aes_cbc: true,
+            has_gzip_stage: true,
+            reads_self_lines: false,
+            aes_key_b64: None,
+            aes_iv_b64: None,
+            assemblies_recovered: None,
+            nested_aes: Vec::new(),
+        });
+        env
+    }
 
     #[test]
     fn no_op_without_gate_trait() {
@@ -265,5 +482,94 @@ mod tests {
         extract_from_chain(b"", &deob, &mut env);
         // No gate trait → nothing happens.
         assert!(env.traits.is_empty());
+    }
+
+    #[test]
+    fn ps_base64_aes_gzip_payload_recovers_pe() {
+        let key: [u8; 16] = [
+            0x20, 0x7b, 0x91, 0x4a, 0xf5, 0x0d, 0x32, 0x6c, 0x9e, 0x41, 0x88, 0x03, 0xa7, 0xdd,
+            0x14, 0x59,
+        ];
+        let iv: [u8; 16] = [
+            0xa0, 0x31, 0x6c, 0x11, 0x8b, 0x45, 0x72, 0xde, 0x39, 0xff, 0x06, 0xc2, 0x4b, 0x80,
+            0x17, 0xea,
+        ];
+        let url = "https://b64-aes.example/payload";
+        let pe = fake_pe_with_url(url);
+        let b64 = aes_gzip_b64(&pe, &key, &iv);
+        let key_array = byte_array(&key);
+        let iv_array = byte_array(&iv);
+        let deob = format!(
+            r#"
+$ZbmpUg=('{b64}');
+$LyzpcK=[Convert]::FromBase64String($ZbmpUg);
+$aes=[type]('Activator')::CreateInstance([type]'System.Security.Cryptography.AesManaged');
+$aes.Mode=1;$aes.Padding=2;
+$aes.Key=[byte[]]@({key_array});
+$aes.IV=[byte[]]@({iv_array});
+$dec=$aes.CreateDecryptor();
+$stage=$dec.TransformFinalBlock($LyzpcK,0,$LyzpcK.Length);
+$gzip=New-Object System.IO.Compression.GZipStream($stage,[IO.Compression.CompressionMode]::Decompress);
+[System.Reflection.Assembly]::Load($stage)
+"#
+        );
+        let mut env = gated_env(b64.len());
+
+        extract_from_chain(b"", &deob, &mut env);
+
+        assert!(
+            env.recovered_pe
+                .iter()
+                .any(|(label, bytes)| label.starts_with("ps-b64-aes-asm") && bytes == &pe),
+            "recovered_pe: {:?}",
+            env.recovered_pe
+        );
+        assert!(
+            env.traits.iter().any(|trait_| matches!(
+                trait_,
+                Trait::DownloadInDeobText { src, line_hint }
+                    if src == url && line_hint == "aes-chain"
+            )),
+            "traits: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn ps_base64_aes_gzip_payload_accepts_damaged_byte_array_heads() {
+        let key: [u8; 16] = [
+            b'v', b'9', 0x91, 0x4a, 0xf5, 0x0d, 0x32, 0x6c, 0x9e, 0x41, 0x88, 0x03, 0xa7, 0xdd,
+            0x14, 0x59,
+        ];
+        let iv: [u8; 16] = [
+            b'A', b'z', 0x6c, 0x11, 0x8b, 0x45, 0x72, 0xde, 0x39, 0xff, 0x06, 0xc2, 0x4b, 0x80,
+            0x17, 0xea,
+        ];
+        let pe = fake_pe_with_url("https://damaged-byte-head.example/payload");
+        let b64 = aes_gzip_b64(&pe, &key, &iv);
+        let key_tail = byte_array(&key[2..]);
+        let iv_tail = byte_array(&iv[2..]);
+        let deob = format!(
+            r#"
+$stageBytes=('{b64}');
+$blob=[Convert]::FromBase64String($stageBytes);
+$aes=New-Object System.Security.Cryptography.AesManaged;
+$aes.Key=[byv9,{key_tail});
+$aes.IV=[byAz,{iv_tail});
+$plain=$aes.CreateDecryptor().TransformFinalBlock($blob,0,$blob.Length);
+$gzip=New-Object System.IO.Compression.GZipStream($plain,[IO.Compression.CompressionMode]::Decompress);
+"#
+        );
+        let mut env = gated_env(b64.len());
+
+        extract_from_chain(b"", &deob, &mut env);
+
+        assert!(
+            env.recovered_pe
+                .iter()
+                .any(|(label, bytes)| label.starts_with("ps-b64-aes-asm") && bytes == &pe),
+            "recovered_pe: {:?}",
+            env.recovered_pe
+        );
     }
 }
