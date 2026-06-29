@@ -4301,24 +4301,17 @@ fn scan_remote_access(command: &str, env: &mut Environment) {
                 push_remote_access(env, "rdp-firewall-open", "Remote Desktop", line.trim());
             }
         }
-        if !(lower_line.contains("set-itemproperty") || lower_line.contains("new-itemproperty")) {
+        let Some((path, value_name, value)) = powershell_item_property_args(line) else {
             continue;
-        }
-        let path = powershell_named_argument(line, "-Path")
-            .or_else(|| powershell_named_argument(line, "-LiteralPath"))
-            .unwrap_or_default();
+        };
         if !path
             .to_ascii_lowercase()
             .contains(r"control\terminal server")
         {
             continue;
         }
-        let value_name = powershell_named_argument(line, "-Name")
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        let value = powershell_named_argument(line, "-Value")
-            .unwrap_or_default()
-            .to_ascii_lowercase();
+        let value_name = value_name.to_ascii_lowercase();
+        let value = value.to_ascii_lowercase();
         let enables_rdp = match value_name.as_str() {
             "allowtsconnections" => value == "1" || value == "0x1",
             "fdenytsconnections" => value == "0" || value == "0x0",
@@ -5154,6 +5147,40 @@ fn powershell_named_argument_list(command: &str, name: &str) -> Vec<String> {
         cursor += 1;
     }
     split_powershell_value_list(&command[value_start..value_end])
+}
+
+fn powershell_item_property_args(command: &str) -> Option<(String, String, String)> {
+    let has_new = contains_callable_ascii_case_insensitive(command, "New-ItemProperty");
+    let has_set = contains_callable_ascii_case_insensitive(command, "Set-ItemProperty");
+    let has_sp = contains_callable_ascii_case_insensitive(command, "sp");
+    if !has_new && !has_set && !has_sp {
+        return None;
+    }
+
+    let mut path = powershell_named_argument(command, "-Path")
+        .or_else(|| powershell_named_argument(command, "-LiteralPath"));
+    let mut name = powershell_named_argument(command, "-Name");
+    let mut value = powershell_named_argument(command, "-Value");
+
+    let keyword = if has_new {
+        "New-ItemProperty"
+    } else if has_set {
+        "Set-ItemProperty"
+    } else {
+        "sp"
+    };
+    let positional = powershell_positional_arguments(command, keyword);
+    if path.is_none() {
+        path = positional.first().cloned();
+    }
+    if name.is_none() {
+        name = positional.get(1).cloned();
+    }
+    if value.is_none() {
+        value = positional.get(2).cloned();
+    }
+
+    Some((path?, name?, value?))
 }
 
 fn powershell_positional_arguments(command: &str, keyword: &str) -> Vec<String> {
@@ -9786,6 +9813,32 @@ fn scan_uac_bypass(deobfuscated: &str, env: &mut Environment) {
             break;
         }
     }
+    for line in deobfuscated.lines() {
+        if command_starts_with_echo(line) {
+            continue;
+        }
+        let Some((path, value_name, value)) = powershell_item_property_args(line) else {
+            continue;
+        };
+        if !path
+            .to_ascii_lowercase()
+            .contains(r"microsoft\windows\currentversion\policies\system")
+            || !value_name.eq_ignore_ascii_case("EnableLUA")
+            || !matches!(value.to_ascii_lowercase().as_str(), "0" | "0x0")
+        {
+            continue;
+        }
+        if env.traits.iter().any(|t| {
+            matches!(
+                t, crate::traits::Trait::UacBypass { technique } if technique == "uac-enablelua-disabled"
+            )
+        }) {
+            continue;
+        }
+        env.traits.push(crate::traits::Trait::UacBypass {
+            technique: "uac-enablelua-disabled".to_string(),
+        });
+    }
 }
 
 /// `sc create` service install — MITRE T1543.003.
@@ -10276,23 +10329,24 @@ fn scan_powershell_registry_persistence(deobfuscated: &str, env: &mut Environmen
     use once_cell::sync::Lazy;
     use regex::Regex;
     static PS_ITEM_PROPERTY_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?im)^[^\r\n]*?\b(?:New|Set)-ItemProperty\b[^\r\n]*"#)
+        Regex::new(r#"(?im)^[^\r\n]*?(?:\b(?:New|Set)-ItemProperty\b|(?:^|[\s;&|'"])sp\b)[^\r\n]*"#)
             .expect("powershell item property regex")
     });
 
     for m in PS_ITEM_PROPERTY_RE.find_iter(deobfuscated) {
+        if match_line_starts_with_echo(deobfuscated, m.start()) {
+            continue;
+        }
         let command = m.as_str().trim();
-        let path = powershell_named_argument(command, "-Path")
-            .or_else(|| powershell_named_argument(command, "-LiteralPath"))
-            .unwrap_or_default();
+        let Some((path, value_name, value)) = powershell_item_property_args(command) else {
+            continue;
+        };
         let Some((hive, key)) = normalize_powershell_registry_path(&path) else {
             continue;
         };
         if !registry_persistence_key(&key) {
             continue;
         }
-        let value_name = powershell_named_argument(command, "-Name").unwrap_or_default();
-        let value = powershell_named_argument(command, "-Value").unwrap_or_default();
         if value_name.is_empty() || value.is_empty() {
             continue;
         }

