@@ -1621,6 +1621,29 @@ fn expand_ps_embedded_single_quote_assignments(text: &str) -> String {
         .into_owned()
 }
 
+#[cfg(test)]
+mod embedded_single_quote_signal_tests {
+    use super::expand_ps_embedded_single_quote_assignments;
+
+    #[test]
+    fn embedded_single_quote_signal_blocks_generic_triple_quotes() {
+        let text = "$name = 'demo'; Write-Host '''quoted'''";
+
+        let out = expand_ps_embedded_single_quote_assignments(text);
+
+        assert_eq!(out, text);
+    }
+
+    #[test]
+    fn embedded_single_quote_signal_allows_assignments() {
+        let text = "$payload = '''Invoke-WebRequest https://x.test/a'''";
+
+        let out = expand_ps_embedded_single_quote_assignments(text);
+
+        assert_eq!(out, "$payload=\"'Invoke-WebRequest https://x.test/a'\"");
+    }
+}
+
 #[allow(clippy::expect_used)]
 static REGEX_REPLACE_CALL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
