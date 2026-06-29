@@ -4403,6 +4403,16 @@ fn expand_obfuscation(text: &str) -> String {
     out
 }
 
+fn expand_obfuscation_with_env(text: &str, env: &Environment) -> String {
+    let expanded = expand_obfuscation(text);
+    let env_expanded = expand_ps_env_refs(&expanded, env);
+    if env_expanded == expanded {
+        expanded
+    } else {
+        expand_obfuscation(&env_expanded)
+    }
+}
+
 fn normalize_powershell_quotes(text: &str) -> String {
     if !text
         .chars()
@@ -5685,7 +5695,7 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
     for payload in file_backed_payloads {
         let raw_text = decode_payload(&payload);
         let raw_env_expanded = expand_ps_env_refs(&raw_text, env);
-        let text_expanded = expand_obfuscation(&raw_env_expanded);
+        let text_expanded = expand_obfuscation_with_env(&raw_env_expanded, env);
         scan_file_backed_base64_ps1(&text_expanded, env, &text_expanded);
     }
 
@@ -5707,7 +5717,7 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
         let raw_owned: String = raw_text.clone().into_owned();
         let raw_env_expanded = expand_ps_env_refs(&raw_owned, env);
 
-        let text_expanded = expand_obfuscation(&raw_env_expanded);
+        let text_expanded = expand_obfuscation_with_env(&raw_env_expanded, env);
         // Dual-scan: also run URL regexes over alias-expanded version so that
         // `iwr`, `irm`, `wget` etc. are caught even if obfuscation expansion
         // didn't surface them.
