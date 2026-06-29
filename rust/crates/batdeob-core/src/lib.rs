@@ -12842,6 +12842,34 @@ hh C:/Temp/payload.chm::/index.htm"#,
     }
 
     #[test]
+    fn browser_url_launchers_emit_url_launch() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            "explorer.exe https://explorer-direct.example/privacy/",
+            &mut env,
+        );
+        interpret_line("msedge browser-direct.example/lure.pdf", &mut env);
+        interpret_line("chrome https://browser-direct.example/payload[1]", &mut env);
+        interpret_line("edge https://edge-direct.example/lure", &mut env);
+        interpret_line("vivaldi vivaldi-direct.example/panel", &mut env);
+        for expected in [
+            "https://explorer-direct.example/privacy/",
+            "http://browser-direct.example/lure.pdf",
+            "https://browser-direct.example/payload[1]",
+            "https://edge-direct.example/lure",
+            "http://vivaldi-direct.example/panel",
+        ] {
+            assert!(
+                env.traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::UrlLaunch { url, .. } if url == expected)),
+                "missing browser UrlLaunch for {expected}: {:?}",
+                env.traits
+            );
+        }
+    }
+
+    #[test]
     fn browser_attached_url_flags_emit_url_launch() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
@@ -36266,6 +36294,7 @@ mod cmd_path_flags_tests {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod disguised_binary_tests {
     use super::{detect_disguised_binary, looks_like_pe};
+    use crate::{analyze, Config, Trait};
 
     #[test]
     fn cab_magic_recognized_as_disguised() {
@@ -36319,6 +36348,34 @@ mod disguised_binary_tests {
         buf[0x41] = b'E';
         assert!(looks_like_pe(&buf));
         assert_eq!(detect_disguised_binary(&buf), None);
+    }
+
+    #[test]
+    fn analyze_disguised_pdf_recovers_blob_and_scans_urls() {
+        let mut buf = b"%PDF-1.7\n".to_vec();
+        buf.extend_from_slice(b"stream http://pdf-disguised.example/payload.exe endstream\n");
+
+        let report = analyze(&buf, &Config::default());
+
+        assert!(report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::DisguisedBinary { format, size }
+                    if format == "pdf" && *size == buf.len() as u64
+            )
+        }));
+        assert!(report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::DownloadInDeobText { src, line_hint }
+                    if src == "http://pdf-disguised.example/payload.exe"
+                        && line_hint == "binary-input"
+            )
+        }));
+        assert_eq!(report.recovered_pe.len(), 1);
+        assert_eq!(report.recovered_pe[0].0, "disguised-pdf-input");
+        assert_eq!(report.recovered_pe[0].1, buf);
+        assert!(report.deobfuscated.is_empty());
     }
 
     #[test]
