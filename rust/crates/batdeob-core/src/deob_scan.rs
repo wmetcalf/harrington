@@ -555,10 +555,18 @@ fn scan_bitsadmin_deob_text(deobfuscated: &str, env: &mut Environment) {
                     i += 1;
                     continue;
                 }
-                if let Some(url) = normalize_liberal_url_token(&token) {
+                if let Some(url) = normalize_liberal_url_token(&token)
+                    .or_else(|| normalize_schemeless_domain_path_token(&token))
+                {
                     let dst = bitsadmin_dst_after_url(&tokens, i + 1).unwrap_or_default();
                     if known.insert(url.clone()) {
                         push_lolbas_once(env, "bitsadmin", line);
+                        if !dst.is_empty() {
+                            env.modified_filesystem.insert(
+                                filesystem_storage_key(&dst),
+                                FsEntry::Download { src: url.clone() },
+                            );
+                        }
                         env.traits.push(Trait::BitsadminDownload { url, dst });
                     }
                     i += 2;
@@ -6690,20 +6698,46 @@ fn scan_downloaded_script_host_deob_text(deobfuscated: &str, env: &mut Environme
         else {
             continue;
         };
-        let Some(FsEntry::Download { src }) = filesystem_entry_for_path(env, path) else {
+        let src = if let Some(FsEntry::Download { src }) = filesystem_entry_for_path(env, path) {
+            src.clone()
+        } else if let Some(src) = prior_download_trait_url(path, env) {
+            src
+        } else {
             continue;
         };
         if !env
             .traits
             .iter()
-            .any(|t| matches!(t, Trait::UrlArgument { cmd, url } if cmd == line && url == src))
+            .any(|t| matches!(t, Trait::UrlArgument { cmd, url } if cmd == line && url == &src))
         {
             env.traits.push(Trait::UrlArgument {
                 cmd: line.to_string(),
-                url: src.clone(),
+                url: src,
             });
         }
     }
+}
+
+fn prior_download_trait_url(path: &str, env: &Environment) -> Option<String> {
+    env.traits.iter().find_map(|trait_| match trait_ {
+        Trait::Download {
+            src,
+            dst: Some(dst),
+            ..
+        }
+        | Trait::BitsadminDownload { url: src, dst }
+        | Trait::CertutilDownload { url: src, dst }
+            if paths_match_for_download_lookup(path, dst) =>
+        {
+            Some(src.clone())
+        }
+        _ => None,
+    })
+}
+
+fn paths_match_for_download_lookup(path: &str, tracked_path: &str) -> bool {
+    path.eq_ignore_ascii_case(tracked_path)
+        || windows_basename(tracked_path).is_some_and(|name| name.eq_ignore_ascii_case(path))
 }
 
 fn is_downloaded_script_host(cmd: &str) -> bool {

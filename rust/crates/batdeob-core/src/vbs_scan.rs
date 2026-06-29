@@ -80,8 +80,7 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
                 let Some(url_match) = caps.get(1) else {
                     continue;
                 };
-                let Some(url) = crate::deob_scan::normalize_liberal_url_token(url_match.as_str())
-                else {
+                let Some(url) = normalize_vbs_download_url(url_match.as_str()) else {
                     continue;
                 };
                 if !seen.insert((idx, url.clone())) {
@@ -102,8 +101,7 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
             let Some(url_match) = caps.get(1) else {
                 continue;
             };
-            let Some(url) = crate::deob_scan::normalize_liberal_url_token(url_match.as_str())
-            else {
+            let Some(url) = normalize_vbs_download_url(url_match.as_str()) else {
                 continue;
             };
             if !seen_launches.insert((idx, url.clone())) {
@@ -157,7 +155,7 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
 
         for expr in extract_xmlhttp_open_url_exprs(&text) {
             let Some(url) = eval_vbs_string_expr(expr, &bindings)
-                .and_then(|value| crate::deob_scan::normalize_liberal_url_token(&value))
+                .and_then(|value| normalize_vbs_download_url(&value))
             else {
                 continue;
             };
@@ -179,7 +177,7 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
             let Some(url) = bindings.get(&var_match.as_str().to_ascii_lowercase()) else {
                 continue;
             };
-            let Some(url) = crate::deob_scan::normalize_liberal_url_token(url) else {
+            let Some(url) = normalize_vbs_download_url(url) else {
                 continue;
             };
             if !seen.insert((idx, url.clone())) {
@@ -200,7 +198,7 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
             let Some(url) = bindings.get(&var_match.as_str().to_ascii_lowercase()) else {
                 continue;
             };
-            let Some(url) = crate::deob_scan::normalize_liberal_url_token(url) else {
+            let Some(url) = normalize_vbs_download_url(url) else {
                 continue;
             };
             if !seen.insert((idx, url.clone())) {
@@ -409,15 +407,13 @@ fn extract_urldownload_expr_downloads(
             let Some(value) = eval_vbs_string_expr(args[idx].trim(), bindings) else {
                 continue;
             };
-            let Some(url) = crate::deob_scan::normalize_liberal_url_token(&value) else {
+            let Some(url) = normalize_vbs_download_url(&value) else {
                 continue;
             };
             let dst = args
                 .get(idx + 1)
                 .and_then(|arg| eval_vbs_string_expr(arg.trim(), bindings))
-                .filter(|candidate| {
-                    crate::deob_scan::normalize_liberal_url_token(candidate).is_none()
-                });
+                .filter(|candidate| normalize_vbs_download_url(candidate).is_none());
             out.push((url, dst));
         }
     }
@@ -441,7 +437,7 @@ fn urldownload_dst_for_url(
             let Some(value) = eval_vbs_string_expr(args[idx].trim(), bindings) else {
                 continue;
             };
-            let Some(url) = crate::deob_scan::normalize_liberal_url_token(&value) else {
+            let Some(url) = normalize_vbs_download_url(&value) else {
                 continue;
             };
             if url != normalized_url {
@@ -450,10 +446,15 @@ fn urldownload_dst_for_url(
             return args
                 .get(idx + 1)
                 .and_then(|arg| eval_vbs_string_expr(arg.trim(), bindings))
-                .filter(|dst| crate::deob_scan::normalize_liberal_url_token(dst).is_none());
+                .filter(|dst| normalize_vbs_download_url(dst).is_none());
         }
     }
     None
+}
+
+fn normalize_vbs_download_url(value: &str) -> Option<String> {
+    crate::deob_scan::normalize_liberal_url_token(value)
+        .or_else(|| crate::deob_scan::normalize_schemeless_domain_path_token(value))
 }
 
 fn urldownload_args(line: &str) -> Vec<&str> {

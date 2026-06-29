@@ -50,15 +50,13 @@ pub fn h_bitsadmin(raw: &str, env: &mut Environment) {
         if pending_url.is_none()
             && downloads.is_empty()
             && !is_bitsadmin_option(t)
-            && crate::deob_scan::normalize_liberal_url_token(strip_outer_quotes(t)).is_none()
+            && normalize_bitsadmin_url(strip_outer_quotes(t)).is_none()
         {
             // This is the job name; skip it.
             i += 1;
             continue;
         }
-        if let Some(normalized) =
-            crate::deob_scan::normalize_liberal_url_token(strip_outer_quotes(t))
-        {
+        if let Some(normalized) = normalize_bitsadmin_url(strip_outer_quotes(t)) {
             if let Some(url) = pending_url.replace(normalized) {
                 downloads.push((url, String::new()));
             }
@@ -137,6 +135,11 @@ fn bitsadmin_flag_is_bare(token: &str, flag: &str) -> bool {
 
 fn is_bitsadmin_option(token: &str) -> bool {
     token.starts_with('/') || token.starts_with('-')
+}
+
+fn normalize_bitsadmin_url(token: &str) -> Option<String> {
+    crate::deob_scan::normalize_liberal_url_token(token)
+        .or_else(|| crate::deob_scan::normalize_schemeless_domain_path_token(token))
 }
 
 fn bitsadmin_notify_command(tokens: &[String]) -> Option<(String, String)> {
