@@ -8307,6 +8307,12 @@ fn scan_lateral_movement(deobfuscated: &str, env: &mut Environment) {
 fn scan_anti_recovery(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
+    static VSSADMIN_RESIZE_SHADOWSTORAGE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?im)^[^\r\n]*\bvssadmin(?:\.exe)?\s+resize\s+shadowstorage\b[^\r\n]*[/\-]maxsize\s*=\s*"?([^"'\s]+)"?[^\r\n]*"#,
+        )
+        .expect("vssadmin resize shadowstorage regex")
+    });
     static PATTERNS: Lazy<Vec<(Regex, &str)>> = Lazy::new(|| {
         vec![
             (
@@ -8371,6 +8377,31 @@ fn scan_anti_recovery(deobfuscated: &str, env: &mut Environment) {
             });
             break;
         }
+    }
+    for caps in VSSADMIN_RESIZE_SHADOWSTORAGE_RE.captures_iter(deobfuscated) {
+        if caps
+            .get(0)
+            .is_some_and(|m| command_starts_with_echo(m.as_str()))
+        {
+            continue;
+        }
+        let Some(maxsize) = caps.get(1).map(|m| m.as_str().trim()) else {
+            continue;
+        };
+        if maxsize.eq_ignore_ascii_case("unbounded") {
+            continue;
+        }
+        let action = "vssadmin-resize-shadowstorage";
+        if env.traits.iter().any(|t| {
+            matches!(
+                t, crate::traits::Trait::AntiRecovery { action: a } if a == action
+            )
+        }) {
+            continue;
+        }
+        env.traits.push(crate::traits::Trait::AntiRecovery {
+            action: action.to_string(),
+        });
     }
 }
 

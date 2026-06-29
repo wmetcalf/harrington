@@ -3736,6 +3736,36 @@ echo keep ^& mshta payload.hta"#;
         );
     }
 
+    #[test]
+    fn vssadmin_resize_shadowstorage_small_maxsize_emits_anti_recovery_trait() {
+        let script = br#"vssadmin resize shadowstorage /for=C: /on=C: /maxsize=401MB"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AntiRecovery { action } if action == "vssadmin-resize-shadowstorage"
+            )),
+            "vssadmin resize shadowstorage was not surfaced as anti-recovery: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn vssadmin_resize_shadowstorage_unbounded_does_not_emit_anti_recovery_trait() {
+        let script = br#"vssadmin resize shadowstorage /for=C: /on=C: /maxsize=unbounded"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AntiRecovery { action } if action == "vssadmin-resize-shadowstorage"
+            )),
+            "vssadmin unbounded shadowstorage resize should not be anti-recovery: {:?}",
+            report.traits
+        );
+    }
+
     fn assert_script_emits_anti_recovery(script: &[u8], expected_action: &str) {
         let report = analyze(script, &AnalyzeConfig::default());
         assert!(
