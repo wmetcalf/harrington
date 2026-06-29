@@ -153,6 +153,108 @@ fn is_file_flag(flag: &str) -> bool {
     flag == "File"
 }
 
+fn has_non_redirection_body(body: &str) -> bool {
+    let (cleaned, _) = crate::redirect::extract_redirections(body);
+    !cleaned.trim().is_empty()
+}
+
+fn command_body_payload(body: &str) -> String {
+    let body = strip_trailing_nul_redirections(body.trim());
+    let body = strip_matching_outer_quotes(body.trim());
+    let body = strip_unmatched_trailing_wrapper_double_quote(body);
+    trim_nul_padding_body(body).to_string()
+}
+
+fn strip_matching_outer_quotes(s: &str) -> &str {
+    let bytes = s.as_bytes();
+    if bytes.len() >= 2
+        && matches!(bytes.first(), Some(b'"' | b'\''))
+        && bytes.first() == bytes.last()
+    {
+        &s[1..s.len() - 1]
+    } else {
+        s
+    }
+}
+
+fn strip_unmatched_trailing_wrapper_double_quote(s: &str) -> &str {
+    let Some(prefix) = s.strip_suffix('"') else {
+        return s;
+    };
+    if prefix.as_bytes().contains(&b'"') {
+        s
+    } else {
+        prefix.trim_end()
+    }
+}
+
+fn strip_trailing_nul_redirections(mut body: &str) -> &str {
+    loop {
+        let trimmed_end = body.trim_end();
+        if trimmed_end.is_empty() {
+            return trimmed_end;
+        }
+        let Some((target_start, target)) = trailing_token(trimmed_end) else {
+            return trimmed_end;
+        };
+        if let Some(mut op_offset) = target.rfind('>') {
+            let target_value = &target[op_offset + 1..];
+            if !strip_quotes(target_value).eq_ignore_ascii_case("nul") {
+                return trimmed_end;
+            }
+            if op_offset > 0 && target.as_bytes().get(op_offset - 1) == Some(&b'>') {
+                op_offset -= 1;
+            }
+            if op_offset > 0
+                && matches!(
+                    target.as_bytes().get(op_offset - 1),
+                    Some(b'1') | Some(b'2')
+                )
+            {
+                op_offset -= 1;
+            }
+            body = trimmed_end[..target_start + op_offset].trim_end();
+            continue;
+        }
+        if !strip_quotes(target).eq_ignore_ascii_case("nul") {
+            return trimmed_end;
+        }
+        let before_target = trimmed_end[..target_start].trim_end();
+        let Some(mut op_start) = before_target.rfind('>') else {
+            return trimmed_end;
+        };
+        if before_target[..op_start].ends_with('>') {
+            op_start -= 1;
+        }
+        if op_start > 0 {
+            let fd_start = op_start - 1;
+            if matches!(
+                before_target.as_bytes().get(fd_start),
+                Some(b'1') | Some(b'2')
+            ) {
+                op_start = fd_start;
+            }
+        }
+        body = before_target[..op_start].trim_end();
+    }
+}
+
+fn trailing_token(s: &str) -> Option<(usize, &str)> {
+    let end = s.len();
+    let last = s.as_bytes().get(end.checked_sub(1)?)?;
+    if matches!(last, b'"' | b'\'') {
+        let quote = *last;
+        let start = s.as_bytes()[..end - 1].iter().rposition(|&b| b == quote)?;
+        return Some((start, &s[start..end]));
+    }
+    let start = s
+        .char_indices()
+        .rev()
+        .find_map(|(idx, c)| c.is_whitespace().then_some(idx + c.len_utf8()))
+        .unwrap_or(0);
+    Some((start, &s[start..end]))
+}
+
 pub fn h_powershell(raw: &str, env: &mut Environment) {
     let tokens = split_words(raw);
     if tokens.is_empty() {
@@ -173,9 +275,10 @@ pub fn h_powershell(raw: &str, env: &mut Environment) {
             }
             if is_command_flag(flag) {
                 let body = command_body_from_attached_value(value, &tokens[i + 1..]);
-                if !body.is_empty() {
+                let body = command_body_payload(&body);
+                if !body.is_empty() && has_non_redirection_body(&body) {
                     record_powershell_side_effects(&body, env);
-                    env.exec_ps1.push(body.as_bytes().to_vec());
+                    env.exec_ps1.push(body.into_bytes());
                 }
                 return;
             }
@@ -198,11 +301,10 @@ pub fn h_powershell(raw: &str, env: &mut Environment) {
             }
             Some(flag) if is_command_flag(flag) => {
                 let body = tokens[i + 1..].join(" ");
-                let body = body.trim();
-                let body = body.trim_matches('"').trim_matches('\'');
-                if !body.is_empty() {
-                    record_powershell_side_effects(body, env);
-                    env.exec_ps1.push(body.as_bytes().to_vec());
+                let body = command_body_payload(&body);
+                if !body.is_empty() && has_non_redirection_body(&body) {
+                    record_powershell_side_effects(&body, env);
+                    env.exec_ps1.push(body.into_bytes());
                 }
                 return;
             }
@@ -224,9 +326,10 @@ pub fn h_powershell(raw: &str, env: &mut Environment) {
     // is in the positional arguments. Skip PS-meta flags (and their values
     // when they take one) and push the remainder as the script body.
     let body = skip_ps_meta_flags(&tokens[1..]);
-    if !body.is_empty() {
+    let body = command_body_payload(&body);
+    if !body.is_empty() && has_non_redirection_body(&body) {
         record_powershell_side_effects(&body, env);
-        env.exec_ps1.push(body.as_bytes().to_vec());
+        env.exec_ps1.push(body.into_bytes());
     }
 }
 
@@ -744,6 +847,21 @@ fn strip_quotes(s: &str) -> &str {
     s.trim().trim_matches(['"', '\''])
 }
 
+fn trim_nul_padding_body(body: &str) -> &str {
+    const MIN_NUL_PADDING_BYTES: usize = 1024;
+
+    let Some(first_nul) = body.as_bytes().iter().position(|&b| b == 0) else {
+        return body;
+    };
+    let tail = &body[first_nul..];
+    let nul_count = tail.as_bytes().iter().filter(|&&b| b == 0).count();
+    if tail.len() >= MIN_NUL_PADDING_BYTES && nul_count * 100 >= tail.len() * 90 {
+        body[..first_nul].trim_end()
+    } else {
+        body
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
@@ -845,5 +963,90 @@ mod tests {
             "attached encoded command was not decoded: {:?}",
             env.exec_ps1
         );
+    }
+
+    #[test]
+    fn command_with_only_redirections_is_not_extracted() {
+        let mut env = Environment::new(&crate::Config::default());
+
+        h_powershell(
+            "powershell -WindowStyle Hidden -Command 2>nul >nul",
+            &mut env,
+        );
+
+        assert!(
+            env.exec_ps1.is_empty(),
+            "redirection-only -Command should not be a payload: {:?}",
+            env.exec_ps1
+        );
+    }
+
+    #[test]
+    fn command_with_real_body_and_redirection_is_extracted() {
+        let mut env = Environment::new(&crate::Config::default());
+
+        h_powershell(
+            "powershell -Command \"Invoke-WebRequest https://example.test/a\" >nul 2>nul",
+            &mut env,
+        );
+
+        assert_eq!(
+            env.exec_ps1,
+            vec![b"Invoke-WebRequest https://example.test/a".to_vec()]
+        );
+    }
+
+    #[test]
+    fn command_with_powershell_file_redirection_is_preserved() {
+        let mut env = Environment::new(&crate::Config::default());
+
+        h_powershell(
+            "powershell -Command \"Write-Output hi > C:\\Users\\Public\\out.txt\"",
+            &mut env,
+        );
+
+        assert_eq!(
+            env.exec_ps1,
+            vec![b"Write-Output hi > C:\\Users\\Public\\out.txt".to_vec()]
+        );
+    }
+
+    #[test]
+    fn command_preserves_trailing_single_quote_inside_double_quoted_body() {
+        let mut env = Environment::new(&crate::Config::default());
+
+        h_powershell(
+            r#"powershell -Command "Invoke-WebRequest -Uri '%url%' -OutFile '%php_file%'""#,
+            &mut env,
+        );
+
+        assert_eq!(
+            env.exec_ps1,
+            vec![b"Invoke-WebRequest -Uri '%url%' -OutFile '%php_file%'".to_vec()]
+        );
+    }
+
+    #[test]
+    fn command_strips_dangling_outer_double_quote_from_vbs_suffix() {
+        let mut env = Environment::new(&crate::Config::default());
+
+        h_powershell(
+            r#"powershell.exe -NoP -Command Write-Host inparams""#,
+            &mut env,
+        );
+
+        assert_eq!(env.exec_ps1, vec![b"Write-Host inparams".to_vec()]);
+    }
+
+    #[test]
+    fn command_preserves_balanced_inner_double_quotes() {
+        let mut env = Environment::new(&crate::Config::default());
+
+        h_powershell(
+            r#"powershell.exe -NoP -Command Write-Host "inparams""#,
+            &mut env,
+        );
+
+        assert_eq!(env.exec_ps1, vec![b"Write-Host \"inparams\"".to_vec()]);
     }
 }
