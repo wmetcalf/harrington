@@ -2315,6 +2315,106 @@ move "%cmdDestination%" "%startupFolder%"
     }
 
     #[test]
+    fn account_modification_preserves_full_command_context() {
+        let comment = "A".repeat(260);
+        let script = format!("net user support P@ssw0rd /add /comment:\"{comment}\"\r\n");
+        let report = analyze(script.as_bytes(), &AnalyzeConfig::default());
+        let expected = script.trim_end();
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification {
+                    action,
+                    account,
+                    command,
+                    ..
+                } if action == "local-user-add"
+                    && account == "support"
+                    && command == expected
+            )),
+            "full account modification command was not preserved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn net_user_active_yes_emits_account_modification_trait() {
+        let script = br#"net user defaultuserx /active:yes"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, .. }
+                    if action == "local-user-enable" && account == "defaultuserx"
+            )),
+            "net user /active:yes account enablement missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn net_user_password_set_emits_account_modification_trait() {
+        let script = br#"net user support P@ssw0rd123!"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, .. }
+                    if action == "local-user-password-set" && account == "support"
+            )),
+            "net user password set account modification missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn remote_desktop_users_group_add_emits_remote_access_trait() {
+        let script = br#"net localgroup "Remote Desktop Users" support /add"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, group, .. }
+                    if action == "localgroup-add"
+                        && account == "support"
+                        && group.as_deref() == Some("Remote Desktop Users")
+            )),
+            "missing account modification for Remote Desktop Users add: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-user-group-add" && target == "support"
+            )),
+            "missing remote access trait for Remote Desktop Users add: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn file_concealment_preserves_full_command_context() {
+        let path = format!(r#"C:\Users\Public\{}\payload.vbs"#, "A".repeat(240));
+        let script = format!("attrib +h +s \"{path}\"\r\n");
+        let report = analyze(script.as_bytes(), &AnalyzeConfig::default());
+        let expected = script.trim_end();
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::FileConcealment { command, .. } if command == expected
+            )),
+            "full file concealment command was not preserved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn escaped_ampersand_registry_hive_save_text_does_not_emit_credential_access() {
         let script = br#"echo keep ^& reg save HKLM\SAM C:\Users\Public\sam.save /y"#;
         let report = analyze(script, &AnalyzeConfig::default());

@@ -4975,10 +4975,36 @@ fn scan_copied_net_account_modification(line: &str, tokens: &[String], env: &mut
             let account = clean_account_modification_token(&tokens[2]);
             push_account_modification_once(env, "local-user-add", account, None, line);
         }
+        "user"
+            if tokens.iter().skip(3).any(|token| {
+                strip_outer_quotes(token)
+                    .to_ascii_lowercase()
+                    .starts_with("/active:yes")
+            }) =>
+        {
+            let account = clean_account_modification_token(&tokens[2]);
+            push_account_modification_once(env, "local-user-enable", account, None, line);
+        }
+        "user" if tokens.len() >= 4 => {
+            let password = strip_outer_quotes(&tokens[3]);
+            if !password.starts_with('/') && !password.starts_with('-') {
+                let account = clean_account_modification_token(&tokens[2]);
+                push_account_modification_once(env, "local-user-password-set", account, None, line);
+            }
+        }
         "localgroup" if has_add && tokens.len() >= 4 => {
             let group = clean_account_modification_token(&tokens[2]);
             let account = clean_account_modification_token(&tokens[3]);
-            push_account_modification_once(env, "localgroup-add", account, Some(group), line);
+            push_account_modification_once(
+                env,
+                "localgroup-add",
+                account.clone(),
+                Some(group.clone()),
+                line,
+            );
+            if group.eq_ignore_ascii_case("Remote Desktop Users") {
+                push_remote_access(env, "rdp-user-group-add", &account, line);
+            }
         }
         _ => {}
     }
@@ -5062,6 +5088,22 @@ fn push_account_modification_once(
 
 fn scan_account_modification(deobfuscated: &str, env: &mut Environment) {
     for line in deobfuscated.lines() {
+        if command_starts_with_echo(line) {
+            continue;
+        }
+        let tokens = split_words(line);
+        if tokens
+            .first()
+            .and_then(|cmd| basename_trimmed(strip_outer_quotes(cmd)))
+            .is_some_and(|cmd| {
+                cmd.eq_ignore_ascii_case("net")
+                    || cmd.eq_ignore_ascii_case("net.exe")
+                    || cmd.eq_ignore_ascii_case("net1")
+                    || cmd.eq_ignore_ascii_case("net1.exe")
+            })
+        {
+            scan_copied_net_account_modification(line.trim(), &tokens, env);
+        }
         let lower = line.to_ascii_lowercase();
         if lower.contains("new-localuser") {
             if let Some(account) = powershell_named_argument(line, "-Name").or_else(|| {
