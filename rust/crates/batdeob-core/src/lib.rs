@@ -6837,6 +6837,7 @@ fn analyze_inner(
         vbs_scan::scan_vbs_payloads(&mut env);
         js_scan::scan_js_payloads(&mut env);
         ps1_scan::scan_inline_powershell_text(&out, &mut env);
+        deob_scan::scan_rot13_url_prefix(&out, &mut env);
         deob_scan::scan_deob_text(&out, &mut env);
         deob_scan::scan_raw_curl_known_percent_urls(&raw_text, &mut env);
         // The char-index-extractor scan needs the FULL source — our
@@ -6856,6 +6857,7 @@ fn analyze_inner(
         deob_scan::scan_inline_b64_urls(&out, &mut env);
         deob_scan::scan_bare_b64_urls(&out, &mut env);
         deob_scan::scan_b64_url_prefix(&out, &mut env);
+        deob_scan::scan_rot13_url_prefix(&out, &mut env);
         deob_scan::scan_ps_char_concat_urls(&out, &mut env);
         deob_scan::scan_truncated_url_vars(&out, &mut env);
         deob_scan::scan_certutil_decoded_js(&out, &mut env);
@@ -33296,6 +33298,52 @@ mod inline_b64_url_tests {
             env.traits.is_empty(),
             "noise URL extracted: {:?}",
             env.traits
+        );
+    }
+
+    #[test]
+    fn rot13_url_prefix_extracts_standalone_token() {
+        let deob = "powershell [Fiber.Program]::Main('uggcf://nepuvibfpebfbsg.pbz/arjerz.cat')\r\n";
+        let mut env = Environment::new(&Config::default());
+        crate::deob_scan::scan_rot13_url_prefix(deob, &mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, cmd, .. }
+                    if src == "https://archivoscrosoft.com/newrem.png"
+                        && cmd == "rot13-url-prefix"
+            )
+        });
+        assert!(has, "standalone ROT13 URL missed: {:?}", env.traits);
+    }
+
+    #[test]
+    fn rot13_url_prefix_respects_noise_filter() {
+        let deob = "set encoded=uggc://fnjrofreivpr.erq-tngr.pbz/\r\n";
+        let mut env = Environment::new(&Config::default());
+        crate::deob_scan::scan_rot13_url_prefix(deob, &mut env);
+        assert!(
+            env.traits.is_empty(),
+            "ROT13 noise URL extracted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn analyze_extracts_rot13_url_prefix_from_powershell_stage_args() {
+        let script = b"powershell -Command \"[Fiber.Program]::Main('uggcf://nepuvibfpebfbsg.pbz/arjerz.cat')\"\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, cmd, .. }
+                        if src == "https://archivoscrosoft.com/newrem.png"
+                            && cmd == "rot13-url-prefix"
+                )
+            }),
+            "analyze missed ROT13 URL stage arg: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
         );
     }
 }

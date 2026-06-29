@@ -11403,6 +11403,43 @@ pub fn scan_b64_url_prefix(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
+pub fn scan_rot13_url_prefix(deobfuscated: &str, env: &mut Environment) {
+    let known = env.known_extracted_urls();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for m in ROT13_URL_RE.find_iter(deobfuscated) {
+        if m.start() > 0 && deobfuscated.as_bytes()[m.start() - 1].is_ascii_alphanumeric() {
+            continue;
+        }
+        if m.end() < deobfuscated.len() && deobfuscated.as_bytes()[m.end()].is_ascii_alphanumeric()
+        {
+            continue;
+        }
+        let encoded = trim_url_suffix(m.as_str());
+        if encoded.len() < "uggc://k".len() {
+            continue;
+        }
+        let decoded = rot13_ascii(encoded);
+        let Some(url) = normalize_liberal_url_token(&decoded) else {
+            continue;
+        };
+        if !(url.starts_with("http://")
+            || url.starts_with("https://")
+            || url.starts_with("ftp://")
+            || url.starts_with("file://"))
+        {
+            continue;
+        }
+        if is_noise_url(&url) || known.contains(&url) || !seen.insert(url.clone()) {
+            continue;
+        }
+        env.traits.push(Trait::Download {
+            cmd: "rot13-url-prefix".to_string(),
+            src: url,
+            dst: None,
+        });
+    }
+}
+
 fn is_base64_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/')
 }
