@@ -123,6 +123,13 @@ fn run_stage(stage: &str, input: Vec<String>, env: &mut Environment) -> Vec<Stri
         "whoami" => synth_whoami(&rest_args, env),
         "chcp" => synth_chcp(&rest_args),
         "query" => synth_query(&rest_args),
+        "vol" => synth_vol(&rest_args),
+        "tzutil" => synth_tzutil(&rest_args),
+        "sc" => synth_sc(&rest_args),
+        "netsh" => synth_netsh(&rest_args),
+        "net" => synth_net(&rest_args),
+        "schtasks" => synth_schtasks(&rest_args),
+        "wevtutil" => synth_wevtutil(&rest_args),
         "ver" => synth_ver(),
         "date" => synth_date(&rest_args),
         "time" => synth_time(&rest_args),
@@ -200,6 +207,13 @@ fn is_supported_command(cmd: String) -> bool {
             | "whoami"
             | "chcp"
             | "query"
+            | "vol"
+            | "tzutil"
+            | "sc"
+            | "netsh"
+            | "net"
+            | "schtasks"
+            | "wevtutil"
             | "ver"
             | "date"
             | "time"
@@ -1395,6 +1409,102 @@ fn synth_query(args: &[&str]) -> Vec<String> {
         ],
         _ => Vec::new(),
     }
+}
+
+fn synth_vol(args: &[&str]) -> Vec<String> {
+    let drive = non_redirect_args(args)
+        .next()
+        .unwrap_or("C:")
+        .trim_matches('"');
+    vec![
+        format!(" Volume in drive {drive} is Windows"),
+        " Volume Serial Number is 1234-ABCD".to_string(),
+    ]
+}
+
+fn synth_tzutil(args: &[&str]) -> Vec<String> {
+    if non_redirect_args(args).any(|arg| arg.eq_ignore_ascii_case("/g")) {
+        return vec!["Central Standard Time".to_string()];
+    }
+    Vec::new()
+}
+
+fn synth_sc(args: &[&str]) -> Vec<String> {
+    let mut iter = non_redirect_args(args);
+    let Some(action) = iter.next() else {
+        return Vec::new();
+    };
+    if !action.eq_ignore_ascii_case("query") {
+        return Vec::new();
+    }
+    let service = iter.next().unwrap_or("WinDefend").trim_matches('"');
+    vec![
+        format!("SERVICE_NAME: {service}"),
+        "        TYPE               : 10  WIN32_OWN_PROCESS".to_string(),
+        "        STATE              : 4  RUNNING".to_string(),
+    ]
+}
+
+fn synth_netsh(args: &[&str]) -> Vec<String> {
+    let args: Vec<String> = non_redirect_args(args)
+        .map(str::to_ascii_lowercase)
+        .collect();
+    if args.len() >= 4 && args[0] == "advfirewall" && args[1] == "show" && args[3] == "state" {
+        return vec!["State                                 ON".to_string()];
+    }
+    Vec::new()
+}
+
+fn synth_net(args: &[&str]) -> Vec<String> {
+    let args: Vec<&str> = non_redirect_args(args).collect();
+    if args.len() >= 2 && args[0].eq_ignore_ascii_case("localgroup") {
+        let group = args[1].trim_matches('"');
+        return vec![
+            format!("Alias name     {group}"),
+            "Comment        Administrators have complete and unrestricted access".to_string(),
+            String::new(),
+            "Members".to_string(),
+            "-------------------------------------------------------------------------------"
+                .to_string(),
+            "Administrator".to_string(),
+            "The command completed successfully.".to_string(),
+        ];
+    }
+    Vec::new()
+}
+
+fn synth_schtasks(args: &[&str]) -> Vec<String> {
+    let args: Vec<&str> = non_redirect_args(args).collect();
+    if !args.iter().any(|arg| arg.eq_ignore_ascii_case("/query")) {
+        return Vec::new();
+    }
+    let mut task_name = "\\Updater".to_string();
+    for pair in args.windows(2) {
+        if pair[0].eq_ignore_ascii_case("/tn") {
+            task_name = format!(r"\{}", pair[1].trim_matches('"').trim_start_matches('\\'));
+            break;
+        }
+    }
+    vec![
+        format!("TaskName: {task_name}"),
+        "Status: Ready".to_string(),
+    ]
+}
+
+fn synth_wevtutil(args: &[&str]) -> Vec<String> {
+    let mut iter = non_redirect_args(args);
+    let Some(action) = iter.next() else {
+        return Vec::new();
+    };
+    if !action.eq_ignore_ascii_case("qe") {
+        return Vec::new();
+    }
+    let log = iter.next().unwrap_or("System").trim_matches('"');
+    vec![
+        "Event[0]:".to_string(),
+        format!("  Log Name: {log}"),
+        "  Level: Error".to_string(),
+    ]
 }
 
 fn synth_ver() -> Vec<String> {

