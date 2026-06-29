@@ -508,6 +508,9 @@ fn scan_bitsadmin_deob_text(deobfuscated: &str, env: &mut Environment) {
         .collect();
 
     for line in deobfuscated.lines() {
+        if command_starts_with_echo(line) {
+            continue;
+        }
         if (!contains_ascii_case_insensitive(line, "/transfer")
             && !contains_ascii_case_insensitive(line, "-transfer")
             && !contains_ascii_case_insensitive(line, "/addfile")
@@ -3579,6 +3582,16 @@ fn suppress_generic_downloads_for_new_structured_urls(env: &mut Environment, bef
     });
 }
 
+fn command_starts_with_echo(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    let trimmed = trimmed.strip_prefix('@').unwrap_or(trimmed).trim_start();
+    let tokens = split_words(trimmed);
+    tokens.first().is_some_and(|cmd| {
+        let cmd = strip_outer_quotes(cmd);
+        cmd.eq_ignore_ascii_case("echo")
+    })
+}
+
 fn scan_copied_handler_alias_deob_text(
     deobfuscated: &str,
     env: &mut Environment,
@@ -5954,6 +5967,9 @@ fn scan_curl_redirect_deob_text(deobfuscated: &str, env: &mut Environment) {
         .collect();
 
     for line in deobfuscated.lines() {
+        if command_starts_with_echo(line) {
+            continue;
+        }
         if !contains_ascii_case_insensitive(line, "curl") || !line.contains('>') {
             continue;
         }
@@ -6009,6 +6025,9 @@ fn scan_curl_deob_text(deobfuscated: &str, env: &mut Environment) {
         .collect();
 
     for line in deobfuscated.lines() {
+        if command_starts_with_echo(line) {
+            continue;
+        }
         if !contains_ascii_case_insensitive(line, "curl") {
             continue;
         }
@@ -6067,11 +6086,7 @@ fn scan_aria2_deob_text(deobfuscated: &str, env: &mut Environment) {
         .collect();
 
     for line in deobfuscated.lines() {
-        if line
-            .trim_start()
-            .get(..4)
-            .is_some_and(|head| head.eq_ignore_ascii_case("echo"))
-        {
+        if command_starts_with_echo(line) {
             continue;
         }
         let Some(aria_pos) = find_ascii_case_insensitive_from(line, "aria2c", 0) else {
@@ -6324,6 +6339,9 @@ fn scan_wget_deob_text(deobfuscated: &str, env: &mut Environment) {
         .collect();
 
     for line in deobfuscated.lines() {
+        if command_starts_with_echo(line) {
+            continue;
+        }
         if !contains_ascii_case_insensitive(line, "wget")
             && !contains_ascii_case_insensitive(line, "get.exe")
         {
@@ -6417,6 +6435,7 @@ fn scan_echoed_curl_deob_text(deobfuscated: &str, env: &mut Environment) {
         if !contains_ascii_case_insensitive(line, "echo")
             || !contains_ascii_case_insensitive(line, "curl")
             || !contains_liberal_url_scheme(line)
+            || !line.contains('>')
         {
             continue;
         }
