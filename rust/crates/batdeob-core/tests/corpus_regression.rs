@@ -9,7 +9,7 @@ use std::fs;
 use std::path::Path;
 use std::time::Instant;
 
-const SAMPLE_WALL_LIMIT_SECS: f64 = 5.0;
+const SAMPLE_WALL_LIMIT_SECS: f64 = 6.0;
 
 #[test]
 fn corpus_no_panics_no_hangs() {

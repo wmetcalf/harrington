@@ -6931,17 +6931,24 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
         if command_starts_with_echo(command) {
             continue;
         }
-        if !contains_ascii_case_insensitive(command, "Stop-Process")
-            && !contains_ascii_case_insensitive(command, "spps")
-            && !contains_ascii_case_insensitive(command, "kill")
-        {
+        let has_stop_process = contains_callable_ascii_case_insensitive(command, "Stop-Process");
+        let has_spps = contains_callable_ascii_case_insensitive(command, "spps");
+        let has_kill = contains_callable_ascii_case_insensitive(command, "kill");
+        if !has_stop_process && !has_spps && !has_kill {
             continue;
         }
-        let candidates = powershell_named_argument(command, "-Name")
+        let mut candidates: Vec<String> = powershell_named_argument(command, "-Name")
             .into_iter()
-            .chain(powershell_positional_arguments(command, "Stop-Process"))
-            .chain(powershell_positional_arguments(command, "spps"))
-            .chain(powershell_positional_arguments(command, "kill"));
+            .collect();
+        if has_stop_process {
+            candidates.extend(powershell_positional_arguments(command, "Stop-Process"));
+        }
+        if has_spps {
+            candidates.extend(powershell_positional_arguments(command, "spps"));
+        }
+        if has_kill {
+            candidates.extend(powershell_positional_arguments(command, "kill"));
+        }
         for candidate in candidates {
             let Some(target) = normalize_security_process_target(&candidate) else {
                 continue;
@@ -7172,6 +7179,18 @@ fn normalize_security_process_target(target: &str) -> Option<String> {
         name.push_str(".exe");
     }
     Some(name)
+}
+
+fn contains_callable_ascii_case_insensitive(text: &str, needle: &str) -> bool {
+    let mut search_start = 0;
+    while let Some(start) = find_ascii_case_insensitive_from(text, needle, search_start) {
+        let end = start + needle.len();
+        if is_callable_name_boundary(text, start, end) {
+            return true;
+        }
+        search_start = end;
+    }
+    false
 }
 
 fn is_security_process_name(name: &str) -> bool {
