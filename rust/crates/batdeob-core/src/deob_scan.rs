@@ -1684,16 +1684,23 @@ fn emit_python_download_with_dst(
     known: &mut std::collections::HashSet<String>,
 ) {
     let url = trim_url_suffix(url);
-    if is_noise_url(url) || !known.insert(url.to_string()) {
+    if is_noise_url(url) {
         return;
     }
-    let line = deobfuscated.lines().find(|line| line.contains(url));
+    let Some(line) = deobfuscated
+        .lines()
+        .find(|line| line.contains(url) && !command_starts_with_echo(line))
+    else {
+        return;
+    };
+    if !known.insert(url.to_string()) {
+        return;
+    }
     let dst = dst
         .map(str::to_string)
-        .or_else(|| line.and_then(|line| python_open_write_dst(line, url)));
-    let line_hint = line.map(str::to_string).unwrap_or_default();
+        .or_else(|| python_open_write_dst(line, url));
     env.traits.push(Trait::Download {
-        cmd: line_hint,
+        cmd: line.to_string(),
         src: url.to_string(),
         dst,
     });
@@ -3594,7 +3601,7 @@ fn suppress_generic_downloads_for_new_structured_urls(env: &mut Environment, bef
     });
 }
 
-fn command_starts_with_echo(line: &str) -> bool {
+pub(crate) fn command_starts_with_echo(line: &str) -> bool {
     let trimmed = line.trim_start();
     let trimmed = trimmed.strip_prefix('@').unwrap_or(trimmed).trim_start();
     let tokens = split_words(trimmed);
@@ -3604,7 +3611,7 @@ fn command_starts_with_echo(line: &str) -> bool {
     })
 }
 
-fn match_line_starts_with_echo(text: &str, match_start: usize) -> bool {
+pub(crate) fn match_line_starts_with_echo(text: &str, match_start: usize) -> bool {
     let line_start = text[..match_start]
         .rfind(['\r', '\n'])
         .map(|idx| idx + 1)
@@ -7433,6 +7440,9 @@ fn scan_file_concealment(deobfuscated: &str, env: &mut Environment) {
     }
 
     for line in deobfuscated.lines() {
+        if command_starts_with_echo(line) {
+            continue;
+        }
         let tokens = split_words(line);
         let Some(cmd_index) = tokens.iter().position(|token| {
             basename_trimmed(&clean_token(token)).is_some_and(|base| {
@@ -9319,6 +9329,12 @@ fn scan_beacon_sleep(deobfuscated: &str, env: &mut Environment) {
     });
     let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
     for caps in SLEEP_RE.captures_iter(deobfuscated).take(8) {
+        if caps
+            .get(0)
+            .is_some_and(|m| match_line_starts_with_echo(deobfuscated, m.start()))
+        {
+            continue;
+        }
         let secs = caps
             .get(1)
             .and_then(|m| m.as_str().parse::<u32>().ok())
@@ -9835,6 +9851,9 @@ pub fn scan_raw_marker_powershell_urls(input: &[u8], env: &mut Environment) {
 pub fn scan_embedded_powershell_invocations(text: &str, env: &mut Environment) {
     let normalized = text.replace('^', "");
     for line in normalized.lines() {
+        if command_starts_with_echo(line) {
+            continue;
+        }
         for m in EMBEDDED_POWERSHELL_RE.find_iter(line) {
             let tail = &line[m.start()..];
             if !looks_like_embedded_powershell_payload(tail) {
@@ -10588,6 +10607,12 @@ pub fn scan_extrac32_self_extract(deobfuscated: &str, env: &mut Environment) {
         .expect("extrac32 re")
     });
     for caps in EXTRAC32_RE.captures_iter(deobfuscated) {
+        if caps
+            .get(0)
+            .is_some_and(|m| match_line_starts_with_echo(deobfuscated, m.start()))
+        {
+            continue;
+        }
         let (Some(src), Some(dst)) = (caps.get(1), caps.get(2)) else {
             continue;
         };
@@ -11712,6 +11737,12 @@ pub fn scan_unc_webdav(deobfuscated: &str, env: &mut Environment) {
     // of which share path or file within it was accessed.
     let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
     for caps in UNC_WEBDAV_RE.captures_iter(deobfuscated) {
+        if caps
+            .get(0)
+            .is_some_and(|m| match_line_starts_with_echo(deobfuscated, m.start()))
+        {
+            continue;
+        }
         let host = caps
             .get(1)
             .map(|m| m.as_str().to_string())
@@ -11742,6 +11773,12 @@ pub fn scan_unc_webdav(deobfuscated: &str, env: &mut Environment) {
         });
     }
     for caps in BARE_WEBDAV_RE.captures_iter(deobfuscated) {
+        if caps
+            .get(0)
+            .is_some_and(|m| match_line_starts_with_echo(deobfuscated, m.start()))
+        {
+            continue;
+        }
         let host = caps
             .get(1)
             .map(|m| m.as_str().to_string())

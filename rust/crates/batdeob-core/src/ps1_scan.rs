@@ -5190,7 +5190,17 @@ fn is_schemeless_ip_url(url: &str) -> bool {
 }
 
 pub fn scan_inline_powershell_text(text: &str, env: &mut Environment) {
-    let lower = text.to_ascii_lowercase();
+    let filtered = text
+        .lines()
+        .filter(|line| !crate::deob_scan::command_starts_with_echo(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let scan_text = if filtered.len() == text.len() {
+        text
+    } else {
+        filtered.as_str()
+    };
+    let lower = scan_text.to_ascii_lowercase();
     if !lower.contains("powershell")
         && !lower.contains("downloadstring")
         && !lower.contains("downloadfile")
@@ -5222,7 +5232,9 @@ pub fn scan_inline_powershell_text(text: &str, env: &mut Environment) {
         max_output_line_bytes: env.limits.max_output_line_bytes,
         max_traits_per_kind: 100,
     });
-    payload_env.all_extracted_ps1.push(text.as_bytes().to_vec());
+    payload_env
+        .all_extracted_ps1
+        .push(scan_text.as_bytes().to_vec());
     scan_ps1_payloads(&mut payload_env);
     env.traits
         .extend(payload_env.traits.into_iter().filter(|t| match t {

