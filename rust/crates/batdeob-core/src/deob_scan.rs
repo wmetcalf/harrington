@@ -7876,7 +7876,7 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
             .get(0)
             .map(|m| m.as_str().trim().to_string())
             .unwrap_or_default();
-        if !target.is_empty() {
+        if !target.is_empty() && has_security_product_remove_token(&target) {
             push("security-product-remove", target);
         }
     }
@@ -7936,6 +7936,51 @@ fn defender_evasion_candidate_text(lower: &str) -> bool {
         "policies\\associations",
     ];
     NEEDLES.iter().any(|needle| lower.contains(needle))
+}
+
+fn has_security_product_remove_token(target: &str) -> bool {
+    const NEEDLES: &[&str] = &[
+        "Trend Micro",
+        "Windows Defender",
+        "Microsoft Defender",
+        "Sophos",
+        "Kaspersky",
+        "Symantec",
+        "McAfee",
+        "Avast",
+        "AVG",
+        "ESET",
+        "Malwarebytes",
+        "CrowdStrike",
+        "SentinelOne",
+        "CarbonBlack",
+        "Cylance",
+        "Bitdefender",
+        "mbam",
+        "MsMpEng",
+        "MpCmdRun",
+    ];
+
+    NEEDLES
+        .iter()
+        .any(|needle| contains_security_product_token(target, needle))
+}
+
+fn contains_security_product_token(target: &str, needle: &str) -> bool {
+    let lower = target.to_ascii_lowercase();
+    let needle = needle.to_ascii_lowercase();
+    let mut search_start = 0usize;
+    while let Some(rel) = lower[search_start..].find(&needle) {
+        let start = search_start + rel;
+        let end = start + needle.len();
+        let before_ok = start == 0 || !lower.as_bytes()[start - 1].is_ascii_alphanumeric();
+        let after_ok = end == lower.len() || !lower.as_bytes()[end].is_ascii_alphanumeric();
+        if before_ok && after_ok {
+            return true;
+        }
+        search_start = end;
+    }
+    false
 }
 
 fn attachment_policy_value_weakens(value_name: &str, data: &str) -> bool {
