@@ -250,6 +250,8 @@ const NOISE_EXACT_URLS: &[&str] = &[
     "https://github.com/ch2sh/batcloak",
     "https://github.com/baum1810",
     "https://massgrave.dev/troubleshoot",
+    "https://www.cyotek.com",
+    "http://www.skinstudio.netg",
     // XML / schema absolutes
     "http://www.w3.org/2000/svg",
     "http://schema.org/softwaresourcecode",
@@ -286,6 +288,12 @@ const NOISE_URL_PREFIXES: &[&str] = &[
     "https://github.com/signup",
     "https://github.com/topics/",
     "http://www.apache.org/licenses/",
+    "https://www.youtube.com/embed/",
+    "https://player.vimeo.com/video/",
+    "https://ok.ru/videoembed/",
+    "https://music.yandex.ru/iframe/",
+    "https://www.google.com/maps/place/",
+    "http://sourceforge.net/p/compactview",
 ];
 
 // URL substrings (lowercase). Used for hostnames / paths that show up
@@ -13388,6 +13396,20 @@ mod noise_ip_tests {
             "http://www.red-gate.com/products/dotnet-development/smartassembly/?utm_source=x"
         ));
         assert!(super::is_noise_url("http://sawebservice.red-gate.com/"));
+    }
+
+    #[test]
+    fn binary_resource_template_urls_are_noise() {
+        assert!(super::is_noise_url("https://www.youtube.com/embed/"));
+        assert!(super::is_noise_url("https://player.vimeo.com/video/"));
+        assert!(super::is_noise_url("https://ok.ru/videoembed/"));
+        assert!(super::is_noise_url(
+            "https://music.yandex.ru/iframe/#track/"
+        ));
+        assert!(super::is_noise_url("https://www.google.com/maps/place/"));
+        assert!(super::is_noise_url("https://www.cyotek.com"));
+        assert!(super::is_noise_url("http://sourceforge.net/p/compactview"));
+        assert!(super::is_noise_url("http://www.skinstudio.netG"));
     }
 
     #[test]
