@@ -90,16 +90,12 @@ fn split_cmd_body(raw: &str) -> Option<&str> {
             if ch == b'/' || ch == b'-' {
                 if sub_idx > sub_start {
                     let sub = &token[sub_start..sub_idx];
-                    if sub.eq_ignore_ascii_case("c")
-                        || sub.eq_ignore_ascii_case("k")
-                        || sub.eq_ignore_ascii_case("r")
-                    {
-                        // Body starts after the rest of this token plus
-                        // any trailing whitespace.
-                        let trigger_abs_end = token_start + sub_idx;
+                    if let Some(trigger) = cmd_body_trigger_prefix_len(sub) {
+                        // CMD accepts attached forms such as `/c"echo hi"`
+                        // and `/cecho hi`; preserve everything after the
+                        // trigger as the body.
+                        let trigger_abs_end = token_start + sub_start + trigger;
                         if trigger_abs_end < token_start + token.len() {
-                            // Something after the trigger inside the SAME
-                            // token (e.g. `/c/q`). CMD treats that as body.
                             let after = &raw[trigger_abs_end..];
                             return Some(after.trim_start());
                         }
@@ -114,6 +110,11 @@ fn split_cmd_body(raw: &str) -> Option<&str> {
             }
         }
     }
+}
+
+fn cmd_body_trigger_prefix_len(sub: &str) -> Option<usize> {
+    let first = sub.as_bytes().first()?;
+    matches!(first.to_ascii_lowercase(), b'c' | b'k' | b'r').then_some(1)
 }
 
 /// Detect whether `/V:ON` (or `/V` without qualifier) is present in a cmd invocation.
@@ -191,14 +192,11 @@ fn cmd_flags_section(raw: &str) -> Option<&str> {
             if ch == b'/' || ch == b'-' {
                 if sub_idx > sub_start {
                     let sub = &flag[sub_start..sub_idx];
-                    if sub.eq_ignore_ascii_case("c")
-                        || sub.eq_ignore_ascii_case("k")
-                        || sub.eq_ignore_ascii_case("r")
-                    {
+                    if let Some(trigger) = cmd_body_trigger_prefix_len(sub) {
                         // Trigger found — flags span ends at the token start
                         // PLUS any pre-trigger sub-flags. Include those as
                         // flags so `cmd /V/D/c …` exposes the `/V`.
-                        return Some(&raw[flags_begin..flag_start + sub_idx]);
+                        return Some(&raw[flags_begin..flag_start + sub_start + trigger]);
                     }
                 }
                 sub_start = sub_idx + 1;
@@ -607,6 +605,11 @@ mod has_v_on_tests {
     fn no_v_flag_is_off() {
         assert!(!has_v_on_raw("cmd /c echo hi"));
     }
+
+    #[test]
+    fn attached_body_does_not_count_as_flag_section() {
+        assert!(!has_v_on_raw("cmd /v:off /c/v:on echo hi"));
+    }
 }
 
 #[cfg(test)]
@@ -653,6 +656,12 @@ mod extract_cmd_inner_tests {
     fn cmd_exe_cmd_form_preserves_v_flag_state() {
         assert!(has_v_on_raw("cmd.exe cmd /V:ON /c echo hi"));
     }
+
+    #[test]
+    fn slash_c_attached_quoted_body() {
+        let r = extract_cmd_inner("cmd.exe /d /c\"echo attached-body\"").unwrap();
+        assert_eq!(r, "echo attached-body");
+    }
 }
 
 #[cfg(test)]
@@ -670,6 +679,13 @@ mod start_child_tests {
     fn start_skips_separate_and_shared_flags() {
         let child = start_child_command(r#"start /separate /shared cmd.exe /c echo child"#)
             .expect("start child should parse");
+        assert_eq!(child, "cmd.exe /c echo child");
+    }
+
+    #[test]
+    fn start_attached_d_option_skips_working_directory() {
+        let child =
+            start_child_command(r#"start /D"C:\Users\Public" /min cmd.exe /c echo child"#).unwrap();
         assert_eq!(child, "cmd.exe /c echo child");
     }
 }
