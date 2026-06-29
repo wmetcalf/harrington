@@ -35296,6 +35296,14 @@ mod ps_alias_tests {
     }
 
     #[test]
+    fn command_surface_aliases_expanded() {
+        let out = expand_aliases("gcm *Download*; gal; gmo -ListAvailable");
+        assert!(out.contains("Get-Command *Download*"), "got: {}", out);
+        assert!(out.contains("Get-Alias"), "got: {}", out);
+        assert!(out.contains("Get-Module -ListAvailable"), "got: {}", out);
+    }
+
+    #[test]
     fn gate_allows_verb_noun_cmdlet() {
         use crate::ps_alias::expand_aliases_if_ps;
         let with_cmdlet = "Get-Item foo; start bar";

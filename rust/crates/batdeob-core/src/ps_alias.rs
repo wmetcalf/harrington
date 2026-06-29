@@ -86,6 +86,8 @@ const ALIAS_TABLE: &[(&str, &str)] = &[
     ("ipmo", "Import-Module"),
     ("rmo", "Remove-Module"),
     ("gmo", "Get-Module"),
+    ("gcm", "Get-Command"),
+    ("gal", "Get-Alias"),
     // Misc
     ("clear", "Clear-Host"),
     ("cls", "Clear-Host"),
