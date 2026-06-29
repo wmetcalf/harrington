@@ -2832,6 +2832,7 @@ pub(crate) fn trim_url_suffix(url: &str) -> &str {
 }
 
 pub(crate) fn trim_liberal_url_suffix(mut token: &str) -> &str {
+    token = trim_html_quote_entity_suffix(token);
     loop {
         let Some(last) = token.chars().last() else {
             return token;
@@ -2847,6 +2848,23 @@ pub(crate) fn trim_liberal_url_suffix(mut token: &str) -> &str {
             return token;
         }
         token = &token[..token.len() - last.len_utf8()];
+        token = trim_html_quote_entity_suffix(token);
+    }
+}
+
+fn trim_html_quote_entity_suffix(mut token: &str) -> &str {
+    loop {
+        let Some(trimmed) = token
+            .strip_suffix("&quot")
+            .or_else(|| token.strip_suffix("&apos"))
+            .or_else(|| token.strip_suffix("&#039"))
+            .or_else(|| token.strip_suffix("&#34"))
+            .or_else(|| token.strip_suffix("&#x27"))
+            .or_else(|| token.strip_suffix("&#X27"))
+        else {
+            return token;
+        };
+        token = trimmed;
     }
 }
 

