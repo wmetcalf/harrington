@@ -8115,21 +8115,36 @@ fn scan_enumeration(deobfuscated: &str, env: &mut Environment) {
                 false,
             ),
             (
-                Regex::new(r"(?i)\bGet-Process\b[^\r\n]*").unwrap(),
+                Regex::new(r"(?i)\b(?:Get-Process|gps)\b[^\r\n]*").unwrap(),
                 "ps-get-process",
                 false,
             ),
             (
-                Regex::new(r"(?i)\bGet-Service\b[^\r\n]*").unwrap(),
+                Regex::new(r"(?i)\b(?:Get-Service|gsv)\b[^\r\n]*").unwrap(),
                 "ps-get-service",
                 false,
             ),
             (
                 Regex::new(
-                    r"(?i)\b(?:Get-CimInstance|Get-WmiObject)\b[^\r\n]*\bAntiVirusProduct\b[^\r\n]*",
+                    r"(?i)\b(?:Get-CimInstance|Get-WmiObject|gcim|gwmi)\b[^\r\n]*\bAntiVirusProduct\b[^\r\n]*",
                 )
                 .unwrap(),
                 "ps-securitycenter",
+                false,
+            ),
+            (
+                Regex::new(r"(?i)\bGet-Command\b[^\r\n]*").unwrap(),
+                "ps-get-command",
+                false,
+            ),
+            (
+                Regex::new(r"(?i)\bGet-Alias\b[^\r\n]*").unwrap(),
+                "ps-get-alias",
+                false,
+            ),
+            (
+                Regex::new(r"(?i)\b(?:Get-Module|gmo)\b[^\r\n]*").unwrap(),
+                "ps-get-module",
                 false,
             ),
             (
@@ -8305,7 +8320,15 @@ fn enumeration_candidate_text(lower: &str) -> bool {
         "get-netgroup",
         "get-process",
         "get-service",
+        "gps",
+        "gsv",
         "antivirusproduct",
+        "gcim",
+        "gwmi",
+        "get-command",
+        "get-alias",
+        "get-module",
+        "gmo",
         "get-computerinfo",
         "get-hotfix",
         "get-localgroup",

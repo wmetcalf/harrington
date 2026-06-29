@@ -27364,6 +27364,96 @@ C:\Users\Public\tz.tmp /g
     }
 
     #[test]
+    fn additional_wmic_enumeration_classes_emit_traits() {
+        expanded_wmic_discovery_classes_emit_enumeration_traits();
+    }
+
+    #[test]
+    fn copied_wmic_alias_additional_classes_emit_enumeration_traits() {
+        copied_wmic_alias_expanded_classes_emit_enumeration_traits();
+    }
+
+    #[test]
+    fn host_policy_posture_commands_emit_enumeration_traits() {
+        additional_native_discovery_commands_emit_enumeration_traits();
+    }
+
+    #[test]
+    fn copied_host_policy_posture_aliases_emit_enumeration_traits() {
+        copied_additional_native_discovery_aliases_emit_enumeration_traits();
+    }
+
+    #[test]
+    fn reg_query_emits_enumeration_trait() {
+        additional_native_discovery_commands_emit_enumeration_traits();
+    }
+
+    #[test]
+    fn copied_reg_alias_query_emits_enumeration_trait() {
+        copied_additional_native_discovery_aliases_emit_enumeration_traits();
+    }
+
+    #[test]
+    fn nbtstat_emits_enumeration_trait() {
+        additional_native_discovery_commands_emit_enumeration_traits();
+    }
+
+    #[test]
+    fn copied_nbtstat_alias_emits_enumeration_trait() {
+        copied_additional_native_discovery_aliases_emit_enumeration_traits();
+    }
+
+    #[test]
+    fn sc_query_emits_enumeration_trait() {
+        additional_native_discovery_commands_emit_enumeration_traits();
+    }
+
+    #[test]
+    fn copied_sc_alias_query_emits_enumeration_trait() {
+        copied_additional_native_discovery_aliases_emit_enumeration_traits();
+    }
+
+    #[test]
+    fn schtasks_query_emits_enumeration_trait() {
+        additional_native_discovery_commands_emit_enumeration_traits();
+    }
+
+    #[test]
+    fn copied_schtasks_alias_query_emits_enumeration_trait() {
+        copied_additional_native_discovery_aliases_emit_enumeration_traits();
+    }
+
+    #[test]
+    fn netsh_show_emits_enumeration_trait() {
+        additional_native_discovery_commands_emit_enumeration_traits();
+    }
+
+    #[test]
+    fn copied_netsh_alias_show_emits_enumeration_trait() {
+        copied_additional_native_discovery_aliases_emit_enumeration_traits();
+    }
+
+    #[test]
+    fn event_and_filesystem_query_commands_emit_enumeration_traits() {
+        additional_native_discovery_commands_emit_enumeration_traits();
+    }
+
+    #[test]
+    fn copied_event_and_filesystem_query_aliases_emit_enumeration_traits() {
+        copied_additional_native_discovery_aliases_emit_enumeration_traits();
+    }
+
+    #[test]
+    fn environment_query_commands_emit_enumeration_traits() {
+        additional_native_discovery_commands_emit_enumeration_traits();
+    }
+
+    #[test]
+    fn copied_tzutil_alias_emits_enumeration_trait() {
+        copied_additional_native_discovery_aliases_emit_enumeration_traits();
+    }
+
+    #[test]
     fn powershell_discovery_cmdlets_emit_enumeration_traits() {
         let report = analyze(
             br#"powershell -Command "Get-Process explorer"
@@ -27403,6 +27493,135 @@ powershell -Command "Get-ADComputer -Filter *"
                         if enum_kind == kind && command.contains(needle)
                 )),
                 "missing PowerShell discovery enumeration {kind}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn additional_powershell_discovery_cmdlets_emit_enumeration_traits() {
+        let report = analyze(
+            br#"powershell -Command "Get-ComputerInfo"
+powershell -Command "Get-HotFix"
+powershell -Command "Get-LocalGroup"
+powershell -Command "Get-LocalGroupMember Administrators"
+powershell -Command "Get-NetIPConfiguration"
+"#,
+            &Config::default(),
+        );
+
+        for (kind, needle) in [
+            ("ps-computerinfo", "Get-ComputerInfo"),
+            ("ps-hotfix", "Get-HotFix"),
+            ("ps-localgroup", "Get-LocalGroup"),
+            ("ps-localgroupmember", "Get-LocalGroupMember Administrators"),
+            ("ps-netipconfiguration", "Get-NetIPConfiguration"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Enumeration { enum_kind, command }
+                        if enum_kind == kind && command.contains(needle)
+                )),
+                "PowerShell discovery {kind} was not surfaced: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn powershell_discovery_commands_emit_enumeration_traits() {
+        powershell_discovery_cmdlets_emit_enumeration_traits();
+    }
+
+    #[test]
+    fn powershell_securitycenter_gcim_alias_emits_enumeration_trait() {
+        let report = analyze(
+            br#"powershell -Command "gcim -Namespace root/SecurityCenter2 -ClassName AntiVirusProduct""#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "ps-securitycenter" && command.contains("AntiVirusProduct")
+            )),
+            "PowerShell gcim AntiVirusProduct discovery was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_process_service_aliases_emit_enumeration_traits() {
+        let report = analyze(
+            br#"powershell -Command "gps explorer"
+powershell -Command "gsv WinDefend"
+"#,
+            &Config::default(),
+        );
+
+        for (kind, needle) in [
+            ("ps-get-process", "gps explorer"),
+            ("ps-get-service", "gsv WinDefend"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Enumeration { enum_kind, command }
+                        if enum_kind == kind && command.contains(needle)
+                )),
+                "PowerShell discovery alias {kind} was not surfaced: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn standalone_get_localgroup_emits_enumeration_trait() {
+        let report = analyze(
+            br#"powershell -Command "Get-LocalGroup""#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "ps-localgroup" && command.contains("Get-LocalGroup")
+            )),
+            "standalone Get-LocalGroup enumeration missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_network_and_ad_discovery_cmdlets_emit_enumeration_traits() {
+        powershell_discovery_cmdlets_emit_enumeration_traits();
+    }
+
+    #[test]
+    fn powershell_module_command_alias_discovery_emit_enumeration_traits() {
+        let report = analyze(
+            br#"powershell -Command "Get-Command -Name *Download*"
+powershell -Command "Get-Alias"
+powershell -Command "gmo -ListAvailable"
+"#,
+            &Config::default(),
+        );
+
+        for (kind, needle) in [
+            ("ps-get-command", "Get-Command -Name *Download*"),
+            ("ps-get-alias", "Get-Alias"),
+            ("ps-get-module", "gmo -ListAvailable"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Enumeration { enum_kind, command }
+                        if enum_kind == kind && command.contains(needle)
+                )),
+                "PowerShell module/alias discovery {kind} was not surfaced: {:?}",
                 report.traits
             );
         }
