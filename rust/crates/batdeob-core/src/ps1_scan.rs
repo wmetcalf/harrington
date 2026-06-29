@@ -228,7 +228,7 @@ static PS_QUOTED_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static OUTFILE_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?i)-Out(?:F(?:ile)?)?(?:\s+|:|=)(?:"([^"\r\n;]+)"?|'([^'\r\n;]+)'?|([^"'\s;]+))"#,
+        r#"(?i)-Out(?:F(?:ile)?)?(?:\s+|:|=)(?:`"([^"`\r\n;]+)`"|"([^"\r\n;]+)"?|'([^'\r\n;]+)'?|([^"'\s;]+))"#,
     )
     .expect("outfile")
 });
@@ -275,7 +275,16 @@ fn capture_first_group(captures: &regex::Captures<'_>) -> Option<String> {
         .skip(1)
         .flatten()
         .next()
-        .map(|m| m.as_str().to_string())
+        .map(|m| clean_ps_argument_literal(m.as_str()))
+}
+
+fn clean_ps_argument_literal(value: &str) -> String {
+    value
+        .trim()
+        .replace("`\"", "\"")
+        .replace("`'", "'")
+        .trim_matches(['"', '\''])
+        .to_string()
 }
 
 fn bits_positional_destination_from(text: &str) -> Option<String> {
