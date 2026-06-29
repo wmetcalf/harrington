@@ -6701,10 +6701,6 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
         )
         .expect("wmic-security-process-delete")
     });
-    static POWERSHELL_STOP_PROCESS_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?im)^[^\r\n]*?\b(?:Stop-Process|spps|kill)\b[^\r\n]*"#)
-            .expect("powershell-stop-process")
-    });
     static TAKEOWN_SECURITY_BINARY_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?i)\btakeown(?:\.exe)?\b[^\r\n]*?/f\s+("[^"]+"|'[^']+'|[^\s&|]+)"#)
             .expect("takeown-security-binary")
@@ -6931,11 +6927,16 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
             push("taskkill-security-process", target);
         }
     }
-    for m in POWERSHELL_STOP_PROCESS_RE.find_iter(deobfuscated) {
-        if match_line_starts_with_echo(deobfuscated, m.start()) {
+    for command in deobfuscated.lines() {
+        if command_starts_with_echo(command) {
             continue;
         }
-        let command = m.as_str();
+        if !contains_ascii_case_insensitive(command, "Stop-Process")
+            && !contains_ascii_case_insensitive(command, "spps")
+            && !contains_ascii_case_insensitive(command, "kill")
+        {
+            continue;
+        }
         let candidates = powershell_named_argument(command, "-Name")
             .into_iter()
             .chain(powershell_positional_arguments(command, "Stop-Process"))
