@@ -8143,6 +8143,10 @@ fn scan_inmem_assembly_load(deobfuscated: &str, env: &mut Environment) {
         )
         .expect("reflect load regex")
     });
+    static APPDOMAIN_LOAD_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?i)\[(?:system\.)?AppDomain\]::CurrentDomain\.Load\s*\("#)
+            .expect("appdomain load regex")
+    });
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for caps in REFLECT_RE.captures_iter(deobfuscated) {
         if caps
@@ -8156,6 +8160,25 @@ fn scan_inmem_assembly_load(deobfuscated: &str, env: &mut Environment) {
             .map(|m| m.as_str().to_string())
             .unwrap_or_default();
         if variant.is_empty() || !seen.insert(variant.clone()) {
+            continue;
+        }
+        if env.traits.iter().any(|t| {
+            matches!(
+                t,
+                crate::traits::Trait::InMemoryAssemblyLoad { variant: v } if v == &variant
+            )
+        }) {
+            continue;
+        }
+        env.traits
+            .push(crate::traits::Trait::InMemoryAssemblyLoad { variant });
+    }
+    for m in APPDOMAIN_LOAD_RE.find_iter(deobfuscated) {
+        if match_line_starts_with_echo(deobfuscated, m.start()) {
+            continue;
+        }
+        let variant = "AppDomain.Load".to_string();
+        if !seen.insert(variant.clone()) {
             continue;
         }
         if env.traits.iter().any(|t| {

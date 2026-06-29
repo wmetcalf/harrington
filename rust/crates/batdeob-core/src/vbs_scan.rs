@@ -66,6 +66,7 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
         let uncommented = strip_vbs_apostrophe_comments(&raw);
         let text = join_vbs_line_continuations(&uncommented);
         let bindings = collect_vbs_string_bindings(&text);
+        let process_env = collect_vbs_process_env_bindings(&text, &bindings);
         let dst_hint: Option<String> = extract_savetofile_dest_exprs(&text)
             .into_iter()
             .find_map(|expr| eval_vbs_string_expr(expr, &bindings))
@@ -135,6 +136,13 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
                 src: url,
                 dst: dst_hint.clone(),
             });
+        }
+
+        for payload in extract_shell_run_ps_scriptblocks(&text, &bindings, &process_env) {
+            let bytes = payload.into_bytes();
+            if !env.all_extracted_ps1.contains(&bytes) {
+                env.all_extracted_ps1.push(bytes);
+            }
         }
 
         for url in extract_shell_execute_command_downloads(&text, &bindings) {
@@ -226,6 +234,251 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
             });
         }
     }
+}
+
+fn collect_vbs_process_env_bindings(
+    text: &str,
+    initial_bindings: &std::collections::HashMap<String, String>,
+) -> std::collections::HashMap<String, String> {
+    let mut bindings = initial_bindings.clone();
+    let mut arrays: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    let mut process_env = std::collections::HashMap::new();
+
+    for line in text.lines() {
+        for statement in split_vbs_statements(line) {
+            collect_vbs_array_assignment(statement, &bindings, &mut arrays);
+            collect_vbs_chr_array_append(statement, &mut bindings, &arrays);
+            collect_vbs_process_env_assignment(statement, &bindings, &arrays, &mut process_env);
+        }
+    }
+
+    process_env
+}
+
+fn collect_vbs_array_assignment(
+    statement: &str,
+    bindings: &std::collections::HashMap<String, String>,
+    arrays: &mut std::collections::HashMap<String, Vec<String>>,
+) {
+    let Some(caps) = VBS_STRING_ASSIGN_RE.captures(statement) else {
+        return;
+    };
+    let (Some(name), Some(value)) = (caps.get(1), caps.get(2)) else {
+        return;
+    };
+    let Some(values) = parse_vbs_array_scalar_values(value.as_str(), bindings) else {
+        return;
+    };
+    arrays.insert(name.as_str().to_ascii_lowercase(), values);
+}
+
+fn parse_vbs_array_scalar_values(
+    expr: &str,
+    bindings: &std::collections::HashMap<String, String>,
+) -> Option<Vec<String>> {
+    let inner = vbs_function_args(expr, "array")?;
+    let mut values = Vec::new();
+    for arg in split_vbs_args(inner) {
+        if let Some(value) = eval_vbs_string_expr(arg, bindings) {
+            values.push(value);
+        } else if let Some(value) = parse_vbs_integer(arg) {
+            values.push(value.to_string());
+        } else {
+            return None;
+        }
+    }
+    Some(values)
+}
+
+fn collect_vbs_chr_array_append(
+    statement: &str,
+    bindings: &mut std::collections::HashMap<String, String>,
+    arrays: &std::collections::HashMap<String, Vec<String>>,
+) {
+    let Some((lhs, rhs)) = statement.split_once('=') else {
+        return;
+    };
+    let target = lhs.trim().to_ascii_lowercase();
+    if target.is_empty() {
+        return;
+    }
+    let rhs = rhs.trim();
+    let Some(rest) = rhs
+        .to_ascii_lowercase()
+        .strip_prefix(&(target.clone() + " & chr("))
+        .map(str::to_string)
+    else {
+        return;
+    };
+    let index_expr = rest.trim().strip_suffix(')').unwrap_or(rest.trim()).trim();
+    let Some((array_name, _index_var)) = index_expr.split_once('(') else {
+        return;
+    };
+    if !index_expr.ends_with(')') {
+        return;
+    }
+    let Some(values) = arrays.get(&array_name.to_ascii_lowercase()) else {
+        return;
+    };
+    let mut out = bindings.remove(&target).unwrap_or_default();
+    for value in values {
+        let Some(codepoint) = parse_vbs_integer(value) else {
+            return;
+        };
+        let Some(ch) = char::from_u32(codepoint) else {
+            return;
+        };
+        out.push(ch);
+    }
+    bindings.insert(target, out);
+}
+
+fn collect_vbs_process_env_assignment(
+    statement: &str,
+    bindings: &std::collections::HashMap<String, String>,
+    arrays: &std::collections::HashMap<String, Vec<String>>,
+    process_env: &mut std::collections::HashMap<String, String>,
+) {
+    let Some((lhs, rhs)) = statement.split_once('=') else {
+        return;
+    };
+    if !crate::util::contains_ascii_case_insensitive(lhs, "env") {
+        return;
+    }
+    let Some(name) = vbs_env_assignment_name(lhs.trim(), bindings, arrays) else {
+        return;
+    };
+    let Some(value) = vbs_env_assignment_value(rhs.trim(), bindings, arrays) else {
+        return;
+    };
+    process_env.insert(name.to_ascii_uppercase(), value);
+}
+
+fn vbs_env_assignment_name(
+    lhs: &str,
+    bindings: &std::collections::HashMap<String, String>,
+    arrays: &std::collections::HashMap<String, Vec<String>>,
+) -> Option<String> {
+    let open = lhs.find('(')?;
+    let close = lhs.rfind(')')?;
+    let expr = lhs.get(open + 1..close)?.trim();
+    if let Some(value) = eval_vbs_string_expr(expr, bindings) {
+        return Some(value);
+    }
+    let (array_name, index) = expr.split_once('(')?;
+    let index = index.trim_end_matches(')');
+    let index = parse_vbs_integer(index)? as usize;
+    arrays
+        .get(&array_name.trim().to_ascii_lowercase())?
+        .get(index)
+        .cloned()
+}
+
+fn vbs_env_assignment_value(
+    rhs: &str,
+    bindings: &std::collections::HashMap<String, String>,
+    arrays: &std::collections::HashMap<String, Vec<String>>,
+) -> Option<String> {
+    if let Some(value) = eval_vbs_string_expr(rhs, bindings) {
+        return Some(value);
+    }
+    let (array_name, index) = rhs.trim().split_once('(')?;
+    let index = index.trim_end_matches(')');
+    let index = parse_vbs_integer(index)? as usize;
+    arrays
+        .get(&array_name.trim().to_ascii_lowercase())?
+        .get(index)
+        .cloned()
+}
+
+fn extract_shell_run_ps_scriptblocks(
+    text: &str,
+    bindings: &std::collections::HashMap<String, String>,
+    process_env: &std::collections::HashMap<String, String>,
+) -> Vec<String> {
+    if process_env.is_empty() || !crate::util::contains_ascii_case_insensitive(text, ".run") {
+        return Vec::new();
+    }
+
+    let mut payloads = Vec::new();
+    for line in text.lines() {
+        let mut cursor = 0usize;
+        while let Some(pos) = find_ascii_case_insensitive_from(line, ".run", cursor) {
+            let mut args = line[pos + ".run".len()..].trim();
+            if let Some(stripped) = args.strip_prefix('(') {
+                args = stripped.trim_end().strip_suffix(')').unwrap_or(stripped);
+            }
+            let Some(first_arg) = split_vbs_args(args).first().copied() else {
+                cursor = pos + ".run".len();
+                continue;
+            };
+            if let Some(command) = eval_vbs_string_expr(first_arg, bindings) {
+                if let Some(payload) = scriptblock_env_payload(&command, process_env) {
+                    payloads.push(payload);
+                }
+            }
+            cursor = pos + ".run".len();
+        }
+    }
+    payloads
+}
+
+fn scriptblock_env_payload(
+    command: &str,
+    process_env: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    if !crate::util::contains_ascii_case_insensitive(command, "scriptblock")
+        || !crate::util::contains_ascii_case_insensitive(command, "$env:")
+    {
+        return None;
+    }
+    let env_name = first_powershell_env_ref(command)?;
+    let payload = process_env.get(&env_name.to_ascii_uppercase())?;
+    Some(expand_powershell_env_refs_from_vbs(payload, process_env))
+}
+
+fn first_powershell_env_ref(text: &str) -> Option<String> {
+    let lower = text.to_ascii_lowercase();
+    let start = lower.find("$env:")? + "$env:".len();
+    let tail = &text[start..];
+    let end = tail
+        .char_indices()
+        .find_map(|(idx, ch)| (!is_env_name_char(ch)).then_some(idx))
+        .unwrap_or(tail.len());
+    (end > 0).then(|| tail[..end].to_string())
+}
+
+fn expand_powershell_env_refs_from_vbs(
+    payload: &str,
+    process_env: &std::collections::HashMap<String, String>,
+) -> String {
+    let mut out = String::new();
+    let mut cursor = 0usize;
+    let lower = payload.to_ascii_lowercase();
+    while let Some(rel) = lower[cursor..].find("$env:") {
+        let start = cursor + rel;
+        out.push_str(&payload[cursor..start]);
+        let name_start = start + "$env:".len();
+        let tail = &payload[name_start..];
+        let name_len = tail
+            .char_indices()
+            .find_map(|(idx, ch)| (!is_env_name_char(ch)).then_some(idx))
+            .unwrap_or(tail.len());
+        let name = &tail[..name_len];
+        if let Some(value) = process_env.get(&name.to_ascii_uppercase()) {
+            out.push_str(value);
+        } else {
+            out.push_str(&payload[start..name_start + name_len]);
+        }
+        cursor = name_start + name_len;
+    }
+    out.push_str(&payload[cursor..]);
+    out
+}
+
+fn is_env_name_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_'
 }
 
 fn extract_shell_run_url_exprs(
