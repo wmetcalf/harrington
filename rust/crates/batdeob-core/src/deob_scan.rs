@@ -4132,6 +4132,15 @@ fn scan_copied_attrib_alias_deob_text(deobfuscated: &str, env: &mut Environment)
 
 fn scan_netsh_remote_access(command: &str, env: &mut Environment) {
     let lower = command.to_ascii_lowercase();
+    if lower.contains("netsh")
+        && lower.contains("firewall")
+        && lower.contains("add")
+        && lower.contains("portopening")
+        && lower.contains("3389")
+        && (lower.contains("remote desktop") || lower.contains("enable"))
+    {
+        push_remote_access(env, "rdp-firewall-open", "3389", command);
+    }
     if !lower.contains("netsh")
         || !lower.contains("advfirewall")
         || !lower.contains("firewall")
@@ -4176,6 +4185,7 @@ fn scan_remote_access(command: &str, env: &mut Environment) {
     }
     let command = actionable_command.as_str();
     let lower = command.to_ascii_lowercase();
+    scan_netsh_remote_access(command, env);
     if lower.contains("terminal server")
         && lower.contains("allowtsconnections")
         && lower.contains("/d 1")
@@ -6681,6 +6691,10 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
         Regex::new(r#"(?i)netsh(?:\.exe)?\s+advfirewall\s+set\s+(\w+)\s+state\s+off"#)
             .expect("fw-off")
     });
+    static LEGACY_FIREWALL_OFF_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?i)netsh(?:\.exe)?\s+firewall\s+set\s+opmode\b[^\r\n]*(?:\bdisable\b|\bmode\s*=\s*disable\b)"#)
+            .expect("legacy-fw-off")
+    });
     static PS_FIREWALL_PROFILE_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?im)^[^\r\n]*?\bSet-NetFirewallProfile\b[^\r\n]*"#)
             .expect("powershell firewall profile regex")
@@ -6874,6 +6888,12 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
             .map(|m| m.as_str().to_string())
             .unwrap_or_default();
         push("netsh-fw-off", prof);
+    }
+    for m in LEGACY_FIREWALL_OFF_RE.find_iter(deobfuscated) {
+        if match_line_starts_with_echo(deobfuscated, m.start()) {
+            continue;
+        }
+        push("netsh-fw-off", "legacy-firewall".to_string());
     }
     for m in PS_FIREWALL_PROFILE_RE.find_iter(deobfuscated) {
         if match_line_starts_with_echo(deobfuscated, m.start()) {

