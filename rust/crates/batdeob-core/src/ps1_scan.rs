@@ -5572,6 +5572,9 @@ fn ps_non_download_option_before_value(before_value: &str) -> bool {
 
 fn clean_ps_url(raw: &str) -> String {
     let mut url = raw.trim().trim_matches(['"', '\'']).to_string();
+    if let Some(end) = ps_url_shell_separator_pos(&url) {
+        url.truncate(end);
+    }
     for marker in ['[', '{'] {
         if let Some(pos) = url.find(marker) {
             url.truncate(pos);
@@ -5582,6 +5585,53 @@ fn clean_ps_url(raw: &str) -> String {
             .len(),
     );
     url
+}
+
+fn ps_url_shell_separator_pos(url: &str) -> Option<usize> {
+    let bytes = url.as_bytes();
+    let mut idx = 0usize;
+    while idx < bytes.len() {
+        match bytes[idx] {
+            b'|' => return Some(idx),
+            b'&' if bytes.get(idx + 1) == Some(&b'&') => return Some(idx),
+            b'&' if ps_url_ampersand_starts_command(&url[idx + 1..]) => return Some(idx),
+            _ => idx += 1,
+        }
+    }
+    None
+}
+
+fn ps_url_ampersand_starts_command(after_ampersand: &str) -> bool {
+    let after = after_ampersand.trim_start();
+    let command_end = after
+        .find(|ch: char| !ch.is_ascii_alphanumeric() && ch != '-' && ch != '_' && ch != '.')
+        .unwrap_or(after.len());
+    let command = &after[..command_end];
+    if command.is_empty() || after[command_end..].starts_with('=') {
+        return false;
+    }
+    matches!(
+        command.to_ascii_lowercase().as_str(),
+        "curl"
+            | "curl.exe"
+            | "wget"
+            | "iwr"
+            | "irm"
+            | "invoke-webrequest"
+            | "invoke-restmethod"
+            | "powershell"
+            | "powershell.exe"
+            | "cmd"
+            | "cmd.exe"
+            | "certutil"
+            | "certutil.exe"
+            | "bitsadmin"
+            | "bitsadmin.exe"
+            | "mshta"
+            | "mshta.exe"
+            | "start"
+            | "call"
+    )
 }
 
 fn is_schemeless_ip_url(url: &str) -> bool {

