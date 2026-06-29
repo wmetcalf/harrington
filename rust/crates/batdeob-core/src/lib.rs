@@ -8022,7 +8022,7 @@ fn dedup_traits(traits: &mut Vec<Trait>, max_per_kind: u32) {
         exact_seen.insert(key)
     });
     // Count by kind
-    let mut counts: HashMap<String, u64> = HashMap::new();
+    let mut counts: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
     for t in traits.iter() {
         let kind = trait_kind(t);
         *counts.entry(kind).or_insert(0) += 1;
@@ -18283,6 +18283,36 @@ mod trait_dedup_tests {
             "duplicate downloads caused cap: {:?}",
             report.traits
         );
+    }
+
+    #[test]
+    fn capped_trait_summaries_are_emitted_in_stable_kind_order() {
+        let mut traits = Vec::new();
+        for i in 0..3 {
+            traits.push(Trait::RegQuery {
+                key: format!("HKCU\\Software\\Test\\{i}"),
+                value: None,
+            });
+            traits.push(Trait::Arithmetic {
+                expr: format!("{i}+1"),
+                value: i + 1,
+            });
+            traits.push(Trait::DirListing {
+                path: format!("C:\\Temp\\{i}"),
+                flags: Vec::new(),
+            });
+        }
+
+        super::dedup_traits(&mut traits, 1);
+        let capped_kinds: Vec<_> = traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::TraitsCapped { capped_kind, .. } => Some(capped_kind.as_str()),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(capped_kinds, ["Arithmetic", "DirListing", "RegQuery"]);
     }
 
     #[test]
