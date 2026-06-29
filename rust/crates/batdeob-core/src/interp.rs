@@ -306,6 +306,7 @@ fn conhost_child_command(raw: &str) -> Option<String> {
         if command_basename_is(token, "cmd")
             || command_basename_is(token, "powershell")
             || command_basename_is(token, "pwsh")
+            || crate::handlers::cmd::extract_cmd_inner(&raw[start..]).is_some()
         {
             return Some(raw[start..].trim().to_string());
         }
