@@ -6576,6 +6576,10 @@ fn scan_self_elevation(deobfuscated: &str, env: &mut Environment) {
 fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
+    let lower = deobfuscated.to_ascii_lowercase();
+    if !defender_evasion_candidate_text(&lower) {
+        return;
+    }
     static EXCLUSION_ARG_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
             r#"(?i)-Exclusion(Path|Extension|Process)\s*(?::|=|\s)\s*(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^\s'";|&)]+))"#,
@@ -6830,6 +6834,53 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
     if ETW_PATCH_RE.is_match(deobfuscated) {
         push("etw-patch", String::new());
     }
+}
+
+fn defender_evasion_candidate_text(lower: &str) -> bool {
+    const NEEDLES: &[&str] = &[
+        "add-mppreference",
+        "set-mppreference",
+        "winrm",
+        "windefend",
+        "msmpsvc",
+        "wuauserv",
+        "mpssvc",
+        "wdnissvc",
+        "netsh",
+        "set-netfirewallprofile",
+        "taskkill",
+        "takeown",
+        "icacls",
+        "\\services\\",
+        "schtasks",
+        "windows defender",
+        "microsoft defender",
+        "securityhealthservice",
+        "securityhealthsystray",
+        "msmpeng",
+        "nissrv",
+        "mpcmdrun",
+        "trend micro",
+        "sophos",
+        "kaspersky",
+        "symantec",
+        "mcafee",
+        "avast",
+        "avg",
+        "eset",
+        "malwarebytes",
+        "crowdstrike",
+        "sentinelone",
+        "carbonblack",
+        "cylance",
+        "bitdefender",
+        "mbam",
+        "invoke-nullamsi",
+        "amsi",
+        "etweventwrite",
+        "system.diagnostics.eventing.eventprovider",
+    ];
+    NEEDLES.iter().any(|needle| lower.contains(needle))
 }
 
 fn defender_evasion_match_in_assignment(deobfuscated: &str, start: usize) -> bool {
@@ -7680,6 +7731,10 @@ fn is_loopback_ping_target(target: &str) -> bool {
 fn scan_enumeration(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
+    let lower = deobfuscated.to_ascii_lowercase();
+    if !enumeration_candidate_text(&lower) {
+        return;
+    }
     static PATTERNS: Lazy<Vec<(Regex, &str, bool)>> = Lazy::new(|| {
         vec![
             (
@@ -7861,6 +7916,69 @@ fn scan_enumeration(deobfuscated: &str, env: &mut Environment) {
             }
         }
     }
+}
+
+fn enumeration_candidate_text(lower: &str) -> bool {
+    const NEEDLES: &[&str] = &[
+        "net",
+        "net1",
+        "reg",
+        "sc",
+        "netsh",
+        "wevtutil",
+        "fsutil",
+        "schtasks",
+        "gpresult",
+        "driverquery",
+        "auditpol",
+        "dsregcmd",
+        "tzutil",
+        "whoami",
+        "hostname",
+        "query",
+        "quser",
+        "qwinsta",
+        "qprocess",
+        "ipconfig",
+        "getmac",
+        "netstat",
+        "nbtstat",
+        "arp",
+        "route",
+        "nltest",
+        "dsquery",
+        "netdom",
+        "klist",
+        "setspn",
+        "vol",
+        "systeminfo",
+        "tasklist",
+        "wmic",
+        "get-localuser",
+        "get-netuser",
+        "get-netgroup",
+        "get-process",
+        "get-service",
+        "antivirusproduct",
+        "get-computerinfo",
+        "get-hotfix",
+        "get-localgroup",
+        "get-localgroupmember",
+        "get-netipconfiguration",
+        "get-nettcpconnection",
+        "get-netadapter",
+        "get-netipaddress",
+        "get-netroute",
+        "get-dnsclientcache",
+        "get-smbshare",
+        "get-netfirewallprofile",
+        "get-scheduledtask",
+        "get-psdrive",
+        "env:",
+        "get-aduser",
+        "get-adcomputer",
+    ];
+    NEEDLES.iter().any(|needle| lower.contains(needle))
 }
 
 fn command_enumeration_kind(tokens: &[String], command: &str) -> Option<&'static str> {
