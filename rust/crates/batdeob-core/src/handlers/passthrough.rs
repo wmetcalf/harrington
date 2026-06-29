@@ -992,7 +992,7 @@ pub(crate) fn at_scheduled_command(raw: &str) -> Option<(String, String)> {
         break;
     }
     let command_start = spans.get(idx)?.start;
-    let command = strip_outer_quotes(raw[command_start..].trim()).trim();
+    let command = raw[command_start..].trim();
     if command.is_empty() {
         return None;
     }
@@ -1566,5 +1566,24 @@ mod tests {
 
         assert_eq!(time, "23:59");
         assert_eq!(command, "cmd.exe /c echo hi");
+    }
+
+    #[test]
+    fn at_scheduled_command_accepts_plain_time_command() {
+        let (time, command) =
+            at_scheduled_command(r#"at 23:59 cmd.exe /c echo hi"#).expect("at should parse");
+
+        assert_eq!(time, "23:59");
+        assert_eq!(command, "cmd.exe /c echo hi");
+    }
+
+    #[test]
+    fn at_scheduled_command_skips_remote_host_and_schedule_flags() {
+        let (time, command) =
+            at_scheduled_command(r#"at \\host 1:30pm /every:M,T "cmd.exe /c echo hi""#)
+                .expect("remote at should parse");
+
+        assert_eq!(time, "1:30pm");
+        assert_eq!(command, r#""cmd.exe /c echo hi""#);
     }
 }
