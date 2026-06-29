@@ -170,6 +170,36 @@ mod tests {
             report.traits
         );
     }
+
+    #[test]
+    fn fast_percent_chain_logical_line_skips_raw_dispatch_and_renders_expanded_line() {
+        let mut script = String::new();
+        for (name, value) in [("A", "#"), ("B", "e"), ("C", "c"), ("D", "h"), ("E", "o")] {
+            script.push_str(&format!("set {name}={value}\r\n"));
+        }
+        script.push_str(&"%A%%B%%C%%D%%E%".repeat(512));
+        script.push_str("\r\n");
+
+        let report = crate::analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("harrington: omitted 2560 bytes from hash-prefixed carrier line"),
+            "hash-prefixed carrier summary missing from fast path:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::LineTruncated { original_len } if *original_len == 2560
+                )
+            }),
+            "expected LineTruncated for hash-prefixed carrier line: {:?}",
+            report.traits
+        );
+    }
 }
 
 #[cfg(test)]
@@ -9386,6 +9416,142 @@ fn cap_line(line: String, env: &mut Environment) -> String {
     s
 }
 
+fn fast_expand_percent_substr_chain_line(line: &str, env: &Environment) -> Option<String> {
+    if line.len() < 128 || !line.contains(":~") {
+        return None;
+    }
+
+    let mut out = String::with_capacity(line.len().min(128 * 1024));
+    let mut cursor = 0usize;
+    let mut refs = 0usize;
+    while cursor < line.len() {
+        let rest = &line[cursor..];
+        let Some(first) = rest.chars().next() else {
+            break;
+        };
+        if first.is_whitespace() {
+            out.push(first);
+            cursor += first.len_utf8();
+            continue;
+        }
+        if first != '%' {
+            return None;
+        }
+
+        let name_start = cursor + 1;
+        let after_start = &line[name_start..];
+        let close_rel = after_start.find('%')?;
+        let colon_rel = after_start.find(':');
+        let Some(colon_rel) = colon_rel.filter(|colon_rel| *colon_rel < close_rel) else {
+            let name_end = name_start + close_rel;
+            if name_end == name_start {
+                return None;
+            }
+            let name = &line[name_start..name_end];
+            if name.contains(['!', '^', '&', '|', '<', '>', '"']) {
+                return None;
+            }
+            if let Some(value) = env.get(name) {
+                out.push_str(&value);
+            }
+            refs += 1;
+            cursor = name_end + 1;
+            continue;
+        };
+
+        let name_end = name_start + colon_rel;
+        if name_end == name_start {
+            return None;
+        }
+        let op_start = name_end + 1;
+        let op_end = name_start + close_rel;
+        let op = &line[op_start..op_end];
+        if !op.trim_start().starts_with('~') {
+            return None;
+        }
+        let crate::lex::VarOp::Substr { index, length } = crate::lex::parse_substr(op)? else {
+            return None;
+        };
+        let raw = env.get(&line[name_start..name_end])?;
+        out.push_str(&crate::normalize::apply_substr(&raw, index, length));
+        refs += 1;
+        cursor = op_end + 1;
+    }
+
+    (refs >= 8).then_some(out)
+}
+
+fn fast_expand_percent_var_chain_line(line: &str, env: &Environment) -> Option<String> {
+    if line.len() < 128 || !line.contains('%') {
+        return None;
+    }
+
+    let mut out = String::with_capacity(line.len().min(128 * 1024));
+    let mut cursor = 0usize;
+    let mut refs = 0usize;
+    while cursor < line.len() {
+        let rest = &line[cursor..];
+        let Some(first) = rest.chars().next() else {
+            break;
+        };
+        if first.is_whitespace() {
+            out.push(first);
+            cursor += first.len_utf8();
+            continue;
+        }
+        if first != '%' {
+            return None;
+        }
+
+        let name_start = cursor + 1;
+        let after_start = &line[name_start..];
+        let close_rel = after_start.find('%')?;
+        let name_end = name_start + close_rel;
+        if name_end == name_start {
+            return None;
+        }
+        let name = &line[name_start..name_end];
+        if name.contains([':', '!', '^', '&', '|', '<', '>', '"']) {
+            return None;
+        }
+        if let Some(value) = env.get(name) {
+            out.push_str(&value);
+        }
+        refs += 1;
+        cursor = name_end + 1;
+    }
+
+    (refs >= 16).then_some(out)
+}
+
+fn render_fast_percent_chain_logical_line(
+    normalized: &str,
+    env: &mut Environment,
+    out: &mut String,
+    line_output_elided: bool,
+) -> bool {
+    if normalized.len() < 1024 || !normalized.starts_with('#') {
+        return false;
+    }
+    if normalized
+        .bytes()
+        .any(|b| b.is_ascii_whitespace() || matches!(b, b'%' | b'!' | b'^' | b'&' | b'|'))
+    {
+        return false;
+    }
+    if !line_output_elided {
+        rescue_truncated_urls(normalized, normalized.len(), env);
+        env.traits.push(crate::traits::Trait::LineTruncated {
+            original_len: normalized.len() as u64,
+        });
+        out.push_str(&format!(
+            "::==== harrington: omitted {} bytes from hash-prefixed carrier line ====\r\n",
+            normalized.len()
+        ));
+    }
+    true
+}
+
 fn summarize_long_alpha_echo_line(line: &str, env: &mut Environment) -> Option<String> {
     const MIN_SUMMARY_BYTES: usize = 1024;
 
@@ -9892,6 +10058,17 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
         // When true, we advance past the high-water mark to avoid re-executing
         // subroutine bodies that were already visited via a call.
         let mut top_level_exit = false;
+
+        if !env.suppress_until_eol {
+            let fast_normalized = fast_expand_percent_substr_chain_line(logical, env)
+                .or_else(|| fast_expand_percent_var_chain_line(logical, env));
+            if let Some(fast) = fast_normalized {
+                if render_fast_percent_chain_logical_line(&fast, env, out, line_output_elided) {
+                    cursor += 1;
+                    continue;
+                }
+            }
+        }
 
         let commands = if interp::should_preserve_raw_at_schedule(logical, env) {
             vec![logical.trim().to_string()]
