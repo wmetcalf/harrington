@@ -36,6 +36,12 @@ pub fn h_if(raw: &str, env: &mut Environment) {
         }
     };
     if !final_result {
+        if let Some(body) = extract_inline_body(rest) {
+            if let Some(else_body) = parenthesized_else_body(&body) {
+                dispatch_if_branch(else_body, env);
+                return;
+            }
+        }
         env.suppress_until_eol = true;
         return;
     }
@@ -464,6 +470,15 @@ fn parenthesized_branch_body(body: &str) -> Option<&str> {
     let inner = body.strip_prefix('(')?;
     let close = matching_close_paren(inner)?;
     inner.get(..close)
+}
+
+fn parenthesized_else_body(body: &str) -> Option<&str> {
+    let body = body.trim();
+    let inner = body.strip_prefix('(')?;
+    let close = matching_close_paren(inner)?;
+    let after_then = inner.get(close + 1..)?.trim_start();
+    let else_body = strip_kw(after_then, "else")?.trim_start();
+    parenthesized_branch_body(else_body)
 }
 
 fn matching_close_paren(s: &str) -> Option<usize> {

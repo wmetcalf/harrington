@@ -106,6 +106,35 @@ mod tests {
     }
 
     #[test]
+    fn inert_nul_padding_line_is_summarized_without_command_truncation() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        let mut out = String::new();
+        let padding = "\0".repeat(70_000);
+        let command = "powershell.exe -NoProfile -Command \"Write-Output keep\"";
+
+        assert!(
+            crate::summarize_inert_binary_noise_line(&padding, &mut env, &mut out),
+            "NUL padding line should be summarized"
+        );
+        assert!(
+            !crate::summarize_inert_binary_noise_line(command, &mut env, &mut out),
+            "real command line should not be summarized"
+        );
+        assert!(
+            out.contains("harrington: omitted 70000 NUL padding bytes"),
+            "NUL padding summary missing from output: {:?}",
+            out
+        );
+        assert!(
+            env.traits.iter().any(
+                |t| matches!(t, Trait::LineTruncated { original_len } if *original_len == 70_000)
+            ),
+            "expected LineTruncated only for NUL padding line: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn caret_obfuscated_long_rem_noise_is_summarized_and_tail_url_rescued() {
         let url = "https://caret-rem-tail.attacker.example/payload.bat";
         let noise = "B".repeat(4096);
@@ -10282,6 +10311,12 @@ fn summarize_binary_noise_line_runs(text: &str, env: &mut Environment) -> String
 
     for line in text.split_inclusive('\n') {
         let (body, _) = split_line_ending(line);
+        if summarize_inert_binary_noise_line(body, env, &mut out) {
+            if line.ends_with('\n') {
+                out.push_str("\r\n");
+            }
+            continue;
+        }
         if is_binary_noise_line(body) {
             pending.push_str(line);
             pending_lines += 1;
@@ -10292,6 +10327,25 @@ fn summarize_binary_noise_line_runs(text: &str, env: &mut Environment) -> String
     }
     flush_binary_noise_run(&mut out, &mut pending, &mut pending_lines, env);
     out
+}
+
+fn summarize_inert_binary_noise_line(line: &str, env: &mut Environment, out: &mut String) -> bool {
+    const MIN_NUL_PADDING_BYTES: usize = 1024;
+    if line.len() < MIN_NUL_PADDING_BYTES {
+        return false;
+    }
+    let nul_count = line.as_bytes().iter().filter(|b| **b == 0).count();
+    if nul_count * 100 < line.len() * 90 {
+        return false;
+    }
+    env.traits.push(crate::traits::Trait::LineTruncated {
+        original_len: line.len() as u64,
+    });
+    out.push_str(&format!(
+        "::==== harrington: omitted {} NUL padding bytes ====",
+        line.len()
+    ));
+    true
 }
 
 fn flush_binary_noise_run(
@@ -20129,6 +20183,17 @@ mod inline_if_tests {
         assert!(
             !report.deobfuscated.contains("echo value"),
             "got:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn inline_if_false_runs_parenthesized_else_body() {
+        let script = b"if \"off.\" EQU \"on.\" (set X=bad) else (set X=good)\r\necho %X%\r\n";
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo good"),
+            "else branch did not run, got:\n{}",
             report.deobfuscated
         );
     }
