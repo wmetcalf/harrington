@@ -4189,6 +4189,13 @@ fn scan_netsh_remote_access(command: &str, env: &mut Environment) {
 }
 
 fn scan_remote_access(command: &str, env: &mut Environment) {
+    use once_cell::sync::Lazy;
+    use regex::Regex;
+    static PS_TERMSERVICE_SET_SERVICE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?im)(?:^|[;|&])\s*[^\r\n;|&]*?\b(?:Set-Service|ssv)\b[^\r\n;|&]*"#)
+            .expect("powershell termservice set-service regex")
+    });
+
     let actionable_command = command
         .lines()
         .filter(|line| !command_starts_with_echo(line))
@@ -4237,6 +4244,36 @@ fn scan_remote_access(command: &str, env: &mut Environment) {
     }
     if lower.contains("net") && lower.contains("start") && lower.contains("termservice") {
         push_remote_access(env, "rdp-service-enable", "TermService", command);
+    }
+    for m in PS_TERMSERVICE_SET_SERVICE_RE.find_iter(command) {
+        let service_command = m.as_str().trim();
+        let startup_type = powershell_named_argument(service_command, "-StartupType")
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if !matches!(
+            startup_type.as_str(),
+            "automatic" | "auto" | "manual" | "demand"
+        ) {
+            continue;
+        }
+        let mut candidates = powershell_named_argument_list(service_command, "-Name");
+        if candidates.is_empty() {
+            let positional =
+                if find_ascii_case_insensitive_from(service_command, "Set-Service", 0).is_some() {
+                    powershell_positional_arguments(service_command, "Set-Service")
+                } else {
+                    powershell_positional_arguments(service_command, "ssv")
+                };
+            if let Some(service) = positional.first() {
+                candidates.extend(split_powershell_value_list(service));
+            }
+        }
+        if candidates
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case("TermService"))
+        {
+            push_remote_access(env, "rdp-service-enable", "TermService", service_command);
+        }
     }
     if lower.contains("wmic")
         && lower.contains("rdtoggle")
@@ -7243,6 +7280,10 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
         Regex::new(r#"(?i)sc(?:\.exe)?\s+(stop|config|delete)\s+(WinDefend|MsMpSvc|wuauserv|MpsSvc|WdNisSvc)"#)
             .expect("sc-defender")
     });
+    static PS_SET_SERVICE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?im)(?:^|[;|&])\s*[^\r\n;|&]*?\b(?:Set-Service|ssv)\b[^\r\n;|&]*"#)
+            .expect("powershell set-service regex")
+    });
     static FIREWALL_OFF_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?i)netsh(?:\.exe)?\s+advfirewall\s+set\s+(\w+)\s+state\s+off"#)
             .expect("fw-off")
@@ -7431,6 +7472,40 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
             .map(|m| m.as_str().to_string())
             .unwrap_or_default();
         push(&format!("sc-{verb}"), svc);
+    }
+    for m in PS_SET_SERVICE_RE.find_iter(deobfuscated) {
+        if match_line_starts_with_echo(deobfuscated, m.start()) {
+            continue;
+        }
+        let command = m.as_str().trim();
+        let startup_type = powershell_named_argument(command, "-StartupType")
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if startup_type != "disabled" {
+            continue;
+        }
+        let mut services = powershell_named_argument_list(command, "-Name");
+        if services.is_empty() {
+            if let Some(display_name) = powershell_named_argument(command, "-DisplayName") {
+                services.push(display_name);
+            }
+        }
+        if services.is_empty() {
+            let positional =
+                if find_ascii_case_insensitive_from(command, "Set-Service", 0).is_some() {
+                    powershell_positional_arguments(command, "Set-Service")
+                } else {
+                    powershell_positional_arguments(command, "ssv")
+                };
+            if let Some(service) = positional.first() {
+                services.extend(split_powershell_value_list(service));
+            }
+        }
+        for service in services {
+            if is_security_service_name(&service) {
+                push("powershell-service-disabled", service);
+            }
+        }
     }
     for caps in FIREWALL_OFF_RE.captures_iter(deobfuscated) {
         if caps
@@ -7797,9 +7872,17 @@ fn is_security_binary_name(name: &str) -> bool {
 }
 
 fn is_security_service_name(name: &str) -> bool {
-    ["WinDefend", "MsMpSvc", "wuauserv", "MpsSvc", "WdNisSvc"]
-        .iter()
-        .any(|candidate| name.eq_ignore_ascii_case(candidate))
+    [
+        "WinDefend",
+        "MsMpSvc",
+        "wuauserv",
+        "MpsSvc",
+        "WdNisSvc",
+        "Windows Defender Antivirus Service",
+        "Microsoft Defender Antivirus Service",
+    ]
+    .iter()
+    .any(|candidate| name.eq_ignore_ascii_case(candidate))
 }
 
 pub(crate) fn defender_evasion_is_disabling_value(opt: &str, val: &str) -> bool {

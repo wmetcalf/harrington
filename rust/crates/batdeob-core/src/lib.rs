@@ -2068,6 +2068,142 @@ move "%cmdDestination%" "%startupFolder%"
         );
     }
 
+    fn assert_powershell_service_disabled(script: &[u8], expected: &str, label: &str) {
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "powershell-service-disabled" && target == expected
+            )),
+            "{label}: {:?}",
+            report.traits
+        );
+    }
+
+    fn assert_powershell_termservice_enablement(script: &[u8], label: &str) {
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-service-enable" && target == "TermService"
+            )),
+            "{label}: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_set_service_disabled_emits_defender_evasion_trait() {
+        assert_powershell_service_disabled(
+            br#"powershell -Command "Set-Service WinDefend -StartupType Disabled""#,
+            "WinDefend",
+            "PowerShell Set-Service disabled WinDefend was not surfaced",
+        );
+    }
+
+    #[test]
+    fn powershell_ssv_alias_disabled_emits_defender_evasion_trait() {
+        assert_powershell_service_disabled(
+            br#"powershell -Command "ssv WinDefend -StartupType Disabled""#,
+            "WinDefend",
+            "PowerShell ssv disabled WinDefend was not surfaced",
+        );
+    }
+
+    #[test]
+    fn powershell_set_service_reordered_disabled_args_emit_defender_evasion_trait() {
+        assert_powershell_service_disabled(
+            br#"powershell -Command "Set-Service -StartupType Disabled -Name WinDefend""#,
+            "WinDefend",
+            "PowerShell reordered Set-Service disabled WinDefend was not surfaced",
+        );
+    }
+
+    #[test]
+    fn powershell_set_service_name_list_disabled_emits_each_defender_evasion_trait() {
+        let script =
+            br#"powershell -Command "Set-Service -Name WinDefend, WdNisSvc -StartupType Disabled""#;
+
+        for service in ["WinDefend", "WdNisSvc"] {
+            assert_powershell_service_disabled(
+                script,
+                service,
+                "PowerShell Set-Service disabled service was not surfaced",
+            );
+        }
+    }
+
+    #[test]
+    fn powershell_set_service_defender_displayname_disabled_emits_trait() {
+        assert_powershell_service_disabled(
+            br#"powershell -Command "Set-Service -DisplayName 'Windows Defender Antivirus Service' -StartupType Disabled""#,
+            "Windows Defender Antivirus Service",
+            "PowerShell Defender display-name service disablement was not surfaced",
+        );
+    }
+
+    #[test]
+    fn powershell_chained_set_service_defender_disable_emits_evasion_trait() {
+        assert_powershell_service_disabled(
+            br#"powershell -Command "Set-Service TermService -StartupType Automatic; Set-Service WinDefend -StartupType Disabled""#,
+            "WinDefend",
+            "chained PowerShell Set-Service WinDefend disablement was not surfaced",
+        );
+    }
+
+    #[test]
+    fn powershell_set_service_termservice_auto_emits_remote_access_trait() {
+        assert_powershell_termservice_enablement(
+            br#"powershell -Command "Set-Service -Name TermService -StartupType Automatic""#,
+            "PowerShell Set-Service TermService auto was not surfaced",
+        );
+    }
+
+    #[test]
+    fn powershell_ssv_termservice_auto_emits_remote_access_trait() {
+        assert_powershell_termservice_enablement(
+            br#"powershell -Command "ssv -Name TermService -StartupType Automatic""#,
+            "PowerShell ssv TermService auto was not surfaced",
+        );
+    }
+
+    #[test]
+    fn powershell_positional_set_service_termservice_demand_emits_remote_access_trait() {
+        assert_powershell_termservice_enablement(
+            br#"powershell -Command "Set-Service TermService -StartupType Manual""#,
+            "PowerShell positional Set-Service TermService demand was not surfaced",
+        );
+    }
+
+    #[test]
+    fn powershell_chained_set_service_termservice_enable_emits_remote_access_trait() {
+        assert_powershell_termservice_enablement(
+            br#"powershell -Command "Set-Service WinDefend -StartupType Disabled; Set-Service TermService -StartupType Automatic""#,
+            "chained PowerShell Set-Service TermService enablement was not surfaced",
+        );
+    }
+
+    #[test]
+    fn powershell_set_service_termservice_disabled_is_not_remote_access_enablement() {
+        let script =
+            br#"powershell -Command "Set-Service -Name TermService -StartupType Disabled""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-service-enable" && target == "TermService"
+            )),
+            "disabled TermService was mislabeled as RDP enablement: {:?}",
+            report.traits
+        );
+    }
+
     #[test]
     fn mppreference_invoke_expression_exclusion_process_uses_list_target() {
         let script = br#"powershell -Command "$ListProcess = @('miner.exe'); $First = 'Add-MpPreference -ExclusionProcess '; $Third = ' -Force'; ForEach ($Path in $ListProcess) { Invoke-Expression ($First + $Path + $Third) }""#;
