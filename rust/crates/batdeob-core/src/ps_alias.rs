@@ -17,12 +17,14 @@ const ALIAS_TABLE: &[(&str, &str)] = &[
     ("iex", "Invoke-Expression"),
     ("icm", "Invoke-Command"),
     ("ihy", "Invoke-History"),
+    ("ii", "Invoke-Item"),
     // Item operations
     ("gi", "Get-Item"),
     ("gci", "Get-ChildItem"),
     ("ls", "Get-ChildItem"),
     ("dir", "Get-ChildItem"),
     ("ni", "New-Item"),
+    ("si", "Set-Item"),
     ("ri", "Remove-Item"),
     ("rm", "Remove-Item"),
     ("rmdir", "Remove-Item"),
@@ -95,6 +97,13 @@ const ALIAS_TABLE: &[(&str, &str)] = &[
     ("help", "Get-Help"),
     ("gjb", "Get-Job"),
     ("rcjb", "Receive-Job"),
+    // WMI / services
+    ("gwmi", "Get-WmiObject"),
+    ("rwmi", "Remove-WmiObject"),
+    ("gcim", "Get-CimInstance"),
+    ("gsv", "Get-Service"),
+    ("sasv", "Start-Service"),
+    ("ssv", "Set-Service"),
     // Type / member
     ("gm", "Get-Member"),
     ("gu", "Get-Unique"),
@@ -106,8 +115,8 @@ const ALIAS_TABLE: &[(&str, &str)] = &[
 /// True when `text` has visible evidence of a PowerShell context: a
 /// `powershell`/`pwsh` invocation literal, a PS-distinctive Verb-Noun
 /// cmdlet, a `$`-sigil variable, a `::` static-member access, or a
-/// networking-alias invocation at command position (`iex`, `iwr`, `irm`,
-/// `wget`, `curl`, `tnc`). Used to gate alias expansion so we don't rewrite
+/// high-signal alias invocation at command position (`iex`, `iwr`, `irm`,
+/// `wget`, `curl`, `tnc`, `ii`, `si`, WMI/service aliases). Used to gate alias expansion so we don't rewrite
 /// CMD/batch tokens that share names with PS aliases (`start`, `cd`,
 /// `dir`, `copy`, `del`, `cls`, ...). The alias-at-cmd-position case is
 /// load-bearing for modern droppers — they often build a pure-alias
@@ -126,7 +135,7 @@ pub fn looks_like_powershell(text: &str) -> bool {
                   |Import|Export|ConvertTo|ConvertFrom|Start|Stop|Enter|Exit
                   |Write|Read|Test|Format) - [A-Z][A-Za-z]+ \b
             | :: [A-Za-z_]
-            | (?:^|[\s;|&(]) (?:iex|iwr|irm|wget|curl|tnc) (?:\s|$|[\(\;\&\|])
+            | (?:^|[\s;|&(]) (?:iex|iwr|irm|wget|curl|tnc|ii|si|gwmi|rwmi|gcim|gsv|sasv|ssv) (?:\s|$|[\(\;\&\|])
             ",
         )
         .expect("ps marker re")

@@ -37448,6 +37448,41 @@ mod ps_alias_tests {
     }
 
     #[test]
+    fn gate_allows_invoke_item_alias_only_payload() {
+        use crate::ps_alias::expand_aliases_if_ps;
+        let out = expand_aliases_if_ps("ii https://launch-gate-alias.example/doc.pdf");
+        assert!(
+            out.contains("Invoke-Item https://launch-gate-alias.example/doc.pdf"),
+            "got: {}",
+            out
+        );
+    }
+
+    #[test]
+    fn gate_allows_set_item_function_alias_only_payload() {
+        use crate::ps_alias::expand_aliases_if_ps;
+        let out = expand_aliases_if_ps("(si function:\\Decoder -Value { param($x) $x })");
+        assert!(out.contains("Set-Item"), "got: {}", out);
+    }
+
+    #[test]
+    fn gate_allows_wmi_and_service_alias_only_payload() {
+        use crate::ps_alias::expand_aliases_if_ps;
+        let out = expand_aliases_if_ps(
+            "gwmi Win32_ShadowCopy | rwmi; gsv WinDefend; sasv TermService; ssv WinDefend",
+        );
+        assert!(
+            out.contains("Get-WmiObject Win32_ShadowCopy"),
+            "got: {}",
+            out
+        );
+        assert!(out.contains("Remove-WmiObject"), "got: {}", out);
+        assert!(out.contains("Get-Service WinDefend"), "got: {}", out);
+        assert!(out.contains("Start-Service TermService"), "got: {}", out);
+        assert!(out.contains("Set-Service WinDefend"), "got: {}", out);
+    }
+
+    #[test]
     fn command_surface_aliases_expanded() {
         let out = expand_aliases("gcm *Download*; gal; gmo -ListAvailable");
         assert!(out.contains("Get-Command *Download*"), "got: {}", out);
