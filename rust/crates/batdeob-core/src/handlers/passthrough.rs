@@ -529,13 +529,17 @@ fn queue_child_command(command: String, env: &mut Environment) {
         return;
     }
     if let Some(inner) = super::cmd::extract_cmd_inner(&command) {
-        env.exec_cmd.push(inner);
+        env.exec_cmd.push(unescape_outer_caret_bangs(&inner));
         env.exec_cmd_delayed
             .push(super::cmd::has_v_on_raw(&command));
     } else {
-        env.exec_cmd.push(command);
+        env.exec_cmd.push(unescape_outer_caret_bangs(&command));
         env.exec_cmd_delayed.push(false);
     }
+}
+
+fn unescape_outer_caret_bangs(command: &str) -> String {
+    command.replace("^!", "!")
 }
 
 fn persisted_command_looks_dispatchable(command: &str) -> bool {
