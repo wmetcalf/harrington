@@ -549,6 +549,10 @@ fn strip_for_header_noise(raw: &str, env: &Environment) -> String {
 /// Called by `drive()` on the **raw** (pre-normalization) command string.
 /// Returns true if this was a FOR command that was handled.
 pub fn run_for_from_raw(raw: &str, env: &mut Environment) -> bool {
+    if !raw_might_start_with_for(raw) {
+        return false;
+    }
+
     // Trim leading `@` and whitespace (echo-suppression prefix).
     // Build a noise-stripped copy so the keyword regex can match even when
     // the FOR header is shrouded in caret escapes + non-ASCII-named empty
@@ -702,6 +706,53 @@ pub fn run_for_from_raw(raw: &str, env: &mut Environment) -> bool {
 /// dispatch an unknown-command no-op for the normalized `for …` text.
 pub fn h_for(_raw: &str, _env: &mut Environment) {
     // Intentionally empty — all work is done by run_for_from_raw in drive().
+}
+
+fn raw_might_start_with_for(raw: &str) -> bool {
+    let mut token = [0u8; 3];
+    let mut token_len = 0usize;
+    let mut chars = raw.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '^' {
+            continue;
+        }
+        if c == '%' {
+            if chars.peek() == Some(&'%') {
+                break;
+            }
+            for next in chars.by_ref() {
+                if next == '%' || next == '\n' || next == '\r' {
+                    break;
+                }
+            }
+            continue;
+        }
+        if token_len == 0 && (c.is_whitespace() || matches!(c, '@' | '(' | ',' | ';')) {
+            continue;
+        }
+        if c.is_ascii_alphabetic() {
+            token[token_len] = c.to_ascii_lowercase() as u8;
+            token_len += 1;
+            if token_len == token.len() {
+                if token != *b"for" {
+                    return false;
+                }
+                while let Some(&next) = chars.peek() {
+                    if next == '^' {
+                        chars.next();
+                        continue;
+                    }
+                    return !(next.is_ascii_alphanumeric() || next == '_');
+                }
+                return true;
+            }
+            continue;
+        }
+        break;
+    }
+
+    false
 }
 
 /// Build a lazy iterator over the numeric range `start, start+step, ..., end`.
@@ -1043,12 +1094,21 @@ fn strip_outer_parens(s: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::strip_carets;
+    use super::{raw_might_start_with_for, strip_carets};
 
     #[test]
     fn strip_carets_preserves_unicode_and_removes_ascii_carets() {
         assert_eq!(strip_carets("te^st"), "test");
         assert_eq!(strip_carets("hé^llo"), "héllo");
         assert_eq!(strip_carets("plain"), "plain");
+    }
+
+    #[test]
+    fn for_prefix_rejects_longer_command_names() {
+        assert!(!raw_might_start_with_for("forest /q"));
+        assert!(!raw_might_start_with_for("format /q"));
+        assert!(!raw_might_start_with_for("for1 /q"));
+        assert!(!raw_might_start_with_for("for_ /q"));
+        assert!(raw_might_start_with_for("for /f %%A in (x) do echo hi"));
     }
 }
