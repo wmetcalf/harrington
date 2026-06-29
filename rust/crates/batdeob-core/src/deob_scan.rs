@@ -3793,9 +3793,12 @@ fn scan_copied_forfiles_alias_deob_text(deobfuscated: &str, env: &mut Environmen
         {
             for inner in inners {
                 if let Some(cmd_inner) = crate::handlers::cmd::extract_cmd_inner(&inner) {
-                    crate::interp::interpret_line(&cmd_inner, env);
+                    let command = cmd_inner.replace("^!", "!");
+                    let delayed = crate::handlers::cmd::has_v_on_raw(&inner);
+                    replay_child_command(&command, delayed, env);
                 } else {
-                    crate::interp::interpret_line(&inner, env);
+                    let command = inner.replace("^!", "!");
+                    replay_child_command(&command, false, env);
                 }
             }
         }
