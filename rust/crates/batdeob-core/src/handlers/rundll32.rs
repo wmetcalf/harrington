@@ -3,6 +3,7 @@ use crate::handlers::util::{
     filesystem_entry_for_path, split_words, strip_outer_quotes, windows_basename,
 };
 use crate::traits::Trait;
+use crate::util::contains_ascii_case_insensitive;
 
 pub fn h_rundll32(raw: &str, env: &mut Environment) {
     let parts = split_words(raw);
@@ -31,7 +32,7 @@ pub fn h_rundll32(raw: &str, env: &mut Environment) {
     let dll = strip_outer_quotes(parts[1].split(',').next().unwrap_or(""));
     let url = match filesystem_entry_for_path(env, dll) {
         Some(FsEntry::Download { src }) => Some(src.clone()),
-        _ => None,
+        _ => webdav_url_for_candidate(dll),
     };
     if url.is_some() {
         matched_lolbas = true;
@@ -146,6 +147,42 @@ fn prior_download_url_by_basename(path: &str, env: &Environment) -> Option<Strin
             FsEntry::Download { src } => Some(src.clone()),
             _ => None,
         })
+}
+
+fn webdav_url_for_candidate(candidate: &str) -> Option<String> {
+    let candidate = candidate.trim();
+    if !candidate.starts_with(r"\\") || !rundll32_loadable_target(candidate) {
+        return None;
+    }
+    let parts: Vec<&str> = candidate
+        .split('\\')
+        .filter(|part| !part.is_empty())
+        .collect();
+    let host_port = parts.first()?;
+    if let Some((host, port)) = host_port.split_once('@') {
+        if host.is_empty()
+            || port.is_empty()
+            || !contains_ascii_case_insensitive(candidate, r"\davwwwroot\")
+        {
+            return None;
+        }
+        return Some(crate::deob_scan::unc_webdav_to_http_url(
+            host, port, candidate,
+        ));
+    }
+    if parts.len() < 3 || !parts[1].eq_ignore_ascii_case("webdav") || parts[2].is_empty() {
+        return None;
+    }
+    Some(crate::deob_scan::unc_webdav_to_http_url(
+        host_port, "80", candidate,
+    ))
+}
+
+fn rundll32_loadable_target(token: &str) -> bool {
+    windows_basename(token).is_some_and(|name| {
+        let lower = name.to_ascii_lowercase();
+        lower.ends_with(".dll") || lower.ends_with(".cpl")
+    })
 }
 
 fn current_dir_basename(path: &str) -> Option<&str> {

@@ -13095,7 +13095,12 @@ pub fn scan_unc_webdav(deobfuscated: &str, env: &mut Environment) {
             .map(str::to_string)
             .unwrap_or_default();
 
-        let http_url = unc_webdav_to_http_url(&host, &port, full_match);
+        let url_share_path = if contains_ascii_keyword(&command, "rundll32") {
+            full_match.split(',').next().unwrap_or(full_match)
+        } else {
+            full_match
+        };
+        let http_url = unc_webdav_to_http_url(&host, &port, url_share_path);
         env.traits.push(Trait::UncWebDavC2 {
             host,
             port,
@@ -13125,10 +13130,17 @@ pub fn scan_unc_webdav(deobfuscated: &str, env: &mut Environment) {
             .find(|line| line.contains(full_match))
             .map(str::to_string)
             .unwrap_or_default();
-        if !contains_ascii_keyword(&command, "regsvr32") {
+        if !contains_ascii_keyword(&command, "regsvr32")
+            && !contains_ascii_keyword(&command, "rundll32")
+        {
             continue;
         }
-        let http_url = unc_webdav_to_http_url(&host, &port, full_match);
+        let url_share_path = if contains_ascii_keyword(&command, "rundll32") {
+            full_match.split(',').next().unwrap_or(full_match)
+        } else {
+            full_match
+        };
+        let http_url = unc_webdav_to_http_url(&host, &port, url_share_path);
         env.traits.push(Trait::UncWebDavC2 {
             host,
             port,

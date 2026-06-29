@@ -351,11 +351,15 @@ pub fn h_start(raw: &str, env: &mut Environment) {
     // BEFORE strip_leading_quoted_title (which would treat `"URL"` as a
     // title and strip the URL away).
     if let Some(url) = find_liberal_url_in_start_arg(inner_raw) {
-        env.traits.push(crate::traits::Trait::Download {
-            src: url,
-            dst: None,
-            cmd: format!("start {}", inner_raw),
-        });
+        if start_inner_opens_url(inner_raw) {
+            push_start_url_launch(inner_raw, url, env);
+        } else {
+            env.traits.push(crate::traits::Trait::Download {
+                src: url,
+                dst: None,
+                cmd: format!("start {}", inner_raw),
+            });
+        }
     } else if let Some(url) = start_prior_download_url(inner_raw, env) {
         push_start_url_argument(inner_raw, url, env);
     }
@@ -511,6 +515,45 @@ fn find_liberal_url_in_start_arg(s: &str) -> Option<String> {
     })
 }
 
+fn start_inner_opens_url(inner_raw: &str) -> bool {
+    let (first, rest) = split_start_arg(inner_raw);
+    let first = strip_quotes(first.trim());
+    crate::deob_scan::normalize_liberal_url_token(first).is_some()
+        || start_url_launcher_command(first)
+        || rest
+            .split_whitespace()
+            .next()
+            .is_some_and(|token| start_url_launcher_command(strip_quotes(token)))
+}
+
+fn start_url_launcher_command(cmd: &str) -> bool {
+    let cmd = cmd
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(cmd)
+        .trim_end_matches('.');
+    [
+        "explorer",
+        "explorer.exe",
+        "chrome",
+        "chrome.exe",
+        "msedge",
+        "msedge.exe",
+        "iexplore",
+        "iexplore.exe",
+        "firefox",
+        "firefox.exe",
+        "brave",
+        "brave.exe",
+        "opera",
+        "opera.exe",
+        "hh",
+        "hh.exe",
+    ]
+    .iter()
+    .any(|launcher| cmd.eq_ignore_ascii_case(launcher))
+}
+
 fn start_prior_download_url(inner_raw: &str, env: &Environment) -> Option<String> {
     let (first, _) = split_start_arg(inner_raw);
     let first = strip_quotes(first.trim())
@@ -588,6 +631,20 @@ fn push_start_url_argument(inner_raw: &str, url: String, env: &mut Environment) 
     }) {
         env.traits
             .push(crate::traits::Trait::UrlArgument { cmd, url });
+    }
+}
+
+fn push_start_url_launch(inner_raw: &str, url: String, env: &mut Environment) {
+    let cmd = format!("start {inner_raw}");
+    if !env.traits.iter().any(|t| {
+        matches!(
+            t,
+            crate::traits::Trait::UrlLaunch { cmd: existing_cmd, url: existing_url }
+                if existing_cmd == &cmd && existing_url == &url
+        )
+    }) {
+        env.traits
+            .push(crate::traits::Trait::UrlLaunch { cmd, url });
     }
 }
 

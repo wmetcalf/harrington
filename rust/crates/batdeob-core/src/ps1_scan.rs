@@ -5382,6 +5382,14 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
     // the latest exec_ps1 (which gets drained).
     let payloads: Vec<Vec<u8>> = env.all_extracted_ps1.clone();
     let mut seen: std::collections::HashSet<(usize, String)> = std::collections::HashSet::new();
+    let known_launch_urls: std::collections::HashSet<String> = env
+        .traits
+        .iter()
+        .filter_map(|t| match t {
+            Trait::UrlLaunch { url, .. } | Trait::UrlArgument { url, .. } => Some(url.clone()),
+            _ => None,
+        })
+        .collect();
 
     for (idx, payload) in payloads.iter().enumerate() {
         let raw_text = decode_payload(payload);
@@ -5442,6 +5450,9 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
                     else {
                         continue;
                     };
+                    if known_launch_urls.contains(&url) {
+                        continue;
+                    }
                     if !seen.insert((idx, url.clone())) {
                         continue;
                     }
@@ -5459,6 +5470,9 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
             }
 
             for url in dynamic_download_invoke_urls(text) {
+                if known_launch_urls.contains(&url) {
+                    continue;
+                }
                 if !seen.insert((idx, url.clone())) {
                     continue;
                 }
@@ -5470,6 +5484,9 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
             }
 
             for url in ps_literal_urls_in_download_context(text) {
+                if known_launch_urls.contains(&url) {
+                    continue;
+                }
                 if !seen.insert((idx, url.clone())) {
                     continue;
                 }
