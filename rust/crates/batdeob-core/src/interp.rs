@@ -58,17 +58,17 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
         if has_substitution {
             for inner in inners {
                 if let Some(cmd_inner) = crate::handlers::cmd::extract_cmd_inner(&inner) {
-                    env.exec_cmd.push(cmd_inner);
+                    env.exec_cmd.push(unescape_outer_caret_bangs(&cmd_inner));
                     env.exec_cmd_delayed
                         .push(crate::handlers::cmd::has_v_on_raw(&inner));
                 } else {
-                    env.exec_cmd.push(inner);
+                    env.exec_cmd.push(unescape_outer_caret_bangs(&inner));
                     env.exec_cmd_delayed.push(false);
                 }
             }
         } else if let Some(inner) = inners.into_iter().next() {
             result.child_cmd_delayed = crate::handlers::cmd::has_v_on_raw(&inner);
-            result.child_cmd_to_push = Some(inner);
+            result.child_cmd_to_push = Some(unescape_outer_caret_bangs(&inner));
         }
     }
 
@@ -177,6 +177,10 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
     }
 
     result
+}
+
+fn unescape_outer_caret_bangs(command: &str) -> String {
+    command.replace("^!", "!")
 }
 
 fn replay_copied_filesystem_alias(raw: &str, env: &mut Environment) -> bool {

