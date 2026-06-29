@@ -3199,8 +3199,20 @@ echo keep ^& mshta payload.hta"#;
         );
     }
 
+    fn assert_script_emits_anti_recovery(script: &[u8], expected_action: &str) {
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AntiRecovery { action } if action == expected_action
+            )),
+            "missing AntiRecovery {expected_action}: {:?}",
+            report.traits
+        );
+    }
+
     #[test]
-    fn copied_cipher_alias_wipe_emits_anti_recovery_trait() {
+    fn copied_evidence_cleanup_aliases_emit_traits() {
         let script = br#"@echo off
 copy C:\Windows\System32\wevtutil.exe C:\Users\Public\we.tmp
 C:\Users\Public\we.tmp cl Security
@@ -3227,6 +3239,244 @@ C:\Users\Public\ci.tmp /w:C:\Users\Public
                 report.traits
             );
         }
+    }
+
+    #[test]
+    fn evidence_cleanup_artifacts_emit_traits() {
+        let script = b"@echo off\r\n\
+            wevtutil cl Security\r\n\
+            del /s /f /q C:\\Windows\\Prefetch\\*.*\r\n\
+            del /s /f /q \"%APPDATA%\\Microsoft\\Windows\\Recent\\AutomaticDestinations\\*.*\"\r\n\
+            reg delete \"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\UserAssist\" /f\r\n\
+            reg delete \"HKCU\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\MuiCache\" /f\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        for action in [
+            "event-log-clear",
+            "prefetch-delete",
+            "recent-items-delete",
+            "registry-history-delete",
+        ] {
+            assert!(
+                report
+                    .traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::AntiRecovery { action: a } if a == action)),
+                "missing cleanup AntiRecovery {action}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn cipher_wipe_free_space_emits_evidence_cleanup_trait() {
+        assert_script_emits_anti_recovery(br#"cipher /w:C:\Users\Public"#, "free-space-wipe");
+    }
+
+    #[test]
+    fn browser_history_file_delete_emits_evidence_cleanup_trait() {
+        assert_script_emits_anti_recovery(
+            br#"del "%LOCALAPPDATA%\Google\Chrome\User Data\Default\History""#,
+            "browser-history-delete",
+        );
+    }
+
+    #[test]
+    fn powershell_evidence_cleanup_artifacts_emit_traits() {
+        let script = br#"powershell -Command "Clear-EventLog -LogName Security"
+powershell -Command "Remove-Item -Recurse -Force C:\Windows\Prefetch\*"
+powershell -Command "Remove-Item -Force $env:APPDATA\Microsoft\Windows\Recent\CustomDestinations\*"
+powershell -Command "Clear-RecycleBin -Force"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        for action in [
+            "event-log-clear",
+            "prefetch-delete",
+            "recent-items-delete",
+            "recycle-bin-clear",
+        ] {
+            assert!(
+                report
+                    .traits
+                    .iter()
+                    .any(|t| matches!(t, Trait::AntiRecovery { action: a } if a == action)),
+                "missing PowerShell cleanup AntiRecovery {action}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn generic_delete_does_not_emit_evidence_cleanup_trait() {
+        let script = b"@echo off\r\n\
+            del /f /q C:\\Temp\\installer.log\r\n\
+            reg delete \"HKCU\\Software\\Example\\Cache\" /f\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::AntiRecovery { .. })),
+            "generic cleanup should not be AntiRecovery: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn wevtutil_clear_log_long_form_emits_evidence_cleanup_trait() {
+        assert_script_emits_anti_recovery(br#"wevtutil clear-log Security"#, "event-log-clear");
+    }
+
+    #[test]
+    fn sdelete_secure_delete_emits_evidence_cleanup_trait() {
+        assert_script_emits_anti_recovery(
+            br#"sdelete64.exe -accepteula -p 3 C:\Users\Public\dropper.exe"#,
+            "secure-delete",
+        );
+    }
+
+    #[test]
+    fn powershell_history_file_delete_emits_evidence_cleanup_trait() {
+        assert_script_emits_anti_recovery(
+            br#"del "%APPDATA%\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt""#,
+            "powershell-history-delete",
+        );
+    }
+
+    #[test]
+    fn powershell_clear_history_emits_evidence_cleanup_trait() {
+        assert_script_emits_anti_recovery(
+            br#"powershell -Command "Clear-History""#,
+            "powershell-history-delete",
+        );
+    }
+
+    #[test]
+    fn powershell_clear_history_alias_emits_evidence_cleanup_trait() {
+        assert_script_emits_anti_recovery(
+            br#"powershell -Command "clhy""#,
+            "powershell-history-delete",
+        );
+    }
+
+    #[test]
+    fn powershell_psreadline_history_path_delete_emits_evidence_cleanup_trait() {
+        assert_script_emits_anti_recovery(
+            br#"powershell -Command "Remove-Item (Get-PSReadLineOption).HistorySavePath -Force""#,
+            "powershell-history-delete",
+        );
+    }
+
+    #[test]
+    fn powershell_psreadline_history_path_ri_alias_emits_evidence_cleanup_trait() {
+        assert_script_emits_anti_recovery(
+            br#"powershell -Command "ri (Get-PSReadLineOption).HistorySavePath -Force""#,
+            "powershell-history-delete",
+        );
+    }
+
+    #[test]
+    fn powershell_chained_remove_item_does_not_inherit_history_context() {
+        let script = br#"powershell -Command "Write-Output (Get-PSReadLineOption).HistorySavePath; Remove-Item C:\Temp\scratch.txt -Force""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AntiRecovery { action } if action == "powershell-history-delete"
+            )),
+            "unrelated chained Remove-Item inherited PowerShell history cleanup: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_psreadline_history_disable_emits_evidence_cleanup_trait() {
+        assert_script_emits_anti_recovery(
+            br#"powershell -Command "Set-PSReadLineOption -HistorySaveStyle SaveNothing""#,
+            "powershell-history-disable",
+        );
+    }
+
+    #[test]
+    fn powershell_psreadline_history_disable_short_parameter_emits_evidence_cleanup_trait() {
+        assert_script_emits_anti_recovery(
+            br#"powershell -Command "Set-PSReadLineOption -Hi SaveNothing""#,
+            "powershell-history-disable",
+        );
+    }
+
+    #[test]
+    fn powershell_clear_eventlog_positional_name_emits_evidence_cleanup_trait() {
+        assert_script_emits_anti_recovery(
+            br#"powershell -Command "Clear-EventLog Security""#,
+            "event-log-clear",
+        );
+    }
+
+    #[test]
+    fn powershell_chained_clear_eventlog_emits_each_log_target() {
+        assert_script_emits_anti_recovery(
+            br#"powershell -Command "Clear-EventLog Security; Clear-EventLog System""#,
+            "event-log-clear",
+        );
+    }
+
+    #[test]
+    fn powershell_clear_eventlog_positional_list_emits_each_log_cleanup_trait() {
+        assert_script_emits_anti_recovery(
+            br#"powershell -Command "Clear-EventLog Security, System""#,
+            "event-log-clear",
+        );
+    }
+
+    #[test]
+    fn powershell_clear_eventlog_logname_list_emits_each_log_cleanup_trait() {
+        assert_script_emits_anti_recovery(
+            br#"powershell -Command "Clear-EventLog -LogName Security,System""#,
+            "event-log-clear",
+        );
+    }
+
+    #[test]
+    fn powershell_clear_eventlog_spaced_logname_list_emits_each_log_cleanup_trait() {
+        assert_script_emits_anti_recovery(
+            br#"powershell -Command "Clear-EventLog -LogName Security, System""#,
+            "event-log-clear",
+        );
+    }
+
+    #[test]
+    fn powershell_clear_eventlog_short_logname_list_emits_each_log_cleanup_trait() {
+        assert_script_emits_anti_recovery(
+            br#"powershell -Command "Clear-EventLog -Lo Security,System""#,
+            "event-log-clear",
+        );
+    }
+
+    #[test]
+    fn powershell_chained_clear_recyclebin_preserves_statement_command() {
+        assert_script_emits_anti_recovery(
+            br#"powershell -Command "Write-Output keep; Clear-RecycleBin -Force""#,
+            "recycle-bin-clear",
+        );
+    }
+
+    #[test]
+    fn deob_text_ri_alias_prefetch_delete_emits_evidence_cleanup_trait() {
+        let mut env = Environment::new(&AnalyzeConfig::default());
+        crate::deob_scan::scan_deob_text(r#"ri -Force C:\Windows\Prefetch\*"#, &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::AntiRecovery { action } if action == "prefetch-delete"
+            )),
+            "deob-text ri alias prefetch deletion missed: {:?}",
+            env.traits
+        );
     }
 
     #[test]

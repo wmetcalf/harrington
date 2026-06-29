@@ -7364,19 +7364,73 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
     static PS_CLEAR_EVENT_LOG_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(
-            r#"(?im)^[^\r\n]*?\bClear-EventLog\b[^\r\n]*?-LogName(?:\s*[:=]\s*|\s+)(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^\s;|&]+))[^\r\n]*"#,
-        )
-        .expect("powershell clear-eventlog regex")
+        Regex::new(r#"(?im)^[^\r\n]*?\bClear-EventLog\b[^\r\n]*"#)
+            .expect("powershell clear-eventlog regex")
     });
     static PS_REMOVE_ITEM_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?im)^[^\r\n]*?\b(?:Remove-Item|rm|del|erase|rd|rmdir)\b[^\r\n]*"#)
+        Regex::new(r#"(?im)^[^\r\n]*?\b(?:Remove-Item|rm|ri|del|erase|rd|rmdir)\b[^\r\n]*"#)
             .expect("powershell remove-item regex")
     });
     static PS_CLEAR_RECYCLE_BIN_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?im)^[^\r\n]*?\bClear-RecycleBin\b[^\r\n]*"#)
             .expect("powershell clear recycle bin regex")
     });
+    static PS_CLEAR_HISTORY_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?im)^[^\r\n]*?\b(?:Clear-History|clhy)\b[^\r\n]*"#)
+            .expect("powershell clear history regex")
+    });
+    static PS_HISTORY_DISABLE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?im)^[^\r\n]*?\bSet-PSReadLineOption\b[^\r\n]*?-(?:HistorySaveStyle|Hi)(?:\s*[:=]\s*|\s+)SaveNothing\b[^\r\n]*"#,
+        )
+        .expect("powershell history disable regex")
+    });
+    fn is_delete_command(command_base: &str) -> bool {
+        ["del", "erase", "rm", "ri", "rd", "rmdir", "remove-item"]
+            .iter()
+            .any(|candidate| command_base.eq_ignore_ascii_case(candidate))
+    }
+    fn is_browser_history_delete(command: &str) -> bool {
+        let lower = command.to_ascii_lowercase();
+        (lower.contains("\\google\\chrome\\user data\\")
+            || lower.contains("\\microsoft\\edge\\user data\\")
+            || lower.contains("\\brave-browser\\user data\\"))
+            && (lower.contains("\\history\"")
+                || lower.contains("\\history ")
+                || lower.ends_with("\\history"))
+    }
+    fn is_powershell_history_delete(command: &str) -> bool {
+        let lower = command.to_ascii_lowercase();
+        if lower.contains("\\powershell\\psreadline\\") && lower.contains("consolehost_history.txt")
+        {
+            return true;
+        }
+        for verb in [
+            "remove-item ",
+            "remove-item\t",
+            " ri ",
+            " ri\t",
+            " rm ",
+            " rm\t",
+            " del ",
+            " del\t",
+            " erase ",
+            " erase\t",
+        ] {
+            if let Some(start) = lower.find(verb) {
+                let args = &lower[start + verb.len()..];
+                return args.contains("get-psreadlineoption") && args.contains("historysavepath");
+            }
+        }
+        for verb in [
+            "ri ", "ri\t", "rm ", "rm\t", "del ", "del\t", "erase ", "erase\t",
+        ] {
+            if let Some(args) = lower.strip_prefix(verb) {
+                return args.contains("get-psreadlineoption") && args.contains("historysavepath");
+            }
+        }
+        false
+    }
     let mut push = |action: &str| {
         if env.traits.iter().any(|t| {
             matches!(
@@ -7390,19 +7444,76 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
             action: action.to_string(),
         });
     };
-    for caps in PS_CLEAR_EVENT_LOG_RE.captures_iter(deobfuscated) {
-        if caps
-            .get(0)
-            .is_some_and(|m| match_line_starts_with_echo(deobfuscated, m.start()))
-        {
+    for line in deobfuscated.lines() {
+        if command_starts_with_echo(line) {
             continue;
         }
-        if caps
-            .get(1)
-            .or_else(|| caps.get(2))
-            .or_else(|| caps.get(3))
-            .is_some()
+        let tokens = split_words(line);
+        let Some(command) = tokens.first().map(|token| token.trim_start_matches('@')) else {
+            continue;
+        };
+        let Some(command_base) = basename_trimmed(command) else {
+            continue;
+        };
+        let lower_line = line.to_ascii_lowercase();
+        if (command_base.eq_ignore_ascii_case("wevtutil")
+            || command_base.eq_ignore_ascii_case("wevtutil.exe"))
+            && tokens.get(1).is_some_and(|token| {
+                token.eq_ignore_ascii_case("cl") || token.eq_ignore_ascii_case("clear-log")
+            })
         {
+            push("event-log-clear");
+            continue;
+        }
+        if (command_base.eq_ignore_ascii_case("reg")
+            || command_base.eq_ignore_ascii_case("reg.exe"))
+            && tokens
+                .get(1)
+                .is_some_and(|token| token.eq_ignore_ascii_case("delete"))
+            && (lower_line.contains("userassist")
+                || lower_line.contains("runmru")
+                || lower_line.contains("muicache"))
+        {
+            push("registry-history-delete");
+            continue;
+        }
+        if (command_base.eq_ignore_ascii_case("cipher")
+            || command_base.eq_ignore_ascii_case("cipher.exe"))
+            && tokens.iter().skip(1).any(|token| {
+                token.eq_ignore_ascii_case("/w") || token.to_ascii_lowercase().starts_with("/w:")
+            })
+        {
+            push("free-space-wipe");
+            continue;
+        }
+        if basename_trimmed(command).is_some_and(|base| {
+            let lower_base = base.to_ascii_lowercase();
+            lower_base
+                .strip_suffix(".exe")
+                .unwrap_or(&lower_base)
+                .starts_with("sdelete")
+        }) && tokens.len() > 1
+        {
+            push("secure-delete");
+            continue;
+        }
+        if is_delete_command(command_base) && is_browser_history_delete(line) {
+            push("browser-history-delete");
+            continue;
+        }
+        if is_delete_command(command_base) && is_powershell_history_delete(line) {
+            push("powershell-history-delete");
+        }
+    }
+    for m in PS_CLEAR_EVENT_LOG_RE.find_iter(deobfuscated) {
+        if match_line_starts_with_echo(deobfuscated, m.start()) {
+            continue;
+        }
+        let lower_command = m.as_str().to_ascii_lowercase();
+        let has_eventlog_arg = lower_command
+            .split_once("clear-eventlog")
+            .is_some_and(|(_, rest)| !rest.trim().is_empty());
+        if has_eventlog_arg {
             push("event-log-clear");
         }
     }
@@ -7411,6 +7522,18 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
         .any(|m| !match_line_starts_with_echo(deobfuscated, m.start()))
     {
         push("recycle-bin-clear");
+    }
+    if PS_CLEAR_HISTORY_RE
+        .find_iter(deobfuscated)
+        .any(|m| !match_line_starts_with_echo(deobfuscated, m.start()))
+    {
+        push("powershell-history-delete");
+    }
+    if PS_HISTORY_DISABLE_RE
+        .find_iter(deobfuscated)
+        .any(|m| !match_line_starts_with_echo(deobfuscated, m.start()))
+    {
+        push("powershell-history-disable");
     }
     for caps in PS_REMOVE_ITEM_RE.captures_iter(deobfuscated) {
         if caps
@@ -7432,6 +7555,12 @@ fn scan_evidence_cleanup(deobfuscated: &str, env: &mut Environment) {
             || lower.contains("customdestinations")
         {
             push("recent-items-delete");
+        }
+        if is_browser_history_delete(command) {
+            push("browser-history-delete");
+        }
+        if is_powershell_history_delete(command) {
+            push("powershell-history-delete");
         }
     }
 }
