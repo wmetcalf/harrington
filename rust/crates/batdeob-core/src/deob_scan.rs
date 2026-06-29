@@ -6677,6 +6677,9 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
         });
     };
     for line in deobfuscated.lines() {
+        if command_starts_with_echo(line) {
+            continue;
+        }
         let lower_line = line.to_ascii_lowercase();
         if !lower_line.contains("add-mppreference") && !lower_line.contains("set-mppreference") {
             continue;
@@ -6704,6 +6707,9 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
     }
     push_mppreference_invoke_expression_exclusion_process(deobfuscated, &mut push);
     for line in deobfuscated.lines() {
+        if command_starts_with_echo(line) {
+            continue;
+        }
         if !line.to_ascii_lowercase().contains("set-mppreference") {
             continue;
         }
@@ -6746,6 +6752,12 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
         push(&format!("sc-{verb}"), svc);
     }
     for caps in FIREWALL_OFF_RE.captures_iter(deobfuscated) {
+        if caps
+            .get(0)
+            .is_some_and(|m| match_line_starts_with_echo(deobfuscated, m.start()))
+        {
+            continue;
+        }
         let prof = caps
             .get(1)
             .map(|m| m.as_str().to_string())
@@ -6753,6 +6765,9 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
         push("netsh-fw-off", prof);
     }
     for m in PS_FIREWALL_PROFILE_RE.find_iter(deobfuscated) {
+        if match_line_starts_with_echo(deobfuscated, m.start()) {
+            continue;
+        }
         let command = m.as_str().trim();
         let disabled = powershell_named_argument(command, "-Enabled")
             .map(|value| {
@@ -6799,6 +6814,12 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
         }
     }
     for caps in REG_SERVICE_DISABLED_RE.captures_iter(deobfuscated) {
+        if caps
+            .get(0)
+            .is_some_and(|m| match_line_starts_with_echo(deobfuscated, m.start()))
+        {
+            continue;
+        }
         let service = caps
             .get(1)
             .or_else(|| caps.get(2))
@@ -8589,7 +8610,10 @@ fn scan_uac_bypass(deobfuscated: &str, env: &mut Environment) {
         ]
     });
     for (re, tech) in PATTERNS.iter() {
-        if re.is_match(deobfuscated) {
+        for m in re.find_iter(deobfuscated) {
+            if match_line_starts_with_echo(deobfuscated, m.start()) {
+                continue;
+            }
             if env.traits.iter().any(|t| {
                 matches!(
                     t, crate::traits::Trait::UacBypass { technique: tk } if tk == tech
@@ -8600,6 +8624,7 @@ fn scan_uac_bypass(deobfuscated: &str, env: &mut Environment) {
             env.traits.push(crate::traits::Trait::UacBypass {
                 technique: tech.to_string(),
             });
+            break;
         }
     }
 }
@@ -8630,6 +8655,12 @@ fn scan_service_install(deobfuscated: &str, env: &mut Environment) {
         });
     };
     for caps in SC_CREATE_RE.captures_iter(deobfuscated) {
+        if caps
+            .get(0)
+            .is_some_and(|m| match_line_starts_with_echo(deobfuscated, m.start()))
+        {
+            continue;
+        }
         let name = caps
             .get(1)
             .map(|m| m.as_str().to_string())
@@ -8642,6 +8673,9 @@ fn scan_service_install(deobfuscated: &str, env: &mut Environment) {
         push(name, path);
     }
     for m in PS_NEW_SERVICE_RE.find_iter(deobfuscated) {
+        if match_line_starts_with_echo(deobfuscated, m.start()) {
+            continue;
+        }
         let command = m.as_str().trim();
         let Some(name) = powershell_named_argument(command, "-Name") else {
             continue;
