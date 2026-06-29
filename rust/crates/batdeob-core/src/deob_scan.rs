@@ -4304,6 +4304,20 @@ fn scan_remote_access(command: &str, env: &mut Environment) {
                 push_remote_access(env, "rdp-firewall-open", "Remote Desktop", line.trim());
             }
         }
+        if lower_line.contains("enable-netfirewallrule") {
+            let mut rule_names = powershell_named_argument_list(line, "-Name");
+            if rule_names.is_empty() {
+                let positional = powershell_positional_arguments(line, "Enable-NetFirewallRule");
+                if let Some(rule_name) = positional.first() {
+                    rule_names.extend(split_powershell_value_list(rule_name));
+                }
+            }
+            for rule_name in rule_names {
+                if is_rdp_firewall_rule_name(&rule_name) {
+                    push_remote_access(env, "rdp-firewall-open", &rule_name, line.trim());
+                }
+            }
+        }
         let Some((path, value_name, value)) = powershell_item_property_args(line) else {
             continue;
         };
@@ -4324,6 +4338,11 @@ fn scan_remote_access(command: &str, env: &mut Environment) {
             push_remote_access(env, "rdp-enable", "Terminal Server", line.trim());
         }
     }
+}
+
+fn is_rdp_firewall_rule_name(name: &str) -> bool {
+    name.to_ascii_lowercase()
+        .contains("remotedesktop-usermode-in")
 }
 
 fn reg_value_name(tokens: &[String]) -> Option<String> {

