@@ -4091,6 +4091,7 @@ fn scan_copied_defender_evasion_alias_deob_text(deobfuscated: &str, env: &mut En
         (&["sc", "sc.exe"][..], "sc.exe"),
         (&["reg", "reg.exe"][..], "reg.exe"),
         (&["schtasks", "schtasks.exe"][..], "schtasks.exe"),
+        (&["wmic", "wmic.exe"][..], "wmic.exe"),
     ] {
         scan_copied_handler_alias_deob_text(
             deobfuscated,
@@ -6688,6 +6689,12 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
         Regex::new(r#"(?i)\btaskkill(?:\.exe)?\b[^\r\n]*?/im\s+("[^"]+"|'[^']+'|[^\s&|]+)"#)
             .expect("taskkill-security-process")
     });
+    static WMIC_SECURITY_PROCESS_DELETE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?i)\bwmic(?:\.exe)?\s+process\b[^\r\n]*?\bname\s*=\s*['"]([^'"\r\n]+)['"][^\r\n]*\bdelete\b"#,
+        )
+        .expect("wmic-security-process-delete")
+    });
     static TAKEOWN_SECURITY_BINARY_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?i)\btakeown(?:\.exe)?\b[^\r\n]*?/f\s+("[^"]+"|'[^']+'|[^\s&|]+)"#)
             .expect("takeown-security-binary")
@@ -6893,6 +6900,21 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
         };
         if is_security_process_name(&target) {
             push("taskkill-security-process", target);
+        }
+    }
+    for caps in WMIC_SECURITY_PROCESS_DELETE_RE.captures_iter(deobfuscated) {
+        if caps
+            .get(0)
+            .is_some_and(|m| match_line_starts_with_echo(deobfuscated, m.start()))
+        {
+            continue;
+        }
+        let target = caps
+            .get(1)
+            .map(|m| m.as_str().trim_matches(['"', '\'']).to_string())
+            .unwrap_or_default();
+        if is_security_process_name(&target) {
+            push("wmic-security-process-delete", target);
         }
     }
     for caps in TAKEOWN_SECURITY_BINARY_RE.captures_iter(deobfuscated) {
@@ -7378,7 +7400,7 @@ fn scan_anti_recovery(deobfuscated: &str, env: &mut Environment) {
             ),
             (
                 Regex::new(
-                    r"(?i)\b(?:Get-WmiObject|Get-CimInstance)\b[^\r\n]*\bWin32_ShadowCopy\b[^\r\n]*(?:\.Delete\s*\(|Remove-CimInstance\b)",
+                    r"(?i)\b(?:Get-WmiObject|Get-CimInstance|gwmi|gcim)\b[^\r\n;]*\bWin32_ShadowCopy\b[^\r\n;]*(?:\.Delete\s*\(|\|\s*(?:Remove-CimInstance|Remove-WmiObject|rwmi)\b)",
                 )
                 .unwrap(),
                 "powershell-shadowcopy-delete",
@@ -8244,7 +8266,7 @@ fn scan_enumeration(deobfuscated: &str, env: &mut Environment) {
             ),
             (
                 Regex::new(
-                    r"(?i)\bwmic(?:\.exe)?\s+(?:cpu|computersystem|logicaldisk|os|partition|qfe|startup|path\s+softwarelicensingservice)\b",
+                    r"(?i)\bwmic(?:\.exe)?\s+(?:cpu|computersystem|logicaldisk|os|partition|qfe|startup|path\s+softwarelicensingservice)\b[^\r\n']*",
                 )
                 .unwrap(),
                 "wmic-enum",

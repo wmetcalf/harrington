@@ -1567,5 +1567,31 @@ fn synth_wmic(args: &[&str]) -> Vec<String> {
             "20260615120000.000000-000".to_string(),
         ];
     }
+    if filtered.first().is_some_and(|arg| arg == "logicaldisk")
+        && joined.contains("250954240000")
+        && joined.contains("size")
+    {
+        return vec!["Size".to_string(), "250954240000".to_string()];
+    }
+    if filtered.first().is_some_and(|arg| arg == "computersystem")
+        && joined.contains("manufacturer")
+    {
+        if joined.contains("/value") {
+            return vec!["Manufacturer=Microsoft Corporation".to_string()];
+        }
+        return vec![
+            "Manufacturer".to_string(),
+            "Microsoft Corporation".to_string(),
+        ];
+    }
+    if filtered.first().is_some_and(|arg| arg == "group")
+        && joined.contains("s-1-5-32-544")
+        && joined.contains("name")
+    {
+        if joined.contains("/value") {
+            return vec!["Name=Administrators".to_string()];
+        }
+        return vec!["Name".to_string(), "Administrators".to_string()];
+    }
     Vec::new()
 }

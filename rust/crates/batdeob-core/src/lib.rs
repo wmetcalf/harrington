@@ -28119,6 +28119,210 @@ powershell -Command "New-Service -Name UpdateSvc -BinaryPathName 'cmd.exe /c cal
     }
 
     #[test]
+    fn wmic_security_process_delete_emits_defender_evasion_trait() {
+        let script = br#"wmic process where "name='MsMpEng.exe'" delete"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "wmic-security-process-delete" && target == "MsMpEng.exe"
+            )),
+            "WMIC security-process delete was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_wmic_alias_security_process_delete_emits_defender_evasion_trait() {
+        let script = br#"copy C:\Windows\System32\wbem\wmic.exe C:\Users\Public\wm.tmp
+C:\Users\Public\wm.tmp process where "name='MsMpEng.exe'" delete
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ManipulatedExec { target, .. }
+                    if target.eq_ignore_ascii_case(r#"C:\Users\Public\wm.tmp"#)
+            )),
+            "copied WMIC alias was not surfaced: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "wmic-security-process-delete" && target == "MsMpEng.exe"
+            )),
+            "copied WMIC security-process delete was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn wmic_system_inventory_emits_enumeration_trait() {
+        let script = b"@echo off\r\n\
+            wmic cpu get caption, name, deviceid, numberofcores, maxclockspeed, status >> userdata.txt\r\n\
+            wmic logicaldisk get name,deviceid,filesystem,freespace,size >> disklog.txt\r\n";
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "wmic-enum" && command.contains("wmic cpu get")
+            )),
+            "missing WMIC CPU enumeration: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "wmic-enum" && command.contains("wmic logicaldisk get")
+            )),
+            "missing WMIC logicaldisk enumeration: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn wmic_for_f_inventory_command_is_trimmed() {
+        let script = br#"for /f "tokens=3" %%a in ('wmic logicaldisk where "Size=250954240000" get Size | find "Size"') do echo %%a"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Enumeration { enum_kind, command }
+                    if enum_kind == "wmic-enum"
+                        && command == "wmic logicaldisk where \"Size=250954240000\" get Size | find \"Size\""
+            )),
+            "WMIC for/f enumeration command was not trimmed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn for_f_reads_wmic_inventory_output() {
+        let script = concat!(
+            "for /f \"tokens=*\" %%d in ('wmic logicaldisk where \"Size=250954240000\" get Size') do echo disk=%%d\r\n",
+            "for /f \"tokens=*\" %%m in ('wmic computersystem get manufacturer /value') do echo maker=%%m\r\n",
+            "for /f \"tokens=*\" %%g in ('WMIC Group Where \"SID = ''S-1-5-32-544''\" Get Name /Value') do echo group=%%g\r\n",
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.deobfuscated.contains("echo disk=Size")
+                && report.deobfuscated.contains("echo disk=250954240000")
+                && report
+                    .deobfuscated
+                    .contains("echo maker=Manufacturer=Microsoft Corporation")
+                && report
+                    .deobfuscated
+                    .contains("echo group=Name=Administrators"),
+            "deobf:\n{}\ntraits: {:?}",
+            report.deobfuscated,
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_shadowcopy_delete_emits_anti_recovery_trait() {
+        let script = br#"powershell -Command "Get-WmiObject Win32_ShadowCopy | ForEach-Object { $_.Delete() }"
+powershell -Command "Get-CimInstance Win32_ShadowCopy | Remove-CimInstance"
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AntiRecovery { action } if action == "powershell-shadowcopy-delete"
+            )),
+            "PowerShell shadow copy deletion was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_remove_wmiobject_shadowcopy_emits_anti_recovery_trait() {
+        let script = br#"powershell -Command "Get-WmiObject Win32_ShadowCopy | Remove-WmiObject""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AntiRecovery { action } if action == "powershell-shadowcopy-delete"
+            )),
+            "PowerShell Remove-WmiObject shadowcopy deletion was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_gwmi_shadowcopy_delete_emits_anti_recovery_trait() {
+        let script = br#"powershell -Command "gwmi Win32_ShadowCopy | Remove-WmiObject""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AntiRecovery { action } if action == "powershell-shadowcopy-delete"
+            )),
+            "PowerShell gwmi shadowcopy deletion was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_rwmi_shadowcopy_delete_emits_anti_recovery_trait() {
+        let script = br#"powershell -Command "Get-WmiObject Win32_ShadowCopy | rwmi""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AntiRecovery { action } if action == "powershell-shadowcopy-delete"
+            )),
+            "PowerShell rwmi shadowcopy deletion was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn wmic_filtered_shadowcopy_delete_emits_anti_recovery_trait() {
+        let script = br#"wmic shadowcopy where "ClientAccessible='TRUE'" delete
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AntiRecovery { action } if action == "wmic-shadowcopy-delete"
+            )),
+            "filtered WMIC shadowcopy deletion was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_shadowcopy_query_does_not_inherit_later_remove_wmiobject() {
+        let script = br#"powershell -Command "Get-WmiObject Win32_ShadowCopy | Select-Object ID; Remove-WmiObject Win32_Process""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AntiRecovery { action } if action == "powershell-shadowcopy-delete"
+            )),
+            "shadowcopy query inherited unrelated later Remove-WmiObject: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn expanded_persistence_probe_cleanup_and_recovery_signals_emit_traits() {
         let script = br#"powershell.exe Set-ItemProperty -Path HKLM:Software\Microsoft\Windows\CurrentVersion\policies\system -Name EnableLUA -Value 0
 powershell -Command "Test-NetConnection -ComputerName c2.example -Port 443"
