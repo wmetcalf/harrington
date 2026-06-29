@@ -24,7 +24,7 @@ fn find_cmd_executable_end(raw: &str) -> Option<usize> {
     while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
         i += 1;
     }
-    if !is_cmd_token(&raw[start..i]) {
+    if !is_cmd_token(&raw[start..i]) && !is_comspec_token(&raw[start..i]) {
         return None;
     }
     // Optional second cmd token (e.g. `cmd.exe cmd /c X`).
@@ -36,10 +36,17 @@ fn find_cmd_executable_end(raw: &str) -> Option<usize> {
     while j < bytes.len() && !bytes[j].is_ascii_whitespace() {
         j += 1;
     }
-    if tok2_start < j && is_cmd_token(&raw[tok2_start..j]) {
+    if tok2_start < j
+        && (is_cmd_token(&raw[tok2_start..j]) || is_comspec_token(&raw[tok2_start..j]))
+    {
         i = j;
     }
     Some(i)
+}
+
+fn is_comspec_token(tok: &str) -> bool {
+    tok.trim_matches(['"', '\'', '\\'])
+        .eq_ignore_ascii_case("%comspec%")
 }
 
 fn is_cmd_token(tok: &str) -> bool {
@@ -304,6 +311,11 @@ pub fn h_start(raw: &str, env: &mut Environment) {
     }
     let inner = unquote_start_executable(inner_raw);
     if inner.is_empty() {
+        return;
+    }
+    if let Some(child) = extract_cmd_inner(inner.as_ref()) {
+        env.exec_cmd.push(child);
+        env.exec_cmd_delayed.push(has_v_on_raw(inner.as_ref()));
         return;
     }
     // Recurse: interpret the inner command inline.

