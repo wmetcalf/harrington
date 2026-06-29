@@ -24,6 +24,7 @@ pub fn build_label_index(lines: &[String]) -> HashMap<String, usize> {
             .split_ascii_whitespace()
             .next()
             .unwrap_or("")
+            .trim_end_matches(':')
             .to_ascii_lowercase();
         if !name.is_empty() {
             out.entry(name).or_insert(i);

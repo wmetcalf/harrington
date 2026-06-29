@@ -30,7 +30,15 @@ pub fn h_goto(raw: &str, env: &mut Environment) {
         return;
     }
     if let Some(line_idx) = env.label_index.get(&target).copied() {
-        env.pending_action = Some(CursorAction::GotoLine(line_idx));
+        let from_line = env.current_line.unwrap_or(0);
+        if line_idx <= from_line {
+            env.traits.push(Trait::GotoUnresolved {
+                from_line,
+                to_label: target,
+            });
+        } else {
+            env.pending_action = Some(CursorAction::GotoLine(line_idx));
+        }
     } else {
         env.traits.push(Trait::GotoUnresolved {
             from_line: env.current_line.unwrap_or(0),
