@@ -3766,6 +3766,55 @@ fn scan_copied_forfiles_alias_deob_text(deobfuscated: &str, env: &mut Environmen
     }
 }
 
+fn maybe_extend_copied_cmd_replay(replay: &str, next_line: Option<&str>) -> String {
+    let Some(next_line) = next_line.map(str::trim).filter(|line| !line.is_empty()) else {
+        return replay.to_string();
+    };
+    if crate::handlers::cmd::has_v_on_raw(replay) && next_line.contains('!') {
+        format!("{replay}&&{next_line}")
+    } else {
+        replay.to_string()
+    }
+}
+
+fn scan_copied_cmd_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
+    let aliases = copied_aliases_for(env, &["cmd", "cmd.exe"]);
+    if aliases.is_empty() {
+        return;
+    }
+
+    let lines: Vec<&str> = deobfuscated.lines().collect();
+    for (line_idx, line) in lines.iter().enumerate() {
+        let tokens = split_words(line);
+        let Some(cmd) = tokens.first() else {
+            continue;
+        };
+        if !copied_alias_matches_command_ci(&aliases, cmd) || tokens.len() < 2 {
+            continue;
+        }
+        push_manipulated_exec_once(env, line, cmd);
+        let rest = line
+            .get(cmd.len()..)
+            .map(str::trim_start)
+            .unwrap_or_default();
+        let replay = if rest.is_empty() {
+            "cmd.exe".to_string()
+        } else {
+            format!("cmd.exe {rest}")
+        };
+        let replay = maybe_extend_copied_cmd_replay(&replay, lines.get(line_idx + 1).copied());
+        let Some(child) = crate::handlers::cmd::extract_cmd_inner(&replay) else {
+            continue;
+        };
+        let before_len = env.traits.len();
+        let delayed = crate::handlers::cmd::has_v_on_raw(&replay);
+        replay_child_command(&child, delayed, env);
+        replay_embedded_url_variable_curl(line, &child, env);
+        replay_following_url_variable_curl(line, &lines, line_idx, env);
+        suppress_generic_downloads_for_new_structured_urls(env, before_len);
+    }
+}
+
 fn replay_child_command(command: &str, delayed: bool, env: &mut Environment) {
     let saved_delayed = env.delayed_expansion;
     if delayed {
@@ -4457,7 +4506,15 @@ fn scan_copied_bitsadmin_alias_deob_text(deobfuscated: &str, env: &mut Environme
         } else {
             format!("bitsadmin.exe {rest}")
         };
+        let before_len = env.traits.len();
+        let child_start = env.exec_cmd.len();
         crate::handlers::bitsadmin::h_bitsadmin(&replay, env);
+        let queued_children = env.exec_cmd.get(child_start..).unwrap_or_default().to_vec();
+        replay_queued_child_commands_from(env, child_start);
+        for child in queued_children {
+            replay_embedded_url_variable_curl(line, &child, env);
+        }
+        suppress_generic_downloads_for_new_structured_urls(env, before_len);
     }
 }
 
@@ -9032,6 +9089,7 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     scan_copied_uac_alias_deob_text(deobfuscated, env);
     scan_copied_esentutl_alias_deob_text(deobfuscated, env);
     scan_copied_forfiles_alias_deob_text(deobfuscated, env);
+    scan_copied_cmd_alias_deob_text(deobfuscated, env);
     scan_copied_wmic_alias_deob_text(deobfuscated, env);
     scan_copied_runas_alias_deob_text(deobfuscated, env);
     scan_copied_reg_alias_deob_text(deobfuscated, env);

