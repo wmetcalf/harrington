@@ -161,11 +161,14 @@ pub fn expand_aliases(text: &str) -> String {
             Some(m) => m,
             None => continue,
         };
+        if is_inside_ps_string(text, m.start()) {
+            continue;
+        }
         out.push_str(&text[last_end..m.start()]);
         let lead = caps.name("lead").map(|x| x.as_str()).unwrap_or("");
         let tok = caps.name("tok").map(|x| x.as_str()).unwrap_or("");
         let next = bytes.get(m.end()).copied();
-        let is_cmdlet_head = matches!(next, Some(b'-'));
+        let is_cmdlet_head = matches!(next, Some(b'-' | b':'));
         if tok.eq_ignore_ascii_case("foreach") && is_foreach_language_statement(&text[m.end()..]) {
             out.push_str(&text[m.start()..m.end()]);
             last_end = m.end();
@@ -197,4 +200,69 @@ pub fn expand_aliases(text: &str) -> String {
 fn is_foreach_language_statement(after_token: &str) -> bool {
     let after = after_token.trim_start();
     after.starts_with('(')
+}
+
+fn is_inside_ps_string(text: &str, pos: usize) -> bool {
+    let bytes = text.as_bytes();
+    let mut idx = 0usize;
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut double_start = None;
+    while idx < pos && idx < bytes.len() {
+        match bytes[idx] {
+            b'\'' if !in_double => {
+                if in_single && bytes.get(idx + 1) == Some(&b'\'') {
+                    idx += 2;
+                    continue;
+                }
+                in_single = !in_single;
+            }
+            b'"' if !in_single => {
+                if in_double {
+                    in_double = false;
+                    double_start = None;
+                } else {
+                    in_double = true;
+                    double_start = Some(idx);
+                }
+            }
+            b'`' => {
+                idx += 1;
+            }
+            _ => {}
+        }
+        idx += 1;
+    }
+    in_single
+        || (in_double && !double_start.is_some_and(|start| is_powershell_command_arg(text, start)))
+}
+
+fn is_powershell_command_arg(text: &str, quote_start: usize) -> bool {
+    let prefix = text[..quote_start].trim_end();
+    let Some(flag_start) = prefix.rfind(|ch: char| ch.is_ascii_whitespace()) else {
+        return false;
+    };
+    let flag = &prefix[flag_start..].trim();
+    if !matches!(
+        flag.to_ascii_lowercase().as_str(),
+        "-c" | "-command" | "/c" | "/command"
+    ) {
+        return false;
+    }
+    let before_flag = prefix[..flag_start].trim_end();
+    before_flag
+        .rsplit(|ch: char| ch.is_ascii_whitespace())
+        .next()
+        .is_some_and(|cmd| {
+            let cmd = cmd
+                .trim_matches(['"', '\''])
+                .rsplit(['\\', '/'])
+                .next()
+                .unwrap_or(cmd);
+            let lower = cmd.to_ascii_lowercase();
+            lower == "powershell"
+                || lower == "powershell.exe"
+                || lower == "pwsh"
+                || lower == "pwsh.exe"
+        })
 }

