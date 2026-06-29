@@ -8717,20 +8717,44 @@ fn scan_file_concealment(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
+static IP_DISCOVERY_HOSTS: &[&str] = &[
+    "api.ipify.org",
+    "ipv4.icanhazip.com",
+    "icanhazip.com",
+    "checkip.dyndns.org",
+    "checkip.amazonaws.com",
+    "ifconfig.me",
+    "ip-api.com",
+    "ipinfo.io",
+    "reallyfreegeoip.org",
+];
+
+pub(crate) fn ip_discovery_host_from_url(url: &str) -> Option<&'static str> {
+    let rest = url
+        .strip_prefix("http://")
+        .or_else(|| url.strip_prefix("https://"))?;
+    let authority = rest
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default()
+        .rsplit('@')
+        .next()
+        .unwrap_or_default()
+        .trim_matches(['[', ']']);
+    let host = authority
+        .split(':')
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches('.');
+    IP_DISCOVERY_HOSTS
+        .iter()
+        .copied()
+        .find(|known| host.eq_ignore_ascii_case(known))
+}
+
 /// Network/IP discovery probes: nslookup, Resolve-DnsName, ping to
 /// non-loopback IPs, calls to ipify/checkip/ip-api.
 fn scan_network_probe(deobfuscated: &str, env: &mut Environment) {
-    static IP_DISCOVERY_HOSTS: &[&str] = &[
-        "api.ipify.org",
-        "ipv4.icanhazip.com",
-        "icanhazip.com",
-        "checkip.dyndns.org",
-        "checkip.amazonaws.com",
-        "ifconfig.me",
-        "ip-api.com",
-        "ipinfo.io",
-        "reallyfreegeoip.org",
-    ];
     let mut push = |kind: &str, target: String| {
         if target.is_empty() {
             return;
