@@ -4292,7 +4292,10 @@ fn scan_remote_access(command: &str, env: &mut Environment) {
         {
             let enabled = if lower_line.contains("set-netfirewallrule") {
                 powershell_named_argument(line, "-Enabled").is_some_and(|value| {
-                    matches!(value.to_ascii_lowercase().as_str(), "true" | "$true" | "1")
+                    matches!(
+                        value.to_ascii_lowercase().as_str(),
+                        "true" | "$true" | "1" | "0x1" | "0x00000001"
+                    )
                 })
             } else {
                 true

