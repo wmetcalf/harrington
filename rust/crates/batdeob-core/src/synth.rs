@@ -80,6 +80,9 @@ fn run_stage(stage: &str, input: Vec<String>, env: &mut Environment) -> Vec<Stri
         input
     };
     let stage = normalize_stage_prefix(&redir_cleaned);
+    if let Some(lines) = synth_echo_stage(stage) {
+        return lines;
+    }
     let Some(cmd) = stage_command(stage) else {
         return Vec::new();
     };
@@ -130,6 +133,7 @@ fn run_stage(stage: &str, input: Vec<String>, env: &mut Environment) -> Vec<Stri
         "fsutil" => synth_fsutil(&rest_args),
         "wmic" => synth_wmic(&rest_args),
         "powershell" | "powershell.exe" => synth_powershell(&rest_args, env),
+        "echo" => synth_echo_stage(stage).unwrap_or_default(),
         "tasklist" => synth_tasklist(&rest_args),
         "where" => synth_where(&rest_args, env),
         "curl" | "curl.exe" => {
@@ -206,6 +210,7 @@ fn is_supported_command(cmd: String) -> bool {
             | "wmic"
             | "powershell"
             | "powershell.exe"
+            | "echo"
             | "tasklist"
             | "where"
             | "curl"
@@ -216,7 +221,28 @@ fn is_supported_command(cmd: String) -> bool {
 fn normalize_command_token(token: &str) -> String {
     let trimmed = token.trim_matches('"');
     let basename = trimmed.rsplit(['\\', '/']).next().unwrap_or(trimmed);
+    if echo_payload_after_command(basename).is_some() {
+        return "echo".to_string();
+    }
     basename.to_ascii_lowercase()
+}
+
+fn synth_echo_stage(stage: &str) -> Option<Vec<String>> {
+    echo_payload_after_command(stage).map(|payload| vec![payload.to_string()])
+}
+
+fn echo_payload_after_command(command: &str) -> Option<&str> {
+    let command = normalize_stage_prefix(command);
+    let rest = command.get(4..)?;
+    if !command[..4].eq_ignore_ascii_case("echo") {
+        return None;
+    }
+    match rest.chars().next() {
+        None => Some(""),
+        Some(ch) if ch.is_whitespace() => Some(rest.trim_start()),
+        Some('.') | Some(':') | Some('/') | Some('(') => Some(rest[1..].trim_start()),
+        _ => None,
+    }
 }
 
 /// Restore the canonical Windows casing of a well-known env var name so
@@ -1422,6 +1448,9 @@ fn synth_getmac() -> Vec<String> {
 fn synth_powershell(args: &[&str], env: &Environment) -> Vec<String> {
     let command = args.join(" ");
     let lower = command.to_ascii_lowercase();
+    if let Some(output) = powershell_write_output_literal(&command) {
+        return vec![output];
+    }
     if lower.contains("[system.net.dns]::gethostname()") {
         return vec![env
             .get("COMPUTERNAME")
@@ -1445,6 +1474,22 @@ fn synth_powershell(args: &[&str], env: &Environment) -> Vec<String> {
         return vec!["120000".to_string()];
     }
     Vec::new()
+}
+
+fn powershell_write_output_literal(command: &str) -> Option<String> {
+    let lower = command.to_ascii_lowercase();
+    let idx = lower.find("write-output")?;
+    let mut value = command[idx + "write-output".len()..].trim_start();
+    if value.is_empty() {
+        return None;
+    }
+    value = value
+        .split_once(';')
+        .map(|(head, _)| head)
+        .unwrap_or(value)
+        .trim();
+    value = value.trim_matches(|ch| ch == '"' || ch == '\'').trim();
+    (!value.is_empty()).then(|| value.to_string())
 }
 
 fn synth_fsutil(args: &[&str]) -> Vec<String> {
