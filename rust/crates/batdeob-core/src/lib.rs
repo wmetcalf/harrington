@@ -7806,7 +7806,9 @@ fn analyze_inner(
     dedup_traits(&mut env.traits, max_per_kind);
     collect_decoded_pe_artifacts(&mut env);
     let raw_input_text = String::from_utf8_lossy(input);
-    collect_embedded_base64_pe_carrier_artifacts(&raw_input_text, &mut env);
+    if has_embedded_base64_pe_carrier_hint(input) {
+        collect_embedded_base64_pe_carrier_artifacts(&raw_input_text, &mut env);
+    }
     out = summarize_multiline_base64_pe_carrier_blocks(out, &mut env);
     scan_recovered_artifact_strings(&mut env);
     correlate_startup_folder_downloads(&mut env.traits);
@@ -7991,6 +7993,38 @@ fn collect_embedded_base64_pe_carrier_artifacts(text: &str, env: &mut Environmen
         recovered_count,
         MAX_EMBEDDED_PE_CARRIER_ARTIFACTS,
     );
+}
+
+fn has_embedded_base64_pe_carrier_hint(input: &[u8]) -> bool {
+    for line in input.split(|b| matches!(*b, b'\r' | b'\n')) {
+        let trimmed = trim_ascii_whitespace_bytes(line);
+        if trimmed.len() < 64 {
+            continue;
+        }
+        if !trimmed.iter().take(64).all(|b| is_base64_carrier_byte(*b)) {
+            continue;
+        }
+        if trimmed.starts_with(b"TV")
+            || trimmed.starts_with(b"NGQ1")
+            || trimmed.starts_with(b"NEQ1")
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn trim_ascii_whitespace_bytes(bytes: &[u8]) -> &[u8] {
+    let start = bytes
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .unwrap_or(bytes.len());
+    let end = bytes
+        .iter()
+        .rposition(|b| !b.is_ascii_whitespace())
+        .map(|idx| idx + 1)
+        .unwrap_or(start);
+    &bytes[start..end]
 }
 
 fn collect_ps1_self_tail_reversed_gzip_pe(
@@ -10231,6 +10265,41 @@ mod line_cap_tests {
                 .map(|(label, blob)| (label.as_str(), blob.len()))
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn embedded_base64_pe_carrier_hint_recognizes_supported_prefixes() {
+        use base64::Engine;
+
+        let mut direct_pe = vec![0u8; 0x84];
+        direct_pe[0..2].copy_from_slice(b"MZ");
+        direct_pe[0x3c..0x40].copy_from_slice(&(0x80u32).to_le_bytes());
+        direct_pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        direct_pe.resize(4096, 0);
+        let direct_b64 = base64::engine::general_purpose::STANDARD.encode(&direct_pe);
+        let hex_lower_b64 =
+            base64::engine::general_purpose::STANDARD.encode(hex::encode(&direct_pe));
+        let hex_upper_b64 =
+            base64::engine::general_purpose::STANDARD.encode(hex::encode_upper(&direct_pe));
+
+        assert!(crate::has_embedded_base64_pe_carrier_hint(
+            format!("goto :eof\r\n{direct_b64}\r\n").as_bytes()
+        ));
+        assert!(crate::has_embedded_base64_pe_carrier_hint(
+            format!("goto :eof\r\n {hex_lower_b64}\r\n").as_bytes()
+        ));
+        assert!(crate::has_embedded_base64_pe_carrier_hint(
+            format!("goto :eof\r\n\t{hex_upper_b64}\r\n").as_bytes()
+        ));
+        assert!(!crate::has_embedded_base64_pe_carrier_hint(
+            b"echo ordinary script text with incidental TV bytes\r\n"
+        ));
+        assert!(!crate::has_embedded_base64_pe_carrier_hint(
+            b"echo TVAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\r\n"
+        ));
+        assert!(!crate::has_embedded_base64_pe_carrier_hint(
+            b"echo ordinary script text\r\n"
+        ));
     }
 }
 
