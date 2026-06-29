@@ -66,8 +66,9 @@ pub fn read_logical_lines(input: &[u8]) -> Vec<String> {
         // strip trailing \n and optional \r
         let line = raw.strip_suffix('\n').unwrap_or(raw);
         let line = line.strip_suffix('\r').unwrap_or(line);
-        if has_unescaped_trailing_caret(line) {
-            let prefix = &line[..line.len() - '^'.len_utf8()];
+        let continuation_end = line.trim_end_matches([' ', '\t']);
+        if has_unescaped_trailing_caret(continuation_end) {
+            let prefix = &continuation_end[..continuation_end.len() - '^'.len_utf8()];
             accum.push_str(prefix);
         } else {
             accum.push_str(line);

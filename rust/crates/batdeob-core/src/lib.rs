@@ -161,6 +161,15 @@ mod line_reader_tests {
     }
 
     #[test]
+    fn caret_continuation_allows_trailing_whitespace() {
+        let input = b"echo first ^  \r\nsecond\r\n";
+        assert_eq!(
+            read_logical_lines(input),
+            vec!["echo first second".to_string()]
+        );
+    }
+
+    #[test]
     fn caret_continuation_chain() {
         let input = b"a^\nb^\nc\n";
         assert_eq!(read_logical_lines(input), vec!["abc".to_string()]);
