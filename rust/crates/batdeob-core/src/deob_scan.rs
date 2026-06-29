@@ -398,7 +398,40 @@ pub(crate) fn is_noise_url_context(line: &str, url: &str) -> bool {
     {
         return true;
     }
+    if is_msiexec_log_url_context(line, url) {
+        return true;
+    }
     false
+}
+
+fn is_msiexec_log_url_context(line: &str, url: &str) -> bool {
+    let tokens = split_words(line);
+    if tokens.is_empty() {
+        return false;
+    }
+    let cmd = command_name(strip_outer_quotes(&tokens[0]));
+    if !cmd.eq_ignore_ascii_case("msiexec") && !cmd.eq_ignore_ascii_case("msiexec.exe") {
+        return false;
+    }
+    tokens.iter().enumerate().skip(1).any(|(idx, token)| {
+        let token = strip_outer_quotes(token.trim());
+        let normalized = normalize_liberal_url_token(token).unwrap_or_else(|| token.to_string());
+        normalized == url
+            && tokens
+                .get(idx.wrapping_sub(1))
+                .map(|prev| msiexec_log_option(strip_outer_quotes(prev.trim())))
+                .unwrap_or(false)
+    })
+}
+
+fn msiexec_log_option(token: &str) -> bool {
+    let lower = token.to_ascii_lowercase();
+    lower == "/l"
+        || lower == "-l"
+        || lower.starts_with("/l*")
+        || lower.starts_with("-l*")
+        || lower.starts_with("/log")
+        || lower.starts_with("-log")
 }
 
 pub(crate) fn normalize_liberal_url_token(token: &str) -> Option<String> {
@@ -2913,18 +2946,20 @@ fn scan_process_url_arguments(deobfuscated: &str, env: &mut Environment) {
         if !is_url_argument_process(&cmd) || is_url_launcher_command(&cmd) {
             continue;
         }
-        let Some(url) = first_url_after(
-            &tokens,
-            1,
-            cmd.eq_ignore_ascii_case("msiexec") || cmd.eq_ignore_ascii_case("msiexec.exe"),
-            false,
-        ) else {
+        let is_msiexec =
+            cmd.eq_ignore_ascii_case("msiexec") || cmd.eq_ignore_ascii_case("msiexec.exe");
+        let url = if is_msiexec {
+            msiexec_package_url_after(&tokens, 1)
+        } else {
+            first_url_after(&tokens, 1, false, false)
+        };
+        let Some(url) = url else {
             continue;
         };
         if is_noise_url(&url) || !known.insert(url.clone()) {
             continue;
         }
-        if cmd.eq_ignore_ascii_case("msiexec") || cmd.eq_ignore_ascii_case("msiexec.exe") {
+        if is_msiexec {
             push_lolbas_once(env, "msiexec", line);
         }
         env.traits.push(Trait::UrlArgument {
@@ -3216,6 +3251,38 @@ fn desktopimgdownldr_lockscreen_url_after(tokens: &[String], start: usize) -> Op
     flag_url_value_after(tokens, start, &["/lockscreenurl", "-lockscreenurl"])
 }
 
+fn msiexec_package_url_after(tokens: &[String], start: usize) -> Option<String> {
+    for idx in start..tokens.len() {
+        let token =
+            strip_outer_quotes(&tokens[idx]).trim_matches(['(', ')', ';', ',', '"', '\'', '`']);
+        let candidate = msiexec_attached_url_token(token).or_else(|| {
+            tokens
+                .get(idx.wrapping_sub(1))
+                .map(|prev| {
+                    strip_outer_quotes(prev).trim_matches(['(', ')', ';', ',', '"', '\'', '`'])
+                })
+                .filter(|prev| msiexec_package_option(prev))
+                .map(|_| token)
+        });
+        let Some(candidate) = candidate else {
+            continue;
+        };
+        if candidate.contains("%%") {
+            continue;
+        }
+        let end = candidate
+            .find([')', '(', ';', ',', '"', '\'', '`'])
+            .unwrap_or(candidate.len());
+        let url = normalize_url_obfuscation(&candidate[..end]);
+        if let Some(url) = normalize_liberal_url_token(&url)
+            .or_else(|| normalize_schemeless_domain_path_token(&url))
+        {
+            return Some(url);
+        }
+    }
+    None
+}
+
 fn first_url_after(
     tokens: &[String],
     start: usize,
@@ -3300,6 +3367,13 @@ fn msiexec_attached_url_token(token: &str) -> Option<&str> {
         }
     }
     None
+}
+
+fn msiexec_package_option(token: &str) -> bool {
+    matches!(
+        token.to_ascii_lowercase().as_str(),
+        "/i" | "-i" | "/a" | "-a" | "/package" | "-package" | "/update" | "-update"
+    )
 }
 
 /// Collapse common in-quote URL obfuscation tricks that survive into

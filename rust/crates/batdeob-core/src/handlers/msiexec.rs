@@ -6,15 +6,7 @@ use crate::traits::Trait;
 
 pub fn h_msiexec(raw: &str, env: &mut Environment) {
     let tokens = split_words(raw);
-    if let Some(url) = tokens
-        .iter()
-        .skip(1)
-        .filter_map(|token| {
-            let token = strip_outer_quotes(token.trim());
-            msiexec_url_from_token(token)
-        })
-        .next()
-    {
+    if let Some(url) = msiexec_url_from_tokens(&tokens) {
         env.traits.push(Trait::UrlArgument {
             cmd: raw.to_string(),
             url,
@@ -46,14 +38,30 @@ fn trim_url_suffix(url: &str) -> &str {
     crate::deob_scan::trim_liberal_url_suffix(url)
 }
 
-fn msiexec_url_from_token(token: &str) -> Option<String> {
-    let normalized_token = trim_url_suffix(token);
-    if let Some(url) = crate::deob_scan::normalize_liberal_url_token(normalized_token)
-        .or_else(|| crate::deob_scan::normalize_schemeless_domain_path_token(normalized_token))
-    {
-        return Some(url);
+fn msiexec_url_from_tokens(tokens: &[String]) -> Option<String> {
+    for (idx, token) in tokens.iter().enumerate().skip(1) {
+        let token = strip_outer_quotes(token.trim());
+        if let Some(url) = msiexec_url_from_token(token) {
+            return Some(url);
+        }
+        if tokens
+            .get(idx.wrapping_sub(1))
+            .is_some_and(|prev| msiexec_package_option(strip_outer_quotes(prev.trim())))
+        {
+            let normalized_token = trim_url_suffix(token);
+            if let Some(url) = crate::deob_scan::normalize_liberal_url_token(normalized_token)
+                .or_else(|| {
+                    crate::deob_scan::normalize_schemeless_domain_path_token(normalized_token)
+                })
+            {
+                return Some(url);
+            }
+        }
     }
+    None
+}
 
+fn msiexec_url_from_token(token: &str) -> Option<String> {
     let token = token.trim();
     let lower = token.to_ascii_lowercase();
     for prefix in [
