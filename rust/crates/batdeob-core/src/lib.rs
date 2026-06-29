@@ -2455,6 +2455,24 @@ move "%cmdDestination%" "%startupFolder%"
     }
 
     #[test]
+    fn defender_exclusion_target_does_not_cross_line_boundary() {
+        let script = b"@echo off\r\n\
+            powershell.exe -command \"Add-MpPreference -ExclusionPath \"C:\\\r\n\
+            timeout.exe /t 10\r\n\
+            cd \"C:\\ProgramData\"\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "exclusion-path" && target.contains("timeout.exe")
+            )),
+            "Defender exclusion target crossed line boundary: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn defender_registry_tampering_emits_evasion_trait() {
         // `reg add ...\Windows Defender\... /v DisableX /d 1` — flips
         // Defender policy keys to disable real-time / anti-spyware /
@@ -2470,6 +2488,126 @@ move "%cmdDestination%" "%startupFolder%"
                     if action == "regset-disablebehaviormonitoring"
             )),
             "Defender reg-tamper not flagged: traits={:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn defender_security_binary_tampering_emits_evasion_traits() {
+        let script = b"@echo off\r\n\
+            takeown /f \"C:\\Windows\\System32\\SecurityHealthService.exe\"\r\n\
+            icacls \"C:\\Windows\\System32\\SecurityHealthService.exe\" /grant:r \"%USERDOMAIN%\\%USERNAME%\":F /c\r\n\
+            rename C:\\Windows\\System32\\SecurityHealthSystray.exe Nurik.nes\r\n\
+            icacls \"C:\\Temp\\notes.txt\" /grant:r \"%USERNAME%\":F /c\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+        for action in [
+            "security-binary-takeown",
+            "security-binary-acl-grant",
+            "security-binary-rename",
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::DefenderEvasion { action: a, .. } if a == action
+                )),
+                "missing {action}: {:?}",
+                report.traits
+            );
+        }
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { target, .. } if target.contains("notes.txt")
+            )),
+            "generic icacls target should not be DefenderEvasion: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn defender_scheduled_task_disable_emits_evasion_trait() {
+        let script = b"@echo off\r\n\
+            schtasks /Change /TN \"Microsoft\\Windows\\Windows Defender\\Windows Defender Scheduled Scan\" /Disable\r\n\
+            schtasks /Change /TN \"Microsoft\\Windows\\ExploitGuard\\ExploitGuard MDM policy Refresh\" /Disable\r\n\
+            schtasks /Change /TN \"Microsoft\\Windows\\Windows Defender\\Windows Defender Verification\" /Enable\r\n\
+            schtasks /Change /TN \"\\User\\Maintenance\" /Disable\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+        let defender_tasks: Vec<&str> = report
+            .traits
+            .iter()
+            .filter_map(|t| {
+                if let Trait::DefenderEvasion { action, target } = t {
+                    (action == "scheduled-task-disable").then_some(target.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(
+            defender_tasks
+                .iter()
+                .any(|t| t.contains("Windows Defender Scheduled Scan")),
+            "missing Defender task disable: {:?}",
+            report.traits
+        );
+        assert!(
+            defender_tasks
+                .iter()
+                .any(|t| t.contains("ExploitGuard MDM policy Refresh")),
+            "missing ExploitGuard task disable: {:?}",
+            report.traits
+        );
+        assert!(
+            !defender_tasks
+                .iter()
+                .any(|t| t.contains("Windows Defender Verification")),
+            "enabled Defender task should not be evasion: {:?}",
+            report.traits
+        );
+        assert!(
+            !defender_tasks.iter().any(|t| t.contains("Maintenance")),
+            "unrelated task disable should not be DefenderEvasion: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn defender_service_registry_disable_emits_evasion_trait() {
+        let script = b"@echo off\r\n\
+            reg add \"HKLM\\System\\CurrentControlSet\\Services\\WinDefend\" /v \"Start\" /t REG_DWORD /d \"4\" /f\r\n\
+            reg add \"HKLM\\System\\CurrentControlSet\\Services\\SecurityHealthService\" /v Start /t REG_DWORD /d 4 /f\r\n\
+            reg add \"HKLM\\System\\CurrentControlSet\\Services\\Dnscache\" /v Start /t REG_DWORD /d 4 /f\r\n\
+            reg add \"HKLM\\System\\CurrentControlSet\\Services\\WdNisSvc\" /v Start /t REG_DWORD /d 2 /f\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+        let disabled_services: Vec<&str> = report
+            .traits
+            .iter()
+            .filter_map(|t| {
+                if let Trait::DefenderEvasion { action, target } = t {
+                    (action == "service-start-disabled").then_some(target.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(
+            disabled_services.contains(&"WinDefend"),
+            "missing WinDefend service disable: {:?}",
+            report.traits
+        );
+        assert!(
+            disabled_services.contains(&"SecurityHealthService"),
+            "missing SecurityHealthService service disable: {:?}",
+            report.traits
+        );
+        assert!(
+            !disabled_services.contains(&"Dnscache"),
+            "generic service disable should not be DefenderEvasion: {:?}",
+            report.traits
+        );
+        assert!(
+            !disabled_services.contains(&"WdNisSvc"),
+            "non-disabled Defender service start value should not be evasion: {:?}",
             report.traits
         );
     }

@@ -7480,13 +7480,13 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
     });
     static REG_SERVICE_DISABLED_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r#"(?i)\breg(?:\.exe)?\s+add\s+(?:"[^"\r\n]*\\Services\\([^"\\/\s]+)[^"]*"|[^\r\n\s]*\\Services\\([^\s\\/]+))[^\r\n]*?/v\s+Start\b[^\r\n]*?/d\s+4\b"#,
+            r#"(?i)\breg(?:\.exe)?\s+add\s+(?:"[^"\r\n]*\\Services\\([^"\\/\s]+)[^"]*"|[^\r\n\s]*\\Services\\([^\s\\/]+))[^\r\n]*?/v\s+["']?Start["']?\b[^\r\n]*?/d\s+["']?(?:0x)?4["']?(?:\s|$)"#,
         )
         .expect("reg-service-disabled")
     });
     static SCHTASKS_DEFENDER_DISABLE_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r#"(?i)\bschtasks(?:\.exe)?\b[^\r\n]*?/Change\b[^\r\n]*?/TN\s+("[^"]*Windows Defender[^"]*"|'[^']*Windows Defender[^']*'|[^\r\n]*Windows Defender[^\r\n]*?)\s+/Disable\b"#,
+            r#"(?i)\bschtasks(?:\.exe)?\b[^\r\n]*?/Change\b[^\r\n]*?/TN\s+("[^"]*(?:Windows Defender|ExploitGuard)[^"]*"|'[^']*(?:Windows Defender|ExploitGuard)[^']*'|[^\r\n]*(?:Windows Defender|ExploitGuard)[^\r\n]*?)\s+/Disable\b"#,
         )
         .expect("schtasks-defender-disable")
     });
@@ -7904,6 +7904,7 @@ fn defender_evasion_candidate_text(lower: &str) -> bool {
         "schtasks",
         "windows defender",
         "microsoft defender",
+        "exploitguard",
         "securityhealthservice",
         "securityhealthsystray",
         "msmpeng",
@@ -8076,6 +8077,7 @@ fn is_security_service_name(name: &str) -> bool {
         "wuauserv",
         "MpsSvc",
         "WdNisSvc",
+        "SecurityHealthService",
         "Windows Defender Antivirus Service",
         "Microsoft Defender Antivirus Service",
     ]
