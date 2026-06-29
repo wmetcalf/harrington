@@ -78,13 +78,13 @@ fn extract_script(
         if ends_with_ascii_case_insensitive(path, ".vbs")
             || ends_with_ascii_case_insensitive(path, ".vbe")
         {
-            env.all_extracted_vbs.push(c.clone());
-            env.exec_vbs.push(c);
+            push_unique_payload(&mut env.all_extracted_vbs, c.clone());
+            push_unique_payload(&mut env.exec_vbs, c);
         } else if ends_with_ascii_case_insensitive(path, ".js")
             || ends_with_ascii_case_insensitive(path, ".jse")
         {
-            env.all_extracted_jscript.push(c.clone());
-            env.exec_jscript.push(c);
+            push_unique_payload(&mut env.all_extracted_jscript, c.clone());
+            push_unique_payload(&mut env.exec_jscript, c);
         }
     }
 }
@@ -98,15 +98,30 @@ fn tracked_script_content(path: &str, env: &Environment) -> Option<Vec<u8>> {
             return content_from_entry(filesystem_entry_for_path(env, stripped));
         }
     }
-    let name = current_dir_basename(path)?;
+    if let Some(name) = current_dir_basename(path) {
+        return tracked_script_content_by_basename(name, env);
+    }
+    if path.contains(['\\', '/']) {
+        return None;
+    }
+    tracked_script_content_by_basename(path, env)
+}
+
+fn tracked_script_content_by_basename(path: &str, env: &Environment) -> Option<Vec<u8>> {
     env.modified_filesystem
         .iter()
         .find_map(|(tracked_path, entry)| {
             windows_basename(tracked_path)
-                .is_some_and(|tracked_name| tracked_name.eq_ignore_ascii_case(name))
+                .is_some_and(|tracked_name| tracked_name.eq_ignore_ascii_case(path))
                 .then(|| content_from_entry(Some(entry)))
         })
         .flatten()
+}
+
+fn push_unique_payload(queue: &mut Vec<Vec<u8>>, content: Vec<u8>) {
+    if !queue.iter().any(|existing| existing == &content) {
+        queue.push(content);
+    }
 }
 
 fn content_from_entry(entry: Option<&FsEntry>) -> Option<Vec<u8>> {
@@ -135,19 +150,28 @@ fn downloaded_source_for_path(env: &Environment, path: &str) -> Option<String> {
             Some(FsEntry::Directory | FsEntry::Content { .. } | FsEntry::Decoded { .. }) => {
                 return None;
             }
-            None => return downloaded_source_for_current_dir_path(env, path),
+            None => return downloaded_source_for_unresolved_path(env, path),
         }
     }
     None
 }
 
-fn downloaded_source_for_current_dir_path(env: &Environment, path: &str) -> Option<String> {
+fn downloaded_source_for_unresolved_path(env: &Environment, path: &str) -> Option<String> {
     if let Some(stripped) = strip_current_dir_prefix(path) {
         if stripped.contains(['\\', '/']) {
             return downloaded_source_for_path(env, stripped);
         }
     }
-    let name = current_dir_basename(path)?;
+    if let Some(name) = current_dir_basename(path) {
+        return downloaded_source_by_basename(env, name);
+    }
+    if path.contains(['\\', '/']) {
+        return None;
+    }
+    downloaded_source_by_basename(env, path)
+}
+
+fn downloaded_source_by_basename(env: &Environment, name: &str) -> Option<String> {
     env.modified_filesystem
         .iter()
         .find_map(|(tracked_path, _)| {

