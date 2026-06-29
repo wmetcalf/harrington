@@ -7584,6 +7584,134 @@ pub fn analyze_with_path_and_options(
     analyze_inner(input, cfg, Some(file_path.as_ref().to_path_buf()), options)
 }
 
+fn extracted_ps1_aes_payload_is_redundant(raw: &str, normalized: &str, out: &str) -> bool {
+    let normalized = normalized.trim();
+    if normalized_materializes_aes_carrier_missing_from_out(raw, normalized, out) {
+        return false;
+    }
+
+    if normalized.len() >= 64 && out.contains(normalized) {
+        return true;
+    }
+
+    let raw = raw.trim();
+    if raw.len() >= 64 && out.contains(raw) {
+        return true;
+    }
+
+    let signature = compact_ascii_non_ws_prefix(normalized, 192);
+    signature.len() >= 64 && contains_ascii_ws_insensitive_signature(out, &signature)
+}
+
+fn redundant_extracted_ps1_aes_payloads(
+    raw_payloads: &[String],
+    normalized_payloads: &[String],
+    out: &str,
+) -> Vec<bool> {
+    raw_payloads
+        .iter()
+        .enumerate()
+        .map(|(idx, raw)| {
+            normalized_payloads.get(idx).is_some_and(|normalized| {
+                extracted_ps1_aes_payload_is_redundant(raw, normalized, out)
+            })
+        })
+        .collect()
+}
+
+fn normalized_materializes_aes_carrier_missing_from_out(
+    raw: &str,
+    normalized: &str,
+    out: &str,
+) -> bool {
+    if !raw.contains("$env:") {
+        return false;
+    }
+    let lower = normalized.to_ascii_lowercase();
+    if !(lower.contains("aes")
+        && lower.contains("transformfinalblock")
+        && (lower.contains("frombase64string") || lower.contains("[uint16][char]")))
+    {
+        return false;
+    }
+
+    normalized_has_missing_long_base64_literal(normalized, out)
+        || normalized_has_missing_high_unicode_carrier(normalized, out)
+}
+
+fn normalized_has_missing_long_base64_literal(normalized: &str, out: &str) -> bool {
+    let mut in_quote = None;
+    let mut start = 0;
+    for (idx, ch) in normalized.char_indices() {
+        match in_quote {
+            Some(quote) if ch == quote => {
+                let literal = &normalized[start..idx];
+                if literal.len() >= 80
+                    && literal
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'='))
+                    && !out.contains(literal)
+                {
+                    return true;
+                }
+                in_quote = None;
+            }
+            None if ch == '\'' || ch == '"' => {
+                in_quote = Some(ch);
+                start = idx + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+fn normalized_has_missing_high_unicode_carrier(normalized: &str, out: &str) -> bool {
+    let carrier: String = normalized
+        .chars()
+        .filter(|ch| (*ch as u32) >= 0x4e00)
+        .take(256)
+        .collect();
+    carrier.len() >= 64 && !out.contains(&carrier)
+}
+
+fn compact_ascii_non_ws_prefix(text: &str, limit: usize) -> Vec<u8> {
+    text.bytes()
+        .filter(|byte| !byte.is_ascii_whitespace())
+        .take(limit)
+        .collect()
+}
+
+fn contains_ascii_ws_insensitive_signature(haystack: &str, signature: &[u8]) -> bool {
+    if signature.is_empty() {
+        return false;
+    }
+
+    let haystack = haystack.as_bytes();
+    for start in 0..haystack.len() {
+        if haystack[start].is_ascii_whitespace() || haystack[start] != signature[0] {
+            continue;
+        }
+        let mut sig_idx = 0;
+        let mut hay_idx = start;
+        while hay_idx < haystack.len() && sig_idx < signature.len() {
+            let byte = haystack[hay_idx];
+            hay_idx += 1;
+            if byte.is_ascii_whitespace() {
+                continue;
+            }
+            if byte != signature[sig_idx] {
+                break;
+            }
+            sig_idx += 1;
+        }
+        if sig_idx == signature.len() {
+            return true;
+        }
+    }
+    false
+}
+
 fn analyze_inner(
     input: &[u8],
     cfg: &Config,
@@ -7731,6 +7859,37 @@ fn analyze_inner(
         .iter()
         .map(|bytes| ps1_scan::normalize_ps1_payload(bytes))
         .collect();
+    let extracted_ps1_for_aes: Vec<String> = env
+        .all_extracted_ps1
+        .iter()
+        .map(|bytes| decode_likely_powershell_payload(bytes))
+        .collect();
+    let redundant_extracted_ps1_aes = redundant_extracted_ps1_aes_payloads(
+        &extracted_ps1_for_aes,
+        &extracted_ps1_normalized,
+        &out,
+    );
+    for (idx, ps) in extracted_ps1_for_aes.iter().enumerate() {
+        if redundant_extracted_ps1_aes
+            .get(idx)
+            .copied()
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        aes_chain::extract_from_chain(input, ps, &mut env);
+    }
+    for (idx, ps) in extracted_ps1_normalized.iter().enumerate() {
+        if redundant_extracted_ps1_aes
+            .get(idx)
+            .copied()
+            .unwrap_or(false)
+            || extracted_ps1_aes_payload_is_redundant(ps, ps, &out)
+        {
+            continue;
+        }
+        aes_chain::extract_from_chain(input, ps, &mut env);
+    }
     // Surface decoded/extracted PowerShell payloads in the deob with a
     // banner so analysts can read the reconstructed PS body — critical
     // for set-fragment-assembled `$ddsdfgo = '<b64>'; iex $x` chains
@@ -21692,6 +21851,28 @@ powershell -NoP -C "try {{ $Natural = (Get-Content '%~f0') -join [Environment]::
             }),
             "embedded self-read payload URL was not extracted: {:?}",
             report.traits
+        );
+    }
+
+    #[test]
+    fn env_materialized_ps1_aes_carrier_is_not_marked_redundant() {
+        let carrier = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo=".repeat(4);
+        let raw = "$ZbmpUg=($env:BATDEOB_AES_CT_A+$env:BATDEOB_AES_CT_B);\
+                   $LyzpcK=[Convert]::FromBase64String($ZbmpUg);\
+                   $aes=[type]('Activator')::CreateInstance([type]'System.Security.Cryptography.AesManaged');\
+                   $aes.Key=[byte[]]@(0xFA,0xB2,0x9A,0x62,0x85,0x3F,0x9E,0xED,0x91,0xF4,0x73,0x7C,0xFA,0xBF,0x8C,0x9E);\
+                   $aes.IV=[byte[]]@(0xFE,0x6A,0x14,0x2C,0x64,0xB9,0x42,0x68,0x05,0xA9,0x3B,0xB7,0x26,0x98,0x6B,0xEF);\
+                   $stage=$aes.CreateDecryptor().TransformFinalBlock($LyzpcK,0,$LyzpcK.Length)"
+            .to_string();
+        let normalized = raw.replace(
+            "($env:BATDEOB_AES_CT_A+$env:BATDEOB_AES_CT_B)",
+            &format!("('{carrier}')"),
+        );
+        let out = format!("powershell -Command \"{raw}\"");
+
+        assert!(
+            !crate::extracted_ps1_aes_payload_is_redundant(&raw, &normalized, &out),
+            "env-materialized AES carrier should still be scanned"
         );
     }
 
