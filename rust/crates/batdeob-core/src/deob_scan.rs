@@ -7599,14 +7599,26 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
             .map(|value| {
                 matches!(
                     value.to_ascii_lowercase().as_str(),
-                    "false" | "$false" | "0"
+                    "false" | "$false" | "0" | "0x0" | "0x00000000"
                 )
             })
             .unwrap_or(false);
         if disabled {
-            let target =
-                powershell_named_argument(command, "-Profile").unwrap_or_else(|| "profile".into());
-            push("firewall-profile-disabled", target);
+            let target = powershell_named_argument_list(command, "-Profile")
+                .join(",")
+                .trim_matches(',')
+                .to_string();
+            let target = if target.is_empty() {
+                "profile".to_string()
+            } else {
+                target
+            };
+            push("firewall-profile-disabled", target.clone());
+            for profile in split_powershell_value_list(&target) {
+                if profile != target {
+                    push("firewall-profile-disabled", profile);
+                }
+            }
         }
     }
     for caps in TASKKILL_SECURITY_PROCESS_RE.captures_iter(deobfuscated) {
