@@ -10,9 +10,13 @@ use base64::Engine;
 
 pub fn h_certutil(raw: &str, env: &mut Environment) {
     let tokens = split_words(raw);
+    push_lolbas(raw, env);
 
-    // -urlcache -split -f URL DST
-    if tokens.iter().any(|t| certutil_flag_eq(t, "urlcache")) {
+    // -urlcache -split -f URL DST / -verifyctl -f URL DST
+    if tokens
+        .iter()
+        .any(|t| certutil_flag_eq(t, "urlcache") || certutil_flag_eq(t, "verifyctl"))
+    {
         if let Some(url) = find_first_url(&tokens) {
             let dst = find_dst_after_url(&tokens, &url).or_else(|| url_basename(&url));
             env.traits.push(Trait::CertutilDownload {
@@ -338,5 +342,18 @@ fn url_basename(url: &str) -> Option<String> {
         None
     } else {
         Some(last.to_string())
+    }
+}
+
+fn push_lolbas(raw: &str, env: &mut Environment) {
+    if !env
+        .traits
+        .iter()
+        .any(|t| matches!(t, Trait::Lolbas { name, cmd } if name == "certutil" && cmd == raw))
+    {
+        env.traits.push(Trait::Lolbas {
+            name: "certutil".to_string(),
+            cmd: raw.to_string(),
+        });
     }
 }

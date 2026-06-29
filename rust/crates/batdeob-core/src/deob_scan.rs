@@ -7,8 +7,11 @@
 
 #![allow(clippy::expect_used, clippy::type_complexity, clippy::unwrap_used)]
 
-use crate::env::Environment;
-use crate::handlers::util::{flag_url_value_after, split_words, windows_basename};
+use crate::env::{Environment, FsEntry};
+use crate::handlers::util::{
+    filesystem_entry_for_path, filesystem_storage_key, flag_url_value_after, split_words,
+    windows_basename,
+};
 use crate::traits::Trait;
 use crate::util::{
     contains_ascii_case_insensitive, ends_with_ascii_case_insensitive,
@@ -6632,6 +6635,8 @@ fn scan_certutil_urlcache_deob_text(deobfuscated: &str, env: &mut Environment) {
         }
         if !contains_ascii_case_insensitive(line, "-urlcache")
             && !contains_ascii_case_insensitive(line, "/urlcache")
+            && !contains_ascii_case_insensitive(line, "-verifyctl")
+            && !contains_ascii_case_insensitive(line, "/verifyctl")
         {
             continue;
         }
@@ -6657,8 +6662,63 @@ fn scan_certutil_urlcache_deob_text(deobfuscated: &str, env: &mut Environment) {
             .map(|token| token.trim_matches(['"', '\'', ')']).to_string())
             .or_else(|| url_basename(&url))
             .unwrap_or_default();
+        if !dst.is_empty() {
+            env.modified_filesystem.insert(
+                filesystem_storage_key(&dst),
+                FsEntry::Download { src: url.clone() },
+            );
+        }
         env.traits.push(Trait::CertutilDownload { url, dst });
     }
+}
+
+fn scan_downloaded_script_host_deob_text(deobfuscated: &str, env: &mut Environment) {
+    for line in deobfuscated.lines() {
+        let tokens = split_words(line);
+        let Some(cmd_token) = tokens.first() else {
+            continue;
+        };
+        let cmd = command_name(strip_outer_quotes(cmd_token));
+        if !is_downloaded_script_host(&cmd) {
+            continue;
+        }
+        let Some(path) = tokens
+            .iter()
+            .skip(1)
+            .map(|token| strip_outer_quotes(token))
+            .find(|token| !token.starts_with('-') && !token.starts_with('/'))
+        else {
+            continue;
+        };
+        let Some(FsEntry::Download { src }) = filesystem_entry_for_path(env, path) else {
+            continue;
+        };
+        if !env
+            .traits
+            .iter()
+            .any(|t| matches!(t, Trait::UrlArgument { cmd, url } if cmd == line && url == src))
+        {
+            env.traits.push(Trait::UrlArgument {
+                cmd: line.to_string(),
+                url: src.clone(),
+            });
+        }
+    }
+}
+
+fn is_downloaded_script_host(cmd: &str) -> bool {
+    [
+        "mshta",
+        "mshta.exe",
+        "wscript",
+        "wscript.exe",
+        "cscript",
+        "cscript.exe",
+        "hh",
+        "hh.exe",
+    ]
+    .iter()
+    .any(|host| cmd.eq_ignore_ascii_case(host))
 }
 
 fn normalize_certutil_urlcache_token(token: &str) -> Option<String> {
@@ -10018,6 +10078,7 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     scan_aria2_deob_text(deobfuscated, env);
     scan_wget_deob_text(deobfuscated, env);
     scan_certutil_urlcache_deob_text(deobfuscated, env);
+    scan_downloaded_script_host_deob_text(deobfuscated, env);
     scan_damaged_scheme_download_urls(deobfuscated, env);
     scan_ps_replace_chain_urls(deobfuscated, env);
     scan_ps_bare_url_downloads(deobfuscated, env);
