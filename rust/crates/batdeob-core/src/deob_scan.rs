@@ -9935,7 +9935,7 @@ fn scan_credential_access(deobfuscated: &str, env: &mut Environment) {
     });
     static REG_HIVE_SAVE_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r#"(?im)^[^\r\n]*?\breg(?:\.exe)?\s+save\s+["']?HKLM\\(?:SAM|SYSTEM|SECURITY)["']?\b[^\r\n]*"#,
+            r#"(?im)^[^\r\n]*?\breg(?:\.exe)?\s+save\s+["']?(?:HKLM|HKEY_LOCAL_MACHINE)\\(?:SAM|SYSTEM|SECURITY)["']?\b[^\r\n]*"#,
         )
         .expect("registry hive save regex")
     });

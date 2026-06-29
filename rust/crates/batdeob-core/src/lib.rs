@@ -33541,6 +33541,23 @@ powershell -Command "New-Service -Name UpdateSvc -BinaryPathName 'cmd.exe /c cal
     }
 
     #[test]
+    fn full_registry_hive_saves_emit_credential_access_trait() {
+        let script = br#"reg save HKEY_LOCAL_MACHINE\SAM C:\Users\Public\sam.save /y"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::CredentialAccess { technique, target }
+                    if technique == "registry-hive-save"
+                        && target.contains(r"HKEY_LOCAL_MACHINE\SAM")
+            )),
+            "full registry hive save was not surfaced as credential access: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn esentutl_ntds_copy_emits_credential_access_trait() {
         let script = br#"esentutl.exe /y C:\Windows\NTDS\ntds.dit /d C:\Users\Public\ntds.dit"#;
         let report = analyze(script, &Config::default());
