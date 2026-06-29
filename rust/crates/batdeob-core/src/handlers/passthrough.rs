@@ -542,6 +542,22 @@ fn unescape_outer_caret_bangs(command: &str) -> String {
     command.replace("^!", "!")
 }
 
+fn normalize_comspec_command_for_trait(command: &str) -> String {
+    let trimmed = command.trim_start();
+    let leading_ws_len = command.len() - trimmed.len();
+    let Some(rest) = trimmed
+        .strip_prefix("%COMSPEC%")
+        .or_else(|| trimmed.strip_prefix("%comspec%"))
+    else {
+        return command.to_string();
+    };
+    format!(
+        "{}C:\\WINDOWS\\system32\\cmd.exe{}",
+        &command[..leading_ws_len],
+        rest
+    )
+}
+
 fn persisted_command_looks_dispatchable(command: &str) -> bool {
     let trimmed = command.trim().trim_matches('"');
     if trimmed.is_empty() || trimmed.ends_with('\\') || trimmed.ends_with('/') {
@@ -568,7 +584,7 @@ pub fn h_at(raw: &str, env: &mut Environment) {
         hive: "AtJob".to_string(),
         key: time,
         value_name: "command".to_string(),
-        command: command.clone(),
+        command: normalize_comspec_command_for_trait(&command),
     });
     queue_registry_persisted_command(command, env);
 }
@@ -946,7 +962,7 @@ fn command_target_and_args(command: &str) -> Option<(String, Option<String>)> {
     ))
 }
 
-fn at_scheduled_command(raw: &str) -> Option<(String, String)> {
+pub(crate) fn at_scheduled_command(raw: &str) -> Option<(String, String)> {
     let spans = split_word_spans(raw);
     let first = spans.first()?;
     let command_name = command_token_basename(&raw[first.clone()]);
@@ -976,7 +992,7 @@ fn at_scheduled_command(raw: &str) -> Option<(String, String)> {
         break;
     }
     let command_start = spans.get(idx)?.start;
-    let command = raw[command_start..].trim();
+    let command = strip_outer_quotes(raw[command_start..].trim()).trim();
     if command.is_empty() {
         return None;
     }

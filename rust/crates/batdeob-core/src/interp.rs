@@ -115,6 +115,14 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
         return result;
     }
 
+    if let Some((_time, command)) = crate::handlers::passthrough::at_scheduled_command(raw) {
+        if command.contains('!') && crate::handlers::cmd::extract_cmd_inner(&command).is_some() {
+            crate::handlers::passthrough::h_at(raw, env);
+            result.consumed = true;
+            return result;
+        }
+    }
+
     if let Some(body) = crate::handlers::call::call_body(raw) {
         let raw_wrapper_needs_bang_preservation = body.contains('!')
             && (crate::handlers::cmd::extract_cmd_inner(body).is_some()
@@ -179,6 +187,29 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
     result
 }
 
+pub fn should_preserve_raw_at_schedule(raw: &str, env: &Environment) -> bool {
+    let Some(replay) = at_schedule_replay_command(raw, env) else {
+        return false;
+    };
+    let Some((_time, command)) = crate::handlers::passthrough::at_scheduled_command(&replay) else {
+        return false;
+    };
+    command.contains("&&") && crate::handlers::cmd::extract_cmd_inner(&command).is_some()
+}
+
+fn at_schedule_replay_command(raw: &str, env: &Environment) -> Option<String> {
+    let name = command_name(raw)?;
+    if command_basename_is(&name, "at") {
+        return Some(raw.trim().to_string());
+    }
+    if !command_matches_copied_alias(&name, env, &["at", "at.exe"]) {
+        return None;
+    }
+    let rest_start = raw.find(&name)? + name.len();
+    let rest = raw[rest_start..].trim_start();
+    (!rest.is_empty()).then(|| format!("at.exe {rest}"))
+}
+
 fn unescape_outer_caret_bangs(command: &str) -> String {
     command.replace("^!", "!")
 }
@@ -194,6 +225,8 @@ fn replay_copied_filesystem_alias(raw: &str, env: &mut Environment) -> bool {
         "replace.exe"
     } else if command_matches_copied_alias(&name, env, &["xcopy", "xcopy.exe"]) {
         "xcopy.exe"
+    } else if command_matches_copied_alias(&name, env, &["at", "at.exe"]) {
+        "at.exe"
     } else {
         return false;
     };
@@ -210,6 +243,7 @@ fn replay_copied_filesystem_alias(raw: &str, env: &mut Environment) -> bool {
         "robocopy.exe" => crate::handlers::robocopy::h_robocopy(&replay, env),
         "replace.exe" => crate::handlers::replace::h_replace(&replay, env),
         "xcopy.exe" => crate::handlers::copy::h_xcopy(&replay, env),
+        "at.exe" => crate::handlers::passthrough::h_at(&replay, env),
         _ => return false,
     }
     true
