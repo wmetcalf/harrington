@@ -104,6 +104,35 @@ mod tests {
             report.traits
         );
     }
+
+    #[test]
+    fn caret_obfuscated_long_rem_noise_is_summarized_and_tail_url_rescued() {
+        let url = "https://caret-rem-tail.attacker.example/payload.bat";
+        let noise = "B".repeat(4096);
+        let script = format!("@echo off\r\nR^E^M {noise} {url}\r\n");
+        let report = crate::analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("bytes from long REM comment line"),
+            "caret-obfuscated REM noise should be summarized, got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.lines().all(|line| line.len() < 512),
+            "summarized caret-obfuscated REM output should stay compact, got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
+            "URL hidden in caret-obfuscated REM line should be rescued: {:?}",
+            report.traits
+        );
+    }
 }
 
 #[cfg(test)]
@@ -7221,6 +7250,7 @@ fn analyze_inner(
         } else {
             drive(input, &mut env, &mut out);
         }
+        out = summarize_long_rem_comment_lines(&out, &mut env);
         out = summarize_binary_noise_line_runs(&out, &mut env);
         let raw_text = String::from_utf8_lossy(input);
         deob_scan::scan_embedded_powershell_invocations(&raw_text, &mut env);
@@ -8707,6 +8737,46 @@ fn looks_like_powershell_payload_bytes(bytes: &[u8]) -> bool {
         || lower.contains("frombase64string")
         || lower.contains("downloadstring")
         || lower.contains('$')
+}
+
+fn summarize_long_rem_comment_lines(text: &str, env: &mut Environment) -> String {
+    const MIN_SUMMARY_BYTES: usize = 1024;
+
+    if !contains_rem_comment_candidate(text) {
+        return text.to_string();
+    }
+
+    let mut out = String::with_capacity(text.len().min(256 * 1024));
+    for line in text.split_inclusive('\n') {
+        let (body, eol) = split_line_ending(line);
+        let trimmed = body.trim_start_matches(['@', ' ', '\t']);
+        let leading_len = body.len() - trimmed.len();
+        let lower = trimmed.to_ascii_lowercase();
+        if !lower.starts_with("rem ") {
+            out.push_str(line);
+            continue;
+        }
+
+        let payload = &trimmed[4..];
+        if payload.len() < MIN_SUMMARY_BYTES {
+            out.push_str(line);
+            continue;
+        }
+
+        rescue_truncated_urls(payload, body.len(), env);
+        out.push_str(&body[..leading_len]);
+        out.push_str("rem ::==== harrington: omitted ");
+        out.push_str(&payload.len().to_string());
+        out.push_str(" bytes from long REM comment line ====");
+        out.push_str(eol);
+    }
+    out
+}
+
+fn contains_rem_comment_candidate(text: &str) -> bool {
+    text.as_bytes()
+        .windows(4)
+        .any(|w| matches!(w, [b'r' | b'R', b'e' | b'E', b'm' | b'M', b' ']))
 }
 
 fn summarize_binary_noise_line_runs(text: &str, env: &mut Environment) -> String {
