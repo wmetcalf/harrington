@@ -6056,6 +6056,60 @@ fn scan_curl_deob_text(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
+fn scan_aria2_deob_text(deobfuscated: &str, env: &mut Environment) {
+    let mut known: std::collections::HashSet<String> = env
+        .traits
+        .iter()
+        .filter_map(|t| match t {
+            Trait::Download { src, .. } => Some(src.clone()),
+            _ => None,
+        })
+        .collect();
+
+    for line in deobfuscated.lines() {
+        if line
+            .trim_start()
+            .get(..4)
+            .is_some_and(|head| head.eq_ignore_ascii_case("echo"))
+        {
+            continue;
+        }
+        let Some(aria_pos) = find_ascii_case_insensitive_from(line, "aria2c", 0) else {
+            continue;
+        };
+        let command_start = line[..aria_pos]
+            .rfind([' ', '\t', '&', '(', ')'])
+            .map_or(aria_pos, |idx| idx + 1);
+        let aria_text = &line[command_start..];
+        let tokens = split_words(aria_text);
+        let Some(cmd) = tokens.first() else {
+            continue;
+        };
+        let Some(cmd_base) = basename_trimmed(cmd) else {
+            continue;
+        };
+        if !cmd_base.eq_ignore_ascii_case("aria2c") && !cmd_base.eq_ignore_ascii_case("aria2c.exe")
+        {
+            continue;
+        }
+        let downloads = crate::handlers::aria2::parse_aria2c_downloads(&tokens, env);
+        if downloads.is_empty() {
+            continue;
+        }
+        for (url, dst) in downloads {
+            if !known.insert(url.clone()) {
+                continue;
+            }
+            env.traits.push(Trait::Download {
+                cmd: line.to_string(),
+                src: url,
+                dst,
+            });
+        }
+        suppress_generic_downloads_for_new_structured_urls(env, 0);
+    }
+}
+
 fn parse_wget_like_download(tokens: &[String]) -> Option<(String, Option<String>)> {
     let mut url: Option<String> = None;
     let mut dst: Option<String> = None;
@@ -9117,6 +9171,7 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     scan_echoed_curl_deob_text(deobfuscated, env);
     scan_curl_redirect_deob_text(deobfuscated, env);
     scan_curl_deob_text(deobfuscated, env);
+    scan_aria2_deob_text(deobfuscated, env);
     scan_wget_deob_text(deobfuscated, env);
     scan_certutil_urlcache_deob_text(deobfuscated, env);
     scan_damaged_scheme_download_urls(deobfuscated, env);

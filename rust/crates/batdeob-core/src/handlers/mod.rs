@@ -2,6 +2,7 @@
 
 use crate::env::Environment;
 
+pub mod aria2;
 pub mod auto_elevate;
 pub mod bitsadmin;
 pub mod call;
@@ -73,6 +74,9 @@ pub fn lookup(name: &str) -> Option<Handler> {
     }
     if base.eq_ignore_ascii_case("wget") || base.eq_ignore_ascii_case("get") {
         return Some(wget::h_wget);
+    }
+    if base.eq_ignore_ascii_case("aria2c") {
+        return Some(aria2::h_aria2c);
     }
     if base.eq_ignore_ascii_case("msiexec") {
         return Some(msiexec::h_msiexec);

