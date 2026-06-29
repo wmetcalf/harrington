@@ -228,6 +228,110 @@ fn deob_writes_extracted_ps1() {
 }
 
 #[test]
+fn deob_writes_extracted_jscript() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(
+        &input,
+        r#"mshta javascript:var u="https://js-payload.example/a.js";close()"#,
+    )
+    .expect("write");
+    let out_dir = dir.path().join("out");
+    Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args([
+            "deob",
+            input.to_str().expect("path"),
+            "-o",
+            out_dir.to_str().expect("path"),
+        ])
+        .assert()
+        .success();
+
+    let extracted = fs::read_dir(&out_dir)
+        .expect("read out")
+        .filter_map(|e| e.ok())
+        .find(|e| e.file_name().to_string_lossy().ends_with(".js"))
+        .expect("extracted .js missing");
+    let contents = fs::read_to_string(extracted.path()).expect("read extracted js");
+    assert!(
+        contents.contains("https://js-payload.example/a.js"),
+        "got:\n{}",
+        contents
+    );
+}
+
+#[test]
+fn deob_writes_extracted_vbs() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(
+        &input,
+        r#"mshta vbscript:CreateObject("WScript.Shell").Run("calc.exe"):close"#,
+    )
+    .expect("write");
+    let out_dir = dir.path().join("out");
+    Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args([
+            "deob",
+            input.to_str().expect("path"),
+            "-o",
+            out_dir.to_str().expect("path"),
+        ])
+        .assert()
+        .success();
+
+    let extracted = fs::read_dir(&out_dir)
+        .expect("read out")
+        .filter_map(|e| e.ok())
+        .find(|e| e.file_name().to_string_lossy().ends_with(".vbs"))
+        .expect("extracted .vbs missing");
+    let contents = fs::read_to_string(extracted.path()).expect("read extracted vbs");
+    assert!(
+        contents.contains("CreateObject") && contents.contains("calc.exe"),
+        "got:\n{}",
+        contents
+    );
+}
+
+#[test]
+fn deob_writes_same_bytes_extracted_jscript_and_vbs() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(
+        &input,
+        "mshta javascript:shared_payload\r\nmshta vbscript:shared_payload\r\n",
+    )
+    .expect("write");
+    let out_dir = dir.path().join("out");
+    Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args([
+            "deob",
+            input.to_str().expect("path"),
+            "-o",
+            out_dir.to_str().expect("path"),
+        ])
+        .assert()
+        .success();
+
+    let entries: Vec<_> = fs::read_dir(&out_dir)
+        .expect("read out")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    assert!(
+        entries.iter().any(|name| name.ends_with(".js")),
+        "same-bytes JScript artifact missing: {entries:?}"
+    );
+    assert!(
+        entries.iter().any(|name| name.ends_with(".vbs")),
+        "same-bytes VBScript artifact missing: {entries:?}"
+    );
+}
+
+#[test]
 fn analyze_emits_json_to_stdout() {
     let dir = TempDir::new().expect("tmp");
     let input = dir.path().join("in.bat");

@@ -782,10 +782,26 @@ fn write_report_files(report: &batdeob_core::Report, out_dir: &Path, force: bool
     }
     for child in &report.extracted_ps1 {
         let sha = short_sha(child);
-        if !seen.insert(sha.clone()) {
+        let name = format!("{sha}.ps1");
+        if !seen.insert(name.clone()) {
             continue;
         }
-        let name = format!("{sha}.ps1");
+        safe_write(&safe_join(&canonical_out, &name)?, child, force)?;
+    }
+    for child in &report.extracted_jscript {
+        let sha = short_sha(child);
+        let name = format!("{sha}.js");
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        safe_write(&safe_join(&canonical_out, &name)?, child, force)?;
+    }
+    for child in &report.extracted_vbs {
+        let sha = short_sha(child);
+        let name = format!("{sha}.vbs");
+        if !seen.insert(name.clone()) {
+            continue;
+        }
         safe_write(&safe_join(&canonical_out, &name)?, child, force)?;
     }
 
@@ -986,8 +1002,8 @@ fn extracted_counts(report: &batdeob_core::Report) -> serde_json::Value {
     serde_json::json!({
         "cmd": report.extracted_cmd.len(),
         "powershell": report.extracted_ps1.len(),
-        "jscript": 0,
-        "vbs": 0,
+        "jscript": report.extracted_jscript.len(),
+        "vbs": report.extracted_vbs.len(),
     })
 }
 

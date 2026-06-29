@@ -7008,6 +7008,8 @@ pub struct Report {
     pub extracted_cmd: Vec<String>,
     pub extracted_ps1: Vec<Vec<u8>>,
     pub extracted_ps1_normalized: Vec<String>,
+    pub extracted_jscript: Vec<Vec<u8>>,
+    pub extracted_vbs: Vec<Vec<u8>>,
     /// Recovered PE blobs from AES-chain droppers, paired with a short
     /// human-readable label (e.g. `"ps-aes-stage1-asm0"`). The CLI's
     /// `write_report_files` writes each as `<sha>.<ext>` so analysts
@@ -7710,6 +7712,8 @@ fn analyze_inner(
         extracted_cmd: std::mem::take(&mut env.all_extracted_cmd),
         extracted_ps1: std::mem::take(&mut env.all_extracted_ps1),
         extracted_ps1_normalized,
+        extracted_jscript: std::mem::take(&mut env.all_extracted_jscript),
+        extracted_vbs: std::mem::take(&mut env.all_extracted_vbs),
         recovered_pe: std::mem::take(&mut env.recovered_pe),
     }
 }
