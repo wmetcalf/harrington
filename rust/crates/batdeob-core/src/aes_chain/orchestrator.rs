@@ -19,6 +19,7 @@ const MAX_STAGE1_B64: usize = 1024 * 1024;
 const MAX_STAGE1_DECODED: usize = 2 * 1024 * 1024;
 const MAX_STAGE_OUTPUT: usize = 16 * 1024 * 1024;
 const MAX_URLS_PER_SAMPLE: usize = 16;
+const MAX_ENVELOPE_CHUNKS: usize = 64;
 
 #[allow(clippy::expect_used)]
 static STAGE1_RE: Lazy<Regex> = Lazy::new(|| {
@@ -44,9 +45,24 @@ static PS_B64_ASSIGNMENT_RE: Lazy<Regex> = Lazy::new(|| {
         .expect("ps b64 assignment re")
 });
 
+#[allow(clippy::expect_used)]
+static SIMPLE_AES_COLON_PAYLOAD_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?m)^::\s?([A-Za-z0-9+/\\=]{200,})"#).expect("simple aes colon payload re")
+});
+
+#[allow(clippy::expect_used)]
+static SIMPLE_AES_KEY_B64_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"['"]([A-Za-z0-9+/]{43}=)['"]\s*\)"#).expect("simple aes key re"));
+
+#[allow(clippy::expect_used)]
+static SIMPLE_AES_IV_B64_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"['"]([A-Za-z0-9+/]{22}==)['"]\s*\)"#).expect("simple aes iv re"));
+
 /// Top-level entry. Run after `scan_multistage_encrypted_dropper` so the
 /// gate trait is in place. No-op when the gate trait is absent.
 pub fn extract_from_chain(raw_input: &[u8], deob: &str, env: &mut Environment) {
+    try_extract_simple_ps_aes(raw_input, deob, env);
+
     let has_gate = env
         .traits
         .iter()
@@ -271,6 +287,153 @@ fn has_ps_base64_aes_gzip_indicators(deob: &str) -> bool {
         && contains_ascii_case_insensitive(deob, "gzip")
 }
 
+fn try_extract_simple_ps_aes(raw_input: &[u8], deob: &str, env: &mut Environment) {
+    if env.traits.iter().any(|t| {
+        matches!(
+            t,
+            Trait::MultiStageEncryptedDropper {
+                aes_key_b64: Some(_),
+                ..
+            }
+        )
+    }) {
+        return;
+    }
+
+    let raw_text = String::from_utf8_lossy(raw_input);
+    let Some(payload) = SIMPLE_AES_COLON_PAYLOAD_RE
+        .captures(&raw_text)
+        .and_then(|caps| caps.get(1).map(|m| m.as_str()))
+    else {
+        return;
+    };
+    if payload.len() < 200 || payload.len() > MAX_STAGE_OUTPUT {
+        return;
+    }
+
+    let mut found_keys = Vec::new();
+    let mut found_ivs = Vec::new();
+    for body in &env.all_extracted_ps1 {
+        harvest_simple_aes_material(
+            &String::from_utf8_lossy(body),
+            &mut found_keys,
+            &mut found_ivs,
+        );
+    }
+    if found_keys.is_empty() || found_ivs.is_empty() {
+        harvest_simple_aes_material(deob, &mut found_keys, &mut found_ivs);
+    }
+    if found_keys.is_empty() || found_ivs.is_empty() {
+        harvest_simple_aes_material(&raw_text, &mut found_keys, &mut found_ivs);
+    }
+    if found_keys.is_empty() || found_ivs.is_empty() {
+        return;
+    }
+
+    let chunks: Vec<&str> = payload
+        .split('\\')
+        .filter(|s| !s.is_empty())
+        .take(MAX_ENVELOPE_CHUNKS)
+        .collect();
+    let Some(first_chunk) = chunks.first() else {
+        return;
+    };
+    let Ok(first_ct) = base64::engine::general_purpose::STANDARD.decode(first_chunk) else {
+        return;
+    };
+
+    let mut winning: Option<(Vec<u8>, Vec<u8>)> = None;
+    'outer: for key_b64 in &found_keys {
+        let Ok(key) = base64::engine::general_purpose::STANDARD.decode(key_b64) else {
+            continue;
+        };
+        if !matches!(key.len(), 16 | 24 | 32) {
+            continue;
+        }
+        for iv_b64 in &found_ivs {
+            let Ok(iv) = base64::engine::general_purpose::STANDARD.decode(iv_b64) else {
+                continue;
+            };
+            if iv.len() != 16 {
+                continue;
+            }
+            let Ok(plaintext) = aes_cbc_decrypt(&key, &iv, &first_ct) else {
+                continue;
+            };
+            if gunzip(&plaintext, MAX_STAGE_OUTPUT).is_ok() {
+                winning = Some((key, iv));
+                break 'outer;
+            }
+        }
+    }
+    let Some((key, iv)) = winning else {
+        return;
+    };
+
+    let mut combined = Vec::new();
+    let mut assemblies_recovered = 0u32;
+    for chunk in chunks {
+        let Ok(ciphertext) = base64::engine::general_purpose::STANDARD.decode(chunk) else {
+            continue;
+        };
+        let Ok(plaintext) = aes_cbc_decrypt(&key, &iv, &ciphertext) else {
+            continue;
+        };
+        let Ok(decompressed) = gunzip(&plaintext, MAX_STAGE_OUTPUT) else {
+            continue;
+        };
+        if decompressed.len() >= 64 && decompressed.starts_with(b"MZ") {
+            assemblies_recovered += 1;
+            if env
+                .recovered_pe
+                .iter()
+                .any(|(_, existing)| existing == &decompressed)
+            {
+                scan_decrypted_iocs(&decompressed, env);
+            } else if env.recovered_pe.len() < MAX_URLS_PER_SAMPLE {
+                let label = format!("ps-aes-stage1-asm{}", env.recovered_pe.len());
+                env.recovered_pe.push((label, decompressed.clone()));
+                scan_decrypted_iocs(&decompressed, env);
+            }
+        }
+        if combined.len() + decompressed.len() <= MAX_STAGE_OUTPUT {
+            combined.extend_from_slice(&decompressed);
+        }
+    }
+
+    let key_b64 = base64::engine::general_purpose::STANDARD.encode(&key);
+    let iv_b64 = base64::engine::general_purpose::STANDARD.encode(&iv);
+    env.traits.push(Trait::MultiStageEncryptedDropper {
+        marker: "ps-aes-cbc-gzip".to_string(),
+        b64_length: u32::try_from(payload.len()).unwrap_or(u32::MAX),
+        has_aes_cbc: true,
+        has_gzip_stage: true,
+        reads_self_lines: true,
+        aes_key_b64: Some(key_b64),
+        aes_iv_b64: Some(iv_b64),
+        assemblies_recovered: Some(assemblies_recovered),
+        nested_aes: Vec::new(),
+    });
+    scan_decrypted_iocs(&combined, env);
+}
+
+fn harvest_simple_aes_material(text: &str, keys: &mut Vec<String>, ivs: &mut Vec<String>) {
+    for caps in SIMPLE_AES_KEY_B64_RE.captures_iter(text).take(4) {
+        if let Some(key) = caps.get(1).map(|m| m.as_str().to_string()) {
+            if !keys.contains(&key) {
+                keys.push(key);
+            }
+        }
+    }
+    for caps in SIMPLE_AES_IV_B64_RE.captures_iter(text).take(4) {
+        if let Some(iv) = caps.get(1).map(|m| m.as_str().to_string()) {
+            if !ivs.contains(&iv) {
+                ivs.push(iv);
+            }
+        }
+    }
+}
+
 fn parse_ps_byte_array(nums: &str) -> Option<Vec<u8>> {
     let mut out = Vec::new();
     let mut parts = nums.split(',');
@@ -426,6 +589,7 @@ mod tests {
     use std::io::Write;
 
     type Aes128CbcEnc = cbc::Encryptor<aes::Aes128>;
+    type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
 
     fn fake_pe_with_url(url: &str) -> Vec<u8> {
         let mut pe = vec![0u8; 0x200];
@@ -443,6 +607,20 @@ mod tests {
         let mut enc_buf = gzipped.clone();
         enc_buf.resize(gzipped.len() + 16, 0);
         let cipher = Aes128CbcEnc::new_from_slices(key, iv).unwrap();
+        let ciphertext = cipher
+            .encrypt_padded_mut::<Pkcs7>(&mut enc_buf, gzipped.len())
+            .unwrap()
+            .to_vec();
+        base64::engine::general_purpose::STANDARD.encode(ciphertext)
+    }
+
+    fn aes256_gzip_b64(pe: &[u8], key: &[u8; 32], iv: &[u8; 16]) -> String {
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(pe).unwrap();
+        let gzipped = gz.finish().unwrap();
+        let mut enc_buf = gzipped.clone();
+        enc_buf.resize(gzipped.len() + 16, 0);
+        let cipher = Aes256CbcEnc::new_from_slices(key, iv).unwrap();
         let ciphertext = cipher
             .encrypt_padded_mut::<Pkcs7>(&mut enc_buf, gzipped.len())
             .unwrap()
@@ -570,6 +748,62 @@ $gzip=New-Object System.IO.Compression.GZipStream($plain,[IO.Compression.Compres
                 .any(|(label, bytes)| label.starts_with("ps-b64-aes-asm") && bytes == &pe),
             "recovered_pe: {:?}",
             env.recovered_pe
+        );
+    }
+
+    #[test]
+    fn simple_raw_ps_aes_gzip_payload_recovers_pe_without_gate() {
+        let key: [u8; 32] = *b"01234567890123456789012345678901";
+        let iv: [u8; 16] = *b"abcdefghijklmnop";
+        let url = "https://simple-aes.example/payload";
+        let mut pe = fake_pe_with_url(url);
+        let filler_start = pe.len();
+        pe.resize(2048, 0);
+        for (i, slot) in pe[filler_start..].iter_mut().enumerate() {
+            *slot = (i as u8).wrapping_mul(31).wrapping_add(7);
+        }
+        let b64 = aes256_gzip_b64(&pe, &key, &iv);
+        let key_b64 = base64::engine::general_purpose::STANDARD.encode(key);
+        let iv_b64 = base64::engine::general_purpose::STANDARD.encode(iv);
+        let script = format!(
+            "@echo off\r\n\
+             set \"EtnCTS=$a.Key=[System.Convert]::FromBase64String('{key_b64}');\
+             $a.IV=[System.Convert]::FromBase64String('{iv_b64}');\"\r\n\
+             :: {b64}\r\n"
+        );
+        let mut env = Environment::new(&Config::default());
+
+        extract_from_chain(script.as_bytes(), &script, &mut env);
+
+        assert!(
+            env.recovered_pe
+                .iter()
+                .any(|(label, bytes)| label.starts_with("ps-aes-stage1-asm") && bytes == &pe),
+            "simple AES/GZip PE was not recovered: {:?}",
+            env.recovered_pe
+        );
+        assert!(
+            env.traits.iter().any(|trait_| matches!(
+                trait_,
+                Trait::MultiStageEncryptedDropper {
+                    marker,
+                    aes_key_b64: Some(_),
+                    aes_iv_b64: Some(_),
+                    assemblies_recovered: Some(1),
+                    ..
+                } if marker == "ps-aes-cbc-gzip"
+            )),
+            "dropper trait was not annotated: {:?}",
+            env.traits
+        );
+        assert!(
+            env.traits.iter().any(|trait_| matches!(
+                trait_,
+                Trait::DownloadInDeobText { src, line_hint }
+                    if src == url && line_hint == "aes-chain"
+            )),
+            "recovered PE URL was not extracted: {:?}",
+            env.traits
         );
     }
 }

@@ -780,13 +780,26 @@ fn write_report_files(report: &batdeob_core::Report, out_dir: &Path, force: bool
         let name = format!("{sha}.bat");
         safe_write(&safe_join(&canonical_out, &name)?, bytes, force)?;
     }
-    for child in &report.extracted_ps1 {
+    for (idx, child) in report.extracted_ps1.iter().enumerate() {
         let sha = short_sha(child);
         let name = format!("{sha}.ps1");
         if !seen.insert(name.clone()) {
             continue;
         }
         safe_write(&safe_join(&canonical_out, &name)?, child, force)?;
+        if let Some(normalized) = report.extracted_ps1_normalized.get(idx) {
+            let raw_text = String::from_utf8_lossy(child);
+            if normalized != raw_text.as_ref() {
+                let name = format!("{sha}.normalized.ps1");
+                if seen.insert(name.clone()) {
+                    safe_write(
+                        &safe_join(&canonical_out, &name)?,
+                        normalized.as_bytes(),
+                        force,
+                    )?;
+                }
+            }
+        }
     }
     for child in &report.extracted_jscript {
         let sha = short_sha(child);
@@ -804,6 +817,29 @@ fn write_report_files(report: &batdeob_core::Report, out_dir: &Path, force: bool
         }
         safe_write(&safe_join(&canonical_out, &name)?, child, force)?;
     }
+    for (label, blob) in &report.recovered_pe {
+        let bytes = blob.as_slice();
+        let sha = short_sha(bytes);
+        let ext = detect_blob_extension(bytes);
+        let name = format!("{sha}.{ext}");
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        safe_write(&safe_join(&canonical_out, &name)?, bytes, force)?;
+
+        let meta_name = format!("{sha}.meta");
+        if seen.insert(meta_name.clone()) {
+            let meta = format!(
+                "origin: {label}\nsize: {}\nsha256-prefix: {sha}\n",
+                bytes.len()
+            );
+            safe_write(
+                &safe_join(&canonical_out, &meta_name)?,
+                meta.as_bytes(),
+                force,
+            )?;
+        }
+    }
 
     let traits_json = serde_json::to_string_pretty(&report.traits)?;
     safe_write(
@@ -813,6 +849,37 @@ fn write_report_files(report: &batdeob_core::Report, out_dir: &Path, force: bool
     )?;
 
     Ok(())
+}
+
+fn detect_blob_extension(bytes: &[u8]) -> &'static str {
+    if bytes.starts_with(b"MZ") {
+        return "exe";
+    }
+    if bytes.starts_with(b"MSCF") {
+        return "cab";
+    }
+    if bytes.starts_with(b"PK\x03\x04") {
+        return "zip";
+    }
+    if bytes.starts_with(b"Rar!\x1A\x07") {
+        return "rar";
+    }
+    if bytes.starts_with(b"7z\xBC\xAF\x27\x1C") {
+        return "7z";
+    }
+    if bytes.starts_with(b"%PDF-") {
+        return "pdf";
+    }
+    if bytes.starts_with(b"\x89PNG\r\n\x1A\n") {
+        return "png";
+    }
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return "gif";
+    }
+    if bytes.starts_with(b"\xFF\xD8\xFF") {
+        return "jpg";
+    }
+    "bin"
 }
 
 fn remove_stale_generated_outputs(canonical_out: &Path) -> Result<()> {
