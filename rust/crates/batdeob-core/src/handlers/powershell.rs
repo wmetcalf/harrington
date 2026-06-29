@@ -232,6 +232,7 @@ pub fn h_powershell(raw: &str, env: &mut Environment) {
 
 fn record_powershell_side_effects(body: &str, env: &mut Environment) {
     record_download_side_effects(body, env);
+    record_set_content_value_side_effects(body, env);
     record_get_content_set_content_side_effects(body, env);
 }
 
@@ -276,6 +277,36 @@ fn record_get_content_set_content_side_effects(body: &str, env: &mut Environment
         env.modified_filesystem
             .insert(filesystem_storage_key(&dst), entry);
     }
+}
+
+fn record_set_content_value_side_effects(body: &str, env: &mut Environment) {
+    let tokens = split_words(body);
+    for i in 0..tokens.len() {
+        let Some(append) = direct_content_write_append_mode(&tokens, i) else {
+            continue;
+        };
+        let Some((dst, content)) = powershell_set_content_paths_and_value(&tokens, i + 1) else {
+            continue;
+        };
+        write_powershell_content(env, &dst, content.into_bytes(), append);
+    }
+}
+
+fn write_powershell_content(env: &mut Environment, dst: &str, content: Vec<u8>, append: bool) {
+    let key = filesystem_storage_key(dst);
+    if append {
+        if let Some(FsEntry::Content {
+            content: prior,
+            append: prior_append,
+        }) = env.modified_filesystem.get_mut(&key)
+        {
+            prior.extend_from_slice(&content);
+            *prior_append = true;
+            return;
+        }
+    }
+    env.modified_filesystem
+        .insert(key, FsEntry::Content { content, append });
 }
 
 fn queue_file_payload_or_url(raw: &str, path: &str, env: &mut Environment) {
@@ -391,6 +422,28 @@ fn is_content_write_token(token: &str) -> bool {
     )
 }
 
+fn direct_content_write_append_mode(tokens: &[String], idx: usize) -> Option<bool> {
+    match strip_quotes(tokens.get(idx)?).to_ascii_lowercase().as_str() {
+        "set-content" | "sc" => Some(false),
+        "add-content" | "ac" => Some(true),
+        "out-file" => Some(powershell_has_switch(tokens, idx + 1, "-append")),
+        _ => None,
+    }
+}
+
+fn powershell_has_switch(tokens: &[String], start: usize, switch: &str) -> bool {
+    for token in tokens.iter().skip(start) {
+        let token = strip_quotes(token);
+        if token == "|" || token == ";" {
+            break;
+        }
+        if token.eq_ignore_ascii_case(switch) {
+            return true;
+        }
+    }
+    false
+}
+
 fn powershell_stdout_redirect_destination(tokens: &[String], start: usize) -> Option<String> {
     let token = strip_quotes(tokens.get(start)?);
     for op in [">>", "1>>", ">", "1>"] {
@@ -406,6 +459,55 @@ fn powershell_stdout_redirect_destination(tokens: &[String], start: usize) -> Op
         }
     }
     None
+}
+
+fn powershell_set_content_paths_and_value(
+    tokens: &[String],
+    start: usize,
+) -> Option<(String, String)> {
+    let mut path: Option<String> = None;
+    let mut value: Option<String> = None;
+    let mut positional: Vec<String> = Vec::new();
+    let mut i = start;
+    while i < tokens.len() {
+        let token = strip_quotes(&tokens[i]);
+        if token == "|" || token == ";" {
+            break;
+        }
+        let lower = token.to_ascii_lowercase();
+        if lower == "-path" || lower == "-literalpath" || lower == "-filepath" {
+            path = Some(strip_quotes(tokens.get(i + 1)?).to_string());
+            i += 2;
+            continue;
+        }
+        if let Some(path_value) = attached_ps_path_value(token) {
+            path = Some(path_value.to_string());
+            i += 1;
+            continue;
+        }
+        if lower == "-value" || lower == "-inputobject" {
+            value = Some(strip_quotes(tokens.get(i + 1)?).to_string());
+            i += 2;
+            continue;
+        }
+        if let Some(content_value) = attached_ps_value_value(token) {
+            value = Some(content_value.to_string());
+            i += 1;
+            continue;
+        }
+        if let Some(content_value) = attached_ps_input_object_value(token) {
+            value = Some(content_value.to_string());
+            i += 1;
+            continue;
+        }
+        if !token.starts_with('-') {
+            positional.push(token.to_string());
+        }
+        i += 1;
+    }
+    let path = path.or_else(|| positional.first().cloned())?;
+    let value = value.or_else(|| positional.get(1).cloned())?;
+    Some((path, value))
 }
 
 fn powershell_content_path_arg(tokens: &[String], start: usize) -> Option<(String, usize)> {
@@ -429,6 +531,22 @@ fn powershell_content_path_arg(tokens: &[String], start: usize) -> Option<(Strin
         i += 1;
     }
     None
+}
+
+fn attached_ps_value_value(token: &str) -> Option<&str> {
+    let lower = token.to_ascii_lowercase();
+    let rest = lower.strip_prefix("-value")?;
+    let original_rest = &token[token.len() - rest.len()..];
+    let value = original_rest.trim_start_matches([':', '=']);
+    (!value.is_empty()).then(|| strip_quotes(value))
+}
+
+fn attached_ps_input_object_value(token: &str) -> Option<&str> {
+    let lower = token.to_ascii_lowercase();
+    let rest = lower.strip_prefix("-inputobject")?;
+    let original_rest = &token[token.len() - rest.len()..];
+    let value = original_rest.trim_start_matches([':', '=']);
+    (!value.is_empty()).then(|| strip_quotes(value))
 }
 
 fn attached_ps_path_value(token: &str) -> Option<&str> {

