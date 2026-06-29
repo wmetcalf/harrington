@@ -107,6 +107,18 @@ static AES_IV_RE: Lazy<Regex> = Lazy::new(|| {
 
 const CONVERT_DECODE_METHOD: &str = r"(?:FromBase64String|\(\s*\$\w+\s*\[\s*\d+\s*\]\s*\))";
 
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+static FROMBASE64_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"(?ix)
+          \[ (?:System\.)? Convert \] \s* :: \s* FromBase64String \s* \(
+          \s* ['\x22] ([A-Za-z0-9+/=]{16,}) ['\x22] \s* \)
+        ",
+    )
+    .expect("frombase64 literal re")
+});
+
 /// Extract AES key+IV bytes from stage-3 PS. Returns `None` if either is
 /// missing or fails base64 decode.
 pub fn find_aes_key_iv(text: &str) -> Option<(Vec<u8>, Vec<u8>)> {
@@ -129,6 +141,24 @@ pub fn find_aes_key_iv(text: &str) -> Option<(Vec<u8>, Vec<u8>)> {
         })
         .or_else(|| find_aes_byte_array_assignment(text, "IV"))?;
     Some((key, iv))
+}
+
+#[cfg(test)]
+fn collect_base64_blobs(text: &str) -> Vec<Vec<u8>> {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for caps in FROMBASE64_LITERAL_RE.captures_iter(text) {
+        let Some(b64) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        if !seen.insert(b64.to_string()) {
+            continue;
+        }
+        if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64) {
+            out.push(bytes);
+        }
+    }
+    out
 }
 
 fn find_aes_byte_array_assignment(text: &str, field: &str) -> Option<Vec<u8>> {
@@ -324,6 +354,16 @@ mod tests {
         let (key, iv) = find_aes_key_iv(text).unwrap();
         assert_eq!(key.len(), 32);
         assert_eq!(iv.len(), 16);
+    }
+
+    #[test]
+    fn collect_base64_blobs_finds_all_literals() {
+        let text = "x=[Convert]::FromBase64String('AAAAAAAAAAAAAAAAAAAAAA=='); \
+                    y=[System.Convert]::FromBase64String('YxDv4kASEFyuJeQu75vQBrsFn/XUfuPBjWy3/xKoBl8=')";
+        let blobs = collect_base64_blobs(text);
+        assert_eq!(blobs.len(), 2);
+        assert_eq!(blobs[0].len(), 16);
+        assert_eq!(blobs[1].len(), 32);
     }
 
     #[test]
