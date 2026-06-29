@@ -135,7 +135,24 @@ fn unescape_outer_caret_bangs(command: &str) -> String {
 #[cfg(test)]
 #[allow(clippy::panic)]
 mod tests {
-    use super::wmic_node_target;
+    use super::{wmic_create_commandline_argument, wmic_node_target};
+
+    #[test]
+    fn create_argument_extracts_named_commandline() {
+        assert_eq!(
+            wmic_create_commandline_argument(r#"CommandLine="cmd /c echo named""#).as_deref(),
+            Some("cmd /c echo named")
+        );
+    }
+
+    #[test]
+    fn create_argument_extracts_named_commandline_with_spaces() {
+        assert_eq!(
+            wmic_create_commandline_argument(r#"CommandLine = "cmd /c echo named", "C:\Temp""#)
+                .as_deref(),
+            Some("cmd /c echo named")
+        );
+    }
 
     #[test]
     fn node_target_accepts_attached_and_spaced_values() {
