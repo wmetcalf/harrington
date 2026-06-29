@@ -105,6 +105,11 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
         return result;
     }
 
+    if crate::handlers::bitsadmin::h_bitsadmin_preserve_escaped_notify(raw, env) {
+        result.consumed = true;
+        return result;
+    }
+
     if replay_copied_filesystem_alias(raw, env) {
         result.consumed = true;
         return result;

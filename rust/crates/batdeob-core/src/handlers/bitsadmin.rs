@@ -2,7 +2,7 @@
 
 use crate::env::{Environment, FsEntry};
 use crate::handlers::util::{
-    attached_flag_value, filesystem_storage_key, split_words, strip_outer_quotes,
+    attached_flag_value, filesystem_storage_key, split_words, strip_outer_quotes, windows_basename,
 };
 use crate::traits::Trait;
 
@@ -97,6 +97,29 @@ pub fn h_bitsadmin(raw: &str, env: &mut Environment) {
     }
 }
 
+pub(crate) fn h_bitsadmin_preserve_escaped_notify(raw: &str, env: &mut Environment) -> bool {
+    if !raw.contains("^!") {
+        return false;
+    }
+    let tokens = split_words(raw);
+    if !tokens.first().is_some_and(|cmd| {
+        let cmd = strip_outer_quotes(cmd);
+        let base = windows_basename(cmd).unwrap_or(cmd);
+        base.eq_ignore_ascii_case("bitsadmin") || base.eq_ignore_ascii_case("bitsadmin.exe")
+    }) {
+        return false;
+    }
+    let Some((job, command)) = bitsadmin_notify_command_with_program_expander(&tokens, |program| {
+        expand_exact_env_reference(program, env)
+    }) else {
+        return false;
+    };
+    push_lolbas(raw, env);
+    push_notify_persistence(env, job, command.clone());
+    queue_notify_child(command, env);
+    true
+}
+
 fn bitsadmin_flag_eq(token: &str, flag: &str) -> bool {
     token.strip_prefix(['/', '-']).is_some_and(|value| {
         value.eq_ignore_ascii_case(flag)
@@ -117,6 +140,13 @@ fn is_bitsadmin_option(token: &str) -> bool {
 }
 
 fn bitsadmin_notify_command(tokens: &[String]) -> Option<(String, String)> {
+    bitsadmin_notify_command_with_program_expander(tokens, str::to_string)
+}
+
+fn bitsadmin_notify_command_with_program_expander(
+    tokens: &[String],
+    expand_program: impl FnOnce(&str) -> String,
+) -> Option<(String, String)> {
     let mut i = 1usize;
     while i < tokens.len() {
         let token = strip_outer_quotes(&tokens[i]);
@@ -141,6 +171,7 @@ fn bitsadmin_notify_command(tokens: &[String]) -> Option<(String, String)> {
             return None;
         }
 
+        let program = expand_program(program);
         let params = tokens
             .get(program_idx + 1..)
             .unwrap_or_default()
@@ -154,9 +185,23 @@ fn bitsadmin_notify_command(tokens: &[String]) -> Option<(String, String)> {
         } else {
             format!("{program} {params}")
         };
+        let command = unescape_outer_caret_bangs(&command);
         return Some((job, command));
     }
     None
+}
+
+fn expand_exact_env_reference(value: &str, env: &Environment) -> String {
+    value
+        .strip_prefix('%')
+        .and_then(|inner| inner.strip_suffix('%'))
+        .filter(|inner| !inner.is_empty() && !inner.contains(':'))
+        .and_then(|name| env.get(name))
+        .unwrap_or_else(|| value.to_string())
+}
+
+fn unescape_outer_caret_bangs(command: &str) -> String {
+    command.replace("^!", "!")
 }
 
 fn push_notify_persistence(env: &mut Environment, job: String, command: String) {
