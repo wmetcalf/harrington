@@ -17,6 +17,8 @@ pub fn h_if(raw: &str, env: &mut Environment) {
     };
     let negate = caps.name("neg").is_some();
     let rest = caps.name("rest").map(|m| m.as_str()).unwrap_or("");
+    let (negate, rest) = normalize_negate_after_case_flag(negate, rest);
+    let rest = rest.as_str();
     let result = evaluate(rest, env);
     let final_result = match result {
         Some(b) => {
@@ -47,6 +49,18 @@ pub fn h_if(raw: &str, env: &mut Environment) {
             dispatch_if_branch(&body, env);
         }
     }
+}
+
+fn normalize_negate_after_case_flag(negate: bool, rest: &str) -> (bool, String) {
+    let trimmed = rest.trim_start();
+    let Some(after_i) = strip_kw(trimmed, "/i") else {
+        return (negate, rest.to_string());
+    };
+    let after_i_trimmed = after_i.trim_start();
+    let Some(after_not) = strip_kw(after_i_trimmed, "not") else {
+        return (negate, rest.to_string());
+    };
+    (true, format!("/i {}", after_not.trim_start()))
 }
 
 pub(crate) fn inline_body_needs_raw_dispatch(raw: &str) -> bool {
@@ -84,16 +98,22 @@ fn evaluate(rest: &str, env: &Environment) -> Option<bool> {
     }
 
     if let Some(after) = strip_kw(trimmed, "exist") {
+        let path_token = after.trim_start();
         let path = next_token(after).unwrap_or("");
         if path.is_empty() {
-            return None;
+            return Some(false);
         }
         let key = path.to_ascii_lowercase();
-        return Some(tracked_path_exists(path, &key, env));
+        let exists = tracked_path_exists(path, &key, env);
+        if !exists && path_token.starts_with('"') && path.contains(' ') {
+            return None;
+        }
+        return Some(exists);
     }
 
-    if strip_kw(trimmed, "errorlevel").is_some() {
-        return Some(false);
+    if let Some(after) = strip_kw(trimmed, "errorlevel") {
+        let threshold = next_token(after)?.parse::<i64>().ok()?;
+        return (threshold == 0).then_some(true);
     }
 
     if strip_kw(trimmed, "cmdextversion").is_some() {
@@ -110,6 +130,8 @@ fn evaluate(rest: &str, env: &Environment) -> Option<bool> {
         let rhs_full = body[eq_pos + 2..].trim_start();
         let rhs_end = token_end(rhs_full);
         let rhs = rhs_full[..rhs_end].trim().trim_matches('"');
+        let lhs = default_empty_positional_arg(lhs);
+        let rhs = default_empty_positional_arg(rhs);
         if lhs.contains('%') || lhs.contains('!') || rhs.contains('%') || rhs.contains('!') {
             return None;
         }
@@ -137,6 +159,11 @@ fn evaluate(rest: &str, env: &Environment) -> Option<bool> {
             let rhs_full = body[rhs_start..].trim_start();
             let rhs_end = token_end(rhs_full);
             let rhs = rhs_full[..rhs_end].trim().trim_matches('"');
+            let lhs = default_empty_positional_arg(lhs);
+            let rhs = default_empty_positional_arg(rhs);
+            if let Some(result) = invariant_errorlevel_comparison(lhs, op_kind, rhs) {
+                return Some(result);
+            }
             if lhs.contains('%') || lhs.contains('!') || rhs.contains('%') || rhs.contains('!') {
                 return None;
             }
@@ -171,6 +198,25 @@ fn evaluate(rest: &str, env: &Environment) -> Option<bool> {
     }
 
     None
+}
+
+fn default_empty_positional_arg(value: &str) -> &str {
+    if matches!(value.to_ascii_lowercase().as_str(), "%1" | "%~1") {
+        ""
+    } else {
+        value
+    }
+}
+
+fn invariant_errorlevel_comparison(lhs: &str, op_kind: &str, rhs: &str) -> Option<bool> {
+    if !lhs.eq_ignore_ascii_case("%ERRORLEVEL%") {
+        return None;
+    }
+    let rhs = rhs.parse::<i64>().ok()?;
+    match op_kind {
+        "ge" if rhs <= 0 => Some(true),
+        _ => None,
+    }
 }
 
 fn tracked_path_exists(path: &str, key: &str, env: &Environment) -> bool {
