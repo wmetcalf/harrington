@@ -4158,6 +4158,15 @@ fn scan_netsh_remote_access(command: &str, env: &mut Environment) {
 }
 
 fn scan_remote_access(command: &str, env: &mut Environment) {
+    let actionable_command = command
+        .lines()
+        .filter(|line| !command_starts_with_echo(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if actionable_command.trim().is_empty() {
+        return;
+    }
+    let command = actionable_command.as_str();
     let lower = command.to_ascii_lowercase();
     if lower.contains("terminal server")
         && lower.contains("allowtsconnections")
@@ -7142,11 +7151,21 @@ fn scan_lateral_movement(deobfuscated: &str, env: &mut Environment) {
         });
     };
     for c in PSEXEC_RE.captures_iter(deobfuscated) {
+        if c.get(0)
+            .is_some_and(|m| match_line_starts_with_echo(deobfuscated, m.start()))
+        {
+            continue;
+        }
         if let Some(m) = c.get(1) {
             push("psexec", m.as_str().to_string());
         }
     }
     for c in WMIC_NODE_RE.captures_iter(deobfuscated) {
+        if c.get(0)
+            .is_some_and(|m| match_line_starts_with_echo(deobfuscated, m.start()))
+        {
+            continue;
+        }
         let host = c
             .get(1)
             .or_else(|| c.get(2))
@@ -7155,6 +7174,11 @@ fn scan_lateral_movement(deobfuscated: &str, env: &mut Environment) {
         push("wmic", host);
     }
     for c in PS_REMOTING_RE.captures_iter(deobfuscated) {
+        if c.get(0)
+            .is_some_and(|m| match_line_starts_with_echo(deobfuscated, m.start()))
+        {
+            continue;
+        }
         let tool = match c
             .get(1)
             .map(|m| m.as_str().to_ascii_lowercase())
@@ -7175,6 +7199,11 @@ fn scan_lateral_movement(deobfuscated: &str, env: &mut Environment) {
         push(tool, host);
     }
     for c in SCHTASKS_S_RE.captures_iter(deobfuscated) {
+        if c.get(0)
+            .is_some_and(|m| match_line_starts_with_echo(deobfuscated, m.start()))
+        {
+            continue;
+        }
         let host = c
             .get(1)
             .or_else(|| c.get(2))
@@ -7183,11 +7212,21 @@ fn scan_lateral_movement(deobfuscated: &str, env: &mut Environment) {
         push("schtasks", host);
     }
     for c in SC_HOST_RE.captures_iter(deobfuscated) {
+        if c.get(0)
+            .is_some_and(|m| match_line_starts_with_echo(deobfuscated, m.start()))
+        {
+            continue;
+        }
         if let Some(m) = c.get(1) {
             push("sc", m.as_str().to_string());
         }
     }
     for c in NET_USE_ADMIN_SHARE_RE.captures_iter(deobfuscated) {
+        if c.get(0)
+            .is_some_and(|m| match_line_starts_with_echo(deobfuscated, m.start()))
+        {
+            continue;
+        }
         if let Some(m) = c.get(1) {
             push("net-use", m.as_str().to_string());
         }
@@ -7460,6 +7499,9 @@ fn scan_network_probe(deobfuscated: &str, env: &mut Environment) {
         });
     };
     for line in deobfuscated.lines() {
+        if command_starts_with_echo(line) {
+            continue;
+        }
         if let Some((kind, target)) = powershell_connection_test_probe(line) {
             push(kind, target);
         }
@@ -7513,7 +7555,9 @@ fn scan_network_probe(deobfuscated: &str, env: &mut Environment) {
         }
     }
     for host in IP_DISCOVERY_HOSTS {
-        if contains_ascii_case_insensitive(deobfuscated, host) {
+        if deobfuscated.lines().any(|line| {
+            !command_starts_with_echo(line) && contains_ascii_case_insensitive(line, host)
+        }) {
             push("ip-discovery", (*host).to_string());
         }
     }
@@ -8517,6 +8561,12 @@ fn scan_remote_exec(deobfuscated: &str, env: &mut Environment) {
     });
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for caps in WINRM_RE.captures_iter(deobfuscated) {
+        if caps
+            .get(0)
+            .is_some_and(|m| match_line_starts_with_echo(deobfuscated, m.start()))
+        {
+            continue;
+        }
         let host = caps
             .get(1)
             .or_else(|| caps.get(2))
