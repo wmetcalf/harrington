@@ -25,11 +25,13 @@ pub fn h_wmic(raw: &str, env: &mut Environment) {
             target_host,
         });
     }
+    let command = unescape_outer_caret_bangs(&inner);
     env.traits.push(Trait::WmicProcessCreate {
-        inner_cmd: inner.clone(),
+        inner_cmd: command.clone(),
     });
-    env.exec_cmd.push(inner);
-    env.exec_cmd_delayed.push(false);
+    let delayed = crate::handlers::cmd::has_v_on_raw(&command);
+    env.exec_cmd.push(command);
+    env.exec_cmd_delayed.push(delayed);
 }
 
 pub(crate) fn wmic_process_create_inner(raw: &str) -> Option<String> {
@@ -124,6 +126,10 @@ fn normalize_node_target(value: &str) -> String {
         .trim()
         .trim_start_matches('\\')
         .to_string()
+}
+
+fn unescape_outer_caret_bangs(command: &str) -> String {
+    command.replace("^!", "!")
 }
 
 #[cfg(test)]

