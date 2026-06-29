@@ -328,6 +328,13 @@ pub fn interpret_line(line: &str, env: &mut Environment) {
     if let Some(tail) = xcopy_pipeline_tail(line) {
         crate::handlers::copy::h_xcopy(tail, env);
     }
+    if let Some(payload) = piped_echo_powershell_stdin_payload(line) {
+        let payload = payload.into_bytes();
+        if !env.exec_ps1.iter().any(|existing| existing == &payload) {
+            env.exec_ps1.push(payload);
+        }
+        return;
+    }
     let Some(name) = command_name(line) else {
         return;
     };
@@ -552,6 +559,41 @@ fn xcopy_pipeline_tail(line: &str) -> Option<&str> {
     } else {
         None
     }
+}
+
+fn piped_echo_powershell_stdin_payload(line: &str) -> Option<String> {
+    let (head, tail) = line.split_once('|')?;
+    let payload = echo_payload(head)?;
+    let tail = tail.trim();
+    let command = crate::handlers::cmd::extract_cmd_inner(tail).unwrap_or_else(|| tail.to_string());
+    if !raw_invokes_powershell(&command) || !powershell_reads_stdin(&command) {
+        return None;
+    }
+    Some(payload.to_string())
+}
+
+fn echo_payload(command: &str) -> Option<&str> {
+    let command = command.trim_start_matches(|c: char| {
+        c == '@' || c == '(' || c == ';' || c == ',' || c.is_whitespace()
+    });
+    let rest = command.get(4..)?;
+    if !command[..4].eq_ignore_ascii_case("echo")
+        || rest
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    {
+        return None;
+    }
+    Some(rest.trim_start_matches(['.', ':', '/', '(']).trim_start())
+}
+
+fn powershell_reads_stdin(command: &str) -> bool {
+    split_words(command)
+        .iter()
+        .skip(1)
+        .map(|token| strip_outer_quotes(token))
+        .any(|token| token == "-")
 }
 
 fn capture_synthetic_stdout_redirect(line: &str, env: &mut Environment) {
