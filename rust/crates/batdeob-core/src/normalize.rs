@@ -38,7 +38,10 @@ pub fn normalize_to_string(tokens: &[Token], env: &mut Environment) -> String {
     // `^>^>` left intact and arith errors out, breaking the dynamic-
     // goto chain.
     let processed = caret_postprocess(&normalized);
-    if is_base64_fragment_set_assignment(&processed) || has_replace_marker_operation(&processed) {
+    if is_base64_fragment_set_assignment(&processed)
+        || is_encoded_set_carrier_assignment(&processed)
+        || has_replace_marker_operation(&processed)
+    {
         processed
     } else {
         strip_marker_noise(&processed)
@@ -189,6 +192,66 @@ fn is_base64_fragment_set_assignment(text: &str) -> bool {
             Some(idx) => value[idx..].bytes().all(|b| b == b'='),
             None => true,
         }
+}
+
+fn is_encoded_set_carrier_assignment(text: &str) -> bool {
+    let trimmed = text.trim_start_matches(|c: char| c == '@' || c == '(' || c.is_whitespace());
+    let bytes = trimmed.as_bytes();
+    if bytes.len() < 3
+        || !bytes[0].eq_ignore_ascii_case(&b's')
+        || !bytes[1].eq_ignore_ascii_case(&b'e')
+        || !bytes[2].eq_ignore_ascii_case(&b't')
+    {
+        return false;
+    }
+    let rest = &trimmed[3..];
+    if !rest
+        .as_bytes()
+        .first()
+        .is_some_and(|b| b.is_ascii_whitespace() || *b == b'"')
+    {
+        return false;
+    }
+    let rest = rest.trim_start();
+    if rest
+        .get(..2)
+        .is_some_and(|flag| flag.eq_ignore_ascii_case("/a"))
+    {
+        return false;
+    }
+    let body = if let Some(stripped) = rest.strip_prefix('"') {
+        stripped.strip_suffix('"').unwrap_or(stripped)
+    } else {
+        rest
+    };
+    let Some((_, value)) = body.split_once('=') else {
+        return false;
+    };
+    let value = value.trim().trim_matches('"').trim();
+    encoded_set_carrier_value(value)
+}
+
+fn encoded_set_carrier_value(value: &str) -> bool {
+    if value.len() < 256 {
+        return false;
+    }
+
+    let mut encoded = 0usize;
+    let mut marker = 0usize;
+    let mut other = 0usize;
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '+' | '/' | '=' | '-' | '_') {
+            encoded += 1;
+        } else if !ch.is_ascii() {
+            marker += ch.len_utf8();
+        } else if ch.is_ascii_whitespace() {
+            continue;
+        } else {
+            other += 1;
+        }
+    }
+    let total = encoded + marker + other;
+    marker > 0 && total >= 256 && encoded * 100 >= total * 85 && other * 100 <= total * 5
 }
 
 fn strip_marker_noise_preserving_base64(text: &str) -> String {
@@ -1164,6 +1227,12 @@ mod dosfuscation_tests {
     fn base64_fragment_set_assignment_is_case_insensitive() {
         let payload = "sEt Carrier= QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo=";
         assert!(super::is_base64_fragment_set_assignment(payload));
+    }
+
+    #[test]
+    fn encoded_set_carrier_detection_is_case_insensitive() {
+        let payload = format!("sEt Carrier= \u{8bef}{}", "A".repeat(300));
+        assert!(super::is_encoded_set_carrier_assignment(&payload));
     }
 
     #[test]
