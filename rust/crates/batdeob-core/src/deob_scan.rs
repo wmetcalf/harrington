@@ -9885,6 +9885,9 @@ fn scan_process_injection(deobfuscated: &str, env: &mut Environment) {
     });
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for m in API_RE.find_iter(deobfuscated) {
+        if match_line_starts_with_echo(deobfuscated, m.start()) {
+            continue;
+        }
         let api = m.as_str().to_string();
         if !seen.insert(api.clone()) {
             continue;

@@ -3578,6 +3578,21 @@ attrib \"C:\\Users\\Public\\payload.exe\" +r +a +s +h\r\n";
     }
 
     #[test]
+    fn escaped_ampersand_process_injection_text_does_not_emit_trait() {
+        let script = br#"echo keep ^& powershell Add-Type -MemberDefinition '[DllImport("kernel32.dll")] public static extern IntPtr VirtualAlloc();'"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ProcessInjection { api } if api == "VirtualAlloc"
+            )),
+            "escaped echo process-injection text emitted ProcessInjection: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn shellcode_marker_detects_real_assignment_after_echoed_text() {
         let script = br#"echo keep ^& powershell $shellcode = @(0xfc,0x48,0x83,0xe4,0xf0)
 powershell $shellcode = @(0xfc,0x48,0x83,0xe4,0xf0)"#;
