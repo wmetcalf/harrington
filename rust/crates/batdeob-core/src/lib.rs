@@ -2440,6 +2440,24 @@ move "%cmdDestination%" "%startupFolder%"
     }
 
     #[test]
+    fn chained_net_user_add_emits_each_account_modification_trait() {
+        let script = br#"net user backdoor P@ssw0rd! /add & net user support S3cret! /add"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        for account in ["backdoor", "support"] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::AccountModification { action, account: existing_account, .. }
+                        if action == "local-user-add" && existing_account == account
+                )),
+                "missing chained net user add for {account}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn net_user_active_yes_emits_account_modification_trait() {
         let script = br#"net user defaultuserx /active:yes"#;
         let report = analyze(script, &AnalyzeConfig::default());
@@ -2467,6 +2485,229 @@ move "%cmdDestination%" "%startupFolder%"
                     if action == "local-user-password-set" && account == "support"
             )),
             "net user password set account modification missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_enable_localuser_emits_account_modification_trait() {
+        let script = br#"powershell -Command "Enable-LocalUser -Name defaultuserx""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, .. }
+                    if action == "local-user-enable" && account == "defaultuserx"
+            )),
+            "PowerShell Enable-LocalUser account enablement missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_enable_localuser_name_list_emits_each_account_modification_trait() {
+        let script = br#"powershell -Command "Enable-LocalUser -Name defaultuserx, support""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        for account in ["defaultuserx", "support"] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::AccountModification { action, account: existing_account, .. }
+                        if action == "local-user-enable" && existing_account == account
+                )),
+                "PowerShell Enable-LocalUser account {account} missing: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn powershell_set_localuser_password_emits_account_modification_trait() {
+        let script = br#"powershell -Command "Set-LocalUser -Name support -Password $p""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, .. }
+                    if action == "local-user-password-set" && account == "support"
+            )),
+            "PowerShell Set-LocalUser password change missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_set_localuser_name_list_emits_each_password_modification_trait() {
+        let script = br#"powershell -Command "Set-LocalUser -Name support, backup -Password $p""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        for account in ["support", "backup"] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::AccountModification { action, account: existing_account, .. }
+                        if action == "local-user-password-set" && existing_account == account
+                )),
+                "PowerShell Set-LocalUser password change missing for {account}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn powershell_chained_local_account_modification_preserves_statement_command() {
+        let script = br#"powershell -Command "New-LocalUser support -Password $p; Add-LocalGroupMember Administrators support""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, command, .. }
+                    if action == "local-user-add"
+                        && account == "support"
+                        && command == "New-LocalUser support -Password $p"
+            )),
+            "chained New-LocalUser command context was not preserved: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, group, command }
+                    if action == "localgroup-add"
+                        && account == "support"
+                        && group.as_deref() == Some("Administrators")
+                        && command == "Add-LocalGroupMember Administrators support"
+            )),
+            "chained Add-LocalGroupMember command context was not preserved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_localgroup_member_list_emits_each_account_modification_trait() {
+        let script =
+            br#"powershell -Command "Add-LocalGroupMember -Group Administrators -Member backdoor, support""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        for account in ["backdoor", "support"] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::AccountModification { action, account: existing_account, group, .. }
+                        if action == "localgroup-add"
+                            && existing_account == account
+                            && group.as_deref() == Some("Administrators")
+                )),
+                "missing PowerShell localgroup-add account {account}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn powershell_local_user_and_group_member_emit_account_modification_traits() {
+        let script = br#"powershell -Command "New-LocalUser -Name backdoor -Password $p"
+powershell -Command "Add-LocalGroupMember -Group Administrators -Member backdoor"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, .. }
+                    if action == "local-user-add" && account == "backdoor"
+            )),
+            "missing PowerShell local-user-add: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, group, .. }
+                    if action == "localgroup-add"
+                        && account == "backdoor"
+                        && group.as_deref() == Some("Administrators")
+            )),
+            "missing PowerShell localgroup-add: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_positional_local_account_modification_emits_traits() {
+        let script = br#"powershell -Command "New-LocalUser backdoor -Password $p"
+powershell -Command "Add-LocalGroupMember Administrators backdoor"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, .. }
+                    if action == "local-user-add" && account == "backdoor"
+            )),
+            "missing positional PowerShell local-user-add: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, group, .. }
+                    if action == "localgroup-add"
+                        && account == "backdoor"
+                        && group.as_deref() == Some("Administrators")
+            )),
+            "missing positional PowerShell localgroup-add: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_chained_local_account_modification_emits_traits() {
+        let script = br#"powershell -Command "New-LocalUser backdoor -Password $p; Add-LocalGroupMember Administrators backdoor""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, .. }
+                    if action == "local-user-add" && account == "backdoor"
+            )),
+            "missing chained PowerShell local-user-add: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, group, .. }
+                    if action == "localgroup-add"
+                        && account == "backdoor"
+                        && group.as_deref() == Some("Administrators")
+            )),
+            "missing chained PowerShell localgroup-add: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_mixed_localgroup_member_emits_account_modification_trait() {
+        let script =
+            br#"powershell -Command "Add-LocalGroupMember -Group Administrators backdoor""#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, group, .. }
+                    if action == "localgroup-add"
+                        && account == "backdoor"
+                        && group.as_deref() == Some("Administrators")
+            )),
+            "missing mixed PowerShell localgroup-add: {:?}",
             report.traits
         );
     }
@@ -26057,6 +26298,34 @@ C:\Users\Public\nt.tmp localgroup "Remote Desktop Users" support /add
                     if technique == "rdp-user-group-add" && target == "support"
             )),
             "missing copied-net Remote Desktop Users remote access trait: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn copied_net_alias_emits_user_enable_and_password_set_traits() {
+        let script = br#"copy C:\Windows\System32\net.exe C:\Users\Public\nt.tmp
+C:\Users\Public\nt.tmp user defaultuserx /active:yes
+C:\Users\Public\nt.tmp user support N3wP@ssw0rd!
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, .. }
+                    if action == "local-user-enable" && account == "defaultuserx"
+            )),
+            "missing copied-net local-user-enable: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::AccountModification { action, account, .. }
+                    if action == "local-user-password-set" && account == "support"
+            )),
+            "missing copied-net local-user-password-set: {:?}",
             report.traits
         );
     }
