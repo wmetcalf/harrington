@@ -2085,6 +2085,78 @@ move "%cmdDestination%" "%startupFolder%"
     }
 
     #[test]
+    fn attachment_policy_weakening_emits_evasion_traits() {
+        let script = b"@echo off\r\n\
+            Reg Add \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Associations\" /v \"LowRiskFileTypes\" /t REG_SZ /d \".exe;.bat;.cmd;.reg;.msi;\" /f\r\n\
+            Reg Add \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Attachments\" /v \"HideZoneInfoOnProperties\" /t REG_DWORD /d \"1\" /f\r\n\
+            Reg Add \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Attachments\" /v \"SaveZoneInformation\" /t REG_DWORD /d \"2\" /f\r\n\
+            Reg Add \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Attachments\" /v \"SaveZoneInformation\" /t REG_DWORD /d \"1\" /f\r\n";
+        let report = analyze(script, &AnalyzeConfig::default());
+        let targets: std::collections::HashSet<&str> = report
+            .traits
+            .iter()
+            .filter_map(|t| {
+                if let Trait::DefenderEvasion { action, target } = t {
+                    (action == "attachment-policy-weaken").then_some(target.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for target in [
+            "LowRiskFileTypes",
+            "HideZoneInfoOnProperties",
+            "SaveZoneInformation",
+        ] {
+            assert!(
+                targets.contains(target),
+                "missing attachment policy weakening {target}: {:?}",
+                report.traits
+            );
+        }
+        assert_eq!(
+            targets.len(),
+            3,
+            "benign SaveZoneInformation value should not emit an extra trait: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn attachment_policy_padded_hidezoneinfo_emits_evasion_trait() {
+        let script = br#"Reg Add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Attachments" /v "HideZoneInfoOnProperties" /t REG_DWORD /d "0x00000001" /f"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "attachment-policy-weaken"
+                        && target == "HideZoneInfoOnProperties"
+            )),
+            "padded HideZoneInfoOnProperties weakening was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn attachment_policy_padded_savezoneinformation_emits_evasion_trait() {
+        let script = br#"Reg Add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Attachments" /v "SaveZoneInformation" /t REG_DWORD /d "0x00000002" /f"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "attachment-policy-weaken" && target == "SaveZoneInformation"
+            )),
+            "padded SaveZoneInformation weakening was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn escaped_ampersand_defender_registry_text_does_not_emit_evasion() {
         let script = br#"echo keep ^& reg add HKLM\SYSTEM\CurrentControlSet\Services\WinDefend /v Start /t REG_DWORD /d 4 /f"#;
         let report = analyze(script, &AnalyzeConfig::default());

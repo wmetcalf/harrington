@@ -4287,6 +4287,25 @@ fn reg_value_name(tokens: &[String]) -> Option<String> {
     None
 }
 
+fn reg_data_value(tokens: &[String]) -> Option<String> {
+    let mut iter = tokens.iter().peekable();
+    while let Some(token) = iter.next() {
+        let trimmed = token.trim_matches(['"', '\'']);
+        if trimmed.eq_ignore_ascii_case("/d") {
+            return iter
+                .next()
+                .map(|value| value.trim_matches(['"', '\'']).to_string());
+        }
+        if let Some(value) = trimmed
+            .strip_prefix("/d:")
+            .or_else(|| trimmed.strip_prefix("/D:"))
+        {
+            return Some(value.trim_matches(['"', '\'']).to_string());
+        }
+    }
+    None
+}
+
 fn push_remote_access(env: &mut Environment, technique: &str, target: &str, command: &str) {
     if env.traits.iter().any(|t| {
         matches!(
@@ -6739,6 +6758,27 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
             continue;
         }
         let lower_line = line.to_ascii_lowercase();
+        if !lower_line.contains("reg")
+            || !lower_line.contains(" add ")
+            || !(lower_line.contains(r"policies\attachments")
+                || lower_line.contains(r"policies\associations"))
+        {
+            continue;
+        }
+        let tokens = split_words(line);
+        let Some(value_name) = reg_value_name(&tokens) else {
+            continue;
+        };
+        let data = reg_data_value(&tokens).unwrap_or_default();
+        if attachment_policy_value_weakens(&value_name, &data) {
+            push("attachment-policy-weaken", value_name);
+        }
+    }
+    for line in deobfuscated.lines() {
+        if command_starts_with_echo(line) {
+            continue;
+        }
+        let lower_line = line.to_ascii_lowercase();
         if !lower_line.contains("add-mppreference") && !lower_line.contains("set-mppreference") {
             continue;
         }
@@ -6961,8 +7001,41 @@ fn defender_evasion_candidate_text(lower: &str) -> bool {
         "amsi",
         "etweventwrite",
         "system.diagnostics.eventing.eventprovider",
+        "policies\\attachments",
+        "policies\\associations",
     ];
     NEEDLES.iter().any(|needle| lower.contains(needle))
+}
+
+fn attachment_policy_value_weakens(value_name: &str, data: &str) -> bool {
+    let value_name = value_name.trim_matches(['"', '\'']);
+    let data = data.trim_matches(['"', '\'']);
+    if value_name.eq_ignore_ascii_case("LowRiskFileTypes") {
+        let lower_data = data.to_ascii_lowercase();
+        return [".exe", ".bat", ".cmd", ".reg", ".msi"]
+            .iter()
+            .any(|extension| lower_data.contains(extension));
+    }
+    let numeric = parse_reg_numeric_value(data);
+    if value_name.eq_ignore_ascii_case("HideZoneInfoOnProperties") {
+        return numeric == Some(1);
+    }
+    if value_name.eq_ignore_ascii_case("SaveZoneInformation") {
+        return numeric == Some(2);
+    }
+    false
+}
+
+fn parse_reg_numeric_value(value: &str) -> Option<u32> {
+    let trimmed = value
+        .trim()
+        .trim_matches(['"', '\''])
+        .trim_start_matches('+')
+        .to_ascii_lowercase();
+    if let Some(hex) = trimmed.strip_prefix("0x") {
+        return u32::from_str_radix(hex, 16).ok();
+    }
+    trimmed.parse::<u32>().ok()
 }
 
 fn defender_evasion_match_in_assignment(deobfuscated: &str, start: usize) -> bool {
