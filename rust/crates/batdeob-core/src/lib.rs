@@ -3220,6 +3220,23 @@ attrib \"C:\\Users\\Public\\payload.exe\" +r +a +s +h\r\n";
     }
 
     #[test]
+    fn chained_registry_hive_save_target_excludes_benign_commands() {
+        let script = br#"echo keep & reg save HKLM\SAM C:\Users\Public\sam.save /y"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::CredentialAccess { technique, target }
+                    if technique == "registry-hive-save"
+                        && target == r"reg save HKLM\SAM C:\Users\Public\sam.save /y"
+            )),
+            "registry hive save target included chained benign command: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn escaped_ampersand_clipboard_text_does_not_emit_input_capture() {
         for script in [
             br#"echo keep ^& powershell Get-Clipboard"#.as_slice(),
