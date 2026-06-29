@@ -28690,6 +28690,30 @@ C:\Users\Public\alpha.pif /C ping -n 2 127.0.0.1
     }
 
     #[test]
+    fn copied_extrac32_alias_replays_copy_arguments() {
+        let report = analyze(
+            br#"extrac32 /c /y "C:\Windows\System32\extrac32.exe" "C:\Users\Public\expha.pif"
+C:\Users\Public\expha.pif /c /y "C:\Windows\System32\cmd.exe" "C:\Users\Public\alpha.pif"
+"#,
+            &Config::default(),
+        );
+
+        let has = report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::WindowsUtilManip { src, dst, .. }
+                    if src == r#"C:\Windows\System32\cmd.exe"#
+                        && dst == r#"C:\Users\Public\alpha.pif"#
+            )
+        });
+        assert!(
+            has,
+            "copied extrac32 alias did not replay copy arguments: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn copied_cmd_alias_v_on_child_preserves_escaped_delayed_expansion() {
         let report = analyze(
             br#"copy C:\Windows\System32\cmd.exe C:\Users\Public\cm.tmp
