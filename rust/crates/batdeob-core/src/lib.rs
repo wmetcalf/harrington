@@ -28765,6 +28765,40 @@ C:\Users\Public\expha.pif /c /y "C:\Windows\System32\cmd.exe" "C:\Users\Public\a
     }
 
     #[test]
+    fn copied_rundll32_alias_emits_rundll32_trait() {
+        let report = analyze(
+            br#"extrac32 /c /y "C:\Windows\System32\extrac32.exe" "C:\Users\Public\expha.pif"
+C:\Users\Public\expha.pif /c /y "C:\Windows\System32\rundll32.exe" "C:\Users\Public\rdha.pif"
+C:\Users\Public\rdha.pif zipfldr.dll,RouteTheCall C:\Users\Public\ANYDESK.PIF
+"#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ManipulatedExec { target, .. }
+                        if target == r#"C:\Users\Public\rdha.pif"#
+                )
+            }),
+            "copied rundll32 alias did not emit manipulated execution: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Rundll32 { cmd, .. }
+                        if cmd == r#"rundll32.exe zipfldr.dll,RouteTheCall C:\Users\Public\ANYDESK.PIF"#
+                )
+            }),
+            "copied rundll32 alias did not replay through rundll32 handler: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn copied_cmd_alias_v_on_child_preserves_escaped_delayed_expansion() {
         let report = analyze(
             br#"copy C:\Windows\System32\cmd.exe C:\Users\Public\cm.tmp
