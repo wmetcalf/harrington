@@ -2544,6 +2544,9 @@ fn scan_url_launch_deob_text(deobfuscated: &str, env: &mut Environment) {
         .collect();
 
     for line in deobfuscated.lines() {
+        if command_starts_with_echo(line) {
+            continue;
+        }
         let tokens = split_words(line);
         if tokens.is_empty() {
             continue;
@@ -3075,6 +3078,9 @@ fn scan_rundll32_download_exports_deob_text(deobfuscated: &str, env: &mut Enviro
         .collect();
 
     for line in deobfuscated.lines() {
+        if command_starts_with_echo(line) {
+            continue;
+        }
         let tokens = split_words(line);
         for i in 0..tokens.len() {
             let cmd = command_name(strip_outer_quotes(&tokens[i]));
@@ -3117,6 +3123,9 @@ fn scan_certoc_deob_text(deobfuscated: &str, env: &mut Environment) {
         .collect();
 
     for line in deobfuscated.lines() {
+        if command_starts_with_echo(line) {
+            continue;
+        }
         let tokens = split_words(line);
         for i in 0..tokens.len() {
             let cmd = command_name(strip_outer_quotes(&tokens[i]));
@@ -3158,6 +3167,9 @@ fn scan_desktopimgdownldr_deob_text(deobfuscated: &str, env: &mut Environment) {
         .collect();
 
     for line in deobfuscated.lines() {
+        if command_starts_with_echo(line) {
+            continue;
+        }
         let tokens = split_words(line);
         for i in 0..tokens.len() {
             let cmd = command_name(strip_outer_quotes(&tokens[i]));
@@ -6386,6 +6398,9 @@ fn scan_certutil_urlcache_deob_text(deobfuscated: &str, env: &mut Environment) {
         .collect();
 
     for line in deobfuscated.lines() {
+        if command_starts_with_echo(line) {
+            continue;
+        }
         if !contains_ascii_case_insensitive(line, "-urlcache")
             && !contains_ascii_case_insensitive(line, "/urlcache")
         {
