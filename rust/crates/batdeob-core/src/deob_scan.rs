@@ -675,6 +675,12 @@ fn is_bitsadmin_option(token: &str) -> bool {
 }
 
 fn scan_python_requests_get_deob_text(deobfuscated: &str, env: &mut Environment) {
+    let has_direct_download = has_python_direct_download_scan_atom(deobfuscated);
+    let has_base64_decode = has_python_base64_decode_scan_atom(deobfuscated);
+    if !has_direct_download && !has_base64_decode {
+        return;
+    }
+
     let mut known: std::collections::HashSet<String> = env
         .traits
         .iter()
@@ -711,6 +717,123 @@ fn scan_python_requests_get_deob_text(deobfuscated: &str, env: &mut Environment)
         for (url, dst) in find_python_urlretrieve_literals(&decoded) {
             emit_python_download_with_dst(&url, dst.as_deref(), &decoded, env, &mut known);
         }
+    }
+}
+
+#[cfg(test)]
+fn has_python_download_scan_atom(text: &str) -> bool {
+    has_python_direct_download_scan_atom(text) || has_python_base64_decode_scan_atom(text)
+}
+
+fn has_python_direct_download_family_atom(text: &str) -> bool {
+    ["request", "httpx", "urllib", "urlopen", "urlretrieve"]
+        .iter()
+        .any(|atom| find_ascii_case_insensitive_from(text, atom, 0).is_some())
+}
+
+fn has_python_direct_download_scan_atom(text: &str) -> bool {
+    if !has_python_direct_download_family_atom(text) {
+        return false;
+    }
+    [
+        "requests.get",
+        "requests.post",
+        "requests.put",
+        "requests.patch",
+        "requests.delete",
+        "requests.head",
+        "requests.options",
+        "requests.request",
+        "httpx.get",
+        "httpx.post",
+        "httpx.put",
+        "httpx.patch",
+        "httpx.delete",
+        "httpx.head",
+        "httpx.options",
+        "httpx.request",
+        "httpx.client",
+        "urllib.",
+        "urlopen(",
+        "urlretrieve(",
+        "import requests",
+        "import httpx",
+        "import urllib",
+        "from requests",
+        "from httpx",
+        "from urllib",
+        "__import__('requests')",
+        "__import__(\"requests\")",
+        "__import__('httpx')",
+        "__import__(\"httpx\")",
+        "__import__('urllib')",
+        "__import__(\"urllib\")",
+    ]
+    .iter()
+    .any(|atom| find_ascii_case_insensitive_from(text, atom, 0).is_some())
+}
+
+fn has_python_base64_decode_scan_atom(text: &str) -> bool {
+    ["b64decode", "urlsafe_b64decode"]
+        .iter()
+        .any(|atom| find_ascii_case_insensitive_from(text, atom, 0).is_some())
+}
+
+#[cfg(test)]
+mod python_download_prefilter_tests {
+    use super::{has_python_direct_download_family_atom, has_python_download_scan_atom};
+
+    #[test]
+    fn prefilter_allows_direct_download_apis() {
+        assert!(has_python_download_scan_atom(
+            "import requests; requests.get('https://example.test/p')"
+        ));
+        assert!(has_python_download_scan_atom(
+            "urllib.request.urlopen('https://example.test/p')"
+        ));
+    }
+
+    #[test]
+    fn prefilter_allows_python_base64_decoders() {
+        assert!(has_python_download_scan_atom(
+            "exec(base64.b64decode('aW1wb3J0IHVybGxpYg=='))"
+        ));
+        assert!(has_python_download_scan_atom(
+            "from base64 import b64decode as dec; exec(dec(payload))"
+        ));
+        assert!(has_python_download_scan_atom(
+            "exec(base64.urlsafe_b64decode(payload))"
+        ));
+    }
+
+    #[test]
+    fn prefilter_blocks_base64_import_without_decoder() {
+        assert!(!has_python_download_scan_atom(
+            "import base64; print(base64.standard_b64encode(b'data'))"
+        ));
+    }
+
+    #[test]
+    fn prefilter_blocks_html_prose_with_python_words() {
+        assert!(!has_python_download_scan_atom(
+            r#"<a href="/pulls">Pull requests</a><link href="https://example.test/urllib-doc.css">"#
+        ));
+    }
+
+    #[test]
+    fn direct_family_prefilter_blocks_python_and_urls_without_download_apis() {
+        assert!(!has_python_direct_download_family_atom(
+            "python http://example.test/a ".repeat(128).as_str()
+        ));
+        assert!(has_python_direct_download_family_atom(
+            "import requests; requests.get('https://example.test/p')"
+        ));
+        assert!(has_python_direct_download_family_atom(
+            "urllib.request.urlopen('https://example.test/p')"
+        ));
+        assert!(has_python_direct_download_family_atom(
+            "import httpx; httpx.Client().get('https://example.test/p')"
+        ));
     }
 }
 
