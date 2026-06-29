@@ -2732,6 +2732,25 @@ move "%cmdDestination%" "%startupFolder%"
     }
 
     #[test]
+    fn custom_loadassembly_invocation_detected_in_extracted_ps_payload() {
+        let body = "$bytes=[byte[]](77,90,0,0); $asm=[DomainLoader]::LoadAssembly($bytes); $t=$asm.GetTypes()[0]; $m=$t.GetMethod('Run'); $m.Invoke($null,@())";
+        use base64::Engine as _;
+        let enc = base64::engine::general_purpose::STANDARD.encode(body.as_bytes());
+        let script = format!(
+            "@echo off\r\npowershell -Command \"$y=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{enc}')); iex $y\"\r\n"
+        );
+        let report = analyze(script.as_bytes(), &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::InMemoryAssemblyLoad { variant } if variant == "LoadAssembly"
+            )),
+            "custom LoadAssembly invocation not detected: traits={:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn escaped_ampersand_inmem_load_text_does_not_emit_assembly_load_trait() {
         let script = br#"echo keep ^& powershell [System.Reflection.Assembly]::Load($bytes)"#;
         let report = analyze(script, &AnalyzeConfig::default());
