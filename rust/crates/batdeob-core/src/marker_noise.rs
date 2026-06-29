@@ -56,12 +56,7 @@ pub fn strip_line(text: &str) -> String {
                 if is_protected_marker_candidate(candidate) {
                     continue;
                 }
-                if candidate
-                    .chars()
-                    .collect::<std::collections::HashSet<_>>()
-                    .len()
-                    < 2
-                {
+                if !candidate_has_multiple_distinct_bytes(candidate.as_bytes()) {
                     continue;
                 }
                 let is_mixed = candidate.chars().any(|c| c.is_ascii_lowercase())
@@ -280,9 +275,16 @@ fn matches_any_ascii_case_insensitive(text: &str, needles: &[&str]) -> bool {
         .any(|needle| text.eq_ignore_ascii_case(needle))
 }
 
+fn candidate_has_multiple_distinct_bytes(candidate: &[u8]) -> bool {
+    let Some(first) = candidate.first() else {
+        return false;
+    };
+    candidate.iter().any(|byte| byte != first)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::strip_line;
+    use super::{candidate_has_multiple_distinct_bytes, strip_line};
 
     #[test]
     fn single_run_repeated_marker_noise_is_stripped() {
@@ -300,5 +302,12 @@ mod tests {
     fn protected_marker_candidate_is_not_stripped() {
         let noisy = "systemsystemsystem";
         assert_eq!(strip_line(noisy), noisy);
+    }
+
+    #[test]
+    fn candidate_distinct_check_matches_ascii_marker_semantics() {
+        assert!(!candidate_has_multiple_distinct_bytes(b"AAA"));
+        assert!(candidate_has_multiple_distinct_bytes(b"AaA"));
+        assert!(candidate_has_multiple_distinct_bytes(b"ABC"));
     }
 }
