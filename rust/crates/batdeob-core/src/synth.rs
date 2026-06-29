@@ -224,7 +224,15 @@ fn normalize_command_token(token: &str) -> String {
     if echo_payload_after_command(basename).is_some() {
         return "echo".to_string();
     }
-    basename.to_ascii_lowercase()
+    let key = basename.to_ascii_lowercase();
+    let skeleton: String = key
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '.')
+        .collect();
+    if is_type_with_missing_noise(&skeleton) {
+        return "type".to_string();
+    }
+    key
 }
 
 fn synth_echo_stage(stage: &str) -> Option<Vec<String>> {
@@ -243,6 +251,10 @@ fn echo_payload_after_command(command: &str) -> Option<&str> {
         Some('.') | Some(':') | Some('/') | Some('(') => Some(rest[1..].trim_start()),
         _ => None,
     }
+}
+
+fn is_type_with_missing_noise(token: &str) -> bool {
+    matches!(token, "typ" | "tye" | "tpe" | "ype" | "te")
 }
 
 /// Restore the canonical Windows casing of a well-known env var name so

