@@ -270,6 +270,9 @@ fn resolve_f_source(src: &str, env: &mut crate::env::Environment, usebackq: bool
             if path.is_empty() {
                 return Vec::new();
             }
+            if path.contains(['%', '!']) {
+                return vec![path.to_string()];
+            }
             let file_lines = crate::synth::run_pipeline(&format!(r#"type "{}""#, path), env);
             if !file_lines.is_empty() {
                 return file_lines;

