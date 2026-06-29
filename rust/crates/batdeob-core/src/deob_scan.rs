@@ -7850,13 +7850,14 @@ fn scan_enumeration(deobfuscated: &str, env: &mut Environment) {
         push_enumeration_once(env, kind, line.trim().to_string(), true);
     }
     for (re, kind, command_specific) in PATTERNS.iter() {
-        for line in deobfuscated
-            .lines()
-            .filter(|line| !command_starts_with_echo(line))
-        {
-            if let Some(m) = re.find(line) {
-                let cmd = m.as_str().trim().to_string();
-                push_enumeration_once(env, kind, cmd, *command_specific);
+        for m in re.find_iter(deobfuscated) {
+            if match_line_starts_with_echo(deobfuscated, m.start()) {
+                continue;
+            }
+            let cmd = m.as_str().trim().to_string();
+            push_enumeration_once(env, kind, cmd, *command_specific);
+            if !*command_specific {
+                break;
             }
         }
     }
