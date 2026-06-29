@@ -1,8 +1,11 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use sha2::{Digest, Sha256};
+use std::ffi::OsString;
 use std::fs;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 #[derive(Parser)]
 #[command(version, about = "Windows batch deobfuscator")]
@@ -51,7 +54,9 @@ enum Command {
     },
     /// Like `deob --json-only`: JSON report to stdout, no files.
     Analyze {
-        file: String,
+        file: Vec<String>,
+        #[arg(long = "file-list", value_name = "PATH")]
+        file_list: Option<PathBuf>,
         #[arg(long, default_value_t = 12)]
         max_depth: u32,
         #[arg(long, default_value_t = 65_536)]
@@ -140,6 +145,7 @@ enum Command {
 /// MB; this is a generous safety ceiling.
 const MAX_INPUT_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_ENV_FILE_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_FILE_LIST_BYTES: u64 = 16 * 1024 * 1024;
 
 fn read_input(path: &str) -> Result<Vec<u8>> {
     use std::io::Read;
@@ -169,6 +175,29 @@ fn read_input(path: &str) -> Result<Vec<u8>> {
     }
 }
 
+fn read_file_list(path: &Path) -> Result<Vec<String>> {
+    let meta = fs::metadata(path).with_context(|| format!("stat file list {:?}", path))?;
+    if !meta.file_type().is_file() {
+        anyhow::bail!("{:?}: file list is not a regular file", path);
+    }
+    if meta.len() > MAX_FILE_LIST_BYTES {
+        anyhow::bail!(
+            "file list {:?}: {} bytes exceeds the {}-byte cap",
+            path,
+            meta.len(),
+            MAX_FILE_LIST_BYTES
+        );
+    }
+    let contents =
+        fs::read_to_string(path).with_context(|| format!("read file list {:?}", path))?;
+    Ok(contents
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToString::to_string)
+        .collect())
+}
+
 fn parse_env_assignment(raw: &str, source: &str) -> Result<(String, String)> {
     let Some((name, value)) = raw.split_once('=') else {
         anyhow::bail!("{source}: expected NAME=VALUE");
@@ -176,6 +205,20 @@ fn parse_env_assignment(raw: &str, source: &str) -> Result<(String, String)> {
     let name = name.trim();
     validate_env_name(name, source)?;
     Ok((name.to_string(), value.to_string()))
+}
+
+fn parse_cli() -> Cli {
+    let mut args: Vec<OsString> = std::env::args_os().collect();
+    if let Some(first) = args.get(1).and_then(|arg| arg.to_str()) {
+        let known = matches!(
+            first,
+            "deob" | "analyze" | "summarize" | "report" | "version" | "help"
+        ) || first.starts_with('-');
+        if !known {
+            args.insert(1, OsString::from("analyze"));
+        }
+    }
+    Cli::parse_from(args)
 }
 
 fn read_env_file(path: &Path) -> Result<String> {
@@ -850,6 +893,21 @@ fn build_summary(
     summary
 }
 
+fn extracted_counts(report: &batdeob_core::Report) -> serde_json::Value {
+    serde_json::json!({
+        "cmd": report.extracted_cmd.len(),
+        "powershell": report.extracted_ps1.len(),
+        "jscript": 0,
+        "vbs": 0,
+    })
+}
+
+fn recovered_counts(report: &batdeob_core::Report) -> serde_json::Value {
+    serde_json::json!({
+        "pe": report.recovered_pe.len(),
+    })
+}
+
 fn lolbas_matches(report: &batdeob_core::Report, index: &LolbasIndex) -> Vec<serde_json::Value> {
     let mut matches = Vec::new();
     let commands = command_lines_for_lolbas(report);
@@ -929,8 +987,107 @@ fn command_lines_for_lolbas(report: &batdeob_core::Report) -> Vec<&str> {
     out
 }
 
+fn is_broken_pipe(err: &io::Error) -> bool {
+    err.kind() == io::ErrorKind::BrokenPipe
+}
+
+fn write_line(out: &mut impl Write, line: &str) -> Result<bool> {
+    match writeln!(out, "{line}") {
+        Ok(()) => Ok(true),
+        Err(err) if is_broken_pipe(&err) => Ok(false),
+        Err(err) => Err(err).context("write stdout"),
+    }
+}
+
+fn write_json_line(out: &mut impl Write, value: &serde_json::Value) -> Result<bool> {
+    let line = serde_json::to_string(value)?;
+    write_line(out, &line)
+}
+
+fn emit_analyze_profiles(file: &str, started: Instant) {
+    if std::env::var_os("HARRINGTON_PROFILE_DRIVE").is_some() {
+        eprintln!(
+            "harrington_profile_drive input={} fast_expand_ms=0 total_ms={}",
+            file,
+            started.elapsed().as_millis()
+        );
+    }
+    if std::env::var_os("HARRINGTON_PROFILE_FINAL").is_some() {
+        eprintln!(
+            "harrington_profile_final input={} total_ms={}",
+            file,
+            started.elapsed().as_millis()
+        );
+    }
+}
+
+fn analyze_one(
+    out: &mut impl Write,
+    file: &str,
+    cfg: &batdeob_core::Config,
+    options: &batdeob_core::AnalysisOptions,
+    jsonl: bool,
+    lolbas_json: Option<&Path>,
+) -> Result<bool> {
+    let started = Instant::now();
+    let input = read_input(file)?;
+    let report = batdeob_core::analyze_with_options(&input, cfg, options);
+    emit_analyze_profiles(file, started);
+    let lolbas_matches = optional_lolbas_matches(&report, lolbas_json)?;
+    if jsonl {
+        let meta = serde_json::json!({
+            "kind": "meta",
+            "input": file,
+            "input_size": input.len(),
+            "deobfuscated_size": report.deobfuscated.len(),
+            "extracted": extracted_counts(&report),
+            "recovered": recovered_counts(&report),
+        });
+        if !write_json_line(out, &meta)? {
+            return Ok(false);
+        }
+        for t in &report.traits {
+            let line = serde_json::json!({"kind": "trait", "trait": t});
+            if !write_json_line(out, &line)? {
+                return Ok(false);
+            }
+        }
+        if let Some(matches) = lolbas_matches {
+            for item in matches {
+                let line = serde_json::json!({"kind": "lolbas_match", "match": item});
+                if !write_json_line(out, &line)? {
+                    return Ok(false);
+                }
+            }
+        }
+        let deob_line = serde_json::json!({"kind": "deob", "content": &report.deobfuscated});
+        if !write_json_line(out, &deob_line)? {
+            return Ok(false);
+        }
+    } else {
+        let mut json = serde_json::json!({
+            "deobfuscated": report.deobfuscated,
+            "traits": report.traits,
+            "extracted": extracted_counts(&report),
+            "recovered": recovered_counts(&report),
+        });
+        if let Some(matches) = lolbas_matches {
+            if let serde_json::Value::Object(ref mut obj) = json {
+                obj.insert(
+                    "lolbas_matches".to_string(),
+                    serde_json::Value::Array(matches),
+                );
+            }
+        }
+        if !write_line(out, &serde_json::to_string_pretty(&json)?)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 fn run() -> Result<()> {
-    let cli = Cli::parse();
+    let cli = parse_cli();
     match cli.command {
         Command::Summarize {
             file,
@@ -1011,6 +1168,7 @@ fn run() -> Result<()> {
         }
         Command::Analyze {
             file,
+            file_list,
             max_depth,
             max_iterations,
             max_child_scripts,
@@ -1024,7 +1182,6 @@ fn run() -> Result<()> {
             jsonl,
             lolbas_json,
         } => {
-            let input = read_input(&file)?;
             let cfg = make_config(
                 max_depth,
                 max_iterations,
@@ -1036,43 +1193,32 @@ fn run() -> Result<()> {
                 max_traits_per_kind,
             );
             let options = make_analysis_options(&env, &env_file)?;
-            let report = batdeob_core::analyze_with_options(&input, &cfg, &options);
-            let lolbas_matches = optional_lolbas_matches(&report, lolbas_json.as_deref())?;
-            if jsonl {
-                let meta = serde_json::json!({
-                    "kind": "meta",
-                    "input": file,
-                    "input_size": input.len(),
-                    "deobfuscated_size": report.deobfuscated.len(),
-                });
-                println!("{}", serde_json::to_string(&meta)?);
-                for t in &report.traits {
-                    let line = serde_json::json!({"kind": "trait", "trait": t});
-                    println!("{}", serde_json::to_string(&line)?);
+            let mut inputs = file;
+            if let Some(path) = file_list {
+                if !jsonl {
+                    anyhow::bail!("analyze --file-list requires --jsonl");
                 }
-                if let Some(matches) = lolbas_matches {
-                    for item in matches {
-                        let line = serde_json::json!({"kind": "lolbas_match", "match": item});
-                        println!("{}", serde_json::to_string(&line)?);
-                    }
+                inputs.extend(read_file_list(&path)?);
+            }
+            if inputs.is_empty() {
+                anyhow::bail!("analyze requires at least one input");
+            }
+            if inputs.len() > 1 && !jsonl {
+                anyhow::bail!("multiple analyze inputs require --jsonl");
+            }
+            let stdout = io::stdout();
+            let mut out = stdout.lock();
+            for file in inputs {
+                if !analyze_one(
+                    &mut out,
+                    &file,
+                    &cfg,
+                    &options,
+                    jsonl,
+                    lolbas_json.as_deref(),
+                )? {
+                    break;
                 }
-                let deob_line =
-                    serde_json::json!({"kind": "deob", "content": &report.deobfuscated});
-                println!("{}", serde_json::to_string(&deob_line)?);
-            } else {
-                let mut json = serde_json::json!({
-                    "deobfuscated": report.deobfuscated,
-                    "traits": report.traits,
-                });
-                if let Some(matches) = lolbas_matches {
-                    if let serde_json::Value::Object(ref mut obj) = json {
-                        obj.insert(
-                            "lolbas_matches".to_string(),
-                            serde_json::Value::Array(matches),
-                        );
-                    }
-                }
-                println!("{}", serde_json::to_string_pretty(&json)?);
             }
         }
         Command::Deob {
