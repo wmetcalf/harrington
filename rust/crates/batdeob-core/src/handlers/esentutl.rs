@@ -21,6 +21,7 @@ pub fn h_esentutl(raw: &str, env: &mut Environment) {
             dst: dst.clone(),
         });
     }
+    push_ntds_copy(raw, &src, &dst, env);
     let entry = copied_entry(&src, env).unwrap_or(FsEntry::Copy { src: src.clone() });
     insert_copied_entry(env, &src, &dst, entry);
 }
@@ -68,6 +69,32 @@ fn is_windows_util_copy(src: &str, dst: &str) -> bool {
         || src_lower.starts_with("c:\\windows\\syswow64"))
         && !(dst_lower.starts_with("c:\\windows\\system32")
             || dst_lower.starts_with("c:\\windows\\syswow64"))
+}
+
+fn push_ntds_copy(raw: &str, src: &str, dst: &str, env: &mut Environment) {
+    if !src
+        .rsplit(['\\', '/'])
+        .next()
+        .is_some_and(|name| name.eq_ignore_ascii_case("ntds.dit"))
+        && !dst
+            .rsplit(['\\', '/'])
+            .next()
+            .is_some_and(|name| name.eq_ignore_ascii_case("ntds.dit"))
+    {
+        return;
+    }
+    if env.traits.iter().any(|t| {
+        matches!(
+            t,
+            Trait::CredentialAccess { technique, .. } if technique == "ntds-file-copy"
+        )
+    }) {
+        return;
+    }
+    env.traits.push(Trait::CredentialAccess {
+        technique: "ntds-file-copy".to_string(),
+        target: raw.to_string(),
+    });
 }
 
 fn copied_entry(src: &str, env: &Environment) -> Option<FsEntry> {

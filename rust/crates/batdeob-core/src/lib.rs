@@ -32898,6 +32898,22 @@ powershell -Command "New-Service -Name UpdateSvc -BinaryPathName 'cmd.exe /c cal
     }
 
     #[test]
+    fn esentutl_ntds_copy_emits_credential_access_trait() {
+        let script = br#"esentutl.exe /y C:\Windows\NTDS\ntds.dit /d C:\Users\Public\ntds.dit"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::CredentialAccess { technique, target }
+                    if technique == "ntds-file-copy" && target.contains("ntds.dit")
+            )),
+            "esentutl ntds.dit copy was not surfaced as credential access: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn set_mppreference_padded_disable_value_emits_defender_evasion_trait() {
         let report = analyze(
             br#"powershell -Command "Set-MpPreference -DisableRealtimeMonitoring 0x00000001""#,
