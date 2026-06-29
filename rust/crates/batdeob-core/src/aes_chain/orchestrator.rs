@@ -8,6 +8,7 @@ use regex::Regex;
 
 use crate::env::Environment;
 use crate::traits::Trait;
+use crate::util::contains_ascii_case_insensitive;
 
 use super::crypto::{aes_cbc_decrypt, gunzip};
 use super::payload_lines;
@@ -264,11 +265,10 @@ fn try_extract_ps_base64_aes_gzip(deob: &str, env: &mut Environment) {
 }
 
 fn has_ps_base64_aes_gzip_indicators(deob: &str) -> bool {
-    let lower = deob.to_ascii_lowercase();
-    lower.contains("aesmanaged")
-        && lower.contains("frombase64string")
-        && lower.contains("transformfinalblock")
-        && lower.contains("gzip")
+    contains_ascii_case_insensitive(deob, "aesmanaged")
+        && contains_ascii_case_insensitive(deob, "frombase64string")
+        && contains_ascii_case_insensitive(deob, "transformfinalblock")
+        && contains_ascii_case_insensitive(deob, "gzip")
 }
 
 fn parse_ps_byte_array(nums: &str) -> Option<Vec<u8>> {
