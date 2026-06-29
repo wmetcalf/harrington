@@ -36,6 +36,12 @@ enum Command {
         timeout: u64,
         #[arg(long)]
         no_self_extract: bool,
+        /// Seed an analysis environment variable (`NAME=VALUE`). Repeatable.
+        #[arg(long = "env", value_name = "NAME=VALUE")]
+        env: Vec<String>,
+        /// Read analysis environment variables from a `NAME=VALUE` file.
+        #[arg(long = "env-file", value_name = "PATH")]
+        env_file: Vec<PathBuf>,
         #[arg(long, default_value_t = 10 * 1024 * 1024)]
         max_output_bytes: u64,
         #[arg(long, default_value_t = 0)]
@@ -56,6 +62,12 @@ enum Command {
         timeout: u64,
         #[arg(long)]
         no_self_extract: bool,
+        /// Seed an analysis environment variable (`NAME=VALUE`). Repeatable.
+        #[arg(long = "env", value_name = "NAME=VALUE")]
+        env: Vec<String>,
+        /// Read analysis environment variables from a `NAME=VALUE` file.
+        #[arg(long = "env-file", value_name = "PATH")]
+        env_file: Vec<PathBuf>,
         #[arg(long, default_value_t = 10 * 1024 * 1024)]
         max_output_bytes: u64,
         #[arg(long, default_value_t = 0)]
@@ -72,6 +84,12 @@ enum Command {
     Summarize {
         /// Input script (`-` for stdin).
         file: String,
+        /// Seed an analysis environment variable (`NAME=VALUE`). Repeatable.
+        #[arg(long = "env", value_name = "NAME=VALUE")]
+        env: Vec<String>,
+        /// Read analysis environment variables from a `NAME=VALUE` file.
+        #[arg(long = "env-file", value_name = "PATH")]
+        env_file: Vec<PathBuf>,
         /// Optional path to external LOLBAS JSON for JSON enrichment.
         #[arg(long = "lolbas-json")]
         lolbas_json: Option<PathBuf>,
@@ -97,6 +115,12 @@ enum Command {
         timeout: u64,
         #[arg(long)]
         no_self_extract: bool,
+        /// Seed an analysis environment variable (`NAME=VALUE`). Repeatable.
+        #[arg(long = "env", value_name = "NAME=VALUE")]
+        env: Vec<String>,
+        /// Read analysis environment variables from a `NAME=VALUE` file.
+        #[arg(long = "env-file", value_name = "PATH")]
+        env_file: Vec<PathBuf>,
         #[arg(long, default_value_t = 10 * 1024 * 1024)]
         max_output_bytes: u64,
         #[arg(long, default_value_t = 0)]
@@ -115,6 +139,7 @@ enum Command {
 /// OOM from a multi-gigabyte input. A real batch file is well under a few
 /// MB; this is a generous safety ceiling.
 const MAX_INPUT_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_ENV_FILE_BYTES: u64 = 16 * 1024 * 1024;
 
 fn read_input(path: &str) -> Result<Vec<u8>> {
     use std::io::Read;
@@ -142,6 +167,94 @@ fn read_input(path: &str) -> Result<Vec<u8>> {
         }
         fs::read(path).with_context(|| format!("read {:?}", path))
     }
+}
+
+fn parse_env_assignment(raw: &str, source: &str) -> Result<(String, String)> {
+    let Some((name, value)) = raw.split_once('=') else {
+        anyhow::bail!("{source}: expected NAME=VALUE");
+    };
+    let name = name.trim();
+    validate_env_name(name, source)?;
+    Ok((name.to_string(), value.to_string()))
+}
+
+fn read_env_file(path: &Path) -> Result<String> {
+    let meta = fs::metadata(path).with_context(|| format!("stat env file {:?}", path))?;
+    if !meta.file_type().is_file() {
+        anyhow::bail!("{:?}: env file is not a regular file", path);
+    }
+    if meta.len() > MAX_ENV_FILE_BYTES {
+        anyhow::bail!(
+            "env file {:?}: {} bytes exceeds the {}-byte cap",
+            path,
+            meta.len(),
+            MAX_ENV_FILE_BYTES
+        );
+    }
+    fs::read_to_string(path).with_context(|| format!("read env file {:?}", path))
+}
+
+fn parse_env_file_assignments(contents: &str, path: &Path) -> Result<Vec<(String, String)>> {
+    let mut environment = Vec::new();
+    for (idx, line) in contents.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with(';') {
+            continue;
+        }
+        if let Some((candidate_name, _)) = line.split_once('=') {
+            let candidate_name = candidate_name.trim();
+            if !candidate_name.is_empty()
+                && validate_env_name(candidate_name, &format!("{:?}:{}", path, idx + 1)).is_ok()
+            {
+                environment.push(parse_env_assignment(
+                    line,
+                    &format!("{:?}:{}", path, idx + 1),
+                )?);
+                continue;
+            }
+        }
+        if let Some((_, value)) = environment.last_mut() {
+            value.push('\n');
+            value.push_str(line);
+            continue;
+        }
+        environment.push(parse_env_assignment(
+            trimmed,
+            &format!("{:?}:{}", path, idx + 1),
+        )?);
+    }
+    Ok(environment)
+}
+
+fn validate_env_name(name: &str, source: &str) -> Result<()> {
+    if name.is_empty() {
+        anyhow::bail!("{source}: env variable name is empty");
+    }
+    if name.len() > 128 {
+        anyhow::bail!("{source}: env variable name exceeds 128 bytes");
+    }
+    if !name
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+    {
+        anyhow::bail!("{source}: unsupported env variable name {:?}", name);
+    }
+    Ok(())
+}
+
+fn make_analysis_options(
+    env_args: &[String],
+    env_files: &[PathBuf],
+) -> Result<batdeob_core::AnalysisOptions> {
+    let mut environment = Vec::new();
+    for path in env_files {
+        let contents = read_env_file(path)?;
+        environment.extend(parse_env_file_assignments(&contents, path)?);
+    }
+    for raw in env_args {
+        environment.push(parse_env_assignment(raw, "--env")?);
+    }
+    Ok(batdeob_core::AnalysisOptions::with_environment(environment))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -819,10 +932,16 @@ fn command_lines_for_lolbas(report: &batdeob_core::Report) -> Vec<&str> {
 fn run() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Summarize { file, lolbas_json } => {
+        Command::Summarize {
+            file,
+            env,
+            env_file,
+            lolbas_json,
+        } => {
             let input = read_input(&file)?;
             let cfg = batdeob_core::Config::default();
-            let report = batdeob_core::analyze(&input, &cfg);
+            let options = make_analysis_options(&env, &env_file)?;
+            let report = batdeob_core::analyze_with_options(&input, &cfg, &options);
             let lolbas_index = lolbas_json.as_deref().map(load_lolbas_index).transpose()?;
             let summary = build_summary(&file, &input, &report, lolbas_index.as_ref());
             println!("{}", serde_json::to_string_pretty(&summary)?);
@@ -836,6 +955,8 @@ fn run() -> Result<()> {
             max_child_scripts,
             timeout,
             no_self_extract,
+            env,
+            env_file,
             max_output_bytes,
             max_output_line_bytes,
             max_traits_per_kind,
@@ -852,7 +973,8 @@ fn run() -> Result<()> {
                 max_output_line_bytes,
                 max_traits_per_kind,
             );
-            let report = batdeob_core::analyze(&input, &cfg);
+            let options = make_analysis_options(&env, &env_file)?;
+            let report = batdeob_core::analyze_with_options(&input, &cfg, &options);
 
             // Start from the analyst-friendly summary, then layer the full
             // typed trait list and any opt-in raw text on top.
@@ -894,6 +1016,8 @@ fn run() -> Result<()> {
             max_child_scripts,
             timeout,
             no_self_extract,
+            env,
+            env_file,
             max_output_bytes,
             max_output_line_bytes,
             max_traits_per_kind,
@@ -911,7 +1035,8 @@ fn run() -> Result<()> {
                 max_output_line_bytes,
                 max_traits_per_kind,
             );
-            let report = batdeob_core::analyze(&input, &cfg);
+            let options = make_analysis_options(&env, &env_file)?;
+            let report = batdeob_core::analyze_with_options(&input, &cfg, &options);
             let lolbas_matches = optional_lolbas_matches(&report, lolbas_json.as_deref())?;
             if jsonl {
                 let meta = serde_json::json!({
@@ -961,6 +1086,8 @@ fn run() -> Result<()> {
             max_child_scripts,
             timeout,
             no_self_extract,
+            env,
+            env_file,
             max_output_bytes,
             max_output_line_bytes,
             max_traits_per_kind,
@@ -976,7 +1103,8 @@ fn run() -> Result<()> {
                 max_output_line_bytes,
                 max_traits_per_kind,
             );
-            let report = batdeob_core::analyze(&input, &cfg);
+            let options = make_analysis_options(&env, &env_file)?;
+            let report = batdeob_core::analyze_with_options(&input, &cfg, &options);
             if !json_only {
                 write_report_files(&report, &out_dir)?;
             }

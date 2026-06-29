@@ -364,6 +364,13 @@ impl Environment {
         }
     }
 
+    /// Seed a variable from explicit analysis options. Unlike `set`, an
+    /// empty value is meaningful and remains present.
+    pub fn seed(&mut self, name: &str, value: &str) {
+        self.vars
+            .insert(name.to_ascii_lowercase(), value.to_string());
+    }
+
     pub fn contains_var(&self, name: &str) -> bool {
         self.vars.contains_key(&name.to_ascii_lowercase())
     }

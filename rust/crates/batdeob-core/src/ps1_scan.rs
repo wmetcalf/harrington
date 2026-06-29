@@ -37,6 +37,10 @@ static IRM_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static PS_ENV_REF_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"(?i)\$env:([A-Za-z0-9_.-]+)"#).expect("ps env ref"));
+
+#[allow(clippy::expect_used)]
 static PS_SCHEMELESS_IP_CMDLET_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?i)(?:Invoke-WebRequest|Invoke-RestMethod|iwr|irm|wget|curl)\b(?:[^\n|;]*?-(?:Uri|Ur)(?:\s+|:|=)|(?:\s+-[A-Za-z][\w-]*)*\s+)(?:['"])?((?:\d{1,3}\.){3}\d{1,3}(?::\d+)?(?:/[^\s"'\);]*)?)(?:['"])?"#,
@@ -4168,6 +4172,86 @@ fn expand_ps_env_path(value: &str, env: &Environment) -> String {
     out
 }
 
+fn expand_ps_env_refs(text: &str, env: &Environment) -> String {
+    if env.vars_iter().next().is_none() || !contains_ascii_case_insensitive(text, "$env:") {
+        return text.to_string();
+    }
+
+    PS_ENV_REF_RE
+        .replace_all(text, |caps: &regex::Captures<'_>| {
+            let whole = caps.get(0).map_or("", |m| m.as_str());
+            let Some(name) = caps.get(1).map(|m| m.as_str()) else {
+                return whole.to_string();
+            };
+            let Some(value) = env.get(name) else {
+                return whole.to_string();
+            };
+            let Some(m) = caps.get(0) else {
+                return whole.to_string();
+            };
+            match ps_env_ref_quote_context(text, m.start()) {
+                PsEnvRefQuoteContext::SingleQuoted => value.replace('\'', "''"),
+                PsEnvRefQuoteContext::DoubleQuoted => value
+                    .replace('`', "``")
+                    .replace('"', "`\"")
+                    .replace('$', "`$"),
+                PsEnvRefQuoteContext::Expression => {
+                    if ps_env_ref_has_unquoted_path_suffix(text, m.end()) {
+                        value
+                    } else {
+                        format!("'{}'", value.replace('\'', "''"))
+                    }
+                }
+            }
+        })
+        .into_owned()
+}
+
+fn ps_env_ref_has_unquoted_path_suffix(text: &str, pos: usize) -> bool {
+    text[pos..]
+        .chars()
+        .next()
+        .is_some_and(|ch| matches!(ch, '\\' | '/'))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PsEnvRefQuoteContext {
+    Expression,
+    SingleQuoted,
+    DoubleQuoted,
+}
+
+fn ps_env_ref_quote_context(text: &str, pos: usize) -> PsEnvRefQuoteContext {
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut chars = text[..pos].chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\'' if !in_double => {
+                if in_single && chars.peek() == Some(&'\'') {
+                    chars.next();
+                } else {
+                    in_single = !in_single;
+                }
+            }
+            '"' if !in_single => {
+                in_double = !in_double;
+            }
+            '`' if in_double => {
+                chars.next();
+            }
+            _ => {}
+        }
+    }
+    if in_single {
+        PsEnvRefQuoteContext::SingleQuoted
+    } else if in_double {
+        PsEnvRefQuoteContext::DoubleQuoted
+    } else {
+        PsEnvRefQuoteContext::Expression
+    }
+}
+
 fn replace_ascii_case_insensitive(input: &str, needle: &str, replacement: &str) -> String {
     if needle.is_empty() {
         return input.to_string();
@@ -4874,7 +4958,8 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
     let file_backed_payloads = env.all_extracted_ps1.clone();
     for payload in file_backed_payloads {
         let raw_text = decode_payload(&payload);
-        let text_expanded = expand_obfuscation(&raw_text);
+        let raw_env_expanded = expand_ps_env_refs(&raw_text, env);
+        let text_expanded = expand_obfuscation(&raw_env_expanded);
         scan_file_backed_base64_ps1(&text_expanded, env, &text_expanded);
     }
 
@@ -4886,8 +4971,9 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
     for (idx, payload) in payloads.iter().enumerate() {
         let raw_text = decode_payload(payload);
         let raw_owned: String = raw_text.clone().into_owned();
+        let raw_env_expanded = expand_ps_env_refs(&raw_owned, env);
 
-        let text_expanded = expand_obfuscation(&raw_owned);
+        let text_expanded = expand_obfuscation(&raw_env_expanded);
         // Dual-scan: also run URL regexes over alias-expanded version so that
         // `iwr`, `irm`, `wget` etc. are caught even if obfuscation expansion
         // didn't surface them.
