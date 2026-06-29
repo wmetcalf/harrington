@@ -132,6 +132,7 @@ fn run_stage(stage: &str, input: Vec<String>, env: &mut Environment) -> Vec<Stri
         "getmac" => synth_getmac(),
         "fsutil" => synth_fsutil(&rest_args),
         "wmic" => synth_wmic(&rest_args),
+        "ping" => synth_ping(&rest_args),
         "powershell" | "powershell.exe" => synth_powershell(&rest_args, env),
         "echo" => synth_echo_stage(stage).unwrap_or_default(),
         "tasklist" => synth_tasklist(&rest_args),
@@ -208,6 +209,7 @@ fn is_supported_command(cmd: String) -> bool {
             | "getmac"
             | "fsutil"
             | "wmic"
+            | "ping"
             | "powershell"
             | "powershell.exe"
             | "echo"
@@ -1455,6 +1457,42 @@ fn synth_getmac() -> Vec<String> {
             .to_string(),
         "00-11-22-33-44-55   \\Device\\Tcpip_{00000000-0000-0000-0000-000000000000}".to_string(),
     ]
+}
+
+fn synth_ping(args: &[&str]) -> Vec<String> {
+    let mut target = None;
+    let mut skip_next = false;
+    for arg in args {
+        let arg = arg.trim_matches('"');
+        if arg.is_empty() {
+            continue;
+        }
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if arg.starts_with(['-', '/']) {
+            let option = arg
+                .trim_start_matches(['-', '/'])
+                .chars()
+                .next()
+                .map(|ch| ch.to_ascii_lowercase());
+            if matches!(
+                option,
+                Some('n' | 'l' | 'w' | 'i' | 'v' | 'r' | 's' | 'j' | 'k' | '4' | '6')
+            ) {
+                skip_next = !matches!(option, Some('4' | '6'));
+            }
+            continue;
+        }
+        target = Some(arg);
+    }
+    let Some(target) = target else {
+        return Vec::new();
+    };
+    vec![format!(
+        "Pinging {target} [{target}] with 32 bytes of data:"
+    )]
 }
 
 fn synth_powershell(args: &[&str], env: &Environment) -> Vec<String> {

