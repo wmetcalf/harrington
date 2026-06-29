@@ -302,13 +302,13 @@ fn resolve_f_source(src: &str, env: &mut crate::env::Environment, usebackq: bool
         let pipeline = expand_percent_vars_for_source(&s[1..s.len() - 1], env);
         return crate::synth::run_pipeline(&pipeline, env);
     }
-    let file_lines = crate::synth::run_pipeline(&format!("type {}", s), env);
+    let expanded = expand_percent_vars_for_source(s, env);
+    let file_lines = crate::synth::run_pipeline(&format!("type {}", expanded), env);
     if !file_lines.is_empty() {
         return file_lines;
     }
-    env.traits.push(crate::traits::Trait::ForUnresolvedSource {
-        pipeline: s.to_string(),
-    });
+    env.traits
+        .push(crate::traits::Trait::ForUnresolvedSource { pipeline: expanded });
     Vec::new()
 }
 
