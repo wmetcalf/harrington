@@ -7342,11 +7342,11 @@ fn scan_echoed_curl_deob_text(deobfuscated: &str, env: &mut Environment) {
 fn scan_self_elevation(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
-    // Anchor on `Start-Process` (or `saps` alias). Lazy match the body up
+    // Anchor on `Start-Process` (or aliases). Lazy match the body up
     // to `-Verb runas` so we capture the target+args regardless of order.
     static SELF_ELEV_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r#"(?is)\b(?:Start-Process|saps)\b([^\n;|&]{0,300}?)-Verb\s+["']?runas["']?([^\n;|&]{0,300})"#,
+            r#"(?is)\b(?:Start-Process|saps|start)\b([^\n;|&]{0,300}?)-Verb\s+["']?runas["']?([^\n;|&]{0,300})"#,
         )
         .expect("self-elev regex")
     });
@@ -7362,6 +7362,8 @@ fn scan_self_elevation(deobfuscated: &str, env: &mut Environment) {
         Lazy::new(|| Regex::new(r#"(?is)-ArgumentList\s+"(.+?)""#).expect("arglist-dq regex"));
     static ARGLIST_SQ_RE: Lazy<Regex> =
         Lazy::new(|| Regex::new(r#"(?is)-ArgumentList\s+'(.+?)'"#).expect("arglist-sq regex"));
+    static ARGLIST_BARE_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r#"(?i)-ArgumentList\s+([^\s'"]+)"#).expect("arglist-bare regex"));
     for caps in SELF_ELEV_RE.captures_iter(deobfuscated) {
         let before = caps.get(1).map(|m| m.as_str()).unwrap_or("");
         let after = caps.get(2).map(|m| m.as_str()).unwrap_or("");
@@ -7389,6 +7391,7 @@ fn scan_self_elevation(deobfuscated: &str, env: &mut Environment) {
         let args = ARGLIST_DQ_RE
             .captures(&combined)
             .or_else(|| ARGLIST_SQ_RE.captures(&combined))
+            .or_else(|| ARGLIST_BARE_RE.captures(&combined))
             .and_then(|c| c.get(1).map(|m| m.as_str().to_string()));
         // Dedup
         if env.traits.iter().any(|t| {
@@ -10991,6 +10994,7 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     scan_extrac32_self_extract(deobfuscated, env);
     scan_ps_var_socket_connect(deobfuscated, env);
     scan_resolved_deob_var_fragment_urls(deobfuscated, env);
+    scan_embedded_powershell_downloads_in_deob_text(deobfuscated, env);
     scan_rot13_urls_in_deob_text(deobfuscated, env);
 
     // Build a set of URLs already known
@@ -11344,6 +11348,74 @@ pub fn scan_embedded_powershell_invocations(text: &str, env: &mut Environment) {
         }
     }
     dedup_exec_ps1(env);
+}
+
+fn scan_embedded_powershell_downloads_in_deob_text(text: &str, env: &mut Environment) {
+    if !has_embedded_powershell_invocation_atom(text) {
+        return;
+    }
+    let normalized = text.replace('^', "");
+    let mut payload_env = Environment::new(&crate::env::Config {
+        max_depth: env.limits.max_depth,
+        max_iterations: env.limits.max_iterations,
+        max_child_scripts: env.limits.max_child_scripts,
+        timeout_secs: 0,
+        self_extract: false,
+        winver: env.winver,
+        max_output_bytes: env.limits.max_output_bytes,
+        max_output_line_bytes: env.limits.max_output_line_bytes,
+        max_traits_per_kind: 100,
+    });
+    payload_env.vars = env.vars.clone();
+
+    for line in normalized.lines() {
+        if command_starts_with_echo(line) {
+            continue;
+        }
+        for m in EMBEDDED_POWERSHELL_RE.find_iter(line) {
+            let tail = &line[m.start()..];
+            if !has_powershell_download_atom(tail) {
+                continue;
+            }
+            crate::handlers::powershell::h_powershell(tail, &mut payload_env);
+        }
+    }
+    if payload_env.exec_ps1.is_empty() {
+        return;
+    }
+
+    payload_env
+        .all_extracted_ps1
+        .extend(std::mem::take(&mut payload_env.exec_ps1));
+    crate::ps1_scan::scan_ps1_payloads(&mut payload_env);
+
+    let before_len = env.traits.len();
+    let mut known = env.known_extracted_urls();
+    env.traits.extend(
+        payload_env
+            .traits
+            .into_iter()
+            .filter(|trait_| match trait_url(trait_) {
+                Some(url) if known.contains(url) => false,
+                Some(url) => {
+                    known.insert(url.to_string());
+                    true
+                }
+                None => true,
+            }),
+    );
+    suppress_generic_downloads_for_new_structured_urls(env, before_len);
+}
+
+fn has_powershell_download_atom(text: &str) -> bool {
+    PS_DOWNLOAD_VERB_RE.is_match(text)
+        || contains_ascii_case_insensitive(text, "invoke-webrequest")
+        || contains_ascii_case_insensitive(text, "invoke-restmethod")
+        || contains_ascii_case_insensitive(text, "downloadstring")
+        || contains_ascii_case_insensitive(text, "downloadfile")
+        || contains_ascii_case_insensitive(text, "downloaddata")
+        || contains_ascii_case_insensitive(text, "start-bitstransfer")
+        || contains_ascii_case_insensitive(text, "new-object net.webclient")
 }
 
 fn has_embedded_powershell_invocation_atom(text: &str) -> bool {
