@@ -27,6 +27,121 @@ fn deob_writes_deobfuscated_file() {
 }
 
 #[test]
+fn deob_force_overwrites_existing_report_files() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(&input, "echo first\r\n").expect("write");
+    let out_dir = dir.path().join("out");
+    Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args([
+            "deob",
+            input.to_str().expect("path"),
+            "-o",
+            out_dir.to_str().expect("path"),
+        ])
+        .assert()
+        .success();
+
+    fs::write(&input, "echo second\r\n").expect("rewrite");
+    Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args([
+            "deob",
+            input.to_str().expect("path"),
+            "-o",
+            out_dir.to_str().expect("path"),
+            "--force",
+        ])
+        .assert()
+        .success();
+
+    let contents = fs::read_to_string(out_dir.join("deobfuscated.bat")).expect("read");
+    assert!(
+        contents.contains("echo second") && !contents.contains("echo first"),
+        "stale deobfuscated output after --force:\n{}",
+        contents
+    );
+}
+
+#[test]
+fn deob_force_removes_stale_generated_artifacts() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(&input, "echo first\r\n").expect("write");
+    let out_dir = dir.path().join("out");
+    Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args([
+            "deob",
+            input.to_str().expect("path"),
+            "-o",
+            out_dir.to_str().expect("path"),
+        ])
+        .assert()
+        .success();
+
+    fs::write(out_dir.join("0123456789.exe"), b"stale pe").expect("write stale exe");
+    fs::write(out_dir.join("0123456789.meta"), b"stale meta").expect("write stale meta");
+    fs::write(out_dir.join("analyst-notes.txt"), b"keep").expect("write analyst note");
+
+    fs::write(&input, "echo second\r\n").expect("rewrite");
+    Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args([
+            "deob",
+            input.to_str().expect("path"),
+            "-o",
+            out_dir.to_str().expect("path"),
+            "--force",
+        ])
+        .assert()
+        .success();
+
+    let entries: Vec<_> = fs::read_dir(&out_dir)
+        .expect("read out")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    assert!(
+        !entries
+            .iter()
+            .any(|name| name.ends_with(".exe") || name.ends_with(".meta")),
+        "stale generated artifact remained after --force: {:?}",
+        entries
+    );
+    assert!(
+        entries.iter().any(|name| name == "analyst-notes.txt"),
+        "unrelated analyst note was removed by --force: {:?}",
+        entries
+    );
+}
+
+#[test]
+fn deob_force_refuses_generated_output_directory_collision() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(&input, "echo hi\r\n").expect("write");
+    let out_dir = dir.path().join("out");
+    fs::create_dir_all(out_dir.join("0123456789.exe")).expect("mkdir generated collision");
+
+    Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args([
+            "deob",
+            input.to_str().expect("path"),
+            "-o",
+            out_dir.to_str().expect("path"),
+            "--force",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "refusing to remove generated output directory",
+        ));
+}
+
+#[test]
 fn deob_writes_extracted_child_bat() {
     let dir = TempDir::new().expect("tmp");
     let input = dir.path().join("in.bat");
@@ -837,6 +952,39 @@ fn analyze_json_includes_extracted_counts() {
     assert!(
         v["extracted"]["powershell"].as_u64().unwrap_or_default() >= 1,
         "PowerShell extracted count missing from analyze JSON: {v}"
+    );
+    assert_eq!(v["recovered"]["pe"].as_u64(), Some(0));
+}
+
+#[test]
+fn deob_json_only_includes_extracted_counts() {
+    use base64::Engine;
+
+    let payload = "Write-Host deob-json";
+    let utf16: Vec<u8> = payload
+        .encode_utf16()
+        .flat_map(|u| u.to_le_bytes())
+        .collect();
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&utf16);
+
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(&input, format!("powershell -EncodedCommand {}", b64)).expect("write");
+
+    let out = Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args(["deob", input.to_str().expect("path"), "--json-only"])
+        .output()
+        .expect("run");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    assert!(
+        v["extracted"]["powershell"].as_u64().unwrap_or_default() >= 1,
+        "PowerShell extracted count missing from deob JSON: {v}"
     );
     assert_eq!(v["recovered"]["pe"].as_u64(), Some(0));
 }

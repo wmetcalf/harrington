@@ -26,6 +26,9 @@ enum Command {
         json: bool,
         #[arg(long)]
         json_only: bool,
+        /// Replace batdeob-generated files in an existing output directory.
+        #[arg(long)]
+        force: bool,
         /// Optional path to external LOLBAS JSON for JSON enrichment.
         #[arg(long = "lolbas-json")]
         lolbas_json: Option<PathBuf>,
@@ -729,16 +732,43 @@ fn safe_join(canonical_out: &Path, name: &str) -> Result<PathBuf> {
     Ok(target)
 }
 
-fn write_report_files(report: &batdeob_core::Report, out_dir: &Path) -> Result<()> {
+fn safe_write(path: &Path, bytes: &[u8], force: bool) -> Result<()> {
+    let mut opts = fs::OpenOptions::new();
+    opts.write(true);
+    if force {
+        opts.create(true).truncate(true);
+    } else {
+        opts.create_new(true);
+    }
+    match opts.open(path) {
+        Ok(mut f) => {
+            f.write_all(bytes)
+                .with_context(|| format!("write {:?}", path))?;
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            anyhow::bail!(
+                "refusing to overwrite existing output path {:?}; rerun with --force to replace stale output",
+                path
+            )
+        }
+        Err(e) => Err(anyhow::Error::from(e).context(format!("open {:?}", path))),
+    }
+}
+
+fn write_report_files(report: &batdeob_core::Report, out_dir: &Path, force: bool) -> Result<()> {
     fs::create_dir_all(out_dir).with_context(|| format!("mkdir {:?}", out_dir))?;
     let canonical_out =
         fs::canonicalize(out_dir).with_context(|| format!("canonicalize {:?}", out_dir))?;
+    if force {
+        remove_stale_generated_outputs(&canonical_out)?;
+    }
 
-    fs::write(
-        safe_join(&canonical_out, "deobfuscated.bat")?,
-        &report.deobfuscated,
-    )
-    .context("write deobfuscated.bat")?;
+    safe_write(
+        &safe_join(&canonical_out, "deobfuscated.bat")?,
+        report.deobfuscated.as_bytes(),
+        force,
+    )?;
 
     let mut seen = std::collections::HashSet::new();
     for child in &report.extracted_cmd {
@@ -748,8 +778,7 @@ fn write_report_files(report: &batdeob_core::Report, out_dir: &Path) -> Result<(
             continue;
         }
         let name = format!("{sha}.bat");
-        fs::write(safe_join(&canonical_out, &name)?, bytes)
-            .with_context(|| format!("write {name}"))?;
+        safe_write(&safe_join(&canonical_out, &name)?, bytes, force)?;
     }
     for child in &report.extracted_ps1 {
         let sha = short_sha(child);
@@ -757,15 +786,75 @@ fn write_report_files(report: &batdeob_core::Report, out_dir: &Path) -> Result<(
             continue;
         }
         let name = format!("{sha}.ps1");
-        fs::write(safe_join(&canonical_out, &name)?, child)
-            .with_context(|| format!("write {name}"))?;
+        safe_write(&safe_join(&canonical_out, &name)?, child, force)?;
     }
 
     let traits_json = serde_json::to_string_pretty(&report.traits)?;
-    fs::write(safe_join(&canonical_out, "traits.json")?, traits_json)
-        .context("write traits.json")?;
+    safe_write(
+        &safe_join(&canonical_out, "traits.json")?,
+        traits_json.as_bytes(),
+        force,
+    )?;
 
     Ok(())
+}
+
+fn remove_stale_generated_outputs(canonical_out: &Path) -> Result<()> {
+    for entry in fs::read_dir(canonical_out)
+        .with_context(|| format!("read output dir {:?}", canonical_out))?
+    {
+        let entry = entry.with_context(|| format!("read output dir entry {:?}", canonical_out))?;
+        let file_name = entry.file_name();
+        let name = file_name.to_string_lossy();
+        if !is_generated_output_name(&name) {
+            continue;
+        }
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("stat output path {:?}", path))?;
+        if file_type.is_file() || file_type.is_symlink() {
+            fs::remove_file(&path).with_context(|| format!("remove stale output {:?}", path))?;
+        } else if file_type.is_dir() {
+            anyhow::bail!(
+                "refusing to remove generated output directory {:?}; remove it manually",
+                path
+            );
+        }
+    }
+    Ok(())
+}
+
+fn is_generated_output_name(name: &str) -> bool {
+    if matches!(name, "deobfuscated.bat" | "traits.json") {
+        return true;
+    }
+    let Some((prefix, ext)) = name.split_once('.') else {
+        return false;
+    };
+    prefix.len() == 10
+        && prefix.bytes().all(|b| b.is_ascii_hexdigit())
+        && matches!(
+            ext,
+            "bat"
+                | "ps1"
+                | "normalized.ps1"
+                | "js"
+                | "vbs"
+                | "exe"
+                | "dll"
+                | "cab"
+                | "zip"
+                | "rar"
+                | "7z"
+                | "lnk"
+                | "pdf"
+                | "png"
+                | "gif"
+                | "jpg"
+                | "bin"
+                | "meta"
+        )
 }
 
 fn build_summary(
@@ -1226,6 +1315,7 @@ fn run() -> Result<()> {
             out_dir,
             json,
             json_only,
+            force,
             lolbas_json,
             max_depth,
             max_iterations,
@@ -1252,13 +1342,15 @@ fn run() -> Result<()> {
             let options = make_analysis_options(&env, &env_file)?;
             let report = batdeob_core::analyze_with_options(&input, &cfg, &options);
             if !json_only {
-                write_report_files(&report, &out_dir)?;
+                write_report_files(&report, &out_dir, force)?;
             }
             if json || json_only {
                 let lolbas_matches = optional_lolbas_matches(&report, lolbas_json.as_deref())?;
                 let mut val = serde_json::json!({
                     "deobfuscated": report.deobfuscated,
                     "traits": report.traits,
+                    "extracted": extracted_counts(&report),
+                    "recovered": recovered_counts(&report),
                 });
                 if let Some(matches) = lolbas_matches {
                     if let serde_json::Value::Object(ref mut obj) = val {
