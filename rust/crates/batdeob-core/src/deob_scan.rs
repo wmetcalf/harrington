@@ -8534,9 +8534,15 @@ fn scan_lateral_movement(deobfuscated: &str, env: &mut Environment) {
     });
     static PS_REMOTING_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r#"(?i)\b(Invoke-Command|icm|Enter-PSSession|etsn|New-PSSession|nsn)\b[^\r\n]*?-ComputerName(?:\s*[:=]\s*|\s+)(?:"+([^"'\s;|&}]+)"+|'([^']+)'|([^,\s;|&}]+))"#,
+            r#"(?i)\b(Invoke-Command|icm|Enter-PSSession|etsn|New-PSSession|nsn)\b[^\r\n]*?-Com(?:puterName)?(?:\s*[:=]\s*|\s+)(?:"+([^"\r\n;|&}]+)"+|'([^'\r\n;|&}]+)'|([^;\r\n|&}]+?))(?:\s+-[A-Za-z]|\s*[;|&}\r\n]|$)"#,
         )
         .expect("powershell remoting re")
+    });
+    static PS_REMOTING_POSITIONAL_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?i)\b(Invoke-Command|icm)\s+(?:"([^"\r\n;|&}]+)"|'([^'\r\n;|&}]+)'|([A-Za-z0-9.\-]+))(?:\s+-[A-Za-z]|\s*[;|&}\r\n]|$)"#,
+        )
+        .expect("powershell remoting positional re")
     });
     static SCHTASKS_S_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?i)\bschtasks[^\r\n]*?\s/s\s+(?:"([^"]+)"|(\S+))"#).expect("schtasks /s re")
@@ -8609,13 +8615,31 @@ fn scan_lateral_movement(deobfuscated: &str, env: &mut Environment) {
             "nsn" | "new-pssession" => "New-PSSession",
             _ => "Invoke-Command",
         };
+        let hosts = c
+            .get(2)
+            .or_else(|| c.get(3))
+            .or_else(|| c.get(4))
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default();
+        for host in split_powershell_host_list(&hosts) {
+            push(tool, host);
+        }
+    }
+    for c in PS_REMOTING_POSITIONAL_RE.captures_iter(deobfuscated) {
+        if c.get(0)
+            .is_some_and(|m| match_line_starts_with_echo(deobfuscated, m.start()))
+        {
+            continue;
+        }
         let host = c
             .get(2)
             .or_else(|| c.get(3))
             .or_else(|| c.get(4))
             .map(|m| m.as_str().to_string())
             .unwrap_or_default();
-        push(tool, host);
+        for host in split_powershell_host_list(&host) {
+            push("Invoke-Command", host);
+        }
     }
     for c in SCHTASKS_S_RE.captures_iter(deobfuscated) {
         if c.get(0)
@@ -10221,8 +10245,12 @@ fn scan_remote_exec(deobfuscated: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
     static WINRM_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?i)\b(?:winrm(?:\.(?:cmd|exe))?\s+(?:invoke|i)\s+[^\r\n]*?(?:[-/]r(?:emote)?[:=]?\s*)(\S+)|winrm(?:\.(?:cmd|exe))?\s+(?:invoke|i)\s+|winrs(?:\.exe)?\s+[-/]r(?:emote)?[:=]?\s*(\S+)|Invoke-WmiMethod\b[^\r\n]*?-ComputerName(?:\s*[:=]\s*|\s+)(?:"+([^"'\s;|&}]+)"+|'([^']+)'|([^,\s;|&}]+))|Set-WmiInstance\b[^\r\n]*?-ComputerName(?:\s*[:=]\s*|\s+)(?:"+([^"'\s;|&}]+)"+|'([^']+)'|([^,\s;|&}]+))|Invoke-CimMethod\b[^\r\n]*?-ComputerName(?:\s*[:=]\s*|\s+)(?:"+([^"'\s;|&}]+)"+|'([^']+)'|([^,\s;|&}]+)))"#)
+        Regex::new(r#"(?i)\b(?:winrm(?:\.(?:cmd|exe))?\s+(?:invoke|i)\s+[^\r\n]*?(?:[-/]r(?:emote)?[:=]?\s*)(\S+)|winrm(?:\.(?:cmd|exe))?\s+(?:invoke|i)\s+|winrs(?:\.exe)?\s+[-/]r(?:emote)?[:=]?\s*(\S+)|Invoke-WmiMethod\b[^\r\n]*?-Com(?:puterName)?(?:\s*[:=]\s*|\s+)(?:"+([^"\r\n;|&}]+)"+|'([^'\r\n;|&}]+)'|([^;\r\n|&}]+?))(?:\s+-[A-Za-z]|\s*[;|&}\r\n]|$)|Set-WmiInstance\b[^\r\n]*?-Com(?:puterName)?(?:\s*[:=]\s*|\s+)(?:"+([^"\r\n;|&}]+)"+|'([^'\r\n;|&}]+)'|([^;\r\n|&}]+?))(?:\s+-[A-Za-z]|\s*[;|&}\r\n]|$)|Invoke-CimMethod\b[^\r\n]*?-Com(?:puterName)?(?:\s*[:=]\s*|\s+)(?:"+([^"\r\n;|&}]+)"+|'([^'\r\n;|&}]+)'|([^;\r\n|&}]+?))(?:\s+-[A-Za-z]|\s*[;|&}\r\n]|$))"#)
             .expect("winrm re")
+    });
+    static WINRM_POSITIONAL_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?i)\bwinrm(?:\.(?:cmd|exe))?\s+(?:invoke|i)\s+([A-Za-z0-9.\-]+)"#)
+            .expect("winrm positional re")
     });
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for caps in WINRM_RE.captures_iter(deobfuscated) {
@@ -10232,7 +10260,7 @@ fn scan_remote_exec(deobfuscated: &str, env: &mut Environment) {
         {
             continue;
         }
-        let host = caps
+        let hosts = caps
             .get(1)
             .or_else(|| caps.get(2))
             .or_else(|| caps.get(3))
@@ -10277,23 +10305,65 @@ fn scan_remote_exec(deobfuscated: &str, env: &mut Environment) {
         } else {
             "Set-WmiInstance"
         };
-        let key = format!("{tool}\0{host}");
+        for host in split_powershell_host_list(&hosts) {
+            let key = format!("{tool}\0{host}");
+            if !seen.insert(key) {
+                continue;
+            }
+            if env.traits.iter().any(|t| {
+                matches!(
+                    t, crate::traits::Trait::RemoteExec { tool: tl, target_host: h }
+                        if tl == tool && h == &host
+                )
+            }) {
+                continue;
+            }
+            env.traits.push(crate::traits::Trait::RemoteExec {
+                tool: tool.to_string(),
+                target_host: host,
+            });
+        }
+    }
+    for caps in WINRM_POSITIONAL_RE.captures_iter(deobfuscated) {
+        if caps
+            .get(0)
+            .is_some_and(|m| match_line_starts_with_echo(deobfuscated, m.start()))
+        {
+            continue;
+        }
+        let host = caps
+            .get(1)
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default();
+        let key = format!("winrm\0{host}");
         if !seen.insert(key) {
             continue;
         }
         if env.traits.iter().any(|t| {
             matches!(
-                t, crate::traits::Trait::RemoteExec { tool: tl, target_host: h }
-                    if tl == tool && h == &host
+                t, crate::traits::Trait::RemoteExec { tool, target_host }
+                    if tool == "winrm" && target_host == &host
             )
         }) {
             continue;
         }
         env.traits.push(crate::traits::Trait::RemoteExec {
-            tool: tool.to_string(),
+            tool: "winrm".to_string(),
             target_host: host,
         });
     }
+}
+
+fn split_powershell_host_list(hosts: &str) -> Vec<String> {
+    hosts
+        .split(',')
+        .map(|host| {
+            host.trim()
+                .trim_matches(|c: char| c == '"' || c == '\'')
+                .to_string()
+        })
+        .filter(|host| !host.is_empty())
+        .collect()
 }
 
 /// UAC bypass technique. MITRE T1548.002. Detects:

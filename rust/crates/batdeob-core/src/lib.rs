@@ -34101,6 +34101,77 @@ powershell -Command "New-PSSession -ComputerName 'filesrv.example'"
     }
 
     #[test]
+    fn powershell_remoting_positional_computername_emits_lateral_movement() {
+        let script = br#"powershell -Command "icm target-pos.example -ScriptBlock { hostname }""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::LateralMovement { tool, target_host }
+                    if tool == "Invoke-Command" && target_host == "target-pos.example"
+            )),
+            "PowerShell positional remoting target missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_remoting_computername_list_emits_lateral_movement_for_each_host() {
+        let script =
+            br#"powershell -Command "icm -ComputerName host1.example,host2.example -ScriptBlock { hostname }""#;
+        let report = analyze(script, &Config::default());
+
+        for host in ["host1.example", "host2.example"] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::LateralMovement { tool, target_host }
+                        if tool == "Invoke-Command" && target_host == host
+                )),
+                "PowerShell remoting host list target missing {host}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn powershell_remoting_spaced_computername_list_emits_each_host() {
+        let script =
+            br#"powershell -Command "icm -ComputerName host1.example, host2.example -ScriptBlock { hostname }""#;
+        let report = analyze(script, &Config::default());
+
+        for host in ["host1.example", "host2.example"] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::LateralMovement { tool, target_host }
+                        if tool == "Invoke-Command" && target_host == host
+                )),
+                "PowerShell remoting spaced host list target missing {host}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn powershell_remoting_short_computername_emits_lateral_movement() {
+        let script =
+            br#"powershell -Command "icm -Com target-short.example -ScriptBlock { hostname }""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::LateralMovement { tool, target_host }
+                    if tool == "Invoke-Command" && target_host == "target-short.example"
+            )),
+            "PowerShell remoting short ComputerName parameter missed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_wmi_remoting_attached_computername_emits_remote_exec() {
         let script = br#"powershell -Command "Invoke-WmiMethod -ComputerName:target.example -Class Win32_Process -Name Create -ArgumentList 'cmd /c hostname'"
 powershell -Command "Set-WmiInstance -ComputerName='adminbox.example' -Class Win32_Process -Arguments @{CommandLine='cmd /c whoami'}"
@@ -34121,6 +34192,78 @@ powershell -Command "Set-WmiInstance -ComputerName='adminbox.example' -Class Win
                 report.traits
             );
         }
+    }
+
+    #[test]
+    fn powershell_cim_method_computername_emits_remote_exec() {
+        let script = br#"powershell -Command "Invoke-CimMethod -ComputerName target.example -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine='cmd /c whoami'}"
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteExec { tool, target_host }
+                    if tool == "Invoke-CimMethod" && target_host == "target.example"
+            )),
+            "missing PowerShell CIM remote exec: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_wmi_computername_list_emits_remote_exec_for_each_host() {
+        let script = br#"powershell -Command "Invoke-WmiMethod -ComputerName host1.example,host2.example -Class Win32_Process -Name Create -ArgumentList 'cmd /c hostname'"
+"#;
+        let report = analyze(script, &Config::default());
+
+        for host in ["host1.example", "host2.example"] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::RemoteExec { tool, target_host }
+                        if tool == "Invoke-WmiMethod" && target_host == host
+                )),
+                "PowerShell WMI remote exec host list target missing {host}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn powershell_wmi_spaced_computername_list_emits_each_remote_exec_host() {
+        let script = br#"powershell -Command "Invoke-WmiMethod -ComputerName host1.example, host2.example -Class Win32_Process -Name Create -ArgumentList 'cmd /c hostname'"
+"#;
+        let report = analyze(script, &Config::default());
+
+        for host in ["host1.example", "host2.example"] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::RemoteExec { tool, target_host }
+                        if tool == "Invoke-WmiMethod" && target_host == host
+                )),
+                "PowerShell WMI spaced host list target missing {host}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn powershell_wmi_short_computername_emits_remote_exec() {
+        let script = br#"powershell -Command "Invoke-WmiMethod -Com target.example -Class Win32_Process -Name Create -ArgumentList 'cmd /c hostname'"
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteExec { tool, target_host }
+                    if tool == "Invoke-WmiMethod" && target_host == "target.example"
+            )),
+            "PowerShell WMI short ComputerName parameter missed: {:?}",
+            report.traits
+        );
     }
 
     #[test]
@@ -34950,6 +35093,113 @@ powershell -Command "Set-MpPreference -DisableArchiveScanning $true -DisableEmai
                 report.traits
             );
         }
+    }
+
+    #[test]
+    fn powershell_connection_tests_emit_network_probe() {
+        let script =
+            br#"powershell -Command "Test-NetConnection -ComputerName c2.example -Port 443"
+powershell -Command "Test-Connection files.example -Count 1"
+"#;
+        let report = analyze(script, &Config::default());
+
+        for (probe_kind, target) in [
+            ("tcp-connect", "c2.example"),
+            ("icmp-ping", "files.example"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::NetworkProbe {
+                        probe_kind: kind,
+                        target: existing_target,
+                    } if kind == probe_kind && existing_target == target
+                )),
+                "missing PowerShell network probe {probe_kind} {target}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn powershell_tnc_alias_emits_network_probe() {
+        let report = analyze(
+            br#"powershell -Command "tnc -ComputerName c2-alias.example -Port 443""#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::NetworkProbe { probe_kind, target }
+                    if probe_kind == "tcp-connect" && target == "c2-alias.example"
+            )),
+            "PowerShell tnc alias network probe missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_wrapped_ping_emits_network_probe() {
+        let report = analyze(
+            br#"powershell -Command "ping c2-ping.example -n 1""#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::NetworkProbe { probe_kind, target }
+                    if probe_kind == "icmp-ping" && target == "c2-ping.example"
+            )),
+            "PowerShell-wrapped ping network probe missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_wrapped_native_probe_commands_emit_network_probes() {
+        let report = analyze(
+            br#"powershell -Command "nslookup dns-wrapper.example"
+powershell -Command "tracert route-wrapper.example"
+"#,
+            &Config::default(),
+        );
+
+        for (probe_kind, target) in [
+            ("dns-lookup", "dns-wrapper.example"),
+            ("route-trace", "route-wrapper.example"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::NetworkProbe {
+                        probe_kind: kind,
+                        target: existing_target,
+                    } if kind == probe_kind && existing_target == target
+                )),
+                "missing PowerShell-wrapped native probe {probe_kind} {target}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
+    fn powershell_wrapped_nslookup_attached_option_keeps_target() {
+        let report = analyze(
+            br#"powershell -Command "nslookup -type=A dns-option-wrapper.example""#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::NetworkProbe { probe_kind, target }
+                    if probe_kind == "dns-lookup" && target == "dns-option-wrapper.example"
+            )),
+            "PowerShell-wrapped nslookup option target missing: {:?}",
+            report.traits
+        );
     }
 
     #[test]
