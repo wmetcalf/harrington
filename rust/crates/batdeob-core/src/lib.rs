@@ -38768,6 +38768,25 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_string_line_continuation_joins_url() {
+        let mut env = Environment::new(&Config::default());
+        let js = b"fetch(\"https://js-line-cont.example/sta\\\r\nge\")".to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://js-line-cont.example/stage"
+                )
+            }),
+            "JS line-continuation URL was not joined: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_single_quoted_string_with_non_ascii_char_not_truncated() {
         // Regression: `c as u8 == quote` truncated a `char` codepoint to its
         // low byte, so 'ħ' (U+0127, low byte 0x27 = `'`) used to close the

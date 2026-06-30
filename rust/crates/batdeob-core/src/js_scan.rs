@@ -106,6 +106,7 @@ pub fn scan_js_payloads(env: &mut Environment) {
         let raw = String::from_utf8_lossy(payload).into_owned();
         // First pass: decode \uXXXX escapes
         let decoded = decode_u_escapes(&raw);
+        let decoded = collapse_js_escaped_line_continuations(&decoded);
         // Second pass: collapse "a"+"b"+"c" concat
         let concat_resolved = expand_js_string_concat(&decoded);
         let mut candidates = vec![concat_resolved.clone()];
@@ -621,6 +622,36 @@ fn percent_decode_lenient(text: &str) -> String {
         i += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+fn collapse_js_escaped_line_continuations(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut cursor = 0usize;
+    while cursor < text.len() {
+        if bytes.get(cursor) == Some(&b'\\') {
+            match bytes.get(cursor + 1) {
+                Some(b'\r') => {
+                    cursor += 2;
+                    if bytes.get(cursor) == Some(&b'\n') {
+                        cursor += 1;
+                    }
+                    continue;
+                }
+                Some(b'\n') => {
+                    cursor += 2;
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        let Some(ch) = text[cursor..].chars().next() else {
+            break;
+        };
+        out.push(ch);
+        cursor += ch.len_utf8();
+    }
+    out
 }
 
 fn decoded_js_variable_string_bindings(text: &str) -> Vec<String> {
@@ -3083,6 +3114,17 @@ fn parse_js_string_literal_at(text: &str, start: usize) -> Option<(usize, String
             break;
         };
         match next {
+            '\r' => {
+                let _ = chars.next();
+                if matches!(chars.peek(), Some(&(_, '\n'))) {
+                    let _ = chars.next();
+                }
+                continue;
+            }
+            '\n' => {
+                let _ = chars.next();
+                continue;
+            }
             'n' => value.push('\n'),
             't' => value.push('\t'),
             'r' => value.push('\r'),
