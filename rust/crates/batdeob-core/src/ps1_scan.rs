@@ -127,7 +127,7 @@ static SELF_B64_MATCH_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static FILE_B64_XOR_LOADER_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\d{1,3})\s*;.*?\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\(\s*(?:gc|Get-Content)\s*['"]([^'"]+)['"]\s*\)\s*-join\s*['"]{2}.*?\[Convert\]::FromBase64String\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\).*?-bxor\s*\$([A-Za-z_][A-Za-z0-9_]*)"#,
+        r#"(?is)\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\d{1,3})\s*;.*?\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\(?\s*(?:gc|cat|Get-Content)\b(?:\s+-(?:Raw|Path|LiteralPath))*\s+['"]([^'"]+)['"](?:\s+-(?:Raw))*\s*\)?(?:\s*-join\s*['"]{2})?.*?\[(?:System\.)?Convert\]::FromBase64String\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\).*?-bxor\s*\$([A-Za-z_][A-Za-z0-9_]*)"#,
     )
     .expect("file b64 xor loader regex")
 });
@@ -2528,12 +2528,14 @@ mod getstring_wrapper_prefilter_tests {
 
 #[allow(clippy::expect_used)]
 static REPLACE_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"'([^'\\]*(?:\\.[^'\\]*)*)'\s*-replace\s*'([^'\\]*(?:\\.[^'\\]*)*)'\s*,\s*'([^'\\]*(?:\\.[^'\\]*)*)'"#)
+    Regex::new(r#"(?is)(?:'((?:''|[^'])*)'|"([^"]*)")\s*-(i?replace)\s*(?:'((?:''|[^'])*)'|"([^"]*)")\s*,\s*(?:'((?:''|[^'])*)'|"([^"]*)")"#)
         .expect("replace")
 });
 
 fn expand_ps_replace(text: &str) -> String {
-    if !contains_ascii_case_insensitive(text, "-replace") {
+    if !contains_ascii_case_insensitive(text, "-replace")
+        && !contains_ascii_case_insensitive(text, "-ireplace")
+    {
         return text.to_string();
     }
     let mut out = text.to_string();
@@ -2544,10 +2546,15 @@ fn expand_ps_replace(text: &str) -> String {
             .captures_iter(&out)
             .filter_map(|caps| {
                 let full = caps.get(0)?;
-                let haystack = caps.get(1)?.as_str();
-                let needle = caps.get(2)?.as_str();
-                let repl = caps.get(3)?.as_str();
-                let new_str = haystack.replace(needle, repl);
+                let haystack = ps_capture_string(&caps, 1, 2)?;
+                let operator = caps.get(3)?.as_str();
+                let needle = ps_capture_string(&caps, 4, 5)?;
+                let repl = ps_capture_string(&caps, 6, 7)?;
+                let new_str = if operator.eq_ignore_ascii_case("ireplace") {
+                    replace_ascii_case_insensitive(&haystack, &needle, &repl)
+                } else {
+                    haystack.replace(&needle, &repl)
+                };
                 Some((full.start(), full.end(), format!("'{}'", new_str)))
             })
             .collect();
@@ -2583,14 +2590,7 @@ fn expand_ps_dot_replace(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut matches = Vec::new();
     let mut start = 0;
-    while let Some(rel) = text[start..].find('\'') {
-        let literal_start = start + rel;
-        let Some((literal_end, haystack)) = parse_ps_single_quoted_literal(text, literal_start)
-        else {
-            start = literal_start + 1;
-            continue;
-        };
-
+    while let Some((literal_start, literal_end, haystack)) = next_ps_quoted_literal(text, start) {
         let mut pos = skip_ascii_ws(bytes, literal_end);
         if bytes.get(pos) != Some(&b'.') {
             start = literal_end;
@@ -2616,7 +2616,7 @@ fn expand_ps_dot_replace(text: &str) -> String {
             continue;
         }
         pos = skip_ascii_ws(bytes, pos + 1);
-        let Some((needle_end, needle)) = parse_ps_single_quoted_literal(text, pos) else {
+        let Some((needle_end, needle)) = parse_ps_quoted_literal(text, pos) else {
             start = literal_end;
             continue;
         };
@@ -2626,7 +2626,7 @@ fn expand_ps_dot_replace(text: &str) -> String {
             continue;
         }
         pos = skip_ascii_ws(bytes, pos + 1);
-        let Some((repl_end, repl)) = parse_ps_single_quoted_literal(text, pos) else {
+        let Some((repl_end, repl)) = parse_ps_quoted_literal(text, pos) else {
             start = literal_end;
             continue;
         };
@@ -2694,6 +2694,92 @@ static SINGLE_LITERAL_JOIN_RE: Lazy<Regex> = Lazy::new(|| {
     )
     .expect("single literal join")
 });
+
+#[allow(clippy::expect_used)]
+static SPLIT_JOIN_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)\(\s*\(?\s*(?:'((?:''|[^'])*)'|"([^"]*)")\s*-i?split\s*(?:'((?:''|[^'])*)'|"([^"]*)")\s*\)?\s*-join\s*(?:'((?:''|[^'])*)'|"([^"]*)")\s*\)"#,
+    )
+    .expect("split join literal")
+});
+
+#[allow(clippy::expect_used)]
+static LITERAL_SUBSTRING_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)(?:'((?:''|[^'])*)'|"([^"]*)")\s*\.\s*Substring\s*\(\s*(\d+)\s*(?:,\s*(\d+)\s*)?\)"#,
+    )
+    .expect("literal substring")
+});
+
+fn expand_ps_split_join_literals(text: &str) -> String {
+    if !contains_ascii_case_insensitive(text, "split")
+        || !contains_ascii_case_insensitive(text, "-join")
+    {
+        return text.to_string();
+    }
+    let matches: Vec<(usize, usize, String)> = SPLIT_JOIN_LITERAL_RE
+        .captures_iter(text)
+        .filter_map(|caps| {
+            let full = caps.get(0)?;
+            let haystack = ps_capture_string(&caps, 1, 2)?;
+            let split = normalize_simple_ps_split_separator(&ps_capture_string(&caps, 3, 4)?);
+            let join = ps_capture_string(&caps, 5, 6)?;
+            if split.is_empty() {
+                return None;
+            }
+            Some((
+                full.start(),
+                full.end(),
+                format!(
+                    "'{}'",
+                    haystack.split(&split).collect::<Vec<_>>().join(&join)
+                ),
+            ))
+        })
+        .collect();
+    let mut out = text.to_string();
+    for (start, end, replacement) in matches.into_iter().rev() {
+        out.replace_range(start..end, &replacement);
+    }
+    out
+}
+
+fn expand_ps_literal_substring(text: &str) -> String {
+    if !contains_ascii_case_insensitive(text, ".substring(") {
+        return text.to_string();
+    }
+    let matches: Vec<(usize, usize, String)> = LITERAL_SUBSTRING_RE
+        .captures_iter(text)
+        .filter_map(|caps| {
+            let full = caps.get(0)?;
+            let value = ps_capture_string(&caps, 1, 2)?;
+            let start: usize = caps.get(3)?.as_str().parse().ok()?;
+            let chars: Vec<char> = value.chars().collect();
+            if start > chars.len() {
+                return None;
+            }
+            let end = if let Some(len) = caps.get(4) {
+                start.saturating_add(len.as_str().parse::<usize>().ok()?)
+            } else {
+                chars.len()
+            };
+            if end > chars.len() {
+                return None;
+            }
+            let substring: String = chars[start..end].iter().collect();
+            Some((
+                full.start(),
+                full.end(),
+                format!("'{}'", substring.replace('\'', "''")),
+            ))
+        })
+        .collect();
+    let mut out = text.to_string();
+    for (start, end, replacement) in matches.into_iter().rev() {
+        out.replace_range(start..end, &replacement);
+    }
+    out
+}
 
 fn expand_single_literal_join(text: &str) -> String {
     if !contains_ascii_case_insensitive(text, "-join") {
@@ -3075,9 +3161,28 @@ static PS_JOIN_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static PS_BRACED_DOUBLE_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"([^"\r\n;=]*\$\{[A-Za-z_][A-Za-z0-9_]*\}[^"\r\n;=]*)""#,
+    )
+    .expect("ps braced double assign")
+});
+
+#[allow(clippy::expect_used)]
 static PS_VAR_REF_RE: Lazy<Regex> = Lazy::new(|| {
     // $name reference
     Regex::new(r#"\$([A-Za-z_][A-Za-z0-9_]*)"#).expect("ps var ref")
+});
+
+#[allow(clippy::expect_used)]
+static PS_INTERPOLATED_VAR_REF_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)"#)
+        .expect("ps interpolated var ref")
+});
+
+#[allow(clippy::expect_used)]
+static PS_SIMPLE_DOUBLE_QUOTED_VAR_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#""([^"\r\n;=]*\$[A-Za-z_{][^"\r\n;=]*)""#).expect("ps simple double quoted var")
 });
 
 #[allow(clippy::expect_used)]
@@ -3248,6 +3353,14 @@ fn expand_ps_variables(text: &str) -> String {
             bindings.insert(dst.as_str().to_ascii_lowercase(), joined);
         }
     }
+    for caps in PS_BRACED_DOUBLE_ASSIGN_RE.captures_iter(text) {
+        let (Some(dst), Some(value)) = (caps.get(1), caps.get(2)) else {
+            continue;
+        };
+        if let Some(resolved) = resolve_ps_interpolated_string(value.as_str(), &bindings) {
+            bindings.insert(dst.as_str().to_ascii_lowercase(), resolved);
+        }
+    }
     for caps in PS_VAR_CONCAT_ASSIGN_RE.captures_iter(text) {
         let (Some(dst), Some(rhs)) = (caps.get(1), caps.get(2)) else {
             continue;
@@ -3273,16 +3386,18 @@ fn expand_ps_variables(text: &str) -> String {
         return text.to_string();
     }
 
+    let expanded_text = expand_simple_double_quoted_var_literals(text, &bindings);
+
     // Replace $name references with 'value' (quoted, so URL regexes still match).
     // Collect all replacements from original text, then apply in reverse order.
     let matches: Vec<(usize, usize, String)> = PS_VAR_REF_RE
-        .captures_iter(text)
+        .captures_iter(&expanded_text)
         .filter_map(|caps| {
             let full = caps.get(0)?;
             let name = caps.get(1)?.as_str();
             // Don't replace inside assignment LHS — heuristic: skip refs
             // immediately followed by an assignment operator, but not equality.
-            let after = &text[full.end()..];
+            let after = &expanded_text[full.end()..];
             let after_trim = after.trim_start();
             if is_ps_assignment_operator(after_trim) {
                 return None;
@@ -3296,6 +3411,51 @@ fn expand_ps_variables(text: &str) -> String {
         })
         .collect();
 
+    let mut out = expanded_text;
+    for (start, end, replacement) in matches.into_iter().rev() {
+        out.replace_range(start..end, &replacement);
+    }
+    out
+}
+
+fn resolve_ps_interpolated_string(
+    value: &str,
+    bindings: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    let mut out = String::new();
+    let mut cursor = 0;
+    for caps in PS_INTERPOLATED_VAR_REF_RE.captures_iter(value) {
+        let full = caps.get(0)?;
+        out.push_str(&value[cursor..full.start()]);
+        let name = caps.get(1).or_else(|| caps.get(2))?.as_str();
+        let replacement = bindings.get(&name.to_ascii_lowercase())?;
+        out.push_str(replacement);
+        cursor = full.end();
+    }
+    if cursor == 0 {
+        return None;
+    }
+    out.push_str(&value[cursor..]);
+    Some(out)
+}
+
+fn expand_simple_double_quoted_var_literals(
+    text: &str,
+    bindings: &std::collections::HashMap<String, String>,
+) -> String {
+    let matches: Vec<(usize, usize, String)> = PS_SIMPLE_DOUBLE_QUOTED_VAR_RE
+        .captures_iter(text)
+        .filter_map(|caps| {
+            let full = caps.get(0)?;
+            let value = caps.get(1)?.as_str();
+            let resolved = resolve_ps_interpolated_string(value, bindings)?;
+            Some((
+                full.start(),
+                full.end(),
+                format!("\"{}\"", resolved.replace('"', "`\"")),
+            ))
+        })
+        .collect();
     let mut out = text.to_string();
     for (start, end, replacement) in matches.into_iter().rev() {
         out.replace_range(start..end, &replacement);
@@ -3999,6 +4159,89 @@ fn parse_ps_single_quoted_literal(text: &str, start: usize) -> Option<(usize, St
     None
 }
 
+fn parse_ps_double_quoted_literal(text: &str, start: usize) -> Option<(usize, String)> {
+    let bytes = text.as_bytes();
+    if bytes.get(start).copied() != Some(b'"') {
+        return None;
+    }
+    let mut pos = start + 1;
+    let mut out = String::new();
+    while pos < bytes.len() {
+        let byte = bytes[pos];
+        if byte == b'"' {
+            return Some((pos + 1, out));
+        }
+        if byte == b'`' {
+            let escaped = *bytes.get(pos + 1)?;
+            out.push(escaped as char);
+            pos += 2;
+            continue;
+        }
+        if byte == b'$' {
+            return None;
+        }
+        if byte.is_ascii() {
+            out.push(byte as char);
+            pos += 1;
+            continue;
+        }
+        let (ch, ch_len) = next_char_at(text, pos)?;
+        out.push(ch);
+        pos += ch_len;
+    }
+    None
+}
+
+fn parse_ps_quoted_literal(text: &str, start: usize) -> Option<(usize, String)> {
+    parse_ps_single_quoted_literal(text, start)
+        .or_else(|| parse_ps_double_quoted_literal(text, start))
+}
+
+fn next_ps_quoted_literal(text: &str, start: usize) -> Option<(usize, usize, String)> {
+    let mut idx = start;
+    while idx < text.len() {
+        let rel = text[idx..].find(['\'', '"'])?;
+        let literal_start = idx + rel;
+        if let Some((end, value)) = parse_ps_quoted_literal(text, literal_start) {
+            return Some((literal_start, end, value));
+        }
+        idx = literal_start + 1;
+    }
+    None
+}
+
+fn ps_capture_string(
+    caps: &regex::Captures<'_>,
+    single_idx: usize,
+    double_idx: usize,
+) -> Option<String> {
+    caps.get(single_idx)
+        .map(|m| m.as_str().replace("''", "'"))
+        .or_else(|| {
+            caps.get(double_idx)
+                .map(|m| m.as_str().replace("`\"", "\""))
+        })
+}
+
+fn normalize_simple_ps_split_separator(separator: &str) -> String {
+    let mut out = String::new();
+    let mut escaped = false;
+    for ch in separator.chars() {
+        if escaped {
+            out.push(ch);
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else {
+            out.push(ch);
+        }
+    }
+    if escaped {
+        out.push('\\');
+    }
+    out
+}
+
 #[allow(clippy::expect_used)]
 static SKIP_NTH_FOR_SUBSTRING_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
@@ -4501,6 +4744,8 @@ fn expand_obfuscation(text: &str) -> String {
         out = expand_getstring_wrapper(&out);
         out = expand_reverse_string_slice_join(&out);
         out = expand_single_literal_join(&out);
+        out = expand_ps_split_join_literals(&out);
+        out = expand_ps_literal_substring(&out);
         out = expand_tochararray_reverse_join(&out);
         out = expand_ps_string_join(&out);
         out = expand_ps_string_concat_static(&out);
@@ -4833,7 +5078,7 @@ fn extract_file_backed_xor_ps1(env: &mut Environment, deobfuscated: &str) {
     let mut decoded_payloads = Vec::new();
 
     for payload in payloads {
-        let text = decode_payload(&payload);
+        let text = expand_ps_variables(&decode_payload(&payload));
         let lower = text.to_ascii_lowercase();
         if !lower.contains("frombase64string") || !lower.contains("-bxor") {
             continue;
@@ -5129,12 +5374,25 @@ fn filesystem_content_for_path(env: &Environment, path: &str) -> Option<Vec<u8>>
     env.modified_filesystem
         .iter()
         .find_map(|(candidate, entry)| {
-            if normalize_fs_lookup_path(candidate) == key {
+            if fs_lookup_path_matches(&normalize_fs_lookup_path(candidate), &key) {
                 fs_entry_content(entry)
             } else {
                 None
             }
         })
+}
+
+fn fs_lookup_path_matches(candidate: &str, wanted: &str) -> bool {
+    if candidate == wanted {
+        return true;
+    }
+    let Some(candidate_base) = candidate.rsplit('\\').next() else {
+        return false;
+    };
+    let Some(wanted_base) = wanted.rsplit('\\').next() else {
+        return false;
+    };
+    !candidate_base.is_empty() && candidate_base == wanted_base
 }
 
 fn grouped_echo_content_for_path(deobfuscated: &str, path: &str) -> Option<Vec<u8>> {
