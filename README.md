@@ -1,7 +1,10 @@
-# batdeob — Windows batch deobfuscator
+# Harrington — Windows batch deobfuscator
 
 Static-analysis deobfuscator for Windows `.bat` / `.cmd` scripts. Never
 invokes PowerShell or `cmd.exe`. Runs on Linux, macOS, and Windows.
+
+Harrington is the public name for the tool; the Rust crate and binary
+package names remain `batdeob-core` and `batdeob-cli` for compatibility.
 
 Handles real-world obfuscation: caret-escape, comma/semicolon
 substitution, `%VAR%` and `!VAR!` with substring + substitution
@@ -291,4 +294,6 @@ directly.
 
 ## License
 
-Apache 2.0
+Licensed under [MIT](LICENSE). The Rust port and extensions are
+copyright (c) 2026 Will Metcalf; the underlying Python
+`batch_deobfuscator` algorithm is copyright (c) 2018 Malwrologist.

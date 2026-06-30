@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 #[derive(Parser)]
-#[command(version, about = "Windows batch deobfuscator")]
+#[command(version, about = "Harrington — Windows batch deobfuscator")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
