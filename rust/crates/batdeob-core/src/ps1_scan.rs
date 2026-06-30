@@ -4048,7 +4048,7 @@ static LITERAL_DOT_REPLACE_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static LITERAL_SUBSTRING_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\(([^)]*)\)\s*\{[^{}]*?(?:return\s+)?\$([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Substring\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*,\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)[^{}]*\}"#,
+        r#"(?is)function\s+(?:[A-Za-z_][A-Za-z0-9_]*:)?([A-Za-z_][A-Za-z0-9_-]*)\s*\(([^)]*)\)\s*\{[^{}]*?(?:return\s+)?\$([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Substring\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*,\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)[^{}]*\}"#,
     )
     .expect("literal substring extractor def")
 });
@@ -4056,7 +4056,7 @@ static LITERAL_SUBSTRING_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static LITERAL_CONST_SUBSTRING_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\(([^)]*)\)\s*\{[^{}]*?(?:return\s+)?\$([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Substring\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)[^{}]*\}"#,
+        r#"(?is)function\s+(?:[A-Za-z_][A-Za-z0-9_]*:)?([A-Za-z_][A-Za-z0-9_-]*)\s*\(([^)]*)\)\s*\{[^{}]*?(?:return\s+)?\$([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Substring\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)[^{}]*\}"#,
     )
     .expect("literal constant substring extractor def")
 });
