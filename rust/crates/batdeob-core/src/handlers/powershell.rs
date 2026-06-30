@@ -334,10 +334,18 @@ pub fn h_powershell(raw: &str, env: &mut Environment) {
 }
 
 fn record_powershell_side_effects(body: &str, env: &mut Environment) {
+    record_quoted_literal_redirect_side_effects(body, env);
     record_download_side_effects(body, env);
     record_copy_item_side_effects(body, env);
     record_set_content_value_side_effects(body, env);
     record_get_content_set_content_side_effects(body, env);
+}
+
+fn record_quoted_literal_redirect_side_effects(body: &str, env: &mut Environment) {
+    let Some((literal, dst, append)) = powershell_quoted_literal_redirect(body) else {
+        return;
+    };
+    write_powershell_content(env, &dst, literal.into_bytes(), append);
 }
 
 fn record_download_side_effects(body: &str, env: &mut Environment) {
@@ -433,6 +441,51 @@ fn write_powershell_content(env: &mut Environment, dst: &str, content: Vec<u8>, 
     }
     env.modified_filesystem
         .insert(key, FsEntry::Content { content, append });
+}
+
+fn powershell_quoted_literal_redirect(body: &str) -> Option<(String, String, bool)> {
+    let (op_start, op_len) = final_unquoted_stdout_redirect(body)?;
+    let literal = body[..op_start].trim();
+    let dst = strip_quotes(body[op_start + op_len..].trim());
+    if literal.is_empty() || dst.is_empty() {
+        return None;
+    }
+    if !(literal.starts_with('\'') && literal.ends_with('\'')
+        || literal.starts_with('"') && literal.ends_with('"'))
+    {
+        return None;
+    }
+    Some((
+        literal[1..literal.len() - 1].to_string(),
+        dst.to_string(),
+        op_len == 2,
+    ))
+}
+
+fn final_unquoted_stdout_redirect(body: &str) -> Option<(usize, usize)> {
+    let mut quote: Option<u8> = None;
+    let bytes = body.as_bytes();
+    let mut last = None;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' | b'"' if quote == Some(bytes[i]) => quote = None,
+            b'\'' | b'"' if quote.is_none() => quote = Some(bytes[i]),
+            b'>' if quote.is_none() => {
+                let len = if bytes.get(i + 1) == Some(&b'>') {
+                    2
+                } else {
+                    1
+                };
+                last = Some((i, len));
+                i += len;
+                continue;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    last
 }
 
 fn queue_file_payload_or_url(raw: &str, path: &str, env: &mut Environment) {
