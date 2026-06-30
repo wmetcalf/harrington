@@ -6178,6 +6178,12 @@ pub fn scan_inline_powershell_text(text: &str, env: &mut Environment) {
         max_output_line_bytes: env.limits.max_output_line_bytes,
         max_traits_per_kind: 100,
     });
+    if lower.contains("powershell") || lower.contains("pwsh") {
+        crate::deob_scan::scan_embedded_powershell_invocations(scan_text, &mut payload_env);
+        payload_env
+            .all_extracted_ps1
+            .extend(std::mem::take(&mut payload_env.exec_ps1));
+    }
     payload_env
         .all_extracted_ps1
         .push(scan_text.as_bytes().to_vec());
