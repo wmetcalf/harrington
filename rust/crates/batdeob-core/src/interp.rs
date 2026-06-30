@@ -184,6 +184,11 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
         }
     }
 
+    if raw_invokes_powershell(raw) {
+        crate::handlers::powershell::h_powershell(raw, env);
+        result.consumed = true;
+    }
+
     result
 }
 

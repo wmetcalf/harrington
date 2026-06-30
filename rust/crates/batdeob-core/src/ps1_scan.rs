@@ -134,14 +134,14 @@ static FILE_B64_XOR_LOADER_RE: Lazy<Regex> = Lazy::new(|| {
 
 #[allow(clippy::expect_used)]
 static INLINE_XOR_KEY_ARRAY_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"(?is)\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*@\(\s*((?:\d{1,3}\s*,\s*)*\d{1,3})\s*\)"#)
+    Regex::new(r#"(?is)\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:\[[A-Za-z0-9_.]+(?:\[\])?\]\s*)?@?\(\s*((?:\d{1,3}\s*,\s*)*\d{1,3})\s*\)"#)
         .expect("inline xor key array regex")
 });
 
 #[allow(clippy::expect_used)]
 static INLINE_XOR_FUNCTION_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)\bfunction\s+([A-Za-z_][A-Za-z0-9_]*)\b.*?\[Convert\]::FromBase64String\b.*?-bxor\s*\$([A-Za-z_][A-Za-z0-9_]*)"#,
+        r#"(?is)\bfunction\s+([A-Za-z_][A-Za-z0-9_]*)\b.*?-bxor\s*\$([A-Za-z_][A-Za-z0-9_]*)"#,
     )
     .expect("inline xor function regex")
 });
@@ -1532,9 +1532,7 @@ fn append_decoded_inline_xor_base64_functions(text: &str) -> String {
 }
 
 fn decode_inline_xor_base64_functions(text: &str) -> Vec<Vec<u8>> {
-    if !contains_ascii_case_insensitive(text, "-bxor")
-        || !contains_ascii_case_insensitive(text, "frombase64string")
-    {
+    if !contains_ascii_case_insensitive(text, "-bxor") {
         return Vec::new();
     }
 
