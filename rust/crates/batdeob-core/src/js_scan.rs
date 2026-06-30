@@ -428,28 +428,170 @@ fn js_command_download_urls(command: &str) -> Vec<String> {
 
 fn decoded_js_percent_literals(text: &str) -> Vec<String> {
     let mut out = Vec::new();
-    for name in ["decodeURIComponent", "unescape"] {
+    let mut string_bindings = collect_js_string_literal_bindings(text);
+    let array_bindings = collect_js_string_array_bindings(text, &string_bindings);
+    string_bindings.extend(collect_js_array_index_string_bindings(
+        text,
+        &string_bindings,
+        &array_bindings,
+    ));
+    let percent_aliases =
+        collect_js_percent_decode_alias_bindings(text, "decodeURIComponent", &string_bindings);
+    for name in ["decodeURIComponent", "decodeURI", "unescape"] {
         let mut cursor = 0usize;
         while let Some(rel) = find_ascii_case_insensitive(&text[cursor..], name) {
             let name_start = cursor + rel;
             let name_end = name_start + name.len();
-            let open = skip_ascii_ws(text, name_end);
-            if text.as_bytes().get(open) != Some(&b'(') {
+            let Some((arg_end, value)) =
+                parse_js_percent_decode_arg(text, name_end, &string_bindings, &array_bindings)
+            else {
                 cursor = name_end;
-                continue;
-            }
-            let literal_start = skip_ascii_ws(text, open + 1);
-            let Some((literal_end, value)) = parse_js_string_literal_at(text, literal_start) else {
-                cursor = open + 1;
                 continue;
             };
             if value.len() <= 8192 {
                 out.push(percent_decode_lenient(&value));
             }
-            cursor = literal_end;
+            cursor = arg_end;
         }
     }
+    let mut cursor = 0usize;
+    while cursor < text.len() {
+        let Some((ident_end, name)) = parse_js_identifier_at(text, cursor) else {
+            cursor += text[cursor..]
+                .chars()
+                .next()
+                .map(char::len_utf8)
+                .unwrap_or(1);
+            continue;
+        };
+        if !percent_aliases.contains(name) {
+            cursor = ident_end;
+            continue;
+        }
+        let Some((arg_end, value)) =
+            parse_js_percent_decode_arg(text, ident_end, &string_bindings, &array_bindings)
+        else {
+            cursor = ident_end;
+            continue;
+        };
+        if value.len() <= 8192 {
+            out.push(percent_decode_lenient(&value));
+        }
+        cursor = arg_end;
+    }
+    let mut cursor = 0usize;
+    while cursor < text.len() {
+        let Some((member_end, method)) =
+            parse_js_window_member_call_name(text, cursor, &string_bindings)
+        else {
+            cursor += text[cursor..]
+                .chars()
+                .next()
+                .map(char::len_utf8)
+                .unwrap_or(1);
+            continue;
+        };
+        if method != "decodeURIComponent" {
+            cursor = member_end;
+            continue;
+        }
+        let Some((arg_end, value)) =
+            parse_js_percent_decode_arg(text, member_end, &string_bindings, &array_bindings)
+        else {
+            cursor = member_end;
+            continue;
+        };
+        if value.len() <= 8192 {
+            out.push(percent_decode_lenient(&value));
+        }
+        cursor = arg_end;
+    }
     out
+}
+
+fn parse_js_window_member_call_name(
+    text: &str,
+    start: usize,
+    string_bindings: &std::collections::HashMap<String, String>,
+) -> Option<(usize, String)> {
+    let (object_end, object) = parse_js_identifier_at(text, start)?;
+    if object != "window" {
+        return None;
+    }
+    let bracket_open = skip_ascii_ws(text, object_end);
+    if text.as_bytes().get(bracket_open) != Some(&b'[') {
+        return None;
+    }
+    let member_start = skip_ascii_ws(text, bracket_open + 1);
+    let (member_end, member_name) =
+        parse_js_string_or_bound_arg(text, member_start, string_bindings)?;
+    let bracket_close = skip_ascii_ws(text, member_end);
+    if text.as_bytes().get(bracket_close) != Some(&b']') {
+        return None;
+    }
+    Some((bracket_close + 1, member_name))
+}
+
+fn collect_js_percent_decode_alias_bindings(
+    text: &str,
+    method: &str,
+    string_bindings: &std::collections::HashMap<String, String>,
+) -> std::collections::HashSet<String> {
+    let mut aliases = std::collections::HashSet::new();
+    for caps in JS_STRING_ASSIGN_RE.captures_iter(text) {
+        if aliases.len() >= 64 {
+            break;
+        }
+        let Some(name) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(expr) = caps.get(2).map(|m| m.as_str().trim()) else {
+            continue;
+        };
+        if is_js_window_function_reference(expr, method, string_bindings) {
+            aliases.insert(name.to_string());
+        }
+    }
+    aliases
+}
+
+fn parse_js_percent_decode_arg(
+    text: &str,
+    callee_end: usize,
+    bindings: &std::collections::HashMap<String, String>,
+    arrays: &std::collections::HashMap<String, Vec<String>>,
+) -> Option<(usize, String)> {
+    if let Some(open) = consume_js_call_open(text, callee_end) {
+        let arg_start = skip_ascii_ws(text, open + 1);
+        let close = find_js_balanced_paren_close(text, open + 1)?;
+        return parse_js_atob_value_arg_until(text, arg_start, close, bindings, arrays);
+    }
+
+    if let Some(open) = consume_js_method_open(text, callee_end, "call") {
+        let comma = find_js_call_comma(text, skip_ascii_ws(text, open + 1))?;
+        let arg_start = skip_ascii_ws(text, comma + 1);
+        let close = find_js_balanced_paren_close(text, open + 1)?;
+        return parse_js_atob_value_arg_until(text, arg_start, close, bindings, arrays);
+    }
+
+    if let Some(open) = consume_js_method_open(text, callee_end, "apply") {
+        let first_arg_end = skip_js_call_arg(text, skip_ascii_ws(text, open + 1))?;
+        let comma = skip_ascii_ws(text, first_arg_end);
+        if text.as_bytes().get(comma) != Some(&b',') {
+            return None;
+        }
+        let array_start = skip_ascii_ws(text, comma + 1);
+        let (array_end, parts) =
+            parse_js_string_array_value_arg_at(text, array_start, bindings, arrays)?;
+        let close = skip_ascii_ws(text, array_end);
+        if text.as_bytes().get(close) != Some(&b')') {
+            return None;
+        }
+        let value = parts.into_iter().find(|part| !part.is_empty())?;
+        return Some((close + 1, value));
+    }
+
+    None
 }
 
 fn percent_decode_lenient(text: &str) -> String {
@@ -1052,21 +1194,22 @@ fn collect_js_atob_alias_bindings(
         let Some(expr) = caps.get(2).map(|m| m.as_str().trim()) else {
             continue;
         };
-        if is_js_atob_function_reference(expr, string_bindings) {
+        if is_js_window_function_reference(expr, "atob", string_bindings) {
             aliases.insert(name.to_string());
         }
     }
     aliases
 }
 
-fn is_js_atob_function_reference(
+fn is_js_window_function_reference(
     expr: &str,
+    target: &str,
     string_bindings: &std::collections::HashMap<String, String>,
 ) -> bool {
     let Some((object_end, object)) = parse_js_identifier_at(expr, 0) else {
         return false;
     };
-    if object == "atob" {
+    if object == target {
         return skip_ascii_ws(expr, object_end) == expr.len();
     }
     if object != "window" {
@@ -1078,7 +1221,7 @@ fn is_js_atob_function_reference(
         let Some((method_end, method)) = parse_js_identifier_at(expr, method_start) else {
             return false;
         };
-        return method == "atob" && skip_ascii_ws(expr, method_end) == expr.len();
+        return method == target && skip_ascii_ws(expr, method_end) == expr.len();
     }
     if expr.as_bytes().get(member) != Some(&b'[') {
         return false;
@@ -1090,7 +1233,7 @@ fn is_js_atob_function_reference(
         return false;
     };
     let close = skip_ascii_ws(expr, method_end);
-    method == "atob"
+    method == target
         && expr.as_bytes().get(close) == Some(&b']')
         && skip_ascii_ws(expr, close + 1) == expr.len()
 }
@@ -1177,6 +1320,9 @@ fn parse_js_array_value_arg_at(
     let parts = arrays.get(name)?;
     if let Some(end) = consume_js_no_arg_method(text, ident_end, "shift") {
         return Some((end, parts.first()?.clone()));
+    }
+    if let Some(end) = consume_js_no_arg_method(text, ident_end, "pop") {
+        return Some((end, parts.last()?.clone()));
     }
     if let Some((end, joined)) =
         consume_js_array_join_chain(text, ident_end, parts.clone(), bindings, arrays)

