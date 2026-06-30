@@ -145,6 +145,8 @@ pub struct Environment {
     pub current_line: Option<usize>,
     /// Suppress further commands on the current logical line (set by `if` on false).
     pub suppress_until_eol: bool,
+    /// Current CMD echo state, toggled by `echo on` / `echo off`.
+    pub echo_enabled: bool,
     /// Output accumulator for per-iteration command renders (FOR loops).
     pub iter_output: String,
     /// `:label` → line-index map, rebuilt on each `drive()` entry.
@@ -238,6 +240,7 @@ impl Default for Environment {
             pending_action: None,
             current_line: None,
             suppress_until_eol: false,
+            echo_enabled: true,
             iter_output: String::new(),
             label_index: HashMap::new(),
             call_stack: Vec::new(),

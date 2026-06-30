@@ -11,6 +11,19 @@ use crate::util::contains_ascii_case_insensitive;
 
 const MAX_REEXPAND_DEPTH: u32 = 32;
 
+fn emit_reexpand_depth_capped(env: &mut Environment, variable: &str) {
+    if variable.is_empty() {
+        return;
+    }
+    let capped = Trait::ReExpansionDepthCapped {
+        variable: variable.to_string(),
+        max_depth: MAX_REEXPAND_DEPTH,
+    };
+    if !env.traits.contains(&capped) {
+        env.traits.push(capped);
+    }
+}
+
 fn next_char_at(s: &str, i: usize) -> Option<(char, usize)> {
     let byte = *s.as_bytes().get(i)?;
     if byte.is_ascii() {
@@ -572,6 +585,7 @@ fn expand_var(
     // bare `^` runs would otherwise collapse to a SINGLE `%` / drop the
     // caret during re-normalize, corrupting analyst-visible literals.
     if depth + 1 >= MAX_REEXPAND_DEPTH {
+        emit_reexpand_depth_capped(env, name);
         out.push_str(&value);
         return;
     }
@@ -823,6 +837,7 @@ fn resolve_var_ref(body: &str, env: &mut Environment, _is_bang: bool, depth: u32
     };
     // Re-lex/re-normalize if the resolved value itself contains %/!/^
     if depth + 1 >= MAX_REEXPAND_DEPTH {
+        emit_reexpand_depth_capped(env, name);
         return value;
     }
     if value.contains('%') || value.contains('!') || value.contains('^') {

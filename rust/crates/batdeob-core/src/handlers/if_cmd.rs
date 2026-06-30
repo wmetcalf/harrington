@@ -6,7 +6,7 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 
 // Regex is a compile-time constant; .expect on a literal panic-at-startup is a developer error.
-#[allow(clippy::expect_used)]
+#[expect(clippy::expect_used, reason = "static regex construction")]
 static IF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?i)^[\s@(;,]*if\s+(?P<neg>not\s+)?(?P<rest>.*)$").expect("if regex")
 });

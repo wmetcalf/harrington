@@ -1,6 +1,6 @@
 //! Extract redirection targets from a normalized command string.
 
-#![allow(clippy::expect_used)] // static regex compile
+#![expect(clippy::expect_used, reason = "static regex construction")] // static regex compile
 
 use once_cell::sync::Lazy;
 use regex::Regex;

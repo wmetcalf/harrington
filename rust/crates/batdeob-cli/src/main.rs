@@ -1029,6 +1029,7 @@ fn build_summary(
             | Trait::LineTruncated { .. }
             | Trait::OutputCapped { .. }
             | Trait::DepthCapped { .. }
+            | Trait::ReExpansionDepthCapped { .. }
             | Trait::ChildScriptsCapped
             | Trait::TimeoutHit
             | Trait::IterationCapped { .. } => {
@@ -1043,13 +1044,10 @@ fn build_summary(
         ps_samples.push(s.chars().take(500).collect());
     }
 
-    let preview: String = report.deobfuscated.chars().take(1000).collect();
-
     let mut summary = serde_json::json!({
         "input": input_path,
         "input_size": input.len(),
         "deobfuscated_size": report.deobfuscated.len(),
-        "deobfuscated_preview": preview,
         "downloads": downloads,
         "extracted": {
             "cmd": report.extracted_cmd.len(),
@@ -1079,6 +1077,23 @@ fn extracted_counts(report: &batdeob_core::Report) -> serde_json::Value {
         "powershell": report.extracted_ps1.len(),
         "jscript": report.extracted_jscript.len(),
         "vbs": report.extracted_vbs.len(),
+    })
+}
+
+fn lossy_payloads(payloads: &[Vec<u8>]) -> Vec<String> {
+    payloads
+        .iter()
+        .map(|payload| String::from_utf8_lossy(payload).into_owned())
+        .collect()
+}
+
+fn extracted_payloads(report: &batdeob_core::Report) -> serde_json::Value {
+    serde_json::json!({
+        "cmd": report.extracted_cmd.clone(),
+        "powershell": lossy_payloads(&report.extracted_ps1),
+        "powershell_normalized": report.extracted_ps1_normalized.clone(),
+        "jscript": lossy_payloads(&report.extracted_jscript),
+        "vbs": lossy_payloads(&report.extracted_vbs),
     })
 }
 
@@ -1555,6 +1570,10 @@ fn run() -> Result<()> {
                     obj.insert(
                         "deobfuscated".to_string(),
                         serde_json::Value::String(report.deobfuscated.clone()),
+                    );
+                    obj.insert(
+                        "extracted_payloads".to_string(),
+                        extracted_payloads(&report),
                     );
                 }
             }

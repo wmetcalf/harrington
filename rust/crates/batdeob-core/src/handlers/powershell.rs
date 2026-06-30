@@ -5,8 +5,6 @@
 //! `-Ex`, `-WindowS`, `-NoP`). The obfuscator-friendly variants all resolve
 //! to the same canonical form here so the URL-extraction pipeline sees the
 //! decoded payload regardless of which spelling the sample used.
-#![allow(clippy::expect_used)]
-
 use super::util::{
     filesystem_entry_for_path, filesystem_storage_key, split_words,
     starts_with_ascii_case_insensitive,

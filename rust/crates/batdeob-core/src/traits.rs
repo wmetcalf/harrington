@@ -85,6 +85,9 @@ pub enum Trait {
         target: String,
         append: bool,
     },
+    EchoStateChange {
+        enabled: bool,
+    },
     SetlocalScope {
         enabled_delayed: bool,
     },
@@ -95,6 +98,10 @@ pub enum Trait {
     },
     DepthCapped {
         command: String,
+    },
+    ReExpansionDepthCapped {
+        variable: String,
+        max_depth: u32,
     },
     ChildScriptsCapped,
     TimeoutHit,

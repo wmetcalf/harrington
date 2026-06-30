@@ -13,35 +13,35 @@ use regex::Regex;
 const MAX_EXECUTE_COUNT: usize = 100;
 const MAX_EXECUTE_EXPANSION_BYTES: usize = 1024 * 1024;
 
-#[allow(clippy::expect_used)]
+#[expect(clippy::expect_used, reason = "static regex construction")]
 static XMLHTTP_OPEN_RE: Lazy<Regex> = Lazy::new(|| {
     // http.Open "GET", "url", False  /  http.Open "POST", "url", False
     Regex::new(r#"(?i)\.Open\s*[("]?\s*"[A-Z]+"\s*,\s*"([^"]+)""#).expect("xmlhttp")
 });
 
-#[allow(clippy::expect_used)]
+#[expect(clippy::expect_used, reason = "static regex construction")]
 static XMLHTTP_OPEN_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?i)\.Open\s*[("]?\s*"[A-Z]+"\s*,\s*([A-Za-z_][A-Za-z0-9_]*)\b"#)
         .expect("xmlhttp variable")
 });
 
-#[allow(clippy::expect_used)]
+#[expect(clippy::expect_used, reason = "static regex construction")]
 static VBS_STRING_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?im)^\s*(?:Const\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+?)\s*$"#)
         .expect("vbs string assignment")
 });
 
-#[allow(clippy::expect_used)]
+#[expect(clippy::expect_used, reason = "static regex construction")]
 static SAVETOFILE_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"(?i)\.SaveToFile\s*\(?\s*"([^"]+)""#).expect("savetofile"));
 
-#[allow(clippy::expect_used)]
+#[expect(clippy::expect_used, reason = "static regex construction")]
 static URLDOWN_RE: Lazy<Regex> = Lazy::new(|| {
     // URLDownloadToFile
     Regex::new(r#"(?i)URLDownloadToFile[^"]*"([^"]+)""#).expect("urldown")
 });
 
-#[allow(clippy::expect_used)]
+#[expect(clippy::expect_used, reason = "static regex construction")]
 static URLDOWN_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?i)\bURLDownloadToFile(?:A|W)?\b\s*\(?\s*(?:[^,\r\n]+,\s*)?([A-Za-z_][A-Za-z0-9_]*)\b"#,
@@ -49,7 +49,7 @@ static URLDOWN_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("urldown variable")
 });
 
-#[allow(clippy::expect_used)]
+#[expect(clippy::expect_used, reason = "static regex construction")]
 static RESPONSE_REDIRECT_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?i)\bResponse\.Redirect\s*\(?\s*"([^"]+)""#).expect("response redirect")
 });

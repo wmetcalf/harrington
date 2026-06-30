@@ -21,40 +21,40 @@ const MAX_STAGE_OUTPUT: usize = 16 * 1024 * 1024;
 const MAX_URLS_PER_SAMPLE: usize = 16;
 const MAX_ENVELOPE_CHUNKS: usize = 64;
 
-#[allow(clippy::expect_used)]
+#[expect(clippy::expect_used, reason = "static regex construction")]
 static STAGE1_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"'([^']{200,})'\s*\.\s*Replace\s*\(\s*'([^']{2,40})'\s*,\s*''\s*\)")
         .expect("stage1 re")
 });
 
-#[allow(clippy::expect_used)]
+#[expect(clippy::expect_used, reason = "static regex construction")]
 static PS_KEY_BYTES_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?is)\.Key\s*=\s*(?:\[\s*byte\s*\[\s*\]\s*\]\s*@?\(\s*([^)]+)\)|\[\s*(by[0-9A-Za-z]{2}\s*,[^)]+)\))")
         .expect("ps key bytes re")
 });
 
-#[allow(clippy::expect_used)]
+#[expect(clippy::expect_used, reason = "static regex construction")]
 static PS_IV_BYTES_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?is)\.IV\s*=\s*(?:\[\s*byte\s*\[\s*\]\s*\]\s*@?\(\s*([^)]+)\)|\[\s*(by[0-9A-Za-z]{2}\s*,[^)]+)\))")
         .expect("ps iv bytes re")
 });
 
-#[allow(clippy::expect_used)]
+#[expect(clippy::expect_used, reason = "static regex construction")]
 static PS_B64_ASSIGNMENT_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?is)\$[A-Za-z_][A-Za-z0-9_]*\s*=\s*\(?\s*['"]([A-Za-z0-9+/=]{80,})['"]\s*\)?"#)
         .expect("ps b64 assignment re")
 });
 
-#[allow(clippy::expect_used)]
+#[expect(clippy::expect_used, reason = "static regex construction")]
 static SIMPLE_AES_COLON_PAYLOAD_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?m)^::\s?([A-Za-z0-9+/\\=]{200,})"#).expect("simple aes colon payload re")
 });
 
-#[allow(clippy::expect_used)]
+#[expect(clippy::expect_used, reason = "static regex construction")]
 static SIMPLE_AES_KEY_B64_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"['"]([A-Za-z0-9+/]{43}=)['"]\s*\)"#).expect("simple aes key re"));
 
-#[allow(clippy::expect_used)]
+#[expect(clippy::expect_used, reason = "static regex construction")]
 static SIMPLE_AES_IV_B64_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"['"]([A-Za-z0-9+/]{22}==)['"]\s*\)"#).expect("simple aes iv re"));
 

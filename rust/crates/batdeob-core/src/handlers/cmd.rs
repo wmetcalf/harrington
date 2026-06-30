@@ -1,5 +1,5 @@
 //! cmd / cmd.exe / *cmd.exe handler — extracts the /c or /r body.
-#![allow(clippy::expect_used)]
+#![expect(clippy::expect_used, reason = "static regex construction")]
 
 use crate::env::{Environment, FsEntry};
 use crate::util::find_ascii_case_insensitive_from;

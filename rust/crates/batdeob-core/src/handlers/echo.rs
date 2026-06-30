@@ -17,7 +17,10 @@ pub fn h_echo(raw: &str, env: &mut Environment) {
     let after_echo = strip_echo_prefix(body).unwrap_or(&cleaned);
     let payload = after_echo.trim_start().to_string();
 
-    let Some(target) = redir.stdout else { return };
+    let Some(target) = redir.stdout else {
+        update_echo_state(&payload, env);
+        return;
+    };
     let path = target.path().to_string();
     let append = target.append();
 
@@ -59,6 +62,21 @@ pub fn h_echo(raw: &str, env: &mut Environment) {
             append,
         },
     );
+}
+
+fn update_echo_state(payload: &str, env: &mut Environment) {
+    let desired = if payload.eq_ignore_ascii_case("off") {
+        Some(false)
+    } else if payload.eq_ignore_ascii_case("on") {
+        Some(true)
+    } else {
+        None
+    };
+    let Some(enabled) = desired else { return };
+    if env.echo_enabled != enabled {
+        env.echo_enabled = enabled;
+        env.traits.push(Trait::EchoStateChange { enabled });
+    }
 }
 
 fn strip_echo_prefix(raw: &str) -> Option<&str> {
