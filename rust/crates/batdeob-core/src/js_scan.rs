@@ -605,23 +605,57 @@ fn parse_js_percent_decode_arg(
 
 fn percent_decode_lenient(text: &str) -> String {
     let bytes = text.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
+    let mut out = String::with_capacity(text.len());
+    let mut byte_run = Vec::new();
     let mut i = 0;
     while i < bytes.len() {
+        if bytes[i] == b'%'
+            && bytes
+                .get(i + 1)
+                .is_some_and(|byte| matches!(*byte, b'u' | b'U'))
+            && i + 5 < bytes.len()
+        {
+            if let (Some(h1), Some(h2), Some(h3), Some(h4)) = (
+                (bytes[i + 2] as char).to_digit(16),
+                (bytes[i + 3] as char).to_digit(16),
+                (bytes[i + 4] as char).to_digit(16),
+                (bytes[i + 5] as char).to_digit(16),
+            ) {
+                if !byte_run.is_empty() {
+                    out.push_str(&String::from_utf8_lossy(&byte_run));
+                    byte_run.clear();
+                }
+                let value = (h1 << 12) | (h2 << 8) | (h3 << 4) | h4;
+                if let Some(ch) = char::from_u32(value) {
+                    out.push(ch);
+                } else {
+                    out.push('\u{fffd}');
+                }
+                i += 6;
+                continue;
+            }
+        }
         if bytes[i] == b'%' && i + 2 < bytes.len() {
             if let (Some(h1), Some(h2)) = (
                 (bytes[i + 1] as char).to_digit(16),
                 (bytes[i + 2] as char).to_digit(16),
             ) {
-                out.push((h1 * 16 + h2) as u8);
+                byte_run.push((h1 * 16 + h2) as u8);
                 i += 3;
                 continue;
             }
         }
-        out.push(bytes[i]);
+        if !byte_run.is_empty() {
+            out.push_str(&String::from_utf8_lossy(&byte_run));
+            byte_run.clear();
+        }
+        out.push(bytes[i] as char);
         i += 1;
     }
-    String::from_utf8_lossy(&out).into_owned()
+    if !byte_run.is_empty() {
+        out.push_str(&String::from_utf8_lossy(&byte_run));
+    }
+    out
 }
 
 fn collapse_js_escaped_line_continuations(text: &str) -> String {
