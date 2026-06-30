@@ -117,6 +117,42 @@ fn deob_force_removes_stale_generated_artifacts() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn deob_force_removes_output_symlink_without_following_it() {
+    use std::os::unix::fs::symlink;
+
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(&input, "echo replacement\r\n").expect("write input");
+    let out_dir = dir.path().join("out");
+    fs::create_dir(&out_dir).expect("mkdir out");
+    let outside = dir.path().join("outside.txt");
+    fs::write(&outside, "do not overwrite").expect("write outside");
+    symlink(&outside, out_dir.join("deobfuscated.bat")).expect("symlink");
+
+    Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args([
+            "deob",
+            input.to_str().expect("path"),
+            "-o",
+            out_dir.to_str().expect("path"),
+            "--force",
+        ])
+        .assert()
+        .success();
+
+    let outside_contents = fs::read_to_string(&outside).expect("read outside");
+    assert_eq!(outside_contents, "do not overwrite");
+    let output_contents =
+        fs::read_to_string(out_dir.join("deobfuscated.bat")).expect("read generated output");
+    assert!(
+        output_contents.contains("echo replacement"),
+        "unexpected generated output: {output_contents}"
+    );
+}
+
 #[test]
 fn deob_force_refuses_generated_output_directory_collision() {
     let dir = TempDir::new().expect("tmp");

@@ -8,6 +8,8 @@ edition = "2021"
 rust-version = "1.78"
 license = "MIT"
 repository = "https://github.com/wmetcalf/harrington"
+homepage = "https://github.com/wmetcalf/harrington"
+authors = ["Will Metcalf <william.metcalf@gmail.com>"]
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -24,8 +26,10 @@ hex = "0.4"
 aes = "0.8"
 cbc = { version = "0.1", features = ["std"] }
 flate2 = "1"
+libc = "0.2"
 # dev
 proptest = "1.4"
 assert_cmd = "2.0"
 pretty_assertions = "1.4"
 tempfile = "3.10"
+predicates = "3"

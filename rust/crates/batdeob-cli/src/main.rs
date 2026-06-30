@@ -743,6 +743,11 @@ fn safe_write(path: &Path, bytes: &[u8], force: bool) -> Result<()> {
     } else {
         opts.create_new(true);
     }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(libc::O_NOFOLLOW);
+    }
     match opts.open(path) {
         Ok(mut f) => {
             f.write_all(bytes)
@@ -1674,5 +1679,31 @@ fn main() {
     if let Err(e) = run() {
         eprintln!("batdeob: {:#}", e);
         std::process::exit(2);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::safe_write;
+
+    #[cfg(unix)]
+    #[test]
+    fn safe_write_force_refuses_final_path_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::TempDir::new().expect("tmp");
+        let outside = dir.path().join("outside.txt");
+        std::fs::write(&outside, "do not overwrite").expect("write outside");
+        let link = dir.path().join("generated.txt");
+        symlink(&outside, &link).expect("symlink");
+
+        let err = safe_write(&link, b"replacement", true).expect_err("symlink should fail");
+        let err_text = format!("{err:#}");
+        assert!(
+            err_text.contains("open") || err_text.contains("Too many levels"),
+            "unexpected error: {err_text}"
+        );
+        let outside_contents = std::fs::read_to_string(&outside).expect("read outside");
+        assert_eq!(outside_contents, "do not overwrite");
     }
 }
