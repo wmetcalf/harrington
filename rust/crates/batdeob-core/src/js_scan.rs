@@ -1368,7 +1368,17 @@ fn is_js_identity_filter_arg(arg: &str) -> bool {
         let rhs = rhs.trim().trim_matches(['(', ')', ' ']);
         return !lhs.is_empty() && lhs == rhs;
     }
-    false
+    if !arg.trim_start().starts_with("function") {
+        return false;
+    }
+    let Some(paren_open) = arg.find('(') else {
+        return false;
+    };
+    let Some(paren_close_rel) = arg[paren_open + 1..].find(')') else {
+        return false;
+    };
+    let param = arg[paren_open + 1..paren_open + 1 + paren_close_rel].trim();
+    !param.is_empty() && arg.contains(&format!("return {param}"))
 }
 
 fn consume_js_concat_chain(
