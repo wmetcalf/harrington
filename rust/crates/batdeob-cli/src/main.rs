@@ -92,6 +92,9 @@ enum Command {
     Summarize {
         /// Input script (`-` for stdin).
         file: String,
+        /// Emit a human-readable TLDR instead of JSON.
+        #[arg(long)]
+        tldr: bool,
         /// Seed an analysis environment variable (`NAME=VALUE`). Repeatable.
         #[arg(long = "env", value_name = "NAME=VALUE")]
         env: Vec<String>,
@@ -1159,6 +1162,218 @@ fn command_lines_for_lolbas(report: &batdeob_core::Report) -> Vec<&str> {
     out
 }
 
+fn build_tldr(file: &str, input: &[u8], report: &batdeob_core::Report) -> String {
+    use batdeob_core::Trait;
+    use std::collections::BTreeSet;
+
+    let mut urls = BTreeSet::new();
+    let mut unc = BTreeSet::new();
+    let mut remote_connect = BTreeSet::new();
+    let mut disguised = BTreeSet::new();
+    let mut extrac32_self = BTreeSet::new();
+    let mut persist = BTreeSet::new();
+    let mut evasion = BTreeSet::new();
+    let mut lateral = BTreeSet::new();
+    let mut inmem = BTreeSet::new();
+    let mut aes_findings = BTreeSet::new();
+    let mut probes = BTreeSet::new();
+    let mut enumeration = BTreeSet::new();
+    let mut cred_access = BTreeSet::new();
+    let mut injection = BTreeSet::new();
+    let mut input_cap = BTreeSet::new();
+    let mut remote_exec = BTreeSet::new();
+    let mut shellcode = BTreeSet::new();
+    let mut uac_bypass = BTreeSet::new();
+    let mut svc_install = BTreeSet::new();
+    let mut beacon_sleep = BTreeSet::new();
+    let mut ransom_ext = BTreeSet::new();
+    let mut anti_recov = BTreeSet::new();
+    let mut self_elev = BTreeSet::new();
+    let mut self_extract = false;
+
+    for t in &report.traits {
+        match t {
+            Trait::Download { src, .. } | Trait::DownloadInDeobText { src, .. } => {
+                urls.insert(src.clone());
+            }
+            Trait::CertutilDownload { url, .. }
+            | Trait::BitsadminDownload { url, .. }
+            | Trait::UrlLaunch { url, .. }
+            | Trait::UrlArgument { url, .. }
+            | Trait::UrlVariable { url, .. }
+            | Trait::RegistryUrl { url, .. } => {
+                urls.insert(url.clone());
+            }
+            Trait::UncWebDavC2 { share_path, .. } => {
+                unc.insert(share_path.clone());
+            }
+            Trait::RemoteConnect { host, port, .. } => {
+                remote_connect.insert(format!("{host}:{port}"));
+            }
+            Trait::DisguisedBinary { format, size } => {
+                disguised.insert(format!("{format} ({size} bytes)"));
+            }
+            Trait::Extrac32 {
+                src,
+                dst,
+                self_reference,
+            } if *self_reference => {
+                extrac32_self.insert(format!("{src} -> {dst}"));
+            }
+            Trait::Persistence {
+                hive,
+                key,
+                value_name,
+                command,
+            } => {
+                let value = if value_name.is_empty() {
+                    String::new()
+                } else {
+                    format!(" /v {value_name}")
+                };
+                let command = if command.is_empty() {
+                    "(no command)"
+                } else {
+                    command
+                };
+                persist.insert(format!("{hive}\\{key}{value} -> {command}"));
+            }
+            Trait::DefenderEvasion { action, target } => {
+                if target.is_empty() {
+                    evasion.insert(action.clone());
+                } else {
+                    evasion.insert(format!("{action} {target}"));
+                }
+            }
+            Trait::LateralMovement { tool, target_host } => {
+                lateral.insert(format!("{tool} -> {target_host}"));
+            }
+            Trait::InMemoryAssemblyLoad { variant } => {
+                inmem.insert(variant.clone());
+            }
+            Trait::MultiStageEncryptedDropper {
+                aes_key_b64,
+                aes_iv_b64,
+                assemblies_recovered,
+                ..
+            } => {
+                if let (Some(key), Some(iv)) = (aes_key_b64, aes_iv_b64) {
+                    let key_prefix: String = key.chars().take(16).collect();
+                    let iv_prefix: String = iv.chars().take(16).collect();
+                    aes_findings.insert(format!(
+                        "key={key_prefix}... iv={iv_prefix}... asm={}",
+                        assemblies_recovered.unwrap_or(0)
+                    ));
+                }
+            }
+            Trait::NetworkProbe { probe_kind, target } => {
+                probes.insert(format!("{probe_kind}={target}"));
+            }
+            Trait::Enumeration { enum_kind, .. } => {
+                enumeration.insert(enum_kind.clone());
+            }
+            Trait::CredentialAccess { technique, target } => {
+                let target: String = target.chars().take(60).collect();
+                cred_access.insert(format!("{technique}: {target}"));
+            }
+            Trait::ProcessInjection { api } => {
+                injection.insert(api.clone());
+            }
+            Trait::InputCapture { capture_kind } => {
+                input_cap.insert(capture_kind.clone());
+            }
+            Trait::RemoteExec { tool, target_host } => {
+                remote_exec.insert(format!("{tool} -> {target_host}"));
+            }
+            Trait::ShellcodeMarker { evidence } => {
+                shellcode.insert(evidence.clone());
+            }
+            Trait::UacBypass { technique } => {
+                uac_bypass.insert(technique.clone());
+            }
+            Trait::ServiceInstall {
+                service_name,
+                bin_path,
+            } => {
+                if bin_path.is_empty() {
+                    svc_install.insert(service_name.clone());
+                } else {
+                    svc_install.insert(format!("{service_name} -> {bin_path}"));
+                }
+            }
+            Trait::BeaconSleep { seconds } => {
+                beacon_sleep.insert(format!("{seconds}s"));
+            }
+            Trait::RansomFileExtension { extension } => {
+                ransom_ext.insert(extension.clone());
+            }
+            Trait::AntiRecovery { action } => {
+                anti_recov.insert(action.clone());
+            }
+            Trait::SelfElevation { target, .. } => {
+                self_elev.insert(target.clone());
+            }
+            Trait::SelfExtract { .. } => {
+                self_extract = true;
+            }
+            _ => {}
+        }
+    }
+
+    let mut out = String::new();
+    out.push_str(&format!(
+        "== {file} ({} bytes, {}) ==\n",
+        input.len(),
+        short_sha(input)
+    ));
+
+    fn emit_line(out: &mut String, label: &str, items: BTreeSet<String>) {
+        if items.is_empty() {
+            return;
+        }
+        let joined = items.into_iter().take(6).collect::<Vec<_>>().join("; ");
+        out.push_str(&format!("  {label}: {joined}\n"));
+    }
+
+    emit_line(&mut out, "URLs", urls);
+    emit_line(&mut out, "UNC", unc);
+    emit_line(&mut out, "C2 connect", remote_connect);
+    emit_line(&mut out, "Disguised binary", disguised);
+    emit_line(&mut out, "Self-extract (extrac32 %~f0)", extrac32_self);
+    if !report.recovered_pe.is_empty() {
+        out.push_str(&format!(
+            "  Recovered PE blobs: {} (run `deob -o <dir>` to dump)\n",
+            report.recovered_pe.len()
+        ));
+    }
+    emit_line(&mut out, "Persistence", persist);
+    if self_extract {
+        out.push_str("  Self-extract: yes\n");
+    }
+    emit_line(&mut out, "Self-elevation", self_elev);
+    emit_line(&mut out, "AV evasion", evasion);
+    emit_line(&mut out, "Lateral", lateral);
+    emit_line(&mut out, "In-memory load", inmem);
+    emit_line(&mut out, "AES dropper", aes_findings);
+    emit_line(&mut out, "Network probe", probes);
+    emit_line(&mut out, "Enumeration", enumeration);
+    emit_line(&mut out, "Cred access", cred_access);
+    emit_line(&mut out, "Process injection", injection);
+    emit_line(&mut out, "Input capture", input_cap);
+    emit_line(&mut out, "Remote exec", remote_exec);
+    emit_line(&mut out, "Shellcode marker", shellcode);
+    emit_line(&mut out, "UAC bypass", uac_bypass);
+    emit_line(&mut out, "Service install", svc_install);
+    emit_line(&mut out, "Beacon sleep", beacon_sleep);
+    emit_line(&mut out, "Ransom file ext", ransom_ext);
+    emit_line(&mut out, "Anti-recovery", anti_recov);
+
+    if out.lines().count() <= 1 {
+        out.push_str("  (no notable IOCs surfaced)\n");
+    }
+    out
+}
+
 fn is_broken_pipe(err: &io::Error) -> bool {
     err.kind() == io::ErrorKind::BrokenPipe
 }
@@ -1263,6 +1478,7 @@ fn run() -> Result<()> {
     match cli.command {
         Command::Summarize {
             file,
+            tldr,
             env,
             env_file,
             lolbas_json,
@@ -1271,9 +1487,13 @@ fn run() -> Result<()> {
             let cfg = batdeob_core::Config::default();
             let options = make_analysis_options(&env, &env_file)?;
             let report = batdeob_core::analyze_with_options(&input, &cfg, &options);
-            let lolbas_index = lolbas_json.as_deref().map(load_lolbas_index).transpose()?;
-            let summary = build_summary(&file, &input, &report, lolbas_index.as_ref());
-            println!("{}", serde_json::to_string_pretty(&summary)?);
+            if tldr {
+                print!("{}", build_tldr(&file, &input, &report));
+            } else {
+                let lolbas_index = lolbas_json.as_deref().map(load_lolbas_index).transpose()?;
+                let summary = build_summary(&file, &input, &report, lolbas_index.as_ref());
+                println!("{}", serde_json::to_string_pretty(&summary)?);
+            }
         }
         Command::Report {
             file,
