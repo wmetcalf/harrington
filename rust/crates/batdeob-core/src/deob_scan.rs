@@ -4568,62 +4568,77 @@ fn scan_remote_access(command: &str, env: &mut Environment) {
     {
         push_remote_access(env, "rdp-enable", "RDTOGGLE", command);
     }
-    for line in command.lines() {
-        let lower_line = line.to_ascii_lowercase();
-        if (lower_line.contains("enable-netfirewallrule")
-            || lower_line.contains("set-netfirewallrule"))
-            && (powershell_named_argument(line, "-DisplayGroup")
-                .or_else(|| powershell_named_argument(line, "-Group"))
-                .is_some_and(|group| group.eq_ignore_ascii_case("Remote Desktop")))
-        {
-            let enabled = if lower_line.contains("set-netfirewallrule") {
-                powershell_named_argument(line, "-Enabled").is_some_and(|value| {
-                    matches!(
-                        value.to_ascii_lowercase().as_str(),
-                        "true" | "$true" | "1" | "0x1" | "0x00000001"
-                    )
-                })
-            } else {
-                true
+    for raw_line in command.lines() {
+        for line in powershell_statement_candidates(raw_line) {
+            let lower_line = line.to_ascii_lowercase();
+            if (lower_line.contains("enable-netfirewallrule")
+                || lower_line.contains("set-netfirewallrule"))
+                && (powershell_named_argument(line, "-DisplayGroup")
+                    .or_else(|| powershell_named_argument(line, "-Group"))
+                    .is_some_and(|group| group.eq_ignore_ascii_case("Remote Desktop")))
+            {
+                let enabled = if lower_line.contains("set-netfirewallrule") {
+                    powershell_named_argument(line, "-Enabled").is_some_and(|value| {
+                        matches!(
+                            value.to_ascii_lowercase().as_str(),
+                            "true" | "$true" | "1" | "0x1" | "0x00000001"
+                        )
+                    })
+                } else {
+                    true
+                };
+                if enabled {
+                    push_remote_access(env, "rdp-firewall-open", "Remote Desktop", line.trim());
+                }
+            }
+            if lower_line.contains("enable-netfirewallrule") {
+                let mut rule_names = powershell_named_argument_list(line, "-Name");
+                if rule_names.is_empty() {
+                    let positional =
+                        powershell_positional_arguments(line, "Enable-NetFirewallRule");
+                    if let Some(rule_name) = positional.first() {
+                        rule_names.extend(split_powershell_value_list(rule_name));
+                    }
+                }
+                for rule_name in rule_names {
+                    if is_rdp_firewall_rule_name(&rule_name) {
+                        push_remote_access(env, "rdp-firewall-open", &rule_name, line.trim());
+                    }
+                }
+            }
+            let Some((path, value_name, value)) = powershell_item_property_args(line) else {
+                continue;
             };
-            if enabled {
-                push_remote_access(env, "rdp-firewall-open", "Remote Desktop", line.trim());
+            if !path
+                .to_ascii_lowercase()
+                .contains(r"control\terminal server")
+            {
+                continue;
             }
-        }
-        if lower_line.contains("enable-netfirewallrule") {
-            let mut rule_names = powershell_named_argument_list(line, "-Name");
-            if rule_names.is_empty() {
-                let positional = powershell_positional_arguments(line, "Enable-NetFirewallRule");
-                if let Some(rule_name) = positional.first() {
-                    rule_names.extend(split_powershell_value_list(rule_name));
-                }
+            let value_name = value_name.to_ascii_lowercase();
+            let value = value.to_ascii_lowercase();
+            let enables_rdp = match value_name.as_str() {
+                "allowtsconnections" => value == "1" || value == "0x1",
+                "fdenytsconnections" => value == "0" || value == "0x0",
+                _ => false,
+            };
+            if enables_rdp {
+                push_remote_access(env, "rdp-enable", "Terminal Server", line.trim());
             }
-            for rule_name in rule_names {
-                if is_rdp_firewall_rule_name(&rule_name) {
-                    push_remote_access(env, "rdp-firewall-open", &rule_name, line.trim());
-                }
-            }
-        }
-        let Some((path, value_name, value)) = powershell_item_property_args(line) else {
-            continue;
-        };
-        if !path
-            .to_ascii_lowercase()
-            .contains(r"control\terminal server")
-        {
-            continue;
-        }
-        let value_name = value_name.to_ascii_lowercase();
-        let value = value.to_ascii_lowercase();
-        let enables_rdp = match value_name.as_str() {
-            "allowtsconnections" => value == "1" || value == "0x1",
-            "fdenytsconnections" => value == "0" || value == "0x0",
-            _ => false,
-        };
-        if enables_rdp {
-            push_remote_access(env, "rdp-enable", "Terminal Server", line.trim());
         }
     }
+}
+
+fn powershell_statement_candidates(line: &str) -> Vec<&str> {
+    let command_text = powershell_account_command_text(line);
+    if command_text == line.trim() {
+        return vec![line.trim()];
+    }
+    command_text
+        .split(';')
+        .map(str::trim)
+        .filter(|statement| !statement.is_empty())
+        .collect()
 }
 
 fn is_rdp_firewall_rule_name(name: &str) -> bool {

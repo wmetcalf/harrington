@@ -34693,6 +34693,22 @@ powershell -Command "Set-MpPreference -DisableArchiveScanning $true -DisableEmai
     }
 
     #[test]
+    fn powershell_chained_rdp_registry_write_emits_remote_access_trait() {
+        let script = br#"powershell -Command "Set-ItemProperty -Path 'HKLM:\Software\Noise' -Name Enabled -Value 0; Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-enable" && target == "Terminal Server"
+            )),
+            "chained PowerShell RDP registry enablement missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_firewall_profile_disable_emits_defender_evasion_trait() {
         let script =
             br#"powershell -Command "Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False"
@@ -34779,6 +34795,22 @@ powershell -Command "Set-MpPreference -DisableArchiveScanning $true -DisableEmai
                     if technique == "rdp-firewall-open" && target == "Remote Desktop"
             )),
             "missing PowerShell Remote Desktop firewall set-enabled: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_chained_remote_desktop_firewall_set_enabled_emits_remote_access_trait() {
+        let script = br#"powershell -Command "Set-NetFirewallRule -DisplayGroup 'File and Printer Sharing' -Enabled False; Set-NetFirewallRule -DisplayGroup 'Remote Desktop' -Enabled True""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-firewall-open" && target == "Remote Desktop"
+            )),
+            "chained PowerShell Remote Desktop firewall set-enabled was not surfaced: {:?}",
             report.traits
         );
     }
