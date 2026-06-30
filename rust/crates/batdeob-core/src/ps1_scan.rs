@@ -538,7 +538,8 @@ mod char_concat_prefilter_tests {
 #[allow(clippy::expect_used)]
 static STR_CONCAT_RE: Lazy<Regex> = Lazy::new(|| {
     // Match runs of (quoted-string + )+ quoted-string.
-    Regex::new(r#"(?:'(?:[^'\\]|\\.)*'\s*\+\s*)+'(?:[^'\\]|\\.)*'"#).expect("str concat regex")
+    Regex::new(r#"(?:(?:\(\s*'(?:[^'\\]|\\.)*'\s*\)|'(?:[^'\\]|\\.)*')\s*\+\s*)+(?:\(\s*'(?:[^'\\]|\\.)*'\s*\)|'(?:[^'\\]|\\.)*')"#)
+        .expect("str concat regex")
 });
 
 #[allow(clippy::expect_used)]
@@ -3990,6 +3991,16 @@ static LITERAL_CASE_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("literal case extractor def")
 });
 
+#[allow(clippy::expect_used)]
+static LITERAL_INDEX_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\(([^)]*)\)\s*\{[^{}]*?return\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\]|\.\s*(?:Chars|get_Chars)\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)|\.\s*ToCharArray\s*\(\s*\)\s*\[\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\])[^{}]*\}"#,
+    )
+    .expect("literal index extractor def")
+});
+
+const PS_LITERAL_SPACE_SENTINEL: &str = "__BATDEOB_PS_LITERAL_SPACE__";
+
 fn is_ps_command_atom(value: &str) -> bool {
     !value.is_empty()
         && value
@@ -4305,6 +4316,58 @@ fn inline_ps_literal_case_extractor_calls(text: &str, name: &str, lower: bool) -
     out
 }
 
+fn inline_ps_literal_index_extractor_calls(
+    text: &str,
+    name: &str,
+    value_position: usize,
+    index_position: usize,
+) -> String {
+    let bytes = text.as_bytes();
+    let mut matches = Vec::new();
+    let mut search_from = 0;
+
+    while let Some(start) = find_ascii_case_insensitive_from(text, name, search_from) {
+        let end_name = start + name.len();
+        if is_ident_byte(bytes.get(start.wrapping_sub(1)).copied())
+            || is_ident_byte(bytes.get(end_name).copied())
+        {
+            search_from = end_name;
+            continue;
+        }
+
+        let pos = skip_ascii_ws(bytes, end_name);
+        let Some((call_end, args)) = parse_ps_literal_call_args(text, pos) else {
+            search_from = end_name;
+            continue;
+        };
+        let Some(PsLiteralCallArg::String(value)) = args.get(value_position) else {
+            search_from = call_end;
+            continue;
+        };
+        let Some(PsLiteralCallArg::Integer(index)) = args.get(index_position) else {
+            search_from = call_end;
+            continue;
+        };
+        let Some(ch) = value.chars().nth(*index) else {
+            search_from = call_end;
+            continue;
+        };
+        let replacement = if ch == ' ' {
+            PS_LITERAL_SPACE_SENTINEL.to_string()
+        } else {
+            ch.to_string().replace('\'', "''")
+        };
+        matches.push((start, call_end, format!("'{replacement}'")));
+        search_from = call_end;
+    }
+
+    let mut out = text.to_string();
+    for (start, end, replacement) in matches.into_iter().rev() {
+        out.replace_range(start..end, &replacement);
+    }
+    out
+}
+
 fn expand_literal_replace_extractor_calls(text: &str) -> String {
     if !contains_ascii_case_insensitive(text, "function")
         || !contains_ascii_case_insensitive(text, "replace")
@@ -4429,6 +4492,74 @@ fn expand_literal_case_extractor_calls(text: &str) -> String {
         out = inline_ps_literal_case_extractor_calls(&out, &name, lower);
     }
     out
+}
+
+fn parse_ps_parameter_names(params: &str) -> Vec<String> {
+    params
+        .split(',')
+        .filter_map(|param| {
+            let cleaned = param
+                .trim()
+                .trim_start_matches('[')
+                .split(']')
+                .next_back()
+                .unwrap_or(param)
+                .trim()
+                .trim_start_matches('$');
+            if cleaned
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+                && !cleaned.is_empty()
+            {
+                Some(cleaned.to_ascii_lowercase())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn expand_literal_index_extractor_calls(text: &str) -> String {
+    if !contains_ascii_case_insensitive(text, "function")
+        || (!text.contains('[')
+            && !contains_ascii_case_insensitive(text, "chars")
+            && !contains_ascii_case_insensitive(text, "tochararray"))
+    {
+        return text.to_string();
+    }
+    let defs: Vec<(String, usize, usize)> = LITERAL_INDEX_EXTRACTOR_DEF_RE
+        .captures_iter(text)
+        .filter_map(|caps| {
+            let name = caps.get(1)?.as_str();
+            let params = parse_ps_parameter_names(caps.get(2)?.as_str());
+            let value_param = caps.get(3)?.as_str().to_ascii_lowercase();
+            let index_param = caps
+                .get(4)
+                .or_else(|| caps.get(5))
+                .or_else(|| caps.get(6))?
+                .as_str()
+                .to_ascii_lowercase();
+            let value_position = params
+                .iter()
+                .position(|param| param.eq_ignore_ascii_case(&value_param))?;
+            let index_position = params
+                .iter()
+                .position(|param| param.eq_ignore_ascii_case(&index_param))?;
+            Some((name.to_string(), value_position, index_position))
+        })
+        .collect();
+    let mut out = text.to_string();
+    for (name, value_position, index_position) in defs {
+        out = inline_ps_literal_index_extractor_calls(&out, &name, value_position, index_position);
+    }
+    out
+}
+
+fn restore_ps_literal_space_sentinels(text: &str) -> String {
+    if !text.contains(PS_LITERAL_SPACE_SENTINEL) {
+        return text.to_string();
+    }
+    text.replace(PS_LITERAL_SPACE_SENTINEL, " ")
 }
 
 fn expand_passthrough_call_wrappers(text: &str) -> String {
@@ -5144,6 +5275,7 @@ fn expand_obfuscation(text: &str) -> String {
         out = expand_literal_substring_extractor_calls(&out);
         out = expand_literal_trim_extractor_calls(&out);
         out = expand_literal_case_extractor_calls(&out);
+        out = expand_literal_index_extractor_calls(&out);
         out = expand_passthrough_call_wrappers(&out);
         out = expand_ps_dot_replace(&out);
         out = expand_ps_embedded_single_quote_assignments(&out);
@@ -5163,6 +5295,7 @@ fn expand_obfuscation(text: &str) -> String {
         out = expand_hex_split_char_loop(&out);
         out = expand_space_concat(&out); // space-separated string array (Pattern C)
         out = expand_string_concat(&out);
+        out = restore_ps_literal_space_sentinels(&out);
         out = expand_double_string_concat(&out);
         out = expand_format_literals(&out);
         out = expand_ps_string_format_static(&out);
