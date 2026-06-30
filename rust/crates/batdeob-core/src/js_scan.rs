@@ -564,11 +564,15 @@ fn consume_js_replace_call(
     value: String,
     bindings: &std::collections::HashMap<String, String>,
 ) -> Option<(usize, String)> {
-    let (open, force_global) = if let Some(open) = consume_js_method_open(text, idx, "replaceAll") {
-        (open, true)
-    } else {
-        (consume_js_method_open(text, idx, "replace")?, false)
-    };
+    let (open, force_global) =
+        if let Some(open) = consume_js_replace_method_open(text, idx, "replaceAll", bindings) {
+            (open, true)
+        } else {
+            (
+                consume_js_replace_method_open(text, idx, "replace", bindings)?,
+                false,
+            )
+        };
 
     let first_start = skip_ascii_ws(text, open + 1);
     let (first_end, needle, options) = if let Some((first_end, first)) =
@@ -613,6 +617,31 @@ fn consume_js_replace_call(
         close + 1,
         apply_js_string_replacement(value, &needle, &replacement, options),
     ))
+}
+
+fn consume_js_replace_method_open(
+    text: &str,
+    start: usize,
+    method: &str,
+    bindings: &std::collections::HashMap<String, String>,
+) -> Option<usize> {
+    if let Some(open) = consume_js_method_open(text, start, method) {
+        return Some(open);
+    }
+    let bracket_open = skip_ascii_ws(text, start);
+    if text.as_bytes().get(bracket_open) != Some(&b'[') {
+        return None;
+    }
+    let method_start = skip_ascii_ws(text, bracket_open + 1);
+    let (method_end, method_name) = parse_js_string_or_bound_arg(text, method_start, bindings)?;
+    if method_name != method {
+        return None;
+    }
+    let bracket_close = skip_ascii_ws(text, method_end);
+    if text.as_bytes().get(bracket_close) != Some(&b']') {
+        return None;
+    }
+    consume_js_call_open(text, bracket_close + 1)
 }
 
 fn apply_js_string_replacement(
@@ -919,6 +948,7 @@ fn decoded_js_atob_literals(text: &str) -> Vec<String> {
         &string_bindings,
         &array_bindings,
     ));
+    let atob_aliases = collect_js_atob_alias_bindings(text, &string_bindings);
     let mut cursor = 0usize;
     while let Some(rel) = find_ascii_case_insensitive(&text[cursor..], "atob") {
         let name_start = cursor + rel;
@@ -962,7 +992,107 @@ fn decoded_js_atob_literals(text: &str) -> Vec<String> {
         }
         cursor = arg_end;
     }
+
+    let mut cursor = 0usize;
+    while cursor < text.len() {
+        let Some((ident_end, name)) = parse_js_identifier_at(text, cursor) else {
+            cursor += text[cursor..]
+                .chars()
+                .next()
+                .map(char::len_utf8)
+                .unwrap_or(1);
+            continue;
+        };
+        if !atob_aliases.contains(name) {
+            cursor = ident_end;
+            continue;
+        }
+        let Some((arg_end, value)) =
+            parse_js_atob_string_arg(text, ident_end, &string_bindings, &array_bindings)
+        else {
+            cursor = ident_end;
+            continue;
+        };
+        if value.len() <= 16384 {
+            let bytes = value.as_bytes();
+            let cleaned = if bytes.iter().any(|b| b.is_ascii_whitespace()) {
+                std::borrow::Cow::Owned(
+                    bytes
+                        .iter()
+                        .copied()
+                        .filter(|b| !b.is_ascii_whitespace())
+                        .collect::<Vec<u8>>(),
+                )
+            } else {
+                std::borrow::Cow::Borrowed(bytes)
+            };
+            if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(&cleaned) {
+                if decoded.len() <= 8192 {
+                    out.push(String::from_utf8_lossy(&decoded).into_owned());
+                }
+            }
+        }
+        cursor = arg_end;
+    }
     out
+}
+
+fn collect_js_atob_alias_bindings(
+    text: &str,
+    string_bindings: &std::collections::HashMap<String, String>,
+) -> std::collections::HashSet<String> {
+    let mut aliases = std::collections::HashSet::new();
+    for caps in JS_STRING_ASSIGN_RE.captures_iter(text) {
+        if aliases.len() >= 64 {
+            break;
+        }
+        let Some(name) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(expr) = caps.get(2).map(|m| m.as_str().trim()) else {
+            continue;
+        };
+        if is_js_atob_function_reference(expr, string_bindings) {
+            aliases.insert(name.to_string());
+        }
+    }
+    aliases
+}
+
+fn is_js_atob_function_reference(
+    expr: &str,
+    string_bindings: &std::collections::HashMap<String, String>,
+) -> bool {
+    let Some((object_end, object)) = parse_js_identifier_at(expr, 0) else {
+        return false;
+    };
+    if object == "atob" {
+        return skip_ascii_ws(expr, object_end) == expr.len();
+    }
+    if object != "window" {
+        return false;
+    }
+    let member = skip_ascii_ws(expr, object_end);
+    if expr.as_bytes().get(member) == Some(&b'.') {
+        let method_start = skip_ascii_ws(expr, member + 1);
+        let Some((method_end, method)) = parse_js_identifier_at(expr, method_start) else {
+            return false;
+        };
+        return method == "atob" && skip_ascii_ws(expr, method_end) == expr.len();
+    }
+    if expr.as_bytes().get(member) != Some(&b'[') {
+        return false;
+    }
+    let method_start = skip_ascii_ws(expr, member + 1);
+    let Some((method_end, method)) =
+        parse_js_string_or_bound_arg(expr, method_start, string_bindings)
+    else {
+        return false;
+    };
+    let close = skip_ascii_ws(expr, method_end);
+    method == "atob"
+        && expr.as_bytes().get(close) == Some(&b']')
+        && skip_ascii_ws(expr, close + 1) == expr.len()
 }
 
 fn parse_js_atob_string_arg(
@@ -973,13 +1103,15 @@ fn parse_js_atob_string_arg(
 ) -> Option<(usize, String)> {
     if let Some(open) = consume_js_call_open(text, callee_end) {
         let arg_start = skip_ascii_ws(text, open + 1);
-        return parse_js_atob_value_arg_at(text, arg_start, bindings, arrays);
+        let close = find_js_balanced_paren_close(text, open + 1)?;
+        return parse_js_atob_value_arg_until(text, arg_start, close, bindings, arrays);
     }
 
     if let Some(open) = consume_js_method_open(text, callee_end, "call") {
         let comma = find_js_call_comma(text, skip_ascii_ws(text, open + 1))?;
         let arg_start = skip_ascii_ws(text, comma + 1);
-        return parse_js_atob_value_arg_at(text, arg_start, bindings, arrays);
+        let close = find_js_balanced_paren_close(text, open + 1)?;
+        return parse_js_atob_value_arg_until(text, arg_start, close, bindings, arrays);
     }
 
     if let Some(open) = consume_js_method_open(text, callee_end, "apply") {
@@ -1003,10 +1135,26 @@ fn parse_js_atob_string_arg(
         let bind_close = find_js_call_close(text, bind_open + 1)?;
         let open = consume_js_call_open(text, bind_close + 1)?;
         let arg_start = skip_ascii_ws(text, open + 1);
-        return parse_js_atob_value_arg_at(text, arg_start, bindings, arrays);
+        let close = find_js_balanced_paren_close(text, open + 1)?;
+        return parse_js_atob_value_arg_until(text, arg_start, close, bindings, arrays);
     }
 
     None
+}
+
+fn parse_js_atob_value_arg_until(
+    text: &str,
+    arg_start: usize,
+    close: usize,
+    bindings: &std::collections::HashMap<String, String>,
+    arrays: &std::collections::HashMap<String, Vec<String>>,
+) -> Option<(usize, String)> {
+    let expr = text.get(arg_start..close)?.trim();
+    if let Some(value) = eval_js_string_expr(expr, bindings) {
+        return Some((close + 1, value));
+    }
+    let (arg_end, value) = parse_js_atob_value_arg_at(text, arg_start, bindings, arrays)?;
+    (skip_ascii_ws(text, arg_end) == close).then_some((close + 1, value))
 }
 
 fn parse_js_atob_value_arg_at(
@@ -1162,9 +1310,50 @@ fn parse_js_string_value_arg_at(
             cursor = end;
             continue;
         }
+        if let Some((end, replaced)) =
+            consume_js_replace_call(text, cursor, value.clone(), bindings)
+        {
+            value = replaced;
+            cursor = end;
+            continue;
+        }
+        if let Some((end, concatenated)) =
+            consume_js_string_concat_call(text, cursor, value.clone(), bindings)
+        {
+            value = concatenated;
+            cursor = end;
+            continue;
+        }
         break;
     }
     Some((cursor, value))
+}
+
+fn consume_js_string_concat_call(
+    text: &str,
+    idx: usize,
+    mut value: String,
+    bindings: &std::collections::HashMap<String, String>,
+) -> Option<(usize, String)> {
+    let open = consume_js_method_open(text, idx, "concat")?;
+    let close = find_js_call_close(text, open + 1)?;
+    let mut cursor = skip_ascii_ws(text, open + 1);
+    if text.as_bytes().get(cursor) == Some(&b')') {
+        return Some((close + 1, value));
+    }
+    loop {
+        let (arg_end, arg) = parse_js_string_or_bound_arg(text, cursor, bindings)?;
+        value.push_str(&arg);
+        if value.len() > 16384 {
+            return None;
+        }
+        cursor = skip_ascii_ws(text, arg_end);
+        match text.as_bytes().get(cursor) {
+            Some(b',') => cursor = skip_ascii_ws(text, cursor + 1),
+            Some(b')') if cursor == close => return Some((close + 1, value)),
+            _ => return None,
+        }
+    }
 }
 
 fn decoded_js_buffer_literals(text: &str) -> Vec<String> {

