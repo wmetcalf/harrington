@@ -2668,6 +2668,12 @@ static JOIN_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static UNARY_LITERAL_JOIN_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"-join\s+@?\(\s*((?:(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*")\s*,\s*)+(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*"))\s*\)"#)
+        .expect("unary literal join")
+});
+
+#[allow(clippy::expect_used)]
 static JOIN_PART_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"'([^'\\]*(?:\\.[^'\\]*)*)'|"([^"\\]*(?:\\.[^"\\]*)*)""#).expect("join part")
 });
@@ -3003,7 +3009,7 @@ fn expand_ps_join(text: &str) -> String {
     if !contains_ascii_case_insensitive(text, "-join") {
         return text.to_string();
     }
-    let matches: Vec<(usize, usize, String)> = JOIN_RE
+    let mut matches: Vec<(usize, usize, String)> = JOIN_RE
         .captures_iter(text)
         .filter_map(|caps| {
             let full = caps.get(0)?;
@@ -3023,6 +3029,26 @@ fn expand_ps_join(text: &str) -> String {
             Some((full.start(), full.end(), format!("'{}'", parts.join(sep))))
         })
         .collect();
+    matches.extend(
+        UNARY_LITERAL_JOIN_RE
+            .captures_iter(text)
+            .filter_map(|caps| {
+                let full = caps.get(0)?;
+                let parts_text = caps.get(1)?.as_str();
+                let parts: Vec<String> = JOIN_PART_RE
+                    .captures_iter(parts_text)
+                    .filter_map(|c| {
+                        c.get(1)
+                            .or_else(|| c.get(2))
+                            .map(|m| m.as_str().to_string())
+                    })
+                    .collect();
+                if parts.is_empty() {
+                    return None;
+                }
+                Some((full.start(), full.end(), format!("'{}'", parts.join(""))))
+            }),
+    );
     let mut out = text.to_string();
     for (start, end, replacement) in matches.into_iter().rev() {
         out.replace_range(start..end, &replacement);
