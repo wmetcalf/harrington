@@ -34837,6 +34837,95 @@ C:\Users\Public\wm.tmp process where "name='MsMpEng.exe'" delete
     }
 
     #[test]
+    fn powershell_new_service_emits_service_install_trait() {
+        let script = br#"powershell -Command "New-Service -Name UpdateSvc -BinaryPathName 'cmd.exe /c calc.exe' -StartupType Automatic"
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ServiceInstall { service_name, bin_path }
+                    if service_name == "UpdateSvc" && bin_path == "cmd.exe /c calc.exe"
+            )),
+            "PowerShell New-Service install trait missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_positional_new_service_emits_service_install_trait() {
+        let script = br#"powershell -Command "New-Service UpdateSvc 'cmd.exe /c calc.exe' -StartupType Automatic"
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ServiceInstall { service_name, bin_path }
+                    if service_name == "UpdateSvc" && bin_path == "cmd.exe /c calc.exe"
+            )),
+            "positional PowerShell New-Service install trait missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_mixed_new_service_emits_service_install_trait() {
+        let script = br#"powershell -Command "New-Service -Name UpdateSvc 'cmd.exe /c calc.exe' -StartupType Automatic"
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ServiceInstall { service_name, bin_path }
+                    if service_name == "UpdateSvc" && bin_path == "cmd.exe /c calc.exe"
+            )),
+            "mixed PowerShell New-Service install trait missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_short_new_service_parameters_emit_service_install_trait() {
+        let script = br#"powershell -Command "New-Service -Na UpdateSvc -Bi 'cmd.exe /c calc.exe' -Sta Automatic"
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ServiceInstall { service_name, bin_path }
+                    if service_name == "UpdateSvc" && bin_path == "cmd.exe /c calc.exe"
+            )),
+            "short PowerShell New-Service parameters missed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_chained_new_service_emits_each_service_install_trait() {
+        let script = br#"powershell -Command "New-Service -Name FirstSvc -BinaryPathName 'cmd.exe /c one.exe'; New-Service -Name UpdateSvc -BinaryPathName 'cmd.exe /c calc.exe'""#;
+        let report = analyze(script, &Config::default());
+
+        for (service, path) in [
+            ("FirstSvc", "cmd.exe /c one.exe"),
+            ("UpdateSvc", "cmd.exe /c calc.exe"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::ServiceInstall { service_name, bin_path }
+                        if service_name == service && bin_path == path
+                )),
+                "chained PowerShell New-Service install missing {service}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn for_f_reads_wmic_inventory_output() {
         let script = concat!(
             "for /f \"tokens=*\" %%d in ('wmic logicaldisk where \"Size=250954240000\" get Size') do echo disk=%%d\r\n",
@@ -35222,6 +35311,73 @@ powershell -Command "tracert route-wrapper.example"
                     && command == "cmd.exe /c calc.exe"
             )),
             "PowerShell Run-key persistence missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_positional_run_key_itemproperty_emits_persistence_trait() {
+        let script = br#"powershell -Command "New-ItemProperty HKCU:\Software\Microsoft\Windows\CurrentVersion\Run Updater calc.exe"
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence {
+                    hive,
+                    key,
+                    value_name,
+                    command,
+                } if hive == "HKCU"
+                    && key == r"Software\Microsoft\Windows\CurrentVersion\Run"
+                    && value_name == "Updater"
+                    && command == "calc.exe"
+            )),
+            "positional PowerShell Run-key persistence missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_mixed_run_key_itemproperty_emits_persistence_trait() {
+        let script = br#"powershell -Command "New-ItemProperty -Path HKCU:\Software\Microsoft\Windows\CurrentVersion\Run Updater calc.exe"
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence {
+                    hive,
+                    key,
+                    value_name,
+                    command,
+                } if hive == "HKCU"
+                    && key == r"Software\Microsoft\Windows\CurrentVersion\Run"
+                    && value_name == "Updater"
+                    && command == "calc.exe"
+            )),
+            "mixed PowerShell Run-key persistence missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_chained_run_key_itemproperty_emits_persistence_trait() {
+        let script = br#"powershell -Command "Set-ItemProperty -Path HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer -Name Clean -Value ok; New-ItemProperty -Path HKCU:\Software\Microsoft\Windows\CurrentVersion\Run -Name Updater -Value calc.exe""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { hive, key, value_name, command }
+                    if hive == "HKCU"
+                        && key.ends_with(r"Software\Microsoft\Windows\CurrentVersion\Run")
+                        && value_name == "Updater"
+                        && command == "calc.exe"
+            )),
+            "chained PowerShell Run-key persistence missing: {:?}",
             report.traits
         );
     }
@@ -35681,6 +35837,86 @@ powershell -Command "tracert route-wrapper.example"
             "PowerShell scheduled-task query ampersand URL was not preserved: {:?}",
             report.traits
         );
+    }
+
+    #[test]
+    fn powershell_register_scheduled_task_emits_persistence_trait() {
+        let script = br#"powershell -Command "$a = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/c calc.exe'; Register-ScheduledTask -TaskName Updater -Action $a -Force"
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { hive, key, command, .. }
+                    if hive == "ScheduledTask"
+                        && key == "Updater"
+                        && command == "cmd.exe /c calc.exe"
+            )),
+            "PowerShell scheduled-task persistence missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_positional_register_scheduled_task_emits_persistence_trait() {
+        let script = br#"powershell -Command "$a = New-ScheduledTaskAction 'cmd.exe' '/c calc.exe'; Register-ScheduledTask Updater -Action $a -Force"
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { hive, key, command, .. }
+                    if hive == "ScheduledTask"
+                        && key == "Updater"
+                        && command == "cmd.exe /c calc.exe"
+            )),
+            "positional PowerShell scheduled-task persistence missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_mixed_scheduled_task_action_emits_persistence_trait() {
+        let script = br#"powershell -Command "$a = New-ScheduledTaskAction -Execute 'cmd.exe' '/c calc.exe'; Register-ScheduledTask -TaskName Updater -Action $a -Force"
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { hive, key, command, .. }
+                    if hive == "ScheduledTask"
+                        && key == "Updater"
+                        && command == "cmd.exe /c calc.exe"
+            )),
+            "mixed PowerShell scheduled-task action missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_chained_inline_scheduled_tasks_emit_each_persistence_trait() {
+        let script = br#"powershell -Command "Register-ScheduledTask -TaskName FirstTask -Action (New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/c one.exe') -Force; Register-ScheduledTask -TaskName SecondTask -Action (New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/c two.exe') -Force""#;
+        let report = analyze(script, &Config::default());
+
+        for (task_name, command) in [
+            ("FirstTask", "cmd.exe /c one.exe"),
+            ("SecondTask", "cmd.exe /c two.exe"),
+        ] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::Persistence { hive, key, command: existing_command, .. }
+                        if hive == "ScheduledTask"
+                            && key == task_name
+                            && existing_command == command
+                )),
+                "chained inline scheduled task missing {task_name}: {:?}",
+                report.traits
+            );
+        }
     }
 
     #[test]

@@ -5492,15 +5492,15 @@ fn powershell_item_property_args(command: &str) -> Option<(String, String, Strin
     } else {
         "sp"
     };
-    let positional = powershell_positional_arguments(command, keyword);
+    let mut positional = powershell_positional_arguments(command, keyword).into_iter();
     if path.is_none() {
-        path = positional.first().cloned();
+        path = positional.next();
     }
     if name.is_none() {
-        name = positional.get(1).cloned();
+        name = positional.next();
     }
     if value.is_none() {
-        value = positional.get(2).cloned();
+        value = positional.next();
     }
 
     Some((path?, name?, value?))
@@ -10487,13 +10487,31 @@ fn scan_service_install(deobfuscated: &str, env: &mut Environment) {
         if match_line_starts_with_echo(deobfuscated, m.start()) {
             continue;
         }
-        let command = m.as_str().trim();
-        let Some(name) = powershell_named_argument(command, "-Name") else {
-            continue;
-        };
-        let path = powershell_named_argument(command, "-BinaryPathName").unwrap_or_default();
-        push(name, path);
+        for command in powershell_statement_candidates(m.as_str()) {
+            let Some((name, path)) = powershell_new_service_args(command) else {
+                continue;
+            };
+            push(name, path);
+        }
     }
+}
+
+fn powershell_new_service_args(command: &str) -> Option<(String, String)> {
+    if !contains_callable_ascii_case_insensitive(command, "New-Service") {
+        return None;
+    }
+    let mut name = powershell_named_argument(command, "-Name")
+        .or_else(|| powershell_named_argument(command, "-Na"));
+    let mut path = powershell_named_argument(command, "-BinaryPathName")
+        .or_else(|| powershell_named_argument(command, "-Bi"));
+    let mut positional = powershell_positional_arguments(command, "New-Service").into_iter();
+    if name.is_none() {
+        name = positional.next();
+    }
+    if path.is_none() {
+        path = positional.next();
+    }
+    Some((name?, path.unwrap_or_default()))
 }
 
 fn scan_startup_folder_persistence(deobfuscated: &str, env: &mut Environment) {
@@ -10889,39 +10907,84 @@ fn scan_powershell_scheduled_task_persistence(deobfuscated: &str, env: &mut Envi
             continue;
         };
         let command = caps.get(0).map(|m| m.as_str()).unwrap_or_default();
-        let execute = powershell_named_argument(command, "-Execute").unwrap_or_default();
+        let Some((execute, argument)) = powershell_scheduled_task_action_args(command) else {
+            continue;
+        };
         if execute.is_empty() {
             continue;
         }
-        let argument = powershell_named_argument(command, "-Argument").unwrap_or_default();
-        actions.insert(var, join_powershell_command(&execute, &argument));
+        actions.insert(
+            var,
+            join_powershell_command(&execute, argument.as_deref().unwrap_or("")),
+        );
     }
 
     for m in REGISTER_TASK_RE.find_iter(deobfuscated) {
-        let command = m.as_str().trim();
-        let Some(task_name) = powershell_named_argument(command, "-TaskName") else {
-            continue;
-        };
-        let task_command = powershell_named_argument(command, "-Execute")
-            .map(|execute| {
-                join_powershell_command(
-                    &execute,
-                    &powershell_named_argument(command, "-Argument").unwrap_or_default(),
-                )
-            })
-            .or_else(|| {
-                powershell_named_argument(command, "-Action").and_then(|action| {
-                    action
-                        .strip_prefix('$')
-                        .and_then(|name| actions.get(&name.to_ascii_lowercase()).cloned())
-                })
-            })
-            .unwrap_or_default();
-        if task_command.is_empty() {
-            continue;
+        for command in powershell_statement_candidates(m.as_str()) {
+            let Some((task_name, task_command)) =
+                powershell_register_scheduled_task_args(command, &actions)
+            else {
+                continue;
+            };
+            if task_command.is_empty() {
+                continue;
+            }
+            push_persistence(env, "ScheduledTask", &task_name, "", &task_command);
         }
-        push_persistence(env, "ScheduledTask", &task_name, "", &task_command);
     }
+}
+
+fn powershell_scheduled_task_action_args(command: &str) -> Option<(String, Option<String>)> {
+    if !contains_callable_ascii_case_insensitive(command, "New-ScheduledTaskAction") {
+        return None;
+    }
+    let mut execute = powershell_named_argument(command, "-Execute");
+    let mut argument = powershell_named_argument(command, "-Argument");
+    let mut positional =
+        powershell_positional_arguments(command, "New-ScheduledTaskAction").into_iter();
+    if execute.is_none() {
+        execute = positional.next();
+    }
+    if argument.is_none() {
+        argument = positional.next();
+    }
+    Some((execute?, argument))
+}
+
+fn powershell_register_scheduled_task_args(
+    command: &str,
+    actions: &std::collections::HashMap<String, String>,
+) -> Option<(String, String)> {
+    if !contains_callable_ascii_case_insensitive(command, "Register-ScheduledTask") {
+        return None;
+    }
+    let mut task_name = powershell_named_argument(command, "-TaskName");
+    let mut positional =
+        powershell_positional_arguments(command, "Register-ScheduledTask").into_iter();
+    if task_name.is_none() {
+        task_name = positional.next();
+    }
+    let task_command = powershell_named_argument(command, "-Execute")
+        .map(|execute| {
+            join_powershell_command(
+                &execute,
+                &powershell_named_argument(command, "-Argument").unwrap_or_default(),
+            )
+        })
+        .or_else(|| {
+            powershell_named_argument(command, "-Action").and_then(|action| {
+                action
+                    .strip_prefix('$')
+                    .and_then(|name| actions.get(&name.to_ascii_lowercase()).cloned())
+                    .or_else(|| {
+                        powershell_scheduled_task_action_args(&action).map(|(execute, argument)| {
+                            join_powershell_command(&execute, argument.as_deref().unwrap_or(""))
+                        })
+                    })
+            })
+        })
+        .unwrap_or_default();
+    Some((task_name?, task_command))
 }
 
 fn scan_powershell_registry_persistence(deobfuscated: &str, env: &mut Environment) {
@@ -10936,20 +10999,21 @@ fn scan_powershell_registry_persistence(deobfuscated: &str, env: &mut Environmen
         if match_line_starts_with_echo(deobfuscated, m.start()) {
             continue;
         }
-        let command = m.as_str().trim();
-        let Some((path, value_name, value)) = powershell_item_property_args(command) else {
-            continue;
-        };
-        let Some((hive, key)) = normalize_powershell_registry_path(&path) else {
-            continue;
-        };
-        if !registry_persistence_key(&key) {
-            continue;
+        for command in powershell_statement_candidates(m.as_str()) {
+            let Some((path, value_name, value)) = powershell_item_property_args(command) else {
+                continue;
+            };
+            let Some((hive, key)) = normalize_powershell_registry_path(&path) else {
+                continue;
+            };
+            if !registry_persistence_key(&key) {
+                continue;
+            }
+            if value_name.is_empty() || value.is_empty() {
+                continue;
+            }
+            push_persistence(env, &hive, &key, &value_name, &value);
         }
-        if value_name.is_empty() || value.is_empty() {
-            continue;
-        }
-        push_persistence(env, &hive, &key, &value_name, &value);
     }
 }
 
