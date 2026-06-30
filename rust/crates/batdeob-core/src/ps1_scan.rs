@@ -133,6 +133,26 @@ static FILE_B64_XOR_LOADER_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static INLINE_XOR_KEY_ARRAY_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?is)\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*@\(\s*((?:\d{1,3}\s*,\s*)*\d{1,3})\s*\)"#)
+        .expect("inline xor key array regex")
+});
+
+#[allow(clippy::expect_used)]
+static INLINE_XOR_FUNCTION_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)\bfunction\s+([A-Za-z_][A-Za-z0-9_]*)\b.*?\[Convert\]::FromBase64String\b.*?-bxor\s*\$([A-Za-z_][A-Za-z0-9_]*)"#,
+    )
+    .expect("inline xor function regex")
+});
+
+#[allow(clippy::expect_used)]
+static INLINE_XOR_CALL_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?is)\b([A-Za-z_][A-Za-z0-9_]*)\s+['"]([A-Za-z0-9+/=]{32,})['"]"#)
+        .expect("inline xor call regex")
+});
+
+#[allow(clippy::expect_used)]
 static FILE_B64_LOADER_PATH_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)(?:\bgc\b|\bGet-Content\b)\s+(?:\$([A-Za-z_][A-Za-z0-9_]*)|['"]([^'"]+)['"])"#,
@@ -1489,6 +1509,99 @@ fn append_decoded_rc4_wrappers(text: &str) -> String {
     let mut out = text.to_string();
     out.push('\n');
     out.push_str(&decoded);
+    out
+}
+
+fn append_decoded_inline_xor_base64_functions(text: &str) -> String {
+    let decoded_payloads = decode_inline_xor_base64_functions(text);
+    if decoded_payloads.is_empty() {
+        return text.to_string();
+    }
+    let mut out = text.to_string();
+    for payload in decoded_payloads {
+        let decoded = decode_payload(&payload);
+        if decoded.trim().is_empty() {
+            continue;
+        }
+        out.push('\n');
+        out.push_str(&decoded);
+    }
+    out
+}
+
+fn decode_inline_xor_base64_functions(text: &str) -> Vec<Vec<u8>> {
+    if !contains_ascii_case_insensitive(text, "-bxor")
+        || !contains_ascii_case_insensitive(text, "frombase64string")
+    {
+        return Vec::new();
+    }
+
+    let mut key_arrays = std::collections::HashMap::new();
+    for caps in INLINE_XOR_KEY_ARRAY_RE.captures_iter(text) {
+        let Some(name) = caps.get(1).map(|m| m.as_str().to_ascii_lowercase()) else {
+            continue;
+        };
+        let Some(raw_values) = caps.get(2).map(|m| m.as_str()) else {
+            continue;
+        };
+        let key: Vec<u8> = raw_values
+            .split(',')
+            .filter_map(|part| part.trim().parse::<u8>().ok())
+            .collect();
+        if !key.is_empty() {
+            key_arrays.insert(name, key);
+        }
+    }
+    if key_arrays.is_empty() {
+        return Vec::new();
+    }
+
+    let mut function_keys = std::collections::HashMap::new();
+    for caps in INLINE_XOR_FUNCTION_RE.captures_iter(text) {
+        let Some(function_name) = caps.get(1).map(|m| m.as_str().to_ascii_lowercase()) else {
+            continue;
+        };
+        let Some(key_name) = caps.get(2).map(|m| m.as_str().to_ascii_lowercase()) else {
+            continue;
+        };
+        if key_arrays.contains_key(&key_name) {
+            function_keys.insert(function_name, key_name);
+        }
+    }
+    if function_keys.is_empty() {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for caps in INLINE_XOR_CALL_RE.captures_iter(text) {
+        let Some(function_name) = caps.get(1).map(|m| m.as_str().to_ascii_lowercase()) else {
+            continue;
+        };
+        let Some(key_name) = function_keys.get(&function_name) else {
+            continue;
+        };
+        let Some(key) = key_arrays.get(key_name) else {
+            continue;
+        };
+        let Some(blob) = caps.get(2).map(|m| m.as_str()) else {
+            continue;
+        };
+        if !seen.insert(blob) {
+            continue;
+        }
+        let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(blob) else {
+            continue;
+        };
+        let xored: Vec<u8> = decoded
+            .into_iter()
+            .enumerate()
+            .map(|(idx, byte)| byte ^ key[idx % key.len()])
+            .collect();
+        if looks_like_powershell_payload(&xored) {
+            out.push(xored);
+        }
+    }
     out
 }
 
@@ -4383,6 +4496,7 @@ fn expand_obfuscation(text: &str) -> String {
         out = expand_convert_frombase64_literals(&out);
         out = append_decoded_frombase64_literals(&out);
         out = append_decoded_rc4_wrappers(&out);
+        out = append_decoded_inline_xor_base64_functions(&out);
         out = expand_base64_literals(&out);
         out = expand_getstring_wrapper(&out);
         out = expand_reverse_string_slice_join(&out);
@@ -4403,6 +4517,7 @@ fn expand_obfuscation(text: &str) -> String {
         out = expand_convert_frombase64_literals(&out);
         out = append_decoded_frombase64_literals(&out);
         out = append_decoded_rc4_wrappers(&out);
+        out = append_decoded_inline_xor_base64_functions(&out);
         out = expand_base64_literals(&out);
         out = expand_getstring_wrapper(&out);
         if out == before {
@@ -5538,6 +5653,24 @@ fn extract_rc4_wrapper_inners(env: &mut Environment) {
     env.all_extracted_ps1.extend(new_payloads);
 }
 
+fn extract_inline_xor_base64_function_inners(env: &mut Environment) {
+    let payloads = env.all_extracted_ps1.clone();
+    let mut new_payloads: Vec<Vec<u8>> = Vec::new();
+    let mut seen: std::collections::HashSet<Vec<u8>> =
+        env.all_extracted_ps1.iter().cloned().collect();
+
+    for payload in payloads {
+        let text = decode_payload(&payload).into_owned();
+        for decoded in decode_inline_xor_base64_functions(&text) {
+            if seen.insert(decoded.clone()) {
+                new_payloads.push(decoded);
+            }
+        }
+    }
+
+    env.all_extracted_ps1.extend(new_payloads);
+}
+
 fn decode_rc4_wrapper_from_text(text: &str) -> Option<Vec<u8>> {
     let lower = text.to_ascii_lowercase();
     if !lower.contains("frombase64string")
@@ -5700,6 +5833,7 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
     // herestring body.
     extract_herestring_replace_iex_inners(env);
     extract_rc4_wrapper_inners(env);
+    extract_inline_xor_base64_function_inners(env);
     let file_backed_payloads = env.all_extracted_ps1.clone();
     for payload in file_backed_payloads {
         let raw_text = decode_payload(&payload);

