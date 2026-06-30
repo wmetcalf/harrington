@@ -4016,6 +4016,30 @@ static LITERAL_INDEX_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static LITERAL_CONST_INDEX_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\(([^)]*)\)\s*\{[^{}]*?return\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[\s*(\d+)\s*\]|\.\s*(?:Chars|get_Chars)\s*\(\s*(\d+)\s*\)|\.\s*ToCharArray\s*\(\s*\)\s*\[\s*(\d+)\s*\])[^{}]*\}"#,
+    )
+    .expect("literal constant index extractor def")
+});
+
+#[allow(clippy::expect_used)]
+static LITERAL_CONST_REMOVE_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\(([^)]*)\)\s*\{[^{}]*?return\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Remove\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)[^{}]*\}"#,
+    )
+    .expect("literal constant remove extractor def")
+});
+
+#[allow(clippy::expect_used)]
+static LITERAL_CONST_INSERT_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\(([^)]*)\)\s*\{[^{}]*?return\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Insert\s*\(\s*(\d+)\s*,\s*'((?:''|[^'])*)'\s*\)[^{}]*\}"#,
+    )
+    .expect("literal constant insert extractor def")
+});
+
+#[allow(clippy::expect_used)]
 static LITERAL_CONST_DOT_REPLACE_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\(([^)]*)\)\s*\{[^{}]*?return\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Replace\s*\(\s*'((?:''|[^'])*)'\s*,\s*'((?:''|[^'])*)'\s*\)[^{}]*\}"#,
@@ -4661,6 +4685,166 @@ fn inline_ps_literal_index_extractor_calls(
     out
 }
 
+fn inline_ps_literal_const_index_extractor_calls(
+    text: &str,
+    name: &str,
+    value_binding: &PsLiteralArgBinding,
+    index: usize,
+) -> String {
+    let bytes = text.as_bytes();
+    let mut matches = Vec::new();
+    let mut search_from = 0;
+
+    while let Some(start) = find_ascii_case_insensitive_from(text, name, search_from) {
+        let end_name = start + name.len();
+        if is_ident_byte(bytes.get(start.wrapping_sub(1)).copied())
+            || is_ident_byte(bytes.get(end_name).copied())
+        {
+            search_from = end_name;
+            continue;
+        }
+
+        let pos = skip_ascii_ws(bytes, end_name);
+        let Some((call_end, args)) = parse_ps_literal_call_args(text, pos) else {
+            search_from = end_name;
+            continue;
+        };
+        let Some(value) =
+            ps_literal_arg_by_name_or_position(&args, &value_binding.name, value_binding.position)
+                .and_then(ps_literal_arg_as_string)
+        else {
+            search_from = call_end;
+            continue;
+        };
+        let Some(ch) = value.chars().nth(index) else {
+            search_from = call_end;
+            continue;
+        };
+        let replacement = if ch == ' ' {
+            PS_LITERAL_SPACE_SENTINEL.to_string()
+        } else {
+            ch.to_string().replace('\'', "''")
+        };
+        matches.push((start, call_end, format!("'{replacement}'")));
+        search_from = call_end;
+    }
+
+    let mut out = text.to_string();
+    for (start, end, replacement) in matches.into_iter().rev() {
+        out.replace_range(start..end, &replacement);
+    }
+    out
+}
+
+fn inline_ps_literal_const_remove_extractor_calls(
+    text: &str,
+    name: &str,
+    value_binding: &PsLiteralArgBinding,
+    start_index: usize,
+    count: usize,
+) -> String {
+    let bytes = text.as_bytes();
+    let mut matches = Vec::new();
+    let mut search_from = 0;
+
+    while let Some(start) = find_ascii_case_insensitive_from(text, name, search_from) {
+        let end_name = start + name.len();
+        if is_ident_byte(bytes.get(start.wrapping_sub(1)).copied())
+            || is_ident_byte(bytes.get(end_name).copied())
+        {
+            search_from = end_name;
+            continue;
+        }
+
+        let pos = skip_ascii_ws(bytes, end_name);
+        let Some((call_end, args)) = parse_ps_literal_call_args(text, pos) else {
+            search_from = end_name;
+            continue;
+        };
+        let Some(value) =
+            ps_literal_arg_by_name_or_position(&args, &value_binding.name, value_binding.position)
+                .and_then(ps_literal_arg_as_string)
+        else {
+            search_from = call_end;
+            continue;
+        };
+        let mut chars: Vec<char> = value.chars().collect();
+        let end_index = start_index.saturating_add(count);
+        if start_index > chars.len() || end_index > chars.len() {
+            search_from = call_end;
+            continue;
+        }
+        chars.drain(start_index..end_index);
+        let replacement: String = chars.into_iter().collect();
+        matches.push((
+            start,
+            call_end,
+            format!("'{}'", replacement.replace('\'', "''")),
+        ));
+        search_from = call_end;
+    }
+
+    let mut out = text.to_string();
+    for (start, end, replacement) in matches.into_iter().rev() {
+        out.replace_range(start..end, &replacement);
+    }
+    out
+}
+
+fn inline_ps_literal_const_insert_extractor_calls(
+    text: &str,
+    name: &str,
+    value_binding: &PsLiteralArgBinding,
+    start_index: usize,
+    insertion: &str,
+) -> String {
+    let bytes = text.as_bytes();
+    let mut matches = Vec::new();
+    let mut search_from = 0;
+
+    while let Some(start) = find_ascii_case_insensitive_from(text, name, search_from) {
+        let end_name = start + name.len();
+        if is_ident_byte(bytes.get(start.wrapping_sub(1)).copied())
+            || is_ident_byte(bytes.get(end_name).copied())
+        {
+            search_from = end_name;
+            continue;
+        }
+
+        let pos = skip_ascii_ws(bytes, end_name);
+        let Some((call_end, args)) = parse_ps_literal_call_args(text, pos) else {
+            search_from = end_name;
+            continue;
+        };
+        let Some(value) =
+            ps_literal_arg_by_name_or_position(&args, &value_binding.name, value_binding.position)
+                .and_then(ps_literal_arg_as_string)
+        else {
+            search_from = call_end;
+            continue;
+        };
+        let mut chars: Vec<char> = value.chars().collect();
+        if start_index > chars.len() {
+            search_from = call_end;
+            continue;
+        }
+        chars.splice(start_index..start_index, insertion.chars());
+        let replacement: String = chars.into_iter().collect();
+        matches.push((
+            start,
+            call_end,
+            format!("'{}'", replacement.replace('\'', "''")),
+        ));
+        search_from = call_end;
+    }
+
+    let mut out = text.to_string();
+    for (start, end, replacement) in matches.into_iter().rev() {
+        out.replace_range(start..end, &replacement);
+    }
+    out
+}
+
 fn expand_literal_replace_extractor_calls(text: &str) -> String {
     if !contains_ascii_case_insensitive(text, "function")
         || !contains_ascii_case_insensitive(text, "replace")
@@ -4920,9 +5104,98 @@ fn expand_literal_index_extractor_calls(text: &str) -> String {
             Some((name.to_string(), value_position, index_position))
         })
         .collect();
+    let const_defs: Vec<(String, PsLiteralArgBinding, usize)> =
+        LITERAL_CONST_INDEX_EXTRACTOR_DEF_RE
+            .captures_iter(text)
+            .filter_map(|caps| {
+                let name = caps.get(1)?.as_str();
+                let params = parse_ps_parameter_names(caps.get(2)?.as_str());
+                let index = caps
+                    .get(4)
+                    .or_else(|| caps.get(5))
+                    .or_else(|| caps.get(6))?
+                    .as_str()
+                    .parse()
+                    .ok()?;
+                Some((
+                    name.to_string(),
+                    ps_literal_arg_binding(&params, caps.get(3)?.as_str())?,
+                    index,
+                ))
+            })
+            .collect();
     let mut out = text.to_string();
     for (name, value_position, index_position) in defs {
         out = inline_ps_literal_index_extractor_calls(&out, &name, value_position, index_position);
+    }
+    for (name, value_binding, index) in const_defs {
+        out = inline_ps_literal_const_index_extractor_calls(&out, &name, &value_binding, index);
+    }
+    out
+}
+
+fn expand_literal_remove_extractor_calls(text: &str) -> String {
+    if !contains_ascii_case_insensitive(text, "function")
+        || !contains_ascii_case_insensitive(text, "remove")
+    {
+        return text.to_string();
+    }
+    let defs: Vec<(String, PsLiteralArgBinding, usize, usize)> =
+        LITERAL_CONST_REMOVE_EXTRACTOR_DEF_RE
+            .captures_iter(text)
+            .filter_map(|caps| {
+                let name = caps.get(1)?.as_str();
+                let params = parse_ps_parameter_names(caps.get(2)?.as_str());
+                Some((
+                    name.to_string(),
+                    ps_literal_arg_binding(&params, caps.get(3)?.as_str())?,
+                    caps.get(4)?.as_str().parse().ok()?,
+                    caps.get(5)?.as_str().parse().ok()?,
+                ))
+            })
+            .collect();
+    let mut out = text.to_string();
+    for (name, value_binding, start_index, count) in defs {
+        out = inline_ps_literal_const_remove_extractor_calls(
+            &out,
+            &name,
+            &value_binding,
+            start_index,
+            count,
+        );
+    }
+    out
+}
+
+fn expand_literal_insert_extractor_calls(text: &str) -> String {
+    if !contains_ascii_case_insensitive(text, "function")
+        || !contains_ascii_case_insensitive(text, "insert")
+    {
+        return text.to_string();
+    }
+    let defs: Vec<(String, PsLiteralArgBinding, usize, String)> =
+        LITERAL_CONST_INSERT_EXTRACTOR_DEF_RE
+            .captures_iter(text)
+            .filter_map(|caps| {
+                let name = caps.get(1)?.as_str();
+                let params = parse_ps_parameter_names(caps.get(2)?.as_str());
+                Some((
+                    name.to_string(),
+                    ps_literal_arg_binding(&params, caps.get(3)?.as_str())?,
+                    caps.get(4)?.as_str().parse().ok()?,
+                    caps.get(5)?.as_str().replace("''", "'"),
+                ))
+            })
+            .collect();
+    let mut out = text.to_string();
+    for (name, value_binding, start_index, insertion) in defs {
+        out = inline_ps_literal_const_insert_extractor_calls(
+            &out,
+            &name,
+            &value_binding,
+            start_index,
+            &insertion,
+        );
     }
     out
 }
@@ -5648,6 +5921,8 @@ fn expand_obfuscation(text: &str) -> String {
         out = expand_literal_trim_extractor_calls(&out);
         out = expand_literal_case_extractor_calls(&out);
         out = expand_literal_index_extractor_calls(&out);
+        out = expand_literal_remove_extractor_calls(&out);
+        out = expand_literal_insert_extractor_calls(&out);
         out = expand_passthrough_call_wrappers(&out);
         out = expand_ps_dot_replace(&out);
         out = expand_ps_embedded_single_quote_assignments(&out);
