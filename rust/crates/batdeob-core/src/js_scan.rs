@@ -913,6 +913,7 @@ fn skip_js_call_arg(text: &str, start: usize) -> Option<usize> {
 fn decoded_js_atob_literals(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let string_bindings = collect_js_string_literal_bindings(text);
+    let array_bindings = collect_js_string_array_bindings(text, &string_bindings);
     let mut cursor = 0usize;
     while let Some(rel) = find_ascii_case_insensitive(&text[cursor..], "atob") {
         let name_start = cursor + rel;
@@ -929,7 +930,8 @@ fn decoded_js_atob_literals(text: &str) -> Vec<String> {
             continue;
         }
 
-        let Some((arg_end, value)) = parse_js_atob_string_arg(text, name_end, &string_bindings)
+        let Some((arg_end, value)) =
+            parse_js_atob_string_arg(text, name_end, &string_bindings, &array_bindings)
         else {
             cursor = name_end;
             continue;
@@ -962,6 +964,7 @@ fn parse_js_atob_string_arg(
     text: &str,
     callee_end: usize,
     bindings: &std::collections::HashMap<String, String>,
+    arrays: &std::collections::HashMap<String, Vec<String>>,
 ) -> Option<(usize, String)> {
     if let Some(open) = consume_js_call_open(text, callee_end) {
         let arg_start = skip_ascii_ws(text, open + 1);
@@ -981,7 +984,8 @@ fn parse_js_atob_string_arg(
             return None;
         }
         let array_start = skip_ascii_ws(text, comma + 1);
-        let (array_end, parts) = parse_js_string_array_arg_at(text, array_start, bindings)?;
+        let (array_end, parts) =
+            parse_js_string_array_value_arg_at(text, array_start, bindings, arrays)?;
         let close = skip_ascii_ws(text, array_end);
         if text.as_bytes().get(close) != Some(&b')') {
             return None;
@@ -998,6 +1002,63 @@ fn parse_js_atob_string_arg(
     }
 
     None
+}
+
+fn parse_js_string_array_value_arg_at(
+    text: &str,
+    start: usize,
+    bindings: &std::collections::HashMap<String, String>,
+    arrays: &std::collections::HashMap<String, Vec<String>>,
+) -> Option<(usize, Vec<String>)> {
+    let start = skip_ascii_ws(text, start);
+    let (mut cursor, mut parts) =
+        if let Some((end, parts)) = parse_js_string_array_arg_at(text, start, bindings) {
+            (end, parts)
+        } else {
+            let (end, name) = parse_js_identifier_at(text, start)?;
+            (end, arrays.get(name)?.clone())
+        };
+
+    if let Some((slice_end, sliced)) = consume_js_array_slice_chain(text, cursor, parts.clone()) {
+        cursor = slice_end;
+        parts = sliced;
+    }
+
+    Some((cursor, parts))
+}
+
+fn consume_js_array_slice_chain(
+    text: &str,
+    idx: usize,
+    parts: Vec<String>,
+) -> Option<(usize, Vec<String>)> {
+    let open = consume_js_method_open(text, idx, "slice")?;
+    let args_close = find_js_call_close(text, open + 1)?;
+    let args = text[open + 1..args_close].trim();
+    let (start, end) = parse_js_slice_bounds(args, parts.len())?;
+    if start > end || end > parts.len() {
+        return None;
+    }
+    Some((args_close + 1, parts[start..end].to_vec()))
+}
+
+fn parse_js_slice_bounds(args: &str, len: usize) -> Option<(usize, usize)> {
+    let mut parts = args.split(',').map(str::trim);
+    let start = parts.next()?.parse::<usize>().ok()?;
+    let end = parts
+        .next()
+        .and_then(|part| {
+            if part.is_empty() {
+                None
+            } else {
+                part.parse::<usize>().ok()
+            }
+        })
+        .unwrap_or(len);
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((start.min(len), end.min(len)))
 }
 
 fn find_js_call_comma(text: &str, mut cursor: usize) -> Option<usize> {
