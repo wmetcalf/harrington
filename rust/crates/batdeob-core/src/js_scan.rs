@@ -1124,7 +1124,8 @@ fn is_js_string_code_decoder(value: &str) -> bool {
 }
 
 fn decoded_js_fromcharcode_apply_bindings(text: &str) -> Vec<String> {
-    let bindings = collect_js_typed_byte_array_bindings(text);
+    let typed_bindings = collect_js_typed_byte_array_bindings(text);
+    let byte_bindings = collect_js_byte_array_literal_byte_bindings(text);
     let mut out = Vec::new();
     let mut cursor = 0usize;
     while let Some(rel) = text[cursor..].find("String") {
@@ -1142,6 +1143,70 @@ fn decoded_js_fromcharcode_apply_bindings(text: &str) -> Vec<String> {
             cursor = string_end;
             continue;
         };
+        if let Some(call_open) = consume_js_call_open(text, fromcharcode_end) {
+            let arg_start = skip_ascii_ws(text, call_open + 1);
+            if text.as_bytes().get(arg_start) != Some(&b'.')
+                || text.as_bytes().get(arg_start + 1) != Some(&b'.')
+                || text.as_bytes().get(arg_start + 2) != Some(&b'.')
+            {
+                cursor = fromcharcode_end;
+                continue;
+            }
+            let spread_arg_start = skip_ascii_ws(text, arg_start + 3);
+            let Some((arg_end, bytes)) =
+                parse_js_numeric_byte_array_arg_bytes(text, spread_arg_start)
+                    .or_else(|| parse_js_typed_byte_array_arg_bytes(text, spread_arg_start))
+                    .or_else(|| {
+                        let (arg_end, var_name) = parse_js_identifier_at(text, spread_arg_start)?;
+                        if let Some(decoded) = typed_bindings.get(var_name) {
+                            return Some((arg_end, decoded.as_bytes().to_vec()));
+                        }
+                        byte_bindings
+                            .get(var_name)
+                            .map(|bytes| (arg_end, bytes.clone()))
+                    })
+            else {
+                cursor = spread_arg_start;
+                continue;
+            };
+            let close = skip_ascii_ws(text, arg_end);
+            if text.as_bytes().get(close) == Some(&b')') {
+                out.push(String::from_utf8_lossy(&bytes).into_owned());
+                if out.len() >= 128 {
+                    break;
+                }
+                cursor = close + 1;
+                continue;
+            }
+            cursor = arg_end;
+            continue;
+        }
+        if let Some(call_open) = consume_js_method_open(text, fromcharcode_end, "call") {
+            let Some(first_arg_end) = skip_js_call_arg(text, call_open + 1) else {
+                cursor = call_open + 1;
+                continue;
+            };
+            let comma = skip_ascii_ws(text, first_arg_end);
+            if text.as_bytes().get(comma) != Some(&b',') {
+                cursor = call_open + 1;
+                continue;
+            }
+            let nums_start = skip_ascii_ws(text, comma + 1);
+            let Some(close) = find_js_call_close(text, nums_start) else {
+                cursor = nums_start;
+                continue;
+            };
+            if let Some(decoded) = decode_js_fromcharcode_args(&text[nums_start..close]) {
+                out.push(decoded);
+                if out.len() >= 128 {
+                    break;
+                }
+                cursor = close + 1;
+                continue;
+            }
+            cursor = close + 1;
+            continue;
+        }
         let Some(apply_open) = consume_js_method_open(text, fromcharcode_end, "apply") else {
             cursor = fromcharcode_end;
             continue;
@@ -1156,6 +1221,17 @@ fn decoded_js_fromcharcode_apply_bindings(text: &str) -> Vec<String> {
             continue;
         }
         let arg_start = skip_ascii_ws(text, comma + 1);
+        if let Some((arg_end, bytes)) = parse_js_numeric_byte_array_arg_bytes(text, arg_start) {
+            let close = skip_ascii_ws(text, arg_end);
+            if text.as_bytes().get(close) == Some(&b')') {
+                out.push(String::from_utf8_lossy(&bytes).into_owned());
+                if out.len() >= 128 {
+                    break;
+                }
+                cursor = close + 1;
+                continue;
+            }
+        }
         if let Some((arg_end, decoded)) = parse_js_typed_byte_array_arg(text, arg_start) {
             let close = skip_ascii_ws(text, arg_end);
             if text.as_bytes().get(close) == Some(&b')') {
@@ -1176,8 +1252,13 @@ fn decoded_js_fromcharcode_apply_bindings(text: &str) -> Vec<String> {
             cursor = var_end;
             continue;
         }
-        if let Some(decoded) = bindings.get(var_name) {
+        if let Some(decoded) = typed_bindings.get(var_name) {
             out.push(decoded.clone());
+            if out.len() >= 128 {
+                break;
+            }
+        } else if let Some(bytes) = byte_bindings.get(var_name) {
+            out.push(String::from_utf8_lossy(bytes).into_owned());
             if out.len() >= 128 {
                 break;
             }
@@ -1227,24 +1308,44 @@ fn decoded_js_atob_literals(text: &str) -> Vec<String> {
             cursor = name_end;
             continue;
         };
-        if value.len() <= 16384 {
-            let bytes = value.as_bytes();
-            let cleaned = if bytes.iter().any(|b| b.is_ascii_whitespace()) {
-                std::borrow::Cow::Owned(
-                    bytes
-                        .iter()
-                        .copied()
-                        .filter(|b| !b.is_ascii_whitespace())
-                        .collect::<Vec<u8>>(),
-                )
-            } else {
-                std::borrow::Cow::Borrowed(bytes)
-            };
-            if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(&cleaned) {
-                if decoded.len() <= 8192 {
-                    out.push(String::from_utf8_lossy(&decoded).into_owned());
-                }
-            }
+        if let Some(decoded) =
+            decode_js_base64_bytes(&value).map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        {
+            out.push(decoded);
+        }
+        cursor = arg_end;
+    }
+
+    let mut cursor = 0usize;
+    while cursor < text.len() {
+        let Some((ident_end, name)) = parse_js_identifier_at(text, cursor) else {
+            cursor += text[cursor..]
+                .chars()
+                .next()
+                .map(char::len_utf8)
+                .unwrap_or(1);
+            continue;
+        };
+        if name != "window" {
+            cursor = ident_end;
+            continue;
+        }
+        let Some(callee_end) =
+            consume_js_window_member_function_end(text, ident_end, "atob", &string_bindings)
+        else {
+            cursor = ident_end;
+            continue;
+        };
+        let Some((arg_end, value)) =
+            parse_js_atob_string_arg(text, callee_end, &string_bindings, &array_bindings)
+        else {
+            cursor = callee_end;
+            continue;
+        };
+        if let Some(decoded) =
+            decode_js_base64_bytes(&value).map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        {
+            out.push(decoded);
         }
         cursor = arg_end;
     }
@@ -1269,28 +1370,33 @@ fn decoded_js_atob_literals(text: &str) -> Vec<String> {
             cursor = ident_end;
             continue;
         };
-        if value.len() <= 16384 {
-            let bytes = value.as_bytes();
-            let cleaned = if bytes.iter().any(|b| b.is_ascii_whitespace()) {
-                std::borrow::Cow::Owned(
-                    bytes
-                        .iter()
-                        .copied()
-                        .filter(|b| !b.is_ascii_whitespace())
-                        .collect::<Vec<u8>>(),
-                )
-            } else {
-                std::borrow::Cow::Borrowed(bytes)
-            };
-            if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(&cleaned) {
-                if decoded.len() <= 8192 {
-                    out.push(String::from_utf8_lossy(&decoded).into_owned());
-                }
-            }
+        if let Some(decoded) =
+            decode_js_base64_bytes(&value).map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        {
+            out.push(decoded);
         }
         cursor = arg_end;
     }
     out
+}
+
+fn consume_js_window_member_function_end(
+    text: &str,
+    object_end: usize,
+    target: &str,
+    bindings: &std::collections::HashMap<String, String>,
+) -> Option<usize> {
+    let bracket_open = skip_ascii_ws(text, object_end);
+    if text.as_bytes().get(bracket_open) != Some(&b'[') {
+        return None;
+    }
+    let member_start = skip_ascii_ws(text, bracket_open + 1);
+    let (member_end, member) = parse_js_string_or_bound_arg(text, member_start, bindings)?;
+    let bracket_close = skip_ascii_ws(text, member_end);
+    if member != target || text.as_bytes().get(bracket_close) != Some(&b']') {
+        return None;
+    }
+    Some(bracket_close + 1)
 }
 
 fn decoded_js_custom_base64_decoder_calls(text: &str) -> Vec<String> {
@@ -1656,6 +1762,25 @@ fn parse_js_string_value_arg_at(
             cursor = end;
             continue;
         }
+        if let Some(end) = consume_js_no_arg_method(text, cursor, "toString") {
+            cursor = end;
+            continue;
+        }
+        if let Some((end, sliced)) = consume_js_string_slice_call(text, cursor, &value) {
+            value = sliced;
+            cursor = end;
+            continue;
+        }
+        if let Some((end, reversed)) = consume_js_split_reverse_join_chain(text, cursor, &value) {
+            value = reversed;
+            cursor = end;
+            continue;
+        }
+        if let Some((end, joined)) = consume_js_split_join_chain(text, cursor, &value) {
+            value = joined;
+            cursor = end;
+            continue;
+        }
         if let Some((end, replaced)) =
             consume_js_replace_call(text, cursor, value.clone(), bindings)
         {
@@ -1673,6 +1798,89 @@ fn parse_js_string_value_arg_at(
         break;
     }
     Some((cursor, value))
+}
+
+fn consume_js_string_slice_call(text: &str, idx: usize, value: &str) -> Option<(usize, String)> {
+    let len = value.chars().count();
+    if let Some(open) = consume_js_method_open(text, idx, "slice") {
+        let close = find_js_call_close(text, open + 1)?;
+        let (start, end) = parse_js_string_slice_bounds(&text[open + 1..close], len)?;
+        return Some((close + 1, slice_js_string_chars(value, start, end)?));
+    }
+    if let Some(open) = consume_js_method_open(text, idx, "substring") {
+        let close = find_js_call_close(text, open + 1)?;
+        let (start, end) = parse_js_string_substring_bounds(&text[open + 1..close], len)?;
+        return Some((close + 1, slice_js_string_chars(value, start, end)?));
+    }
+    let open = consume_js_method_open(text, idx, "substr")?;
+    let close = find_js_call_close(text, open + 1)?;
+    let (start, end) = parse_js_string_substr_bounds(&text[open + 1..close], len)?;
+    Some((close + 1, slice_js_string_chars(value, start, end)?))
+}
+
+fn parse_js_string_slice_bounds(args: &str, len: usize) -> Option<(usize, usize)> {
+    let mut parts = args.split(',').map(str::trim);
+    let start = normalize_js_relative_index(parts.next()?.parse::<isize>().ok()?, len);
+    let end = parts
+        .next()
+        .filter(|part| !part.is_empty())
+        .and_then(|part| part.parse::<isize>().ok())
+        .map(|idx| normalize_js_relative_index(idx, len))
+        .unwrap_or(len);
+    if parts.next().is_some() || start > end {
+        return None;
+    }
+    Some((start, end))
+}
+
+fn parse_js_string_substring_bounds(args: &str, len: usize) -> Option<(usize, usize)> {
+    let mut parts = args.split(',').map(str::trim);
+    let start = normalize_js_nonnegative_index(parts.next()?.parse::<isize>().ok()?, len);
+    let end = parts
+        .next()
+        .filter(|part| !part.is_empty())
+        .and_then(|part| part.parse::<isize>().ok())
+        .map(|idx| normalize_js_nonnegative_index(idx, len))
+        .unwrap_or(len);
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((start.min(end), start.max(end)))
+}
+
+fn parse_js_string_substr_bounds(args: &str, len: usize) -> Option<(usize, usize)> {
+    let mut parts = args.split(',').map(str::trim);
+    let start = normalize_js_relative_index(parts.next()?.parse::<isize>().ok()?, len);
+    let count = parts
+        .next()
+        .filter(|part| !part.is_empty())
+        .and_then(|part| part.parse::<isize>().ok())
+        .map(|count| count.max(0) as usize)
+        .unwrap_or(len.saturating_sub(start));
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((start, start.saturating_add(count).min(len)))
+}
+
+fn normalize_js_relative_index(idx: isize, len: usize) -> usize {
+    if idx < 0 {
+        len.saturating_sub(idx.unsigned_abs())
+    } else {
+        (idx as usize).min(len)
+    }
+}
+
+fn normalize_js_nonnegative_index(idx: isize, len: usize) -> usize {
+    (idx.max(0) as usize).min(len)
+}
+
+fn slice_js_string_chars(value: &str, start: usize, end: usize) -> Option<String> {
+    if start > end {
+        return None;
+    }
+    let sliced: String = value.chars().skip(start).take(end - start).collect();
+    (sliced.len() <= 16384).then_some(sliced)
 }
 
 fn consume_js_string_concat_call(
@@ -2195,6 +2403,15 @@ fn consume_js_split_reverse_join_chain(
     Some((join_end, value.chars().rev().collect()))
 }
 
+fn consume_js_split_join_chain(text: &str, idx: usize, value: &str) -> Option<(usize, String)> {
+    let (split_end, sep) = consume_js_string_arg_method(text, idx, "split")?;
+    let (join_end, join_sep) = consume_js_string_arg_method(text, split_end, "join")?;
+    Some((
+        join_end,
+        value.split(&sep).collect::<Vec<_>>().join(&join_sep),
+    ))
+}
+
 fn collect_js_byte_array_literal_byte_bindings(
     text: &str,
 ) -> std::collections::HashMap<String, Vec<u8>> {
@@ -2271,8 +2488,9 @@ fn parse_js_buffer_args_bytes(
     string_bindings: &std::collections::HashMap<String, String>,
 ) -> Option<(usize, Vec<u8>)> {
     let arg_start = skip_ascii_ws(text, open + 1);
-    if let Some((arg_end, bytes)) =
-        parse_js_byte_array_literal_bytes(text, arg_start).or_else(|| {
+    if let Some((arg_end, bytes)) = parse_js_numeric_byte_array_arg_bytes(text, arg_start)
+        .or_else(|| parse_js_typed_byte_array_arg_bytes(text, arg_start))
+        .or_else(|| {
             let (arg_end, name) = parse_js_identifier_at(text, arg_start)?;
             byte_bindings
                 .get(name)
@@ -2357,6 +2575,32 @@ fn parse_js_byte_array_literal_bytes(text: &str, start: usize) -> Option<(usize,
     }
     let close = find_js_byte_array_close(text, start + 1)?;
     let bytes = decode_js_byte_array_values(&text[start + 1..close])?;
+    Some((close + 1, bytes))
+}
+
+fn parse_js_numeric_byte_array_arg_bytes(text: &str, start: usize) -> Option<(usize, Vec<u8>)> {
+    let start = skip_ascii_ws(text, start);
+    if let Some((end, bytes)) = parse_js_byte_array_literal_bytes(text, start) {
+        return Some((end, bytes));
+    }
+
+    let (first_end, first_name) = parse_js_identifier_at(text, start)?;
+    let (array_end, array_name) = if first_name == "new" {
+        let array_start = skip_ascii_ws(text, first_end);
+        let (array_end, array_name) = parse_js_identifier_at(text, array_start)?;
+        (array_end, array_name)
+    } else {
+        (first_end, first_name)
+    };
+    if array_name != "Array" {
+        return None;
+    }
+    let open = skip_ascii_ws(text, array_end);
+    if text.as_bytes().get(open) != Some(&b'(') {
+        return None;
+    }
+    let close = find_js_call_close(text, open + 1)?;
+    let bytes = decode_js_byte_array_values(&text[open + 1..close])?;
     Some((close + 1, bytes))
 }
 
