@@ -912,8 +912,13 @@ fn skip_js_call_arg(text: &str, start: usize) -> Option<usize> {
 
 fn decoded_js_atob_literals(text: &str) -> Vec<String> {
     let mut out = Vec::new();
-    let string_bindings = collect_js_string_literal_bindings(text);
+    let mut string_bindings = collect_js_string_literal_bindings(text);
     let array_bindings = collect_js_string_array_bindings(text, &string_bindings);
+    string_bindings.extend(collect_js_array_index_string_bindings(
+        text,
+        &string_bindings,
+        &array_bindings,
+    ));
     let mut cursor = 0usize;
     while let Some(rel) = find_ascii_case_insensitive(&text[cursor..], "atob") {
         let name_start = cursor + rel;
@@ -968,13 +973,13 @@ fn parse_js_atob_string_arg(
 ) -> Option<(usize, String)> {
     if let Some(open) = consume_js_call_open(text, callee_end) {
         let arg_start = skip_ascii_ws(text, open + 1);
-        return parse_js_string_value_arg_at(text, arg_start, bindings);
+        return parse_js_atob_value_arg_at(text, arg_start, bindings, arrays);
     }
 
     if let Some(open) = consume_js_method_open(text, callee_end, "call") {
         let comma = find_js_call_comma(text, skip_ascii_ws(text, open + 1))?;
         let arg_start = skip_ascii_ws(text, comma + 1);
-        return parse_js_string_value_arg_at(text, arg_start, bindings);
+        return parse_js_atob_value_arg_at(text, arg_start, bindings, arrays);
     }
 
     if let Some(open) = consume_js_method_open(text, callee_end, "apply") {
@@ -998,10 +1003,60 @@ fn parse_js_atob_string_arg(
         let bind_close = find_js_call_close(text, bind_open + 1)?;
         let open = consume_js_call_open(text, bind_close + 1)?;
         let arg_start = skip_ascii_ws(text, open + 1);
-        return parse_js_string_value_arg_at(text, arg_start, bindings);
+        return parse_js_atob_value_arg_at(text, arg_start, bindings, arrays);
     }
 
     None
+}
+
+fn parse_js_atob_value_arg_at(
+    text: &str,
+    start: usize,
+    bindings: &std::collections::HashMap<String, String>,
+    arrays: &std::collections::HashMap<String, Vec<String>>,
+) -> Option<(usize, String)> {
+    parse_js_string_value_arg_at(text, start, bindings)
+        .or_else(|| parse_js_array_value_arg_at(text, start, bindings, arrays))
+}
+
+fn parse_js_array_value_arg_at(
+    text: &str,
+    start: usize,
+    bindings: &std::collections::HashMap<String, String>,
+    arrays: &std::collections::HashMap<String, Vec<String>>,
+) -> Option<(usize, String)> {
+    let (ident_end, name) = parse_js_identifier_at(text, start)?;
+    let parts = arrays.get(name)?;
+    if let Some(end) = consume_js_no_arg_method(text, ident_end, "shift") {
+        return Some((end, parts.first()?.clone()));
+    }
+    if let Some((end, joined)) =
+        consume_js_array_join_chain(text, ident_end, parts.clone(), bindings, arrays)
+    {
+        return Some((end, joined));
+    }
+    let open = skip_ascii_ws(text, ident_end);
+    if text.as_bytes().get(open) != Some(&b'[') {
+        return None;
+    }
+    let index_start = skip_ascii_ws(text, open + 1);
+    let mut index_end = index_start;
+    while text
+        .as_bytes()
+        .get(index_end)
+        .is_some_and(u8::is_ascii_digit)
+    {
+        index_end += 1;
+    }
+    if index_end == index_start {
+        return None;
+    }
+    let index = text[index_start..index_end].parse::<usize>().ok()?;
+    let close = skip_ascii_ws(text, index_end);
+    if text.as_bytes().get(close) != Some(&b']') {
+        return None;
+    }
+    Some((close + 1, parts.get(index)?.clone()))
 }
 
 fn parse_js_string_array_value_arg_at(
@@ -1157,6 +1212,34 @@ fn collect_js_string_literal_bindings(text: &str) -> std::collections::HashMap<S
     bindings
 }
 
+fn collect_js_array_index_string_bindings(
+    text: &str,
+    string_bindings: &std::collections::HashMap<String, String>,
+    arrays: &std::collections::HashMap<String, Vec<String>>,
+) -> std::collections::HashMap<String, String> {
+    let mut bindings = std::collections::HashMap::new();
+    for caps in JS_STRING_ASSIGN_RE.captures_iter(text) {
+        if bindings.len() >= 256 {
+            break;
+        }
+        let Some(name) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(expr) = caps.get(2).map(|m| m.as_str().trim()) else {
+            continue;
+        };
+        let Some((end, value)) = parse_js_array_value_arg_at(expr, 0, string_bindings, arrays)
+        else {
+            continue;
+        };
+        if skip_ascii_ws(expr, end) != expr.len() {
+            continue;
+        }
+        bindings.insert(name.to_string(), value);
+    }
+    bindings
+}
+
 fn decoded_js_array_join_literals(text: &str) -> Vec<String> {
     let string_bindings = collect_js_string_literal_bindings(text);
     let array_bindings = collect_js_string_array_bindings(text, &string_bindings);
@@ -1267,7 +1350,13 @@ fn parse_js_string_array_arg_at(
         if matches!(kind, JsArrayConstructorKind::From) {
             let arg_start = skip_ascii_ws(text, open + 1);
             if text.as_bytes().get(arg_start) != Some(&b'[') {
-                return None;
+                let (string_end, value) = parse_js_string_or_bound_arg(text, arg_start, bindings)?;
+                let close = skip_ascii_ws(text, string_end);
+                if text.as_bytes().get(close) != Some(&b')') || value.chars().count() > 128 {
+                    return None;
+                }
+                let parts = value.chars().map(|ch| ch.to_string()).collect();
+                return Some((close + 1, parts));
             }
             let (array_end, parts) = parse_js_string_array_arg_at(text, arg_start, bindings)?;
             let close = skip_ascii_ws(text, array_end);
@@ -1373,6 +1462,12 @@ fn consume_js_array_join_chain(
         parts = filter_parts;
     }
 
+    if let Some((slice_end, sliced_parts)) = consume_js_array_slice_chain(text, idx, parts.clone())
+    {
+        idx = slice_end;
+        parts = sliced_parts;
+    }
+
     if let Some((join_end, sep)) = consume_js_string_arg_method(text, idx, "join") {
         let joined = join_js_string_parts(parts, &sep)?;
         return Some(consume_js_join_string_transforms(
@@ -1393,6 +1488,12 @@ fn consume_js_array_join_chain(
     {
         after_reverse = filter_end;
         parts = filter_parts;
+    }
+    if let Some((slice_end, sliced_parts)) =
+        consume_js_array_slice_chain(text, after_reverse, parts.clone())
+    {
+        after_reverse = slice_end;
+        parts = sliced_parts;
     }
     let (join_end, sep) = consume_js_string_arg_method(text, after_reverse, "join")?;
     let joined = join_js_string_parts(parts, &sep)?;

