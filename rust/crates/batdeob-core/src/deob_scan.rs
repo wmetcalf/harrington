@@ -10980,8 +10980,10 @@ fn powershell_scheduled_task_action_args(command: &str) -> Option<(String, Optio
     if !contains_callable_ascii_case_insensitive(command, "New-ScheduledTaskAction") {
         return None;
     }
-    let mut execute = powershell_named_argument(command, "-Execute");
-    let mut argument = powershell_named_argument(command, "-Argument");
+    let mut execute = powershell_named_argument(command, "-Execute")
+        .or_else(|| powershell_named_argument(command, "-Ex"));
+    let mut argument = powershell_named_argument(command, "-Argument")
+        .or_else(|| powershell_named_argument(command, "-Ar"));
     let mut positional =
         powershell_positional_arguments(command, "New-ScheduledTaskAction").into_iter();
     if execute.is_none() {
@@ -11000,7 +11002,8 @@ fn powershell_register_scheduled_task_args(
     if !contains_callable_ascii_case_insensitive(command, "Register-ScheduledTask") {
         return None;
     }
-    let mut task_name = powershell_named_argument(command, "-TaskName");
+    let mut task_name = powershell_named_argument(command, "-TaskName")
+        .or_else(|| powershell_named_argument(command, "-Ta"));
     let mut positional =
         powershell_positional_arguments(command, "Register-ScheduledTask").into_iter();
     if task_name.is_none() {
@@ -11014,16 +11017,23 @@ fn powershell_register_scheduled_task_args(
             )
         })
         .or_else(|| {
-            powershell_named_argument(command, "-Action").and_then(|action| {
-                action
-                    .strip_prefix('$')
-                    .and_then(|name| actions.get(&name.to_ascii_lowercase()).cloned())
-                    .or_else(|| {
-                        powershell_scheduled_task_action_args(&action).map(|(execute, argument)| {
-                            join_powershell_command(&execute, argument.as_deref().unwrap_or(""))
+            powershell_named_argument(command, "-Action")
+                .or_else(|| powershell_named_argument(command, "-Ac"))
+                .and_then(|action| {
+                    action
+                        .strip_prefix('$')
+                        .and_then(|name| actions.get(&name.to_ascii_lowercase()).cloned())
+                        .or_else(|| {
+                            powershell_scheduled_task_action_args(&action).map(
+                                |(execute, argument)| {
+                                    join_powershell_command(
+                                        &execute,
+                                        argument.as_deref().unwrap_or(""),
+                                    )
+                                },
+                            )
                         })
-                    })
-            })
+                })
         })
         .unwrap_or_default();
     Some((task_name?, task_command))

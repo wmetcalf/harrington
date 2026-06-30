@@ -35978,6 +35978,25 @@ powershell -Command "tracert route-wrapper.example"
     }
 
     #[test]
+    fn powershell_short_scheduled_task_parameters_emit_persistence_trait() {
+        let script = br#"powershell -Command "$a = New-ScheduledTaskAction -Ex 'cmd.exe' -Ar '/c calc.exe'; Register-ScheduledTask -Ta Updater -Ac $a -Fo"
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { hive, key, command, .. }
+                    if hive == "ScheduledTask"
+                        && key == "Updater"
+                        && command == "cmd.exe /c calc.exe"
+            )),
+            "short PowerShell scheduled-task parameters missed: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_chained_inline_scheduled_tasks_emit_each_persistence_trait() {
         let script = br#"powershell -Command "Register-ScheduledTask -TaskName FirstTask -Action (New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/c one.exe') -Force; Register-ScheduledTask -TaskName SecondTask -Action (New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/c two.exe') -Force""#;
         let report = analyze(script, &Config::default());
