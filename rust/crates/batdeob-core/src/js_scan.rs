@@ -91,6 +91,14 @@ static JS_STRING_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("js string assign")
 });
 
+#[allow(clippy::expect_used)]
+static JS_STRING_APPEND_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)(?:^|[;\r\n])\s*([A-Za-z_$][A-Za-z0-9_$]{0,127})\s*\+=\s*([^;\r\n]{1,4096})"#,
+    )
+    .expect("js string append")
+});
+
 pub fn scan_js_payloads(env: &mut Environment) {
     let payloads: Vec<Vec<u8>> = env.all_extracted_jscript.clone();
     let mut seen: std::collections::HashSet<(usize, String)> = std::collections::HashSet::new();
@@ -618,25 +626,58 @@ fn percent_decode_lenient(text: &str) -> String {
 fn decoded_js_variable_string_bindings(text: &str) -> Vec<String> {
     let mut vars: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut out = Vec::new();
+    let mut events = Vec::new();
 
     for caps in JS_STRING_ASSIGN_RE.captures_iter(text) {
+        let Some(start) = caps.get(0).map(|m| m.start()) else {
+            continue;
+        };
         let Some(name) = caps.get(1).map(|m| m.as_str()) else {
             continue;
         };
         let Some(expr) = caps.get(2).map(|m| m.as_str()) else {
             continue;
         };
+        events.push((start, false, name, expr));
+    }
+
+    for caps in JS_STRING_APPEND_RE.captures_iter(text) {
+        let Some(start) = caps.get(0).map(|m| m.start()) else {
+            continue;
+        };
+        let Some(name) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(expr) = caps.get(2).map(|m| m.as_str()) else {
+            continue;
+        };
+        events.push((start, true, name, expr));
+    }
+
+    events.sort_by_key(|(start, _, _, _)| *start);
+    for (_, append, name, expr) in events {
         if vars.len() >= 256 && !vars.contains_key(name) {
             continue;
         }
         let Some(value) = eval_js_string_expr(expr, &vars) else {
             continue;
         };
-        if value.len() > 16384 {
-            continue;
+        if append {
+            let Some(current) = vars.get_mut(name) else {
+                continue;
+            };
+            current.push_str(&value);
+            if current.len() > 16384 {
+                continue;
+            }
+            out.push(current.clone());
+        } else {
+            if value.len() > 16384 {
+                continue;
+            }
+            vars.insert(name.to_string(), value.clone());
+            out.push(value);
         }
-        vars.insert(name.to_string(), value.clone());
-        out.push(value);
     }
 
     out
