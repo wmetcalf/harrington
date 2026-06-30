@@ -7971,10 +7971,15 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
                 })
                 .unwrap_or(false);
             if disabled {
-                let target = powershell_named_argument_list(command, "-Profile")
-                    .join(",")
-                    .trim_matches(',')
-                    .to_string();
+                let mut profiles = powershell_named_argument_list(command, "-Profile");
+                if profiles.is_empty() {
+                    if let Some(profile) =
+                        powershell_positional_arguments(command, "Set-NetFirewallProfile").first()
+                    {
+                        profiles.extend(split_powershell_value_list(profile));
+                    }
+                }
+                let target = profiles.join(",").trim_matches(',').to_string();
                 let target = if target.is_empty() {
                     "profile".to_string()
                 } else {

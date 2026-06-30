@@ -35732,6 +35732,23 @@ powershell -Command "tracert route-wrapper.example"
     }
 
     #[test]
+    fn powershell_positional_firewall_profile_disable_emits_defender_evasion_trait() {
+        let script = br#"powershell -Command "Set-NetFirewallProfile Domain,Public -Enabled False"
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "firewall-profile-disabled" && target == "Domain,Public"
+            )),
+            "missing positional PowerShell firewall profile disable: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_remote_desktop_firewall_group_enable_emits_remote_access_trait() {
         let script =
             br#"powershell -Command "Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'"
