@@ -2059,7 +2059,17 @@ fn parse_js_buffer_from_arg_bytes(
     if name != "Buffer" {
         return None;
     }
-    let open = consume_js_method_or_bound_immediate_call_open(text, buffer_end, "from")?;
+    let open = consume_js_method_or_bound_immediate_call_open(text, buffer_end, "from")
+        .or_else(|| consume_js_call_open(text, buffer_end))?;
+    parse_js_buffer_args_bytes(text, open, byte_bindings, string_bindings)
+}
+
+fn parse_js_buffer_args_bytes(
+    text: &str,
+    open: usize,
+    byte_bindings: &std::collections::HashMap<String, Vec<u8>>,
+    string_bindings: &std::collections::HashMap<String, String>,
+) -> Option<(usize, Vec<u8>)> {
     let arg_start = skip_ascii_ws(text, open + 1);
     if let Some((arg_end, bytes)) =
         parse_js_byte_array_literal_bytes(text, arg_start).or_else(|| {
