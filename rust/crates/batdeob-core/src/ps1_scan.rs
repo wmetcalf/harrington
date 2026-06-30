@@ -3962,7 +3962,7 @@ static PASSTHROUGH_CALL_WRAPPER_DEF_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static LITERAL_REPLACE_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*,\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*,\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*\{[^{}]*?return\s+\$([A-Za-z_][A-Za-z0-9_]*)\s+-i?replace\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*,\s*\$([A-Za-z_][A-Za-z0-9_]*)[^{}]*\}"#,
+        r#"(?is)function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\(([^)]*)\)\s*\{[^{}]*?return\s+\$([A-Za-z_][A-Za-z0-9_]*)\s+-i?replace\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*,\s*\$([A-Za-z_][A-Za-z0-9_]*)[^{}]*\}"#,
     )
     .expect("literal replace extractor def")
 });
@@ -3970,7 +3970,7 @@ static LITERAL_REPLACE_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static LITERAL_SUBSTRING_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*,\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*,\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*\{[^{}]*?return\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Substring\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*,\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)[^{}]*\}"#,
+        r#"(?is)function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\(([^)]*)\)\s*\{[^{}]*?(?:return\s+)?\$([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Substring\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*,\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)[^{}]*\}"#,
     )
     .expect("literal substring extractor def")
 });
@@ -3978,7 +3978,7 @@ static LITERAL_SUBSTRING_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static LITERAL_TRIM_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*,\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*\{[^{}]*?return\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Trim\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)[^{}]*\}"#,
+        r#"(?is)function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\(([^)]*)\)\s*\{[^{}]*?return\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Trim\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)[^{}]*\}"#,
     )
     .expect("literal trim extractor def")
 });
@@ -3986,7 +3986,7 @@ static LITERAL_TRIM_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
 #[allow(clippy::expect_used)]
 static LITERAL_CASE_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*\{[^{}]*?return\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*To(Lower|Upper)\s*\(\s*\)[^{}]*\}"#,
+        r#"(?is)function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\(([^)]*)\)\s*\{[^{}]*?return\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*To(Lower|Upper)\s*\(\s*\)[^{}]*\}"#,
     )
     .expect("literal case extractor def")
 });
@@ -4070,40 +4070,6 @@ enum PsLiteralCallArg {
     Integer(usize),
 }
 
-fn parse_ps_single_quoted_call_args(text: &str, mut pos: usize) -> Option<(usize, Vec<String>)> {
-    let bytes = text.as_bytes();
-    let parenthesized = bytes.get(pos) == Some(&b'(');
-    if parenthesized {
-        pos = skip_ascii_ws(bytes, pos + 1);
-    }
-    let mut args = Vec::new();
-    loop {
-        pos = skip_ascii_ws(bytes, pos);
-        if parenthesized && bytes.get(pos) == Some(&b')') {
-            return Some((pos + 1, args));
-        }
-        if bytes.get(pos) != Some(&b'\'') {
-            if args.is_empty() {
-                return None;
-            }
-            return if parenthesized {
-                None
-            } else {
-                Some((pos, args))
-            };
-        }
-        let (literal_end, value) = parse_ps_single_quoted_literal(text, pos)?;
-        args.push(value);
-        pos = skip_ascii_ws(bytes, literal_end);
-        if !parenthesized && bytes.get(pos) != Some(&b'\'') {
-            return Some((pos, args));
-        }
-        if parenthesized && bytes.get(pos) == Some(&b',') {
-            pos = skip_ascii_ws(bytes, pos + 1);
-        }
-    }
-}
-
 fn parse_ps_literal_call_args(
     text: &str,
     mut pos: usize,
@@ -4149,46 +4115,13 @@ fn parse_ps_literal_call_args(
     }
 }
 
-fn inline_ps_literal_replace_extractor_calls(text: &str, name: &str) -> String {
-    let bytes = text.as_bytes();
-    let mut matches = Vec::new();
-    let mut search_from = 0;
-
-    while let Some(start) = find_ascii_case_insensitive_from(text, name, search_from) {
-        let end_name = start + name.len();
-        if is_ident_byte(bytes.get(start.wrapping_sub(1)).copied())
-            || is_ident_byte(bytes.get(end_name).copied())
-        {
-            search_from = end_name;
-            continue;
-        }
-
-        let pos = skip_ascii_ws(bytes, end_name);
-        let Some((call_end, args)) = parse_ps_single_quoted_call_args(text, pos) else {
-            search_from = end_name;
-            continue;
-        };
-        if args.len() != 3 {
-            search_from = call_end;
-            continue;
-        }
-        let replacement = args[0].replace(&args[1], &args[2]);
-        matches.push((
-            start,
-            call_end,
-            format!("'{}'", replacement.replace('\'', "''")),
-        ));
-        search_from = call_end;
-    }
-
-    let mut out = text.to_string();
-    for (start, end, replacement) in matches.into_iter().rev() {
-        out.replace_range(start..end, &replacement);
-    }
-    out
-}
-
-fn inline_ps_literal_substring_extractor_calls(text: &str, name: &str) -> String {
+fn inline_ps_literal_replace_extractor_calls(
+    text: &str,
+    name: &str,
+    value_position: usize,
+    needle_position: usize,
+    replacement_position: usize,
+) -> String {
     let bytes = text.as_bytes();
     let mut matches = Vec::new();
     let mut search_from = 0;
@@ -4207,9 +4140,68 @@ fn inline_ps_literal_substring_extractor_calls(text: &str, name: &str) -> String
             search_from = end_name;
             continue;
         };
-        let [PsLiteralCallArg::String(value), PsLiteralCallArg::Integer(start_index), PsLiteralCallArg::Integer(count)] =
-            args.as_slice()
-        else {
+        let Some(PsLiteralCallArg::String(value)) = args.get(value_position) else {
+            search_from = call_end;
+            continue;
+        };
+        let Some(PsLiteralCallArg::String(needle)) = args.get(needle_position) else {
+            search_from = call_end;
+            continue;
+        };
+        let Some(PsLiteralCallArg::String(replacement_arg)) = args.get(replacement_position) else {
+            search_from = call_end;
+            continue;
+        };
+        let replacement = value.replace(needle, replacement_arg);
+        matches.push((
+            start,
+            call_end,
+            format!("'{}'", replacement.replace('\'', "''")),
+        ));
+        search_from = call_end;
+    }
+
+    let mut out = text.to_string();
+    for (start, end, replacement) in matches.into_iter().rev() {
+        out.replace_range(start..end, &replacement);
+    }
+    out
+}
+
+fn inline_ps_literal_substring_extractor_calls(
+    text: &str,
+    name: &str,
+    value_position: usize,
+    start_position: usize,
+    count_position: usize,
+) -> String {
+    let bytes = text.as_bytes();
+    let mut matches = Vec::new();
+    let mut search_from = 0;
+
+    while let Some(start) = find_ascii_case_insensitive_from(text, name, search_from) {
+        let end_name = start + name.len();
+        if is_ident_byte(bytes.get(start.wrapping_sub(1)).copied())
+            || is_ident_byte(bytes.get(end_name).copied())
+        {
+            search_from = end_name;
+            continue;
+        }
+
+        let pos = skip_ascii_ws(bytes, end_name);
+        let Some((call_end, args)) = parse_ps_literal_call_args(text, pos) else {
+            search_from = end_name;
+            continue;
+        };
+        let Some(PsLiteralCallArg::String(value)) = args.get(value_position) else {
+            search_from = call_end;
+            continue;
+        };
+        let Some(PsLiteralCallArg::Integer(start_index)) = args.get(start_position) else {
+            search_from = call_end;
+            continue;
+        };
+        let Some(PsLiteralCallArg::Integer(count)) = args.get(count_position) else {
             search_from = call_end;
             continue;
         };
@@ -4235,7 +4227,12 @@ fn inline_ps_literal_substring_extractor_calls(text: &str, name: &str) -> String
     out
 }
 
-fn inline_ps_literal_trim_extractor_calls(text: &str, name: &str) -> String {
+fn inline_ps_literal_trim_extractor_calls(
+    text: &str,
+    name: &str,
+    value_position: usize,
+    chars_position: usize,
+) -> String {
     let bytes = text.as_bytes();
     let mut matches = Vec::new();
     let mut search_from = 0;
@@ -4254,8 +4251,11 @@ fn inline_ps_literal_trim_extractor_calls(text: &str, name: &str) -> String {
             search_from = end_name;
             continue;
         };
-        let [PsLiteralCallArg::String(value), PsLiteralCallArg::String(chars)] = args.as_slice()
-        else {
+        let Some(PsLiteralCallArg::String(value)) = args.get(value_position) else {
+            search_from = call_end;
+            continue;
+        };
+        let Some(PsLiteralCallArg::String(chars)) = args.get(chars_position) else {
             search_from = call_end;
             continue;
         };
@@ -4273,7 +4273,12 @@ fn inline_ps_literal_trim_extractor_calls(text: &str, name: &str) -> String {
     out
 }
 
-fn inline_ps_literal_case_extractor_calls(text: &str, name: &str, lower: bool) -> String {
+fn inline_ps_literal_case_extractor_calls(
+    text: &str,
+    name: &str,
+    value_position: usize,
+    lower: bool,
+) -> String {
     let bytes = text.as_bytes();
     let mut matches = Vec::new();
     let mut search_from = 0;
@@ -4292,7 +4297,7 @@ fn inline_ps_literal_case_extractor_calls(text: &str, name: &str, lower: bool) -
             search_from = end_name;
             continue;
         };
-        let [PsLiteralCallArg::String(value)] = args.as_slice() else {
+        let Some(PsLiteralCallArg::String(value)) = args.get(value_position) else {
             search_from = call_end;
             continue;
         };
@@ -4374,23 +4379,29 @@ fn expand_literal_replace_extractor_calls(text: &str) -> String {
     {
         return text.to_string();
     }
-    let defs: Vec<String> = LITERAL_REPLACE_EXTRACTOR_DEF_RE
+    let defs: Vec<(String, usize, usize, usize)> = LITERAL_REPLACE_EXTRACTOR_DEF_RE
         .captures_iter(text)
         .filter_map(|caps| {
             let name = caps.get(1)?.as_str();
-            let value_param = caps.get(2)?.as_str();
-            let needle_param = caps.get(3)?.as_str();
-            let replacement_param = caps.get(4)?.as_str();
-            let return_value = caps.get(5)?.as_str();
-            let return_needle = caps.get(6)?.as_str();
-            let return_replacement = caps.get(7)?.as_str();
-            if !value_param.eq_ignore_ascii_case(return_value)
-                || !needle_param.eq_ignore_ascii_case(return_needle)
-                || !replacement_param.eq_ignore_ascii_case(return_replacement)
-            {
-                return None;
-            }
-            Some(name.to_string())
+            let params = parse_ps_parameter_names(caps.get(2)?.as_str());
+            let value_param = caps.get(3)?.as_str();
+            let needle_param = caps.get(4)?.as_str();
+            let replacement_param = caps.get(5)?.as_str();
+            let value_position = params
+                .iter()
+                .position(|param| param.eq_ignore_ascii_case(value_param))?;
+            let needle_position = params
+                .iter()
+                .position(|param| param.eq_ignore_ascii_case(needle_param))?;
+            let replacement_position = params
+                .iter()
+                .position(|param| param.eq_ignore_ascii_case(replacement_param))?;
+            Some((
+                name.to_string(),
+                value_position,
+                needle_position,
+                replacement_position,
+            ))
         })
         .collect();
     if defs.is_empty() {
@@ -4398,8 +4409,14 @@ fn expand_literal_replace_extractor_calls(text: &str) -> String {
     }
 
     let mut out = text.to_string();
-    for name in defs {
-        out = inline_ps_literal_replace_extractor_calls(&out, &name);
+    for (name, value_position, needle_position, replacement_position) in defs {
+        out = inline_ps_literal_replace_extractor_calls(
+            &out,
+            &name,
+            value_position,
+            needle_position,
+            replacement_position,
+        );
     }
     out
 }
@@ -4410,28 +4427,40 @@ fn expand_literal_substring_extractor_calls(text: &str) -> String {
     {
         return text.to_string();
     }
-    let defs: Vec<String> = LITERAL_SUBSTRING_EXTRACTOR_DEF_RE
+    let defs: Vec<(String, usize, usize, usize)> = LITERAL_SUBSTRING_EXTRACTOR_DEF_RE
         .captures_iter(text)
         .filter_map(|caps| {
             let name = caps.get(1)?.as_str();
-            let value_param = caps.get(2)?.as_str();
-            let start_param = caps.get(3)?.as_str();
-            let count_param = caps.get(4)?.as_str();
-            let return_value = caps.get(5)?.as_str();
-            let return_start = caps.get(6)?.as_str();
-            let return_count = caps.get(7)?.as_str();
-            if !value_param.eq_ignore_ascii_case(return_value)
-                || !start_param.eq_ignore_ascii_case(return_start)
-                || !count_param.eq_ignore_ascii_case(return_count)
-            {
-                return None;
-            }
-            Some(name.to_string())
+            let params = parse_ps_parameter_names(caps.get(2)?.as_str());
+            let value_param = caps.get(3)?.as_str();
+            let start_param = caps.get(4)?.as_str();
+            let count_param = caps.get(5)?.as_str();
+            let value_position = params
+                .iter()
+                .position(|param| param.eq_ignore_ascii_case(value_param))?;
+            let start_position = params
+                .iter()
+                .position(|param| param.eq_ignore_ascii_case(start_param))?;
+            let count_position = params
+                .iter()
+                .position(|param| param.eq_ignore_ascii_case(count_param))?;
+            Some((
+                name.to_string(),
+                value_position,
+                start_position,
+                count_position,
+            ))
         })
         .collect();
     let mut out = text.to_string();
-    for name in defs {
-        out = inline_ps_literal_substring_extractor_calls(&out, &name);
+    for (name, value_position, start_position, count_position) in defs {
+        out = inline_ps_literal_substring_extractor_calls(
+            &out,
+            &name,
+            value_position,
+            start_position,
+            count_position,
+        );
     }
     out
 }
@@ -4442,25 +4471,25 @@ fn expand_literal_trim_extractor_calls(text: &str) -> String {
     {
         return text.to_string();
     }
-    let defs: Vec<String> = LITERAL_TRIM_EXTRACTOR_DEF_RE
+    let defs: Vec<(String, usize, usize)> = LITERAL_TRIM_EXTRACTOR_DEF_RE
         .captures_iter(text)
         .filter_map(|caps| {
             let name = caps.get(1)?.as_str();
-            let value_param = caps.get(2)?.as_str();
-            let chars_param = caps.get(3)?.as_str();
-            let return_value = caps.get(4)?.as_str();
-            let return_chars = caps.get(5)?.as_str();
-            if !value_param.eq_ignore_ascii_case(return_value)
-                || !chars_param.eq_ignore_ascii_case(return_chars)
-            {
-                return None;
-            }
-            Some(name.to_string())
+            let params = parse_ps_parameter_names(caps.get(2)?.as_str());
+            let value_param = caps.get(3)?.as_str();
+            let chars_param = caps.get(4)?.as_str();
+            let value_position = params
+                .iter()
+                .position(|param| param.eq_ignore_ascii_case(value_param))?;
+            let chars_position = params
+                .iter()
+                .position(|param| param.eq_ignore_ascii_case(chars_param))?;
+            Some((name.to_string(), value_position, chars_position))
         })
         .collect();
     let mut out = text.to_string();
-    for name in defs {
-        out = inline_ps_literal_trim_extractor_calls(&out, &name);
+    for (name, value_position, chars_position) in defs {
+        out = inline_ps_literal_trim_extractor_calls(&out, &name, value_position, chars_position);
     }
     out
 }
@@ -4472,24 +4501,25 @@ fn expand_literal_case_extractor_calls(text: &str) -> String {
     {
         return text.to_string();
     }
-    let defs: Vec<(String, bool)> = LITERAL_CASE_EXTRACTOR_DEF_RE
+    let defs: Vec<(String, usize, bool)> = LITERAL_CASE_EXTRACTOR_DEF_RE
         .captures_iter(text)
         .filter_map(|caps| {
             let name = caps.get(1)?.as_str();
-            let value_param = caps.get(2)?.as_str();
-            let return_value = caps.get(3)?.as_str();
-            if !value_param.eq_ignore_ascii_case(return_value) {
-                return None;
-            }
+            let params = parse_ps_parameter_names(caps.get(2)?.as_str());
+            let value_param = caps.get(3)?.as_str();
+            let value_position = params
+                .iter()
+                .position(|param| param.eq_ignore_ascii_case(value_param))?;
             Some((
                 name.to_string(),
+                value_position,
                 caps.get(4)?.as_str().eq_ignore_ascii_case("Lower"),
             ))
         })
         .collect();
     let mut out = text.to_string();
-    for (name, lower) in defs {
-        out = inline_ps_literal_case_extractor_calls(&out, &name, lower);
+    for (name, value_position, lower) in defs {
+        out = inline_ps_literal_case_extractor_calls(&out, &name, value_position, lower);
     }
     out
 }
