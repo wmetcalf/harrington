@@ -4078,6 +4078,22 @@ static LITERAL_PARAM_BLOCK_TRIM_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static LITERAL_ITEM_PATH_TRIM_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)\b(?:New-Item|n`?i|Set-Item|s`?i)\b[^{}]{0,512}\bFunction:\s*\\?\s*([A-Za-z_][A-Za-z0-9_-]*)[^{}]{0,512}-Value\s*\{\s*param\s*\(([^)]*)\)[^{}]*?return\s+\(?\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)?\s*\.\s*Trim(Start|End)?\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)[^{}]*\}"#,
+    )
+    .expect("literal item path trim extractor def")
+});
+
+#[allow(clippy::expect_used)]
+static LITERAL_ITEM_NAME_TRIM_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)\b(?:New-Item|n`?i|Set-Item|s`?i)\b[^{}]{0,512}-Name\s+([A-Za-z_][A-Za-z0-9_-]*)[^{}]{0,512}-Value\s*\{\s*param\s*\(([^)]*)\)[^{}]*?return\s+\(?\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)?\s*\.\s*Trim(Start|End)?\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)[^{}]*\}"#,
+    )
+    .expect("literal item name trim extractor def")
+});
+
+#[allow(clippy::expect_used)]
 static LITERAL_CONST_TRIM_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\(([^)]*)\)\s*\{[^{}]*?return\s+\(?\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)?\s*\.\s*Trim(Start|End)?\s*\(\s*'((?:''|[^'])*)'\s*\)[^{}]*\}"#,
@@ -5114,6 +5130,8 @@ fn expand_literal_trim_extractor_calls(text: &str) -> String {
         LITERAL_TRIM_EXTRACTOR_DEF_RE
             .captures_iter(text)
             .chain(LITERAL_PARAM_BLOCK_TRIM_EXTRACTOR_DEF_RE.captures_iter(text))
+            .chain(LITERAL_ITEM_PATH_TRIM_EXTRACTOR_DEF_RE.captures_iter(text))
+            .chain(LITERAL_ITEM_NAME_TRIM_EXTRACTOR_DEF_RE.captures_iter(text))
             .filter_map(|caps| {
                 let name = caps.get(1)?.as_str();
                 let params = parse_ps_parameter_names(caps.get(2)?.as_str());

