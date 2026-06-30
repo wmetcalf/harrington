@@ -4054,6 +4054,14 @@ static LITERAL_SUBSTRING_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static LITERAL_TAIL_SUBSTRING_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)function\s+(?:[A-Za-z_][A-Za-z0-9_]*:)?([A-Za-z_][A-Za-z0-9_-]*)\s*\(([^)]*)\)\s*\{[^{}]*?(?:return\s+)?\$([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Substring\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)[^{}]*\}"#,
+    )
+    .expect("literal tail substring extractor def")
+});
+
+#[allow(clippy::expect_used)]
 static LITERAL_CONST_SUBSTRING_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)function\s+(?:[A-Za-z_][A-Za-z0-9_]*:)?([A-Za-z_][A-Za-z0-9_-]*)\s*\(([^)]*)\)\s*\{[^{}]*?(?:return\s+)?\$([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Substring\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)[^{}]*\}"#,
@@ -4134,11 +4142,27 @@ static LITERAL_CONST_REMOVE_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[allow(clippy::expect_used)]
+static LITERAL_REMOVE_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\(([^)]*)\)\s*\{[^{}]*?return\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Remove\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)(?:\s*,\s*\$([A-Za-z_][A-Za-z0-9_]*))?\s*\)[^{}]*\}"#,
+    )
+    .expect("literal remove extractor def")
+});
+
+#[allow(clippy::expect_used)]
 static LITERAL_CONST_INSERT_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\(([^)]*)\)\s*\{[^{}]*?return\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Insert\s*\(\s*(\d+)\s*,\s*'((?:''|[^'])*)'\s*\)[^{}]*\}"#,
     )
     .expect("literal constant insert extractor def")
+});
+
+#[allow(clippy::expect_used)]
+static LITERAL_INSERT_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\(([^)]*)\)\s*\{[^{}]*?return\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Insert\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*,\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)[^{}]*\}"#,
+    )
+    .expect("literal insert extractor def")
 });
 
 #[allow(clippy::expect_used)]
@@ -4606,6 +4630,58 @@ fn inline_ps_literal_substring_extractor_calls(
     out
 }
 
+fn inline_ps_literal_tail_substring_extractor_calls(
+    text: &str,
+    name: &str,
+    value_binding: &PsLiteralArgBinding,
+    start_binding: &PsLiteralArgBinding,
+) -> String {
+    let mut matches = Vec::new();
+    let mut search_from = 0;
+    let aliases = ps_literal_string_assignments_to(text, name);
+
+    while let Some((start, end_name, pos)) =
+        find_ps_literal_extractor_invocation(text, name, &aliases, search_from)
+    {
+        let Some((call_end, args)) = parse_ps_literal_call_args(text, pos) else {
+            search_from = end_name;
+            continue;
+        };
+        let Some(value) =
+            ps_literal_arg_by_name_or_position(&args, &value_binding.name, value_binding.position)
+                .and_then(ps_literal_arg_as_string)
+        else {
+            search_from = call_end;
+            continue;
+        };
+        let Some(start_index) =
+            ps_literal_arg_by_name_or_position(&args, &start_binding.name, start_binding.position)
+                .and_then(ps_literal_arg_as_integer)
+        else {
+            search_from = call_end;
+            continue;
+        };
+        let chars: Vec<char> = value.chars().collect();
+        if start_index > chars.len() {
+            search_from = call_end;
+            continue;
+        }
+        let replacement: String = chars[start_index..].iter().collect();
+        matches.push((
+            start,
+            call_end,
+            format!("'{}'", replacement.replace('\'', "''")),
+        ));
+        search_from = call_end;
+    }
+
+    let mut out = text.to_string();
+    for (start, end, replacement) in matches.into_iter().rev() {
+        out.replace_range(start..end, &replacement);
+    }
+    out
+}
+
 fn inline_ps_literal_const_substring_extractor_calls(
     text: &str,
     name: &str,
@@ -4638,6 +4714,143 @@ fn inline_ps_literal_const_substring_extractor_calls(
             continue;
         }
         let replacement: String = chars[start_index..end_index].iter().collect();
+        matches.push((
+            start,
+            call_end,
+            format!("'{}'", replacement.replace('\'', "''")),
+        ));
+        search_from = call_end;
+    }
+
+    let mut out = text.to_string();
+    for (start, end, replacement) in matches.into_iter().rev() {
+        out.replace_range(start..end, &replacement);
+    }
+    out
+}
+
+fn inline_ps_literal_remove_extractor_calls(
+    text: &str,
+    name: &str,
+    value_binding: &PsLiteralArgBinding,
+    start_binding: &PsLiteralArgBinding,
+    count_binding: Option<&PsLiteralArgBinding>,
+) -> String {
+    let mut matches = Vec::new();
+    let mut search_from = 0;
+    let aliases = ps_literal_string_assignments_to(text, name);
+
+    while let Some((start, end_name, pos)) =
+        find_ps_literal_extractor_invocation(text, name, &aliases, search_from)
+    {
+        let Some((call_end, args)) = parse_ps_literal_call_args(text, pos) else {
+            search_from = end_name;
+            continue;
+        };
+        let Some(value) =
+            ps_literal_arg_by_name_or_position(&args, &value_binding.name, value_binding.position)
+                .and_then(ps_literal_arg_as_string)
+        else {
+            search_from = call_end;
+            continue;
+        };
+        let Some(start_index) =
+            ps_literal_arg_by_name_or_position(&args, &start_binding.name, start_binding.position)
+                .and_then(ps_literal_arg_as_integer)
+        else {
+            search_from = call_end;
+            continue;
+        };
+        let count = match count_binding {
+            Some(binding) => {
+                let Some(count) =
+                    ps_literal_arg_by_name_or_position(&args, &binding.name, binding.position)
+                        .and_then(ps_literal_arg_as_integer)
+                else {
+                    search_from = call_end;
+                    continue;
+                };
+                Some(count)
+            }
+            None => None,
+        };
+        let mut chars: Vec<char> = value.chars().collect();
+        if start_index > chars.len() {
+            search_from = call_end;
+            continue;
+        }
+        let end_index = count
+            .map(|count| start_index.saturating_add(count))
+            .unwrap_or(chars.len());
+        if end_index > chars.len() {
+            search_from = call_end;
+            continue;
+        }
+        chars.drain(start_index..end_index);
+        let replacement: String = chars.into_iter().collect();
+        matches.push((
+            start,
+            call_end,
+            format!("'{}'", replacement.replace('\'', "''")),
+        ));
+        search_from = call_end;
+    }
+
+    let mut out = text.to_string();
+    for (start, end, replacement) in matches.into_iter().rev() {
+        out.replace_range(start..end, &replacement);
+    }
+    out
+}
+
+fn inline_ps_literal_insert_extractor_calls(
+    text: &str,
+    name: &str,
+    value_binding: &PsLiteralArgBinding,
+    start_binding: &PsLiteralArgBinding,
+    insert_binding: &PsLiteralArgBinding,
+) -> String {
+    let mut matches = Vec::new();
+    let mut search_from = 0;
+    let aliases = ps_literal_string_assignments_to(text, name);
+
+    while let Some((start, end_name, pos)) =
+        find_ps_literal_extractor_invocation(text, name, &aliases, search_from)
+    {
+        let Some((call_end, args)) = parse_ps_literal_call_args(text, pos) else {
+            search_from = end_name;
+            continue;
+        };
+        let Some(value) =
+            ps_literal_arg_by_name_or_position(&args, &value_binding.name, value_binding.position)
+                .and_then(ps_literal_arg_as_string)
+        else {
+            search_from = call_end;
+            continue;
+        };
+        let Some(start_index) =
+            ps_literal_arg_by_name_or_position(&args, &start_binding.name, start_binding.position)
+                .and_then(ps_literal_arg_as_integer)
+        else {
+            search_from = call_end;
+            continue;
+        };
+        let Some(insertion) = ps_literal_arg_by_name_or_position(
+            &args,
+            &insert_binding.name,
+            insert_binding.position,
+        )
+        .and_then(ps_literal_arg_as_string) else {
+            search_from = call_end;
+            continue;
+        };
+        let mut chars: Vec<char> = value.chars().collect();
+        if start_index > chars.len() {
+            search_from = call_end;
+            continue;
+        }
+        chars.splice(start_index..start_index, insertion.chars());
+        let replacement: String = chars.into_iter().collect();
         matches.push((
             start,
             call_end,
@@ -5084,6 +5297,19 @@ fn expand_literal_substring_extractor_calls(text: &str) -> String {
             ))
         })
         .collect();
+    let tail_defs: Vec<(String, PsLiteralArgBinding, PsLiteralArgBinding)> =
+        LITERAL_TAIL_SUBSTRING_EXTRACTOR_DEF_RE
+            .captures_iter(text)
+            .filter_map(|caps| {
+                let name = caps.get(1)?.as_str();
+                let params = parse_ps_parameter_names(caps.get(2)?.as_str());
+                Some((
+                    name.to_string(),
+                    ps_literal_arg_binding(&params, caps.get(3)?.as_str())?,
+                    ps_literal_arg_binding(&params, caps.get(4)?.as_str())?,
+                ))
+            })
+            .collect();
     let const_defs: Vec<(String, PsLiteralArgBinding, usize, usize)> =
         LITERAL_CONST_SUBSTRING_EXTRACTOR_DEF_RE
             .captures_iter(text)
@@ -5106,6 +5332,14 @@ fn expand_literal_substring_extractor_calls(text: &str) -> String {
             &value_binding,
             &start_binding,
             &count_binding,
+        );
+    }
+    for (name, value_binding, start_binding) in tail_defs {
+        out = inline_ps_literal_tail_substring_extractor_calls(
+            &out,
+            &name,
+            &value_binding,
+            &start_binding,
         );
     }
     for (name, value_binding, start_index, count) in const_defs {
@@ -5302,6 +5536,25 @@ fn expand_literal_remove_extractor_calls(text: &str) -> String {
     {
         return text.to_string();
     }
+    let variable_defs: Vec<(
+        String,
+        PsLiteralArgBinding,
+        PsLiteralArgBinding,
+        Option<PsLiteralArgBinding>,
+    )> = LITERAL_REMOVE_EXTRACTOR_DEF_RE
+        .captures_iter(text)
+        .filter_map(|caps| {
+            let name = caps.get(1)?.as_str();
+            let params = parse_ps_parameter_names(caps.get(2)?.as_str());
+            Some((
+                name.to_string(),
+                ps_literal_arg_binding(&params, caps.get(3)?.as_str())?,
+                ps_literal_arg_binding(&params, caps.get(4)?.as_str())?,
+                caps.get(5)
+                    .and_then(|m| ps_literal_arg_binding(&params, m.as_str())),
+            ))
+        })
+        .collect();
     let defs: Vec<(String, PsLiteralArgBinding, usize, usize)> =
         LITERAL_CONST_REMOVE_EXTRACTOR_DEF_RE
             .captures_iter(text)
@@ -5317,6 +5570,15 @@ fn expand_literal_remove_extractor_calls(text: &str) -> String {
             })
             .collect();
     let mut out = text.to_string();
+    for (name, value_binding, start_binding, count_binding) in variable_defs {
+        out = inline_ps_literal_remove_extractor_calls(
+            &out,
+            &name,
+            &value_binding,
+            &start_binding,
+            count_binding.as_ref(),
+        );
+    }
     for (name, value_binding, start_index, count) in defs {
         out = inline_ps_literal_const_remove_extractor_calls(
             &out,
@@ -5335,6 +5597,24 @@ fn expand_literal_insert_extractor_calls(text: &str) -> String {
     {
         return text.to_string();
     }
+    let variable_defs: Vec<(
+        String,
+        PsLiteralArgBinding,
+        PsLiteralArgBinding,
+        PsLiteralArgBinding,
+    )> = LITERAL_INSERT_EXTRACTOR_DEF_RE
+        .captures_iter(text)
+        .filter_map(|caps| {
+            let name = caps.get(1)?.as_str();
+            let params = parse_ps_parameter_names(caps.get(2)?.as_str());
+            Some((
+                name.to_string(),
+                ps_literal_arg_binding(&params, caps.get(3)?.as_str())?,
+                ps_literal_arg_binding(&params, caps.get(4)?.as_str())?,
+                ps_literal_arg_binding(&params, caps.get(5)?.as_str())?,
+            ))
+        })
+        .collect();
     let defs: Vec<(String, PsLiteralArgBinding, usize, String)> =
         LITERAL_CONST_INSERT_EXTRACTOR_DEF_RE
             .captures_iter(text)
@@ -5350,6 +5630,15 @@ fn expand_literal_insert_extractor_calls(text: &str) -> String {
             })
             .collect();
     let mut out = text.to_string();
+    for (name, value_binding, start_binding, insert_binding) in variable_defs {
+        out = inline_ps_literal_insert_extractor_calls(
+            &out,
+            &name,
+            &value_binding,
+            &start_binding,
+            &insert_binding,
+        );
+    }
     for (name, value_binding, start_index, insertion) in defs {
         out = inline_ps_literal_const_insert_extractor_calls(
             &out,
