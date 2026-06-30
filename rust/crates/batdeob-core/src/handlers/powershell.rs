@@ -386,10 +386,15 @@ fn record_get_content_set_content_side_effects(body: &str, env: &mut Environment
 fn record_copy_item_side_effects(body: &str, env: &mut Environment) {
     let tokens = split_words(body);
     for i in 0..tokens.len() {
-        if !is_copy_item_token(&tokens[i]) {
-            continue;
-        }
-        let Some((src, dst)) = powershell_copy_item_paths(&tokens, i + 1) else {
+        let token = strip_quotes(&tokens[i]);
+        let transfer = if is_copy_item_token(token) || is_move_item_token(token) {
+            powershell_copy_item_paths(&tokens, i + 1)
+        } else if is_rename_item_token(token) {
+            powershell_rename_item_paths(&tokens, i + 1)
+        } else {
+            None
+        };
+        let Some((src, dst)) = transfer else {
             continue;
         };
         let Some(entry) = tracked_transfer_entry(&src, env) else {
@@ -550,6 +555,20 @@ fn is_copy_item_token(token: &str) -> bool {
     )
 }
 
+fn is_move_item_token(token: &str) -> bool {
+    matches!(
+        strip_quotes(token).to_ascii_lowercase().as_str(),
+        "move-item" | "move" | "mv" | "mi"
+    )
+}
+
+fn is_rename_item_token(token: &str) -> bool {
+    matches!(
+        strip_quotes(token).to_ascii_lowercase().as_str(),
+        "rename-item" | "rename" | "ren" | "rni"
+    )
+}
+
 fn direct_content_write_append_mode(tokens: &[String], idx: usize) -> Option<bool> {
     match strip_quotes(tokens.get(idx)?).to_ascii_lowercase().as_str() {
         "set-content" | "sc" => Some(false),
@@ -702,6 +721,58 @@ fn powershell_copy_item_paths(tokens: &[String], start: usize) -> Option<(String
     Some((src, dst))
 }
 
+fn powershell_rename_item_paths(tokens: &[String], start: usize) -> Option<(String, String)> {
+    let mut src: Option<String> = None;
+    let mut new_name: Option<String> = None;
+    let mut positional: Vec<String> = Vec::new();
+    let mut i = start;
+    while i < tokens.len() {
+        let token = strip_quotes(&tokens[i]);
+        if token == "|" || token == ";" {
+            break;
+        }
+        let lower = token.to_ascii_lowercase();
+        if lower == "-path" || lower == "-literalpath" {
+            src = Some(strip_quotes(tokens.get(i + 1)?).to_string());
+            i += 2;
+            continue;
+        }
+        if let Some(value) = attached_ps_path_value(token) {
+            src = Some(value.to_string());
+            i += 1;
+            continue;
+        }
+        if lower == "-newname" {
+            new_name = Some(strip_quotes(tokens.get(i + 1)?).to_string());
+            i += 2;
+            continue;
+        }
+        if let Some(value) = attached_ps_new_name_value(token) {
+            new_name = Some(value.to_string());
+            i += 1;
+            continue;
+        }
+        if !token.starts_with('-') {
+            positional.push(token.to_string());
+        }
+        i += 1;
+    }
+    let src = src.or_else(|| positional.first().cloned())?;
+    let new_name = new_name.or_else(|| positional.get(1).cloned())?;
+    let dst = if new_name.contains(['\\', '/']) {
+        new_name
+    } else {
+        powershell_same_directory_path(&src, &new_name)
+    };
+    Some((src, dst))
+}
+
+fn powershell_same_directory_path(src: &str, file_name: &str) -> String {
+    src.rfind(['\\', '/'])
+        .map(|idx| format!("{}{}", &src[..=idx], file_name))
+        .unwrap_or_else(|| file_name.to_string())
+}
+
 fn attached_ps_value_value(token: &str) -> Option<&str> {
     let lower = token.to_ascii_lowercase();
     let rest = lower.strip_prefix("-value")?;
@@ -713,6 +784,14 @@ fn attached_ps_value_value(token: &str) -> Option<&str> {
 fn attached_ps_input_object_value(token: &str) -> Option<&str> {
     let lower = token.to_ascii_lowercase();
     let rest = lower.strip_prefix("-inputobject")?;
+    let original_rest = &token[token.len() - rest.len()..];
+    let value = original_rest.trim_start_matches([':', '=']);
+    (!value.is_empty()).then(|| strip_quotes(value))
+}
+
+fn attached_ps_new_name_value(token: &str) -> Option<&str> {
+    let lower = token.to_ascii_lowercase();
+    let rest = lower.strip_prefix("-newname")?;
     let original_rest = &token[token.len() - rest.len()..];
     let value = original_rest.trim_start_matches([':', '=']);
     (!value.is_empty()).then(|| strip_quotes(value))

