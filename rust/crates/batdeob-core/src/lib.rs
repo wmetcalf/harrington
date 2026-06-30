@@ -2686,6 +2686,22 @@ move "%USERPROFILE%\Downloads\startupppp.bat" "%APPDATA%\Microsoft\Windows\Start
     }
 
     #[test]
+    fn powershell_start_service_termservice_emits_remote_access_trait() {
+        assert_powershell_termservice_enablement(
+            br#"powershell -Command "Start-Service -Name TermService""#,
+            "PowerShell Start-Service TermService was not surfaced",
+        );
+    }
+
+    #[test]
+    fn powershell_sasv_termservice_emits_remote_access_trait() {
+        assert_powershell_termservice_enablement(
+            br#"powershell -Command "sasv TermService""#,
+            "PowerShell sasv TermService was not surfaced",
+        );
+    }
+
+    #[test]
     fn powershell_set_service_termservice_disabled_is_not_remote_access_enablement() {
         let script =
             br#"powershell -Command "Set-Service -Name TermService -StartupType Disabled""#;
@@ -35531,6 +35547,39 @@ powershell -Command "tracert route-wrapper.example"
     }
 
     #[test]
+    fn powershell_boolean_rdp_registry_values_emit_remote_access_trait() {
+        let script = br#"powershell -Command "Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value $false""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-enable" && target == "Terminal Server"
+            )),
+            "PowerShell boolean RDP registry enablement missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_padded_allowtsconnections_emits_remote_access_trait() {
+        let script = br#"powershell -Command "New-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name AllowTSConnections -PropertyType DWord -Value 0x00000001 -Force"
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-enable" && target == "Terminal Server"
+            )),
+            "missing padded PowerShell AllowTSConnections RDP enablement: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn powershell_firewall_profile_disable_emits_defender_evasion_trait() {
         let script =
             br#"powershell -Command "Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False"
@@ -35584,6 +35633,22 @@ powershell -Command "tracert route-wrapper.example"
                 report.traits
             );
         }
+    }
+
+    #[test]
+    fn powershell_chained_firewall_profile_disable_emits_evasion_trait() {
+        let script = br#"powershell -Command "Set-NetFirewallProfile -Profile Domain -Enabled True; Set-NetFirewallProfile -Profile Public -Enabled False""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "firewall-profile-disabled" && target == "Public"
+            )),
+            "chained Set-NetFirewallProfile disablement was not surfaced: {:?}",
+            report.traits
+        );
     }
 
     #[test]
@@ -35650,6 +35715,22 @@ powershell -Command "tracert route-wrapper.example"
                     if technique == "rdp-firewall-open" && target == "Remote Desktop"
             )),
             "padded PowerShell Remote Desktop firewall enablement was not surfaced: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_new_firewall_rule_rdp_port_emits_remote_access_trait() {
+        let script = br#"powershell -Command "New-NetFirewallRule -DisplayName RDP -Direction Inbound -Action Allow -Protocol TCP -LocalPort 3389""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::RemoteAccess { technique, target, .. }
+                    if technique == "rdp-firewall-open" && target == "3389"
+            )),
+            "PowerShell New-NetFirewallRule RDP port opening was not surfaced: {:?}",
             report.traits
         );
     }

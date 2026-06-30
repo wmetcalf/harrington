@@ -4571,6 +4571,28 @@ fn scan_remote_access(command: &str, env: &mut Environment) {
     for raw_line in command.lines() {
         for line in powershell_statement_candidates(raw_line) {
             let lower_line = line.to_ascii_lowercase();
+            if contains_callable_ascii_case_insensitive(line, "Start-Service")
+                || contains_callable_ascii_case_insensitive(line, "sasv")
+            {
+                let mut services = powershell_named_argument_list(line, "-Name");
+                if services.is_empty() {
+                    let positional =
+                        if contains_callable_ascii_case_insensitive(line, "Start-Service") {
+                            powershell_positional_arguments(line, "Start-Service")
+                        } else {
+                            powershell_positional_arguments(line, "sasv")
+                        };
+                    if let Some(service) = positional.first() {
+                        services.extend(split_powershell_value_list(service));
+                    }
+                }
+                if services
+                    .iter()
+                    .any(|name| name.eq_ignore_ascii_case("TermService"))
+                {
+                    push_remote_access(env, "rdp-service-enable", "TermService", line.trim());
+                }
+            }
             if (lower_line.contains("enable-netfirewallrule")
                 || lower_line.contains("set-netfirewallrule"))
                 && (powershell_named_argument(line, "-DisplayGroup")
@@ -4606,6 +4628,17 @@ fn scan_remote_access(command: &str, env: &mut Environment) {
                     }
                 }
             }
+            if lower_line.contains("new-netfirewallrule") {
+                let allows = powershell_named_argument(line, "-Action")
+                    .is_some_and(|action| action.eq_ignore_ascii_case("Allow"));
+                let opens_rdp = powershell_named_argument_list(line, "-LocalPort")
+                    .iter()
+                    .flat_map(|value| split_powershell_value_list(value))
+                    .any(|port| port == "3389");
+                if allows && opens_rdp {
+                    push_remote_access(env, "rdp-firewall-open", "3389", line.trim());
+                }
+            }
             let Some((path, value_name, value)) = powershell_item_property_args(line) else {
                 continue;
             };
@@ -4618,8 +4651,16 @@ fn scan_remote_access(command: &str, env: &mut Environment) {
             let value_name = value_name.to_ascii_lowercase();
             let value = value.to_ascii_lowercase();
             let enables_rdp = match value_name.as_str() {
-                "allowtsconnections" => value == "1" || value == "0x1",
-                "fdenytsconnections" => value == "0" || value == "0x0",
+                "allowtsconnections" => matches!(
+                    value.as_str(),
+                    "1" | "0x1" | "0x00000001" | "true" | "$true"
+                ),
+                "fdenytsconnections" => {
+                    matches!(
+                        value.as_str(),
+                        "0" | "0x0" | "0x00000000" | "false" | "$false"
+                    )
+                }
                 _ => false,
             };
             if enables_rdp {
@@ -7920,29 +7961,30 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
         if match_line_starts_with_echo(deobfuscated, m.start()) {
             continue;
         }
-        let command = m.as_str().trim();
-        let disabled = powershell_named_argument(command, "-Enabled")
-            .map(|value| {
-                matches!(
-                    value.to_ascii_lowercase().as_str(),
-                    "false" | "$false" | "0" | "0x0" | "0x00000000"
-                )
-            })
-            .unwrap_or(false);
-        if disabled {
-            let target = powershell_named_argument_list(command, "-Profile")
-                .join(",")
-                .trim_matches(',')
-                .to_string();
-            let target = if target.is_empty() {
-                "profile".to_string()
-            } else {
-                target
-            };
-            push("firewall-profile-disabled", target.clone());
-            for profile in split_powershell_value_list(&target) {
-                if profile != target {
-                    push("firewall-profile-disabled", profile);
+        for command in powershell_statement_candidates(m.as_str()) {
+            let disabled = powershell_named_argument(command, "-Enabled")
+                .map(|value| {
+                    matches!(
+                        value.to_ascii_lowercase().as_str(),
+                        "false" | "$false" | "0" | "0x0" | "0x00000000"
+                    )
+                })
+                .unwrap_or(false);
+            if disabled {
+                let target = powershell_named_argument_list(command, "-Profile")
+                    .join(",")
+                    .trim_matches(',')
+                    .to_string();
+                let target = if target.is_empty() {
+                    "profile".to_string()
+                } else {
+                    target
+                };
+                push("firewall-profile-disabled", target.clone());
+                for profile in split_powershell_value_list(&target) {
+                    if profile != target {
+                        push("firewall-profile-disabled", profile);
+                    }
                 }
             }
         }
