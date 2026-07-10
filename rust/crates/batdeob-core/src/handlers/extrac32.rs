@@ -41,6 +41,9 @@ pub fn h_expand(raw: &str, env: &mut Environment) {
     let Some((src, dst)) = parse_expand_paths(&tokens) else {
         return;
     };
+    if !expand_path_evidence(&src, env) && !expand_path_evidence(&dst, env) {
+        return;
+    }
 
     push_lolbas("expand", raw, env);
     let entry = match downloaded_src_for_candidate(&src, env) {
@@ -185,6 +188,19 @@ fn parse_expand_paths(tokens: &[String]) -> Option<(String, String)> {
         }
     }
     (!dst.is_empty()).then_some((src, dst))
+}
+
+fn expand_path_evidence(candidate: &str, env: &Environment) -> bool {
+    if downloaded_src_for_candidate(candidate, env).is_some() {
+        return true;
+    }
+    let candidate = candidate.trim();
+    if candidate.starts_with(['%', '!']) || candidate.contains(['\\', '/', ':']) {
+        return true;
+    }
+    windows_basename(candidate)
+        .and_then(|name| name.rsplit_once('.'))
+        .is_some_and(|(stem, extension)| !stem.is_empty() && !extension.is_empty())
 }
 
 fn expand_member_name(selector: &str) -> Option<String> {
