@@ -374,6 +374,9 @@ const NOISE_URL_SUBSTRINGS: &[&str] = &[
     "s.symcb.com/",
     "ocsp.comodoca.com",
     "secure.comodo.net/cps",
+    "ocsp2.globalsign.com/",
+    "globalsign.com/repository/",
+    "secure.globalsign.com/cacert/",
     // NSIS installer error page — appears in every NSIS-built dropper PE
     // tail (43 corpus samples are PE-renamed `.bat`); pure infrastructure
     // URL, not the malware's C2.
@@ -394,6 +397,8 @@ const NOISE_URL_SUBSTRINGS: &[&str] = &[
     "xmp.gettyimages.com/",
     "ns.useplus.org/",
     "red-gate.com/products/dotnet-development/smartassembly",
+    // AutoIt product URL embedded in signed AutoIt stubs, not an execution URL.
+    "autoitscript.com/autoit3/",
     // Stock photo / template attribution
     "istockphoto.com/legal/license-agreement",
     "istockphoto.com/photo/license",

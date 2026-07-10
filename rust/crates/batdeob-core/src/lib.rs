@@ -64467,6 +64467,7 @@ mod inline_b64_url_tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod deob_scan_noise_filter_tests {
+    use crate::env::Environment;
     use crate::traits::Trait;
     use crate::{analyze, Config};
 
@@ -64566,6 +64567,22 @@ mod deob_scan_noise_filter_tests {
             )
         });
         assert!(has_real, "real URL filtered: {:?}", report.traits);
+    }
+
+    #[test]
+    fn binary_signer_metadata_urls_are_filtered() {
+        let input = b"metadata http://ocsp2.globalsign.com/rootr306 https://www.globalsign.com/repository/0 http://secure.globalsign.com/cacert/gstimestampingsha2g2.crt0 https://www.autoitscript.com/autoit3/";
+        let mut env = Environment::new(&Config::default());
+
+        crate::scan_binary_input_urls(input, &mut env);
+
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::DownloadInDeobText { .. })),
+            "binary signer metadata must not be labeled as downloads: {:?}",
+            env.traits
+        );
     }
 
     #[test]
