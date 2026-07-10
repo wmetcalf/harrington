@@ -20399,8 +20399,9 @@ fn summarize_marker_prefixed_self_read_base64_line(
     ));
     out.push_str(newline);
     rescue_truncated_urls(&String::from_utf8_lossy(&decoded), body.len(), env);
-    if decoded.len() <= MAX_DIRECT_EXTRACTED_PS1_BYTES {
-        env.push_extracted_ps1(decoded);
+    const MAX_RETAINED_MARKER_PS1_BYTES: usize = 4 * 1024 * 1024;
+    if decoded.len() <= MAX_RETAINED_MARKER_PS1_BYTES {
+        env.push_extracted_ps1_with_limit(decoded, MAX_RETAINED_MARKER_PS1_BYTES);
     } else {
         crate::ps1_scan::scan_large_ps1_payload_bytes_fast(&decoded, env);
     }
@@ -48102,8 +48103,8 @@ exit /b
             "brace marker regex was not recognized"
         );
         assert!(
-            report.extracted_ps1.iter().all(|ps| ps.len() < 300 * 1024),
-            "large marker payload should not be emitted whole: {:?}",
+            report.extracted_ps1.iter().any(|ps| ps.len() >= 300 * 1024),
+            "large marker payload should be retained as an extracted layer: {:?}",
             report
                 .extracted_ps1
                 .iter()
